@@ -140,7 +140,7 @@ tokoboros/
 │       ├── notion/           # Notion integration skills
 │       └── slack/            # Slack integration skills
 │
-├── GraphMark_Complete_Specification.md   # Full .og format specification
+├── ObjectGraph_Complete_Specification.md   # Full .og format specification
 ├── pyproject.toml                        # Project metadata & dependencies
 ├── CONTRIBUTING.md                       # Contribution guidelines
 └── LICENSE                               # MIT License
@@ -202,7 +202,7 @@ and install dependencies from requirements.txt.
   ->[:requires] concept-virtualenv
 ```
 
-For the complete specification, see [GraphMark_Complete_Specification.md](GraphMark_Complete_Specification.md).
+For the complete specification, see [ObjectGraph_Complete_Specification.md](ObjectGraph_Complete_Specification.md).
 
 ---
 
