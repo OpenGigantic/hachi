@@ -1,0 +1,22 @@
+::node[core_wiki]
+->[:role=skill]
+->[:keywords=wikipedia, search, encyclopedia, summary, who is, what is]
+
+::api[fetch_wiki_summary]
+method=GET
+endpoint=https://en.wikipedia.org/api/rest_v1/page/summary/{title}
+schema={"title": "string"}
+description=Fetches a concise, encyclopedic summary of any topic from Wikipedia. Spaces in the title should be replaced with underscores.
+
+::dense
+Acts as the ultimate universal knowledge base using Wikipedia's REST API.
+This is the primary tool for answering factual "Who is..." or "What is..." questions.
+
+::steps
+1. Format the search topic by replacing spaces with underscores (e.g., 'Albert Einstein' -> 'Albert_Einstein').
+2. Call `fetch_wiki_summary`.
+3. Extract the `extract` field from the JSON response.
+4. Deliver the summary clearly, and offer to provide more details if needed.
+
+::assertions
+assert title != "" "A search title must be provided."

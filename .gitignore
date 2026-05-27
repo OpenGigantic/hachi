@@ -1,0 +1,68 @@
+# ==========================================
+# Python
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+.eggs/
+
+# ==========================================
+# Virtual Environments
+# ==========================================
+.venv/
+venv/
+myvenv/
+env/
+ENV/
+
+# ==========================================
+# IDE & Editor
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# ==========================================
+# OS Files
+# ==========================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ==========================================
+# Testing & Coverage
+# ==========================================
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ==========================================
+# Tokoboros Runtime (user-generated, not source)
+# ==========================================
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.html
+
+# ==========================================
+# Environment & Secrets
+# ==========================================
+.env
+.env.local
+*.pem
+*.key
+credentials.json
+token.json
