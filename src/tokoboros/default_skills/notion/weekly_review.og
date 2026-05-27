@@ -1,0 +1,18 @@
+::node[weekly_review]
+->[:role=skill]
+->[:keywords=weekly review, progress, productivity, accomplishments, notion]
+
+::dense
+Synthesizes a high-level "Weekly Wins" report from completed Notion tasks and optionally shares it via Slack.
+Assumes the presence of `notion_database_query`, `notion_page_create`, and `slack_send_message` native tools.
+
+::steps
+1. Request the ID of the user's main Tasks database in Notion.
+2. Call `notion_database_query` to fetch all tasks marked with status "Done" within the last 7 days.
+3. Synthesize the completed tasks into a professional, categorized Markdown document (e.g., "Engineering Wins", "Admin", "Planning").
+4. Call `notion_page_create` to save this document into the user's "Journal" or "Reviews" Notion database.
+5. Ask the user: "Would you like me to DM this summary to your manager or team channel on Slack?"
+6. If the user says yes, use the Slack tool to dispatch the summary.
+
+::assertions
+assert database_id != "" "A Notion database ID is required to fetch completed tasks."

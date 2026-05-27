@@ -1,0 +1,22 @@
+::node[core_network]
+->[:role=skill]
+->[:keywords=ip, network, location, isp, timezone, lookup]
+
+::api[lookup_ip]
+method=GET
+endpoint=https://ipapi.co/{ip_address}/json/
+schema={"ip_address": "string"}
+description=Looks up geographical and network information for a specific public IPv4 or IPv6 address.
+
+::dense
+Performs rapid IP address intelligence and geolocation lookups.
+Useful for security, network diagnostics, and general curiosity.
+
+::steps
+1. Extract the IP address from the user's prompt.
+2. Call `lookup_ip`.
+3. Parse the JSON to extract the City, Country, ISP, and Organization.
+4. Present the data in a clean, structured list.
+
+::assertions
+assert ip_address != "" "An IP address is required for lookup."

@@ -1,0 +1,15 @@
+::node[receipt_sweeper]
+->[:role=skill]
+->[:keywords=receipts, invoices, expenses, inbox zero, taxes]
+
+::dense
+A batch processing workflow that cleans financial clutter from Gmail and organizes attachments into Google Drive.
+Assumes the presence of `gmail_search`, `gmail_download_attachment`, `google_drive_upload`, and `gmail_archive` native tools.
+
+::steps
+1. Search the Gmail inbox using queries like "receipt", "invoice", "payment confirmed", or specific vendor names (e.g., "Uber Receipts").
+2. For each matching email, check if it contains a PDF attachment or HTML receipt.
+3. If a PDF exists, download the attachment.
+4. Call the Google Drive tool to upload the PDF into a designated "Financials/Receipts" folder, automatically renaming the file to include the date and vendor name.
+5. Archive the processed email in Gmail to maintain Inbox Zero.
+6. Present a batch processing report showing how many receipts were secured.

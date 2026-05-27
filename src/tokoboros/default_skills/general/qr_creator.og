@@ -1,0 +1,18 @@
+::node[core_qr_creator]
+->[:role=skill]
+->[:keywords=qr code, generate qr, barcode, link to qr]
+
+::dense
+Instantly generates high-quality QR codes and saves them directly to the user's local machine.
+Since the QR API returns raw binary image data, you must orchestrate the native OS `run_command` tool to download it via `curl`, rather than using a REST adapter.
+
+::steps
+1. Extract the target data (URL, Wi-Fi password, or text) from the user.
+2. URL-encode the data string so it is safe for a web request.
+3. Construct the API URL: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=[ENCODED_DATA]`
+4. Call the native `run_command` tool to execute: `curl -s -o "qrcode.png" "[API_URL]"`
+5. Confirm to the user that `qrcode.png` has been saved to their current working directory.
+6. (Optional) If the user is on Windows, use `run_command` to execute `start qrcode.png` to open it immediately so they can scan it with their phone.
+
+::assertions
+assert data != "" "Data to encode must be provided by the user."

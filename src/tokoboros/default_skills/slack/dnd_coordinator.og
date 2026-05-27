@@ -1,0 +1,18 @@
+::node[dnd_coordinator]
+->[:role=skill]
+->[:keywords=do not disturb, dnd, focus, sync status, calendar, slack]
+
+::dense
+A background sentinel that synchronizes the user's Slack status with their Google Calendar events to protect focus time.
+Assumes the presence of `google_calendar_read` and `slack_set_status` native tools.
+
+::steps
+1. Enter a background loop checking the user's Google Calendar for the current day's events.
+2. When the current time enters a scheduled meeting block:
+   a. Call `slack_set_status` with the emoji "🗓️", the text "In a meeting until [End Time]", and toggle DND (Do Not Disturb) on.
+3. When the meeting block ends:
+   a. Call `slack_set_status` to clear the status and turn off DND.
+4. Suspend the workflow for 5 minutes (`core_suspend_workflow`) before checking the calendar state again.
+
+::assertions
+assert calendar_id != "" "A valid Google Calendar ID must be referenced."

@@ -1,0 +1,20 @@
+::node[meeting_copilot]
+->[:role=skill]
+->[:keywords=meeting, prep, debrief, notes, agenda]
+
+::dense
+Acts as an intelligent copilot for Google Calendar events, handling both pre-meeting context retrieval and post-meeting distribution.
+Assumes the presence of `google_calendar_read`, `gmail_search`, `google_drive_create_doc`, and `gmail_send_draft` tools.
+
+::steps
+1. Ask the user if they need "Prep" or "Debrief" for an upcoming/recent meeting.
+2. If "Prep":
+   a. Fetch the specific calendar event.
+   b. Extract attendee email addresses.
+   c. Use Gmail search to find the 3 most recent email threads involving those attendees.
+   d. Summarize the context and display it to the user.
+3. If "Debrief":
+   a. Ask the user to provide raw, unstructured meeting notes.
+   b. Structure the notes into Professional Meeting Minutes (Decisions, Action Items, Next Steps).
+   c. Create a new Google Doc via the Drive SDK with the structured minutes.
+   d. Draft a Gmail message to all meeting attendees containing the summary and the Google Doc link, saving it to Drafts for user review.

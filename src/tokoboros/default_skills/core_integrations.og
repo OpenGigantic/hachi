@@ -1,0 +1,20 @@
+::node[google_workspace]
+->[:role=native_integration]
+->[:keywords=google, workspace, drive, docs, gmail, calendar, native SDK]
+
+::dense
+Enables the heavy Python native SDKs for Google Workspace.
+
+::node[slack]
+->[:role=native_integration]
+->[:keywords=slack, native, chat, messages]
+
+::dense
+Enables the native Slack Python integration.
+
+::node[notion]
+->[:role=native_integration]
+->[:keywords=notion, native, databases, pages]
+
+::dense
+Enables the native Notion Python integration.
