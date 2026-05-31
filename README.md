@@ -4,7 +4,7 @@
 
 **The Autonomous Agent Engine Powered by ObjectGraph (.og)**
 
-*A multi-agent orchestration framework that reduces token costs by up to 90% using a structured, queryable, agent-native file format.*
+_A multi-agent orchestration framework that reduces token costs by up to 90% using a structured, queryable, agent-native file format._
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -18,11 +18,11 @@
 
 Tokoboros is an autonomous AI agent framework built from the ground up to solve the three biggest problems in modern agentic AI:
 
-| Problem | How Tokoboros Solves It |
-|---|---|
-| **Token Waste** | ObjectGraph (.og) files enable partial, query-aware loading — agents read ~30 tokens instead of entire 50,000-token documents |
-| **Context Pollution** | A delegation architecture spawns isolated sub-agents, keeping the orchestrator's context window pristine |
-| **Cost Explosion** | Native Anthropic prompt caching + structured file indexing reduces API costs by up to 90% |
+| Problem               | How Tokoboros Solves It                                                                                                       |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| **Token Waste**       | ObjectGraph (.og) files enable partial, query-aware loading — agents read ~30 tokens instead of entire 50,000-token documents |
+| **Context Pollution** | A delegation architecture spawns isolated sub-agents, keeping the orchestrator's context window pristine                      |
+| **Cost Explosion**    | Native Anthropic prompt caching + structured file indexing reduces API costs by up to 90%                                     |
 
 Unlike traditional agent frameworks that dump everything into the system prompt and pray, Tokoboros treats skill files as **queryable databases** and agents as **specialized workers** — each with their own clean context window, strict behavioral constraints, and deterministic validation.
 
@@ -47,6 +47,7 @@ Unlike traditional agent frameworks that dump everything into the system prompt 
 ### Prerequisites
 
 - Python 3.11+
+- [uv](https://docs.astral.sh/uv/)
 - An [Anthropic API key](https://console.anthropic.com/)
 
 ### Installation
@@ -56,16 +57,8 @@ Unlike traditional agent frameworks that dump everything into the system prompt 
 git clone https://github.com/AetherMind-Labs/tokoboros.git
 cd tokoboros
 
-# Create and activate a virtual environment
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-# macOS / Linux
-source .venv/bin/activate
-
-# Install Tokoboros
-pip install -e .
+# Create/update the local environment and install the package
+uv sync
 ```
 
 ### Configuration
@@ -82,10 +75,11 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 ### Run
 
 ```bash
-tokoboros run
+uv run tokoboros run
 ```
 
 On first run, Tokoboros will:
+
 1. Create the `~/.tokoboros/` workspace directory
 2. Launch the **Device Permissions Wizard** to configure access tiers
 3. Copy default skill files to `~/.tokoboros/skills/`
@@ -154,16 +148,16 @@ ObjectGraph is the core innovation behind Tokoboros. It is a **structured, query
 
 ### Why Not Markdown?
 
-| | Markdown | ObjectGraph (.og) |
-|---|---|---|
-| **Reading Model** | Full file every time | 3-pass: Index → Dense → Full |
-| **Token Cost (per query)** | ~1,800 tokens | ~200 tokens |
-| **Query Routing** | None (read everything) | `::index` routing table |
-| **Compression** | None | `::dense` keyword blocks |
-| **Validation** | Prompt-dependent | `::assertion` blocks |
-| **Multi-Agent RBAC** | None | `scope` attribute per node |
-| **Dependency Tracking** | None | `::edges` with typed relationships |
-| **Delta Loading** | Full re-read | `::changelog` diff entries |
+|                            | Markdown               | ObjectGraph (.og)                  |
+| -------------------------- | ---------------------- | ---------------------------------- |
+| **Reading Model**          | Full file every time   | 3-pass: Index → Dense → Full       |
+| **Token Cost (per query)** | ~1,800 tokens          | ~200 tokens                        |
+| **Query Routing**          | None (read everything) | `::index` routing table            |
+| **Compression**            | None                   | `::dense` keyword blocks           |
+| **Validation**             | Prompt-dependent       | `::assertion` blocks               |
+| **Multi-Agent RBAC**       | None                   | `scope` attribute per node         |
+| **Dependency Tracking**    | None                   | `::edges` with typed relationships |
+| **Delta Loading**          | Full re-read           | `::changelog` diff entries         |
 
 ### Example `.og` File
 
@@ -176,25 +170,25 @@ ObjectGraph is the core innovation behind Tokoboros. It is a **structured, query
 
 ::index
   # node-id       | type    | scope  | conf | keywords
-  install          | step    | all    | 0.99 | install, setup, pip
+  install          | step    | all    | 0.99 | install, setup, uv
   deploy-prod      | step    | all    | 0.95 | deploy, production, release
   rollback         | step    | all    | 0.93 | rollback, revert, undo
 
 ::node[install]
 ->[:role=skill]
-->[:keywords=install, setup, pip, python]
+->[:keywords=install, setup, uv, python]
 ::dense
-python3.11+|pip|virtualenv|requirements.txt|venv
+python3.11+|uv|sync|project-env|dependencies
 ::full
-Ensure Python 3.11+ is installed. Create a virtual environment
-and install dependencies from requirements.txt.
+Ensure Python 3.11+ and uv are installed. Sync dependencies
+and package metadata into the local project environment.
 ::steps
-1. python -m venv .venv
-2. source .venv/bin/activate
-3. pip install -r requirements.txt
+1. uv sync
+2. uv run python --version
+3. uv run tokoboros --help
 ::assertion
   trigger: after[install]
-  check: command('pip list') contains 'requests'
+  check: command('uv run python -c "import typer"') exits 0
   on-fail: ->[:retry] install
   on-pass: ->[:proceed] deploy-prod
 ::edges
@@ -228,11 +222,11 @@ On first boot, Tokoboros creates `~/.tokoboros/` with the following layout:
 
 ```json
 {
-    "agent": {
-        "model": "claude-haiku-4-5",
-        "temperature": 0.0,
-        "max_tokens": 8192
-    }
+  "agent": {
+    "model": "claude-haiku-4-5",
+    "temperature": 0.0,
+    "max_tokens": 8192
+  }
 }
 ```
 

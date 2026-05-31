@@ -16,9 +16,7 @@ import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Dict, List, Optional
 import httpx
-
-# Tokens are stored securely in the user's home directory
-TOKEN_DIR = os.path.expanduser("~/.tokoboros/tokens")
+from tokoboros.core.secret_store import SecretStore, create_default_secret_store
 
 # For an open-source project, a public Client ID is standard practice for Desktop Apps.
 # This would normally be the official "Tokoboros AI" Google App.
@@ -65,25 +63,33 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
 class OAuthManager:
     """Manages OAuth tokens and the browser-based authentication flow."""
     
-    def __init__(self):
-        os.makedirs(TOKEN_DIR, exist_ok=True)
+    def __init__(self, secret_store: Optional[SecretStore] = None):
+        self._store = secret_store or create_default_secret_store()
+
+    @staticmethod
+    def _key(provider: str) -> str:
+        return f"oauth.{provider}"
         
     def get_token(self, provider: str) -> Optional[Dict]:
-        """Load a saved token from disk."""
-        token_path = os.path.join(TOKEN_DIR, f"{provider}.json")
-        if os.path.exists(token_path):
-            with open(token_path, "r") as f:
-                return json.load(f)
+        """Load a saved token from secure storage."""
+        raw = self._store.get(self._key(provider))
+        if raw:
+            try:
+                return json.loads(raw)
+            except Exception:
+                return None
         return None
         
     def save_token(self, provider: str, token_data: Dict):
-        """Save a token to disk securely."""
-        token_path = os.path.join(TOKEN_DIR, f"{provider}.json")
-        # Ensure file is only readable by the user
-        with open(token_path, "w") as f:
-            json.dump(token_data, f, indent=2)
-        if os.name != 'nt':
-            os.chmod(token_path, 0o600)
+        """Save a token to secure storage with metadata."""
+        metadata = {
+            "name": self._key(provider),
+            "labels": {
+                "provider": provider,
+                "scope": str(token_data.get("scope", "")),
+            },
+        }
+        self._store.set(self._key(provider), json.dumps(token_data), metadata=metadata)
             
     def get_google_credentials(self, scopes: List[str]) -> str:
         """

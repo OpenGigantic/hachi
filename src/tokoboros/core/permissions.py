@@ -17,8 +17,9 @@ Security Invariants:
 """
 
 from dataclasses import dataclass
+import uuid
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Literal, Optional, Tuple
 
 
 # ==========================================
@@ -37,6 +38,26 @@ class PermissionResult:
     """
     allowed: bool
     reason: str
+
+
+@dataclass(frozen=True)
+class PermissionRequest:
+    """A runtime approval request emitted when policy denies a sensitive action."""
+
+    request_id: str
+    operation: str
+    tool: str
+    target: str
+    reason: str
+    policy_summary: str
+
+
+@dataclass(frozen=True)
+class PermissionDecision:
+    """User decision returned by approval UIs (TUI modal, future APIs)."""
+
+    action: Literal["approve", "deny", "allow_once"]
+    rationale: str = ""
 
 
 @dataclass(frozen=True)
@@ -491,6 +512,140 @@ class PermissionGate:
             paths_str = ", ".join(p.name for p in self._fs.allowed_paths)
         terminal_str = "ON" if self._term.enabled else "OFF"
         return f"Tier: {self._tier.capitalize()} | Folders: {paths_str} | Terminal: {terminal_str}"
+
+
+class InteractivePermissionGate:
+    """Permission gate wrapper that supports interactive escalation decisions.
+
+    The base PermissionGate remains the source of truth. Escalations only apply
+    in-memory for the current process and never modify device-permissions.og.
+    """
+
+    def __init__(
+        self,
+        base_gate: PermissionGate,
+        approval_handler: Optional[Callable[[PermissionRequest], PermissionDecision]] = None,
+        event_emitter: Optional[Callable[[str, Dict[str, str]], None]] = None,
+    ):
+        self._base = base_gate
+        self._approval_handler = approval_handler
+        self._emit = event_emitter or (lambda *_a, **_kw: None)
+        self._allowed_session_paths: set[tuple[str, str]] = set()
+        self._allowed_session_commands: set[str] = set()
+
+    @property
+    def summary(self) -> str:
+        return self._base.summary
+
+    @property
+    def terminal_timeout(self) -> int:
+        return self._base.terminal_timeout
+
+    @property
+    def tier(self) -> str:
+        return self._base.tier
+
+    def is_mcp_filesystem_enabled(self) -> bool:
+        return self._base.is_mcp_filesystem_enabled()
+
+    def get_allowed_paths(self) -> List[Path]:
+        return self._base.get_allowed_paths()
+
+    def get_system_prompt_injection(self) -> str:
+        return self._base.get_system_prompt_injection()
+
+    def _request_decision(
+        self,
+        operation: str,
+        tool: str,
+        target: str,
+        reason: str,
+    ) -> PermissionDecision:
+        request = PermissionRequest(
+            request_id=uuid.uuid4().hex,
+            operation=operation,
+            tool=tool,
+            target=target,
+            reason=reason,
+            policy_summary=self._base.summary,
+        )
+
+        self._emit("permission.requested", {
+            "request_id": request.request_id,
+            "operation": operation,
+            "tool": tool,
+            "target": target,
+            "reason": reason,
+            "policy_summary": request.policy_summary,
+        })
+
+        if not self._approval_handler:
+            decision = PermissionDecision(action="deny", rationale="No approval handler available")
+        else:
+            try:
+                decision = self._approval_handler(request)
+            except Exception as exc:
+                decision = PermissionDecision(action="deny", rationale=f"Approval handler failed: {exc}")
+
+        self._emit("permission.decided", {
+            "request_id": request.request_id,
+            "operation": operation,
+            "tool": tool,
+            "target": target,
+            "decision": decision.action,
+            "reason": decision.rationale or reason,
+        })
+
+        return decision
+
+    def check_path(self, path: str, operation: str) -> PermissionResult:
+        try:
+            resolved_target = str(_resolve_path(path))
+        except Exception:
+            resolved_target = path
+        if (operation, resolved_target) in self._allowed_session_paths:
+            return PermissionResult(True, "Allowed for current runtime session.")
+
+        base_result = self._base.check_path(path, operation)
+        if base_result.allowed:
+            return base_result
+
+        decision = self._request_decision(
+            operation=operation,
+            tool="filesystem",
+            target=resolved_target,
+            reason=base_result.reason,
+        )
+
+        if decision.action == "approve":
+            self._allowed_session_paths.add((operation, resolved_target))
+            return PermissionResult(True, "Approved for session by operator.")
+        if decision.action == "allow_once":
+            return PermissionResult(True, "Allowed once by operator.")
+        return PermissionResult(False, decision.rationale or base_result.reason)
+
+    def check_command(self, command: str) -> PermissionResult:
+        normalized = command.strip()
+        if normalized in self._allowed_session_commands:
+            return PermissionResult(True, "Allowed for current runtime session.")
+
+        base_result = self._base.check_command(command)
+        if base_result.allowed:
+            return base_result
+
+        decision = self._request_decision(
+            operation="execute",
+            tool="run_terminal_command",
+            target=normalized,
+            reason=base_result.reason,
+        )
+
+        if decision.action == "approve":
+            self._allowed_session_commands.add(normalized)
+            return PermissionResult(True, "Approved for session by operator.")
+        if decision.action == "allow_once":
+            return PermissionResult(True, "Allowed once by operator.")
+        return PermissionResult(False, decision.rationale or base_result.reason)
 
 
 # ==========================================

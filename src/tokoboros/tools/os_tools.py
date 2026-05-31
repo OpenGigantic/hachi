@@ -10,12 +10,11 @@ every call is checked against the user's device-permissions.og before execution.
 If no gate is provided, tools run unrestricted (used only during internal boot operations).
 """
 
-import os
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Any
+
 from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.permissions import PermissionGate
 
 
 # ==========================================
@@ -94,7 +93,7 @@ def _raw_run_terminal_command(command: str, cwd: str = ".", timeout: int = 120) 
 # of the raw tool. The gate checks happen BEFORE execution — if denied,
 # the raw function is never called.
 
-def _make_guarded_read_file(gate: PermissionGate):
+def _make_guarded_read_file(gate: Any):
     """Create a permission-gated read_file tool."""
     def guarded_read_file(path: str) -> str:
         result = gate.check_path(path, "read")
@@ -104,7 +103,7 @@ def _make_guarded_read_file(gate: PermissionGate):
     return guarded_read_file
 
 
-def _make_guarded_write_file(gate: PermissionGate):
+def _make_guarded_write_file(gate: Any):
     """Create a permission-gated write_file tool."""
     def guarded_write_file(path: str, content: str) -> str:
         result = gate.check_path(path, "write")
@@ -114,7 +113,7 @@ def _make_guarded_write_file(gate: PermissionGate):
     return guarded_write_file
 
 
-def _make_guarded_run_terminal(gate: PermissionGate):
+def _make_guarded_run_terminal(gate: Any):
     """Create a permission-gated run_terminal_command tool."""
     def guarded_run_terminal(command: str, cwd: str = ".") -> str:
         # Check command against terminal rules (allowlist/blocklist)
@@ -191,7 +190,7 @@ RUN_TERMINAL_COMMAND_SCHEMA = {
 # Registration Helper
 # ==========================================
 
-def register_os_tools(registry: ToolRegistry, gate: Optional[PermissionGate] = None):
+def register_os_tools(registry: ToolRegistry, gate: Any | None = None):
     """
     Mount all OS tools onto the provided ToolRegistry.
 

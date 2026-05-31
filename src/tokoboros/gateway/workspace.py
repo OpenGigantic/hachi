@@ -5,13 +5,14 @@ Manages the ~/.tokoboros/ directory structure — the local home of every Tokobo
 Handles first-run setup, configuration loading, brain loading, and the device permissions wizard.
 """
 
-import os
-import json
 import shutil
 from pathlib import Path
 from typing import List, Optional
 
+from tokoboros.core.config_loader import load_effective_config, write_global_config
+from tokoboros.core.paths import ensure_directories, get_tokoboros_paths, import_legacy_workspace
 from tokoboros.core.permissions import generate_permissions_og
+from tokoboros.core.skill_packs import install_core_skill_packs, install_skill_pack
 
 
 # ==========================================
@@ -19,15 +20,13 @@ from tokoboros.core.permissions import generate_permissions_og
 # ==========================================
 
 def get_workspace_dir() -> Path:
-    """Returns the path to the Tokoboros workspace."""
-    home = Path.home()
-    workspace = home / ".tokoboros"
-    return workspace
+    """Returns the canonical global config directory for Tokoboros."""
+    return get_tokoboros_paths().config_dir
 
 
 def get_skills_dir() -> Path:
-    """Returns the absolute path to the directory containing user-provided .og skill files."""
-    skills_dir = get_workspace_dir() / "skills"
+    """Returns the absolute path to the user skill directory."""
+    skills_dir = get_tokoboros_paths().skills_dir
     if not skills_dir.exists():
         ensure_workspace()
     return skills_dir
@@ -35,7 +34,7 @@ def get_skills_dir() -> Path:
 
 def get_permissions_file() -> Path:
     """Returns the absolute path to the device-permissions.og manifest."""
-    return get_workspace_dir() / "device-permissions.og"
+    return get_tokoboros_paths().permissions_file
 
 
 # ==========================================
@@ -48,33 +47,20 @@ def ensure_workspace():
     Does NOT trigger the permissions wizard — that is handled separately
     by ensure_device_permissions() during the boot sequence.
     """
-    workspace = get_workspace_dir()
-    
-    # Create directories
-    directories = [
-        workspace,
-        workspace / "skills",
-        workspace / "sessions",
-    ]
-    
-    for dir_path in directories:
-        dir_path.mkdir(parents=True, exist_ok=True)
-        
-    # Phase 4 Enhancement: First-Boot Skill Injection
-    # Copy JARVIS core skills to user's local directory if it's completely empty
-    skills_dir = workspace / "skills"
+    paths = get_tokoboros_paths()
+    ensure_directories(paths)
+    import_legacy_workspace(paths)
+
+    # Install only core, local-first skill packs by default.
+    skills_dir = paths.skills_dir
     if not any(skills_dir.iterdir()):
         try:
-            # Resolve the default_skills directory relative to this file
-            default_skills_path = Path(__file__).parent.parent / "default_skills"
-            if default_skills_path.exists():
-                # Copy the entire directory tree (general, technical, google folders)
-                shutil.copytree(default_skills_path, skills_dir, dirs_exist_ok=True)
-        except Exception as e:
+            install_core_skill_packs(skills_dir)
+        except Exception:
             pass
-        
+
     # Create default brain.og if it doesn't exist
-    brain_file = workspace / "brain.og"
+    brain_file = paths.brain_file
     if not brain_file.exists():
         default_brain = Path(__file__).parent.parent / "default_skills" / "brain.og"
         if default_brain.exists():
@@ -89,18 +75,9 @@ def ensure_workspace():
                     "You are Tokoboros, an elite autonomous agent.\n"
                 )
             
-    # Create config file
-    config_file = workspace / "tokoboros.json"
-    if not config_file.exists():
-        default_config = {
-            "agent": {
-                "model": "claude-haiku-4-5",
-                "temperature": 0.0,
-                "max_tokens": 8192
-            }
-        }
-        with open(config_file, "w", encoding="utf-8") as f:
-            json.dump(default_config, f, indent=4)
+    # Create canonical TOML config if it doesn't exist
+    if not paths.global_config_toml.exists():
+        write_global_config(load_effective_config(paths=paths), paths=paths)
 
 
 # ==========================================
@@ -109,15 +86,17 @@ def ensure_workspace():
 
 def load_config() -> dict:
     """
-    Loads the user's Tokoboros configuration from ~/.tokoboros/tokoboros.json.
+    Loads the effective Tokoboros configuration.
     Falls back to defaults if not found.
     """
-    config_file = get_workspace_dir() / "tokoboros.json"
-    if not config_file.exists():
-        ensure_workspace()
-    
-    with open(config_file, "r", encoding="utf-8") as f:
-        return json.load(f)
+    ensure_workspace()
+    return load_effective_config().model_dump(mode="python", exclude_none=True)
+
+
+def install_optional_skill_pack(pack_id: str) -> List[Path]:
+    """Install an optional built-in skill pack into the user skills directory."""
+    ensure_workspace()
+    return install_skill_pack(pack_id, get_tokoboros_paths().skills_dir)
 
 
 def load_brain() -> str:
@@ -136,7 +115,7 @@ def load_brain() -> str:
     Returns:
         A formatted system prompt string (~1000-1500 tokens).
     """
-    brain_file = get_workspace_dir() / "brain.og"
+    brain_file = get_tokoboros_paths().brain_file
     if not brain_file.exists():
         ensure_workspace()
 
@@ -254,11 +233,11 @@ def run_permissions_wizard(console) -> str:
     ))
 
     # Tier selection table
-    table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
-    table.add_column("Option", style="bold cyan", width=8)
-    table.add_column("Tier", width=14)
-    table.add_column("Access", width=40)
-    table.add_column("Best For", style="dim", width=30)
+    table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2), expand=True)
+    table.add_column("Option", style="bold cyan", width=8, no_wrap=True)
+    table.add_column("Tier", min_width=12, no_wrap=True)
+    table.add_column("Access", ratio=2, overflow="fold")
+    table.add_column("Best For", style="dim", ratio=2, overflow="fold")
 
     table.add_row("[1]", TIER_INFO["sandbox"]["emoji"], TIER_INFO["sandbox"]["description"], TIER_INFO["sandbox"]["audience"])
     table.add_row("[2]", TIER_INFO["guided"]["emoji"] + " *", TIER_INFO["guided"]["description"], TIER_INFO["guided"]["audience"])

@@ -7,7 +7,7 @@ Thank you for your interest in contributing to Tokoboros! This document provides
 ### Prerequisites
 
 - Python 3.11+
-- [uv](https://docs.astral.sh/uv/) or pip
+- [uv](https://docs.astral.sh/uv/)
 - An Anthropic API key (for running the agent)
 
 ### Getting Started
@@ -17,31 +17,32 @@ Thank you for your interest in contributing to Tokoboros! This document provides
 git clone https://github.com/AetherMind-Labs/tokoboros.git
 cd tokoboros
 
-# Create a virtual environment
-python -m venv .venv
+# Create/update local environment and include development dependencies
+uv sync --extra dev
+```
 
-# Activate it
-# Windows
-.venv\Scripts\activate
-# macOS/Linux
-source .venv/bin/activate
+### Managing Dependencies
 
-# Install in development mode
-pip install -e ".[dev]"
+```bash
+# Add a runtime dependency
+uv add <package>
+
+# Add a development-only dependency
+uv add --dev <package>
 ```
 
 ### Running Tests
 
 ```bash
-pytest
+uv run pytest
 ```
 
 ### Linting & Formatting
 
 ```bash
-ruff check src/
-ruff format src/
-mypy src/tokoboros/
+uv run ruff check src/
+uv run ruff format src/
+uv run mypy src/tokoboros/
 ```
 
 ## Project Structure

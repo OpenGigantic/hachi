@@ -19,6 +19,7 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 
 from tokoboros.core.memory_guard import scan as guard_scan
+from tokoboros.core.paths import get_tokoboros_paths
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +47,10 @@ class MemoryVault:
         """Initialize the embedded ChromaDB client with dual collections.
 
         Args:
-            brain_dir: Physical location of the vault. Defaults to ~/.tokoboros/brain.
+            brain_dir: Physical location of the vault. Defaults to OS-native data directory.
         """
         if not brain_dir:
-            from pathlib import Path
-            brain_dir = str(Path.home() / ".tokoboros" / "brain")
+            brain_dir = str(get_tokoboros_paths().data_dir)
 
         self.db_path = os.path.join(brain_dir, "chroma_vault")
         os.makedirs(self.db_path, exist_ok=True)

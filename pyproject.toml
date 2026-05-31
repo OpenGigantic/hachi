@@ -25,8 +25,15 @@ classifiers = [
 dependencies = [
     "pydantic>=2.9.0",
     "anthropic>=0.40.0",
+    "httpx>=0.28.0",
+    "chromadb>=0.5.5",
+    "platformdirs>=4.3.0",
+    "keyring>=25.5.0",
+    "cryptography>=43.0.0",
+    "tomlkit>=0.13.2",
     "typer>=0.12.0",
-    "rich>=13.7.0"
+    "rich>=13.7.0",
+    "textual>=0.75.0"
 ]
 
 [project.optional-dependencies]
@@ -35,9 +42,28 @@ dev = [
     "ruff>=0.7.0",
     "mypy>=1.11.0",
 ]
+google = [
+    "google-auth>=2.35.0",
+    "google-api-python-client>=2.154.0",
+]
+notion = [
+    "notion-client>=2.2.1",
+]
+slack = [
+    "slack-sdk>=3.33.3",
+]
+memory = [
+    "chromadb>=0.5.5",
+]
+local-models = [
+    "httpx>=0.28.0",
+]
 
 [project.scripts]
 tokoboros = "tokoboros.cli.main:app"
+
+[tool.uv]
+package = true
 
 [tool.ruff]
 line-length = 100

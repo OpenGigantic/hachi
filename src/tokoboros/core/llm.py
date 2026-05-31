@@ -8,10 +8,47 @@ without modifying the core agent loop.
 """
 
 import abc
+import json
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 import anthropic
+import httpx
+
+from tokoboros.core.secret_store import SecretStore
+
+
+def _read_dotenv(path: Path) -> Dict[str, str]:
+    """Parse a simple KEY=VALUE dotenv file into a dictionary."""
+    if not path.exists():
+        return {}
+
+    values: Dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _resolve_api_key(api_key_env: Optional[str], explicit_api_key: Optional[str] = None) -> Optional[str]:
+    """Resolve provider API key from explicit value, env var, then local project .env."""
+    if explicit_api_key:
+        return explicit_api_key
+    if not api_key_env:
+        return None
+
+    env_name = str(api_key_env)
+    from_env = os.environ.get(env_name)
+    if from_env:
+        return from_env
+
+    # Fallback for local dev: allow project-level .env without requiring shell export.
+    dotenv_values = _read_dotenv(Path.cwd() / ".env")
+    return dotenv_values.get(env_name)
 
 class Message(BaseModel):
     """
@@ -147,3 +184,128 @@ class AnthropicClient(BaseLLMClient):
                 )
 
         return LLMResponse(content=text_content.strip(), tool_calls=tool_calls)
+
+
+class OpenAICompatibleClient(BaseLLMClient):
+    """OpenAI-compatible chat completions client (works for hosted and local endpoints)."""
+
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        api_key: Optional[str] = None,
+        max_tokens: int = 4096,
+        timeout: float = 60.0,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key = api_key
+        self.max_tokens = max_tokens
+        self._http = httpx.Client(timeout=timeout)
+
+    @staticmethod
+    def _adapt_tools(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        if not tools:
+            return []
+
+        adapted = []
+        for tool in tools:
+            adapted.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.get("name", "tool"),
+                        "description": tool.get("description", ""),
+                        "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+                    },
+                }
+            )
+        return adapted
+
+    def generate(
+        self,
+        messages: List[Message],
+        system_prompt: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> LLMResponse:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        payload_messages: List[Dict[str, Any]] = []
+        if system_prompt:
+            payload_messages.append({"role": "system", "content": system_prompt})
+
+        for msg in messages:
+            if msg.role == "system":
+                continue
+            payload_messages.append({"role": msg.role, "content": msg.content})
+
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": payload_messages,
+            "max_tokens": self.max_tokens,
+        }
+
+        adapted_tools = self._adapt_tools(tools)
+        if adapted_tools:
+            payload["tools"] = adapted_tools
+            payload["tool_choice"] = "auto"
+
+        response = self._http.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
+        response.raise_for_status()
+        data = response.json()
+
+        choices = data.get("choices", [])
+        if not choices:
+            return LLMResponse(content="", tool_calls=[])
+
+        message = choices[0].get("message", {})
+        content = message.get("content") or ""
+
+        tool_calls: List[ToolCall] = []
+        for raw_call in message.get("tool_calls", []) or []:
+            fn = raw_call.get("function", {})
+            args_str = fn.get("arguments", "{}")
+            try:
+                args = json.loads(args_str)
+            except Exception:
+                args = {}
+
+            tool_calls.append(
+                ToolCall(
+                    id=str(raw_call.get("id", "tool_call")),
+                    name=str(fn.get("name", "unknown_tool")),
+                    input=args,
+                )
+            )
+
+        return LLMResponse(content=str(content).strip(), tool_calls=tool_calls)
+
+
+def create_llm_client(provider_config: Dict[str, Any], secret_store: Optional[SecretStore] = None, max_tokens: int = 4096) -> BaseLLMClient:
+    """Build an LLM client from provider config plus secret references."""
+    kind = str(provider_config.get("kind", "anthropic")).lower()
+    model = str(provider_config.get("model", "claude-haiku-4-5"))
+    api_key_ref = provider_config.get("api_key_ref")
+    api_key_env = provider_config.get("api_key_env")
+    base_url = provider_config.get("base_url")
+
+    api_key: Optional[str] = None
+    if api_key_ref and secret_store is not None:
+        api_key = secret_store.get(str(api_key_ref))
+    if not api_key:
+        api_key = _resolve_api_key(api_key_env)
+
+    if kind == "anthropic":
+        return AnthropicClient(api_key=api_key, model=model, max_tokens=max_tokens)
+
+    if kind == "ollama":
+        resolved_base = str(base_url or os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434/v1")
+        return OpenAICompatibleClient(base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens)
+
+    if kind == "openai-compatible":
+        resolved_base = str(base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1")
+        return OpenAICompatibleClient(base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens)
+
+    raise ValueError(f"Unsupported provider kind: {kind}")
