@@ -20,6 +20,8 @@ import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from tokoboros.core.paths import get_tokoboros_paths
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,10 +38,10 @@ class SessionStore:
 
         Args:
             db_path: Path to the SQLite database file.
-                     Defaults to ~/.tokoboros/brain/sessions.db.
+                     Defaults to OS-native Tokoboros state directory.
         """
         if not db_path:
-            db_path = str(Path.home() / ".tokoboros" / "brain" / "sessions.db")
+            db_path = str(get_tokoboros_paths().sessions_db)
 
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 

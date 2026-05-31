@@ -350,6 +350,25 @@ class MCPManager:
 
                 registry.register(schema, make_handler(server, tool_name))
 
+    def get_server_tool_count(self, server_name: str) -> int:
+        """Return the discovered tool count for a given server."""
+        server = self._servers.get(server_name)
+        if not server:
+            return 0
+        return len(server.tools)
+
+    def get_inventory(self) -> List[Dict[str, Any]]:
+        """Return a structured MCP inventory snapshot for operator views."""
+        rows: List[Dict[str, Any]] = []
+        for name, server in self._servers.items():
+            rows.append({
+                "name": name,
+                "status": "ready" if server.is_alive else "stopped",
+                "tool_count": len(server.tools),
+                "tools": [tool.get("name", "") for tool in server.tools if tool.get("name")],
+            })
+        return rows
+
     @property
     def server_count(self) -> int:
         """Number of active MCP server connections."""

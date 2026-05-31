@@ -2,7 +2,6 @@
 Base Notion Service
 Provides the core HTTP client wrapper and authentication headers for the Notion API.
 """
-import os
 import httpx
 from tokoboros.core.loop import ToolRegistry
 
@@ -16,16 +15,23 @@ class NotionService:
 
     def __init__(self):
         from tokoboros.core.credential_vault import CredentialVault
-        vault = CredentialVault()
-        try:
-            self.api_key = vault.get_token("notion_api_key", prompt_if_missing=True)
-        except ValueError:
-            self.api_key = None
-            print("Warning: NOTION_API_KEY was not provided. Notion tools will fail.")
+        self._vault = CredentialVault()
+        # Avoid interactive stdin prompts during TUI boot. We resolve lazily per call.
+        self.api_key = self._vault.get_token("notion_api_key", prompt_if_missing=False)
+
+    def _ensure_api_key(self) -> None:
+        if self.api_key:
+            return
+        self.api_key = self._vault.get_token("notion_api_key", prompt_if_missing=False)
+        if not self.api_key:
+            raise ValueError(
+                "Missing Notion API key. Add 'notion_api_key' to ~/.tokoboros/vault.json."
+            )
 
     @property
     def headers(self) -> dict:
         """Returns the required headers for Notion API requests."""
+        self._ensure_api_key()
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Notion-Version": self.NOTION_VERSION,

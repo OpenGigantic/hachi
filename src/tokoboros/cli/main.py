@@ -11,16 +11,13 @@ Commands:
 """
 
 import json
-import sys
 from pathlib import Path
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.prompt import Prompt
 from rich.panel import Panel
-from rich.text import Text
 from rich.rule import Rule
-from rich.syntax import Syntax
 
 from tokoboros.gateway.workspace import (
     ensure_workspace,
@@ -28,11 +25,60 @@ from tokoboros.gateway.workspace import (
     run_permissions_wizard,
     show_current_permissions,
     get_permissions_file,
+    get_workspace_dir,
 )
 from tokoboros.gateway.orchestrator import boot_agent, AgentSession
+from tokoboros.core.config_loader import load_effective_config, write_global_config
+from tokoboros.core.onboarding import OnboardingService
+from tokoboros.core.paths import get_tokoboros_paths
+from tokoboros.core.secret_store import create_default_secret_store
+from tokoboros.core.settings import ResolvedConfig
+from tokoboros.core.credential_vault import CredentialVault
+from tokoboros.tui.app import run_tui
 
 app = typer.Typer(help="Tokoboros - The Autonomous Agent Engine powered by ObjectGraph")
 console = Console()
+
+
+def _apply_quick_setup_if_needed() -> None:
+    service = OnboardingService()
+    if not service.needs_setup():
+        return
+
+    detected = service.detect_environment()
+    provider: Dict[str, str] = {
+        "kind": "anthropic",
+        "model": "claude-haiku-4-5",
+        "api_key_env": "ANTHROPIC_API_KEY",
+    }
+
+    if detected.get("ollama_cli"):
+        provider = {
+            "kind": "ollama",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "llama3.1:8b",
+        }
+    elif detected.get("openai_env"):
+        provider = {
+            "kind": "openai-compatible",
+            "api_key_env": "OPENAI_API_KEY",
+            "model": "gpt-4.1-mini",
+        }
+    elif detected.get("anthropic_env"):
+        provider = {
+            "kind": "anthropic",
+            "api_key_env": "ANTHROPIC_API_KEY",
+            "model": "claude-haiku-4-5",
+        }
+
+    plan = service.build_tier_plan(
+        "lightning",
+        {
+            "provider": provider,
+            "permission_tier": "guided",
+        },
+    )
+    service.apply_setup(plan)
 
 
 def _render_event(event_type: str, data: dict):
@@ -40,11 +86,11 @@ def _render_event(event_type: str, data: dict):
     Callback invoked by the ExecutionLoop on every significant action.
     Renders a beautiful, real-time visual log in the terminal.
     """
-    if event_type == "thinking":
+    if event_type in ("thinking", "thinking.step"):
         iteration = data.get("iteration", "?")
         console.print(Rule(f"[dim]Step {iteration}[/dim]", style="dim"))
 
-    elif event_type == "tool_call":
+    elif event_type in ("tool_call", "tool.call.started"):
         tool_name = data.get("name", "unknown")
         tool_input = data.get("input", {})
 
@@ -63,9 +109,9 @@ def _render_event(event_type: str, data: dict):
             )
         )
 
-    elif event_type == "tool_result":
+    elif event_type in ("tool_result", "tool.call.completed"):
         tool_name = data.get("name", "unknown")
-        result = data.get("result", "")
+        result = data.get("result", data.get("result_preview", ""))
 
         # Truncate long results for display
         if len(result) > 400:
@@ -82,13 +128,13 @@ def _render_event(event_type: str, data: dict):
             )
         )
 
-    elif event_type == "text_chunk":
+    elif event_type in ("text_chunk", "text.stream.delta"):
         # Intermediate text from the model (before it decides on a tool call)
         text = data.get("text", "")
         if text.strip():
             console.print(f"  [dim italic]{text[:200]}[/dim italic]")
 
-    elif event_type == "compaction":
+    elif event_type in ("compaction", "memory.compaction"):
         old_skill = data.get("old_skill", "none")
         new_skill = data.get("new_skill", "unknown")
         console.print(Panel(
@@ -99,6 +145,28 @@ def _render_event(event_type: str, data: dict):
             border_style="yellow",
             padding=(0, 1)
         ))
+
+    elif event_type == "boot.progress":
+        idx = data.get("index", "?")
+        total = data.get("total", "?")
+        message = data.get("message", "Booting")
+        console.print(f"[dim]Boot {idx}/{total}: {message}[/dim]")
+
+    elif event_type == "boot.complete":
+        console.print("[green]Runtime boot complete.[/green]")
+
+    elif event_type == "permission.decided":
+        decision = data.get("decision", "unknown")
+        tool = data.get("tool", "unknown")
+        console.print(f"[bold]Permission {decision}[/bold] for {tool}")
+
+    elif event_type == "subagent.started":
+        console.print(f"[cyan]Sub-agent started:[/cyan] {data.get('role', 'unknown')}")
+
+    elif event_type == "subagent.completed":
+        console.print(
+            f"[cyan]Sub-agent completed:[/cyan] {data.get('role', 'unknown')} ({data.get('status', 'unknown')})"
+        )
 
 
 @app.command()
@@ -111,8 +179,8 @@ def onboard():
         ensure_workspace()
         console.print(Panel(
             "[bold green]Tokoboros workspace initialized successfully![/bold green]\n\n"
-            "Your agent's brain is located at: [cyan]~/.tokoboros/brain.og[/cyan]\n"
-            "Drop your new capabilities into:  [cyan]~/.tokoboros/skills/[/cyan]",
+            f"Your config directory: [cyan]{get_workspace_dir()}[/cyan]\n"
+            f"Your skills directory: [cyan]{get_tokoboros_paths().skills_dir}[/cyan]",
             title="Setup Complete"
         ))
     except Exception as e:
@@ -133,8 +201,7 @@ def permissions(
     Use --reset to re-run the wizard, --tier to switch tiers,
     or --allow/--block to add paths.
     """
-    from tokoboros.core.permissions import PermissionGate, generate_permissions_og
-    from tokoboros.og_engine.parser import parse_og_file
+    from tokoboros.core.permissions import generate_permissions_og
 
     permissions_file = get_permissions_file()
 
@@ -197,8 +264,6 @@ def _modify_permissions_path(
         action: 'add' (future: 'remove').
         console: Rich console for output.
     """
-    from tokoboros.core.permissions import PermissionGate
-
     if not permissions_file.exists():
         console.print("[yellow]No permissions file found. Run 'tokoboros permissions --reset' first.[/yellow]")
         return
@@ -238,9 +303,9 @@ def reauth():
     """
     Clear stored API credentials (like Slack/Notion tokens) so you can update them.
     """
-    vault_path = Path.home() / ".tokoboros" / "vault.json"
-    if vault_path.exists():
-        vault_path.unlink()
+    vault = CredentialVault()
+    deleted = vault.clear_all()
+    if deleted > 0:
         console.print(Panel(
             "[bold green]Credentials cleared successfully![/bold green]\n\n"
             "The next time you boot Tokoboros and trigger an integration,\n"
@@ -252,12 +317,12 @@ def reauth():
         console.print("[yellow]No credentials vault found. You're already starting fresh.[/yellow]")
 
 
-@app.command()
-def run():
+def _run_repl() -> None:
     """
-    Start the Tokoboros interactive agent session.
+    Start the compatibility Rich REPL agent session.
     """
     ensure_workspace()
+    _apply_quick_setup_if_needed()
 
     # Ensure device permissions exist (runs wizard on first launch)
     ensure_device_permissions(console)
@@ -307,6 +372,159 @@ def run():
             break
         except Exception as e:
             console.print(f"\n[bold red]Error:[/] {e}")
+
+
+@app.command()
+def run(
+    repl: bool = typer.Option(
+        False,
+        "--repl",
+        help="Launch the legacy Rich REPL instead of the Textual TUI.",
+    ),
+):
+    """
+    Start Tokoboros.
+
+    Default: Textual TUI.
+    Fallback: pass --repl for the legacy terminal REPL.
+    """
+    ensure_workspace()
+    _apply_quick_setup_if_needed()
+    ensure_device_permissions(console)
+
+    if repl:
+        _run_repl()
+        return
+
+    try:
+        run_tui()
+    except Exception as e:
+        console.print(f"[bold red]Failed to launch Textual UI:[/] {e}")
+        console.print("[yellow]Falling back to compatibility REPL...[/yellow]")
+        _run_repl()
+
+
+@app.command("run-repl")
+def run_repl_command():
+    """Launch the compatibility Rich REPL explicitly."""
+    _run_repl()
+
+
+@app.command()
+def setup(
+    tier: str = typer.Option("lightning", "--tier", help="Setup tier: lightning, recommended, enhanced, power."),
+    permission_tier: str = typer.Option("guided", "--permission-tier", help="Permission tier: sandbox, guided, unrestricted."),
+):
+    """Run or resume setup without launching a session."""
+    ensure_workspace()
+
+    service = OnboardingService()
+    detected = service.detect_environment()
+
+    provider: Dict[str, str] = {
+        "kind": "anthropic",
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "model": "claude-haiku-4-5",
+    }
+
+    if detected.get("ollama_cli"):
+        provider = {
+            "kind": "ollama",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "llama3.1:8b",
+        }
+    elif detected.get("openai_env"):
+        provider = {
+            "kind": "openai-compatible",
+            "api_key_env": "OPENAI_API_KEY",
+            "model": "gpt-4.1-mini",
+        }
+
+    plan = service.build_tier_plan(
+        tier,
+        {
+            "provider": provider,
+            "permission_tier": permission_tier,
+        },
+    )
+    service.apply_setup(plan)
+
+    console.print(Panel(
+        "[bold green]Setup saved.[/bold green]\n\n"
+        f"Tier: [cyan]{tier}[/cyan]\n"
+        f"Provider: [cyan]{provider['kind']}[/cyan]\n"
+        f"Permission tier: [cyan]{permission_tier}[/cyan]\n"
+        "You can rerun setup anytime with [bold]tokoboros setup[/bold].",
+        title="Onboarding"
+    ))
+
+
+@app.command()
+def config(show_paths: bool = typer.Option(False, "--paths", help="Show canonical config/data/cache/state paths.")):
+    """Show the effective resolved configuration."""
+    cfg = load_effective_config().model_dump(mode="python", exclude_none=True)
+    console.print(Panel(json.dumps(cfg, indent=2), title="Effective Config", border_style="cyan"))
+
+    if show_paths:
+        p = get_tokoboros_paths()
+        path_payload = {
+            "config_dir": str(p.config_dir),
+            "data_dir": str(p.data_dir),
+            "cache_dir": str(p.cache_dir),
+            "state_dir": str(p.state_dir),
+            "legacy_dir": str(p.legacy_dir),
+            "settings_toml": str(p.global_config_toml),
+        }
+        console.print(Panel(json.dumps(path_payload, indent=2), title="Canonical Paths", border_style="magenta"))
+
+
+@app.command()
+def secrets(
+    list_only: bool = typer.Option(False, "--list", help="List stored secret metadata."),
+    delete: str = typer.Option(None, "--delete", help="Delete a secret by logical name."),
+    check: bool = typer.Option(False, "--check", help="Run secret backend health check."),
+):
+    """Inspect or manage secure secrets."""
+    store = create_default_secret_store()
+
+    if check:
+        console.print(Panel(json.dumps(store.healthcheck(), indent=2), title="Secret Backend Health"))
+        return
+
+    if delete:
+        store.delete(delete)
+        console.print(f"Deleted secret metadata and value for: [cyan]{delete}[/cyan]")
+        return
+
+    if list_only:
+        rows = store.list_metadata()
+        console.print(Panel(json.dumps(rows, indent=2), title="Secret Metadata"))
+        return
+
+    console.print("Use --list, --delete <name>, or --check")
+
+
+@app.command()
+def doctor():
+    """Run environment diagnostics for onboarding and runtime health."""
+    paths = get_tokoboros_paths()
+    cfg = load_effective_config()
+    service = OnboardingService(paths=paths)
+    store = create_default_secret_store(paths=paths)
+
+    checks = {
+        "config_dir_exists": paths.config_dir.exists(),
+        "data_dir_exists": paths.data_dir.exists(),
+        "state_dir_exists": paths.state_dir.exists(),
+        "settings_toml_exists": paths.global_config_toml.exists(),
+        "provider_kind": cfg.provider.kind,
+        "provider_model": cfg.provider.model,
+        "permissions_tier": cfg.permissions.tier,
+        "onboarding_needs_setup": service.needs_setup(),
+        "secret_backend": store.healthcheck(),
+        "environment_detection": service.detect_environment(),
+    }
+    console.print(Panel(json.dumps(checks, indent=2), title="Tokoboros Doctor", border_style="green"))
 
 
 if __name__ == "__main__":

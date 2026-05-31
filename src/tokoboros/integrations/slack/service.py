@@ -2,7 +2,6 @@
 Base Slack Service
 Provides the core HTTP client wrapper and authentication headers for the Slack Web API.
 """
-import os
 import httpx
 from tokoboros.core.loop import ToolRegistry
 
@@ -15,16 +14,23 @@ class SlackService:
 
     def __init__(self):
         from tokoboros.core.credential_vault import CredentialVault
-        vault = CredentialVault()
-        try:
-            self.bot_token = vault.get_token("slack_bot_token", prompt_if_missing=True)
-        except ValueError:
-            self.bot_token = None
-            print("Warning: SLACK_BOT_TOKEN was not provided. Slack tools will fail.")
+        self._vault = CredentialVault()
+        # Avoid interactive stdin prompts during TUI boot. We resolve lazily per call.
+        self.bot_token = self._vault.get_token("slack_bot_token", prompt_if_missing=False)
+
+    def _ensure_token(self) -> None:
+        if self.bot_token:
+            return
+        self.bot_token = self._vault.get_token("slack_bot_token", prompt_if_missing=False)
+        if not self.bot_token:
+            raise ValueError(
+                "Missing Slack Bot Token. Add 'slack_bot_token' to ~/.tokoboros/vault.json."
+            )
 
     @property
     def headers(self) -> dict:
         """Returns the required headers for Slack API requests."""
+        self._ensure_token()
         return {
             "Authorization": f"Bearer {self.bot_token}",
             "Content-Type": "application/json; charset=utf-8"
@@ -43,6 +49,7 @@ class SlackService:
         return data
 
     def _post_multipart(self, endpoint: str, data: dict = None, files: dict = None) -> dict:
+        self._ensure_token()
         url = f"{self.BASE_URL}/{endpoint.lstrip('/')}"
         
         # Don't use standard headers because httpx must set the Content-Type to multipart/form-data with boundary
