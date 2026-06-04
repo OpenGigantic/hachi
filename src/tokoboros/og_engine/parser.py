@@ -43,15 +43,15 @@ Node-Level Tags (parsed within each ::node block):
     - ::api[name]  — API definition block for Universal REST Adapter
 """
 
-import re
 import json
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+import re
 
+from pydantic import BaseModel, Field
 
 # ==========================================
 # Data Models
 # ==========================================
+
 
 class OGIndexEntry(BaseModel):
     """A single row in the ::index routing table.
@@ -60,11 +60,21 @@ class OGIndexEntry(BaseModel):
     and searchable keywords — enabling O(1) query routing without
     reading any node content.
     """
+
     node_id: str = Field(..., description="The unique node identifier this entry routes to.")
-    node_type: str = Field(default="step", description="Content type (step, concept, warning, example, etc.).")
-    scope: str = Field(default="all", description="Access scope (all, orchestrator, worker, readonly, admin).")
-    confidence: float = Field(default=1.0, description="Reliability score: 1.0=verified, 0.5=experimental, <0.3=deprecated.")
-    keywords: List[str] = Field(default_factory=list, description="Searchable keywords for query matching.")
+    node_type: str = Field(
+        default="step", description="Content type (step, concept, warning, example, etc.)."
+    )
+    scope: str = Field(
+        default="all", description="Access scope (all, orchestrator, worker, readonly, admin)."
+    )
+    confidence: float = Field(
+        default=1.0,
+        description="Reliability score: 1.0=verified, 0.5=experimental, <0.3=deprecated.",
+    )
+    keywords: list[str] = Field(
+        default_factory=list, description="Searchable keywords for query matching."
+    )
 
 
 class OGFileMeta(BaseModel):
@@ -73,14 +83,21 @@ class OGFileMeta(BaseModel):
     Contains identity, versioning, domain classification, and integrity
     information for the entire .og file.
     """
+
     title: str = Field(default="", description="Human-readable title of the file.")
     version: str = Field(default="", description="Semantic version string.")
     author: str = Field(default="", description="Author or team identifier.")
     created: str = Field(default="", description="Creation date (ISO format).")
     updated: str = Field(default="", description="Last update date (ISO format).")
-    domain: str = Field(default="", description="Pipe-separated domain tags (e.g., 'deployment|python|devops').")
+    domain: str = Field(
+        default="", description="Pipe-separated domain tags (e.g., 'deployment|python|devops')."
+    )
     scope: str = Field(default="all", description="Default access scope for the file.")
-    tools: str = Field(default="", description="Pipe-separated tool prefix patterns this role needs (e.g., 'google_*|slack_*|run_terminal_command').")
+    tools: str = Field(
+        default="",
+        description="Pipe-separated tool prefix patterns this role needs "
+        "(e.g., 'google_*|slack_*|run_terminal_command').",
+    )
     min_agent_version: str = Field(default="", description="Minimum OG Reader version required.")
     checksum: str = Field(default="", description="Integrity verification hash.")
 
@@ -92,6 +109,7 @@ class OGChangelogEntry(BaseModel):
     can check only the changelog (~30 tokens) to discover what changed,
     then fetch only the modified nodes.
     """
+
     date: str = Field(..., description="Date of the change (YYYY-MM-DD).")
     action: str = Field(..., description="Change type: added, updated, deprecated, removed.")
     target: str = Field(..., description="The node ID or reference that was changed.")
@@ -105,42 +123,83 @@ class OGNode(BaseModel):
     Nodes are the fundamental atomic unit of ObjectGraph — every piece of
     content lives inside a node, and every node is independently addressable.
     """
+
     name: str = Field(..., description="The unique identifier of the node.")
-    source_file: str = Field(default="", description="The absolute path to the .og file this node was parsed from.")
+    source_file: str = Field(
+        default="", description="The absolute path to the .og file this node was parsed from."
+    )
 
     # Metadata extracted from ->[:key=value] edges
-    role: str = Field(default="general", description="The functional role (e.g., 'skill', 'rule', 'integration', 'env').")
-    scope: str = Field(default="public", description="Access scope (e.g., 'public', 'private', 'internal').")
-    keywords: List[str] = Field(default_factory=list, description="Searchable keywords for O(1) routing.")
-    requires: List[str] = Field(default_factory=list, description="Names of other nodes this node depends on.")
-    requires_auth: List[str] = Field(default_factory=list, description="Auth tokens required for this node (from ->[:requires_auth=...]).")
+    role: str = Field(
+        default="general",
+        description="The functional role (e.g., 'skill', 'rule', 'integration', 'env').",
+    )
+    scope: str = Field(
+        default="public", description="Access scope (e.g., 'public', 'private', 'internal')."
+    )
+    keywords: list[str] = Field(
+        default_factory=list, description="Searchable keywords for O(1) routing."
+    )
+    requires: list[str] = Field(
+        default_factory=list, description="Names of other nodes this node depends on."
+    )
+    requires_auth: list[str] = Field(
+        default_factory=list,
+        description="Auth tokens required for this node (from ->[:requires_auth=...]).",
+    )
 
     # Content blocks (ordered by reading pass depth)
-    dense: str = Field(default="", description="Compressed keyword summary for Pass 2 (~10-15 tokens).")
+    dense: str = Field(
+        default="", description="Compressed keyword summary for Pass 2 (~10-15 tokens)."
+    )
     full: str = Field(default="", description="Complete human-readable prose for Pass 3.")
     summary: str = Field(default="", description="Pre-written human summary of a long node.")
-    code_blocks: Dict[str, str] = Field(default_factory=dict, description="Executable code blocks keyed by language (e.g., {'python': '...'}).")
-    steps: List[str] = Field(default_factory=list, description="Ordered sequence of steps the agent must follow.")
-    list_items: List[str] = Field(default_factory=list, description="Unordered enumerable items.")
+    code_blocks: dict[str, str] = Field(
+        default_factory=dict,
+        description="Executable code blocks keyed by language (e.g., {'python': '...'}).",
+    )
+    steps: list[str] = Field(
+        default_factory=list, description="Ordered sequence of steps the agent must follow."
+    )
+    list_items: list[str] = Field(default_factory=list, description="Unordered enumerable items.")
     table: str = Field(default="", description="Structured data table (never paraphrased by LLM).")
-    warning: str = Field(default="", description="Critical callout (always read, even in dense-only passes).")
+    warning: str = Field(
+        default="", description="Critical callout (always read, even in dense-only passes)."
+    )
     note: str = Field(default="", description="Informational aside (lower priority than warning).")
-    example: str = Field(default="", description="Concrete illustration (skippable via skip-if-known).")
-    reference: Dict[str, str] = Field(default_factory=dict, description="External link or citation (url, title, accessed).")
+    example: str = Field(
+        default="", description="Concrete illustration (skippable via skip-if-known)."
+    )
+    reference: dict[str, str] = Field(
+        default_factory=dict, description="External link or citation (url, title, accessed)."
+    )
 
     # Agent behaviour blocks
-    assertions: List[str] = Field(default_factory=list, description="Executable validation conditions the agent MUST verify.")
+    assertions: list[str] = Field(
+        default_factory=list, description="Executable validation conditions the agent MUST verify."
+    )
 
     # Navigation blocks
-    edges: List[str] = Field(default_factory=list, description="Typed relationship declarations (e.g., '->[:requires] install').")
-    traverse: Dict[str, str] = Field(default_factory=dict, description="Traversal hints (entry, depth-limit, priority, avoid).")
+    edges: list[str] = Field(
+        default_factory=list,
+        description="Typed relationship declarations (e.g., '->[:requires] install').",
+    )
+    traverse: dict[str, str] = Field(
+        default_factory=dict, description="Traversal hints (entry, depth-limit, priority, avoid)."
+    )
 
     # Integration blocks (for role=integration and role=env nodes)
-    config: Dict[str, str] = Field(default_factory=dict, description="Key-value configuration for integrations.")
-    tool_def: Dict[str, str] = Field(default_factory=dict, description="Tool definition for LLM registration.")
+    config: dict[str, str] = Field(
+        default_factory=dict, description="Key-value configuration for integrations."
+    )
+    tool_def: dict[str, str] = Field(
+        default_factory=dict, description="Tool definition for LLM registration."
+    )
 
     # API definitions for Universal REST Adapter
-    api_defs: Dict[str, Dict[str, str]] = Field(default_factory=dict, description="API definitions parsed from ::api[name] blocks.")
+    api_defs: dict[str, dict[str, str]] = Field(
+        default_factory=dict, description="API definitions parsed from ::api[name] blocks."
+    )
 
 
 class OGFile(BaseModel):
@@ -154,15 +213,25 @@ class OGFile(BaseModel):
         Pass 2: Agent reads specific OGNode.dense blocks for compressed context.
         Pass 3: Agent reads OGNode.full blocks for complete execution details.
     """
+
     source_file: str = Field(default="", description="Absolute path to the .og file.")
-    meta: OGFileMeta = Field(default_factory=OGFileMeta, description="File-level metadata from ::meta block.")
-    index: List[OGIndexEntry] = Field(default_factory=list, description="Query routing table from ::index block.")
-    og_schema: Dict[str, str] = Field(default_factory=dict, description="Domain type definitions from ::schema block.")
-    changelog: List[OGChangelogEntry] = Field(default_factory=list, description="Delta loading entries from ::changelog block.")
-    nodes: List[OGNode] = Field(default_factory=list, description="All parsed content nodes.")
+    meta: OGFileMeta = Field(
+        default_factory=OGFileMeta, description="File-level metadata from ::meta block."
+    )
+    index: list[OGIndexEntry] = Field(
+        default_factory=list, description="Query routing table from ::index block."
+    )
+    og_schema: dict[str, str] = Field(
+        default_factory=dict, description="Domain type definitions from ::schema block."
+    )
+    changelog: list[OGChangelogEntry] = Field(
+        default_factory=list, description="Delta loading entries from ::changelog block."
+    )
+    nodes: list[OGNode] = Field(default_factory=list, description="All parsed content nodes.")
 
     def get_index_prompt(self) -> str:
-        """Format the index as a compact routing table for injection into a sub-agent's system prompt.
+        """Format the index as a compact routing table for injection into a sub-agent's system
+        prompt.
 
         Returns a token-efficient string that gives the agent a complete map of
         the file's contents without reading any node bodies.
@@ -179,11 +248,12 @@ class OGFile(BaseModel):
         for entry in self.index:
             kw_str = ", ".join(entry.keywords)
             lines.append(
-                f"  {entry.node_id} | {entry.node_type} | {entry.scope} | {entry.confidence} | {kw_str}"
+                f"  {entry.node_id} | {entry.node_type} | {entry.scope} | "
+                f"{entry.confidence} | {kw_str}"
             )
         return "\n".join(lines)
 
-    def get_node_by_id(self, node_id: str) -> Optional[OGNode]:
+    def get_node_by_id(self, node_id: str) -> OGNode | None:
         """Retrieve a specific node by its name/ID.
 
         Args:
@@ -210,14 +280,8 @@ class OGFile(BaseModel):
         Returns:
             A new OGFile with filtered nodes and index entries.
         """
-        filtered_nodes = [
-            n for n in self.nodes
-            if n.scope in ("all", "public", agent_role)
-        ]
-        filtered_index = [
-            e for e in self.index
-            if e.scope in ("all", agent_role)
-        ]
+        filtered_nodes = [n for n in self.nodes if n.scope in ("all", "public", agent_role)]
+        filtered_index = [e for e in self.index if e.scope in ("all", agent_role)]
         return OGFile(
             source_file=self.source_file,
             meta=self.meta,
@@ -237,7 +301,7 @@ EDGE_PATTERN = re.compile(r"^->\[:(.+?)=(.+?)\]", re.MULTILINE)
 BLOCK_PATTERN = re.compile(
     r"^::(dense|assertion|steps|config|tool|api|full|code|list|table|warning|note|example|reference|edges|traverse|summary|schema-def)"
     r"(?:\[(.+?)\])?",
-    re.MULTILINE
+    re.MULTILINE,
 )
 
 # File-level block patterns (appear in the preamble before any ::node)
@@ -253,6 +317,7 @@ CHANGELOG_PATTERN = re.compile(r"^::changelog\s*\n(.*?)(?=^::|\Z)", re.MULTILINE
 # Main Parser Entry Point
 # ==========================================
 
+
 def parse_og_file(filepath: str) -> OGFile:
     """Parse a single .og file into a fully structured OGFile object.
 
@@ -266,7 +331,7 @@ def parse_og_file(filepath: str) -> OGFile:
     Returns:
         An OGFile object containing all parsed metadata, index, and nodes.
     """
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, encoding="utf-8") as f:
         raw_text = f.read()
 
     # Split the file into individual node sections
@@ -301,6 +366,7 @@ def parse_og_file(filepath: str) -> OGFile:
 # File-Level Tag Parsers
 # ==========================================
 
+
 def _parse_meta(preamble: str) -> OGFileMeta:
     """Parse the ::meta block from the file preamble.
 
@@ -331,7 +397,7 @@ def _parse_meta(preamble: str) -> OGFileMeta:
     return meta
 
 
-def _parse_index(preamble: str) -> List[OGIndexEntry]:
+def _parse_index(preamble: str) -> list[OGIndexEntry]:
     """Parse the ::index routing table from the file preamble.
 
     The index is the single most critical structure in ObjectGraph. It gives
@@ -348,7 +414,7 @@ def _parse_index(preamble: str) -> List[OGIndexEntry]:
     Returns:
         A list of OGIndexEntry objects.
     """
-    entries: List[OGIndexEntry] = []
+    entries: list[OGIndexEntry] = []
     match = INDEX_PATTERN.search(preamble)
     if not match:
         return entries
@@ -381,7 +447,7 @@ def _parse_index(preamble: str) -> List[OGIndexEntry]:
     return entries
 
 
-def _parse_schema(preamble: str) -> Dict[str, str]:
+def _parse_schema(preamble: str) -> dict[str, str]:
     """Parse the ::schema block from the file preamble.
 
     Contains domain type definitions (node-types, edge-types, scope-levels)
@@ -399,7 +465,7 @@ def _parse_schema(preamble: str) -> Dict[str, str]:
     return _parse_key_value_block(match.group(1))
 
 
-def _parse_changelog(preamble: str) -> List[OGChangelogEntry]:
+def _parse_changelog(preamble: str) -> list[OGChangelogEntry]:
     """Parse the ::changelog block from the file preamble.
 
     Enables delta loading: agents that have previously read this file check
@@ -415,7 +481,7 @@ def _parse_changelog(preamble: str) -> List[OGChangelogEntry]:
     Returns:
         A list of OGChangelogEntry objects.
     """
-    entries: List[OGChangelogEntry] = []
+    entries: list[OGChangelogEntry] = []
     match = CHANGELOG_PATTERN.search(preamble)
     if not match:
         return entries
@@ -443,6 +509,7 @@ def _parse_changelog(preamble: str) -> List[OGChangelogEntry]:
 # ==========================================
 # Node-Level Parser
 # ==========================================
+
 
 def _parse_node_body(name: str, body: str, source_file: str) -> OGNode:
     """Parse the body text of a single node into a structured OGNode.
@@ -478,7 +545,9 @@ def _parse_node_body(name: str, body: str, source_file: str) -> OGNode:
             node.requires_auth = [req.strip() for req in value.split(",")]
 
     # Extract content blocks
-    block_positions = [(m.group(1), m.group(2), m.start(), m.end()) for m in BLOCK_PATTERN.finditer(body)]
+    block_positions = [
+        (m.group(1), m.group(2), m.start(), m.end()) for m in BLOCK_PATTERN.finditer(body)
+    ]
 
     for idx, (block_type, block_arg, _start, end) in enumerate(block_positions):
         if idx + 1 < len(block_positions):
@@ -530,12 +599,16 @@ def _parse_node_body(name: str, body: str, source_file: str) -> OGNode:
                     try:
                         json.loads(api_def["schema"])
                     except json.JSONDecodeError as e:
-                        raise ValueError(f"Invalid JSON schema in ::api[{block_arg}] of node '{name}': {e}")
+                        raise ValueError(
+                            f"Invalid JSON schema in ::api[{block_arg}] of node '{name}': {e}"
+                        ) from e
                 if "headers" in api_def:
                     try:
                         json.loads(api_def["headers"])
                     except json.JSONDecodeError as e:
-                        raise ValueError(f"Invalid JSON headers in ::api[{block_arg}] of node '{name}': {e}")
+                        raise ValueError(
+                            f"Invalid JSON headers in ::api[{block_arg}] of node '{name}': {e}"
+                        ) from e
 
                 # Check required fields
                 if "endpoint" not in api_def:
@@ -581,7 +654,8 @@ def _clean_block_content(raw: str) -> str:
 # Shared Utilities
 # ==========================================
 
-def _parse_key_value_block(text: str) -> Dict[str, str]:
+
+def _parse_key_value_block(text: str) -> dict[str, str]:
     """Parse a block of key=value or key: value pairs into a dictionary.
 
     Supports both `key=value` and `key: value` formats.
@@ -593,7 +667,7 @@ def _parse_key_value_block(text: str) -> Dict[str, str]:
     Returns:
         A dictionary of parsed key-value pairs.
     """
-    result: Dict[str, str] = {}
+    result: dict[str, str] = {}
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):

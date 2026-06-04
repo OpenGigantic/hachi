@@ -1,56 +1,105 @@
+"""Memory Content Security Scanner.
+
+Scans inbound memory content for prompt-injection and role-hijack patterns
+before it reaches long-term storage. The scanner uses layered checks:
+
+1. Unicode hygiene (invisible/control characters)
+2. Canonical normalization for obfuscation-resistant matching
+3. Weighted threat scoring across multiple indicator families
+
+The public API remains ``scan(content) -> (is_safe, threat_id)``.
 """
-Memory Content Security Scanner
 
-Scans all inbound memory content for prompt injection, role hijacking,
-exfiltration patterns, and invisible Unicode tricks before it reaches
-the ChromaDB vault.
-
-This is critical because recalled memories are injected directly into the
-system prompt — an unsanitized fact becomes a persistent injection vector
-on every future turn.
-
-Usage:
-    from tokoboros.core.memory_guard import scan
-
-    is_safe, threat_id = scan(content)
-    if not is_safe:
-        return f"BLOCKED:{threat_id}"
-"""
+from __future__ import annotations
 
 import re
-from typing import Optional, Tuple
+import unicodedata
+from dataclasses import dataclass
 
-# --- Threat Pattern Registry ---
-# Each entry: (compiled regex, human-readable threat ID)
-# Patterns are deliberately broad — false positives are preferable to
-# letting a real injection into the permanent memory store.
 
-_THREAT_PATTERNS: list[Tuple[re.Pattern, str]] = [
-    (re.compile(r'ignore\s+(previous|all|above|prior|earlier)\s+instructions', re.IGNORECASE),
-     "prompt_injection"),
+@dataclass(frozen=True)
+class _ThreatSignal:
+    pattern: re.Pattern[str]
+    threat_id: str
+    score: int
 
-    (re.compile(r'you\s+are\s+now\s+', re.IGNORECASE),
-     "role_hijack"),
 
-    (re.compile(r'do\s+not\s+tell\s+the\s+user', re.IGNORECASE),
-     "deception"),
-
-    (re.compile(r'(?:forget|disregard|override)\s+(?:your|all|the)\s+(?:rules|instructions|system)', re.IGNORECASE),
-     "instruction_override"),
-
-    (re.compile(r'<\s*/?\s*(?:system|prompt|instruction)\s*>', re.IGNORECASE),
-     "xml_injection"),
-
-    (re.compile(r'(?:act|behave|respond)\s+as\s+(?:if|though)\s+you\s+(?:are|were)', re.IGNORECASE),
-     "persona_override"),
-]
+# Higher score means stronger confidence that the text is instructional abuse.
+_THREAT_SIGNALS: tuple[_ThreatSignal, ...] = (
+    _ThreatSignal(
+        re.compile(
+            r"(?:ignore|forget|disregard|override)\s+(?:all|any|the|previous|prior|above)?\s*"
+            r"(?:system|safety|policy|rules?|instructions?)",
+            re.IGNORECASE,
+        ),
+        "instruction_override",
+        5,
+    ),
+    _ThreatSignal(
+        re.compile(
+            r"(?:you\s+are\s+now|act\s+as|assume\s+the\s+role\s+of|behave\s+as)",
+            re.IGNORECASE,
+        ),
+        "role_hijack",
+        4,
+    ),
+    _ThreatSignal(
+        re.compile(
+            r"(?:do\s+not\s+tell\s+the\s+user|hide\s+this\s+from\s+the\s+user)", re.IGNORECASE
+        ),
+        "deception",
+        4,
+    ),
+    _ThreatSignal(
+        re.compile(r"(?:developer|system)\s+prompt\s*[:=]", re.IGNORECASE),
+        "prompt_leak_priming",
+        3,
+    ),
+    _ThreatSignal(
+        re.compile(r"<\s*/?\s*(?:system|prompt|instruction|policy)\s*>", re.IGNORECASE),
+        "xml_injection",
+        3,
+    ),
+    _ThreatSignal(
+        re.compile(r"(?:tool\s*:\s*|function\s*call\s*:\s*|json\s*tool\s*payload)", re.IGNORECASE),
+        "tool_call_injection",
+        2,
+    ),
+)
 
 # Zero-width and invisible Unicode characters that can be used to hide
 # injections inside seemingly benign text.
-_INVISIBLE_CHARS = re.compile(r'[\u200b\u200c\u200d\u2060\ufeff\u00ad\u200e\u200f]')
+_INVISIBLE_CHARS = re.compile(r"[\u200b\u200c\u200d\u2060\ufeff\u00ad\u200e\u200f]")
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
+
+_THREAT_SCORE_THRESHOLD = 5
 
 
-def scan(content: str) -> Tuple[bool, Optional[str]]:
+def _normalize_for_scan(content: str) -> str:
+    """Normalize content so obfuscated variants still match threat signals."""
+    normalized = unicodedata.normalize("NFKC", content)
+    normalized = _INVISIBLE_CHARS.sub("", normalized)
+    normalized = _CONTROL_CHARS.sub("", normalized)
+    return normalized
+
+
+def _score_threats(content: str) -> tuple[int, str | None, int]:
+    """Return cumulative score, strongest threat ID, and strongest signal score."""
+    score = 0
+    strongest: str | None = None
+    strongest_score = 0
+
+    for signal in _THREAT_SIGNALS:
+        if signal.pattern.search(content):
+            score += signal.score
+            if signal.score > strongest_score:
+                strongest = signal.threat_id
+                strongest_score = signal.score
+
+    return score, strongest, strongest_score
+
+
+def scan(content: str) -> tuple[bool, str | None]:
     """Scan memory content for security threats.
 
     Args:
@@ -65,13 +114,22 @@ def scan(content: str) -> Tuple[bool, Optional[str]]:
     if not content or not isinstance(content, str):
         return True, None
 
-    # Check for invisible Unicode (must come first — these can hide other patterns)
+    # Invisible Unicode is blocked directly and tagged for quarantine/review.
     if _INVISIBLE_CHARS.search(content):
         return False, "invisible_unicode"
 
-    # Check against all threat patterns
-    for pattern, threat_id in _THREAT_PATTERNS:
-        if pattern.search(content):
-            return False, threat_id
+    # Control characters frequently indicate encoded/obfuscated payload attempts.
+    if _CONTROL_CHARS.search(content):
+        return False, "control_chars"
+
+    normalized = _normalize_for_scan(content)
+    threat_score, strongest_signal, strongest_score = _score_threats(normalized)
+
+    if threat_score >= _THREAT_SCORE_THRESHOLD:
+        return False, strongest_signal or "composite_injection"
+
+    # Keep backward compatibility for strong, single-signal matches.
+    if strongest_signal and strongest_score >= 4:
+        return False, strongest_signal
 
     return True, None

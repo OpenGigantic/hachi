@@ -70,3 +70,38 @@ def test_legacy_json_import_when_no_toml(tmp_path: Path) -> None:
     assert cfg.provider.kind == "anthropic"
     assert cfg.provider.model == "claude-legacy"
     assert cfg.agent.max_tokens == 2048
+
+
+def test_env_numeric_parse_failure_does_not_override_agent_tokens(
+    monkeypatch, tmp_path: Path
+) -> None:
+    paths = _paths(tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.legacy_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("TOKOBOROS_MAX_TOKENS", "not-a-number")
+
+    cfg = load_effective_config(paths=paths)
+
+    assert cfg.agent.max_tokens == 8192
+
+
+def test_env_file_with_malformed_quotes_is_tolerated(monkeypatch, tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.legacy_dir.mkdir(parents=True, exist_ok=True)
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / ".env").write_text(
+        'OPENAI_API_KEY="unterminated\nOPENAI_MODEL=env-model\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    cfg = load_effective_config(project_dir=project_dir, paths=paths)
+
+    assert cfg.provider.kind == "openai-compatible"
+    assert cfg.provider.model == "env-model"

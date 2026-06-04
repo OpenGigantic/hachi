@@ -7,17 +7,16 @@ Handles first-run setup, configuration loading, brain loading, and the device pe
 
 import shutil
 from pathlib import Path
-from typing import List, Optional
 
 from tokoboros.core.config_loader import load_effective_config, write_global_config
 from tokoboros.core.paths import ensure_directories, get_tokoboros_paths, import_legacy_workspace
 from tokoboros.core.permissions import generate_permissions_og
 from tokoboros.core.skill_packs import install_core_skill_packs, install_skill_pack
 
-
 # ==========================================
 # Path Resolution
 # ==========================================
+
 
 def get_workspace_dir() -> Path:
     """Returns the canonical global config directory for Tokoboros."""
@@ -40,6 +39,7 @@ def get_permissions_file() -> Path:
 # ==========================================
 # Workspace Bootstrap
 # ==========================================
+
 
 def ensure_workspace():
     """
@@ -74,7 +74,7 @@ def ensure_workspace():
                     "::dense\n"
                     "You are Tokoboros, an elite autonomous agent.\n"
                 )
-            
+
     # Create canonical TOML config if it doesn't exist
     if not paths.global_config_toml.exists():
         write_global_config(load_effective_config(paths=paths), paths=paths)
@@ -83,6 +83,7 @@ def ensure_workspace():
 # ==========================================
 # Config & Brain Loaders
 # ==========================================
+
 
 def load_config() -> dict:
     """
@@ -93,7 +94,7 @@ def load_config() -> dict:
     return load_effective_config().model_dump(mode="python", exclude_none=True)
 
 
-def install_optional_skill_pack(pack_id: str) -> List[Path]:
+def install_optional_skill_pack(pack_id: str) -> list[Path]:
     """Install an optional built-in skill pack into the user skills directory."""
     ensure_workspace()
     return install_skill_pack(pack_id, get_tokoboros_paths().skills_dir)
@@ -121,10 +122,11 @@ def load_brain() -> str:
 
     try:
         from tokoboros.og_engine.parser import parse_og_file
+
         og_file = parse_og_file(str(brain_file))
     except Exception:
         # Fallback: if parsing fails, load raw text (backward compat)
-        with open(brain_file, "r", encoding="utf-8") as f:
+        with open(brain_file, encoding="utf-8") as f:
             return f.read()
 
     return _render_brain_prompt(og_file)
@@ -170,7 +172,7 @@ def _render_brain_prompt(og_file) -> str:
 
     # Fallback: if nothing was extracted, return raw file content
     if not sections:
-        with open(str(og_file.source_file), "r", encoding="utf-8") as f:
+        with open(str(og_file.source_file), encoding="utf-8") as f:
             return f.read()
 
     return "\n\n".join(sections)
@@ -222,15 +224,17 @@ def run_permissions_wizard(console) -> str:
 
     # Header
     console.print()
-    console.print(Panel(
-        "[bold]Device Permissions Setup[/bold]\n\n"
-        "Control what Tokoboros can access on your device.\n"
-        "You can change this anytime by editing:\n"
-        "[cyan]~/.tokoboros/device-permissions.og[/cyan]",
-        title="[bold magenta]Tokoboros[/bold magenta]",
-        border_style="magenta",
-        padding=(1, 2),
-    ))
+    console.print(
+        Panel(
+            "[bold]Device Permissions Setup[/bold]\n\n"
+            "Control what Tokoboros can access on your device.\n"
+            "You can change this anytime by editing:\n"
+            "[cyan]~/.tokoboros/device-permissions.og[/cyan]",
+            title="[bold magenta]Tokoboros[/bold magenta]",
+            border_style="magenta",
+            padding=(1, 2),
+        )
+    )
 
     # Tier selection table
     table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2), expand=True)
@@ -239,9 +243,24 @@ def run_permissions_wizard(console) -> str:
     table.add_column("Access", ratio=2, overflow="fold")
     table.add_column("Best For", style="dim", ratio=2, overflow="fold")
 
-    table.add_row("[1]", TIER_INFO["sandbox"]["emoji"], TIER_INFO["sandbox"]["description"], TIER_INFO["sandbox"]["audience"])
-    table.add_row("[2]", TIER_INFO["guided"]["emoji"] + " *", TIER_INFO["guided"]["description"], TIER_INFO["guided"]["audience"])
-    table.add_row("[3]", TIER_INFO["unrestricted"]["emoji"], TIER_INFO["unrestricted"]["description"], TIER_INFO["unrestricted"]["audience"])
+    table.add_row(
+        "[1]",
+        TIER_INFO["sandbox"]["emoji"],
+        TIER_INFO["sandbox"]["description"],
+        TIER_INFO["sandbox"]["audience"],
+    )
+    table.add_row(
+        "[2]",
+        TIER_INFO["guided"]["emoji"] + " *",
+        TIER_INFO["guided"]["description"],
+        TIER_INFO["guided"]["audience"],
+    )
+    table.add_row(
+        "[3]",
+        TIER_INFO["unrestricted"]["emoji"],
+        TIER_INFO["unrestricted"]["description"],
+        TIER_INFO["unrestricted"]["audience"],
+    )
 
     console.print()
     console.print(table)
@@ -284,14 +303,16 @@ def run_permissions_wizard(console) -> str:
     # Confirmation
     info = TIER_INFO[tier]
     console.print()
-    console.print(Panel(
-        f"[bold green]Permissions saved![/bold green]\n\n"
-        f"Tier: {info['emoji']}\n"
-        f"Access: {info['description']}\n"
-        f"File: [cyan]~/.tokoboros/device-permissions.og[/cyan]",
-        border_style="green",
-        padding=(0, 2),
-    ))
+    console.print(
+        Panel(
+            f"[bold green]Permissions saved![/bold green]\n\n"
+            f"Tier: {info['emoji']}\n"
+            f"Access: {info['description']}\n"
+            f"File: [cyan]~/.tokoboros/device-permissions.og[/cyan]",
+            border_style="green",
+            padding=(0, 2),
+        )
+    )
 
     return tier
 
@@ -321,12 +342,16 @@ def show_current_permissions(console):
     """
     from rich.panel import Panel
     from rich.table import Table
+
     from tokoboros.core.permissions import PermissionGate
 
     permissions_file = get_permissions_file()
 
     if not permissions_file.exists():
-        console.print("[yellow]No device-permissions.og found. Run 'tokoboros run' to set up permissions.[/yellow]")
+        console.print(
+            "[yellow]No device-permissions.og found. Run 'tokoboros run' to set up "
+            "permissions.[/yellow]"
+        )
         return
 
     gate = PermissionGate(permissions_file)
@@ -350,7 +375,9 @@ def show_current_permissions(console):
     table.add_row("Blocked Folders", f"[red]{blocked}[/red]")
 
     table.add_row("Write Access", "[green]Yes[/green]" if gate._fs.allow_write else "[red]No[/red]")
-    table.add_row("Delete Access", "[green]Yes[/green]" if gate._fs.allow_delete else "[red]No[/red]")
+    table.add_row(
+        "Delete Access", "[green]Yes[/green]" if gate._fs.allow_delete else "[red]No[/red]"
+    )
 
     # Terminal
     if gate._term.enabled:
@@ -363,13 +390,18 @@ def show_current_permissions(console):
         table.add_row("Terminal", "[red]Disabled[/red]")
 
     # MCP
-    table.add_row("MCP Filesystem", "[green]Enabled[/green]" if gate.is_mcp_filesystem_enabled() else "[red]Disabled[/red]")
+    table.add_row(
+        "MCP Filesystem",
+        "[green]Enabled[/green]" if gate.is_mcp_filesystem_enabled() else "[red]Disabled[/red]",
+    )
 
     console.print()
-    console.print(Panel(
-        table,
-        title="[bold magenta]Device Permissions[/bold magenta]",
-        subtitle=f"[dim]~/.tokoboros/device-permissions.og[/dim]",
-        border_style="magenta",
-        padding=(1, 1),
-    ))
+    console.print(
+        Panel(
+            table,
+            title="[bold magenta]Device Permissions[/bold magenta]",
+            subtitle="[dim]~/.tokoboros/device-permissions.og[/dim]",
+            border_style="magenta",
+            padding=(1, 1),
+        )
+    )

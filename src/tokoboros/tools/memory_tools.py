@@ -13,20 +13,19 @@ entries — all without blocking the main agent loop.
 
 import json
 import threading
-from typing import Optional
 
 from tokoboros.core.loop import ToolRegistry
 from tokoboros.core.memory_vault import MemoryVault
 
 
-def register_memory_tools(registry: ToolRegistry, vault: MemoryVault) -> None:
+def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=None) -> None:
     """Mount all memory operations into the LLM's active toolset."""
 
     # ==========================================
     # Shared Helpers
     # ==========================================
 
-    def _parse_llm_json(raw: str) -> Optional[dict]:
+    def _parse_llm_json(raw: str) -> dict | None:
         """Extract JSON from an LLM response that may be fenced in ```json blocks."""
         text = raw.strip()
         if text.startswith("```json"):
@@ -39,6 +38,26 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault) -> None:
     # Core Memory (Workspace Facts)
     # ==========================================
 
+    def _enqueue_memory_job(name: str, func, args: tuple) -> bool:
+        if not job_queue:
+            return False
+
+        try:
+            from tokoboros.jobs.queue import Job, JobStatus
+
+            job = Job(
+                job_id="",
+                name=name,
+                status=JobStatus.PENDING,
+                func=func,
+                args=args,
+                job_type="persist",
+            )
+            job_queue.enqueue(job)
+            return True
+        except Exception:
+            return False
+
     def save_memory(facts: list) -> str:
         """Save one or more workspace facts with intelligent dedup and contradiction resolution."""
         if not facts:
@@ -50,7 +69,7 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault) -> None:
                 category = fact.get("category", "workspace_state")
                 if not content:
                     continue
-                    
+
                 try:
                     results = vault.semantic_search(content, top_k=3)
                     if not results:
@@ -59,7 +78,8 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault) -> None:
 
                     snippet = "\n".join(f"[{r['id']}] {r['raw_content']}" for r in results)
 
-                    from tokoboros.core.llm import AnthropicClient, Message as LLMMessage
+                    from tokoboros.core.llm import AnthropicClient
+                    from tokoboros.core.llm import Message as LLMMessage
 
                     client = AnthropicClient()
                     prompt = (
@@ -67,15 +87,20 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault) -> None:
                         f"New Compound Fact to save: '{content}'\n\n"
                         "Existing Facts in Database:\n"
                         f"{snippet}\n\n"
-                        "Analyze if the New Fact completely supersedes, contradicts, or overlaps with any Existing Facts. "
-                        "CRITICAL: Break the New Fact into STRICTLY ATOMIC components. For example: 'Mike is my boss and his email is X' -> ['User\\'s boss is Mike', 'Mike\\'s email is X'].\n"
-                        "If an atomic component supersedes an old fact (e.g. Boss was X, now Boss is Y), add the old fact's ID to 'delete_ids'.\n"
-                        'Output pure JSON only: {"delete_ids": ["id1", "id2"], "save_contents": ["atomic fact 1", "atomic fact 2"]}'
+                        "Analyze if the New Fact completely supersedes, contradicts, or overlaps "
+                        "with any Existing Facts. "
+                        "CRITICAL: Break the New Fact into STRICTLY ATOMIC components. "
+                        "For example: 'Mike is my boss and his email is X' -> "
+                        "['User\\'s boss is Mike', 'Mike\\'s email is X'].\n"
+                        "If an atomic component supersedes an old fact "
+                        "(e.g. Boss was X, now Boss is Y), add the old fact's ID to 'delete_ids'.\n"
+                        'Output pure JSON only: {"delete_ids": ["id1", "id2"], '
+                        '"save_contents": ["atomic fact 1", "atomic fact 2"]}'
                     )
 
                     response = client.generate(
                         messages=[LLMMessage(role="user", content=prompt)],
-                        system_prompt="You are a data merger. Output pure JSON only."
+                        system_prompt="You are a data merger. Output pure JSON only.",
                     )
 
                     data = _parse_llm_json(response.content)
@@ -89,7 +114,8 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault) -> None:
                 except Exception:
                     vault.upsert_fact(content, category)
 
-        threading.Thread(target=_smart_upsert, args=(facts,), daemon=True).start()
+        if not _enqueue_memory_job("memory_smart_upsert", _smart_upsert, (facts,)):
+            threading.Thread(target=_smart_upsert, args=(facts,), daemon=True).start()
         return f"{len(facts)} fact(s) successfully queued for intelligent long-term consolidation."
 
     def search_memory(query: str, top_k: int = 5) -> str:
@@ -120,28 +146,32 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault) -> None:
         """Save one or more user identity facts into the bounded profile collection."""
         if not facts:
             return "No facts provided."
-        
+
         saved_ids = []
         for fact in facts:
             content = fact.get("content")
             category = fact.get("category", "preference")
             if not content:
                 continue
-                
+
             result = vault.upsert_user_fact(content, category)
             if result == "LIMIT_REACHED":
                 stats = vault.get_profile_stats()
                 return (
                     f"Saved {len(saved_ids)} facts. Stopped because user profile is full "
                     f"({stats['entries']}/{stats['max_entries']} entries). "
-                    "Use core_search_user_profile to find outdated facts, then core_delete_user_profile "
+                    "Use core_search_user_profile to find outdated facts, "
+                    "then core_delete_user_profile "
                     "to remove them before saving new ones."
                 )
             if result.startswith("BLOCKED:"):
-                return f"Saved {len(saved_ids)} facts. Stopped because content was rejected by security scanner: {result}"
-            
+                return (
+                    f"Saved {len(saved_ids)} facts. Stopped because content was rejected "
+                    f"by security scanner: {result}"
+                )
+
             saved_ids.append(result)
-            
+
         return f"Successfully saved {len(saved_ids)} user profile facts."
 
     def search_user_profile(query: str, top_k: int = 10) -> str:
@@ -166,23 +196,23 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault) -> None:
             return f"Successfully deleted user profile fact: {fact_id}"
         return f"Failed to delete user profile fact: {fact_id}. It may not exist."
 
-    def save_agent_profile(facts: List[str]) -> str:
+    def save_agent_profile(facts: list[str]) -> str:
         """Saves a batch of behavioral directives to the agent persona vault."""
         if not vault:
             return "ERROR: MemoryVault is not connected."
-        
+
         results = []
         for fact in facts:
             fact_id = vault.upsert_agent_fact(fact, category="directive")
             results.append(f"- Fact: '{fact[:50]}...' -> ID: {fact_id}")
-            
+
         return "Saved the following directives to Agent Profile Vault:\n" + "\n".join(results)
 
     def delete_agent_profile(fact_id: str) -> str:
         """Deletes a directive from the bounded agent persona vault."""
         if not vault:
             return "ERROR: MemoryVault is not connected."
-        
+
         success = vault.delete_agent_fact(fact_id)
         if success:
             return f"Successfully removed directive {fact_id} from Agent Profile."
@@ -192,15 +222,15 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault) -> None:
         """Retrieves capacity stats for bounded identity vaults."""
         if not vault:
             return "ERROR: MemoryVault is not connected."
-        
+
         # User stats
         user_stats = vault.get_profile_stats()
         user_count = user_stats["entries"]
         user_max = user_stats["max_entries"]
-        
+
         # Agent stats
         agent_count = vault.agent_profile.count() if vault.agent_profile else 0
-        
+
         return (
             f"User Profile Capacity: {user_count}/{user_max} entries used.\n"
             f"Agent Profile Capacity: {agent_count}/{user_max} entries used."
@@ -210,141 +240,199 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault) -> None:
     # Tool Registration
     # ==========================================
 
-    registry.register({
-        "name": "core_save_memory",
-        "description": "Save an atomic, dense fact into the user's Long-Term Memory Vault. Use this to permanently store preferences, relationships, API keys, or context.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "facts": {
-                    "type": "array",
-                    "description": "List of atomic workspace facts to save.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "content": {
-                                "type": "string",
-                                "description": "The exact fact to save. Make it highly descriptive (e.g. 'Project uses FastAPI 0.115')."
+    registry.register(
+        {
+            "name": "core_save_memory",
+            "description": (
+                "Save an atomic, dense fact into the user's Long-Term Memory Vault. "
+                "Use this to permanently store preferences, relationships, API keys, or context."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "facts": {
+                        "type": "array",
+                        "description": "List of atomic workspace facts to save.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {
+                                    "type": "string",
+                                    "description": (
+                                        "The exact fact to save. Make it highly descriptive "
+                                        "(e.g. 'Project uses FastAPI 0.115')."
+                                    ),
+                                },
+                                "category": {
+                                    "type": "string",
+                                    "description": (
+                                        "Optional category tag "
+                                        "(e.g., 'workspace_state', 'architecture', 'bug_history')"
+                                    ),
+                                },
                             },
-                            "category": {
-                                "type": "string",
-                                "description": "Optional category tag (e.g., 'workspace_state', 'architecture', 'bug_history')"
-                            }
+                            "required": ["content"],
                         },
-                        "required": ["content"]
                     }
-                }
-            },
-            "required": ["facts"]
-        }
-    }, save_memory)
-
-    registry.register({
-        "name": "core_search_memory",
-        "description": "Perform a semantic search against the Long-Term Memory Vault. Use this before asking the user a clarifying question to see if you already know the answer.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The semantic query (e.g., 'Who is the user's boss?')"
                 },
-                "top_k": {
-                    "type": "integer",
-                    "description": "Number of results to return (default 5)"
-                }
+                "required": ["facts"],
             },
-            "required": ["query"]
-        }
-    }, search_memory)
+        },
+        save_memory,
+    )
 
-    registry.register({
-        "name": "core_delete_memory",
-        "description": "Remove an outdated or incorrect fact from the Memory Vault.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "fact_id": {
-                    "type": "string",
-                    "description": "The exact ID of the fact to delete, obtained from core_search_memory."
-                }
+    registry.register(
+        {
+            "name": "core_search_memory",
+            "description": (
+                "Perform a semantic search against the Long-Term Memory Vault. "
+                "Use this before asking the user a clarifying question "
+                "to see if you already know the answer."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The semantic query (e.g., 'Who is the user's boss?')",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "Number of results to return (default 5)",
+                    },
+                },
+                "required": ["query"],
             },
-            "required": ["fact_id"]
-        }
-    }, delete_memory)
+        },
+        search_memory,
+    )
 
-    registry.register({
-        "name": "core_save_user_profile",
-        "description": (
-            "Save a user identity or preference fact into the PERMANENT user profile. "
-            "Use this for things that define WHO the user is: their name, role, timezone, "
-            "communication style, coding preferences, or personal relationships. "
-            "This store is bounded (max 25 entries) — be precise and atomic. "
-            "For workspace/project facts, use core_save_memory instead."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "facts": {
-                    "type": "array",
-                    "description": "List of atomic identity facts to save.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "content": {
-                                "type": "string",
-                                "description": "The atomic identity fact (e.g., 'User's name is Aarav', 'User prefers TypeScript')."
+    registry.register(
+        {
+            "name": "core_delete_memory",
+            "description": "Remove an outdated or incorrect fact from the Memory Vault.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "fact_id": {
+                        "type": "string",
+                        "description": (
+                            "The exact ID of the fact to delete, "
+                            "obtained from core_search_memory."
+                        ),
+                    }
+                },
+                "required": ["fact_id"],
+            },
+        },
+        delete_memory,
+    )
+
+    registry.register(
+        {
+            "name": "core_save_user_profile",
+            "description": (
+                "Save a user identity or preference fact into the PERMANENT user profile. "
+                "Use this for things that define WHO the user is: their name, role, timezone, "
+                "communication style, coding preferences, or personal relationships. "
+                "This store is bounded (max 25 entries) — be precise and atomic. "
+                "For workspace/project facts, use core_save_memory instead."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "facts": {
+                        "type": "array",
+                        "description": "List of atomic identity facts to save.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {
+                                    "type": "string",
+                                    "description": (
+                                        "The atomic identity fact "
+                                        "(e.g., 'User's name is Aarav', "
+                                        "'User prefers TypeScript')."
+                                    ),
+                                },
+                                "category": {
+                                    "type": "string",
+                                    "description": (
+                                        "Category: name, role, preference, habit, "
+                                        "relationship, timezone, style, identity."
+                                    ),
+                                    "enum": [
+                                        "name",
+                                        "role",
+                                        "preference",
+                                        "habit",
+                                        "relationship",
+                                        "timezone",
+                                        "style",
+                                        "identity",
+                                    ],
+                                },
                             },
-                            "category": {
-                                "type": "string",
-                                "description": "Category: name, role, preference, habit, relationship, timezone, style, identity.",
-                                "enum": ["name", "role", "preference", "habit", "relationship", "timezone", "style", "identity"]
-                            }
+                            "required": ["content"],
                         },
-                        "required": ["content"]
                     }
-                }
-            },
-            "required": ["facts"]
-        }
-    }, save_user_profile)
-
-    registry.register({
-        "name": "core_search_user_profile",
-        "description": (
-            "Search the user's permanent identity profile. Returns user-specific facts like "
-            "name, role, preferences, and habits. Shows capacity stats (used/max slots)."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "What to look up (e.g., 'user preferences', 'user's name', 'coding style')."
                 },
-                "top_k": {
-                    "type": "integer",
-                    "description": "Number of results to return (default 10)."
-                }
+                "required": ["facts"],
             },
-            "required": ["query"]
-        }
-    }, search_user_profile)
+        },
+        save_user_profile,
+    )
 
-    registry.register({
-        "name": "core_delete_user_profile",
-        "description": "Remove an outdated or incorrect fact from the bounded User Profile store.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "fact_id": {
-                    "type": "string",
-                    "description": "The exact ID of the user profile fact to delete, obtained from core_search_user_profile."
-                }
+    registry.register(
+        {
+            "name": "core_search_user_profile",
+            "description": (
+                "Search the user's permanent identity profile. Returns user-specific facts like "
+                "name, role, preferences, and habits. Shows capacity stats (used/max slots)."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "What to look up "
+                            "(e.g., 'user preferences', 'user's name', 'coding style')."
+                        ),
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "Number of results to return (default 10).",
+                    },
+                },
+                "required": ["query"],
             },
-            "required": ["fact_id"]
-        }
-    }, delete_user_profile)
+        },
+        search_user_profile,
+    )
+
+    registry.register(
+        {
+            "name": "core_delete_user_profile",
+            "description": (
+                "Remove an outdated or incorrect fact from the bounded User Profile store."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "fact_id": {
+                        "type": "string",
+                        "description": (
+                            "The exact ID of the user profile fact to delete, "
+                            "obtained from core_search_user_profile."
+                        ),
+                    }
+                },
+                "required": ["fact_id"],
+            },
+        },
+        delete_user_profile,
+    )
 
 
 def register_session_tools(registry: ToolRegistry, session_store) -> None:
@@ -375,25 +463,28 @@ def register_session_tools(registry: ToolRegistry, session_store) -> None:
         except Exception as e:
             return f"Session search failed: {str(e)}"
 
-    registry.register({
-        "name": "core_search_sessions",
-        "description": (
-            "Search across ALL past conversation sessions. Use this to recall what "
-            "was discussed in previous sessions, find past decisions, or locate "
-            "information the user shared days or weeks ago."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The keyword or phrase to search for across past sessions."
+    registry.register(
+        {
+            "name": "core_search_sessions",
+            "description": (
+                "Search across ALL past conversation sessions. Use this to recall what "
+                "was discussed in previous sessions, find past decisions, or locate "
+                "information the user shared days or weeks ago."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The keyword or phrase to search for across past sessions.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results (default 10).",
+                    },
                 },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of results (default 10)."
-                }
+                "required": ["query"],
             },
-            "required": ["query"]
-        }
-    }, search_sessions)
+        },
+        search_sessions,
+    )

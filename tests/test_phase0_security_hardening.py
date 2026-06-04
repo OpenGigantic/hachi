@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+from tokoboros.core.loop import ToolRegistry
+from tokoboros.core.mcp_client import MCPServerConnection
+from tokoboros.core.rest_adapter import UniversalRestAdapter
+from tokoboros.tools.os_tools import _raw_run_terminal_command
+
+
+class _FakeVault:
+    def __init__(self, values: dict[str, str]):
+        self._values = values
+
+    def get_token(self, name: str) -> str | None:
+        return self._values.get(name)
+
+
+def test_run_terminal_command_rejects_shell_operators(tmp_path: Path) -> None:
+    result = _raw_run_terminal_command("echo hello && echo world", cwd=str(tmp_path))
+    assert "Shell operators are not allowed" in result
+
+
+def test_run_terminal_command_executes_single_argv(tmp_path: Path) -> None:
+    command = f'"{sys.executable}" -c "print(12345)"'
+    result = _raw_run_terminal_command(command, cwd=str(tmp_path))
+    assert "12345" in result
+    assert "Exit Code: 0" in result
+
+
+def test_run_terminal_command_supports_pwd_builtin(tmp_path: Path) -> None:
+    result = _raw_run_terminal_command("pwd", cwd=str(tmp_path))
+    assert str(tmp_path.resolve()) in result
+    assert "Exit Code: 0" in result
+
+
+def test_read_file_returns_directory_listing_for_directory(tmp_path: Path) -> None:
+    folder = tmp_path / "sample"
+    folder.mkdir()
+    (folder / "a.txt").write_text("a", encoding="utf-8")
+    (folder / "sub").mkdir()
+
+    from tokoboros.tools.os_tools import _raw_read_file
+
+    result = _raw_read_file(str(folder))
+    assert "Directory listing for" in result
+    assert "- sub/" in result
+    assert "- a.txt" in result
+
+
+def test_mcp_env_is_scrubbed(monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "should-not-leak")
+    monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
+
+    conn = MCPServerConnection(name="x", command="python")
+    env = conn._build_subprocess_env()
+
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "PATH" in env
+
+
+def test_rest_adapter_blocks_private_hosts() -> None:
+    registry = ToolRegistry()
+    adapter = UniversalRestAdapter(registry)
+
+    adapter._register_single_api(
+        tool_name="private_probe",
+        api_def={
+            "method": "GET",
+            "endpoint": "http://127.0.0.1:8000/health",
+            "headers": "{}",
+            "schema": "{}",
+        },
+        node_name="test-node",
+    )
+
+    result = registry._tools["private_probe"]()
+    assert "Blocked by outbound policy" in result
+
+
+def test_rest_adapter_requires_allowlist_for_secret_interpolation() -> None:
+    registry = ToolRegistry()
+    adapter = UniversalRestAdapter(
+        registry,
+        vault=_FakeVault({"api_token": "super-secret"}),
+        allowed_hosts=[],
+    )
+
+    adapter._register_single_api(
+        tool_name="token_call",
+        api_def={
+            "method": "GET",
+            "endpoint": "https://example.com/api",
+            "headers": '{"Authorization":"Bearer {api_token}"}',
+            "schema": "{}",
+        },
+        node_name="test-node",
+    )
+
+    result = registry._tools["token_call"]()
+    assert "Secret interpolation requires TOKOBOROS_REST_ALLOWLIST" in result
+
+
+def test_rest_allowlist_wildcard_matches_subdomains_only() -> None:
+    assert UniversalRestAdapter._host_in_allowlist("api.example.com", ["*.example.com"]) is True
+    assert UniversalRestAdapter._host_in_allowlist("example.com", ["*.example.com"]) is False
+    assert UniversalRestAdapter._host_in_allowlist("api.evil.com", ["*.example.com"]) is False
+
+
+def test_rest_adapter_blocks_dns_resolution_failures(monkeypatch) -> None:
+    registry = ToolRegistry()
+    adapter = UniversalRestAdapter(registry, allowed_hosts=["api.example.com"])
+    monkeypatch.setattr(
+        "tokoboros.core.rest_adapter.socket.getaddrinfo",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("dns failure")),
+    )
+
+    adapter._register_single_api(
+        tool_name="dns_fail",
+        api_def={
+            "method": "GET",
+            "endpoint": "https://api.example.com/v1/status",
+            "headers": "{}",
+            "schema": "{}",
+        },
+        node_name="test-node",
+    )
+
+    result = registry._tools["dns_fail"]()
+    assert "Blocked by outbound policy" in result
+    assert "private or unsafe address" in result
+
+
+def test_rest_adapter_rejects_host_header_override_tricks() -> None:
+    registry = ToolRegistry()
+    adapter = UniversalRestAdapter(registry, allowed_hosts=["api.example.com"])
+
+    adapter._register_single_api(
+        tool_name="host_header_trick",
+        api_def={
+            "method": "GET",
+            "endpoint": "https://api.example.com/v1/status",
+            "headers": '{"Host":"{api_token}"}',
+            "schema": "{}",
+        },
+        node_name="test-node",
+    )
+
+    result = registry._tools["host_header_trick"]()
+    assert "Host-routing headers are blocked by outbound policy" in result
+
+
+def test_rest_adapter_allows_private_egress_when_explicitly_enabled(monkeypatch) -> None:
+    class _FakeResponse:
+        status_code = 200
+        text = "ok"
+
+        def raise_for_status(self) -> None:
+            return
+
+        def json(self) -> dict[str, str]:
+            return {"ok": "true"}
+
+    class _FakeClient:
+        def __init__(self, **_kwargs) -> None:
+            return
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return
+
+        def request(self, **_kwargs):
+            return _FakeResponse()
+
+    monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "true")
+    monkeypatch.setattr("tokoboros.core.rest_adapter.httpx.Client", _FakeClient)
+
+    registry = ToolRegistry()
+    adapter = UniversalRestAdapter(registry, allowed_hosts=[])
+
+    adapter._register_single_api(
+        tool_name="private_allowed",
+        api_def={
+            "method": "GET",
+            "endpoint": "http://127.0.0.1:9000/health",
+            "headers": "{}",
+            "schema": "{}",
+        },
+        node_name="test-node",
+    )
+
+    result = registry._tools["private_allowed"]()
+    payload = json.loads(result)
+    assert payload["ok"] == "true"

@@ -17,16 +17,16 @@ Supported integration types:
     - http  : Persistent HTTP session for REST API calls.
 """
 
-import json
 import smtplib
-import urllib.request
 import urllib.error
-from email.mime.text import MIMEText
+import urllib.request
+from collections.abc import Callable
 from email.mime.multipart import MIMEMultipart
-from typing import Any, Callable, Dict, List, Optional
+from email.mime.text import MIMEText
+from typing import Any
 
-from tokoboros.og_engine.parser import OGNode
 from tokoboros.core.loop import ToolRegistry
+from tokoboros.og_engine.parser import OGNode
 
 
 class IntegrationRuntime:
@@ -37,10 +37,10 @@ class IntegrationRuntime:
     """
 
     def __init__(self):
-        self._env: Dict[str, str] = {}               # Flat key-value credential store
-        self._connections: Dict[str, Any] = {}        # integration_name -> live connection object
-        self._handlers: Dict[str, Callable] = {}      # integration_name -> callable tool function
-        self._integration_nodes: Dict[str, OGNode] = {}
+        self._env: dict[str, str] = {}  # Flat key-value credential store
+        self._connections: dict[str, Any] = {}  # integration_name -> live connection object
+        self._handlers: dict[str, Callable] = {}  # integration_name -> callable tool function
+        self._integration_nodes: dict[str, OGNode] = {}
 
     # ==========================================
     # Credential Loading
@@ -62,7 +62,7 @@ class IntegrationRuntime:
                 key, _, value = line.partition("=")
                 self._env[key.strip()] = value.strip()
 
-    def get_credential(self, key: str) -> Optional[str]:
+    def get_credential(self, key: str) -> str | None:
         """
         Retrieve a credential by its key name.
 
@@ -98,7 +98,9 @@ class IntegrationRuntime:
             elif integration_type == "http":
                 return self._setup_http(node)
             else:
-                print(f"  [integration] Unknown type '{integration_type}' for {node.name}, skipping.")
+                print(
+                    f"  [integration] Unknown type '{integration_type}' for {node.name}, skipping."
+                )
                 return False
         except Exception as e:
             print(f"  [integration] Failed to setup {node.name}: {e}")
@@ -122,7 +124,7 @@ class IntegrationRuntime:
 
     def shutdown(self):
         """Gracefully close all persistent connections."""
-        for name, conn in self._connections.items():
+        for _name, conn in self._connections.items():
             try:
                 if hasattr(conn, "quit"):
                     conn.quit()
@@ -174,6 +176,12 @@ class IntegrationRuntime:
         def send_email(to: str, subject: str, body: str) -> str:
             """Send an email via the persistent SMTP connection."""
             try:
+                for field_name, field_value in [("to", to), ("subject", subject)]:
+                    if field_value and (chr(13) in field_value or chr(10) in field_value):
+                        raise ValueError(
+                            f"Email field {field_name!r} contains illegal newline characters"
+                        )
+
                 msg = MIMEMultipart()
                 msg["From"] = email_address
                 msg["To"] = to
@@ -236,15 +244,22 @@ class IntegrationRuntime:
         def http_request(method: str, path: str, body: str = "") -> str:
             """Make an HTTP request to the configured API."""
             try:
-                url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+                ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
+                if method.upper() not in ALLOWED_METHODS:
+                    raise ValueError(f"HTTP method is not allowed: {method!r}")
+                method = method.upper()
+
+                path = path.lstrip("/")
+                if "\\" in path:
+                    raise ValueError(f"Invalid request path: {path!r}")
+                for component in path.split("/"):
+                    if component in (".", ".."):
+                        raise ValueError(f"Invalid request path: {path!r}")
+
+                url = f"{base_url.rstrip('/')}/{path}"
                 data = body.encode("utf-8") if body else None
 
-                req = urllib.request.Request(
-                    url,
-                    data=data,
-                    headers=headers,
-                    method=method.upper()
-                )
+                req = urllib.request.Request(url, data=data, headers=headers, method=method)
 
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     response_body = resp.read().decode("utf-8")
@@ -262,7 +277,7 @@ class IntegrationRuntime:
     # Schema Builder
     # ==========================================
 
-    def _build_tool_schema(self, node: OGNode) -> Optional[Dict[str, Any]]:
+    def _build_tool_schema(self, node: OGNode) -> dict[str, Any] | None:
         """
         Build an Anthropic-compatible tool JSON schema from the node's ::tool block.
 
@@ -279,8 +294,8 @@ class IntegrationRuntime:
 
         # Parse params: "to|recipient email, subject|email subject, body|email body"
         params_raw = node.tool_def.get("params", "")
-        properties: Dict[str, Any] = {}
-        required: List[str] = []
+        properties: dict[str, Any] = {}
+        required: list[str] = []
 
         if params_raw:
             for param in params_raw.split(","):
@@ -293,16 +308,12 @@ class IntegrationRuntime:
 
                 properties[param_name.strip()] = {
                     "type": "string",
-                    "description": param_desc.strip()
+                    "description": param_desc.strip(),
                 }
                 required.append(param_name.strip())
 
         return {
             "name": tool_name,
             "description": tool_desc,
-            "input_schema": {
-                "type": "object",
-                "properties": properties,
-                "required": required
-            }
+            "input_schema": {"type": "object", "properties": properties, "required": required},
         }

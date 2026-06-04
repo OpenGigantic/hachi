@@ -28,14 +28,15 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
-from tokoboros.core.llm import AnthropicClient, BaseLLMClient, LLMResponse, Message
+from tokoboros.core.llm import AnthropicClient, BaseLLMClient, Message
 from tokoboros.core.loop import AgentException, ExecutionLoop, ToolRegistry
-from tokoboros.og_engine.parser import OGFile, OGNode, parse_og_file
+from tokoboros.og_engine.parser import OGFile, parse_og_file
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,8 @@ ROLES_DIRECTORY_NAME = "roles"
 # Data Models
 # ==========================================
 
-class SubAgentStatus(str, Enum):
+
+class SubAgentStatus(StrEnum):
     """Terminal status of a completed sub-agent execution.
 
     Values:
@@ -62,6 +64,7 @@ class SubAgentStatus(str, Enum):
         ERROR:    Sub-agent encountered an unrecoverable error during execution.
         TIMEOUT:  Sub-agent exceeded the wall-clock timeout or iteration limit.
     """
+
     SUCCESS = "success"
     ERROR = "error"
     TIMEOUT = "timeout"
@@ -85,6 +88,7 @@ class SubAgentReport:
         token_estimate:   Rough estimate of total tokens consumed.
         metadata:         Optional structured data extracted from the sub-agent's output.
     """
+
     status: SubAgentStatus
     summary: str
     role: str
@@ -92,7 +96,7 @@ class SubAgentReport:
     iterations: int = 0
     duration_seconds: float = 0.0
     token_estimate: int = 0
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_orchestrator_string(self) -> str:
         """Format the report as a concise string for injection into the orchestrator's context.
@@ -120,6 +124,7 @@ class SubAgentReport:
 # Lightweight Memory for Sub-Agents
 # ==========================================
 
+
 class SubAgentMemory:
     """Minimal, zero-overhead memory manager for isolated sub-agent execution.
 
@@ -143,17 +148,17 @@ class SubAgentMemory:
     __slots__ = ("_history", "_last_user_query", "_active_skill")
 
     def __init__(self) -> None:
-        self._history: List[Message] = []
+        self._history: list[Message] = []
         self._last_user_query: str = ""
-        self._active_skill: Optional[str] = None
+        self._active_skill: str | None = None
 
     @property
-    def history(self) -> List[Message]:
+    def history(self) -> list[Message]:
         """The raw conversation history sent to the LLM on every turn."""
         return self._history
 
     @property
-    def active_skill(self) -> Optional[str]:
+    def active_skill(self) -> str | None:
         """Currently active skill name (always None for sub-agents)."""
         return self._active_skill
 
@@ -188,6 +193,7 @@ class SubAgentMemory:
 # System Prompt Builder
 # ==========================================
 
+
 class PromptBuilder:
     """Constructs a layered system prompt from an OGFile's rich tags.
 
@@ -204,7 +210,7 @@ class PromptBuilder:
     """
 
     @staticmethod
-    def build(og_file: OGFile, task: str, context: Optional[str] = None) -> str:
+    def build(og_file: OGFile, task: str, context: str | None = None) -> str:
         """Assemble the complete system prompt from the .og file and task parameters.
 
         Args:
@@ -215,7 +221,7 @@ class PromptBuilder:
         Returns:
             A complete system prompt string, typically 200-800 tokens.
         """
-        sections: List[str] = []
+        sections: list[str] = []
 
         # Layer 1 — Identity
         identity = PromptBuilder._extract_identity(og_file)
@@ -254,7 +260,7 @@ class PromptBuilder:
             A formatted identity section, or empty string if no identity nodes exist.
         """
         identity_roles = {"persona", "identity", "core_agent"}
-        parts: List[str] = []
+        parts: list[str] = []
 
         for node in og_file.nodes:
             if node.role not in identity_roles:
@@ -286,7 +292,7 @@ class PromptBuilder:
         Returns:
             A formatted warnings section, or empty string if none exist.
         """
-        warnings: List[str] = []
+        warnings: list[str] = []
         for node in og_file.nodes:
             if node.warning:
                 warnings.append(f"⚠️ {node.warning}")
@@ -306,7 +312,7 @@ class PromptBuilder:
         Returns:
             A formatted instructions section.
         """
-        parts: List[str] = []
+        parts: list[str] = []
         rule_roles = {"rule", "constraint", "procedure"}
 
         for node in og_file.nodes:
@@ -330,7 +336,7 @@ class PromptBuilder:
         return "\n".join(parts) if parts else ""
 
     @staticmethod
-    def _build_task_section(task: str, context: Optional[str] = None) -> str:
+    def _build_task_section(task: str, context: str | None = None) -> str:
         """Build the task assignment section from the delegate_task parameters.
 
         This is always the final section of the prompt, ensuring the sub-agent
@@ -367,6 +373,7 @@ class PromptBuilder:
 # Role File Resolver
 # ==========================================
 
+
 class RoleResolver:
     """Resolves a role name to its corresponding .og file path.
 
@@ -379,7 +386,7 @@ class RoleResolver:
     custom .og file in their local roles directory.
     """
 
-    def __init__(self, workspace_dir: Optional[Path] = None) -> None:
+    def __init__(self, workspace_dir: Path | None = None) -> None:
         """Initialize the role resolver.
 
         Args:
@@ -419,7 +426,7 @@ class RoleResolver:
             f"Create one at: {self._roles_dir / f'{role}.og'}"
         )
 
-    def list_available_roles(self) -> List[str]:
+    def list_available_roles(self) -> list[str]:
         """List all available role names from both user and built-in directories.
 
         Returns:
@@ -439,6 +446,7 @@ class RoleResolver:
 # ==========================================
 # Sub-Agent Runtime
 # ==========================================
+
 
 class SubAgentRuntime:
     """Isolated execution environment for a delegated sub-agent.
@@ -471,14 +479,14 @@ class SubAgentRuntime:
         self,
         role: str,
         task: str,
-        context: Optional[str] = None,
-        tool_registry: Optional[ToolRegistry] = None,
-        llm_client: Optional[BaseLLMClient] = None,
+        context: str | None = None,
+        tool_registry: ToolRegistry | None = None,
+        llm_client: BaseLLMClient | None = None,
         model: str = DEFAULT_SUB_AGENT_MODEL,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
-        workspace_dir: Optional[Path] = None,
-        on_event: Optional[Callable[..., None]] = None,
+        workspace_dir: Path | None = None,
+        on_event: Callable[..., None] | None = None,
     ) -> None:
         """Initialize the sub-agent runtime.
 
@@ -518,14 +526,14 @@ class SubAgentRuntime:
         self._tool_registry = tool_registry or ToolRegistry()
 
         # Build the system prompt from .og layers
-        self._system_prompt = PromptBuilder.build(
-            self._og_file, self._task, self._context
-        )
+        self._system_prompt = PromptBuilder.build(self._og_file, self._task, self._context)
 
         logger.info(
             "SubAgentRuntime initialized: role=%s, model=%s, max_iter=%d, timeout=%.0fs",
-            self._role, getattr(self._llm_client, 'model', 'unknown'),
-            self._max_iterations, self._timeout_seconds,
+            self._role,
+            getattr(self._llm_client, "model", "unknown"),
+            self._max_iterations,
+            self._timeout_seconds,
         )
 
     @staticmethod
@@ -581,7 +589,9 @@ class SubAgentRuntime:
 
             logger.info(
                 "Sub-agent '%s' completed: %.1fs, ~%d tokens",
-                self._role, elapsed, token_estimate,
+                self._role,
+                elapsed,
+                token_estimate,
             )
 
             return SubAgentReport(
@@ -598,7 +608,9 @@ class SubAgentRuntime:
             elapsed = time.monotonic() - start_time
             logger.warning(
                 "Sub-agent '%s' hit iteration limit after %.1fs: %s",
-                self._role, elapsed, exc,
+                self._role,
+                elapsed,
+                exc,
             )
             return SubAgentReport(
                 status=SubAgentStatus.TIMEOUT,
@@ -614,7 +626,8 @@ class SubAgentRuntime:
             elapsed = time.monotonic() - start_time
             logger.warning(
                 "Sub-agent '%s' timed out after %.1fs",
-                self._role, elapsed,
+                self._role,
+                elapsed,
             )
             return SubAgentReport(
                 status=SubAgentStatus.TIMEOUT,
@@ -629,7 +642,10 @@ class SubAgentRuntime:
             elapsed = time.monotonic() - start_time
             logger.error(
                 "Sub-agent '%s' failed after %.1fs: %s",
-                self._role, elapsed, exc, exc_info=True,
+                self._role,
+                elapsed,
+                exc,
+                exc_info=True,
             )
             return SubAgentReport(
                 status=SubAgentStatus.ERROR,

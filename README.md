@@ -31,14 +31,20 @@ Unlike traditional agent frameworks that dump everything into the system prompt 
 ## Features
 
 - 🧠 **ObjectGraph (.og) Engine** — A structured, agent-native file format with 20+ semantic tags for zero-hallucination skill execution
-- 🔀 **Multi-Agent Delegation** — Fire-and-forget sub-agents with isolated context windows for complex, multi-step tasks
+- 🖥️ **Textual Operator Console** — Rich local UI with transcript, runtime timeline, setup flow, and operations views
+- 🌐 **Typed Gateway API** — FastAPI control plane for sessions, events, runtime read models, config, and setup
+- ⚛️ **Web Frontend Workspace** — TanStack Start frontend wired to gateway endpoints with generated OpenAPI client types
+- 🔀 **Multi-Agent Delegation** — Sub-agents with isolated context windows and searchable delegation reports
 - 💰 **Prompt Caching** — Native Anthropic cache breakpoints on system prompts and tool schemas (up to 90% input token savings)
 - 🔐 **Permission Gating** — Declarative `device-permissions.og` manifest controlling filesystem, terminal, and MCP access
+- 🧱 **Immutable Turn Context** — Per-turn execution state is frozen via `TurnContext` to avoid shared prompt mutation
+- 🗂️ **Job Queue Foundations** — Runtime jobs are tracked with retry/backoff and surfaced in gateway read models
 - 🔌 **Native Integrations** — Google Workspace (Gmail, Drive, Calendar), Notion, Slack — all via OAuth
 - 🌐 **Universal REST Adapter** — Define any REST API in a `.og` file, and Tokoboros auto-generates the tool
 - 🧩 **MCP Support** — Model Context Protocol servers for filesystem and external tools
 - 📊 **Skill Lifecycle** — Usage tracking, stale detection, and analytics for all `.og` skills
 - 🧬 **Long-Term Memory** — Semantic search vault with async prefetch and frozen session snapshots
+- 🛡️ **Security Audit Command** — Built-in `security-audit` CLI checks for risky local runtime posture
 
 ---
 
@@ -49,12 +55,13 @@ Unlike traditional agent frameworks that dump everything into the system prompt 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
 - An [Anthropic API key](https://console.anthropic.com/)
+- Node.js 20+ (optional, for `frontend/` local development)
 
 ### Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/AetherMind-Labs/tokoboros.git
+git clone https://github.com/OpenGigantic/tokoboros.git
 cd tokoboros
 
 # Create/update the local environment and install the package
@@ -78,12 +85,84 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 uv run tokoboros run
 ```
 
+By default, `tokoboros run` starts the gateway-backed Textual operator console.
+Use `uv run tokoboros run --repl` to launch the legacy Rich REPL instead.
+
 On first run, Tokoboros will:
 
 1. Create the `~/.tokoboros/` workspace directory
-2. Launch the **Device Permissions Wizard** to configure access tiers
+2. Apply quick-start setup defaults and prepare provider/permission configuration
 3. Copy default skill files to `~/.tokoboros/skills/`
-4. Boot the agent and enter the interactive terminal
+4. Launch the Textual operator console, or resume setup if configuration is incomplete
+
+### Common Commands
+
+```bash
+# Launch Textual UI (default)
+uv run tokoboros run
+
+# Launch legacy REPL
+uv run tokoboros run --repl
+uv run tokoboros run-repl
+
+# Run setup flow without starting a session
+uv run tokoboros setup --tier lightning
+
+# Inspect config and canonical paths
+uv run tokoboros config --paths
+
+# Manage secret storage metadata and health
+uv run tokoboros secrets --list
+uv run tokoboros secrets --check
+
+# Environment and security diagnostics
+uv run tokoboros doctor
+uv run tokoboros security-audit --json --fail-on-high
+
+# Start standalone gateway server
+uv run tokoboros gateway --host 127.0.0.1 --port 8787 --runtime
+
+# Export OpenAPI contract for clients
+uv run tokoboros gateway-openapi --output openapi/tokoboros-openapi.json
+```
+
+### Gateway and Web Frontend
+
+Tokoboros now ships a typed HTTP gateway and a separate frontend workspace.
+
+```bash
+# Terminal 1: gateway
+uv run tokoboros gateway --host 127.0.0.1 --port 8787 --runtime
+
+# Terminal 2: frontend dev server
+cd frontend
+npm install
+npm run dev
+```
+
+Gateway base URL: `http://127.0.0.1:8787`
+
+Useful endpoints:
+
+- `GET /health`
+- `GET /readiness`
+- `POST /sessions`
+- `POST /sessions/{session_id}/messages`
+- `GET /sessions/{session_id}/events`
+- `GET /runtime/events`
+- `GET /config`
+- `GET /setup`
+
+### Docker Compose
+
+The repository includes a two-service local stack:
+
+- `tokoboros` (Python gateway service on `:8787`)
+- `frontend` (web UI on `:5173`)
+
+```bash
+docker compose up --build
+```
 
 ---
 
@@ -93,28 +172,37 @@ On first run, Tokoboros will:
 tokoboros/
 ├── src/tokoboros/
 │   ├── cli/                  # CLI entry point (Typer)
-│   │   └── main.py           # Boot sequence, REPL, and command handlers
+│   │   └── main.py           # Run modes, gateway server commands, diagnostics
 │   │
 │   ├── core/                 # Core engine modules
 │   │   ├── llm.py            # LLM abstraction layer (Anthropic, with prompt caching)
 │   │   ├── loop.py           # Autonomous ReAct execution loop
-│   │   ├── memory.py         # Context window management & compaction
+│   │   ├── turn_context.py   # Immutable per-turn execution context
+│   │   ├── memory.py         # Context window management, compaction, and sync jobs
 │   │   ├── memory_vault.py   # Long-term semantic memory (ChromaDB)
+│   │   ├── memory_guard.py   # Layered inbound memory threat scanning
 │   │   ├── permissions.py    # Device permission gating engine
 │   │   ├── mcp_client.py     # Model Context Protocol client
 │   │   ├── integrations.py   # Direct integration runtime (SMTP, REST)
 │   │   ├── rest_adapter.py   # Universal REST API adapter
 │   │   ├── oauth.py          # Google OAuth2 flow management
 │   │   ├── session_store.py  # Cross-session persistence (SQLite)
+│   │   ├── runtime_events.py # Runtime event taxonomy
+│   │   ├── runtime_read_models.py # Typed read models for TUI/gateway views
 │   │   └── credential_vault.py  # Secure credential storage
+│   │
+│   ├── jobs/
+│   │   └── queue.py          # Queue/worker primitives with retry/backoff
 │   │
 │   ├── og_engine/            # ObjectGraph (.og) parser & skill engine
 │   │   ├── parser.py         # Full .og lexical parser (OGFile, OGNode, OGIndexEntry)
 │   │   └── engine.py         # Skill indexing, search, and context resolution
 │   │
-│   ├── gateway/              # Session orchestration
-│   │   ├── orchestrator.py   # Agent session factory & memory architecture
-│   │   └── workspace.py      # ~/.tokoboros/ directory management
+│   ├── gateway/              # Typed control plane + orchestration
+│   │   ├── control_plane.py  # Session protocol and gateway runtime interfaces
+│   │   ├── fastapi_app.py    # HTTP routes and OpenAPI surface
+│   │   ├── orchestrator.py   # Agent session factory + runtime wiring
+│   │   └── workspace.py      # ~/.tokoboros/ directory and skill bootstrap
 │   │
 │   ├── integrations/         # Native platform integrations
 │   │   ├── google/           # Gmail, Drive, Calendar
@@ -127,17 +215,26 @@ tokoboros/
 │   │   ├── memory_tools.py   # Long-term memory tools
 │   │   └── workflow_tools.py # Workflow control tools
 │   │
-│   └── default_skills/       # Built-in .og skill files
-│       ├── general/          # Everyday skills (email, QR codes, web apps)
-│       ├── technical/        # Developer skills (code review, debugging)
-│       ├── google/           # Google Workspace skills
-│       ├── notion/           # Notion integration skills
-│       └── slack/            # Slack integration skills
+│   └── tui/
+│       └── app.py            # Textual operator console
 │
+├── src/tokoboros/default_skills/         # Built-in .og skill files
+│   ├── general/                          # Everyday skills (email, QR codes, web apps)
+│   ├── technical/                        # Developer skills (code review, debugging)
+│   ├── google/                           # Google Workspace skills
+│   ├── notion/                           # Notion integration skills
+│   └── slack/                            # Slack integration skills
+│
+├── frontend/                              # TanStack Start web frontend
+├── openapi/
+│   └── tokoboros-openapi.json            # Generated gateway OpenAPI contract
+├── docker-compose.yml                    # Gateway + frontend local stack
+├── Dockerfile                            # Gateway service image
+├── AGENTS.md                             # Contributor guidance for coding agents
 ├── ObjectGraph_Complete_Specification.md   # Full .og format specification
-├── pyproject.toml                        # Project metadata & dependencies
-├── CONTRIBUTING.md                       # Contribution guidelines
-└── LICENSE                               # MIT License
+├── pyproject.toml                          # Project metadata & dependencies
+├── CONTRIBUTING.md                         # Contribution guidelines
+└── LICENSE                                 # MIT License
 ```
 
 ---
@@ -204,30 +301,50 @@ For the complete specification, see [ObjectGraph_Complete_Specification.md](Obje
 
 ### Workspace Structure
 
-On first boot, Tokoboros creates `~/.tokoboros/` with the following layout:
+Tokoboros now resolves paths with `platformdirs` (config/data/state), while still importing from legacy `~/.tokoboros/` when needed.
 
-```
-~/.tokoboros/
-├── brain.og                  # Core agent identity & behavioral rules
-├── tokoboros.json             # Agent configuration (model, max_tokens)
-├── device-permissions.og      # Filesystem & terminal access control
-├── skills/                    # User's .og skill files
-│   ├── general/
-│   ├── technical/
-│   └── google/
-└── sessions/                  # Persistent session data
+Print your active paths at any time:
+
+```bash
+uv run tokoboros config --paths
 ```
 
-### Agent Configuration (`tokoboros.json`)
+Key path roles:
 
-```json
-{
-  "agent": {
-    "model": "claude-haiku-4-5",
-    "temperature": 0.0,
-    "max_tokens": 8192
-  }
-}
+```
+config_dir/
+├── settings.toml              # Main resolved config (provider, agent, permissions, memory)
+├── brain.og                   # Core agent identity & behavioral rules
+└── device-permissions.og      # Filesystem & terminal access policy
+
+data_dir/
+├── skills/                    # User and installed .og skill files
+└── chroma_vault/              # Semantic memory store
+
+state_dir/
+├── sessions.db                # Session/message persistence
+├── tui_state.db               # Textual UI state
+└── onboarding_state.json      # Setup progress
+```
+
+### Agent Configuration (`settings.toml`)
+
+```toml
+[provider]
+kind = "anthropic"
+model = "claude-haiku-4-5"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[agent]
+temperature = 0.0
+max_tokens = 8192
+
+[permissions]
+tier = "guided"
+
+[memory]
+enable_session_history = true
+enable_semantic_memory = true
 ```
 
 ### Device Permissions (`device-permissions.og`)
@@ -248,13 +365,16 @@ timeout=120
 
 ## Roadmap
 
-- [ ] **Multi-Agent Delegation** — `delegate_task` tool for spawning fire-and-forget sub-agents
-- [ ] **Assertion Engine** — Deterministic `::assertion` execution in the ReAct loop
-- [ ] **Edge Traversal** — Automatic `::edges` dependency resolution during skill loading
-- [ ] **Delta Loading** — `::changelog`-based incremental skill updates
-- [ ] **Agent Roles (RBAC)** — Scope-filtered `.og` views for orchestrator vs worker agents
-- [ ] **Web UI** — Browser-based interface for non-terminal users
-- [ ] **Plugin SDK** — Third-party tool development kit
+- [x] **Textual-First Runtime** — `tokoboros run` now launches the Textual operator console by default
+- [x] **Gateway Control Plane** — Typed FastAPI surface for sessions, events, config, setup, and runtime observability
+- [x] **OpenAPI + Frontend Contract** — Exported schema and generated TypeScript client integration
+- [x] **Immutable TurnContext** — Per-turn prompt/context freezing to avoid shared mutable prompt state
+- [x] **Security Audit Command + CI Integration** — Built-in posture checks wired into CI workflows
+- [ ] **Queue Durability Upgrade** — Move from in-memory queue backend to persisted backend
+- [ ] **Container-Grade Sandbox** — Production isolation backend with stronger boundary guarantees
+- [ ] **Gateway Auth and Pairing** — Add auth tokens/device pairing for remote-safe multi-surface operation
+- [ ] **Expanded Scheduler and Automations** — First-class scheduled job orchestration and delivery
+- [ ] **Skill Compiler/Lint Pipeline** — Typed skill validation, diagnostics, and publish workflow
 
 ---
 

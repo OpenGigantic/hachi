@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
-import shutil
 
 from platformdirs import PlatformDirs
-
 
 APP_NAME = "tokoboros"
 
@@ -75,7 +74,13 @@ def get_tokoboros_paths() -> TokoborosPaths:
 
 
 def ensure_directories(paths: TokoborosPaths) -> None:
-    for directory in (paths.config_dir, paths.data_dir, paths.cache_dir, paths.state_dir, paths.skills_dir):
+    for directory in (
+        paths.config_dir,
+        paths.data_dir,
+        paths.cache_dir,
+        paths.state_dir,
+        paths.skills_dir,
+    ):
         directory.mkdir(parents=True, exist_ok=True)
 
 

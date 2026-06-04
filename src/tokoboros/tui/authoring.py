@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import difflib
 from pathlib import Path
-from typing import Tuple
 
 _ALLOWED_SUFFIXES = {".og", ".json", ".md", ".txt"}
 
 
-def discover_authoring_targets(workspace_dir: Path, skills_dir: Path, limit: int = 200) -> Tuple[Path, ...]:
+def discover_authoring_targets(
+    workspace_dir: Path, skills_dir: Path, limit: int = 200
+) -> tuple[Path, ...]:
     """Return curated editable assets for v1 authoring workflows."""
     targets: list[Path] = []
 

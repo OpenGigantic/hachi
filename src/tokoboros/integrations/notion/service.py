@@ -2,19 +2,24 @@
 Base Notion Service
 Provides the core HTTP client wrapper and authentication headers for the Notion API.
 """
+
 import httpx
+
 from tokoboros.core.loop import ToolRegistry
+
 
 class NotionService:
     """
     Base service for Notion API integrations.
     Handles authentication and provides a pre-configured HTTP client.
     """
+
     BASE_URL = "https://api.notion.com/v1"
     NOTION_VERSION = "2025-09-03"
 
     def __init__(self):
         from tokoboros.core.credential_vault import CredentialVault
+
         self._vault = CredentialVault()
         # Avoid interactive stdin prompts during TUI boot. We resolve lazily per call.
         self.api_key = self._vault.get_token("notion_api_key", prompt_if_missing=False)
@@ -35,7 +40,7 @@ class NotionService:
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Notion-Version": self.NOTION_VERSION,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
 
     def _get(self, endpoint: str, params: dict = None) -> dict:

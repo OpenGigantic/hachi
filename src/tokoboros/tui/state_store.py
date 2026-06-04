@@ -6,13 +6,12 @@ state do not pollute operator/audit history.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import datetime
 import json
-from pathlib import Path
 import sqlite3
 import threading
-from typing import Dict, Tuple
+from dataclasses import dataclass
+from pathlib import Path
 
 from tokoboros.core.paths import get_tokoboros_paths
 
@@ -24,7 +23,7 @@ class TUIStateSnapshot:
     last_mode: str = "session"
     draft_input: str = ""
     authoring_target: str = ""
-    recent_authoring_targets: Tuple[str, ...] = ()
+    recent_authoring_targets: tuple[str, ...] = ()
     filters_json: str = "{}"
     setup_resume_json: str = "{}"
 
@@ -56,7 +55,7 @@ class TUIStateStore:
         self._conn.commit()
 
     def _set(self, key: str, value: str) -> None:
-        ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        ts = datetime.datetime.now(datetime.UTC).isoformat()
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO app_state (key, value, updated_at) VALUES (?, ?, ?)",

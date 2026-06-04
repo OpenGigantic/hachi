@@ -3,28 +3,29 @@ LLM Provider Abstraction Layer
 
 This module provides a unified interface for interacting with various Large Language Models (LLMs).
 By strictly programming to the `BaseLLMClient` interface, the Tokoboros agent remains entirely
-model-agnostic, allowing seamless swapping between Anthropic, OpenAI, or local execution (e.g., Ollama)
-without modifying the core agent loop.
+model-agnostic, allowing seamless swapping between Anthropic, OpenAI, or local execution
+(e.g., Ollama) without modifying the core agent loop.
 """
 
 import abc
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from typing import Any
+
 import anthropic
 import httpx
+from pydantic import BaseModel, Field
 
 from tokoboros.core.secret_store import SecretStore
 
 
-def _read_dotenv(path: Path) -> Dict[str, str]:
+def _read_dotenv(path: Path) -> dict[str, str]:
     """Parse a simple KEY=VALUE dotenv file into a dictionary."""
     if not path.exists():
         return {}
 
-    values: Dict[str, str] = {}
+    values: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
@@ -34,7 +35,7 @@ def _read_dotenv(path: Path) -> Dict[str, str]:
     return values
 
 
-def _resolve_api_key(api_key_env: Optional[str], explicit_api_key: Optional[str] = None) -> Optional[str]:
+def _resolve_api_key(api_key_env: str | None, explicit_api_key: str | None = None) -> str | None:
     """Resolve provider API key from explicit value, env var, then local project .env."""
     if explicit_api_key:
         return explicit_api_key
@@ -50,27 +51,39 @@ def _resolve_api_key(api_key_env: Optional[str], explicit_api_key: Optional[str]
     dotenv_values = _read_dotenv(Path.cwd() / ".env")
     return dotenv_values.get(env_name)
 
+
 class Message(BaseModel):
     """
     Represents a standardized message in the conversation history.
     """
-    role: str = Field(..., description="The role of the speaker (e.g., 'user', 'assistant', 'system').")
-    content: str | List[Dict[str, Any]] = Field(..., description="The textual content of the message or a list of content blocks.")
+
+    role: str = Field(
+        ..., description="The role of the speaker (e.g., 'user', 'assistant', 'system')."
+    )
+    content: str | list[dict[str, Any]] = Field(
+        ..., description="The textual content of the message or a list of content blocks."
+    )
+
 
 class ToolCall(BaseModel):
     """
     Represents a tool execution requested by the LLM.
     """
+
     id: str = Field(..., description="The unique identifier for the tool call.")
     name: str = Field(..., description="The name of the tool to execute.")
-    input: Dict[str, Any] = Field(..., description="The arguments to pass to the tool.")
+    input: dict[str, Any] = Field(..., description="The arguments to pass to the tool.")
+
 
 class LLMResponse(BaseModel):
     """
     Standardized response returned by any underlying LLM provider.
     """
+
     content: str = Field(default="", description="The textual response from the model.")
-    tool_calls: List[ToolCall] = Field(default_factory=list, description="Any tool calls requested by the model.")
+    tool_calls: list[ToolCall] = Field(
+        default_factory=list, description="Any tool calls requested by the model."
+    )
 
 
 class BaseLLMClient(abc.ABC):
@@ -82,9 +95,9 @@ class BaseLLMClient(abc.ABC):
     @abc.abstractmethod
     def generate(
         self,
-        messages: List[Message],
-        system_prompt: Optional[str] = None,
-        tools: Optional[List[Dict[str, Any]]] = None
+        messages: list[Message],
+        system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
         """
         Generate a response from the LLM based on the conversation history.
@@ -105,28 +118,31 @@ class AnthropicClient(BaseLLMClient):
     Concrete implementation of BaseLLMClient for Anthropic's Claude models.
     """
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "claude-haiku-4-5", max_tokens: int = 4096):
+    def __init__(
+        self, api_key: str | None = None, model: str = "claude-haiku-4-5", max_tokens: int = 4096
+    ):
         """
         Initialize the Anthropic client.
 
         Args:
-            api_key: The Anthropic API key. If None, falls back to the ANTHROPIC_API_KEY environment variable.
+            api_key: The Anthropic API key. If None, falls back to the ANTHROPIC_API_KEY
+                environment variable.
             model: The target Claude model identifier.
             max_tokens: The maximum number of tokens to generate.
         """
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY must be provided or set in the environment.")
-        
+
         self.client = anthropic.Anthropic(api_key=self.api_key)
         self.model = model
         self.max_tokens = max_tokens
 
     def generate(
         self,
-        messages: List[Message],
-        system_prompt: Optional[str] = None,
-        tools: Optional[List[Dict[str, Any]]] = None
+        messages: list[Message],
+        system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
         """
         Generate a response from the Anthropic Claude model using Prompt Caching.
@@ -134,26 +150,24 @@ class AnthropicClient(BaseLLMClient):
         to optimize token usage and minimize latency on subsequent turns.
         """
         # Convert our standardized Message objects into Anthropic's expected format
-        anthropic_messages = [{"role": m.role, "content": m.content} for m in messages if m.role != "system"]
-        
-        kwargs: Dict[str, Any] = {
+        anthropic_messages = [
+            {"role": m.role, "content": m.content} for m in messages if m.role != "system"
+        ]
+
+        kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
             "messages": anthropic_messages,
             # Ensure prompt caching beta headers are applied (required for some SDK versions)
-            "extra_headers": {"anthropic-beta": "prompt-caching-2024-07-31"}
+            "extra_headers": {"anthropic-beta": "prompt-caching-2024-07-31"},
         }
-        
+
         if system_prompt:
             # Apply prompt caching breakpoint to the system prompt block
             kwargs["system"] = [
-                {
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"}
-                }
+                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
             ]
-            
+
         if tools:
             # Apply prompt caching breakpoint to the tools array.
             # By marking the final tool as ephemeral, we cache the entire tools schema block.
@@ -175,13 +189,7 @@ class AnthropicClient(BaseLLMClient):
             if block.type == "text":
                 text_content += block.text
             elif block.type == "tool_use":
-                tool_calls.append(
-                    ToolCall(
-                        id=block.id,
-                        name=block.name,
-                        input=block.input
-                    )
-                )
+                tool_calls.append(ToolCall(id=block.id, name=block.name, input=block.input))
 
         return LLMResponse(content=text_content.strip(), tool_calls=tool_calls)
 
@@ -193,7 +201,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         self,
         base_url: str,
         model: str,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         max_tokens: int = 4096,
         timeout: float = 60.0,
     ):
@@ -203,8 +211,19 @@ class OpenAICompatibleClient(BaseLLMClient):
         self.max_tokens = max_tokens
         self._http = httpx.Client(timeout=timeout)
 
+    def close(self) -> None:
+        """Close the underlying HTTP client and release its connections."""
+        self._http.close()
+
+    def __del__(self) -> None:
+        """Safety-net finalizer — close the HTTP client if not already closed."""
+        try:
+            self._http.close()
+        except Exception:
+            pass
+
     @staticmethod
-    def _adapt_tools(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    def _adapt_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
         if not tools:
             return []
 
@@ -216,7 +235,9 @@ class OpenAICompatibleClient(BaseLLMClient):
                     "function": {
                         "name": tool.get("name", "tool"),
                         "description": tool.get("description", ""),
-                        "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+                        "parameters": tool.get(
+                            "input_schema", {"type": "object", "properties": {}}
+                        ),
                     },
                 }
             )
@@ -224,15 +245,15 @@ class OpenAICompatibleClient(BaseLLMClient):
 
     def generate(
         self,
-        messages: List[Message],
-        system_prompt: Optional[str] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[Message],
+        system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        payload_messages: List[Dict[str, Any]] = []
+        payload_messages: list[dict[str, Any]] = []
         if system_prompt:
             payload_messages.append({"role": "system", "content": system_prompt})
 
@@ -241,7 +262,7 @@ class OpenAICompatibleClient(BaseLLMClient):
                 continue
             payload_messages.append({"role": msg.role, "content": msg.content})
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": payload_messages,
             "max_tokens": self.max_tokens,
@@ -252,7 +273,9 @@ class OpenAICompatibleClient(BaseLLMClient):
             payload["tools"] = adapted_tools
             payload["tool_choice"] = "auto"
 
-        response = self._http.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
+        response = self._http.post(
+            f"{self.base_url}/chat/completions", headers=headers, json=payload
+        )
         response.raise_for_status()
         data = response.json()
 
@@ -263,7 +286,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         message = choices[0].get("message", {})
         content = message.get("content") or ""
 
-        tool_calls: List[ToolCall] = []
+        tool_calls: list[ToolCall] = []
         for raw_call in message.get("tool_calls", []) or []:
             fn = raw_call.get("function", {})
             args_str = fn.get("arguments", "{}")
@@ -283,7 +306,9 @@ class OpenAICompatibleClient(BaseLLMClient):
         return LLMResponse(content=str(content).strip(), tool_calls=tool_calls)
 
 
-def create_llm_client(provider_config: Dict[str, Any], secret_store: Optional[SecretStore] = None, max_tokens: int = 4096) -> BaseLLMClient:
+def create_llm_client(
+    provider_config: dict[str, Any], secret_store: SecretStore | None = None, max_tokens: int = 4096
+) -> BaseLLMClient:
     """Build an LLM client from provider config plus secret references."""
     kind = str(provider_config.get("kind", "anthropic")).lower()
     model = str(provider_config.get("model", "claude-haiku-4-5"))
@@ -291,7 +316,7 @@ def create_llm_client(provider_config: Dict[str, Any], secret_store: Optional[Se
     api_key_env = provider_config.get("api_key_env")
     base_url = provider_config.get("base_url")
 
-    api_key: Optional[str] = None
+    api_key: str | None = None
     if api_key_ref and secret_store is not None:
         api_key = secret_store.get(str(api_key_ref))
     if not api_key:
@@ -301,11 +326,19 @@ def create_llm_client(provider_config: Dict[str, Any], secret_store: Optional[Se
         return AnthropicClient(api_key=api_key, model=model, max_tokens=max_tokens)
 
     if kind == "ollama":
-        resolved_base = str(base_url or os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434/v1")
-        return OpenAICompatibleClient(base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens)
+        resolved_base = str(
+            base_url or os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434/v1"
+        )
+        return OpenAICompatibleClient(
+            base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens
+        )
 
     if kind == "openai-compatible":
-        resolved_base = str(base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1")
-        return OpenAICompatibleClient(base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens)
+        resolved_base = str(
+            base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+        )
+        return OpenAICompatibleClient(
+            base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens
+        )
 
     raise ValueError(f"Unsupported provider kind: {kind}")

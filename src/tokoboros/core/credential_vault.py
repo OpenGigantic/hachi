@@ -2,18 +2,29 @@
 
 from __future__ import annotations
 
-from typing import Optional
+import sys
 
 from tokoboros.core.secret_store import SecretStore, create_default_secret_store
 
 
 class CredentialVault:
-    def __init__(self, secret_store: Optional[SecretStore] = None):
+    def __init__(self, secret_store: SecretStore | None = None):
         self._store = secret_store or create_default_secret_store()
         self._cache: dict[str, str] = {}
 
-    def get_token(self, token_key: str, prompt_if_missing: bool = True) -> Optional[str]:
-        """Retrieve a token by logical key, optionally prompting when missing."""
+    def get_token(self, token_key: str, prompt_if_missing: bool = False) -> str | None:
+        """Retrieve a token by logical key, optionally prompting when missing.
+
+        Args:
+            token_key: Logical name of the credential to retrieve.
+            prompt_if_missing: When True, fall back to an interactive prompt on TTY.
+                Defaults to False. Non-interactive contexts (TUI, gateway, CI) must
+                leave this as False and handle a missing credential explicitly.
+
+        Raises:
+            ValueError: If the credential is missing and prompt_if_missing is False,
+                or if prompt_if_missing is True but stdin is not a TTY.
+        """
         cached = self._cache.get(token_key)
         if cached:
             return cached
@@ -24,9 +35,14 @@ class CredentialVault:
             return token
 
         if not prompt_if_missing:
-            return None
+            raise ValueError(f"Credential not found. Set it via tokoboros secrets set {token_key}")
 
-        formatted_name = token_key.replace("_", " ").title().replace(" Token", "").replace(" Key", "")
+        if not sys.stdin.isatty():
+            raise ValueError("Cannot prompt for credential in non-interactive context")
+
+        formatted_name = (
+            token_key.replace("_", " ").title().replace(" Token", "").replace(" Key", "")
+        )
         print("\n[Security Vault] Missing credentials detected.")
         print(f"I need your {formatted_name} token to proceed.")
         user_token = input("Paste token value: ").strip()
@@ -39,7 +55,9 @@ class CredentialVault:
         return user_token
 
     def set_token(self, token_key: str, value: str) -> None:
-        self._store.set(token_key, value, metadata={"name": token_key, "labels": {"source": "vault"}})
+        self._store.set(
+            token_key, value, metadata={"name": token_key, "labels": {"source": "vault"}}
+        )
         self._cache[token_key] = value
 
     def delete_token(self, token_key: str) -> None:

@@ -25,8 +25,7 @@ Security:
 
 import json
 import logging
-import threading
-from typing import Any, Callable, Dict, Optional
+from collections.abc import Callable
 
 from tokoboros.core.loop import ToolRegistry
 from tokoboros.core.permissions import PermissionGate
@@ -36,6 +35,7 @@ from tokoboros.core.sub_agent import (
     SubAgentRuntime,
     SubAgentStatus,
 )
+from tokoboros.jobs import Job, JobStatus
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +75,9 @@ DELEGATE_TASK_SCHEMA = {
             "task": {
                 "type": "string",
                 "description": (
-                    "A detailed, self-contained description of what the sub-agent should accomplish. "
-                    "Be specific — the sub-agent has NO access to your conversation history. "
+                    "A detailed, self-contained description of what the sub-agent should "
+                    "accomplish. Be specific — the sub-agent has NO access to your conversation "
+                    "history. "
                     "Include file paths, URLs, expected output format, and any constraints."
                 ),
             },
@@ -119,26 +120,28 @@ LIST_ROLES_SCHEMA = {
 # - Memory reads that could leak cross-session data
 # - Workflow manipulation (suspend_workflow)
 # - Session state corruption (core_search_sessions)
-BLOCKED_TOOL_NAMES = frozenset({
-    # Delegation (no recursive spawning)
-    "delegate_task",
-    "list_roles",
-    # Core memory (no long-term memory writes from sub-agents)
-    "core_save_memory",
-    "core_search_memory",
-    "core_delete_memory",
-    # User profile (sub-agents must never alter user identity)
-    "core_save_user_profile",
-    "core_search_user_profile",
-    "core_delete_user_profile",
-    # Agent profile (sub-agents must never alter agent personality)
-    "core_save_agent_profile",
-    "core_delete_agent_profile",
-    # Session persistence (sub-agents don't have sessions)
-    "core_search_sessions",
-    # Workflow control
-    "suspend_workflow",
-})
+BLOCKED_TOOL_NAMES = frozenset(
+    {
+        # Delegation (no recursive spawning)
+        "delegate_task",
+        "list_roles",
+        # Core memory (no long-term memory writes from sub-agents)
+        "core_save_memory",
+        "core_search_memory",
+        "core_delete_memory",
+        # User profile (sub-agents must never alter user identity)
+        "core_save_user_profile",
+        "core_search_user_profile",
+        "core_delete_user_profile",
+        # Agent profile (sub-agents must never alter agent personality)
+        "core_save_agent_profile",
+        "core_delete_agent_profile",
+        # Session persistence (sub-agents don't have sessions)
+        "core_search_sessions",
+        # Workflow control
+        "suspend_workflow",
+    }
+)
 
 
 # ==========================================
@@ -147,18 +150,20 @@ BLOCKED_TOOL_NAMES = frozenset({
 
 # Core tools that are always available to every sub-agent regardless of role
 # (these are the minimum required for any useful work)
-_CORE_TOOLS = frozenset({
-    "run_terminal_command",
-    "read_file",
-    "write_file",
-    "search_skills",
-    "load_skill",
-})
+_CORE_TOOLS = frozenset(
+    {
+        "run_terminal_command",
+        "read_file",
+        "write_file",
+        "search_skills",
+        "load_skill",
+    }
+)
 
 
 def _build_scoped_registry(
     parent_registry: ToolRegistry,
-    gate: Optional[PermissionGate] = None,
+    gate: PermissionGate | None = None,
     tool_patterns: str = "",
 ) -> ToolRegistry:
     """Build a restricted ToolRegistry for a sub-agent.
@@ -232,11 +237,13 @@ def _build_scoped_registry(
 # Tool Handlers
 # ==========================================
 
+
 def _make_delegate_task(
     parent_registry: ToolRegistry,
-    gate: Optional[PermissionGate] = None,
-    on_event: Optional[Callable[..., None]] = None,
+    gate: PermissionGate | None = None,
+    on_event: Callable[..., None] | None = None,
     vault=None,
+    job_queue=None,
 ) -> Callable[..., str]:
     """Factory: creates the delegate_task tool handler.
 
@@ -249,10 +256,12 @@ def _make_delegate_task(
         gate:            The device permission gate.
         on_event:        Optional progress callback for the CLI/UI.
         vault:           Optional MemoryVault for persisting delegation results.
+        job_queue:       Optional job queue for persistence work.
 
     Returns:
         A callable that accepts (role, task, context) and returns a report string.
     """
+
     def delegate_task(role: str, task: str, context: str = "") -> str:
         """Spawn an isolated sub-agent and return its execution report.
 
@@ -260,7 +269,7 @@ def _make_delegate_task(
             1. Builds a scoped ToolRegistry (no delegate_task, no memory tools)
             2. Creates a SubAgentRuntime with the role's .og file
             3. Runs the sub-agent to completion (fire-and-forget)
-            4. Persists the result to the delegation log (long-term memory)
+            4. Enqueues persistence work for the delegation log
             5. Returns a compact report for the orchestrator
 
         Args:
@@ -273,10 +282,13 @@ def _make_delegate_task(
         """
         # Emit progress event for CLI display
         if on_event:
-            on_event("delegation_start", {
-                "role": role,
-                "task": task[:100],
-            })
+            on_event(
+                "delegation_start",
+                {
+                    "role": role,
+                    "task": task[:100],
+                },
+            )
 
         try:
             # Resolve role .og file to extract tool scope patterns
@@ -285,6 +297,7 @@ def _make_delegate_task(
                 resolver = RoleResolver()
                 role_path = resolver.resolve(role)
                 from tokoboros.og_engine.parser import parse_og_file
+
                 role_og = parse_og_file(str(role_path))
                 tool_patterns = role_og.meta.tools
             except Exception:
@@ -305,15 +318,17 @@ def _make_delegate_task(
 
             # Emit completion event
             if on_event:
-                on_event("delegation_complete", {
-                    "role": role,
-                    "status": report.status.value,
-                    "duration": report.duration_seconds,
-                    "iterations": report.iterations,
-                })
+                on_event(
+                    "delegation_complete",
+                    {
+                        "role": role,
+                        "status": report.status.value,
+                        "duration": report.duration_seconds,
+                        "iterations": report.iterations,
+                    },
+                )
 
-            # Persist to long-term memory (background, non-blocking)
-            _persist_delegation_result(vault, report)
+            _enqueue_delegation_persistence(job_queue, vault, report)
 
             # Return the compact orchestrator string (not raw JSON)
             return report.to_orchestrator_string()
@@ -327,7 +342,7 @@ def _make_delegate_task(
                 role=role,
                 task=task,
             )
-            _persist_delegation_result(vault, error_report)
+            _enqueue_delegation_persistence(job_queue, vault, error_report)
             return error_report.to_orchestrator_string()
 
         except Exception as exc:
@@ -339,53 +354,78 @@ def _make_delegate_task(
                 role=role,
                 task=task,
             )
-            _persist_delegation_result(vault, error_report)
+            _enqueue_delegation_persistence(job_queue, vault, error_report)
             return error_report.to_orchestrator_string()
 
     return delegate_task
 
 
-def _persist_delegation_result(vault, report: SubAgentReport) -> None:
-    """Persist a delegation result to long-term memory in a background thread.
+def _enqueue_delegation_persistence(job_queue, vault, report: SubAgentReport) -> None:
+    """Persist a delegation result through the job queue when available.
+
+    When no queue is configured, the persistence work runs inline so tests and
+    development workflows still retain delegation history.
+    """
+    if not vault:
+        return
+
+    if job_queue:
+        job = Job(
+            job_id="",
+            name="persist_delegation",
+            status=JobStatus.PENDING,
+            func=_persist_delegation_result,
+            args=(vault, report),
+            job_type="persist",
+        )
+
+        try:
+            job_queue.enqueue(job)
+            return
+        except Exception:
+            logger.debug("Failed to enqueue delegation persistence job", exc_info=True)
+
+    _persist_delegation_result(vault, report)
+
+
+def _persist_delegation_result(vault, report: SubAgentReport) -> str:
+    """Persist a delegation result to long-term memory.
 
     Two writes happen:
         1. delegation_log: The full delegation record (searchable by role, task, status)
         2. core_memory: Key workspace facts extracted from the sub-agent's summary
            (e.g., files created, commands run, configurations applied)
 
-    This runs in a daemon thread — never blocks the main orchestrator loop.
+    This function is queue-friendly and returns the delegation log ID.
 
     Args:
         vault:  The MemoryVault instance (may be None if vault is not configured).
         report: The SubAgentReport to persist.
     """
     if not vault:
-        return
+        return ""
 
-    def _persist():
-        try:
-            # 1. Log the delegation result
-            vault.log_delegation(
-                role=report.role,
-                task=report.task,
-                status=report.status.value,
-                summary=report.summary,
-                duration_seconds=report.duration_seconds,
-                iterations=report.iterations,
-                token_estimate=report.token_estimate,
+    try:
+        entry_id = vault.log_delegation(
+            role=report.role,
+            task=report.task,
+            status=report.status.value,
+            summary=report.summary,
+            duration_seconds=report.duration_seconds,
+            iterations=report.iterations,
+            token_estimate=report.token_estimate,
+        )
+
+        if report.status == SubAgentStatus.SUCCESS and len(report.summary) > 30:
+            vault.upsert_fact(
+                f"[delegation:{report.role}] {report.summary[:500]}",
+                category="delegation_result",
             )
 
-            # 2. Extract workspace facts from successful delegations
-            if report.status == SubAgentStatus.SUCCESS and len(report.summary) > 30:
-                vault.upsert_fact(
-                    f"[delegation:{report.role}] {report.summary[:500]}",
-                    category="delegation_result",
-                )
-
-        except Exception:
-            logger.debug("Failed to persist delegation result", exc_info=True)
-
-    threading.Thread(target=_persist, name="persist-delegation", daemon=True).start()
+        return entry_id
+    except Exception:
+        logger.debug("Failed to persist delegation result", exc_info=True)
+        return ""
 
 
 def _make_list_roles() -> Callable[..., str]:
@@ -394,6 +434,7 @@ def _make_list_roles() -> Callable[..., str]:
     Returns:
         A callable that returns a JSON list of available role names.
     """
+
     def list_roles() -> str:
         """List all available sub-agent roles.
 
@@ -404,10 +445,15 @@ def _make_list_roles() -> Callable[..., str]:
             resolver = RoleResolver()
             roles = resolver.list_available_roles()
             if not roles:
-                return json.dumps({
-                    "roles": [],
-                    "message": "No role .og files found. Create one at ~/.tokoboros/skills/roles/<name>.og",
-                })
+                return json.dumps(
+                    {
+                        "roles": [],
+                        "message": (
+                            "No role .og files found. Create one at "
+                            "~/.tokoboros/skills/roles/<name>.og"
+                        ),
+                    }
+                )
             return json.dumps({"roles": roles})
         except Exception as exc:
             return json.dumps({"error": str(exc)})
@@ -419,11 +465,13 @@ def _make_list_roles() -> Callable[..., str]:
 # Registration Helper
 # ==========================================
 
+
 def register_delegation_tools(
     registry: ToolRegistry,
-    gate: Optional[PermissionGate] = None,
-    on_event: Optional[Callable[..., None]] = None,
+    gate: PermissionGate | None = None,
+    on_event: Callable[..., None] | None = None,
     vault=None,
+    job_queue=None,
 ) -> None:
     """Mount delegation tools onto the provided ToolRegistry.
 
@@ -436,10 +484,11 @@ def register_delegation_tools(
         gate:      The device PermissionGate instance.
         on_event:  Optional callback for delegation progress events.
         vault:     Optional MemoryVault for persisting delegation results.
+        job_queue: Optional job queue for delegation persistence.
     """
     registry.register(
         DELEGATE_TASK_SCHEMA,
-        _make_delegate_task(registry, gate, on_event, vault),
+        _make_delegate_task(registry, gate, on_event, vault, job_queue),
     )
     registry.register(
         LIST_ROLES_SCHEMA,
