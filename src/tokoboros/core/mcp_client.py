@@ -19,10 +19,13 @@ Reference: https://modelcontextprotocol.io/
 """
 
 import json
+import os
+import shlex
 import subprocess
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
+
 from tokoboros.core.loop import ToolRegistry
 
 
@@ -32,7 +35,14 @@ class MCPServerConnection:
     Handles JSON-RPC communication over stdin/stdout.
     """
 
-    def __init__(self, name: str, command: str, args: List[str] = None, env: Dict[str, str] = None):
+    def __init__(
+        self,
+        name: str,
+        command: str,
+        args: list[str] = None,
+        env: dict[str, str] = None,
+        request_timeout_seconds: float = 30.0,
+    ):
         """
         Initialize an MCP server connection.
 
@@ -46,10 +56,91 @@ class MCPServerConnection:
         self.command = command
         self.args = args or []
         self.env = env or {}
-        self._process: Optional[subprocess.Popen] = None
+        self._process: subprocess.Popen | None = None
         self._request_id = 0
         self._lock = threading.Lock()
-        self._tools: List[Dict[str, Any]] = []
+        self._response_cv = threading.Condition(self._lock)
+        self._responses: dict[Any, dict[str, Any]] = {}
+        self._reader_thread: threading.Thread | None = None
+        self._request_timeout_seconds = max(1.0, float(request_timeout_seconds))
+        self._tools: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _normalize_tools_payload(raw_tools: Any) -> list[dict[str, Any]]:
+        """Normalize tool discovery payload to a stable list with unique named tools."""
+        if not isinstance(raw_tools, list):
+            return []
+
+        normalized: list[dict[str, Any]] = []
+        seen_names: set[str] = set()
+        for item in raw_tools:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+            normalized.append(item)
+        return normalized
+
+    def _stdout_reader(self) -> None:
+        """Continuously read MCP stdout and route JSON-RPC responses by request ID."""
+        process = self._process
+        if not process or not process.stdout:
+            return
+
+        while True:
+            try:
+                line = process.stdout.readline()
+            except Exception:
+                return
+
+            if not line:
+                return
+
+            decoded = line.decode("utf-8", errors="replace").strip()
+            if not decoded:
+                continue
+
+            try:
+                response = json.loads(decoded)
+            except json.JSONDecodeError:
+                continue
+
+            if not isinstance(response, dict) or "id" not in response:
+                continue
+
+            with self._response_cv:
+                self._responses[response.get("id")] = response
+                self._response_cv.notify_all()
+
+    def _build_subprocess_env(self) -> dict[str, str]:
+        """Build a minimal environment to avoid leaking host secrets to MCP servers."""
+        base_keys = [
+            "PATH",
+            "SYSTEMROOT",
+            "WINDIR",
+            "COMSPEC",
+            "TMP",
+            "TEMP",
+            "HOME",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "ProgramData",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+        ]
+        env: dict[str, str] = {}
+        for key in base_keys:
+            value = os.environ.get(key)
+            if value:
+                env[key] = value
+
+        # Explicit server-level overrides from the OG node are allowed.
+        env.update(self.env)
+        return env
 
     def start(self) -> bool:
         """
@@ -59,10 +150,9 @@ class MCPServerConnection:
             True if the server started and initialized successfully.
         """
         try:
-            import os
             import shutil
-            import sys
-            merged_env = {**os.environ, **self.env}
+
+            merged_env = self._build_subprocess_env()
 
             # Resolve the full path to the command so it works even inside a Python venv
             resolved_command = shutil.which(self.command, path=os.environ.get("PATH", ""))
@@ -71,57 +161,64 @@ class MCPServerConnection:
 
             full_command = [resolved_command] + self.args
 
-            # On Windows, use shell=True for npx/node commands
-            use_shell = sys.platform == "win32" and self.command in ("npx", "node", "npm")
-
-            if use_shell:
-                # Quote paths with spaces for shell execution
-                quoted_parts = []
-                for part in full_command:
-                    if " " in part:
-                        quoted_parts.append(f'"{part}"')
-                    else:
-                        quoted_parts.append(part)
-                shell_command = " ".join(quoted_parts)
-            else:
-                shell_command = full_command
-
             self._process = subprocess.Popen(
-                shell_command,
+                full_command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=merged_env,
-                shell=use_shell,
-                bufsize=0
+                shell=False,
+                bufsize=0,
             )
 
-            # Wait for the server to boot (npx may need to download the package first)
+            # FIX 2: Drain stderr in a daemon thread to prevent pipe-buffer deadlock.
+            def _drain_stderr(proc: subprocess.Popen) -> None:
+                try:
+                    for _ in iter(proc.stderr.readline, b""):
+                        pass
+                except Exception:
+                    pass
+
+            threading.Thread(
+                target=_drain_stderr,
+                args=(self._process,),
+                daemon=True,
+                name="mcp-stderr-drain",
+            ).start()
+
+            # FIX 3: Poll for up to 5 s (10 x 0.5 s) rather than breaking after one iteration.
             for _ in range(10):  # Wait up to 5 seconds
                 time.sleep(0.5)
                 if self._process.poll() is not None:
                     # Process died during startup
-                    stderr = self._process.stderr.read().decode("utf-8", errors="replace")[:500]
-                    print(f"  [mcp] {self.name} exited during startup. stderr: {stderr}")
+                    print(f"  [mcp] {self.name} exited during startup.")
                     self._process = None
                     return False
-                break  # Process is alive, proceed
+
+            self._reader_thread = threading.Thread(
+                target=self._stdout_reader,
+                name=f"mcp-reader-{self.name}",
+                daemon=True,
+            )
+            self._reader_thread.start()
 
             # Extra wait for npx to finish downloading on first run
             time.sleep(2)
 
             # Send the MCP initialize request
-            init_response = self._send_request("initialize", {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {
-                    "name": "tokoboros",
-                    "version": "1.0.0"
-                }
-            })
+            init_response = self._send_request(
+                "initialize",
+                {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "tokoboros", "version": "1.0.0"},
+                },
+            )
 
             if not init_response or "error" in init_response:
-                error_msg = init_response.get("error", {}).get("message", "Unknown error") if init_response else "No response"
+                init_response.get("error", {}).get(
+                    "message", "Unknown error"
+                ) if init_response else "No response"
                 self.stop()
                 return False
 
@@ -131,31 +228,39 @@ class MCPServerConnection:
             # Discover available tools
             tools_response = self._send_request("tools/list", {})
             if tools_response and "result" in tools_response:
-                self._tools = tools_response["result"].get("tools", [])
+                tools = tools_response["result"].get("tools", [])
+                self._tools = self._normalize_tools_payload(tools)
 
             return True
 
         except FileNotFoundError:
             return False
-        except Exception as e:
+        except Exception:
             self.stop()
             return False
 
     def stop(self):
         """Terminate the MCP server subprocess."""
-        if self._process:
+        process = self._process
+        if process:
             try:
-                self._process.terminate()
-                self._process.wait(timeout=5)
+                process.terminate()
+                process.wait(timeout=5)
             except Exception:
                 try:
-                    self._process.kill()
+                    process.kill()
                 except Exception:
                     pass
-            self._process = None
+        self._process = None
+        with self._response_cv:
+            self._responses.clear()
+            self._response_cv.notify_all()
+        if self._reader_thread and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=0.5)
+        self._reader_thread = None
 
     @property
-    def tools(self) -> List[Dict[str, Any]]:
+    def tools(self) -> list[dict[str, Any]]:
         """The list of tools discovered from this MCP server."""
         return self._tools
 
@@ -164,7 +269,7 @@ class MCPServerConnection:
         """Check if the subprocess is still running."""
         return self._process is not None and self._process.poll() is None
 
-    def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
+    def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
         """
         Call a tool on this MCP server.
 
@@ -175,10 +280,7 @@ class MCPServerConnection:
         Returns:
             The tool's response as a string.
         """
-        response = self._send_request("tools/call", {
-            "name": tool_name,
-            "arguments": arguments
-        })
+        response = self._send_request("tools/call", {"name": tool_name, "arguments": arguments})
 
         if not response:
             return f"Error: No response from MCP server '{self.name}'"
@@ -200,12 +302,18 @@ class MCPServerConnection:
 
         return "\n".join(text_parts) if text_parts else json.dumps(result)
 
-    def _send_request(self, method: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Send a JSON-RPC request and wait for the response."""
+    def _send_request(self, method: str, params: dict[str, Any]) -> dict[str, Any] | None:
+        """Send a JSON-RPC request and wait for the response.
+
+        FIX 1: Allocate the request ID and write the payload under the lock (minimally),
+        then use cv.wait_for to wait for the response.  cv.wait_for releases the lock
+        during the wait so other callers can write their own requests and wait concurrently.
+        """
         if not self._process or not self._process.stdin or not self._process.stdout:
             return None
 
-        with self._lock:
+        # --- Step 1: allocate a unique ID and write the request, both under the lock. ---
+        with self._response_cv:
             self._request_id += 1
             request_id = self._request_id
 
@@ -213,46 +321,35 @@ class MCPServerConnection:
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "method": method,
-                "params": params
+                "params": params,
             }
 
             try:
                 payload = json.dumps(message) + "\n"
                 self._process.stdin.write(payload.encode("utf-8"))
                 self._process.stdin.flush()
-
-                # Read response lines until we get one with our request ID
-                deadline = time.time() + 30  # 30 second timeout
-                while time.time() < deadline:
-                    line = self._process.stdout.readline()
-                    if not line:
-                        break
-
-                    line = line.decode("utf-8").strip()
-                    if not line:
-                        continue
-
-                    try:
-                        response = json.loads(line)
-                        if isinstance(response, dict) and response.get("id") == request_id:
-                            return response
-                    except json.JSONDecodeError:
-                        continue
-
-                return None
             except Exception as e:
                 return {"error": {"message": str(e)}}
 
-    def _send_notification(self, method: str, params: Dict[str, Any]):
+            # --- Step 2: wait for the reader thread to post the matching response.
+            # cv.wait_for releases self._lock during the wait, so other threads can
+            # enter this same block and issue their own requests concurrently. ---
+            arrived = self._response_cv.wait_for(
+                lambda: request_id in self._responses,
+                timeout=self._request_timeout_seconds,
+            )
+
+            if not arrived:
+                return None
+
+            return self._responses.pop(request_id)
+
+    def _send_notification(self, method: str, params: dict[str, Any]):
         """Send a JSON-RPC notification (no response expected)."""
         if not self._process or not self._process.stdin:
             return
 
-        message = {
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params
-        }
+        message = {"jsonrpc": "2.0", "method": method, "params": params}
 
         try:
             payload = json.dumps(message) + "\n"
@@ -269,7 +366,7 @@ class MCPManager:
     """
 
     def __init__(self):
-        self._servers: Dict[str, MCPServerConnection] = {}
+        self._servers: dict[str, MCPServerConnection] = {}
 
     def setup_from_node(self, node) -> bool:
         """
@@ -293,7 +390,7 @@ class MCPManager:
 
         # Parse args (space-separated string)
         args_raw = node.config.get("args", "")
-        args = args_raw.split() if args_raw else []
+        args = shlex.split(args_raw, posix=(os.name != "nt")) if args_raw else []
 
         # Parse env vars (keys prefixed with env_)
         env = {}
@@ -302,12 +399,7 @@ class MCPManager:
                 env_key = key[4:]  # Strip the "env_" prefix
                 env[env_key] = value
 
-        server = MCPServerConnection(
-            name=node.name,
-            command=command,
-            args=args,
-            env=env
-        )
+        server = MCPServerConnection(name=node.name, command=command, args=args, env=env)
 
         if server.start():
             self._servers[node.name] = server
@@ -335,17 +427,16 @@ class MCPManager:
                 schema = {
                     "name": namespaced_name,
                     "description": tool.get("description", f"Tool from MCP server '{server_name}'"),
-                    "input_schema": tool.get("inputSchema", {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    })
+                    "input_schema": tool.get(
+                        "inputSchema", {"type": "object", "properties": {}, "required": []}
+                    ),
                 }
 
                 # Create a closure that routes to the correct server using the original tool name
                 def make_handler(srv: MCPServerConnection, original_name: str):
                     def handler(**kwargs) -> str:
                         return srv.call_tool(original_name, kwargs)
+
                     return handler
 
                 registry.register(schema, make_handler(server, tool_name))
@@ -357,16 +448,18 @@ class MCPManager:
             return 0
         return len(server.tools)
 
-    def get_inventory(self) -> List[Dict[str, Any]]:
+    def get_inventory(self) -> list[dict[str, Any]]:
         """Return a structured MCP inventory snapshot for operator views."""
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         for name, server in self._servers.items():
-            rows.append({
-                "name": name,
-                "status": "ready" if server.is_alive else "stopped",
-                "tool_count": len(server.tools),
-                "tools": [tool.get("name", "") for tool in server.tools if tool.get("name")],
-            })
+            rows.append(
+                {
+                    "name": name,
+                    "status": "ready" if server.is_alive else "stopped",
+                    "tool_count": len(server.tools),
+                    "tools": [tool.get("name", "") for tool in server.tools if tool.get("name")],
+                }
+            )
         return rows
 
     @property
@@ -381,6 +474,6 @@ class MCPManager:
 
     def shutdown(self):
         """Terminate all MCP server subprocesses."""
-        for name, server in self._servers.items():
+        for _name, server in self._servers.items():
             server.stop()
         self._servers.clear()

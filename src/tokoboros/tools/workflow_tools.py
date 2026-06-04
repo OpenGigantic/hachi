@@ -6,7 +6,8 @@ This includes the ability to suspend execution to wait for human approval
 or asynchronous events (webhook callbacks, cron schedules).
 """
 
-from tokoboros.core.loop import ToolRegistry, SuspendWorkflow
+from tokoboros.core.loop import SuspendWorkflow, ToolRegistry
+
 
 def register_workflow_tools(registry: ToolRegistry):
     """Mount workflow orchestration tools into the LLM's active toolset."""
@@ -19,23 +20,27 @@ def register_workflow_tools(registry: ToolRegistry):
         """
         raise SuspendWorkflow(reason=reason)
 
-    registry.register({
-        "name": "core_suspend_workflow",
-        "description": (
-            "Suspend the current workflow and wait for an external event. "
-            "Use this when your instructions say 'Wait for human approval', "
-            "'Wait for a webhook', or 'Pause execution until...'. "
-            "Your state will be safely saved and you will automatically wake up "
-            "when the event occurs."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "reason": {
-                    "type": "string",
-                    "description": "The exact reason you are suspending (e.g., 'Waiting for CEO approval in #devops')."
-                }
+    registry.register(
+        {
+            "name": "core_suspend_workflow",
+            "description": (
+                "Suspend the current workflow and wait for an external event. "
+                "Use this when your instructions say 'Wait for human approval', "
+                "'Wait for a webhook', or 'Pause execution until...'. "
+                "Your state will be safely saved and you will automatically wake up "
+                "when the event occurs."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": "The exact reason you are suspending "
+                        "(e.g., 'Waiting for CEO approval in #devops').",
+                    }
+                },
+                "required": ["reason"],
             },
-            "required": ["reason"]
-        }
-    }, suspend_workflow)
+        },
+        suspend_workflow,
+    )

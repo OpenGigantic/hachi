@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import threading
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any
 
 from tokoboros.core.runtime_events import RuntimeEvent
 
@@ -12,7 +12,7 @@ from tokoboros.core.runtime_events import RuntimeEvent
 @dataclass(frozen=True, slots=True)
 class SessionStateSnapshot:
     session_id: str
-    active_skill: Optional[str]
+    active_skill: str | None
     last_user_query: str
     model_name: str
     boot_ready: bool
@@ -48,14 +48,14 @@ class MCPServerSnapshot:
     name: str
     status: str
     tool_count: int
-    tools: Tuple[str, ...]
+    tools: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class MCPInventorySnapshot:
     server_count: int
     total_tool_count: int
-    servers: Tuple[MCPServerSnapshot, ...]
+    servers: tuple[MCPServerSnapshot, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +64,17 @@ class JobSnapshot:
     kind: str
     label: str
     status: str
+
+
+@dataclass(frozen=True, slots=True)
+class JobFailureSnapshot:
+    job_id: str
+    kind: str
+    label: str
+    attempt: int
+    error: str
+    duration_seconds: float
+    timestamp: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +89,7 @@ class SubAgentReportSnapshot:
 @dataclass(frozen=True, slots=True)
 class RuntimeEventSnapshot:
     name: str
-    payload: Dict[str, Any]
+    payload: dict[str, Any]
     timestamp: str
 
 
@@ -88,14 +99,17 @@ class RuntimeReadModelStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._boot_ready = False
-        self._jobs: Dict[str, JobSnapshot] = {}
-        self._permission_audit: List[PermissionAuditSnapshot] = []
-        self._subagent_reports: List[SubAgentReportSnapshot] = []
-        self._events: List[RuntimeEventSnapshot] = []
+        self._jobs: dict[str, JobSnapshot] = {}
+        self._job_failures: list[JobFailureSnapshot] = []
+        self._permission_audit: list[PermissionAuditSnapshot] = []
+        self._subagent_reports: list[SubAgentReportSnapshot] = []
+        self._events: list[RuntimeEventSnapshot] = []
 
     def append_event(self, event: RuntimeEvent) -> None:
         with self._lock:
-            self._events.append(RuntimeEventSnapshot(event.name, dict(event.payload), event.timestamp))
+            self._events.append(
+                RuntimeEventSnapshot(event.name, dict(event.payload), event.timestamp)
+            )
             if len(self._events) > 1000:
                 self._events = self._events[-1000:]
 
@@ -107,7 +121,7 @@ class RuntimeReadModelStore:
                 self._jobs[job_id] = JobSnapshot(
                     job_id=job_id,
                     kind=str(event.payload.get("kind", "generic")),
-                    label=str(event.payload.get("label", "Job")),
+                    label=str(event.payload.get("label") or event.payload.get("job_name", "Job")),
                     status="running",
                 )
 
@@ -117,36 +131,71 @@ class RuntimeReadModelStore:
                 self._jobs[job_id] = JobSnapshot(
                     job_id=job_id,
                     kind=current.kind if current else str(event.payload.get("kind", "generic")),
-                    label=current.label if current else str(event.payload.get("label", "Job")),
+                    label=current.label
+                    if current and current.label != "Job"
+                    else str(event.payload.get("label") or event.payload.get("job_name", "Job")),
                     status=str(event.payload.get("status", "completed")),
                 )
 
+            if event.name == "job.failed":
+                job_id = str(event.payload.get("job_id", "job:unknown"))
+                current = self._jobs.get(job_id)
+                kind = current.kind if current else str(event.payload.get("kind", "generic"))
+                label = (
+                    current.label
+                    if current and current.label != "Job"
+                    else str(event.payload.get("label") or event.payload.get("job_name", "Job"))
+                )
+                self._jobs[job_id] = JobSnapshot(
+                    job_id=job_id,
+                    kind=kind,
+                    label=label,
+                    status=str(event.payload.get("status", "failed")),
+                )
+                self._job_failures.append(
+                    JobFailureSnapshot(
+                        job_id=job_id,
+                        kind=kind,
+                        label=label,
+                        attempt=int(event.payload.get("attempt", 0)),
+                        error=str(event.payload.get("error", "")),
+                        duration_seconds=float(event.payload.get("duration_seconds") or 0.0),
+                        timestamp=event.timestamp,
+                    )
+                )
+
             if event.name == "permission.requested":
-                self._permission_audit.append(PermissionAuditSnapshot(
-                    operation=str(event.payload.get("operation", "unknown")),
-                    tool=str(event.payload.get("tool", "unknown")),
-                    target=str(event.payload.get("target", "")),
-                    decision="requested",
-                    reason="Pending decision",
-                ))
+                self._permission_audit.append(
+                    PermissionAuditSnapshot(
+                        operation=str(event.payload.get("operation", "unknown")),
+                        tool=str(event.payload.get("tool", "unknown")),
+                        target=str(event.payload.get("target", "")),
+                        decision="requested",
+                        reason="Pending decision",
+                    )
+                )
 
             if event.name == "permission.decided":
-                self._permission_audit.append(PermissionAuditSnapshot(
-                    operation=str(event.payload.get("operation", "unknown")),
-                    tool=str(event.payload.get("tool", "unknown")),
-                    target=str(event.payload.get("target", "")),
-                    decision=str(event.payload.get("decision", "unknown")),
-                    reason=str(event.payload.get("reason", "")),
-                ))
+                self._permission_audit.append(
+                    PermissionAuditSnapshot(
+                        operation=str(event.payload.get("operation", "unknown")),
+                        tool=str(event.payload.get("tool", "unknown")),
+                        target=str(event.payload.get("target", "")),
+                        decision=str(event.payload.get("decision", "unknown")),
+                        reason=str(event.payload.get("reason", "")),
+                    )
+                )
 
             if event.name == "subagent.completed":
-                self._subagent_reports.append(SubAgentReportSnapshot(
-                    role=str(event.payload.get("role", "unknown")),
-                    status=str(event.payload.get("status", "unknown")),
-                    duration_seconds=float(event.payload.get("duration") or 0.0),
-                    iterations=int(event.payload.get("iterations") or 0),
-                    summary=str(event.payload.get("summary") or ""),
-                ))
+                self._subagent_reports.append(
+                    SubAgentReportSnapshot(
+                        role=str(event.payload.get("role", "unknown")),
+                        status=str(event.payload.get("status", "unknown")),
+                        duration_seconds=float(event.payload.get("duration") or 0.0),
+                        iterations=int(event.payload.get("iterations") or 0),
+                        summary=str(event.payload.get("summary") or ""),
+                    )
+                )
 
             if len(self._permission_audit) > 500:
                 self._permission_audit = self._permission_audit[-500:]
@@ -157,18 +206,22 @@ class RuntimeReadModelStore:
         with self._lock:
             return self._boot_ready
 
-    def active_jobs(self) -> Tuple[JobSnapshot, ...]:
+    def active_jobs(self) -> tuple[JobSnapshot, ...]:
         with self._lock:
             return tuple(job for job in self._jobs.values() if job.status == "running")
 
-    def permission_audit(self, limit: int = 50) -> Tuple[PermissionAuditSnapshot, ...]:
+    def permission_audit(self, limit: int = 50) -> tuple[PermissionAuditSnapshot, ...]:
         with self._lock:
             return tuple(self._permission_audit[-limit:])
 
-    def subagent_reports(self, limit: int = 20) -> Tuple[SubAgentReportSnapshot, ...]:
+    def subagent_reports(self, limit: int = 20) -> tuple[SubAgentReportSnapshot, ...]:
         with self._lock:
             return tuple(self._subagent_reports[-limit:])
 
-    def runtime_events(self, limit: int = 100) -> Tuple[RuntimeEventSnapshot, ...]:
+    def failed_jobs(self, limit: int = 20) -> tuple[JobFailureSnapshot, ...]:
+        with self._lock:
+            return tuple(self._job_failures[-limit:])
+
+    def runtime_events(self, limit: int = 100) -> tuple[RuntimeEventSnapshot, ...]:
         with self._lock:
             return tuple(self._events[-limit:])

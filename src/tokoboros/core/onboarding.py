@@ -1,18 +1,20 @@
 from __future__ import annotations
 
-import json
 import os
-from pathlib import Path
 import shutil
-from typing import Any, Dict, List, Literal, Optional
+from pathlib import Path
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from tokoboros.core.config_loader import load_effective_config
-from tokoboros.core.config_loader import write_global_config
-from tokoboros.core.paths import TokoborosPaths, ensure_directories, get_tokoboros_paths, import_legacy_workspace
+from tokoboros.core.config_loader import load_effective_config, write_global_config
+from tokoboros.core.paths import (
+    TokoborosPaths,
+    ensure_directories,
+    get_tokoboros_paths,
+    import_legacy_workspace,
+)
 from tokoboros.gateway.workspace import install_optional_skill_pack
-
 
 SetupTier = Literal["lightning", "recommended", "enhanced", "power"]
 SetupStep = Literal["welcome", "provider", "safety", "memory", "integrations", "advanced", "finish"]
@@ -22,24 +24,24 @@ class OnboardingState(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     setup_version: int = 1
-    selected_tier: Optional[str] = None
-    completed_steps: List[str] = Field(default_factory=list)
-    last_seen_release: Optional[str] = None
-    migration_markers: Dict[str, str] = Field(default_factory=dict)
+    selected_tier: str | None = None
+    completed_steps: list[str] = Field(default_factory=list)
+    last_seen_release: str | None = None
+    migration_markers: dict[str, str] = Field(default_factory=dict)
 
 
 class SetupPlan(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     tier: SetupTier
-    steps: List[SetupStep] = Field(default_factory=list)
-    answers: Dict[str, Any] = Field(default_factory=dict)
+    steps: list[SetupStep] = Field(default_factory=list)
+    answers: dict[str, Any] = Field(default_factory=dict)
     enable_memory: bool = True
     show_integrations: bool = False
     show_advanced: bool = False
 
 
-TIER_STEP_PLANS: Dict[str, List[SetupStep]] = {
+TIER_STEP_PLANS: dict[str, list[SetupStep]] = {
     "lightning": ["welcome", "provider", "safety", "finish"],
     "recommended": ["welcome", "provider", "safety", "memory", "finish"],
     "enhanced": ["welcome", "provider", "safety", "memory", "integrations", "finish"],
@@ -47,8 +49,12 @@ TIER_STEP_PLANS: Dict[str, List[SetupStep]] = {
 }
 
 
+_PROVIDER_KINDS = {"anthropic", "openai-compatible", "ollama"}
+_PERMISSION_TIERS = {"sandbox", "guided", "unrestricted"}
+
+
 class OnboardingService:
-    def __init__(self, paths: Optional[TokoborosPaths] = None):
+    def __init__(self, paths: TokoborosPaths | None = None):
         self.paths = paths or get_tokoboros_paths()
         ensure_directories(self.paths)
         import_legacy_workspace(self.paths)
@@ -71,7 +77,7 @@ class OnboardingService:
         )
         return self.paths.onboarding_state_file
 
-    def detect_environment(self, project_dir: Optional[Path] = None) -> Dict[str, Any]:
+    def detect_environment(self, project_dir: Path | None = None) -> dict[str, Any]:
         return {
             "anthropic_env": bool(os.environ.get("ANTHROPIC_API_KEY")),
             "openai_env": bool(os.environ.get("OPENAI_API_KEY")),
@@ -80,7 +86,7 @@ class OnboardingService:
             "project_dir": str(project_dir) if project_dir else None,
         }
 
-    def needs_setup(self, project_dir: Optional[Path] = None) -> bool:
+    def needs_setup(self, project_dir: Path | None = None) -> bool:
         config = load_effective_config(project_dir=project_dir, paths=self.paths)
         state = self.resume_state()
 
@@ -91,7 +97,7 @@ class OnboardingService:
 
         return not (provider_ready and tier_ready and is_marked_done)
 
-    def build_tier_plan(self, tier: str, answers: Dict[str, Any]) -> Dict[str, Any]:
+    def build_tier_plan(self, tier: str, answers: dict[str, Any]) -> dict[str, Any]:
         normalized_tier = str(tier).strip().lower()
         if normalized_tier not in TIER_STEP_PLANS:
             normalized_tier = "lightning"
@@ -105,7 +111,9 @@ class OnboardingService:
             show_advanced=normalized_tier == "power",
         ).model_dump(mode="python")
 
-    def apply_setup(self, plan_payload: Dict[str, Any], project_dir: Optional[Path] = None) -> SetupPlan:
+    def apply_setup(
+        self, plan_payload: dict[str, Any], project_dir: Path | None = None
+    ) -> SetupPlan:
         plan = SetupPlan.model_validate(plan_payload)
         config = load_effective_config(project_dir=project_dir, paths=self.paths)
 
@@ -116,25 +124,42 @@ class OnboardingService:
             base_url = provider.get("base_url")
             api_key_env = provider.get("api_key_env")
 
-            if kind:
-                config.provider.kind = str(kind)  # type: ignore[assignment]
-            if model:
-                config.provider.model = str(model)
+            if kind is not None:
+                normalized_kind = str(kind).strip()
+                if normalized_kind not in _PROVIDER_KINDS:
+                    raise ValueError(
+                        "provider.kind must be one of: anthropic, openai-compatible, ollama"
+                    )
+                config.provider.kind = normalized_kind  # type: ignore[assignment]
+            if model is not None:
+                normalized_model = str(model).strip()
+                if not normalized_model:
+                    raise ValueError("provider.model cannot be empty")
+                config.provider.model = normalized_model
             if base_url is not None:
-                config.provider.base_url = str(base_url)
+                config.provider.base_url = str(base_url).strip() or None
             if api_key_env is not None:
-                config.provider.api_key_env = str(api_key_env)
+                config.provider.api_key_env = str(api_key_env).strip() or None
 
         safety_tier = plan.answers.get("permission_tier")
-        if safety_tier:
-            config.permissions.tier = str(safety_tier)  # type: ignore[assignment]
+        if safety_tier is not None:
+            normalized_tier = str(safety_tier).strip()
+            if normalized_tier not in _PERMISSION_TIERS:
+                raise ValueError("permission_tier must be one of: sandbox, guided, unrestricted")
+            config.permissions.tier = normalized_tier  # type: ignore[assignment]
 
         memory_answers = plan.answers.get("memory", {})
         if isinstance(memory_answers, dict):
             if "enable_session_history" in memory_answers:
-                config.memory.enable_session_history = bool(memory_answers["enable_session_history"])
+                value = memory_answers["enable_session_history"]
+                if not isinstance(value, bool):
+                    raise ValueError("memory.enable_session_history must be a boolean")
+                config.memory.enable_session_history = value
             if "enable_semantic_memory" in memory_answers:
-                config.memory.enable_semantic_memory = bool(memory_answers["enable_semantic_memory"])
+                value = memory_answers["enable_semantic_memory"]
+                if not isinstance(value, bool):
+                    raise ValueError("memory.enable_semantic_memory must be a boolean")
+                config.memory.enable_semantic_memory = value
         elif plan.enable_memory:
             config.memory.enable_session_history = True
             config.memory.enable_semantic_memory = True
@@ -147,10 +172,20 @@ class OnboardingService:
 
                 cap_state = config.capabilities[cap_id]
                 if isinstance(cap_answer, dict):
-                    cap_state.enabled = bool(cap_answer.get("enabled", cap_state.enabled))
-                    cap_state.configured = bool(cap_answer.get("configured", cap_state.configured))
+                    if "enabled" in cap_answer:
+                        enabled = cap_answer["enabled"]
+                        if not isinstance(enabled, bool):
+                            raise ValueError(f"integrations.{cap_id}.enabled must be a boolean")
+                        cap_state.enabled = enabled
+                    if "configured" in cap_answer:
+                        configured = cap_answer["configured"]
+                        if not isinstance(configured, bool):
+                            raise ValueError(f"integrations.{cap_id}.configured must be a boolean")
+                        cap_state.configured = configured
                 else:
-                    cap_state.enabled = bool(cap_answer)
+                    if not isinstance(cap_answer, bool):
+                        raise ValueError(f"integrations.{cap_id} must be a boolean")
+                    cap_state.enabled = cap_answer
 
                 if cap_state.enabled:
                     install_optional_skill_pack(cap_id)
@@ -161,7 +196,10 @@ class OnboardingService:
         state.selected_tier = plan.tier
         state.setup_version = max(state.setup_version, 1)
         for step in plan.steps:
-            if step in {"provider", "safety", "memory", "integrations", "advanced", "finish"} and step not in state.completed_steps:
+            if (
+                step in {"provider", "safety", "memory", "integrations", "advanced", "finish"}
+                and step not in state.completed_steps
+            ):
                 state.completed_steps.append(step)
         self.save_state(state)
 

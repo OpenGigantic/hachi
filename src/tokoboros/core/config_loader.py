@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import tomllib
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any
 
 import tomlkit
 
-from tokoboros.core.paths import TokoborosPaths, ensure_directories, get_tokoboros_paths, import_legacy_workspace
+from tokoboros.core.paths import (
+    TokoborosPaths,
+    ensure_directories,
+    get_tokoboros_paths,
+    import_legacy_workspace,
+)
 from tokoboros.core.settings import ResolvedConfig, default_config
 
 
-def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
@@ -22,13 +27,13 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
     return merged
 
 
-def _read_toml(path: Path) -> Dict[str, Any]:
+def _read_toml(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
-def _legacy_json_as_config(path: Path) -> Dict[str, Any]:
+def _legacy_json_as_config(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
@@ -37,7 +42,7 @@ def _legacy_json_as_config(path: Path) -> Dict[str, Any]:
         return {}
 
     agent = raw.get("agent", {}) if isinstance(raw, dict) else {}
-    out: Dict[str, Any] = {
+    out: dict[str, Any] = {
         "meta": {"imported_from_legacy": True},
         "agent": {
             "max_tokens": int(agent.get("max_tokens", 8192)),
@@ -52,7 +57,7 @@ def _legacy_json_as_config(path: Path) -> Dict[str, Any]:
     return out
 
 
-def _read_env_file(project_dir: Optional[Path]) -> Dict[str, str]:
+def _read_env_file(project_dir: Path | None) -> dict[str, str]:
     if not project_dir:
         return {}
 
@@ -60,7 +65,7 @@ def _read_env_file(project_dir: Optional[Path]) -> Dict[str, str]:
     if not env_path.exists():
         return {}
 
-    values: Dict[str, str] = {}
+    values: dict[str, str] = {}
     for line in env_path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
@@ -70,46 +75,57 @@ def _read_env_file(project_dir: Optional[Path]) -> Dict[str, str]:
     return values
 
 
-def _env_overrides(project_dir: Optional[Path]) -> Dict[str, Any]:
+def _env_overrides(project_dir: Path | None) -> dict[str, Any]:
     env_file = _read_env_file(project_dir)
 
-    def env_get(name: str) -> Optional[str]:
+    def env_get(name: str) -> str | None:
         return os.environ.get(name) or env_file.get(name)
 
-    result: Dict[str, Any] = {}
+    result: dict[str, Any] = {}
 
     if env_get("ANTHROPIC_API_KEY"):
-        result = _deep_merge(result, {
-            "provider": {
-                "kind": "anthropic",
-                "api_key_env": "ANTHROPIC_API_KEY",
-                "model": env_get("TOKOBOROS_MODEL") or "claude-haiku-4-5",
-            }
-        })
+        result = _deep_merge(
+            result,
+            {
+                "provider": {
+                    "kind": "anthropic",
+                    "api_key_env": "ANTHROPIC_API_KEY",
+                    "model": env_get("TOKOBOROS_MODEL") or "claude-haiku-4-5",
+                }
+            },
+        )
 
     openai_key = env_get("OPENAI_API_KEY")
     openai_base = env_get("OPENAI_BASE_URL")
     if openai_key or openai_base:
-        result = _deep_merge(result, {
-            "provider": {
-                "kind": "openai-compatible",
-                "api_key_env": "OPENAI_API_KEY",
-                "base_url": openai_base,
-                "model": env_get("OPENAI_MODEL") or "gpt-4.1-mini",
-            }
-        })
+        result = _deep_merge(
+            result,
+            {
+                "provider": {
+                    "kind": "openai-compatible",
+                    "api_key_env": "OPENAI_API_KEY",
+                    "base_url": openai_base,
+                    "model": env_get("OPENAI_MODEL") or "gpt-4.1-mini",
+                }
+            },
+        )
 
     if env_get("OLLAMA_HOST"):
-        result = _deep_merge(result, {
-            "provider": {
-                "kind": "ollama",
-                "base_url": env_get("OLLAMA_HOST"),
-                "model": env_get("OLLAMA_MODEL") or "llama3.1:8b",
-            }
-        })
+        result = _deep_merge(
+            result,
+            {
+                "provider": {
+                    "kind": "ollama",
+                    "base_url": env_get("OLLAMA_HOST"),
+                    "model": env_get("OLLAMA_MODEL") or "llama3.1:8b",
+                }
+            },
+        )
 
     if env_get("TOKOBOROS_PERMISSION_TIER"):
-        result = _deep_merge(result, {"permissions": {"tier": env_get("TOKOBOROS_PERMISSION_TIER")}})
+        result = _deep_merge(
+            result, {"permissions": {"tier": env_get("TOKOBOROS_PERMISSION_TIER")}}
+        )
 
     if env_get("TOKOBOROS_MAX_TOKENS"):
         try:
@@ -121,16 +137,16 @@ def _env_overrides(project_dir: Optional[Path]) -> Dict[str, Any]:
     return result
 
 
-def _project_config(project_dir: Optional[Path]) -> Dict[str, Any]:
+def _project_config(project_dir: Path | None) -> dict[str, Any]:
     if not project_dir:
         return {}
     return _read_toml(project_dir / ".tokoboros" / "settings.toml")
 
 
 def load_effective_config(
-    project_dir: Optional[Path] = None,
-    cli_overrides: Optional[Dict[str, Any]] = None,
-    paths: Optional[TokoborosPaths] = None,
+    project_dir: Path | None = None,
+    cli_overrides: dict[str, Any] | None = None,
+    paths: TokoborosPaths | None = None,
 ) -> ResolvedConfig:
     paths = paths or get_tokoboros_paths()
     ensure_directories(paths)
@@ -153,7 +169,7 @@ def load_effective_config(
     return ResolvedConfig.model_validate(merged)
 
 
-def write_global_config(config: ResolvedConfig, paths: Optional[TokoborosPaths] = None) -> Path:
+def write_global_config(config: ResolvedConfig, paths: TokoborosPaths | None = None) -> Path:
     paths = paths or get_tokoboros_paths()
     ensure_directories(paths)
 

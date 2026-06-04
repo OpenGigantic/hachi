@@ -32,7 +32,9 @@ def test_interactive_gate_approve_persists_for_session(tmp_path: Path) -> None:
         calls["count"] += 1
         return PermissionDecision(action="approve", rationale="operator approved")
 
-    gate = InteractivePermissionGate(base, approval_handler=handler, event_emitter=lambda n, p: events.append((n, p)))
+    gate = InteractivePermissionGate(
+        base, approval_handler=handler, event_emitter=lambda n, p: events.append((n, p))
+    )
 
     result1 = gate.check_command("rm -rf /tmp")
     result2 = gate.check_command("rm -rf /tmp")
@@ -48,7 +50,9 @@ def test_interactive_gate_deny_uses_rationale(tmp_path: Path) -> None:
 
     gate = InteractivePermissionGate(
         base,
-        approval_handler=lambda _request: PermissionDecision(action="deny", rationale="needs manual review"),
+        approval_handler=lambda _request: PermissionDecision(
+            action="deny", rationale="needs manual review"
+        ),
     )
 
     denied = gate.check_command("shutdown now")

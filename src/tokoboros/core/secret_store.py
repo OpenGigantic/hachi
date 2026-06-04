@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Protocol, TypedDict
+from typing import Protocol, TypedDict
 
 import keyring
 from cryptography.fernet import Fernet
@@ -19,26 +19,26 @@ class SecretMetadata(TypedDict, total=False):
     name: str
     backend: str
     updated_at: str
-    labels: Dict[str, str]
+    labels: dict[str, str]
 
 
 class SecretStore(Protocol):
-    def get(self, name: str) -> Optional[str]: ...
+    def get(self, name: str) -> str | None: ...
 
-    def set(self, name: str, value: str, metadata: Optional[SecretMetadata] = None) -> None: ...
+    def set(self, name: str, value: str, metadata: SecretMetadata | None = None) -> None: ...
 
     def delete(self, name: str) -> None: ...
 
-    def list_metadata(self) -> List[SecretMetadata]: ...
+    def list_metadata(self) -> list[SecretMetadata]: ...
 
-    def healthcheck(self) -> Dict[str, str]: ...
+    def healthcheck(self) -> dict[str, str]: ...
 
 
 class _MetadataStore:
     def __init__(self, metadata_path: Path):
         self._path = metadata_path
 
-    def _load(self) -> Dict[str, SecretMetadata]:
+    def _load(self) -> dict[str, SecretMetadata]:
         if not self._path.exists():
             return {}
         try:
@@ -49,7 +49,7 @@ class _MetadataStore:
             pass
         return {}
 
-    def _save(self, payload: Dict[str, SecretMetadata]) -> None:
+    def _save(self, payload: dict[str, SecretMetadata]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -63,9 +63,9 @@ class _MetadataStore:
         payload.pop(name, None)
         self._save(payload)
 
-    def all(self) -> List[SecretMetadata]:
+    def all(self) -> list[SecretMetadata]:
         payload = self._load()
-        rows: List[SecretMetadata] = []
+        rows: list[SecretMetadata] = []
         for key, value in payload.items():
             item = dict(value)
             item.setdefault("name", key)
@@ -74,14 +74,16 @@ class _MetadataStore:
 
 
 class KeyringSecretStore:
-    def __init__(self, service_name: str = "tokoboros", metadata_store: Optional[_MetadataStore] = None):
+    def __init__(
+        self, service_name: str = "tokoboros", metadata_store: _MetadataStore | None = None
+    ):
         self._service_name = service_name
         self._metadata = metadata_store
 
-    def get(self, name: str) -> Optional[str]:
+    def get(self, name: str) -> str | None:
         return keyring.get_password(self._service_name, name)
 
-    def set(self, name: str, value: str, metadata: Optional[SecretMetadata] = None) -> None:
+    def set(self, name: str, value: str, metadata: SecretMetadata | None = None) -> None:
         keyring.set_password(self._service_name, name, value)
         if self._metadata is not None:
             item: SecretMetadata = {
@@ -99,12 +101,12 @@ class KeyringSecretStore:
         if self._metadata is not None:
             self._metadata.delete(name)
 
-    def list_metadata(self) -> List[SecretMetadata]:
+    def list_metadata(self) -> list[SecretMetadata]:
         if self._metadata is None:
             return []
         return self._metadata.all()
 
-    def healthcheck(self) -> Dict[str, str]:
+    def healthcheck(self) -> dict[str, str]:
         probe_name = "tokoboros.health.probe"
         probe_value = "ok"
         try:
@@ -119,7 +121,9 @@ class KeyringSecretStore:
 
 
 class EncryptedFileSecretStore:
-    def __init__(self, file_path: Path, passphrase: Optional[str], metadata_store: Optional[_MetadataStore] = None):
+    def __init__(
+        self, file_path: Path, passphrase: str | None, metadata_store: _MetadataStore | None = None
+    ):
         self._file_path = file_path
         self._passphrase = passphrase
         self._metadata = metadata_store
@@ -134,7 +138,7 @@ class EncryptedFileSecretStore:
         )
         return base64.urlsafe_b64encode(kdf.derive(passphrase.encode("utf-8")))
 
-    def _read_blob(self) -> Dict[str, str]:
+    def _read_blob(self) -> dict[str, str]:
         if not self._file_path.exists():
             return {"salt": "", "payload": ""}
         try:
@@ -142,7 +146,7 @@ class EncryptedFileSecretStore:
         except Exception:
             return {"salt": "", "payload": ""}
 
-    def _decrypt_all(self) -> Dict[str, str]:
+    def _decrypt_all(self) -> dict[str, str]:
         if not self._passphrase:
             raise RuntimeError("Encrypted fallback requires TOKOBOROS_SECRET_PASSPHRASE")
 
@@ -161,7 +165,7 @@ class EncryptedFileSecretStore:
             return {str(k): str(v) for k, v in data.items()}
         return {}
 
-    def _encrypt_all(self, payload: Dict[str, str]) -> None:
+    def _encrypt_all(self, payload: dict[str, str]) -> None:
         if not self._passphrase:
             raise RuntimeError("Encrypted fallback requires TOKOBOROS_SECRET_PASSPHRASE")
 
@@ -188,10 +192,10 @@ class EncryptedFileSecretStore:
             encoding="utf-8",
         )
 
-    def get(self, name: str) -> Optional[str]:
+    def get(self, name: str) -> str | None:
         return self._decrypt_all().get(name)
 
-    def set(self, name: str, value: str, metadata: Optional[SecretMetadata] = None) -> None:
+    def set(self, name: str, value: str, metadata: SecretMetadata | None = None) -> None:
         payload = self._decrypt_all()
         payload[name] = value
         self._encrypt_all(payload)
@@ -210,12 +214,12 @@ class EncryptedFileSecretStore:
         if self._metadata is not None:
             self._metadata.delete(name)
 
-    def list_metadata(self) -> List[SecretMetadata]:
+    def list_metadata(self) -> list[SecretMetadata]:
         if self._metadata is None:
             return []
         return self._metadata.all()
 
-    def healthcheck(self) -> Dict[str, str]:
+    def healthcheck(self) -> dict[str, str]:
         if not self._passphrase:
             return {
                 "status": "unavailable",
@@ -228,7 +232,11 @@ class EncryptedFileSecretStore:
             observed = self.get(probe)
             self.delete(probe)
             if observed != "ok":
-                return {"status": "degraded", "backend": "encrypted_file", "reason": "probe mismatch"}
+                return {
+                    "status": "degraded",
+                    "backend": "encrypted_file",
+                    "reason": "probe mismatch",
+                }
             return {"status": "ok", "backend": "encrypted_file"}
         except Exception as exc:
             return {"status": "unavailable", "backend": "encrypted_file", "reason": str(exc)}
@@ -239,13 +247,19 @@ class CompositeSecretStore:
         self._primary = primary
         self._fallback = fallback
 
-    def get(self, name: str) -> Optional[str]:
-        primary_value = self._primary.get(name)
+    def get(self, name: str) -> str | None:
+        try:
+            primary_value = self._primary.get(name)
+        except Exception:
+            primary_value = None
         if primary_value is not None:
             return primary_value
-        return self._fallback.get(name)
+        try:
+            return self._fallback.get(name)
+        except Exception:
+            return None
 
-    def set(self, name: str, value: str, metadata: Optional[SecretMetadata] = None) -> None:
+    def set(self, name: str, value: str, metadata: SecretMetadata | None = None) -> None:
         primary_status = self._primary.healthcheck().get("status")
         if primary_status == "ok":
             self._primary.set(name, value, metadata)
@@ -256,13 +270,24 @@ class CompositeSecretStore:
         self._primary.delete(name)
         self._fallback.delete(name)
 
-    def list_metadata(self) -> List[SecretMetadata]:
-        metadata: Dict[str, SecretMetadata] = {}
-        for row in self._fallback.list_metadata() + self._primary.list_metadata():
+    def list_metadata(self) -> list[SecretMetadata]:
+        metadata: dict[str, SecretMetadata] = {}
+        fallback_rows: list[SecretMetadata]
+        primary_rows: list[SecretMetadata]
+        try:
+            fallback_rows = self._fallback.list_metadata()
+        except Exception:
+            fallback_rows = []
+        try:
+            primary_rows = self._primary.list_metadata()
+        except Exception:
+            primary_rows = []
+
+        for row in fallback_rows + primary_rows:
             metadata[row.get("name", "")] = row
         return [row for _, row in sorted(metadata.items()) if row.get("name")]
 
-    def healthcheck(self) -> Dict[str, str]:
+    def healthcheck(self) -> dict[str, str]:
         primary = self._primary.healthcheck()
         if primary.get("status") == "ok":
             return {"status": "ok", "backend": primary.get("backend", "primary")}
@@ -273,11 +298,13 @@ class CompositeSecretStore:
 
         return {
             "status": "unavailable",
-            "reason": f"primary={primary.get('reason', 'n/a')}; fallback={fallback.get('reason', 'n/a')}",
+            "reason": (
+                f"primary={primary.get('reason', 'n/a')}; fallback={fallback.get('reason', 'n/a')}"
+            ),
         }
 
 
-def create_default_secret_store(paths: Optional[TokoborosPaths] = None) -> SecretStore:
+def create_default_secret_store(paths: TokoborosPaths | None = None) -> SecretStore:
     paths = paths or get_tokoboros_paths()
     ensure_directories(paths)
 

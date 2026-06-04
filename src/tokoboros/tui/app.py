@@ -9,21 +9,28 @@ v1 scope:
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import os
+import re
 import threading
 from dataclasses import asdict
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from pathlib import Path
+from typing import Any, Literal
+from urllib import error, request
 
+from rich.console import Group
+from rich.markdown import Markdown
+from rich.padding import Padding
+from rich.text import Text
 from textual.app import App, ComposeResult, NoScreen, ScreenStackError
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Footer, Header, Input, RichLog, Static, TextArea
 
+from tokoboros.core.onboarding import OnboardingService, SetupStep
 from tokoboros.core.permissions import PermissionDecision, PermissionRequest
-from tokoboros.core.onboarding import OnboardingService, SetupStep, SetupTier
 from tokoboros.gateway.orchestrator import AgentSession, boot_agent
-from tokoboros.gateway.workspace import get_skills_dir, get_workspace_dir
+from tokoboros.gateway.workspace import get_skills_dir, get_workspace_dir, load_config
 from tokoboros.tui.authoring import (
     apply_authoring_update,
     discover_authoring_targets,
@@ -32,8 +39,28 @@ from tokoboros.tui.authoring import (
 )
 from tokoboros.tui.state_store import TUIStateSnapshot, TUIStateStore
 
-
 TierName = Literal["lightning", "recommended", "enhanced", "power"]
+
+_GATEWAY_TOKEN: str = os.environ.get("TOKOBOROS_GATEWAY_API_TOKEN", "")
+_URLOPEN_TIMEOUT_S: int = 10
+
+_LEGACY_RICH_TAG_RE = re.compile(
+    r"\[/?(?:"
+    r"dim|green|cyan|yellow|red|magenta|bold|italic|underline|"
+    r"b|i|u"
+    r")(?:\s+[^\]]+)?\]",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_legacy_rich_markup(text: str) -> str:
+    """Strip legacy Rich style tags from plain-text UI surfaces."""
+    return _LEGACY_RICH_TAG_RE.sub("", text)
+
+
+def _sanitize_agent_markdown(text: str) -> str:
+    """Normalize model output for Markdown rendering in transcript views."""
+    return _sanitize_legacy_rich_markup(text).strip()
 
 
 APP_CSS = """
@@ -61,6 +88,12 @@ Screen {
   border: round #9a7040;
   margin: 1 1 0 0;
   height: 45%;
+}
+
+#runtime-banner {
+    margin: 0 1;
+    padding: 0 1;
+    height: auto;
 }
 
 #side-status {
@@ -138,42 +171,47 @@ Screen {
 
 
 class PermissionApprovalModal(ModalScreen[PermissionDecision]):
-        """Interactive approval flow for risky runtime operations."""
+    """Interactive approval flow for risky runtime operations."""
 
-        BINDINGS = [
-                Binding("escape", "deny", "Deny"),
-        ]
+    BINDINGS = [
+        Binding("escape", "deny", "Deny"),
+    ]
 
-        def __init__(self, request: PermissionRequest) -> None:
-                super().__init__(id="approval-modal")
-                self._request = request
+    def __init__(self, request: PermissionRequest) -> None:
+        super().__init__(id="approval-modal")
+        self._request = request
 
-        def compose(self) -> ComposeResult:
-                with Vertical(id="approval-card"):
-                        yield Static("Approval Required")
-                        yield Static(f"Operation: {self._request.operation}")
-                        yield Static(f"Tool: {self._request.tool}")
-                        yield Static(f"Target: {self._request.target}")
-                        yield Static(f"Policy: {self._request.policy_summary}")
-                        yield Static(f"Reason: {self._request.reason}")
-                        yield Input(placeholder="Rationale (required for deny, optional otherwise)", id="approval-rationale")
-                        with Horizontal(id="approval-actions"):
-                                yield Button("Approve", id="approval-approve", variant="success")
-                                yield Button("Allow Once", id="approval-once", variant="primary")
-                                yield Button("Deny", id="approval-deny", variant="error")
+    def compose(self) -> ComposeResult:
+        with Vertical(id="approval-card"):
+            yield Static("Approval Required")
+            yield Static(f"Operation: {self._request.operation}")
+            yield Static(f"Tool: {self._request.tool}")
+            yield Static(f"Target: {self._request.target}")
+            yield Static(f"Policy: {self._request.policy_summary}")
+            yield Static(f"Reason: {self._request.reason}")
+            yield Input(
+                placeholder="Rationale (required for deny, optional otherwise)",
+                id="approval-rationale",
+            )
+            with Horizontal(id="approval-actions"):
+                yield Button("Approve", id="approval-approve", variant="success")
+                yield Button("Allow Once", id="approval-once", variant="primary")
+                yield Button("Deny", id="approval-deny", variant="error")
 
-        def action_deny(self) -> None:
-                rationale = self.query_one("#approval-rationale", Input).value.strip()
-                self.dismiss(PermissionDecision(action="deny", rationale=rationale or "Denied from modal"))
+    def action_deny(self) -> None:
+        rationale = self.query_one("#approval-rationale", Input).value.strip()
+        self.dismiss(PermissionDecision(action="deny", rationale=rationale or "Denied from modal"))
 
-        def on_button_pressed(self, event: Button.Pressed) -> None:
-                rationale = self.query_one("#approval-rationale", Input).value.strip()
-                if event.button.id == "approval-approve":
-                        self.dismiss(PermissionDecision(action="approve", rationale=rationale))
-                elif event.button.id == "approval-once":
-                        self.dismiss(PermissionDecision(action="allow_once", rationale=rationale))
-                elif event.button.id == "approval-deny":
-                        self.dismiss(PermissionDecision(action="deny", rationale=rationale or "Denied from modal"))
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        rationale = self.query_one("#approval-rationale", Input).value.strip()
+        if event.button.id == "approval-approve":
+            self.dismiss(PermissionDecision(action="approve", rationale=rationale))
+        elif event.button.id == "approval-once":
+            self.dismiss(PermissionDecision(action="allow_once", rationale=rationale))
+        elif event.button.id == "approval-deny":
+            self.dismiss(
+                PermissionDecision(action="deny", rationale=rationale or "Denied from modal")
+            )
 
 
 class SetupWizardController:
@@ -184,9 +222,9 @@ class SetupWizardController:
         self.environment = service.detect_environment()
         self.state = service.resume_state()
         self.selected_tier: TierName = "lightning"
-        self.answers: Dict[str, Any] = {}
+        self.answers: dict[str, Any] = {}
         self.current_step: SetupStep = "welcome"
-        self._steps: List[SetupStep] = ["welcome", "provider", "safety", "finish"]
+        self._steps: list[SetupStep] = ["welcome", "provider", "safety", "finish"]
         self.can_resume = False
 
         if self.state.selected_tier in {"lightning", "recommended", "enhanced", "power"}:
@@ -221,12 +259,17 @@ class SetupWizardController:
     def _apply_tier(self, tier: TierName) -> None:
         plan = self.service.build_tier_plan(tier, self.answers)
         steps = plan.get("steps", ["welcome", "provider", "safety", "finish"])
-        self._steps = [step for step in steps if step in {"welcome", "provider", "safety", "memory", "integrations", "advanced", "finish"}]
+        self._steps = [
+            step
+            for step in steps
+            if step
+            in {"welcome", "provider", "safety", "memory", "integrations", "advanced", "finish"}
+        ]
         if self.current_step not in self._steps:
             self.current_step = self._steps[0]
 
     @property
-    def steps(self) -> Tuple[SetupStep, ...]:
+    def steps(self) -> tuple[SetupStep, ...]:
         return tuple(self._steps)
 
     def select_tier(self, tier: TierName) -> None:
@@ -263,7 +306,7 @@ class SetupWizardController:
             }
         )
 
-    def finish(self) -> Dict[str, Any]:
+    def finish(self) -> dict[str, Any]:
         payload = self.service.build_tier_plan(self.selected_tier, self.answers)
         applied = self.service.apply_setup(payload)
         return applied.model_dump(mode="python")
@@ -303,7 +346,7 @@ class SetupScreen(Screen):
     def on_mount(self) -> None:
         self.render_step()
 
-    def _controller(self) -> Optional[SetupWizardController]:
+    def _controller(self) -> SetupWizardController | None:
         app = self.app
         if isinstance(app, TokoborosTextualApp):
             return app.setup_controller
@@ -332,8 +375,10 @@ class SetupScreen(Screen):
             f"Detected env: ollama={controller.environment.get('ollama_cli')} "
             f"anthropic_env={controller.environment.get('anthropic_env')} "
             f"openai_env={controller.environment.get('openai_env')}\n\n"
-            "Why this matters: setup defines the minimum runtime capabilities and safety defaults.\n"
-            "Use Skip for now on optional steps and reopen setup anytime from settings or CLI."
+            "Why this matters: setup defines the minimum runtime capabilities and safety "
+            "defaults.\n"
+            "Use Skip for now on optional steps and reopen setup anytime from settings or "
+            "CLI."
         )
 
         self._set_options_enabled("setup-tier-", step == "welcome")
@@ -364,7 +409,7 @@ class SetupScreen(Screen):
         if button_id in tier_map:
             controller.select_tier(tier_map[button_id])
 
-        provider_map: Dict[str, Dict[str, str]] = {
+        provider_map: dict[str, dict[str, str]] = {
             "setup-provider-anthropic": {
                 "kind": "anthropic",
                 "model": "claude-haiku-4-5",
@@ -393,15 +438,21 @@ class SetupScreen(Screen):
             controller.set_answer("permission_tier", perm_map[button_id])
 
         if button_id == "setup-memory-on":
-            controller.set_answer("memory", {
-                "enable_session_history": True,
-                "enable_semantic_memory": True,
-            })
+            controller.set_answer(
+                "memory",
+                {
+                    "enable_session_history": True,
+                    "enable_semantic_memory": True,
+                },
+            )
         elif button_id == "setup-memory-off":
-            controller.set_answer("memory", {
-                "enable_session_history": False,
-                "enable_semantic_memory": False,
-            })
+            controller.set_answer(
+                "memory",
+                {
+                    "enable_session_history": False,
+                    "enable_semantic_memory": False,
+                },
+            )
 
         if button_id.startswith("setup-google-"):
             integrations = dict(controller.answers.get("integrations", {}))
@@ -468,13 +519,25 @@ class SessionScreen(Screen):
 
     def append_user_prompt(self, text: str) -> None:
         transcript = self.query_one("#transcript", RichLog)
-        transcript.write(f"[b cyan]You:[/b cyan] {text}")
+        transcript.write(Text.assemble(("You:", "bold cyan"), " ", text))
 
     def append_agent_response(self, text: str) -> None:
         transcript = self.query_one("#transcript", RichLog)
-        transcript.write(f"[b magenta]Tokoboros:[/b magenta] {text}")
+        cleaned = _sanitize_agent_markdown(text)
+        if not cleaned:
+            transcript.write(
+                Text.assemble(("Tokoboros:", "bold magenta"), " ", ("(no response)", "dim"))
+            )
+            return
 
-    def ingest_runtime_event(self, event_type: str, payload: Dict[str, Any]) -> None:
+        transcript.write(
+            Group(
+                Text("Tokoboros:", style="bold magenta"),
+                Padding(Markdown(cleaned), (0, 0, 0, 2)),
+            )
+        )
+
+    def ingest_runtime_event(self, event_type: str, payload: dict[str, Any]) -> None:
         transcript = self.query_one("#transcript", RichLog)
         timeline = self.query_one("#timeline", RichLog)
         status = self.query_one("#side-status", Static)
@@ -483,46 +546,79 @@ class SessionScreen(Screen):
             idx = payload.get("index", "?")
             total = payload.get("total", "?")
             msg = payload.get("message", "Booting")
-            transcript.write(f"[dim]Boot {idx}/{total}: {msg}[/dim]")
+            transcript.write(Text(f"Boot {idx}/{total}: {msg}", style="dim"))
             return
 
         if event_type == "boot.complete":
-            transcript.write("[green]Runtime ready.[/green]")
+            transcript.write(Text("Runtime ready.", style="green"))
+            return
+
+        if event_type == "gateway.connect.completed":
+            session_id = str(payload.get("session_id", ""))
+            base_url = payload.get("base_url", "")
+            transcript.write(Text.assemble(("Gateway connected:", "green"), " ", str(base_url)))
+            if session_id:
+                timeline.write(
+                    Text.assemble(("Gateway session:", "green"), " ", f"{session_id[:12]}...")
+                )
+            return
+
+        if event_type == "gateway.events.error":
+            timeline.write(
+                Text.assemble(
+                    ("Gateway events error:", "red"),
+                    " ",
+                    _sanitize_legacy_rich_markup(str(payload.get("error", "unknown"))),
+                )
+            )
             return
 
         if event_type == "boot.failed":
-            transcript.write("[red]Runtime boot failed.[/red]")
+            transcript.write(Text("Runtime boot failed.", style="red"))
             return
 
         if event_type == "thinking.step":
-            timeline.write(f"[dim]Thinking step {payload.get('iteration', '?')}[/dim]")
+            timeline.write(Text(f"Thinking step {payload.get('iteration', '?')}", style="dim"))
             return
 
         if event_type == "text.stream.delta":
             text = payload.get("text", "").strip()
             if text:
-                transcript.write(f"[dim]{text[:220]}[/dim]")
+                transcript.write(Text(_sanitize_legacy_rich_markup(text)[:220], style="dim"))
             return
 
         if event_type == "tool.call.started":
-            timeline.write(f"[yellow]Tool:[/yellow] {payload.get('name', 'unknown')}")
+            timeline.write(
+                Text.assemble(("Tool:", "yellow"), " ", str(payload.get("name", "unknown")))
+            )
             return
 
         if event_type == "tool.call.completed":
             preview = payload.get("result_preview", "")
-            timeline.write(f"[green]Result:[/green] {preview[:180]}")
+            timeline.write(
+                Text.assemble(
+                    ("Result:", "green"),
+                    " ",
+                    _sanitize_legacy_rich_markup(str(preview))[:180],
+                )
+            )
             return
 
         if event_type == "permission.decided":
             decision = payload.get("decision", "unknown")
             tool = payload.get("tool", "unknown")
-            timeline.write(f"[bold]Permission {decision}[/bold] for {tool}")
+            timeline.write(Text.assemble((f"Permission {decision}", "bold"), " for ", str(tool)))
             return
 
         if event_type == "permission.requested":
             timeline.write(
-                "[bold yellow]Approval requested:[/bold yellow] "
-                f"{payload.get('operation', 'operation')} {payload.get('target', '')}"
+                Text.assemble(
+                    ("Approval requested:", "bold yellow"),
+                    " ",
+                    str(payload.get("operation", "operation")),
+                    " ",
+                    str(payload.get("target", "")),
+                )
             )
             status.update("Waiting for operator approval...")
             return
@@ -557,7 +653,7 @@ class SnapshotScreen(Screen):
         if hasattr(app, "active_agent"):
             self.refresh_from_agent(app.active_agent())
 
-    def refresh_from_agent(self, agent: Optional[AgentSession]) -> None:
+    def refresh_from_agent(self, agent: AgentSession | None) -> None:
         body = self.query_one("#snapshot-body", Static)
         if not agent:
             app = self.app
@@ -578,17 +674,23 @@ class OpsScreen(SnapshotScreen):
 
     def _build_snapshot(self, agent: AgentSession) -> str:
         jobs = [asdict(job) for job in agent.snapshot_active_jobs()]
+        failures = [asdict(job) for job in agent.snapshot_failed_jobs(limit=10)]
         mcp = agent.snapshot_mcp_inventory()
         events = [asdict(evt) for evt in agent.snapshot_runtime_events(limit=10)]
         return (
             "Active Jobs:\n"
             + json.dumps(jobs, indent=2)
+            + "\n\nFailed Jobs:\n"
+            + json.dumps(failures, indent=2)
             + "\n\nMCP Inventory:\n"
-            + json.dumps({
-                "server_count": mcp.server_count,
-                "total_tool_count": mcp.total_tool_count,
-                "servers": [asdict(srv) for srv in mcp.servers],
-            }, indent=2)
+            + json.dumps(
+                {
+                    "server_count": mcp.server_count,
+                    "total_tool_count": mcp.total_tool_count,
+                    "servers": [asdict(srv) for srv in mcp.servers],
+                },
+                indent=2,
+            )
             + "\n\nRecent Events:\n"
             + json.dumps(events, indent=2)
         )
@@ -600,7 +702,12 @@ class MemoryScreen(SnapshotScreen):
     def _build_snapshot(self, agent: AgentSession) -> str:
         recalls = [asdict(row) for row in agent.query_memory_recall("recent context", top_k=5)]
         tasks = [asdict(row) for row in agent.snapshot_task_ledger(limit=8)]
-        return "Task Ledger:\n" + json.dumps(tasks, indent=2) + "\n\nRecall:\n" + json.dumps(recalls, indent=2)
+        return (
+            "Task Ledger:\n"
+            + json.dumps(tasks, indent=2)
+            + "\n\nRecall:\n"
+            + json.dumps(recalls, indent=2)
+        )
 
 
 class IntegrationsScreen(SnapshotScreen):
@@ -608,11 +715,14 @@ class IntegrationsScreen(SnapshotScreen):
 
     def _build_snapshot(self, agent: AgentSession) -> str:
         mcp = agent.snapshot_mcp_inventory()
-        return json.dumps({
-            "server_count": mcp.server_count,
-            "total_tool_count": mcp.total_tool_count,
-            "servers": [asdict(srv) for srv in mcp.servers],
-        }, indent=2)
+        return json.dumps(
+            {
+                "server_count": mcp.server_count,
+                "total_tool_count": mcp.total_tool_count,
+                "servers": [asdict(srv) for srv in mcp.servers],
+            },
+            indent=2,
+        )
 
 
 class AuthoringScreen(SnapshotScreen):
@@ -620,13 +730,16 @@ class AuthoringScreen(SnapshotScreen):
 
     def __init__(self) -> None:
         super().__init__()
-        self._current_path: Optional[Path] = None
+        self._current_path: Path | None = None
         self._original_content = ""
         self._pending_patch = ""
 
     def compose(self) -> ComposeResult:
         yield Static(self.title_text, classes="mode-title")
-        yield Input(placeholder="Asset path under ~/.tokoboros (brain.og, skills/*.og, tokoboros.json)", id="authoring-path")
+        yield Input(
+            placeholder="Asset path under ~/.tokoboros (brain.og, skills/*.og, tokoboros.json)",
+            id="authoring-path",
+        )
         with Horizontal(id="authoring-root"):
             yield RichLog(id="authoring-targets", highlight=True, wrap=True)
             with Vertical():
@@ -666,7 +779,7 @@ class AuthoringScreen(SnapshotScreen):
     def _set_status(self, text: str) -> None:
         self.query_one("#authoring-status", Static).update(text)
 
-    def _resolve_target(self) -> Optional[Path]:
+    def _resolve_target(self) -> Path | None:
         raw = self.query_one("#authoring-path", Input).value.strip()
         if not raw:
             self._set_status("Enter a target path first.")
@@ -674,7 +787,9 @@ class AuthoringScreen(SnapshotScreen):
 
         candidate = get_workspace_dir() / raw
         if not is_authoring_target(candidate, get_workspace_dir()):
-            self._set_status("Target must be an existing .og/.json/.md/.txt file inside ~/.tokoboros.")
+            self._set_status(
+                "Target must be an existing .og/.json/.md/.txt file inside ~/.tokoboros."
+            )
             return None
         return candidate.resolve()
 
@@ -774,8 +889,24 @@ class SettingsScreen(SnapshotScreen):
 
     def _build_snapshot(self, agent: AgentSession) -> str:
         state = agent.snapshot_session_state()
+        config = load_config()
         sessions = list(agent.query_recent_sessions(limit=8))
-        return "Session State:\n" + json.dumps(asdict(state), indent=2) + "\n\nRecent Sessions:\n" + json.dumps(sessions, indent=2)
+        return (
+            "Session State:\n"
+            + json.dumps(asdict(state), indent=2)
+            + "\n\nEffective Config:\n"
+            + json.dumps(
+                {
+                    "provider": config.get("provider", {}),
+                    "permissions": config.get("permissions", {}),
+                    "memory": config.get("memory", {}),
+                    "capabilities": config.get("capabilities", {}),
+                },
+                indent=2,
+            )
+            + "\n\nRecent Sessions:\n"
+            + json.dumps(sessions, indent=2)
+        )
 
 
 class TokoborosTextualApp(App[None]):
@@ -823,17 +954,26 @@ class TokoborosTextualApp(App[None]):
         Binding("ctrl+r", "refresh_current", "Refresh"),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, gateway_base_url: str | None = None) -> None:
         super().__init__()
-        self._agent: Optional[AgentSession] = None
-        self._boot_error: Optional[str] = None
-        self._chat_thread: Optional[threading.Thread] = None
-        self._event_buffer: List[Tuple[str, Dict[str, Any]]] = []
+        self._agent: AgentSession | None = None
+        self._boot_error: str | None = None
+        self._gateway_base_url = (gateway_base_url or "").rstrip("/")
+        self._gateway_connected = False
+        self._gateway_session_id: str = ""
+        self._gateway_after_sequence = 0
+        self._boot_thread: threading.Thread | None = None
+        self._gateway_event_thread: threading.Thread | None = None
+        self._gateway_stop_event = threading.Event()
+        self._chat_thread: threading.Thread | None = None
+        self._event_buffer: list[tuple[str, dict[str, Any]]] = []
         self._state_store = TUIStateStore()
         self._hydrated_state = self._state_store.load_snapshot()
         self._onboarding = OnboardingService()
-        self._setup_controller: Optional[SetupWizardController] = None
-        self._approval_waiters: Dict[str, Tuple[threading.Event, Dict[str, PermissionDecision]]] = {}
+        self._setup_controller: SetupWizardController | None = None
+        self._approval_waiters: dict[
+            str, tuple[threading.Event, dict[str, PermissionDecision]]
+        ] = {}
         self._approval_lock = threading.Lock()
 
     @property
@@ -845,21 +985,118 @@ class TokoborosTextualApp(App[None]):
         return self._hydrated_state.authoring_target
 
     @property
-    def setup_controller(self) -> Optional[SetupWizardController]:
+    def setup_controller(self) -> SetupWizardController | None:
         return self._setup_controller
 
-    def active_agent(self) -> Optional[AgentSession]:
+    def active_agent(self) -> AgentSession | None:
         return self._agent
 
     def runtime_status_text(self) -> str:
         if self._boot_error:
             return f"Runtime boot failed: {self._boot_error}"
+        if self._gateway_connected:
+            return "Gateway runtime is online."
         if self._agent:
+            if self._gateway_session_id:
+                return f"Runtime is online (gateway session {self._gateway_session_id[:8]}...)."
             return "Runtime is online."
         return "Booting runtime..."
 
+    def _runtime_config(self) -> dict[str, Any]:
+        try:
+            config = load_config()
+        except Exception:
+            return {}
+        return config if isinstance(config, dict) else {}
+
+    def _event_count(self, event_names: set[str]) -> int:
+        return sum(1 for event_type, _payload in self._event_buffer if event_type in event_names)
+
+    def _active_job_count(self) -> int:
+        if self._agent:
+            try:
+                return len(self._agent.snapshot_active_jobs())
+            except Exception:
+                return 0
+
+        active_job_ids: set[str] = set()
+        for event_type, payload in self._event_buffer:
+            if event_type == "job.started":
+                job_id = str(payload.get("job_id", "")).strip()
+                if job_id:
+                    active_job_ids.add(job_id)
+            elif event_type in {"job.completed", "job.failed"}:
+                job_id = str(payload.get("job_id", "")).strip()
+                if job_id:
+                    active_job_ids.discard(job_id)
+        return len(active_job_ids)
+
+    def _pending_approval_count(self) -> int:
+        waiter_count = len(self._approval_waiters)
+        requested = self._event_count({"permission.requested"})
+        decided = self._event_count({"permission.decided"})
+        return max(waiter_count, requested - decided)
+
+    def _warning_count(self) -> int:
+        return self._event_count(
+            {"boot.failed", "job.failed", "mcp.server.failed", "gateway.events.error"}
+        )
+
+    def _provider_summary(self) -> str:
+        config = self._runtime_config()
+        provider = config.get("provider", {})
+        if not isinstance(provider, dict):
+            return "unknown / unknown"
+        kind = str(provider.get("kind", "unknown"))
+        model = str(provider.get("model", "unknown"))
+        return f"{kind} / {model}"
+
+    def _permission_tier(self) -> str:
+        config = self._runtime_config()
+        permissions = config.get("permissions", {})
+        if not isinstance(permissions, dict):
+            return "unknown"
+        return str(permissions.get("tier", "unknown"))
+
+    def _event_stream_signal(self) -> str:
+        if self._gateway_base_url:
+            if self._gateway_connected and not self._gateway_stop_event.is_set():
+                return "live"
+            return "connecting"
+        if self._boot_error:
+            return "failed"
+        if self._agent:
+            return "local"
+        return "booting"
+
+    def _runtime_banner_text(self) -> str:
+        workspace = get_workspace_dir().name
+        session_id = self._gateway_session_id
+        if not session_id and self._agent:
+            try:
+                session_id = self._agent.snapshot_session_state().session_id
+            except Exception:
+                session_id = ""
+
+        session_label = session_id[:12] if session_id else "none"
+        return (
+            f"workspace={workspace} | session={session_label} | "
+            f"provider={self._provider_summary()} | tier={self._permission_tier()} | "
+            f"runtime={self.runtime_status_text()} | jobs={self._active_job_count()} | "
+            f"approvals={self._pending_approval_count()} | warnings={self._warning_count()} | "
+            f"stream={self._event_stream_signal()}"
+        )
+
+    def _update_runtime_banner(self) -> None:
+        try:
+            banner = self.query_one("#runtime-banner", Static)
+        except Exception:
+            return
+        banner.update(self._runtime_banner_text())
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
+        yield Static("Booting runtime...", id="runtime-banner")
         yield Footer()
 
     def clear_selection(self) -> None:
@@ -883,10 +1120,21 @@ class TokoborosTextualApp(App[None]):
             self.notify("Setup required before first runtime boot.", timeout=4)
         else:
             self.notify("Booting Tokoboros runtime...", timeout=4)
-            threading.Thread(target=self._boot_runtime, name="tui-boot", daemon=True).start()
+            self._boot_thread = threading.Thread(
+                target=self._boot_runtime,
+                name="tui-boot",
+                daemon=True,
+            )
+            self._boot_thread.start()
+
+        self._update_runtime_banner()
 
         restored_mode = self._hydrated_state.last_mode
-        if target_mode != "setup" and restored_mode in self.MODES and restored_mode != self.DEFAULT_MODE:
+        if (
+            target_mode != "setup"
+            and restored_mode in self.MODES
+            and restored_mode != self.DEFAULT_MODE
+        ):
             target_mode = restored_mode
 
         # Delay initial mode switch until the first refresh to avoid switching
@@ -896,6 +1144,12 @@ class TokoborosTextualApp(App[None]):
 
     def _boot_runtime(self) -> None:
         try:
+            if self._gateway_base_url:
+                self._consume_gateway_handshake()
+                self._start_gateway_event_poller()
+                self._queue_ui_callback(self._on_boot_complete, None, None)
+                return
+
             agent = boot_agent(
                 on_event=self._runtime_event_from_thread,
                 on_permission_request=self._request_permission_decision,
@@ -904,9 +1158,110 @@ class TokoborosTextualApp(App[None]):
         except Exception as exc:  # pragma: no cover - UI fallback path
             self._queue_ui_callback(self._on_boot_complete, None, str(exc))
 
+    def _consume_gateway_handshake(self) -> None:
+        readiness_url = f"{self._gateway_base_url}/readiness"
+        connect_url = f"{self._gateway_base_url}/sessions"
+
+        readiness_req = request.Request(readiness_url)
+        if _GATEWAY_TOKEN:
+            readiness_req.add_unredirected_header("Authorization", f"Bearer {_GATEWAY_TOKEN}")
+        try:
+            with request.urlopen(readiness_req, timeout=_URLOPEN_TIMEOUT_S) as resp:
+                readiness = json.loads(resp.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            payload = json.loads(exc.read().decode("utf-8") or "{}")
+            blockers = payload.get("blockers", [])
+            raise RuntimeError(f"Gateway is not ready: blockers={blockers}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"Gateway readiness check failed: {exc}") from exc
+
+        if not readiness.get("ready", False):
+            blockers = readiness.get("blockers", [])
+            raise RuntimeError(f"Gateway is not ready: blockers={blockers}")
+
+        payload = {
+            "client_id": "tokoboros-tui",
+            "surface": "tui",
+            "protocol_version": "1.0",
+            "capabilities": ["events", "health", "readiness"],
+        }
+        req = request.Request(
+            connect_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        if _GATEWAY_TOKEN:
+            req.add_unredirected_header("Authorization", f"Bearer {_GATEWAY_TOKEN}")
+
+        try:
+            with request.urlopen(req, timeout=_URLOPEN_TIMEOUT_S) as resp:
+                connect_ack = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"Gateway connect failed: {exc}") from exc
+
+        # Prefer unversioned response shape, but keep legacy envelope fallback.
+        ack_payload = connect_ack.get("payload", connect_ack)
+        if not ack_payload.get("accepted"):
+            raise RuntimeError("Gateway rejected TUI connect request")
+
+        self._gateway_session_id = str(ack_payload.get("session_id", ""))
+        self._gateway_connected = True
+        self._runtime_event_from_thread(
+            "gateway.connect.completed",
+            {
+                "base_url": self._gateway_base_url,
+                "session_id": self._gateway_session_id,
+            },
+        )
+
+    def _start_gateway_event_poller(self) -> None:
+        if self._gateway_event_thread and self._gateway_event_thread.is_alive():
+            return
+
+        self._gateway_stop_event.clear()
+        self._gateway_event_thread = threading.Thread(
+            target=self._poll_gateway_events,
+            name="tui-gateway-events",
+            daemon=True,
+        )
+        self._gateway_event_thread.start()
+
+    def _poll_gateway_events(self) -> None:
+        while not self._gateway_stop_event.is_set():
+            url = (
+                f"{self._gateway_base_url}/sessions/{self._gateway_session_id}/events"
+                f"?after={self._gateway_after_sequence}"
+                "&limit=100"
+            )
+            poll_req = request.Request(url)
+            if _GATEWAY_TOKEN:
+                poll_req.add_unredirected_header("Authorization", f"Bearer {_GATEWAY_TOKEN}")
+            try:
+                with request.urlopen(poll_req, timeout=_URLOPEN_TIMEOUT_S) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
+                payload = body.get("payload", body)
+                events = payload.get("events", [])
+                for item in events:
+                    self._runtime_event_from_thread(
+                        str(item.get("event_type", "unknown")),
+                        dict(item.get("payload", {})),
+                    )
+                self._gateway_after_sequence = int(
+                    payload.get("next_sequence", self._gateway_after_sequence)
+                )
+                if not events:
+                    self._gateway_stop_event.wait(0.25)
+            except Exception as exc:
+                self._runtime_event_from_thread(
+                    "gateway.events.error",
+                    {"error": str(exc)},
+                )
+                self._gateway_stop_event.wait(1.0)
+
     def _request_permission_decision(self, request: PermissionRequest) -> PermissionDecision:
         waiter = threading.Event()
-        holder: Dict[str, PermissionDecision] = {}
+        holder: dict[str, PermissionDecision] = {}
         with self._approval_lock:
             self._approval_waiters[request.request_id] = (waiter, holder)
 
@@ -921,11 +1276,17 @@ class TokoborosTextualApp(App[None]):
                 self._approval_waiters.pop(request.request_id, None)
             return PermissionDecision(action="deny", rationale="Approval timed out")
 
-        return holder.get("decision", PermissionDecision(action="deny", rationale="No decision received"))
+        return holder.get(
+            "decision",
+            PermissionDecision(action="deny", rationale="No decision received"),
+        )
 
     def _show_permission_modal(self, request: PermissionRequest) -> None:
         def _on_close(result: PermissionDecision | None) -> None:
-            decision = result or PermissionDecision(action="deny", rationale="Dismissed without approval")
+            decision = result or PermissionDecision(
+                action="deny",
+                rationale="Dismissed without approval",
+            )
             self._resolve_permission_decision(request.request_id, decision)
 
         self.push_screen(PermissionApprovalModal(request), _on_close)
@@ -940,7 +1301,16 @@ class TokoborosTextualApp(App[None]):
         holder["decision"] = decision
         waiter.set()
 
-    def _runtime_event_from_thread(self, event_type: str, payload: Dict[str, Any]) -> None:
+    def _resolve_all_pending_approvals(self, rationale: str) -> None:
+        with self._approval_lock:
+            pending = list(self._approval_waiters.items())
+            self._approval_waiters.clear()
+
+        for _request_id, (waiter, holder) in pending:
+            holder["decision"] = PermissionDecision(action="deny", rationale=rationale)
+            waiter.set()
+
+    def _runtime_event_from_thread(self, event_type: str, payload: dict[str, Any]) -> None:
         if not self._queue_ui_callback(self._ingest_runtime_event, event_type, payload):
             # Event loop is closed or closing; buffer the event for later
             self._event_buffer.append((event_type, payload))
@@ -956,14 +1326,14 @@ class TokoborosTextualApp(App[None]):
         except RuntimeError:
             return False
 
-    def _current_screen(self) -> Optional[Screen]:
+    def _current_screen(self) -> Screen | None:
         """Return the current screen, or None when screen stack is unavailable."""
         try:
             return self.screen
         except Exception:
             return None
 
-    def _ingest_runtime_event(self, event_type: str, payload: Dict[str, Any]) -> None:
+    def _ingest_runtime_event(self, event_type: str, payload: dict[str, Any]) -> None:
         self._event_buffer.append((event_type, payload))
         if len(self._event_buffer) > 1500:
             self._event_buffer = self._event_buffer[-1500:]
@@ -971,10 +1341,12 @@ class TokoborosTextualApp(App[None]):
         screen = self._current_screen()
         if isinstance(screen, SessionScreen):
             screen.ingest_runtime_event(event_type, payload)
+        self._update_runtime_banner()
 
-    def _on_boot_complete(self, agent: Optional[AgentSession], error_text: Optional[str]) -> None:
+    def _on_boot_complete(self, agent: AgentSession | None, error_text: str | None) -> None:
         self._agent = agent
         self._boot_error = error_text
+        self._update_runtime_banner()
 
         if error_text:
             self.notify(f"Boot failed: {error_text}", severity="error", timeout=8)
@@ -993,12 +1365,15 @@ class TokoborosTextualApp(App[None]):
 
     def submit_prompt(self, prompt: str) -> None:
         if self._boot_error:
-            self.notify("Runtime is not available. Check boot failure in transcript.", severity="error")
+            self.notify(
+                "Runtime is not available. Check boot failure in transcript.", severity="error"
+            )
             return
 
         if not self._agent:
-            self.notify("Still booting. Please wait.", timeout=2)
-            return
+            if not self._gateway_connected:
+                self.notify("Still booting. Please wait.", timeout=2)
+                return
 
         if self._chat_thread and self._chat_thread.is_alive():
             self.notify("A chat request is already running.", timeout=2)
@@ -1008,8 +1383,9 @@ class TokoborosTextualApp(App[None]):
         if isinstance(screen, SessionScreen):
             screen.append_user_prompt(prompt)
 
+        target = self._run_gateway_chat if self._gateway_connected else self._run_chat
         self._chat_thread = threading.Thread(
-            target=self._run_chat,
+            target=target,
             args=(prompt,),
             name="tui-chat",
             daemon=True,
@@ -1024,7 +1400,29 @@ class TokoborosTextualApp(App[None]):
         except Exception as exc:  # pragma: no cover - defensive UI path
             self._queue_ui_callback(self._on_chat_result, "", str(exc))
 
-    def _on_chat_result(self, response: str, error_text: Optional[str]) -> None:
+    def _run_gateway_chat(self, prompt: str) -> None:
+        payload = {"prompt": prompt}
+        req = request.Request(
+            f"{self._gateway_base_url}/sessions/{self._gateway_session_id}/messages",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        if _GATEWAY_TOKEN:
+            req.add_unredirected_header("Authorization", f"Bearer {_GATEWAY_TOKEN}")
+
+        try:
+            with request.urlopen(req, timeout=_URLOPEN_TIMEOUT_S) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            payload_body = body.get("payload", body)
+            response = str(payload_body.get("response", ""))
+            self._queue_ui_callback(self._on_chat_result, response, None)
+        except (TimeoutError, error.URLError) as exc:
+            self._queue_ui_callback(self._on_chat_result, "", f"Gateway request failed: {exc}")
+        except Exception as exc:
+            self._queue_ui_callback(self._on_chat_result, "", str(exc))
+
+    def _on_chat_result(self, response: str, error_text: str | None) -> None:
         screen = self._current_screen()
         if isinstance(screen, SessionScreen):
             if error_text:
@@ -1033,11 +1431,15 @@ class TokoborosTextualApp(App[None]):
                 screen.append_agent_response(response)
         if screen is not None:
             self._refresh_snapshot_mode(screen)
+        self._update_runtime_banner()
         self._persist_ui_state()
 
     def action_interrupt(self) -> None:
+        self._gateway_stop_event.set()
+        self._resolve_all_pending_approvals("Interrupted by operator")
+        self._update_runtime_banner()
         self.notify(
-            "Interrupt requested. In-flight model calls cannot be force-killed safely yet.",
+            "Interrupt requested. Event polling stopped and pending approvals were dismissed.",
             timeout=4,
         )
 
@@ -1045,6 +1447,7 @@ class TokoborosTextualApp(App[None]):
         screen = self._current_screen()
         if screen is not None:
             self._refresh_snapshot_mode(screen)
+        self._update_runtime_banner()
         self.notify("Refreshed", timeout=1)
 
     def _refresh_snapshot_mode(self, screen: Screen) -> None:
@@ -1063,6 +1466,7 @@ class TokoborosTextualApp(App[None]):
 
     def _switch_mode(self, mode_name: str) -> None:
         self.switch_mode(mode_name)
+        self._update_runtime_banner()
         self._persist_ui_state()
 
     def action_mode_session(self) -> None:
@@ -1098,6 +1502,7 @@ class TokoborosTextualApp(App[None]):
             setup_resume_json=self._setup_controller.serialize_resume(),
         )
         self._state_store.save_snapshot(self._hydrated_state)
+        self._update_runtime_banner()
 
     def complete_setup(self) -> None:
         if not self._setup_controller:
@@ -1120,10 +1525,16 @@ class TokoborosTextualApp(App[None]):
         )
         self._state_store.save_snapshot(self._hydrated_state)
         self.switch_mode("session")
-        threading.Thread(target=self._boot_runtime, name="tui-boot", daemon=True).start()
+        self._update_runtime_banner()
+        self._boot_thread = threading.Thread(
+            target=self._boot_runtime, name="tui-boot", daemon=True
+        )
+        self._boot_thread.start()
 
     def record_authoring_target(self, target: str) -> None:
-        existing = [item for item in self._hydrated_state.recent_authoring_targets if item != target]
+        existing = [
+            item for item in self._hydrated_state.recent_authoring_targets if item != target
+        ]
         updated = tuple([target, *existing][:12])
         self._hydrated_state = TUIStateSnapshot(
             last_mode=self._hydrated_state.last_mode,
@@ -1134,6 +1545,7 @@ class TokoborosTextualApp(App[None]):
             setup_resume_json=self._hydrated_state.setup_resume_json,
         )
         self._persist_ui_state()
+        self._update_runtime_banner()
 
     def _persist_ui_state(self) -> None:
         composer_value = ""
@@ -1160,8 +1572,17 @@ class TokoborosTextualApp(App[None]):
         )
         self._hydrated_state = snapshot
         self._state_store.save_snapshot(snapshot)
+        self._update_runtime_banner()
 
     def on_unmount(self) -> None:
+        self._gateway_stop_event.set()
+        self._resolve_all_pending_approvals("App shutting down")
+        if self._boot_thread and self._boot_thread.is_alive():
+            self._boot_thread.join(timeout=1.0)
+        if self._chat_thread and self._chat_thread.is_alive():
+            self._chat_thread.join(timeout=1.0)
+        if self._gateway_event_thread and self._gateway_event_thread.is_alive():
+            self._gateway_event_thread.join(timeout=1.0)
         self._persist_ui_state()
         if self._agent:
             try:
@@ -1171,6 +1592,6 @@ class TokoborosTextualApp(App[None]):
         self._state_store.shutdown()
 
 
-def run_tui() -> None:
+def run_tui(gateway_base_url: str | None = None) -> None:
     """Entrypoint used by the CLI command."""
-    TokoborosTextualApp().run()
+    TokoborosTextualApp(gateway_base_url=gateway_base_url).run()

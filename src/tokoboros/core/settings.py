@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Dict, Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 ConfigVersion = Literal[1]
 ProviderKind = Literal["anthropic", "openai-compatible", "ollama"]
@@ -29,9 +28,9 @@ class ProviderSettings(BaseModel):
 
     kind: ProviderKind = "anthropic"
     model: str = "claude-haiku-4-5"
-    base_url: Optional[str] = None
-    api_key_ref: Optional[str] = None
-    api_key_env: Optional[str] = None
+    base_url: str | None = None
+    api_key_ref: str | None = None
+    api_key_env: str | None = None
 
 
 class PermissionsSettings(BaseModel):
@@ -52,7 +51,7 @@ class CapabilityState(BaseModel):
 
     enabled: bool = False
     configured: bool = False
-    secret_ref: Optional[str] = None
+    secret_ref: str | None = None
 
 
 class ResolvedConfig(BaseModel):
@@ -63,7 +62,7 @@ class ResolvedConfig(BaseModel):
     agent: AgentSettings = Field(default_factory=AgentSettings)
     permissions: PermissionsSettings = Field(default_factory=PermissionsSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
-    capabilities: Dict[str, CapabilityState] = Field(default_factory=dict)
+    capabilities: dict[str, CapabilityState] = Field(default_factory=dict)
 
 
 def default_config() -> ResolvedConfig:

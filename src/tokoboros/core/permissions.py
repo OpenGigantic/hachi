@@ -16,15 +16,16 @@ Security Invariants:
     5. The gate is immutable after construction — no runtime modification.
 """
 
-from dataclasses import dataclass
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Literal, Optional, Tuple
-
+from typing import Literal
 
 # ==========================================
 # Data Models (Immutable)
 # ==========================================
+
 
 @dataclass(frozen=True)
 class PermissionResult:
@@ -36,6 +37,7 @@ class PermissionResult:
         reason: Human-readable explanation. Shown to the LLM on denial
                 so it can inform the user what to change.
     """
+
     allowed: bool
     reason: str
 
@@ -63,8 +65,9 @@ class PermissionDecision:
 @dataclass(frozen=True)
 class FilesystemRules:
     """Immutable ruleset for filesystem access."""
-    allowed_paths: Tuple[Path, ...]
-    blocked_paths: Tuple[Path, ...]
+
+    allowed_paths: tuple[Path, ...]
+    blocked_paths: tuple[Path, ...]
     allow_all: bool
     allow_write: bool
     allow_delete: bool
@@ -74,9 +77,10 @@ class FilesystemRules:
 @dataclass(frozen=True)
 class TerminalRules:
     """Immutable ruleset for terminal command execution."""
+
     enabled: bool
-    allowed_commands: Tuple[str, ...]
-    blocked_commands: Tuple[str, ...]
+    allowed_commands: tuple[str, ...]
+    blocked_commands: tuple[str, ...]
     allow_all: bool
     timeout: int
 
@@ -84,6 +88,7 @@ class TerminalRules:
 @dataclass(frozen=True)
 class MCPRules:
     """Immutable ruleset for MCP filesystem server."""
+
     filesystem_enabled: bool
 
 
@@ -98,30 +103,85 @@ _PERMISSIONS_HINT = f"~/.tokoboros/{_PERMISSIONS_FILE_NAME}"
 # Commands that are safe for everyday use
 _SAFE_COMMANDS = (
     # Filesystem navigation & management
-    "dir", "ls", "mkdir", "md", "move", "copy", "ren", "rename",
-    "type", "cat", "head", "tail", "echo", "find", "where", "which",
-    "tree", "cd", "pushd", "popd",
+    "dir",
+    "ls",
+    "mkdir",
+    "md",
+    "move",
+    "copy",
+    "ren",
+    "rename",
+    "type",
+    "cat",
+    "head",
+    "tail",
+    "echo",
+    "find",
+    "where",
+    "which",
+    "tree",
+    "cd",
+    "pushd",
+    "popd",
     # App launching (Windows: start, macOS: open, Linux: xdg-open)
-    "start", "open", "xdg-open", "explorer",
+    "start",
+    "open",
+    "xdg-open",
+    "explorer",
     # Developer tools
-    "python", "python3", "pip", "pip3",
-    "git", "npm", "npx", "node",
-    "code", "notepad",
+    "pip",
+    "pip3",
+    "git",
+    "npm",
+    "npx",
+    "code",
+    "notepad",
     # System info (read-only)
-    "cls", "clear", "whoami", "hostname", "ping",
+    "cls",
+    "clear",
+    "whoami",
+    "hostname",
+    "ping",
+)
+
+# Commands that can read or exfiltrate file contents — their arguments must be
+# checked against blocked_paths even when the executable itself is on the allowlist.
+_EXFIL_STEMS: frozenset[str] = frozenset(
+    {
+        "cat",
+        "type",
+        "copy",
+        "move",
+        "find",
+        "head",
+        "tail",
+        "dir",
+        "ls",
+        "tree",
+        "xcopy",
+    }
 )
 
 # Commands that can cause irreversible damage
 _DANGEROUS_COMMANDS = (
-    "rm -rf", "del /s /q", "del /f /s /q",
-    "format", "diskpart",
-    "shutdown", "restart",
+    "rm -rf",
+    "del /s /q",
+    "del /f /s /q",
+    "format",
+    "diskpart",
+    "shutdown",
+    "restart",
     "taskkill",
-    "reg delete", "reg add",
-    "net user", "net localgroup",
+    "reg delete",
+    "reg add",
+    "net user",
+    "net localgroup",
     "cipher /w",
-    "sfc", "dism", "bcdedit",
-    "powershell -enc", "powershell -e ",
+    "sfc",
+    "dism",
+    "bcdedit",
+    "powershell -enc",
+    "powershell -e ",
 )
 
 # Paths that should always be blocked by default
@@ -137,7 +197,7 @@ _DEFAULT_BLOCKED = (
 # Each tier defines the default config values per permission category.
 # User-provided values in device-permissions.og override these.
 
-_TIER_DEFAULTS: Dict[str, Dict[str, Dict[str, str]]] = {
+_TIER_DEFAULTS: dict[str, dict[str, dict[str, str]]] = {
     "sandbox": {
         "filesystem": {
             "allowed_paths": str(_HOME / "Desktop"),
@@ -158,9 +218,14 @@ _TIER_DEFAULTS: Dict[str, Dict[str, Dict[str, str]]] = {
     },
     "guided": {
         "filesystem": {
-            "allowed_paths": ", ".join(str(p) for p in [
-                _HOME / "Desktop", _HOME / "Downloads", _HOME / "Documents",
-            ]),
+            "allowed_paths": ", ".join(
+                str(p)
+                for p in [
+                    _HOME / "Desktop",
+                    _HOME / "Downloads",
+                    _HOME / "Documents",
+                ]
+            ),
             "blocked_paths": ", ".join(str(p) for p in _DEFAULT_BLOCKED),
             "allow_write": "true",
             "allow_delete": "false",
@@ -201,6 +266,7 @@ _TIER_DEFAULTS: Dict[str, Dict[str, Dict[str, str]]] = {
 # Helpers
 # ==========================================
 
+
 def _resolve_path(raw: str) -> Path:
     """Resolve a raw path string to an absolute canonical path."""
     raw = raw.strip()
@@ -209,7 +275,7 @@ def _resolve_path(raw: str) -> Path:
     return Path(raw).resolve()
 
 
-def _parse_csv(raw: str) -> Tuple[str, ...]:
+def _parse_csv(raw: str) -> tuple[str, ...]:
     """Parse a comma-separated string into a tuple of stripped values."""
     if not raw or not raw.strip():
         return ()
@@ -225,7 +291,7 @@ def _is_subpath(child: Path, parent: Path) -> bool:
         return False
 
 
-def _get_config(node_map: Dict, node_name: str, tier: str) -> Dict[str, str]:
+def _get_config(node_map: dict, node_name: str, tier: str) -> dict[str, str]:
     """
     Get merged config for a permission category.
     User-provided values override tier defaults.
@@ -239,6 +305,7 @@ def _get_config(node_map: Dict, node_name: str, tier: str) -> Dict[str, str]:
 # ==========================================
 # PermissionGate
 # ==========================================
+
 
 class PermissionGate:
     """
@@ -260,24 +327,24 @@ class PermissionGate:
         Parse device-permissions.og and build immutable rule sets.
         Falls back to Sandbox defaults if the file is missing or malformed.
         """
-        node_map: Dict = {}
+        node_map: dict = {}
 
         if permissions_file.exists():
             try:
                 from tokoboros.og_engine.parser import parse_og_file
+
                 og_file = parse_og_file(str(permissions_file))
                 node_map = {n.name: n for n in og_file.nodes}
             except Exception as e:
                 import logging
+
                 logger = logging.getLogger(__name__)
                 logger.error("Failed to parse device permissions: %s", e)
                 # Malformed file → Sandbox fallback
 
         # Determine tier
         device_node = node_map.get("device_access")
-        self._tier = (
-            device_node.config.get("tier", "sandbox") if device_node else "sandbox"
-        )
+        self._tier = device_node.config.get("tier", "sandbox") if device_node else "sandbox"
         if self._tier not in _TIER_DEFAULTS:
             self._tier = "sandbox"
 
@@ -288,7 +355,7 @@ class PermissionGate:
 
     # ── Rule Builders ──
 
-    def _build_filesystem_rules(self, node_map: Dict) -> FilesystemRules:
+    def _build_filesystem_rules(self, node_map: dict) -> FilesystemRules:
         """Construct FilesystemRules from parsed config + tier defaults."""
         cfg = _get_config(node_map, "filesystem", self._tier)
         raw_allowed = cfg.get("allowed_paths", "")
@@ -307,7 +374,7 @@ class PermissionGate:
             max_file_size_mb=int(cfg.get("max_file_size_mb", "50")),
         )
 
-    def _build_terminal_rules(self, node_map: Dict) -> TerminalRules:
+    def _build_terminal_rules(self, node_map: dict) -> TerminalRules:
         """Construct TerminalRules from parsed config + tier defaults."""
         cfg = _get_config(node_map, "terminal", self._tier)
         raw_allowed = cfg.get("allowed_commands", "")
@@ -325,12 +392,45 @@ class PermissionGate:
             timeout=int(cfg.get("timeout", "120")),
         )
 
-    def _build_mcp_rules(self, node_map: Dict) -> MCPRules:
+    def _build_mcp_rules(self, node_map: dict) -> MCPRules:
         """Construct MCPRules from parsed config + tier defaults."""
         cfg = _get_config(node_map, "mcp_filesystem", self._tier)
         return MCPRules(
             filesystem_enabled=cfg.get("enabled", "true").lower() == "true",
         )
+
+    # ── Internal Helpers ──
+
+    def _check_path_args(self, arg_tokens: list[str]) -> PermissionResult | None:
+        """
+        Scan command argument tokens for filesystem paths that fall inside a blocked_path.
+
+        Tokens that start with ``-`` or ``--`` (flags) are skipped.  For each
+        remaining token that can be resolved as a Path, the canonical form is
+        checked against every entry in ``self._fs.blocked_paths``.
+
+        Args:
+            arg_tokens: The argv[1:] slice of the original command token list.
+
+        Returns:
+            A denied ``PermissionResult`` if any argument resolves inside a
+            blocked path, otherwise ``None`` (caller continues as normal).
+        """
+        for token in arg_tokens:
+            token = token.strip("\"'")
+            if not token or token.startswith("-"):
+                continue
+            # Only treat tokens that look like paths (contain a separator, ~, or ./)
+            if not any(c in token for c in ("/", "\\", "~", ".")):
+                continue
+            try:
+                resolved = Path(token).expanduser().resolve()
+            except Exception:
+                continue
+            for bp in self._fs.blocked_paths:
+                if _is_subpath(resolved, bp):
+                    return PermissionResult(False, "Access to blocked path denied.")
+        return None
 
     # ── Public Check Methods ──
 
@@ -363,7 +463,7 @@ class PermissionGate:
                 return PermissionResult(
                     False,
                     f"'{resolved}' is inside blocked directory '{bp}'. "
-                    f"This restriction cannot be overridden."
+                    f"This restriction cannot be overridden.",
                 )
 
         # 2. Path accessibility check
@@ -378,23 +478,34 @@ class PermissionGate:
             return PermissionResult(
                 False,
                 f"'{resolved}' is not in your allowed directories. "
-                f"Add it to allowed_paths in {_PERMISSIONS_HINT}."
+                f"Add it to allowed_paths in {_PERMISSIONS_HINT}.",
             )
 
         # 3. Operation-specific checks
         if operation == "write" and not self._fs.allow_write:
             return PermissionResult(
                 False,
-                f"Write operations are disabled. "
-                f"Set allow_write=true in {_PERMISSIONS_HINT}."
+                f"Write operations are disabled. Set allow_write=true in {_PERMISSIONS_HINT}.",
             )
 
         if operation == "delete" and not self._fs.allow_delete:
             return PermissionResult(
                 False,
-                f"Delete operations are disabled. "
-                f"Set allow_delete=true in {_PERMISSIONS_HINT}."
+                f"Delete operations are disabled. Set allow_delete=true in {_PERMISSIONS_HINT}.",
             )
+
+        if operation in {"read", "write"} and resolved.exists() and resolved.is_file():
+            max_bytes = self._fs.max_file_size_mb * 1024 * 1024
+            try:
+                current_size = resolved.stat().st_size
+            except OSError:
+                current_size = 0
+            if current_size > max_bytes:
+                return PermissionResult(
+                    False,
+                    f"'{resolved}' exceeds max_file_size_mb={self._fs.max_file_size_mb}. "
+                    f"Reduce file size or increase max_file_size_mb in {_PERMISSIONS_HINT}.",
+                )
 
         return PermissionResult(True, f"Path '{resolved}' is accessible for '{operation}'.")
 
@@ -419,40 +530,112 @@ class PermissionGate:
             return PermissionResult(
                 False,
                 f"Terminal access is disabled in '{self._tier}' tier. "
-                f"Set terminal enabled=true in {_PERMISSIONS_HINT}."
+                f"Set terminal enabled=true in {_PERMISSIONS_HINT}.",
             )
 
         cmd_lower = command.strip().lower()
+        cmd_tokens_lower = cmd_lower.split()
 
-        # Blocked commands (substring match — catches variations)
+        # Blocked commands — multi-token patterns use order-insensitive token matching;
+        # single-token patterns use exact name match against the first token.
         for bc in self._term.blocked_commands:
-            if bc.lower() in cmd_lower:
-                return PermissionResult(
-                    False,
-                    f"'{bc}' is a blocked command pattern. "
-                    f"This restriction is in place for your safety."
-                )
+            bc_lower = bc.lower()
+            bc_tokens = bc_lower.split()
+            if len(bc_tokens) > 1:
+                # Multi-token pattern: every pattern token must appear in the command tokens
+                if all(t in cmd_tokens_lower for t in bc_tokens):
+                    return PermissionResult(
+                        False,
+                        f"'{bc}' is a blocked command pattern. "
+                        f"This restriction is in place for your safety.",
+                    )
+            else:
+                # Single-token pattern: match the token anywhere in the command
+                # (covers compound commands like "echo foo && shutdown /r /t 0")
+                if bc_lower in cmd_tokens_lower:
+                    return PermissionResult(
+                        False,
+                        f"'{bc}' is a blocked command pattern. "
+                        f"This restriction is in place for your safety.",
+                    )
 
         # Allow-all shortcut
         if self._term.allow_all:
-            return PermissionResult(True, f"Command allowed (unrestricted mode).")
+            return PermissionResult(True, "Command allowed (unrestricted mode).")
 
-        # Allowed commands (prefix match)
+        tokens = command.strip().split()
+        executable = tokens[0] if tokens else ""
+        executable_name = Path(executable.strip("\"'")).name.lower()
+        executable_stem = Path(executable_name).stem.lower()
+        interpreter_stems = {
+            "python",
+            "python3",
+            "node",
+            "pwsh",
+            "powershell",
+            "bash",
+            "sh",
+            "zsh",
+            "cmd",
+        }
+
+        # In guided/sandbox modes, block general-purpose interpreters that can bypass
+        # filesystem path constraints from within an allowed terminal command.
+        if self._tier != "unrestricted" and executable_stem in interpreter_stems:
+            return PermissionResult(
+                False,
+                f"'{executable_stem}' is blocked in {self._tier} tier because it can bypass "
+                "filesystem protections.",
+            )
+
+        # Prevent wrapper command bypasses like "npx node ..." in guided/sandbox tiers.
+        if self._tier != "unrestricted" and executable_stem in {"npx", "npm", "pip", "pip3"}:
+            for token in tokens[1:]:
+                candidate = token.strip("\"'")
+                if not candidate or candidate.startswith("-"):
+                    continue
+                candidate_name = Path(candidate).name.lower()
+                candidate_stem = Path(candidate_name).stem.lower()
+                if candidate_stem in interpreter_stems:
+                    return PermissionResult(
+                        False,
+                        f"Nested interpreter '{candidate_stem}' is blocked in {self._tier} tier.",
+                    )
+
+        # Allowed commands (executable name match)
         for ac in self._term.allowed_commands:
-            if cmd_lower.startswith(ac.lower()):
+            expected = ac.lower().strip()
+            if executable_name == expected or executable_stem == expected:
+                # FIX C1b — privileged sub-command guard (runs after allowlist match)
+                arg_tokens = [t.lower() for t in tokens[1:]]
+                if executable_stem == "git" and ("-c" in arg_tokens or "config" in arg_tokens):
+                    return PermissionResult(
+                        False, f"Command is privileged and blocked in {self._tier} tier."
+                    )
+                if executable_stem in ("pip", "pip3") and "install" in arg_tokens:
+                    return PermissionResult(
+                        False, f"Command is privileged and blocked in {self._tier} tier."
+                    )
+
+                # FIX C1a — file-argument path check for read/copy/exfiltrate commands
+                if executable_stem in _EXFIL_STEMS:
+                    blocked_result = self._check_path_args(tokens[1:])
+                    if blocked_result is not None:
+                        return blocked_result
+
                 return PermissionResult(True, f"Command '{ac}' is allowed.")
 
         return PermissionResult(
             False,
             f"'{command.split()[0]}' is not in your allowed commands. "
-            f"Add it to allowed_commands in {_PERMISSIONS_HINT}."
+            f"Add it to allowed_commands in {_PERMISSIONS_HINT}.",
         )
 
     def is_mcp_filesystem_enabled(self) -> bool:
         """Whether the MCP filesystem server should be started."""
         return self._mcp.filesystem_enabled
 
-    def get_allowed_paths(self) -> List[Path]:
+    def get_allowed_paths(self) -> list[Path]:
         """
         Resolved absolute paths the agent can access.
         Used by the MCP boot sequence to configure the filesystem server.
@@ -504,6 +687,11 @@ class PermissionGate:
         return self._term.timeout
 
     @property
+    def max_file_size_bytes(self) -> int:
+        """Max bytes allowed for filesystem read/write operations."""
+        return self._fs.max_file_size_mb * 1024 * 1024
+
+    @property
     def summary(self) -> str:
         """Human-readable one-liner for the boot banner."""
         if self._fs.allow_all:
@@ -524,8 +712,8 @@ class InteractivePermissionGate:
     def __init__(
         self,
         base_gate: PermissionGate,
-        approval_handler: Optional[Callable[[PermissionRequest], PermissionDecision]] = None,
-        event_emitter: Optional[Callable[[str, Dict[str, str]], None]] = None,
+        approval_handler: Callable[[PermissionRequest], PermissionDecision] | None = None,
+        event_emitter: Callable[[str, dict[str, str]], None] | None = None,
     ):
         self._base = base_gate
         self._approval_handler = approval_handler
@@ -545,10 +733,14 @@ class InteractivePermissionGate:
     def tier(self) -> str:
         return self._base.tier
 
+    @property
+    def max_file_size_bytes(self) -> int:
+        return self._base.max_file_size_bytes
+
     def is_mcp_filesystem_enabled(self) -> bool:
         return self._base.is_mcp_filesystem_enabled()
 
-    def get_allowed_paths(self) -> List[Path]:
+    def get_allowed_paths(self) -> list[Path]:
         return self._base.get_allowed_paths()
 
     def get_system_prompt_injection(self) -> str:
@@ -570,14 +762,17 @@ class InteractivePermissionGate:
             policy_summary=self._base.summary,
         )
 
-        self._emit("permission.requested", {
-            "request_id": request.request_id,
-            "operation": operation,
-            "tool": tool,
-            "target": target,
-            "reason": reason,
-            "policy_summary": request.policy_summary,
-        })
+        self._emit(
+            "permission.requested",
+            {
+                "request_id": request.request_id,
+                "operation": operation,
+                "tool": tool,
+                "target": target,
+                "reason": reason,
+                "policy_summary": request.policy_summary,
+            },
+        )
 
         if not self._approval_handler:
             decision = PermissionDecision(action="deny", rationale="No approval handler available")
@@ -585,16 +780,21 @@ class InteractivePermissionGate:
             try:
                 decision = self._approval_handler(request)
             except Exception as exc:
-                decision = PermissionDecision(action="deny", rationale=f"Approval handler failed: {exc}")
+                decision = PermissionDecision(
+                    action="deny", rationale=f"Approval handler failed: {exc}"
+                )
 
-        self._emit("permission.decided", {
-            "request_id": request.request_id,
-            "operation": operation,
-            "tool": tool,
-            "target": target,
-            "decision": decision.action,
-            "reason": decision.rationale or reason,
-        })
+        self._emit(
+            "permission.decided",
+            {
+                "request_id": request.request_id,
+                "operation": operation,
+                "tool": tool,
+                "target": target,
+                "decision": decision.action,
+                "reason": decision.rationale or reason,
+            },
+        )
 
         return decision
 
@@ -652,7 +852,8 @@ class InteractivePermissionGate:
 # Template Generator
 # ==========================================
 
-def generate_permissions_og(tier: str, custom_paths: Optional[List[str]] = None) -> str:
+
+def generate_permissions_og(tier: str, custom_paths: list[str] | None = None) -> str:
     """
     Generate the contents of a device-permissions.og file for the given tier.
 
@@ -716,7 +917,8 @@ def generate_permissions_og(tier: str, custom_paths: Optional[List[str]] = None)
         "::node[terminal]",
         "->[:role=permission]",
         "::dense",
-        "Controls whether the agent can execute shell commands, and which commands are allowed or blocked.",
+        "Controls whether the agent can execute shell commands, and which commands are "
+        "allowed or blocked.",
         "::config",
         f"enabled={term['enabled']}",
         f"allowed_commands={term['allowed_commands']}",
@@ -727,7 +929,8 @@ def generate_permissions_og(tier: str, custom_paths: Optional[List[str]] = None)
         "::node[mcp_filesystem]",
         "->[:role=permission]",
         "::dense",
-        "Controls whether the native MCP filesystem server is started for IDE-like context integration.",
+        "Controls whether the native MCP filesystem server is started for IDE-like context "
+        "integration.",
         "::config",
         f"enabled={mcp['enabled']}",
         "",

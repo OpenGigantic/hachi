@@ -1,0 +1,40 @@
+services:
+  tokoboros:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tokoboros
+    ports:
+      - "8787:8787"
+    restart: unless-stopped
+    secrets:
+      - gateway_api_token
+    environment:
+      TOKOBOROS_GATEWAY_API_TOKEN_FILE: /run/secrets/gateway_api_token
+    volumes:
+      - ./.tokoboros/config:/root/.config/tokoboros
+      - ./.tokoboros/data:/root/.local/share/tokoboros
+      - ./.tokoboros/state:/root/.local/state/tokoboros
+      - ./.tokoboros/cache:/root/.cache/tokoboros
+      - ./.tokoboros/legacy:/root/.tokoboros
+    command: ["tokoboros", "gateway", "--host", "0.0.0.0", "--port", "8787", "--runtime"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: tokoboros-frontend
+    depends_on:
+      - tokoboros
+    secrets:
+      - gateway_api_token
+    ports:
+      - "5173:5173"
+    restart: unless-stopped
+    environment:
+      TOKOBOROS_GATEWAY_BASE_URL: http://tokoboros:8787
+      TOKOBOROS_GATEWAY_AUTH_HEADER_FILE: /run/secrets/gateway_api_token
+
+secrets:
+  gateway_api_token:
+    file: ./.tokoboros/gateway_api_token.txt

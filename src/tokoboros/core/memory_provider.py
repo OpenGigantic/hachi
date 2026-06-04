@@ -19,7 +19,7 @@ Lifecycle hooks:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class MemoryProvider(ABC):
@@ -51,7 +51,7 @@ class MemoryProvider(ABC):
         """
 
     @abstractmethod
-    def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """Semantic similarity search.
 
         Args:
@@ -73,17 +73,14 @@ class MemoryProvider(ABC):
             True if deletion succeeded.
         """
 
-    def sync_turn(self, user_content: str, assistant_content: str) -> None:
+    def sync_turn(self, user_content: str, assistant_content: str) -> None:  # noqa: B027
         """Optional: called after every completed turn for background extraction."""
-        pass
 
-    def on_session_end(self, messages: list) -> None:
+    def on_session_end(self, messages: list) -> None:  # noqa: B027
         """Optional: called at shutdown for end-of-session processing."""
-        pass
 
-    def shutdown(self) -> None:
+    def shutdown(self) -> None:  # noqa: B027
         """Optional: release resources."""
-        pass
 
 
 class ChromaMemoryProvider(MemoryProvider):
@@ -111,13 +108,14 @@ class ChromaMemoryProvider(MemoryProvider):
         """Create a MemoryVault if one wasn't provided at construction time."""
         if self._vault is None:
             from tokoboros.core.memory_vault import MemoryVault
+
             self._vault = MemoryVault(brain_dir=brain_dir)
 
     def upsert(self, content: str, category: str = "workspace_state") -> str:
         """Delegate to MemoryVault.upsert_fact()."""
         return self._vault.upsert_fact(content, category)
 
-    def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """Delegate to MemoryVault.semantic_search()."""
         return self._vault.semantic_search(query, top_k)
 

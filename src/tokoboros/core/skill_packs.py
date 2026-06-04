@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,9 +20,9 @@ class OptionalSkillPack:
 class SkillPackManifest:
     core_files: tuple[str, ...] = ()
     core_directories: tuple[str, ...] = ()
-    optional_packs: Dict[str, OptionalSkillPack] = field(default_factory=dict)
+    optional_packs: dict[str, OptionalSkillPack] = field(default_factory=dict)
 
-    def pack_for_capability(self, capability_id: str) -> Optional[OptionalSkillPack]:
+    def pack_for_capability(self, capability_id: str) -> OptionalSkillPack | None:
         for pack in self.optional_packs.values():
             if pack.required_capability == capability_id:
                 return pack
@@ -37,7 +37,7 @@ def _manifest_path() -> Path:
     return _default_skills_root() / "manifest.json"
 
 
-def load_skill_pack_manifest(manifest_path: Optional[Path] = None) -> SkillPackManifest:
+def load_skill_pack_manifest(manifest_path: Path | None = None) -> SkillPackManifest:
     path = manifest_path or _manifest_path()
     if not path.exists():
         return SkillPackManifest()
@@ -47,7 +47,7 @@ def load_skill_pack_manifest(manifest_path: Optional[Path] = None) -> SkillPackM
     core = payload.get("core", {}) if isinstance(payload, dict) else {}
     optional_raw = payload.get("optional_packs", {}) if isinstance(payload, dict) else {}
 
-    optional: Dict[str, OptionalSkillPack] = {}
+    optional: dict[str, OptionalSkillPack] = {}
     if isinstance(optional_raw, dict):
         for pack_id, value in optional_raw.items():
             if not isinstance(value, dict):
@@ -67,8 +67,10 @@ def load_skill_pack_manifest(manifest_path: Optional[Path] = None) -> SkillPackM
     )
 
 
-def _copy_relative_entries(source_root: Path, target_root: Path, entries: Sequence[str]) -> List[Path]:
-    copied: List[Path] = []
+def _copy_relative_entries(
+    source_root: Path, target_root: Path, entries: Sequence[str]
+) -> list[Path]:
+    copied: list[Path] = []
     for rel in entries:
         src = source_root / rel
         dst = target_root / rel
@@ -85,14 +87,18 @@ def _copy_relative_entries(source_root: Path, target_root: Path, entries: Sequen
     return copied
 
 
-def install_core_skill_packs(target_skills_dir: Path, source_root: Optional[Path] = None) -> List[Path]:
+def install_core_skill_packs(
+    target_skills_dir: Path, source_root: Path | None = None
+) -> list[Path]:
     source = source_root or _default_skills_root()
     manifest = load_skill_pack_manifest(source / "manifest.json")
     entries = [*manifest.core_files, *manifest.core_directories]
     return _copy_relative_entries(source, target_skills_dir, entries)
 
 
-def install_skill_pack(pack_id: str, target_skills_dir: Path, source_root: Optional[Path] = None) -> List[Path]:
+def install_skill_pack(
+    pack_id: str, target_skills_dir: Path, source_root: Path | None = None
+) -> list[Path]:
     source = source_root or _default_skills_root()
     manifest = load_skill_pack_manifest(source / "manifest.json")
     pack = manifest.optional_packs.get(pack_id)
@@ -103,10 +109,12 @@ def install_skill_pack(pack_id: str, target_skills_dir: Path, source_root: Optio
     return _copy_relative_entries(source, target_skills_dir, entries)
 
 
-def ensure_enabled_skill_packs(target_skills_dir: Path, enabled_capabilities: Sequence[str], source_root: Optional[Path] = None) -> Dict[str, List[Path]]:
+def ensure_enabled_skill_packs(
+    target_skills_dir: Path, enabled_capabilities: Sequence[str], source_root: Path | None = None
+) -> dict[str, list[Path]]:
     source = source_root or _default_skills_root()
     manifest = load_skill_pack_manifest(source / "manifest.json")
-    installed: Dict[str, List[Path]] = {}
+    installed: dict[str, list[Path]] = {}
     enabled = set(enabled_capabilities)
 
     for pack_id, pack in manifest.optional_packs.items():

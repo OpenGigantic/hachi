@@ -19,11 +19,11 @@ we provide surgical, O(1) keyword-based retrieval.
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from tokoboros.og_engine.parser import OGFile, OGNode, OGIndexEntry, parse_og_file
+from tokoboros.og_engine.parser import OGFile, OGNode, parse_og_file
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +36,13 @@ class SkillEngine:
     """
 
     def __init__(self):
-        self._nodes: Dict[str, OGNode] = {}          # node_name -> OGNode
-        self._keyword_index: Dict[str, List[str]] = {}  # keyword -> [node_name, ...]
-        self._files: Dict[str, OGFile] = {}           # filepath -> OGFile (file-level metadata + index)
+        self._nodes: dict[str, OGNode] = {}  # node_name -> OGNode
+        self._keyword_index: dict[str, list[str]] = {}  # keyword -> [node_name, ...]
+        self._files: dict[str, OGFile] = {}  # filepath -> OGFile (file-level metadata + index)
 
         # Phase 4: Persistent usage tracking
         self._usage_path = Path.home() / ".tokoboros" / "brain" / "skill_usage.json"
-        self._usage: Dict[str, Dict[str, Any]] = self._load_usage()
+        self._usage: dict[str, dict[str, Any]] = self._load_usage()
 
     def load_directory(self, skills_dir: Path):
         """
@@ -92,9 +92,9 @@ class SkillEngine:
                         self._keyword_index[kw_lower].append(entry.node_id)
         except Exception as e:
             # Silently skip malformed files so one bad skill doesn't crash the agent
-            print(f"[warn] Failed to parse {filepath}: {e}")
+            logger.warning("Failed to parse %s: %s", filepath, e)
 
-    def search(self, query: str) -> List[Dict[str, str]]:
+    def search(self, query: str) -> list[dict[str, str]]:
         """
         Search the skill index by keyword matching against a natural language query.
         Returns a lightweight list of matching node summaries (name + role + keywords)
@@ -123,16 +123,18 @@ class SkillEngine:
         results = []
         for name in matched_names:
             node = self._nodes[name]
-            results.append({
-                "name": node.name,
-                "role": node.role,
-                "keywords": ", ".join(node.keywords),
-                "source_file": node.source_file
-            })
+            results.append(
+                {
+                    "name": node.name,
+                    "role": node.role,
+                    "keywords": ", ".join(node.keywords),
+                    "source_file": node.source_file,
+                }
+            )
 
         return results
 
-    def list_all_skills(self) -> List[Dict[str, str]]:
+    def list_all_skills(self) -> list[dict[str, str]]:
         """
         Return a summary of every loaded skill node.
         Useful for the agent to understand what capabilities are available.
@@ -142,14 +144,16 @@ class SkillEngine:
         """
         results = []
         for node in self._nodes.values():
-            results.append({
-                "name": node.name,
-                "role": node.role,
-                "keywords": ", ".join(node.keywords),
-            })
+            results.append(
+                {
+                    "name": node.name,
+                    "role": node.role,
+                    "keywords": ", ".join(node.keywords),
+                }
+            )
         return results
 
-    def get_node(self, name: str) -> Optional[OGNode]:
+    def get_node(self, name: str) -> OGNode | None:
         """
         Retrieve the full OGNode by its exact name.
 
@@ -161,7 +165,7 @@ class SkillEngine:
         """
         return self._nodes.get(name)
 
-    def get_all_nodes(self) -> List[OGNode]:
+    def get_all_nodes(self) -> list[OGNode]:
         """Return all indexed skill nodes."""
         return list(self._nodes.values())
 
@@ -260,7 +264,7 @@ class SkillEngine:
         # References
         if node.reference:
             ref_parts = [f"{k}: {v}" for k, v in node.reference.items()]
-            sections.append(f"\n--- Reference ---\n" + "\n".join(ref_parts))
+            sections.append("\n--- Reference ---\n" + "\n".join(ref_parts))
 
         # Assertions (safety checks)
         if node.assertions:
@@ -294,7 +298,7 @@ class SkillEngine:
             return og_file.get_index_prompt()
         return ""
 
-    def get_file_meta(self, filepath: str) -> Optional[Dict[str, str]]:
+    def get_file_meta(self, filepath: str) -> dict[str, str] | None:
         """Return the ::meta block for a specific .og file.
 
         Args:
@@ -308,7 +312,7 @@ class SkillEngine:
             return og_file.meta.model_dump()
         return None
 
-    def get_file_changelog(self, filepath: str) -> List[Dict[str, str]]:
+    def get_file_changelog(self, filepath: str) -> list[dict[str, str]]:
         """Return the ::changelog entries for a specific .og file.
 
         Enables delta loading: agents check only the changelog to discover
@@ -325,7 +329,7 @@ class SkillEngine:
             return [e.model_dump() for e in og_file.changelog]
         return []
 
-    def get_nodes_by_role(self, role: str) -> List[OGNode]:
+    def get_nodes_by_role(self, role: str) -> list[OGNode]:
         """
         Retrieve all nodes matching a specific role.
         Used by the IntegrationRuntime to find 'env' and 'integration' nodes.
@@ -347,7 +351,7 @@ class SkillEngine:
     # Skill Lifecycle & Usage Tracking
     # ==========================================
 
-    def _load_usage(self) -> Dict[str, Dict[str, Any]]:
+    def _load_usage(self) -> dict[str, dict[str, Any]]:
         """Load the usage database from disk. Returns empty dict on error."""
         try:
             if self._usage_path.exists():
@@ -361,8 +365,7 @@ class SkillEngine:
         try:
             self._usage_path.parent.mkdir(parents=True, exist_ok=True)
             self._usage_path.write_text(
-                json.dumps(self._usage, indent=2, default=str),
-                encoding="utf-8"
+                json.dumps(self._usage, indent=2, default=str), encoding="utf-8"
             )
         except Exception:
             logger.warning("Failed to persist skill usage DB")
@@ -375,17 +378,20 @@ class SkillEngine:
         Args:
             name: The exact skill node name that was loaded.
         """
-        now = datetime.now(timezone.utc).isoformat()
-        entry = self._usage.setdefault(name, {
-            "use_count": 0,
-            "first_used": now,
-            "last_used": now,
-        })
+        now = datetime.now(UTC).isoformat()
+        entry = self._usage.setdefault(
+            name,
+            {
+                "use_count": 0,
+                "first_used": now,
+                "last_used": now,
+            },
+        )
         entry["use_count"] += 1
         entry["last_used"] = now
         self._save_usage()
 
-    def get_stale_skills(self, stale_days: int = 30) -> List[Dict[str, Any]]:
+    def get_stale_skills(self, stale_days: int = 30) -> list[dict[str, Any]]:
         """Return skills that haven't been used within the given threshold.
 
         A skill is "stale" if it has usage records but last_used is older
@@ -398,38 +404,42 @@ class SkillEngine:
         Returns:
             List of dicts with name, last_used, use_count, and days_inactive.
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
+        cutoff = datetime.now(UTC) - timedelta(days=stale_days)
         stale = []
 
         for name in self._nodes:
             entry = self._usage.get(name)
             if not entry:
-                stale.append({
-                    "name": name,
-                    "last_used": None,
-                    "use_count": 0,
-                    "days_inactive": None,
-                    "status": "never_used",
-                })
+                stale.append(
+                    {
+                        "name": name,
+                        "last_used": None,
+                        "use_count": 0,
+                        "days_inactive": None,
+                        "status": "never_used",
+                    }
+                )
                 continue
 
             try:
                 last = datetime.fromisoformat(entry["last_used"])
                 if last < cutoff:
-                    days = (datetime.now(timezone.utc) - last).days
-                    stale.append({
-                        "name": name,
-                        "last_used": entry["last_used"],
-                        "use_count": entry["use_count"],
-                        "days_inactive": days,
-                        "status": "stale",
-                    })
+                    days = (datetime.now(UTC) - last).days
+                    stale.append(
+                        {
+                            "name": name,
+                            "last_used": entry["last_used"],
+                            "use_count": entry["use_count"],
+                            "days_inactive": days,
+                            "status": "stale",
+                        }
+                    )
             except (ValueError, KeyError):
                 continue
 
         return stale
 
-    def get_usage_report(self) -> Dict[str, Any]:
+    def get_usage_report(self) -> dict[str, Any]:
         """Generate a full usage analytics report for all loaded skills.
 
         Returns:
@@ -439,12 +449,14 @@ class SkillEngine:
         tracked = []
         for name, entry in self._usage.items():
             if name in self._nodes:
-                tracked.append({
-                    "name": name,
-                    "use_count": entry.get("use_count", 0),
-                    "first_used": entry.get("first_used"),
-                    "last_used": entry.get("last_used"),
-                })
+                tracked.append(
+                    {
+                        "name": name,
+                        "use_count": entry.get("use_count", 0),
+                        "first_used": entry.get("first_used"),
+                        "last_used": entry.get("last_used"),
+                    }
+                )
 
         tracked.sort(key=lambda x: x["use_count"], reverse=True)
 
@@ -458,4 +470,3 @@ class SkillEngine:
             "stale_count": len([s for s in stale if s["status"] == "stale"]),
             "top_skills": tracked[:10],
         }
-
