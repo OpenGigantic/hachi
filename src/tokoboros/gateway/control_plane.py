@@ -114,6 +114,7 @@ class GatewayControlPlane:
         self._get_setup_state = get_setup_state
         self._apply_setup = apply_setup
         self._connections: dict[str, dict[str, Any]] = {}
+        self._api_sessions: dict[str, str] = {}  # session_key -> session_id (facade sessions)
         self._connections_lock = threading.Lock()
         self._max_active_sessions = max(1, max_active_sessions)
         self._max_prompt_chars = max(1, max_prompt_chars)
@@ -187,7 +188,14 @@ class GatewayControlPlane:
             }
 
         if self._on_connect is not None:
-            self._on_connect(session_id, req)
+            try:
+                self._on_connect(session_id, req)
+            except Exception:
+                # Boot (agent/MCP/DB init) failed — release the registered session
+                # slot so repeated failed connects don't exhaust max_active_sessions.
+                with self._connections_lock:
+                    self._connections.pop(session_id, None)
+                raise
 
         response = ConnectResponse(
             session_id=session_id,
@@ -249,6 +257,29 @@ class GatewayControlPlane:
             "session_id": response.session_id,
             "response": response.response,
         }
+
+    def complete_chat(self, prompt: str, *, session_key: str = "__default__") -> dict[str, Any]:
+        """Run a prompt through an auto-managed session keyed by ``session_key``.
+
+        Powers stateless-looking facades (OpenAI-compatible endpoint, channel
+        webhooks) that don't manage sessions themselves: the first call for a key
+        creates a session (booting an agent via on_connect), subsequent calls
+        reuse it so the conversation keeps continuity.
+        """
+        with self._connections_lock:
+            session_id = self._api_sessions.get(session_key)
+            known = session_id in self._connections if session_id else False
+        if not known:
+            created = self.create_session(
+                client_id=f"api:{session_key}",
+                surface="api",
+                protocol_version=PROTOCOL_VERSION,
+                capabilities=[],
+            )
+            session_id = created["session_id"]
+            with self._connections_lock:
+                self._api_sessions[session_key] = session_id
+        return self.send_message(session_id=session_id, prompt=prompt)
 
     def close_session(self, session_id: str) -> dict[str, Any]:
         normalized_session_id = session_id.strip()

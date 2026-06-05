@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 ConfigVersion = Literal[1]
-ProviderKind = Literal["anthropic", "openai-compatible", "ollama"]
+ProviderKind = Literal["anthropic", "openai-compatible", "openrouter", "ollama"]
 PermissionTier = Literal["sandbox", "guided", "unrestricted"]
 
 

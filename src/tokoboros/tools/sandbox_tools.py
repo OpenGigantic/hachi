@@ -19,7 +19,11 @@ def register_sandbox_tools(registry: ToolRegistry, gate: PermissionGate = None) 
         Executes arbitrary Python code in an ephemeral sandbox using `uv`.
         """
         if gate is not None:
-            tier = getattr(gate, "_tier", None)
+            # Use the public `tier` property: both PermissionGate and
+            # InteractivePermissionGate expose it, but only the former has the
+            # private `_tier`. Reading `_tier` returned None under the interactive
+            # gate (the TUI path), silently disabling this restriction.
+            tier = getattr(gate, "tier", None)
             if tier in ("sandbox", "guided"):
                 raise PermissionError(
                     f"python_sandbox is not available in {tier} tier"

@@ -213,8 +213,8 @@ def _make_guarded_read_file(gate: Any):
     return guarded_read_file
 
 
-def _make_guarded_write_file(gate: Any):
-    """Create a permission-gated write_file tool."""
+def _make_guarded_write_file(gate: Any, checkpoints: Any = None):
+    """Create a permission-gated write_file tool (snapshots before overwriting)."""
 
     def guarded_write_file(path: str, content: str) -> str:
         normalized = _normalize_user_path(path)
@@ -227,9 +227,50 @@ def _make_guarded_write_file(gate: Any):
                 "Permission Denied: Content exceeds configured max_file_size_mb. "
                 "Split the file or increase the limit in device-permissions.og."
             )
+        # Snapshot the pre-write state so the user can rollback this change.
+        if checkpoints is not None:
+            try:
+                checkpoints.snapshot(normalized, label="write_file")
+            except Exception:
+                pass
         return _raw_write_file(str(normalized), content)
 
     return guarded_write_file
+
+
+def _make_rollback_changes(checkpoints: Any):
+    """Create the rollback tool that undoes the most recent file change."""
+
+    def rollback_changes(path: str = "") -> str:
+        target = _normalize_user_path(path) if path.strip() else None
+        result = checkpoints.rollback(target)
+        status = result.get("status")
+        if status == "restored":
+            return f"Restored previous version of {result['path']}."
+        if status == "removed":
+            return f"Removed {result['path']} (it did not exist before the change)."
+        return "Nothing to roll back."
+
+    return rollback_changes
+
+
+ROLLBACK_CHANGES_SCHEMA = {
+    "name": "rollback_changes",
+    "description": (
+        "Undo the most recent file change you made (restores the previous version, or removes "
+        "a file you just created). Optionally pass a specific file path to undo its last change."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Optional file path to roll back. Omit to undo the last change.",
+            }
+        },
+        "required": [],
+    },
+}
 
 
 def _make_guarded_run_terminal(gate: Any):
@@ -312,7 +353,7 @@ RUN_TERMINAL_COMMAND_SCHEMA = {
 # ==========================================
 
 
-def register_os_tools(registry: ToolRegistry, gate: Any | None = None):
+def register_os_tools(registry: ToolRegistry, gate: Any | None = None, checkpoints: Any = None):
     """
     Mount all OS tools onto the provided ToolRegistry.
 
@@ -325,9 +366,12 @@ def register_os_tools(registry: ToolRegistry, gate: Any | None = None):
     """
     if gate:
         registry.register(READ_FILE_SCHEMA, _make_guarded_read_file(gate))
-        registry.register(WRITE_FILE_SCHEMA, _make_guarded_write_file(gate))
+        registry.register(WRITE_FILE_SCHEMA, _make_guarded_write_file(gate, checkpoints))
         registry.register(RUN_TERMINAL_COMMAND_SCHEMA, _make_guarded_run_terminal(gate))
     else:
         registry.register(READ_FILE_SCHEMA, _raw_read_file)
         registry.register(WRITE_FILE_SCHEMA, _raw_write_file)
         registry.register(RUN_TERMINAL_COMMAND_SCHEMA, _raw_run_terminal_command)
+
+    if checkpoints is not None:
+        registry.register(ROLLBACK_CHANGES_SCHEMA, _make_rollback_changes(checkpoints))

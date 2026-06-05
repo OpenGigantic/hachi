@@ -487,6 +487,7 @@ class SubAgentRuntime:
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         workspace_dir: Path | None = None,
         on_event: Callable[..., None] | None = None,
+        cost_tracker: Any = None,
     ) -> None:
         """Initialize the sub-agent runtime.
 
@@ -513,6 +514,7 @@ class SubAgentRuntime:
         self._max_iterations = max_iterations
         self._timeout_seconds = timeout_seconds
         self._on_event = on_event or (lambda *a, **kw: None)
+        self._cost_tracker = cost_tracker
 
         # Resolve the role .og file
         resolver = RoleResolver(workspace_dir)
@@ -576,6 +578,7 @@ class SubAgentRuntime:
             memory=memory,
             base_system_prompt=self._system_prompt,
             on_event=self._on_event,
+            cost_tracker=self._cost_tracker,
         )
 
         # Inject the task as the initial user message

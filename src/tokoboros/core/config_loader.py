@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tomllib
 from pathlib import Path
@@ -16,6 +17,8 @@ from tokoboros.core.paths import (
 )
 from tokoboros.core.settings import ResolvedConfig, default_config
 
+logger = logging.getLogger(__name__)
+
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
@@ -30,7 +33,13 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 def _read_toml(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    return tomllib.loads(path.read_text(encoding="utf-8"))
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as exc:
+        # A corrupt config must not crash every command (config/doctor/etc.);
+        # fall back to defaults so the user can re-run setup.
+        logger.warning("Ignoring malformed config %s: %s", path, exc)
+        return {}
 
 
 def _legacy_json_as_config(path: Path) -> dict[str, Any]:
@@ -183,5 +192,10 @@ def write_global_config(config: ResolvedConfig, paths: TokoborosPaths | None = N
     for key, value in payload.items():
         doc[key] = value
 
-    paths.global_config_toml.write_text(tomlkit.dumps(doc), encoding="utf-8")
-    return paths.global_config_toml
+    # Atomic write: serialize to a temp file then os.replace, so a crash mid-write
+    # can't truncate settings.toml (which would silently reset the user's config).
+    target = paths.global_config_toml
+    tmp = target.with_name(f"{target.name}.tmp")
+    tmp.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    os.replace(tmp, target)
+    return target

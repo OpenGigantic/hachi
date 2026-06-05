@@ -251,7 +251,11 @@ class UniversalRestAdapter:
                 return f"Blocked by outbound policy: {validation_error}"
 
             try:
-                with httpx.Client(timeout=15.0) as client:
+                # follow_redirects=False is explicit: a 3xx to an internal host is a
+                # classic SSRF bypass of the public-host check above. (Residual: a
+                # narrow DNS-rebinding window between validation and connect remains;
+                # mitigated by the public-IP check + the secret allowlist.)
+                with httpx.Client(timeout=15.0, follow_redirects=False) as client:
                     response = client.request(
                         method=method, url=url, headers=headers, params=params, json=json_payload
                     )

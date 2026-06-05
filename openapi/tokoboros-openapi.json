@@ -60,11 +60,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  "type": "array",
                   "title": "Response Get Capabilities Capabilities Get"
                 }
               }
@@ -86,11 +81,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  "type": "array",
                   "title": "Response Get Models Models Get"
                 }
               }
@@ -165,11 +155,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": true
-                  },
                   "title": "Response List Sessions Sessions Get"
                 }
               }
@@ -212,9 +197,47 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": true,
                   "title": "Response Get Session Sessions  Session Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Delete Session",
+        "operationId": "delete_session_sessions__session_id__delete",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCloseResponse"
                 }
               }
             }
@@ -349,6 +372,82 @@
         }
       }
     },
+    "/sessions/{session_id}/stream": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Stream Session Events",
+        "description": "Server-Sent Events stream of runtime events \u2014 replaces client polling.\n\nPushes events as they arrive, then closes after ``max_idle_cycles`` idle\npolls (an EventSource auto-reconnects, so this stays cheap and robust).\nClients resume with the last ``id`` they saw via the ``after`` query param.",
+        "operationId": "stream_session_events_sessions__session_id__stream_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "After"
+            }
+          },
+          {
+            "name": "poll_interval",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "maximum": 10.0,
+              "minimum": 0.0,
+              "default": 1.0,
+              "title": "Poll Interval"
+            }
+          },
+          {
+            "name": "max_idle_cycles",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 600,
+              "minimum": 1,
+              "default": 30,
+              "title": "Max Idle Cycles"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/runtime/events": {
       "get": {
         "tags": [
@@ -392,11 +491,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": true
-                  },
                   "title": "Response Get Runtime Events Runtime Events Get"
                 }
               }
@@ -428,8 +522,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
                   "title": "Response Get Mcp Inventory Runtime Mcp Inventory Get"
                 }
               }
@@ -451,11 +543,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  "type": "array",
                   "title": "Response Get Active Jobs Jobs Active Get"
                 }
               }
@@ -491,11 +578,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": true
-                  },
                   "title": "Response Get Failed Jobs Jobs Failed Get"
                 }
               }
@@ -541,11 +623,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": true
-                  },
                   "title": "Response Get Permission Audit Permissions Audit Get"
                 }
               }
@@ -601,11 +678,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": true
-                  },
                   "title": "Response Get Subagent Reports Subagents Reports Get"
                 }
               }
@@ -637,8 +709,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
                   "title": "Response Get Config Config Get"
                 }
               }
@@ -670,8 +740,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
                   "title": "Response Put Provider Config Provider Put"
                 }
               }
@@ -713,8 +781,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
                   "title": "Response Post Provider Validate Config Provider Validate Post"
                 }
               }
@@ -756,8 +822,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
                   "title": "Response Put Permissions Config Permissions Put"
                 }
               }
@@ -799,8 +863,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
                   "title": "Response Put Memory Config Memory Put"
                 }
               }
@@ -832,8 +894,6 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
                   "title": "Response Get Setup Setup Get"
                 }
               }
@@ -865,9 +925,121 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "type": "object",
                   "title": "Response Post Setup Apply Setup Apply Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/chat/completions": {
+      "post": {
+        "tags": [
+          "openai"
+        ],
+        "summary": "Openai Chat Completions",
+        "operationId": "openai_chat_completions_v1_chat_completions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenAIChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Openai Chat Completions V1 Chat Completions Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "tags": [
+          "openai"
+        ],
+        "summary": "Openai Models",
+        "operationId": "openai_models_v1_models_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Openai Models V1 Models Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/channels/{channel}/inbound": {
+      "post": {
+        "tags": [
+          "channels"
+        ],
+        "summary": "Channel Inbound",
+        "operationId": "channel_inbound_channels__channel__inbound_post",
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Channel"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelInboundRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Channel Inbound Channels  Channel  Inbound Post"
                 }
               }
             }
@@ -888,6 +1060,29 @@
   },
   "components": {
     "schemas": {
+      "ChannelInboundRequest": {
+        "properties": {
+          "sender_id": {
+            "type": "string",
+            "title": "Sender Id"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "sender_name": {
+            "type": "string",
+            "title": "Sender Name",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "sender_id",
+          "text"
+        ],
+        "title": "ChannelInboundRequest"
+      },
       "GatewayEventPayload": {
         "properties": {
           "sequence": {
@@ -972,6 +1167,56 @@
         ],
         "title": "MemoryRequest"
       },
+      "OpenAIChatRequest": {
+        "properties": {
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/OpenAIMessage"
+            },
+            "type": "array",
+            "title": "Messages"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "stream": {
+            "type": "boolean",
+            "title": "Stream",
+            "default": false
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "messages"
+        ],
+        "title": "OpenAIChatRequest"
+      },
+      "OpenAIMessage": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "content": {
+            "title": "Content"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "title": "OpenAIMessage"
+      },
       "PermissionsRequest": {
         "properties": {
           "permissions": {
@@ -1035,6 +1280,24 @@
           "time"
         ],
         "title": "ReadinessResponse"
+      },
+      "SessionCloseResponse": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "closed": {
+            "type": "boolean",
+            "title": "Closed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "closed"
+        ],
+        "title": "SessionCloseResponse"
       },
       "SessionCreateRequest": {
         "properties": {

@@ -16,12 +16,15 @@ Phase 1 Update (Runtime Correctness):
 
 import datetime
 import importlib.util
+import os
 import threading
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from tokoboros.core.checkpoints import CheckpointManager
+from tokoboros.core.cost import CostTracker
 from tokoboros.core.credential_vault import CredentialVault
 from tokoboros.core.integrations import IntegrationRuntime
 from tokoboros.core.llm import create_llm_client
@@ -29,6 +32,7 @@ from tokoboros.core.loop import ExecutionLoop, ToolRegistry
 from tokoboros.core.mcp_client import MCPManager
 from tokoboros.core.memory import MemoryManager
 from tokoboros.core.memory_vault import MemoryVault
+from tokoboros.core.paths import get_tokoboros_paths
 from tokoboros.core.permissions import (
     InteractivePermissionGate,
     PermissionDecision,
@@ -66,6 +70,7 @@ from tokoboros.core.runtime_read_models import (
 )
 from tokoboros.core.secret_store import create_default_secret_store
 from tokoboros.core.session_store import SessionStore
+from tokoboros.core.sub_agent import DEFAULT_SUB_AGENT_MODEL
 from tokoboros.core.turn_context import TurnContext
 from tokoboros.gateway.workspace import (
     get_skills_dir,
@@ -75,12 +80,14 @@ from tokoboros.gateway.workspace import (
     load_config,
 )
 from tokoboros.jobs import InMemoryJobQueue, Job, JobQueue, JobStatus, JobWorker
+from tokoboros.jobs.scheduler import Scheduler, ScheduleStore
 from tokoboros.og_engine.engine import SkillEngine
 from tokoboros.tools.delegation_tools import register_delegation_tools
 from tokoboros.tools.memory_tools import register_memory_tools, register_session_tools
 from tokoboros.tools.og_tools import register_og_tools
 from tokoboros.tools.os_tools import register_os_tools
 from tokoboros.tools.sandbox_tools import register_sandbox_tools
+from tokoboros.tools.schedule_tools import register_schedule_tools
 from tokoboros.tools.workflow_tools import register_workflow_tools
 
 
@@ -145,6 +152,30 @@ class CapabilityRegistry:
 
 def _is_module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
+
+
+def _coerce_float(*candidates: Any) -> float:
+    """Return the first parseable float among candidates (config, then env), else 0.0."""
+    for value in candidates:
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _coerce_int(*candidates: Any) -> int:
+    """Return the first parseable int among candidates (config, then env), else 0."""
+    for value in candidates:
+        if value in (None, ""):
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return 0
 
 
 def _build_capability_registry(config: dict[str, Any]) -> CapabilityRegistry:
@@ -324,6 +355,8 @@ class AgentSession:
 
     def snapshot_session_state(self) -> SessionStateSnapshot:
         """Immutable summary of current session state for UI inspection."""
+        tracker = getattr(self.loop, "cost_tracker", None)
+        cost = tracker.snapshot() if tracker is not None else None
         return SessionStateSnapshot(
             session_id=self._session_id or "",
             active_skill=self.memory.active_skill,
@@ -331,6 +364,8 @@ class AgentSession:
             model_name=self.model_name,
             boot_ready=self._read_models.boot_ready(),
             pending_job_count=len(self._read_models.active_jobs()),
+            total_tokens=cost.total_tokens if cost else 0,
+            estimated_cost_usd=round(cost.estimated_cost_usd, 6) if cost else 0.0,
         )
 
     def snapshot_task_ledger(self, limit: int = 50) -> tuple[TaskLedgerItemSnapshot, ...]:
@@ -665,6 +700,19 @@ class AgentSession:
             except Exception:
                 pass
 
+        # Close LLM HTTP clients (OpenAICompatibleClient/ollama hold an httpx.Client;
+        # AnthropicClient has no close() — guarded by getattr so both are safe).
+        for client in (
+            getattr(self.loop, "llm_client", None),
+            getattr(self, "_sub_agent_client", None),
+        ):
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
         self.integrations.shutdown()
         self._emit_event(MCP_SHUTDOWN, {"server_count": self.mcp_manager.server_count})
         self.mcp_manager.shutdown()
@@ -915,12 +963,14 @@ def boot_agent(
 
     if skill_count > 0:
         system_prompt += (
-            "\n\n--- IMPORTANT: ObjectGraph Skills Available ---\n"
-            f"You have {skill_count} skill(s) loaded from .og files.\n"
-            "When the user asks you to do something, ALWAYS use the `search_skills` tool first "
-            "to check if there is a relevant .og skill that tells you exactly how to do it.\n"
-            "If a skill is found, use `load_skill` to load the full instructions, then follow "
-            "them precisely.\n"
+            "\n\n--- IMPORTANT: ObjectGraph Skills Available (3-pass loading) ---\n"
+            f"You have {skill_count} skill(s) loaded from .og files. Read them in three passes "
+            "so you only spend tokens on what you actually need:\n"
+            "1. `search_skills` (Pass 1) — ALWAYS call first to find relevant skills by keyword.\n"
+            "2. `peek_skill` (Pass 2) — read the candidates' compressed summaries cheaply to pick "
+            "the right one; don't load blind.\n"
+            "3. `load_skill` (Pass 3) — load the chosen skill's full instructions (optionally "
+            "narrowing to specific `blocks`), then follow them precisely.\n"
             "If a skill has ASSERTIONS, you MUST run each assertion command and verify it passes "
             "before continuing.\n"
         )
@@ -959,6 +1009,21 @@ def boot_agent(
     secret_store = create_default_secret_store()
     client = create_llm_client(provider_config, secret_store=secret_store, max_tokens=max_tokens)
 
+    # Sub-agents reuse the SAME resolved provider credentials as the main agent so
+    # delegation never fails with "ANTHROPIC_API_KEY must be provided". For Anthropic
+    # we drop to a cheaper model to keep delegation cost-aware; other providers keep
+    # the user's configured model.
+    sub_agent_provider = dict(provider_config)
+    if str(provider_config.get("kind", "anthropic")).lower() == "anthropic":
+        sub_agent_provider["model"] = DEFAULT_SUB_AGENT_MODEL
+    sub_agent_client = create_llm_client(
+        sub_agent_provider, secret_store=secret_store, max_tokens=4096
+    )
+
+    # Shared per-session token/cost tracker — used by the main loop AND threaded
+    # into delegated sub-agents so their spend is included in the session total.
+    cost_tracker = CostTracker()
+
     emit_runtime_event(
         BOOT_PROGRESS,
         {
@@ -984,10 +1049,16 @@ def boot_agent(
 
     # 8. Register all tools
     tool_registry = ToolRegistry()
-    register_os_tools(tool_registry, runtime_gate)  # OS tools gated by PermissionGate
+    # File-change checkpoints give the user an undo for agent edits (rollback_changes tool).
+    checkpoint_manager = CheckpointManager(get_tokoboros_paths().checkpoints_dir)
+    register_os_tools(tool_registry, runtime_gate, checkpoints=checkpoint_manager)
     register_og_tools(tool_registry, skill_engine)
     register_workflow_tools(tool_registry)
     register_sandbox_tools(tool_registry, runtime_gate)
+
+    # Proactive scheduling (cron/interval/once) — persisted across restarts.
+    scheduler = Scheduler(ScheduleStore(get_tokoboros_paths().schedules_file))
+    register_schedule_tools(tool_registry, scheduler)
 
     # Register Universal REST APIs parsed from .og files
     credential_vault = CredentialVault(secret_store=secret_store)
@@ -1011,7 +1082,15 @@ def boot_agent(
     mcp_manager.register_tools(tool_registry)
 
     # Register Delegation tools (MUST be LAST — needs full parent registry)
-    register_delegation_tools(tool_registry, runtime_gate, relay_event, vault, job_queue=job_queue)
+    register_delegation_tools(
+        tool_registry,
+        runtime_gate,
+        relay_event,
+        vault,
+        job_queue=job_queue,
+        sub_agent_llm=sub_agent_client,
+        cost_tracker=cost_tracker,
+    )
 
     # Register native capability tools lazily, with setup stubs for incomplete states.
     native_registration_count = 0
@@ -1054,7 +1133,17 @@ def boot_agent(
         },
     )
 
-    # 9. Instantiate the Brain Loop
+    # Per-session safety caps (0 = unlimited): stop a runaway loop from draining the
+    # user's API budget. Read from the optional [limits] config section, else env vars.
+    limits_cfg = config.get("limits", {}) if isinstance(config.get("limits"), dict) else {}
+    max_session_cost_usd = _coerce_float(
+        limits_cfg.get("max_session_cost_usd"), os.environ.get("TOKOBOROS_MAX_SESSION_COST_USD")
+    )
+    max_session_tokens = _coerce_int(
+        limits_cfg.get("max_session_tokens"), os.environ.get("TOKOBOROS_MAX_SESSION_TOKENS")
+    )
+
+    # 9. Instantiate the Brain Loop (cost_tracker created earlier, shared with sub-agents)
     loop = ExecutionLoop(
         llm_client=client,
         registry=tool_registry,
@@ -1062,6 +1151,9 @@ def boot_agent(
         base_system_prompt=system_prompt,
         on_event=relay_event,
         skill_engine=skill_engine,
+        cost_tracker=cost_tracker,
+        max_cost_usd=max_session_cost_usd,
+        max_tokens=max_session_tokens,
     )
 
     # 10. Create the Session
@@ -1079,6 +1171,7 @@ def boot_agent(
     )
     session.set_vault(vault)
     session.set_session_store(session_store, model=model_name)
+    session._sub_agent_client = sub_agent_client  # closed on shutdown alongside the main client
 
     emit_runtime_event(
         BOOT_COMPLETE,

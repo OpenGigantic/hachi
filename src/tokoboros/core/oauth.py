@@ -135,14 +135,20 @@ class OAuthManager:
         granted_scopes = token_data.get("scope", "").split(" ") if token_data else []
         scopes_satisfied = all(scope in granted_scopes for scope in scopes)
 
-        # If we have a token, it has all required scopes, and it's not expired, return it
-        if token_data and scopes_satisfied and time.time() < token_data.get("expires_at", 0):
+        # If we have a token, it has all required scopes, and it's not expired
+        # (with a 60s clock-skew buffer), return it.
+        if token_data and scopes_satisfied and time.time() < token_data.get("expires_at", 0) - 60:
             return token_data["access_token"]
 
-        # If we have a token, it has all scopes, but it's expired, refresh it
+        # If we have a token, it has all scopes, but it's expired, refresh it.
         if token_data and scopes_satisfied and "refresh_token" in token_data:
             print("  [oauth] Refreshing Google token silently...")
-            return self._refresh_google_token(token_data)
+            try:
+                return self._refresh_google_token(token_data)
+            except Exception as exc:
+                # Refresh token revoked/expired (e.g. invalid_grant) — fall back to
+                # the full browser flow instead of failing every Google tool call.
+                print(f"  [oauth] Token refresh failed ({exc}); re-authenticating...")
 
         # Otherwise, we need to do the full browser flow (missing token or missing scopes)
         if token_data and not scopes_satisfied:

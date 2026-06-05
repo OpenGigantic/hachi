@@ -8,7 +8,7 @@
   version: 1.0.0
   domain: coding|engineering|development|debugging
   scope: worker
-  tools: run_terminal_command|read_file|write_file|search_skills|load_skill
+  tools: run_terminal_command|read_file|write_file|search_skills|peek_skill|load_skill
 
 ::index
   # node-id          | type     | scope  | conf | keywords

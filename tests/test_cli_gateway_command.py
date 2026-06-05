@@ -345,9 +345,10 @@ def test_doctor_command_reports_environment(monkeypatch, tmp_path: Path) -> None
         state_dir=state_dir,
         global_config_toml=settings_toml,
         legacy_dir=legacy_dir,
+        skills_dir=data_dir / "skills",
     )
     fake_config = SimpleNamespace(
-        provider=SimpleNamespace(kind="anthropic", model="claude-haiku-4-5"),
+        provider=SimpleNamespace(kind="anthropic", model="claude-haiku-4-5", api_key_env=None),
         permissions=SimpleNamespace(tier="guided"),
     )
 
@@ -357,6 +358,9 @@ def test_doctor_command_reports_environment(monkeypatch, tmp_path: Path) -> None
 
         def needs_setup(self) -> bool:
             return False
+
+        def validate_provider(self, *, kind, api_key_env=None):
+            return (True, "ok")
 
         def detect_environment(self) -> dict[str, bool]:
             return {"anthropic_env": True}

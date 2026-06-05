@@ -49,8 +49,31 @@ TIER_STEP_PLANS: dict[str, list[SetupStep]] = {
 }
 
 
-_PROVIDER_KINDS = {"anthropic", "openai-compatible", "ollama"}
+_PROVIDER_KINDS = {"anthropic", "openai-compatible", "openrouter", "ollama"}
 _PERMISSION_TIERS = {"sandbox", "guided", "unrestricted"}
+
+# Providers that require an API key (ollama runs locally and does not).
+_KEYLESS_PROVIDERS = {"ollama"}
+
+# Sensible default model + the env var users are most likely to have set, per provider.
+# Used by the conversational quickstart so non-technical users don't have to know
+# model identifiers.
+_PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
+    "anthropic": {"model": "claude-haiku-4-5", "api_key_env": "ANTHROPIC_API_KEY"},
+    "openai-compatible": {"model": "gpt-4o-mini", "api_key_env": "OPENAI_API_KEY"},
+    "openrouter": {"model": "openai/gpt-4o-mini", "api_key_env": "OPENROUTER_API_KEY"},
+    "ollama": {"model": "llama3.1", "api_key_env": ""},
+}
+
+
+def default_model_for(kind: str) -> str:
+    """Return a reasonable default model id for a provider kind."""
+    return _PROVIDER_DEFAULTS.get(kind.strip().lower(), {}).get("model", "")
+
+
+def default_api_key_env_for(kind: str) -> str:
+    """Return the conventional API-key env var name for a provider kind."""
+    return _PROVIDER_DEFAULTS.get(kind.strip().lower(), {}).get("api_key_env", "")
 
 
 class OnboardingService:
@@ -85,6 +108,76 @@ class OnboardingService:
             "legacy_workspace_exists": self.paths.legacy_dir.exists(),
             "project_dir": str(project_dir) if project_dir else None,
         }
+
+    def validate_provider(
+        self,
+        *,
+        kind: str,
+        api_key_env: str | None = None,
+        api_key: str | None = None,
+    ) -> tuple[bool, str]:
+        """Check that a provider is usable BEFORE the first chat.
+
+        Today a missing/typo'd API key only surfaces when the agent first tries to
+        answer — the most common stumbling block for non-technical users. This
+        validates the provider kind and that an API key is actually resolvable
+        (passed directly, or present in the named/conventional environment
+        variable). Local providers (ollama) need no key.
+
+        Returns ``(ok, message)`` where ``message`` is human-friendly guidance.
+        """
+        kind_n = (kind or "").strip().lower()
+        if kind_n not in _PROVIDER_KINDS:
+            return False, (
+                f"Unknown provider '{kind}'. Choose one of: "
+                "anthropic, openai-compatible, openrouter, ollama."
+            )
+        if kind_n in _KEYLESS_PROVIDERS:
+            return True, "Local provider — no API key required."
+
+        env_name = (api_key_env or default_api_key_env_for(kind_n)).strip()
+        resolved = api_key or (os.environ.get(env_name) if env_name else None)
+        if not resolved:
+            return False, (
+                f"No API key found for {kind_n}. Set it first, e.g.:\n"
+                f"  export {env_name or 'YOUR_API_KEY_ENV'}=sk-...\n"
+                "then re-run setup."
+            )
+        return True, f"API key found in {env_name}."
+
+    def quick_setup(
+        self,
+        *,
+        kind: str,
+        model: str | None = None,
+        api_key_env: str | None = None,
+        permission_tier: str = "guided",
+        enable_memory: bool = True,
+        project_dir: Path | None = None,
+    ) -> SetupPlan:
+        """One-call conversational setup: pick provider + safety, persist, done.
+
+        Wraps :meth:`build_tier_plan` + :meth:`apply_setup` with non-technical
+        defaults (sensible model per provider, guided safety tier, memory on) so a
+        brand-new user is ready after answering a couple of plain questions.
+        """
+        kind_n = (kind or "").strip().lower()
+        if kind_n not in _PROVIDER_KINDS:
+            raise ValueError("kind must be one of: anthropic, openai-compatible, ollama")
+        resolved_model = (model or default_model_for(kind_n)).strip()
+        resolved_env = (api_key_env or default_api_key_env_for(kind_n)).strip() or None
+
+        answers = {
+            "provider": {
+                "kind": kind_n,
+                "model": resolved_model,
+                "api_key_env": resolved_env,
+            },
+            "permission_tier": permission_tier,
+        }
+        tier = "recommended" if enable_memory else "lightning"
+        plan_payload = self.build_tier_plan(tier, answers)
+        return self.apply_setup(plan_payload, project_dir=project_dir)
 
     def needs_setup(self, project_dir: Path | None = None) -> bool:
         config = load_effective_config(project_dir=project_dir, paths=self.paths)

@@ -44,7 +44,7 @@ const updatePermissionsInput = z.object({
 });
 
 const updateProviderInput = z.object({
-  providerKind: z.enum(["anthropic", "openai-compatible", "ollama"]),
+  providerKind: z.enum(["anthropic", "openai-compatible", "openrouter", "ollama"]),
   model: z.string().min(1),
   baseUrl: z.string().url().optional().or(z.literal("")),
   apiKeyEnv: z.string().min(1).optional().or(z.literal("")),
@@ -54,9 +54,16 @@ const validateProviderInput = updateProviderInput;
 
 const applySetupInput = z.object({
   tier: z.enum(["lightning", "recommended", "enhanced", "power"]),
-  providerKind: z.enum(["anthropic", "openai-compatible", "ollama"]),
+  providerKind: z.enum(["anthropic", "openai-compatible", "openrouter", "ollama"]),
   model: z.string().min(1),
 });
+
+const PROVIDER_KEY_ENV: Record<string, string> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  "openai-compatible": "OPENAI_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+  ollama: "",
+};
 
 function getClient() {
   const config = getServerConfig();
@@ -188,7 +195,7 @@ export const applyGatewaySetup = createServerFn({ method: "POST" })
           provider: {
             kind: data.providerKind,
             model: data.model,
-            api_key_env: data.providerKind === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY",
+            api_key_env: PROVIDER_KEY_ENV[data.providerKind] ?? "OPENAI_API_KEY",
           },
           permission_tier: "guided",
           memory: {

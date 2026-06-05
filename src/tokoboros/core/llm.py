@@ -75,6 +75,19 @@ class ToolCall(BaseModel):
     input: dict[str, Any] = Field(..., description="The arguments to pass to the tool.")
 
 
+class TokenUsage(BaseModel):
+    """Token accounting for a single LLM generation."""
+
+    input_tokens: int = Field(default=0, description="Prompt/input tokens consumed.")
+    output_tokens: int = Field(default=0, description="Generated/output tokens.")
+    cache_read_tokens: int = Field(
+        default=0, description="Input tokens served from the prompt cache (cheaper)."
+    )
+    cache_creation_tokens: int = Field(
+        default=0, description="Input tokens written to the prompt cache (slightly pricier)."
+    )
+
+
 class LLMResponse(BaseModel):
     """
     Standardized response returned by any underlying LLM provider.
@@ -83,6 +96,9 @@ class LLMResponse(BaseModel):
     content: str = Field(default="", description="The textual response from the model.")
     tool_calls: list[ToolCall] = Field(
         default_factory=list, description="Any tool calls requested by the model."
+    )
+    usage: TokenUsage = Field(
+        default_factory=TokenUsage, description="Token usage for this generation."
     )
 
 
@@ -191,7 +207,15 @@ class AnthropicClient(BaseLLMClient):
             elif block.type == "tool_use":
                 tool_calls.append(ToolCall(id=block.id, name=block.name, input=block.input))
 
-        return LLMResponse(content=text_content.strip(), tool_calls=tool_calls)
+        raw_usage = getattr(response, "usage", None)
+        usage = TokenUsage(
+            input_tokens=getattr(raw_usage, "input_tokens", 0) or 0,
+            output_tokens=getattr(raw_usage, "output_tokens", 0) or 0,
+            cache_read_tokens=getattr(raw_usage, "cache_read_input_tokens", 0) or 0,
+            cache_creation_tokens=getattr(raw_usage, "cache_creation_input_tokens", 0) or 0,
+        )
+
+        return LLMResponse(content=text_content.strip(), tool_calls=tool_calls, usage=usage)
 
 
 class OpenAICompatibleClient(BaseLLMClient):
@@ -303,7 +327,13 @@ class OpenAICompatibleClient(BaseLLMClient):
                 )
             )
 
-        return LLMResponse(content=str(content).strip(), tool_calls=tool_calls)
+        raw_usage = data.get("usage", {}) or {}
+        usage = TokenUsage(
+            input_tokens=int(raw_usage.get("prompt_tokens", 0) or 0),
+            output_tokens=int(raw_usage.get("completion_tokens", 0) or 0),
+        )
+
+        return LLMResponse(content=str(content).strip(), tool_calls=tool_calls, usage=usage)
 
 
 def create_llm_client(
@@ -329,6 +359,13 @@ def create_llm_client(
         resolved_base = str(
             base_url or os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434/v1"
         )
+        return OpenAICompatibleClient(
+            base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens
+        )
+
+    if kind == "openrouter":
+        # OpenRouter is OpenAI-compatible and unlocks 200+ models behind one key.
+        resolved_base = str(base_url or "https://openrouter.ai/api/v1")
         return OpenAICompatibleClient(
             base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens
         )

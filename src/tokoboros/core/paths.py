@@ -54,6 +54,14 @@ class TokoborosPaths:
         return self.state_dir / "tui_state.db"
 
     @property
+    def schedules_file(self) -> Path:
+        return self.state_dir / "schedules.json"
+
+    @property
+    def checkpoints_dir(self) -> Path:
+        return self.state_dir / "checkpoints"
+
+    @property
     def secrets_fallback_file(self) -> Path:
         return self.state_dir / "secrets.enc"
 

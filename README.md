@@ -28,6 +28,33 @@ Unlike traditional agent frameworks that dump everything into the system prompt 
 
 ---
 
+## Quickstart (one-liner install)
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/opensource/tokoboros/main/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/opensource/tokoboros/main/install.ps1 | iex
+```
+
+The installer bootstraps [`uv`](https://docs.astral.sh/uv/) (which manages Python for you), fetches Tokoboros, installs dependencies, and launches the guided setup. No prior Python setup required.
+
+Already have the source? Just run the conversational setup:
+
+```bash
+uv run tokoboros quickstart   # pick a provider, we validate your API key up front, choose a safety level
+uv run tokoboros run          # start chatting
+```
+
+`quickstart` checks your provider API key **before** the first message (instead of failing mid-conversation) — the most common first-run snag for new users.
+
+---
+
 ## Features
 
 - 🧠 **ObjectGraph (.og) Engine** — A structured, agent-native file format with 20+ semantic tags for zero-hallucination skill execution
@@ -45,6 +72,16 @@ Unlike traditional agent frameworks that dump everything into the system prompt 
 - 📊 **Skill Lifecycle** — Usage tracking, stale detection, and analytics for all `.og` skills
 - 🧬 **Long-Term Memory** — Semantic search vault with async prefetch and frozen session snapshots
 - 🛡️ **Security Audit Command** — Built-in `security-audit` CLI checks for risky local runtime posture
+- ⚡ **3-Pass Selective Loading** — Agents read a skill's index → dense summary → full content on demand (≈97% fewer tokens than dumping skill files)
+- ✍️ **Autonomous Skill Authoring** — The agent writes & refines its own `.og` skills (`save_skill`); import the wider ecosystem with `tokoboros skill import` (SKILL.md → `.og`)
+- ⏰ **Proactive Scheduling** — `tokoboros schedule add` runs tasks on cron/interval/once with delivery to chat or a webhook
+- 💬 **Multi-Channel + OpenAI-Compatible API** — Reach the agent from Telegram or any platform via a generic inbound webhook, or point Open WebUI / LibreChat at the `/v1/chat/completions` endpoint
+- 🔄 **Model Freedom** — Anthropic, OpenAI-compatible, **OpenRouter** (200+ models), and local **Ollama** — no lock-in
+- 💵 **Cost Controls** — Live token/cost tracking plus per-session budget caps and per-sender rate limits
+- ↩️ **Edit Undo** — File writes are snapshotted; `rollback_changes` restores the previous version
+- 🚀 **Frictionless Setup** — One-liner install (`install.sh` / `install.ps1`) + conversational `tokoboros quickstart`, or self-host with Docker
+
+> See **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** for the full environment-variable and settings reference.
 
 ---
 
@@ -124,6 +161,24 @@ uv run tokoboros gateway --host 127.0.0.1 --port 8787 --runtime
 
 # Export OpenAPI contract for clients
 uv run tokoboros gateway-openapi --output openapi/tokoboros-openapi.json
+
+# Fastest first-run setup (conversational; validates your API key up front)
+uv run tokoboros quickstart
+
+# Skills: import SKILL.md, list, export, lint, usage report
+uv run tokoboros skill import ./my-skill.md
+uv run tokoboros skill list
+uv run tokoboros skill export deploy_to_prod -o deploy.og
+uv run tokoboros skill lint ./my-skills/      # structure + ::dense token-budget check (--strict for CI)
+uv run tokoboros skill report                 # which skills earn their keep vs. dead weight
+
+# Proactive scheduling (cron / interval / one-shot)
+uv run tokoboros schedule add "daily-brief" "Summarize my unread email" --cron "0 9 * * 1-5"
+uv run tokoboros schedule list
+uv run tokoboros schedule run-due
+
+# Talk to the agent from Telegram (needs TELEGRAM_BOT_TOKEN)
+uv run tokoboros channel telegram
 ```
 
 ### Gateway and Web Frontend
@@ -149,9 +204,12 @@ Useful endpoints:
 - `POST /sessions`
 - `POST /sessions/{session_id}/messages`
 - `GET /sessions/{session_id}/events`
+- `GET /sessions/{session_id}/stream` — Server-Sent Events stream (replaces polling)
 - `GET /runtime/events`
 - `GET /config`
 - `GET /setup`
+- `POST /v1/chat/completions` — OpenAI-compatible (point Open WebUI / LibreChat here)
+- `POST /channels/{channel}/inbound` — generic inbound webhook for any chat platform
 
 ### Docker Compose
 

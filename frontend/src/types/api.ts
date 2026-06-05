@@ -126,7 +126,7 @@ export interface CapabilityStatusDto {
 }
 
 export interface ProviderSettingsDto {
-  kind: "anthropic" | "openai-compatible" | "ollama";
+  kind: "anthropic" | "openai-compatible" | "openrouter" | "ollama";
   model: string;
   base_url?: string;
   api_key_ref?: string;

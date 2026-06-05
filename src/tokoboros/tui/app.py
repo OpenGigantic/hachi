@@ -17,27 +17,41 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib import error, request
 
-from rich.console import Group
-from rich.markdown import Markdown
-from rich.padding import Padding
+from rich.console import RenderableType
 from rich.text import Text
 from textual.app import App, ComposeResult, NoScreen, ScreenStackError
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
+from textual.widget import Widget
 from textual.widgets import Button, Footer, Header, Input, RichLog, Static, TextArea
 
 from tokoboros.core.onboarding import OnboardingService, SetupStep
 from tokoboros.core.permissions import PermissionDecision, PermissionRequest
 from tokoboros.gateway.orchestrator import AgentSession, boot_agent
 from tokoboros.gateway.workspace import get_skills_dir, get_workspace_dir, load_config
+from tokoboros.tui import theme
 from tokoboros.tui.authoring import (
     apply_authoring_update,
     discover_authoring_targets,
     generate_unified_patch,
     is_authoring_target,
 )
+from tokoboros.tui.formatters import (
+    format_integrations,
+    format_memory,
+    format_ops,
+    format_settings,
+)
 from tokoboros.tui.state_store import TUIStateSnapshot, TUIStateStore
+from tokoboros.tui.theme import TOKOBOROS_THEME
+from tokoboros.tui.widgets import (
+    AgentMessage,
+    ErrorCard,
+    SidebarPanel,
+    ToolCard,
+    UserBubble,
+)
 
 TierName = Literal["lightning", "recommended", "enhanced", "power"]
 
@@ -63,109 +77,226 @@ def _sanitize_agent_markdown(text: str) -> str:
     return _sanitize_legacy_rich_markup(text).strip()
 
 
+def _event_input_summary(tool_input: Any) -> str:
+    """Build a short one-line summary of a tool-call input payload."""
+    if not isinstance(tool_input, dict) or not tool_input:
+        return "running…"
+    parts = []
+    for key, value in list(tool_input.items())[:2]:
+        text = _sanitize_legacy_rich_markup(str(value)).replace("\n", " ")
+        if len(text) > 40:
+            text = text[:39] + "…"
+        parts.append(f"{key}={text}")
+    return "  ".join(parts)
+
+
+def _looks_like_error(text: str) -> bool:
+    """Heuristic: does a tool-result preview describe a failure?"""
+    lowered = text.lower()
+    return any(token in lowered for token in ("failed", "error:", "traceback", "exception"))
+
+
 APP_CSS = """
 Screen {
   layout: vertical;
+  background: $background;
 }
 
+
+.mode-title {
+  height: auto;
+  padding: 0 2;
+  margin: 1 0 0 0;
+  color: $text-muted;
+  text-style: bold;
+}
+
+/* --- Session screen ---------------------------------------------------- */
 #session-root {
   height: 1fr;
   width: 100%;
 }
 
+#transcript {
+  height: 1fr;
+  width: 1fr;
+  padding: 1 2;
+  background: $background;
+}
+
+#sidebar {
+  width: 34;
+  height: 1fr;
+  padding: 1 2;
+  background: $surface;
+  color: $foreground;
+}
+
+#session-root.narrow #sidebar {
+  display: none;
+}
+
 #composer {
   dock: bottom;
-  margin: 1 1;
+  margin: 0 2 1 2;
+  border: round #30363d;
+  background: $surface;
 }
 
-#transcript {
-  border: round #4a8f6a;
-  margin: 1 1 0 1;
-  height: 1fr;
+#composer:focus {
+  border: round $primary;
 }
 
-#timeline {
-  border: round #9a7040;
-  margin: 1 1 0 0;
-  height: 45%;
-}
-
-#runtime-banner {
-    margin: 0 1;
-    padding: 0 1;
-    height: auto;
-}
-
-#side-status {
-  border: round #5f6fa3;
-  margin: 1 1 0 0;
-  height: 55%;
-}
-
-.mode-title {
+/* --- Transcript message widgets --------------------------------------- */
+.msg {
   height: auto;
-  margin: 1 1;
-  color: #f5deb3;
+  margin: 0 0 1 0;
+  padding: 0 1;
 }
 
+.msg-user {
+  border-left: thick $accent;
+  color: $foreground;
+}
+
+.msg-agent {
+  border-left: thick $primary;
+}
+
+.msg-error {
+  border-left: thick $error;
+  background: $surface;
+}
+
+.tool-card {
+  height: auto;
+  margin: 0 0 1 0;
+  padding: 0 1;
+  border-left: thick $accent;
+  background: $surface;
+}
+
+.tool-card.done {
+  border-left: thick $success;
+}
+
+.tool-card.failed {
+  border-left: thick $error;
+}
+
+.tool-header {
+  height: auto;
+}
+
+.tool-body {
+  height: auto;
+  color: $text-muted;
+}
+
+.system-line {
+  height: auto;
+  margin: 0 0 1 0;
+  color: $text-muted;
+}
+
+/* --- Approval modal ---------------------------------------------------- */
 #approval-modal {
-    align: center middle;
+  align: center middle;
 }
 
 #approval-card {
-    width: 76;
-    height: auto;
-    padding: 1 2;
-    border: round #a65f2a;
-    background: #161514;
+  width: 76;
+  height: auto;
+  padding: 1 2;
+  border: round $warning;
+  background: $surface;
 }
 
 #approval-actions {
-    margin-top: 1;
-    height: auto;
+  margin-top: 1;
+  height: auto;
 }
 
+/* --- Help modal -------------------------------------------------------- */
+#help-modal {
+  align: center middle;
+}
+
+#help-card {
+  width: 64;
+  height: auto;
+  padding: 1 2;
+  border: round $primary;
+  background: $surface;
+}
+
+/* --- Authoring screen -------------------------------------------------- */
 #authoring-root {
-    height: 1fr;
-    margin: 1 1;
+  height: 1fr;
+  margin: 0 2;
 }
 
 #authoring-targets {
-    border: round #7d8ca8;
-    width: 34%;
+  border: round #30363d;
+  width: 34%;
+  background: $surface;
 }
 
 #authoring-editor {
-    border: round #4a8f6a;
-    height: 1fr;
+  border: round #30363d;
+  height: 1fr;
 }
 
 #authoring-patch {
-    border: round #9a7040;
-    height: 1fr;
+  border: round #30363d;
+  height: 1fr;
+  background: $surface;
 }
 
 #authoring-actions {
-    height: auto;
-    margin: 1 1;
+  height: auto;
+  margin: 1 2;
 }
 
 #authoring-status {
-    margin: 0 1 1 1;
-    color: #cfcfcf;
+  margin: 0 2 1 2;
+  color: $text-muted;
+}
+
+/* --- Setup wizard ------------------------------------------------------ */
+#setup-progress {
+  height: auto;
+  padding: 0 2;
+  color: $text-muted;
 }
 
 #setup-body {
-    margin: 1 1;
-    border: round #5f6fa3;
-    padding: 1 2;
-    height: 1fr;
+  margin: 1 2;
+  border: round #30363d;
+  background: $surface;
+  padding: 1 2;
+  height: 1fr;
 }
 
-#setup-options,
+#setup-options {
+  height: auto;
+  padding: 0 1;
+}
+
+#setup-options Button {
+  margin: 0 0 1 0;
+  width: 100%;
+}
+
 #setup-nav {
-    margin: 0 1 1 1;
-    height: auto;
+  margin: 0 2 1 2;
+  height: auto;
+}
+
+/* --- Snapshot screens -------------------------------------------------- */
+#snapshot-body {
+  height: 1fr;
+  padding: 1 2;
 }
 """
 
@@ -212,6 +343,42 @@ class PermissionApprovalModal(ModalScreen[PermissionDecision]):
             self.dismiss(
                 PermissionDecision(action="deny", rationale=rationale or "Denied from modal")
             )
+
+
+_HELP_ROWS: tuple[tuple[str, str], ...] = (
+    ("Enter", "Send the prompt in the composer"),
+    ("Ctrl+1 … Ctrl+7", "Switch mode (Session / Ops / Memory / …)"),
+    ("Ctrl+P", "Command palette"),
+    ("Ctrl+R", "Refresh the current screen"),
+    ("Ctrl+C", "Interrupt: stop polling, dismiss approvals"),
+    ("?", "Toggle this help"),
+    ("Escape", "Close a dialog / deny an approval"),
+)
+
+
+class HelpModal(ModalScreen[None]):
+    """Keybinding reference overlay."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("question_mark", "close", "Close", show=False),
+    ]
+
+    def compose(self) -> ComposeResult:
+        rows = Text()
+        for key, description in _HELP_ROWS:
+            rows.append(f"  {key:<18}", style=f"bold {theme.PRIMARY}")
+            rows.append(f"{description}\n", style=theme.FOREGROUND)
+        with Vertical(id="help-card"):
+            yield Static(Text("Keyboard shortcuts", style=f"bold {theme.ACCENT}"))
+            yield Static(rows)
+            yield Button("Close", id="help-close", variant="primary")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, _event: Button.Pressed) -> None:
+        self.dismiss(None)
 
 
 class SetupWizardController:
@@ -312,35 +479,86 @@ class SetupWizardController:
         return applied.model_dump(mode="python")
 
 
+_SETUP_STEP_COPY: dict[str, tuple[str, str]] = {
+    "welcome": (
+        "Choose a capability tier",
+        "Tiers set the default tools, memory, and integrations. You can change "
+        "everything later from Settings.",
+    ),
+    "provider": (
+        "Pick a model provider",
+        "Where completions run. API keys are resolved lazily at call time — "
+        "nothing is requested now.",
+    ),
+    "safety": (
+        "Set the permission tier",
+        "Controls how risky filesystem/shell operations are gated at runtime.",
+    ),
+    "memory": (
+        "Configure memory",
+        "Session history and long-term semantic recall. Off keeps everything in-context only.",
+    ),
+    "integrations": (
+        "Connect integrations (optional)",
+        "Enable now or skip and connect later. Enabling only records intent; "
+        "credentials are configured separately.",
+    ),
+    "finish": (
+        "Review and finish",
+        "Apply the selected setup and boot the runtime.",
+    ),
+}
+
+_SETUP_STEP_OPTIONS: dict[str, list[tuple[str, str, str]]] = {
+    "welcome": [
+        ("setup-tier-lightning", "Lightning", "fastest, minimal capabilities"),
+        ("setup-tier-recommended", "Recommended", "balanced defaults for most users"),
+        ("setup-tier-enhanced", "Enhanced", "more tools and memory"),
+        ("setup-tier-power", "Power", "everything enabled"),
+    ],
+    "provider": [
+        ("setup-provider-anthropic", "Anthropic", "Claude models (ANTHROPIC_API_KEY)"),
+        ("setup-provider-openai", "OpenAI-compatible", "GPT / compatible endpoints"),
+        ("setup-provider-ollama", "Ollama", "local models via Ollama"),
+    ],
+    "safety": [
+        ("setup-perm-sandbox", "Sandbox", "blocks risky operations"),
+        ("setup-perm-guided", "Guided", "asks for approval on risky ops"),
+        ("setup-perm-unrestricted", "Unrestricted", "no gating — use with care"),
+    ],
+    "memory": [
+        ("setup-memory-on", "Memory on", "session history + semantic recall"),
+        ("setup-memory-off", "Memory off", "in-context only, no persistence"),
+    ],
+    "integrations": [
+        ("setup-google-enable", "Google: enable", "record intent to connect Google"),
+        ("setup-google-later", "Google: later", "skip for now"),
+        ("setup-slack-enable", "Slack: enable", "record intent to connect Slack"),
+        ("setup-slack-later", "Slack: later", "skip for now"),
+        ("setup-notion-enable", "Notion: enable", "record intent to connect Notion"),
+        ("setup-notion-later", "Notion: later", "skip for now"),
+    ],
+    "finish": [],
+}
+
+
 class SetupScreen(Screen):
     """Tiered onboarding wizard with resumable state."""
 
     def compose(self) -> ComposeResult:
         yield Static("Tokoboros Setup", classes="mode-title")
-        yield Static("Preparing setup...", id="setup-body")
-        with Horizontal(id="setup-options"):
-            yield Button("Lightning", id="setup-tier-lightning")
-            yield Button("Recommended", id="setup-tier-recommended")
-            yield Button("Enhanced", id="setup-tier-enhanced")
-            yield Button("Power", id="setup-tier-power")
-            yield Button("Anthropic", id="setup-provider-anthropic")
-            yield Button("OpenAI-Compatible", id="setup-provider-openai")
-            yield Button("Ollama", id="setup-provider-ollama")
-            yield Button("Sandbox", id="setup-perm-sandbox")
-            yield Button("Guided", id="setup-perm-guided")
-            yield Button("Unrestricted", id="setup-perm-unrestricted")
-            yield Button("Memory On", id="setup-memory-on")
-            yield Button("Memory Off", id="setup-memory-off")
-            yield Button("Google Later", id="setup-google-later")
-            yield Button("Google Enable", id="setup-google-enable")
-            yield Button("Slack Later", id="setup-slack-later")
-            yield Button("Slack Enable", id="setup-slack-enable")
-            yield Button("Notion Later", id="setup-notion-later")
-            yield Button("Notion Enable", id="setup-notion-enable")
+        yield Static("", id="setup-progress")
+        yield Static("Preparing setup…", id="setup-body")
+        with Vertical(id="setup-options"):
+            # All option buttons are created once; visibility is toggled per
+            # step in render_step to avoid dynamic mount/remove id collisions.
+            for options in _SETUP_STEP_OPTIONS.values():
+                for button_id, label, desc in options:
+                    yield Button(f"  {label} — {desc}", id=button_id)
         with Horizontal(id="setup-nav"):
-            yield Button("Back", id="setup-back")
+            yield Button("← Back", id="setup-back")
             yield Button("Skip for now", id="setup-skip")
-            yield Button("Next", id="setup-next", variant="primary")
+            yield Button("Next →", id="setup-next", variant="primary")
             yield Button("Finish", id="setup-finish", variant="success")
 
     def on_mount(self) -> None:
@@ -352,10 +570,34 @@ class SetupScreen(Screen):
             return app.setup_controller
         return None
 
-    def _set_options_enabled(self, prefix: str, enabled: bool) -> None:
-        for button in self.query(Button):
-            if button.id and button.id.startswith(prefix):
-                button.disabled = not enabled
+    def _option_selected(self, button_id: str, controller: SetupWizardController) -> bool:
+        answers = controller.answers
+        if button_id.startswith("setup-tier-"):
+            return controller.selected_tier == button_id.rsplit("-", 1)[-1]
+        if button_id.startswith("setup-provider-"):
+            kind_map = {
+                "anthropic": "anthropic",
+                "openai": "openai-compatible",
+                "ollama": "ollama",
+            }
+            wanted = kind_map.get(button_id.rsplit("-", 1)[-1])
+            provider = answers.get("provider", {})
+            return isinstance(provider, dict) and provider.get("kind") == wanted
+        if button_id.startswith("setup-perm-"):
+            return answers.get("permission_tier") == button_id.rsplit("-", 1)[-1]
+        memory = answers.get("memory")
+        if button_id == "setup-memory-on":
+            return isinstance(memory, dict) and bool(memory.get("enable_semantic_memory"))
+        if button_id == "setup-memory-off":
+            return isinstance(memory, dict) and not memory.get("enable_semantic_memory")
+        for service in ("google", "slack", "notion"):
+            if button_id.startswith(f"setup-{service}-"):
+                entry = answers.get("integrations", {}).get(service)
+                if not isinstance(entry, dict):
+                    return False
+                enabled = bool(entry.get("enabled"))
+                return enabled if button_id.endswith("enable") else not enabled
+        return False
 
     def render_step(self) -> None:
         controller = self._controller()
@@ -365,32 +607,40 @@ class SetupScreen(Screen):
         step = controller.current_step
         idx = controller.step_index() + 1
         total = len(controller.steps)
-        state = controller.state
 
-        body = self.query_one("#setup-body", Static)
-        body.update(
-            f"Step {idx}/{total}: {step}\n\n"
-            f"Tier: {controller.selected_tier}\n"
-            f"Completed markers: {', '.join(state.completed_steps) or 'none'}\n"
-            f"Detected env: ollama={controller.environment.get('ollama_cli')} "
-            f"anthropic_env={controller.environment.get('anthropic_env')} "
-            f"openai_env={controller.environment.get('openai_env')}\n\n"
-            "Why this matters: setup defines the minimum runtime capabilities and safety "
-            "defaults.\n"
-            "Use Skip for now on optional steps and reopen setup anytime from settings or "
-            "CLI."
+        dots = " ".join("●" if i < idx else "○" for i in range(total))
+        self.query_one("#setup-progress", Static).update(
+            Text.assemble(
+                (f"Step {idx}/{total}  ", theme.MUTED),
+                (dots, theme.PRIMARY),
+            )
         )
 
-        self._set_options_enabled("setup-tier-", step == "welcome")
-        self._set_options_enabled("setup-provider-", step == "provider")
-        self._set_options_enabled("setup-perm-", step == "safety")
-        self._set_options_enabled("setup-memory-", step == "memory")
-        self._set_options_enabled("setup-google-", step == "integrations")
-        self._set_options_enabled("setup-slack-", step == "integrations")
-        self._set_options_enabled("setup-notion-", step == "integrations")
+        title, description = _SETUP_STEP_COPY.get(step, (step.title(), ""))
+        body = self.query_one("#setup-body", Static)
+        body.update(
+            Text.assemble(
+                (f"{title}\n", f"bold {theme.FOREGROUND}"),
+                (f"{description}\n", theme.MUTED),
+                ("\nSelected tier: ", theme.MUTED),
+                (controller.selected_tier, theme.ACCENT),
+            )
+        )
+
+        current_ids = {button_id for button_id, _, _ in _SETUP_STEP_OPTIONS.get(step, [])}
+        for options in _SETUP_STEP_OPTIONS.values():
+            for button_id, label, desc in options:
+                button = self.query_one(f"#{button_id}", Button)
+                visible = button_id in current_ids
+                button.display = visible
+                if visible:
+                    selected = self._option_selected(button_id, controller)
+                    button.label = f"{'✓ ' if selected else '  '}{label} — {desc}"
+                    button.variant = "primary" if selected else "default"
 
         self.query_one("#setup-back", Button).disabled = controller.step_index() == 0
         self.query_one("#setup-next", Button).disabled = step == "finish"
+        self.query_one("#setup-skip", Button).disabled = step == "finish"
         self.query_one("#setup-finish", Button).disabled = step != "finish"
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -486,157 +736,134 @@ class SetupScreen(Screen):
 
 
 class SessionScreen(Screen):
-    """Primary session workspace with transcript, composer, and operator timeline."""
+    """Primary chat workspace: scrollable transcript, live sidebar, composer."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._tool_cards: dict[str, list[ToolCard]] = {}
 
     def compose(self) -> ComposeResult:
-        yield Static("Tokoboros Session", classes="mode-title")
         with Horizontal(id="session-root"):
-            yield RichLog(id="transcript", highlight=True, wrap=True)
-            with Vertical():
-                yield RichLog(id="timeline", highlight=True, wrap=True)
-                yield Static("Status pending boot...", id="side-status")
-        yield Input(placeholder="Send a prompt (enter to submit)", id="composer")
+            yield VerticalScroll(id="transcript")
+            yield SidebarPanel(id="sidebar")
+        yield Input(
+            placeholder="Send a prompt  ·  Enter to submit  ·  ? for help",
+            id="composer",
+        )
 
     def on_mount(self) -> None:
-        transcript = self.query_one("#transcript", RichLog)
-        transcript.write("Booting runtime...")
         app = self.app
         if isinstance(app, TokoborosTextualApp):
             self.query_one("#composer", Input).value = app.hydrated_draft
+            app.refresh_sidebar()
+        self._mount_system_line("Booting runtime…")
+
+    # --- mounting helpers -------------------------------------------------
+    def _transcript(self) -> VerticalScroll:
+        return self.query_one("#transcript", VerticalScroll)
+
+    def _append(self, widget: Widget) -> None:
+        transcript = self._transcript()
+        transcript.mount(widget)
+        transcript.scroll_end(animate=False)
+
+    def _mount_system_line(self, text: str, *, style: str = theme.MUTED) -> None:
+        self._append(Static(Text(text, style=style), classes="system-line"))
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "composer":
             return
-
         prompt = event.value.strip()
         event.input.value = ""
         if not prompt:
             return
-
         app = self.app
         if isinstance(app, TokoborosTextualApp):
             app.submit_prompt(prompt)
 
+    def on_resize(self, _event: object) -> None:
+        try:
+            root = self.query_one("#session-root", Horizontal)
+        except Exception:
+            return
+        root.set_class(self.size.width < 90, "narrow")
+
+    # --- transcript rendering --------------------------------------------
     def append_user_prompt(self, text: str) -> None:
-        transcript = self.query_one("#transcript", RichLog)
-        transcript.write(Text.assemble(("You:", "bold cyan"), " ", text))
+        self._append(UserBubble(text))
+
+    def render_assistant_text(self, text: str) -> None:
+        cleaned = _sanitize_agent_markdown(text)
+        app = self.app
+        if isinstance(app, TokoborosTextualApp):
+            if cleaned and app.last_agent_text == cleaned:
+                return
+            app.last_agent_text = cleaned
+        self._append(AgentMessage(cleaned))
 
     def append_agent_response(self, text: str) -> None:
-        transcript = self.query_one("#transcript", RichLog)
-        cleaned = _sanitize_agent_markdown(text)
-        if not cleaned:
-            transcript.write(
-                Text.assemble(("Tokoboros:", "bold magenta"), " ", ("(no response)", "dim"))
-            )
-            return
+        """Backward-compatible alias retained for callers/tests."""
+        self.render_assistant_text(text)
 
-        transcript.write(
-            Group(
-                Text("Tokoboros:", style="bold magenta"),
-                Padding(Markdown(cleaned), (0, 0, 0, 2)),
-            )
-        )
+    def append_error(self, message: str) -> None:
+        self._append(ErrorCard(_sanitize_legacy_rich_markup(message)))
 
     def ingest_runtime_event(self, event_type: str, payload: dict[str, Any]) -> None:
-        transcript = self.query_one("#transcript", RichLog)
-        timeline = self.query_one("#timeline", RichLog)
-        status = self.query_one("#side-status", Static)
-
-        if event_type == "boot.progress":
-            idx = payload.get("index", "?")
-            total = payload.get("total", "?")
-            msg = payload.get("message", "Booting")
-            transcript.write(Text(f"Boot {idx}/{total}: {msg}", style="dim"))
-            return
-
-        if event_type == "boot.complete":
-            transcript.write(Text("Runtime ready.", style="green"))
-            return
-
-        if event_type == "gateway.connect.completed":
-            session_id = str(payload.get("session_id", ""))
-            base_url = payload.get("base_url", "")
-            transcript.write(Text.assemble(("Gateway connected:", "green"), " ", str(base_url)))
-            if session_id:
-                timeline.write(
-                    Text.assemble(("Gateway session:", "green"), " ", f"{session_id[:12]}...")
-                )
-            return
-
-        if event_type == "gateway.events.error":
-            timeline.write(
-                Text.assemble(
-                    ("Gateway events error:", "red"),
-                    " ",
-                    _sanitize_legacy_rich_markup(str(payload.get("error", "unknown"))),
-                )
-            )
-            return
-
-        if event_type == "boot.failed":
-            transcript.write(Text("Runtime boot failed.", style="red"))
-            return
-
-        if event_type == "thinking.step":
-            timeline.write(Text(f"Thinking step {payload.get('iteration', '?')}", style="dim"))
-            return
-
         if event_type == "text.stream.delta":
-            text = payload.get("text", "").strip()
+            text = str(payload.get("text", "")).strip()
             if text:
-                transcript.write(Text(_sanitize_legacy_rich_markup(text)[:220], style="dim"))
+                app = self.app
+                if isinstance(app, TokoborosTextualApp):
+                    app.mark_turn_streamed()
+                self.render_assistant_text(text)
             return
 
         if event_type == "tool.call.started":
-            timeline.write(
-                Text.assemble(("Tool:", "yellow"), " ", str(payload.get("name", "unknown")))
-            )
+            name = str(payload.get("name", "tool"))
+            card = ToolCard(name, _event_input_summary(payload.get("input")))
+            self._tool_cards.setdefault(name, []).append(card)
+            self._append(card)
             return
 
         if event_type == "tool.call.completed":
-            preview = payload.get("result_preview", "")
-            timeline.write(
-                Text.assemble(
-                    ("Result:", "green"),
-                    " ",
-                    _sanitize_legacy_rich_markup(str(preview))[:180],
-                )
+            name = str(payload.get("name", "tool"))
+            preview = _sanitize_legacy_rich_markup(str(payload.get("result_preview", "")))
+            cards = self._tool_cards.get(name)
+            if cards:
+                card = cards.pop(0)
+                if _looks_like_error(preview):
+                    card.mark_error(preview)
+                else:
+                    card.mark_completed(preview)
+            return
+
+        if event_type == "boot.progress":
+            self._mount_system_line(
+                f"Boot {payload.get('index', '?')}/{payload.get('total', '?')}: "
+                f"{payload.get('message', 'booting')}"
             )
             return
 
-        if event_type == "permission.decided":
-            decision = payload.get("decision", "unknown")
-            tool = payload.get("tool", "unknown")
-            timeline.write(Text.assemble((f"Permission {decision}", "bold"), " for ", str(tool)))
+        if event_type == "boot.complete":
+            self._mount_system_line("Runtime ready.", style=theme.SUCCESS)
             return
 
-        if event_type == "permission.requested":
-            timeline.write(
-                Text.assemble(
-                    ("Approval requested:", "bold yellow"),
-                    " ",
-                    str(payload.get("operation", "operation")),
-                    " ",
-                    str(payload.get("target", "")),
-                )
+        if event_type == "boot.failed":
+            self.append_error(f"Runtime boot failed: {payload.get('error', 'unknown')}")
+            return
+
+        if event_type == "gateway.connect.completed":
+            self._mount_system_line(
+                f"Gateway connected: {payload.get('base_url', '')}", style=theme.SUCCESS
             )
-            status.update("Waiting for operator approval...")
             return
 
-        if event_type == "session.chat.started":
-            status.update("Assistant is working...")
+        if event_type == "gateway.events.error":
+            self.append_error(f"Gateway events error: {payload.get('error', 'unknown')}")
             return
 
-        if event_type == "session.chat.completed":
-            status.update("Idle")
-            return
-
-        if event_type == "job.started":
-            status.update(f"Running job: {payload.get('label', 'job')}")
-            return
-
-        if event_type == "job.completed":
-            status.update("Idle")
+        # thinking / usage / session / job / permission events only drive the
+        # sidebar status, which the app refreshes after each event.
 
 
 class SnapshotScreen(Screen):
@@ -646,7 +873,8 @@ class SnapshotScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Static(self.title_text, classes="mode-title")
-        yield Static("Waiting for runtime...", id="snapshot-body")
+        with VerticalScroll():
+            yield Static("Waiting for runtime…", id="snapshot-body")
 
     def on_mount(self) -> None:
         app = self.app
@@ -665,64 +893,43 @@ class SnapshotScreen(Screen):
 
         body.update(self._build_snapshot(agent))
 
-    def _build_snapshot(self, agent: AgentSession) -> str:
+    def _build_snapshot(self, agent: AgentSession) -> RenderableType:
         return "No snapshot configured"
+
+
+def _mcp_to_dict(mcp: Any) -> dict[str, Any]:
+    return {
+        "server_count": mcp.server_count,
+        "total_tool_count": mcp.total_tool_count,
+        "servers": [asdict(srv) for srv in mcp.servers],
+    }
 
 
 class OpsScreen(SnapshotScreen):
     title_text = "Ops"
 
-    def _build_snapshot(self, agent: AgentSession) -> str:
+    def _build_snapshot(self, agent: AgentSession) -> RenderableType:
         jobs = [asdict(job) for job in agent.snapshot_active_jobs()]
         failures = [asdict(job) for job in agent.snapshot_failed_jobs(limit=10)]
-        mcp = agent.snapshot_mcp_inventory()
+        mcp = _mcp_to_dict(agent.snapshot_mcp_inventory())
         events = [asdict(evt) for evt in agent.snapshot_runtime_events(limit=10)]
-        return (
-            "Active Jobs:\n"
-            + json.dumps(jobs, indent=2)
-            + "\n\nFailed Jobs:\n"
-            + json.dumps(failures, indent=2)
-            + "\n\nMCP Inventory:\n"
-            + json.dumps(
-                {
-                    "server_count": mcp.server_count,
-                    "total_tool_count": mcp.total_tool_count,
-                    "servers": [asdict(srv) for srv in mcp.servers],
-                },
-                indent=2,
-            )
-            + "\n\nRecent Events:\n"
-            + json.dumps(events, indent=2)
-        )
+        return format_ops(jobs, failures, mcp, events)
 
 
 class MemoryScreen(SnapshotScreen):
     title_text = "Memory"
 
-    def _build_snapshot(self, agent: AgentSession) -> str:
+    def _build_snapshot(self, agent: AgentSession) -> RenderableType:
         recalls = [asdict(row) for row in agent.query_memory_recall("recent context", top_k=5)]
         tasks = [asdict(row) for row in agent.snapshot_task_ledger(limit=8)]
-        return (
-            "Task Ledger:\n"
-            + json.dumps(tasks, indent=2)
-            + "\n\nRecall:\n"
-            + json.dumps(recalls, indent=2)
-        )
+        return format_memory(tasks, recalls)
 
 
 class IntegrationsScreen(SnapshotScreen):
     title_text = "Integrations"
 
-    def _build_snapshot(self, agent: AgentSession) -> str:
-        mcp = agent.snapshot_mcp_inventory()
-        return json.dumps(
-            {
-                "server_count": mcp.server_count,
-                "total_tool_count": mcp.total_tool_count,
-                "servers": [asdict(srv) for srv in mcp.servers],
-            },
-            indent=2,
-        )
+    def _build_snapshot(self, agent: AgentSession) -> RenderableType:
+        return format_integrations(_mcp_to_dict(agent.snapshot_mcp_inventory()))
 
 
 class AuthoringScreen(SnapshotScreen):
@@ -887,26 +1094,11 @@ class AuthoringScreen(SnapshotScreen):
 class SettingsScreen(SnapshotScreen):
     title_text = "Settings"
 
-    def _build_snapshot(self, agent: AgentSession) -> str:
-        state = agent.snapshot_session_state()
+    def _build_snapshot(self, agent: AgentSession) -> RenderableType:
+        state = asdict(agent.snapshot_session_state())
         config = load_config()
-        sessions = list(agent.query_recent_sessions(limit=8))
-        return (
-            "Session State:\n"
-            + json.dumps(asdict(state), indent=2)
-            + "\n\nEffective Config:\n"
-            + json.dumps(
-                {
-                    "provider": config.get("provider", {}),
-                    "permissions": config.get("permissions", {}),
-                    "memory": config.get("memory", {}),
-                    "capabilities": config.get("capabilities", {}),
-                },
-                indent=2,
-            )
-            + "\n\nRecent Sessions:\n"
-            + json.dumps(sessions, indent=2)
-        )
+        sessions = [dict(row) for row in agent.query_recent_sessions(limit=8)]
+        return format_settings(state, config if isinstance(config, dict) else {}, sessions)
 
 
 class TokoborosTextualApp(App[None]):
@@ -952,6 +1144,7 @@ class TokoborosTextualApp(App[None]):
         Binding("ctrl+p", "command_palette", "Palette"),
         Binding("ctrl+c", "interrupt", "Interrupt"),
         Binding("ctrl+r", "refresh_current", "Refresh"),
+        Binding("question_mark", "help", "Help"),
     ]
 
     def __init__(self, gateway_base_url: str | None = None) -> None:
@@ -975,6 +1168,12 @@ class TokoborosTextualApp(App[None]):
             str, tuple[threading.Event, dict[str, PermissionDecision]]
         ] = {}
         self._approval_lock = threading.Lock()
+        # Session transcript / sidebar state.
+        self._turn_streamed_any = False
+        self.last_agent_text = ""
+        self._activity: tuple[str, str] = ("Idle", "idle")
+        self._usage: dict[str, Any] | None = None
+        self._recent_tools: list[dict[str, str]] = []
 
     @property
     def hydrated_draft(self) -> str:
@@ -1094,9 +1293,87 @@ class TokoborosTextualApp(App[None]):
             return
         banner.update(self._runtime_banner_text())
 
+    def _provider_model(self) -> str:
+        provider = self._runtime_config().get("provider", {})
+        if isinstance(provider, dict):
+            return str(provider.get("model", "unknown"))
+        return "unknown"
+
+    def mark_turn_streamed(self) -> None:
+        """Flag that the current turn produced streamed assistant text."""
+        self._turn_streamed_any = True
+
+    def _sidebar_info(self) -> dict[str, Any]:
+        status, kind = self._activity
+        session_id = self._gateway_session_id
+        if not session_id and self._agent:
+            try:
+                session_id = self._agent.snapshot_session_state().session_id
+            except Exception:
+                session_id = ""
+        info: dict[str, Any] = {
+            "status": status,
+            "status_kind": kind,
+            "model": self._provider_model(),
+            "tier": self._permission_tier(),
+            "workspace": get_workspace_dir().name,
+            "session": session_id[:12] if session_id else "none",
+            "stream": self._event_stream_signal(),
+            "jobs": self._active_job_count(),
+            "approvals": self._pending_approval_count(),
+            "warnings": self._warning_count(),
+            "recent_tools": self._recent_tools[-6:],
+        }
+        if self._usage:
+            info["tokens"] = self._usage.get("total_tokens", 0)
+            info["cost"] = self._usage.get("estimated_cost_usd", 0.0)
+        return info
+
+    def refresh_sidebar(self) -> None:
+        screen = self._current_screen()
+        if not isinstance(screen, SessionScreen):
+            return
+        try:
+            sidebar = screen.query_one("#sidebar", SidebarPanel)
+        except Exception:
+            return
+        sidebar.update_info(self._sidebar_info())
+
+    def _note_activity(self, event_type: str, payload: dict[str, Any]) -> None:
+        if event_type == "session.chat.started":
+            self._activity = ("Working…", "running")
+        elif event_type == "thinking.step":
+            self._activity = (f"Thinking · step {payload.get('iteration', '?')}", "running")
+        elif event_type == "tool.call.started":
+            name = str(payload.get("name", "tool"))
+            self._activity = (f"Running {name}…", "running")
+            self._recent_tools.append({"name": name, "status": "running"})
+            self._recent_tools = self._recent_tools[-12:]
+        elif event_type == "tool.call.completed":
+            name = str(payload.get("name", "tool"))
+            preview = _sanitize_legacy_rich_markup(str(payload.get("result_preview", "")))
+            status = "failed" if _looks_like_error(preview) else "completed"
+            for tool in reversed(self._recent_tools):
+                if tool["name"] == name and tool["status"] == "running":
+                    tool["status"] = status
+                    break
+        elif event_type == "permission.requested":
+            self._activity = ("Waiting for approval", "pending")
+        elif event_type == "permission.decided":
+            self._activity = ("Working…", "running")
+        elif event_type == "usage.updated":
+            self._usage = dict(payload)
+        elif event_type == "job.started":
+            self._activity = (f"Running job: {payload.get('label', 'job')}", "running")
+        elif event_type in {"session.chat.completed", "job.completed"}:
+            self._activity = ("Idle", "idle")
+        elif event_type in {"boot.failed", "job.failed"}:
+            self._activity = ("Failed", "failed")
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield Static("Booting runtime...", id="runtime-banner")
+        # The runtime/provider/tier summary lives only in the session sidebar
+        # (format_session_info) — no bottom banner, to avoid duplicating it.
         yield Footer()
 
     def clear_selection(self) -> None:
@@ -1108,7 +1385,26 @@ class TokoborosTextualApp(App[None]):
             # during initial input mount before the first screen is on stack.
             pass
 
+    def get_theme_variable_defaults(self) -> dict[str, str]:
+        """Custom CSS ``$variables`` that must resolve regardless of active theme.
+
+        ``App.CSS`` is parsed at startup against the default theme — before
+        ``on_mount`` registers/activates the tokoboros theme — so the custom
+        variables it references (``$border-muted``, ``$text-muted``) must be
+        provided here or the stylesheet fails to parse. Values mirror
+        ``theme.py`` so there is a single source of truth.
+        """
+        return {
+            "border-muted": theme.BORDER_MUTED,
+            "text-muted": theme.MUTED,
+            "role-user": theme.ROLE_USER,
+            "role-agent": theme.ROLE_AGENT,
+        }
+
     def on_mount(self) -> None:
+        self.register_theme(TOKOBOROS_THEME)
+        self.theme = "tokoboros"
+
         target_mode = self.DEFAULT_MODE
 
         if self._onboarding.needs_setup():
@@ -1338,10 +1634,13 @@ class TokoborosTextualApp(App[None]):
         if len(self._event_buffer) > 1500:
             self._event_buffer = self._event_buffer[-1500:]
 
+        self._note_activity(event_type, payload)
+
         screen = self._current_screen()
         if isinstance(screen, SessionScreen):
             screen.ingest_runtime_event(event_type, payload)
         self._update_runtime_banner()
+        self.refresh_sidebar()
 
     def _on_boot_complete(self, agent: AgentSession | None, error_text: str | None) -> None:
         self._agent = agent
@@ -1356,12 +1655,14 @@ class TokoborosTextualApp(App[None]):
             return
 
         self.notify("Tokoboros is online", timeout=3)
+        self._activity = ("Idle", "idle")
         screen = self._current_screen()
         if isinstance(screen, SessionScreen):
             screen.ingest_runtime_event("boot.complete", {})
 
         if screen is not None:
             self._refresh_snapshot_mode(screen)
+        self.refresh_sidebar()
 
     def submit_prompt(self, prompt: str) -> None:
         if self._boot_error:
@@ -1379,9 +1680,13 @@ class TokoborosTextualApp(App[None]):
             self.notify("A chat request is already running.", timeout=2)
             return
 
+        self._turn_streamed_any = False
+        self._activity = ("Working…", "running")
+
         screen = self._current_screen()
         if isinstance(screen, SessionScreen):
             screen.append_user_prompt(prompt)
+        self.refresh_sidebar()
 
         target = self._run_gateway_chat if self._gateway_connected else self._run_chat
         self._chat_thread = threading.Thread(
@@ -1426,12 +1731,17 @@ class TokoborosTextualApp(App[None]):
         screen = self._current_screen()
         if isinstance(screen, SessionScreen):
             if error_text:
-                screen.append_agent_response(f"Error: {error_text}")
-            else:
-                screen.append_agent_response(response)
+                screen.append_error(error_text)
+            elif not self._turn_streamed_any:
+                # No streamed text arrived this turn — render the final
+                # response. When deltas did stream (the normal case), the
+                # transcript already shows it, so skip to avoid duplication.
+                screen.render_assistant_text(response)
+        self._activity = ("Idle", "idle")
         if screen is not None:
             self._refresh_snapshot_mode(screen)
         self._update_runtime_banner()
+        self.refresh_sidebar()
         self._persist_ui_state()
 
     def action_interrupt(self) -> None:
@@ -1443,11 +1753,17 @@ class TokoborosTextualApp(App[None]):
             timeout=4,
         )
 
+    def action_help(self) -> None:
+        if isinstance(self._current_screen(), HelpModal):
+            return
+        self.push_screen(HelpModal())
+
     def action_refresh_current(self) -> None:
         screen = self._current_screen()
         if screen is not None:
             self._refresh_snapshot_mode(screen)
         self._update_runtime_banner()
+        self.refresh_sidebar()
         self.notify("Refreshed", timeout=1)
 
     def _refresh_snapshot_mode(self, screen: Screen) -> None:
@@ -1462,6 +1778,7 @@ class TokoborosTextualApp(App[None]):
         screen = self._current_screen()
         if screen is not None:
             self._refresh_snapshot_mode(screen)
+        self.refresh_sidebar()
         self._persist_ui_state()
 
     def _switch_mode(self, mode_name: str) -> None:

@@ -26,6 +26,7 @@ SESSION_SHUTDOWN = "session.shutdown"
 THINKING = "thinking.step"
 TEXT_STREAM = "text.stream.delta"
 COMPACTION = "memory.compaction"
+USAGE_UPDATED = "usage.updated"
 
 # Tool lifecycle
 TOOL_CALL_STARTED = "tool.call.started"
@@ -105,6 +106,14 @@ def adapt_event(event_type: str, data: dict[str, Any] | None = None) -> list[Run
                     },
                 ),
                 legacy_aliases=("text_chunk",),
+            )
+        ]
+
+    if event_type == "usage":
+        return [
+            RuntimeEventEnvelope(
+                _event(USAGE_UPDATED, dict(payload)),
+                legacy_aliases=("usage",),
             )
         ]
 

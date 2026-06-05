@@ -16,9 +16,9 @@ export function SetupScreen() {
   const [tier, setTier] = useState<"lightning" | "recommended" | "enhanced" | "power">(
     "recommended",
   );
-  const [providerKind, setProviderKind] = useState<"anthropic" | "openai-compatible" | "ollama">(
-    "anthropic",
-  );
+  const [providerKind, setProviderKind] = useState<
+    "anthropic" | "openai-compatible" | "openrouter" | "ollama"
+  >("anthropic");
   const [model, setModel] = useState("claude-haiku-4-5");
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -128,6 +128,7 @@ export function SetupScreen() {
           >
             <option value="anthropic">anthropic</option>
             <option value="openai-compatible">openai-compatible</option>
+            <option value="openrouter">openrouter</option>
             <option value="ollama">ollama</option>
           </select>
         </label>
