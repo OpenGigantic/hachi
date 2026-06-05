@@ -52,6 +52,10 @@ class SessionStore:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        # Wait up to 5s for a competing writer instead of immediately raising
+        # "database is locked" — multiple sessions open separate connections to
+        # the same sessions.db.
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._init_schema()
 
     def _init_schema(self) -> None:

@@ -12,11 +12,38 @@ Phase 1 Update:
     - Prevents mutable shared state issues across concurrent sessions/turns
 """
 
+import logging
+import time
 from collections.abc import Callable
 from typing import Any
 
 from tokoboros.core.llm import BaseLLMClient, Message, ToolCall
 from tokoboros.core.turn_context import TurnContext
+
+logger = logging.getLogger(__name__)
+
+# Transient HTTP statuses worth retrying on (rate limit, overloaded, gateway errors).
+_RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}
+_RETRYABLE_HINTS = ("overloaded", "rate limit", "timeout", "timed out", "temporarily", "connection")
+_MAX_LLM_RETRIES = 3
+_LLM_RETRY_BASE_DELAY = 1.0
+
+
+def _is_retryable_llm_error(exc: Exception) -> bool:
+    """Best-effort detection of transient LLM/provider errors (provider-agnostic).
+
+    Checks an HTTP status code (Anthropic/OpenAI SDK exceptions expose
+    ``status_code``; httpx exposes ``response.status_code``) and falls back to
+    message heuristics for connection/timeout errors that carry no status.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        return status in _RETRYABLE_STATUS
+    message = str(exc).lower()
+    return any(hint in message for hint in _RETRYABLE_HINTS)
 
 
 class AgentException(Exception):
@@ -100,6 +127,9 @@ class ExecutionLoop:
         base_system_prompt: str = "",
         on_event: Callable[..., None] | None = None,
         skill_engine=None,
+        cost_tracker=None,
+        max_cost_usd: float = 0.0,
+        max_tokens: int = 0,
     ):
         """Initialize the execution loop.
 
@@ -120,6 +150,11 @@ class ExecutionLoop:
         self.base_system_prompt = base_system_prompt
         self.on_event = on_event or (lambda *a, **kw: None)
         self.skill_engine = skill_engine
+        self.cost_tracker = cost_tracker
+        # Per-session safety caps (0 = unlimited). Enforced between iterations so a
+        # runaway tool-calling loop can't silently drain the user's API budget.
+        self.max_cost_usd = max_cost_usd
+        self.max_tokens = max_tokens
         self._current_turn_context: TurnContext | None = None
 
     def add_user_message(self, text: str):
@@ -144,6 +179,45 @@ class ExecutionLoop:
         if context_header:
             return f"{self.base_system_prompt}\n\n{context_header}"
         return self.base_system_prompt
+
+    def _generate_with_retry(self, **kwargs: Any):
+        """Call the LLM with bounded exponential-backoff retry on transient errors.
+
+        A single rate-limit / overloaded / network blip should not abort the whole
+        turn. Non-retryable errors (auth, 400s) propagate immediately; retryable
+        ones are retried up to ``_MAX_LLM_RETRIES`` times before re-raising.
+        """
+        delay = _LLM_RETRY_BASE_DELAY
+        for attempt in range(1, _MAX_LLM_RETRIES + 1):
+            try:
+                return self.llm_client.generate(**kwargs)
+            except Exception as exc:
+                if attempt >= _MAX_LLM_RETRIES or not _is_retryable_llm_error(exc):
+                    raise
+                logger.warning(
+                    "LLM call failed (attempt %d/%d): %s — retrying in %.1fs",
+                    attempt,
+                    _MAX_LLM_RETRIES,
+                    exc,
+                    delay,
+                )
+                self.on_event("llm_retry", {"attempt": attempt, "error": str(exc)})
+                time.sleep(delay)
+                delay *= 2
+
+    def _budget_exceeded(self) -> str | None:
+        """Return a reason string if a per-session budget cap is hit, else None."""
+        if self.cost_tracker is None or (self.max_cost_usd <= 0 and self.max_tokens <= 0):
+            return None
+        snap = self.cost_tracker.snapshot()
+        if self.max_tokens > 0 and snap.total_tokens >= self.max_tokens:
+            return f"token budget reached ({snap.total_tokens:,} >= {self.max_tokens:,})"
+        if self.max_cost_usd > 0 and snap.estimated_cost_usd >= self.max_cost_usd:
+            return (
+                f"cost budget reached (~${snap.estimated_cost_usd:.4f} "
+                f">= ${self.max_cost_usd:.2f})"
+            )
+        return None
 
     def run(self, max_iterations: int = 15, turn_context: TurnContext | None = None) -> str:
         """
@@ -174,6 +248,13 @@ class ExecutionLoop:
             while iterations < max_iterations:
                 iterations += 1
 
+                # Stop before spending more if a per-session budget cap was hit.
+                budget_reason = self._budget_exceeded()
+                if budget_reason:
+                    self.on_event("budget_exceeded", {"reason": budget_reason})
+                    self.memory.complete_current_task(f"Stopped: {budget_reason}")
+                    return f"[BUDGET LIMIT REACHED] {budget_reason}"
+
                 # Apply any deferred compaction from a previous skill switch.
                 # This is the SAFE moment — all tool_use/tool_result pairs are complete.
                 if self.memory.apply_pending_compaction():
@@ -190,12 +271,18 @@ class ExecutionLoop:
                 # Build the dynamic system prompt (includes task ledger)
                 system_prompt = self._build_system_prompt()
 
-                # 1. Ask the LLM to generate the next step
-                response = self.llm_client.generate(
+                # 1. Ask the LLM to generate the next step (with transient-error retry)
+                response = self._generate_with_retry(
                     messages=self.memory.history,
                     system_prompt=system_prompt,
                     tools=self.registry.get_schemas(),
                 )
+
+                # Account for token usage / estimated cost and surface it live.
+                if self.cost_tracker is not None:
+                    model_name = getattr(self.llm_client, "model", "unknown")
+                    self.cost_tracker.record(model_name, response.usage)
+                    self.on_event("usage", self.cost_tracker.snapshot().to_dict())
 
                 # Record the assistant's generation in history
                 assistant_content: list[dict[str, Any]] = []
@@ -265,6 +352,21 @@ class ExecutionLoop:
                     if tool_error:
                         tr["is_error"] = True  # FIX H6: signal failure to the Anthropic API
                     tool_results.append(tr)
+
+                # Every tool_use block in the assistant message MUST have a matching
+                # tool_result, or the next turn's history is rejected by the Anthropic
+                # API (400). On suspend we break early, so synthesize results for the
+                # suspending tool and any that never ran.
+                answered_ids = {tr["tool_use_id"] for tr in tool_results}
+                for tool_call in response.tool_calls:
+                    if tool_call.id not in answered_ids:
+                        tool_results.append(
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tool_call.id,
+                                "content": "[not executed: workflow suspended]",
+                            }
+                        )
 
                 if tool_results:
                     self.memory.add_message(Message(role="user", content=tool_results))

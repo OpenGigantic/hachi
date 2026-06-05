@@ -317,8 +317,7 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=
                     "fact_id": {
                         "type": "string",
                         "description": (
-                            "The exact ID of the fact to delete, "
-                            "obtained from core_search_memory."
+                            "The exact ID of the fact to delete, obtained from core_search_memory."
                         ),
                     }
                 },

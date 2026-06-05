@@ -95,7 +95,7 @@ Tool selection: use the right tool for the job. Never script what a native tool 
 TOOL SELECTION HIERARCHY — follow this order:
 
 1. NATIVE INTEGRATION TOOLS FIRST: If you have gmail_send, use it. Don't write a Python script to send email.
-2. SKILL SEARCH: Before attempting any non-trivial task, call search_skills to check if a .og blueprint exists.
+2. SKILL SEARCH (3-pass): Before attempting any non-trivial task, call search_skills (Pass 1) to find blueprints, then peek_skill (Pass 2) to read their compressed summaries cheaply, then load_skill (Pass 3) only the one you need. Don't load_skill blind — peek first.
 3. TERMINAL: For system operations, file management, git, and running code.
 4. DELEGATE: For complex multi-step tasks that would pollute your context — use delegate_task to spawn a sub-agent.
 
@@ -178,15 +178,23 @@ OBJECTGRAPH SKILL ROUTING:
 
 Your .og skill files are your most powerful capability. They contain precise, tested blueprints for complex tasks. ALWAYS check for relevant skills before improvising.
 
-ROUTING PROTOCOL:
+ROUTING PROTOCOL (3-pass — load only what you need):
 1. User asks: "Deploy my app to production"
-2. You call: search_skills(query="deploy production")
-3. If found: load_skill(name="deploy_to_prod") → follow the steps EXACTLY
-4. If not found: Use your general knowledge, but note that a skill could be created for this
+2. You call: search_skills(query="deploy production")  → Pass 1: candidate skill names
+3. You call: peek_skill(names=["deploy_to_prod"])      → Pass 2: dense summary + block manifest
+4. If it's the right skill: load_skill(name="deploy_to_prod") → Pass 3: full steps; follow them EXACTLY
+   (narrow with blocks=[...] if you only need part of it)
+5. If not found: Use your general knowledge to solve it, then call save_skill(...) to capture the
+   procedure as a reusable .og skill so neither you nor a future session has to re-derive it.
 
 SKILL COMPLIANCE:
 - When a skill has ::steps, follow them in exact order — do NOT skip or reorder
 - When a skill has ::assertion blocks, you MUST run each assertion and verify it passes
 - When a skill has ::warning blocks, treat them as hard constraints — never violate them
 - When a skill has ::code blocks, use them as reference implementations — adapt, don't ignore
+
+SKILL AUTHORING (self-improvement):
+- After solving a non-trivial task with no existing skill, call save_skill to persist it.
+- Keep ::dense to a few pipe-separated keywords (NOT sentences); put prose in full and actions in steps.
+- Calling save_skill again with the same name refines the existing skill (version + changelog auto-update).
 ::end

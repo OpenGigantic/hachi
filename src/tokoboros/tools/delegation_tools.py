@@ -138,8 +138,13 @@ BLOCKED_TOOL_NAMES = frozenset(
         "core_delete_agent_profile",
         # Session persistence (sub-agents don't have sessions)
         "core_search_sessions",
-        # Workflow control
-        "suspend_workflow",
+        # Workflow control (registered name is core_suspend_workflow)
+        "core_suspend_workflow",
+        # Skill authoring + scheduling are privileged main-agent actions
+        "save_skill",
+        "schedule_task",
+        "list_schedules",
+        "cancel_schedule",
     }
 )
 
@@ -156,6 +161,7 @@ _CORE_TOOLS = frozenset(
         "read_file",
         "write_file",
         "search_skills",
+        "peek_skill",
         "load_skill",
     }
 )
@@ -244,6 +250,8 @@ def _make_delegate_task(
     on_event: Callable[..., None] | None = None,
     vault=None,
     job_queue=None,
+    sub_agent_llm=None,
+    cost_tracker=None,
 ) -> Callable[..., str]:
     """Factory: creates the delegate_task tool handler.
 
@@ -306,13 +314,18 @@ def _make_delegate_task(
             # Build the scoped tool registry (filtered by role + security)
             scoped_registry = _build_scoped_registry(parent_registry, gate, tool_patterns)
 
-            # Create and run the sub-agent
+            # Create and run the sub-agent. Pass the credential-resolved LLM client
+            # down so the sub-agent uses the SAME working provider/key as the main
+            # agent (otherwise it would build a bare client that only reads the env
+            # var and fails with "ANTHROPIC_API_KEY must be provided").
             runtime = SubAgentRuntime(
                 role=role,
                 task=task,
                 context=context or None,
                 tool_registry=scoped_registry,
+                llm_client=sub_agent_llm,
                 on_event=on_event,
+                cost_tracker=cost_tracker,
             )
             report = runtime.run()
 
@@ -472,6 +485,8 @@ def register_delegation_tools(
     on_event: Callable[..., None] | None = None,
     vault=None,
     job_queue=None,
+    sub_agent_llm=None,
+    cost_tracker=None,
 ) -> None:
     """Mount delegation tools onto the provided ToolRegistry.
 
@@ -488,7 +503,9 @@ def register_delegation_tools(
     """
     registry.register(
         DELEGATE_TASK_SCHEMA,
-        _make_delegate_task(registry, gate, on_event, vault, job_queue),
+        _make_delegate_task(
+            registry, gate, on_event, vault, job_queue, sub_agent_llm, cost_tracker
+        ),
     )
     registry.register(
         LIST_ROLES_SCHEMA,

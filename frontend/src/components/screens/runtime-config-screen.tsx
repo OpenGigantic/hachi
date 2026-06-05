@@ -9,7 +9,7 @@ import { useGatewayConfigQuery, useGatewayModelsQuery } from "@/hooks/use-gatewa
 import { Skeleton } from "@/components/ui/skeleton";
 
 const providerSchema = z.object({
-  providerKind: z.enum(["anthropic", "openai-compatible", "ollama"]),
+  providerKind: z.enum(["anthropic", "openai-compatible", "openrouter", "ollama"]),
   model: z.string().min(1, "Model is required"),
   baseUrl: z
     .string()
@@ -159,6 +159,7 @@ export function RuntimeConfigScreen() {
           >
             <option value="anthropic">anthropic</option>
             <option value="openai-compatible">openai-compatible</option>
+            <option value="openrouter">openrouter</option>
             <option value="ollama">ollama</option>
           </select>
           {form.formState.errors.providerKind ? (

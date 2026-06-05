@@ -46,6 +46,7 @@ from tokoboros.gateway.workspace import (
     run_permissions_wizard,
     show_current_permissions,
 )
+from tokoboros.jobs.scheduler import Scheduler, ScheduleStore
 from tokoboros.tui.app import run_tui
 
 app = typer.Typer(help="Tokoboros - The Autonomous Agent Engine powered by ObjectGraph")
@@ -683,6 +684,98 @@ def onboard():
 
 
 @app.command()
+def quickstart(
+    provider: str | None = typer.Option(
+        None, "--provider", help="anthropic | openai-compatible | ollama (skips the prompt)."
+    ),
+    tier: str | None = typer.Option(
+        None, "--tier", help="Safety tier: sandbox | guided | unrestricted (skips the prompt)."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Accept defaults without prompting."),
+):
+    """Fastest path from zero to chatting — a few plain questions, keys checked up front.
+
+    Designed for non-technical users: pick a provider, we validate your API key
+    immediately (instead of failing on the first message), choose a safety level,
+    and you're ready to run ``tokoboros run``.
+    """
+    from tokoboros.core.onboarding import OnboardingService, default_api_key_env_for
+
+    console.print(
+        Panel(
+            "[bold]Welcome to Tokoboros[/bold] 🪢\nLet's get you set up in under a minute.",
+            title="Quickstart",
+        )
+    )
+    ensure_workspace()
+    service = OnboardingService()
+
+    # 1. Provider
+    provider_choices = {"1": "anthropic", "2": "openai-compatible", "3": "ollama"}
+    chosen = (provider or "").strip().lower()
+    if chosen not in {"anthropic", "openai-compatible", "ollama"}:
+        if yes:
+            chosen = "anthropic"
+        else:
+            console.print(
+                "\nWhich AI provider do you want to use?\n"
+                "  [cyan]1[/cyan] Anthropic (Claude) — recommended\n"
+                "  [cyan]2[/cyan] OpenAI-compatible (OpenAI, etc.)\n"
+                "  [cyan]3[/cyan] Ollama (free, runs locally)"
+            )
+            pick = Prompt.ask("Provider", choices=["1", "2", "3"], default="1")
+            chosen = provider_choices[pick]
+
+    # 2. Validate the API key BEFORE anything else (the usual non-geek failure point).
+    env_name = default_api_key_env_for(chosen)
+    ok, message = service.validate_provider(kind=chosen, api_key_env=env_name)
+    if ok:
+        console.print(f"[green]✓[/green] {message}")
+    else:
+        console.print(f"[yellow]⚠ {message}[/yellow]")
+        if not yes and not typer.confirm("Continue setup anyway?", default=True):
+            raise typer.Exit(1)
+
+    # 3. Safety tier
+    chosen_tier = (tier or "").strip().lower()
+    if chosen_tier not in {"sandbox", "guided", "unrestricted"}:
+        if yes:
+            chosen_tier = "guided"
+        else:
+            console.print(
+                "\nHow much freedom should the agent have?\n"
+                "  [cyan]sandbox[/cyan]   — read-only, safest\n"
+                "  [cyan]guided[/cyan]    — asks before risky actions (recommended)\n"
+                "  [cyan]unrestricted[/cyan] — full access, no prompts"
+            )
+            chosen_tier = Prompt.ask(
+                "Safety tier",
+                choices=["sandbox", "guided", "unrestricted"],
+                default="guided",
+            )
+
+    # 4. Apply and confirm
+    try:
+        plan = service.quick_setup(kind=chosen, permission_tier=chosen_tier)
+    except ValueError as e:
+        console.print(f"[red]Setup failed:[/red] {e}")
+        raise typer.Exit(1) from e
+
+    provider_answer = plan.answers.get("provider", {})
+    console.print(
+        Panel(
+            "[bold green]You're ready![/bold green]\n\n"
+            f"Provider: [cyan]{provider_answer.get('kind')}[/cyan] "
+            f"(model: {provider_answer.get('model')})\n"
+            f"Safety tier: [cyan]{chosen_tier}[/cyan]\n\n"
+            "Start chatting with:  [bold]tokoboros run[/bold]\n"
+            "Schedule proactive tasks with:  [bold]tokoboros schedule add[/bold]",
+            title="Setup Complete",
+        )
+    )
+
+
+@app.command()
 def permissions(
     reset: bool = typer.Option(
         False, "--reset", help="Re-run the permissions wizard from scratch."
@@ -783,10 +876,14 @@ def _modify_permissions_path(
     for i, line in enumerate(lines):
         if line.strip().startswith(f"{field}="):
             current_value = line.split("=", 1)[1].strip()
-            if resolved in current_value:
+            # Compare exact comma-separated tokens, not a substring (otherwise
+            # adding 'C:\\a' is wrongly rejected when 'C:\\abc' is already present).
+            existing = [token.strip() for token in current_value.split(",") if token.strip()]
+            if resolved in existing:
                 console.print(f"[yellow]'{resolved}' is already in {field}.[/yellow]")
                 return
-            lines[i] = f"{field}={current_value}, {resolved}"
+            existing.append(resolved)
+            lines[i] = f"{field}={', '.join(existing)}"
             modified = True
             break
 
@@ -797,7 +894,7 @@ def _modify_permissions_path(
         return
 
     with open(permissions_file, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+        f.write("\n".join(lines) + "\n")
 
     console.print(f"[bold green]Added[/] '{resolved}' to {field}.")
     show_current_permissions(console)
@@ -1082,19 +1179,42 @@ def secrets(
 @app.command()
 def doctor():
     """Run environment diagnostics for onboarding and runtime health."""
+    import sys
+
     paths = get_tokoboros_paths()
     cfg = load_effective_config()
     service = OnboardingService(paths=paths)
     store = create_default_secret_store(paths=paths)
 
+    # The most common "why isn't it working" cause: the configured provider's API
+    # key isn't actually resolvable. Surface it explicitly.
+    provider_ok, provider_msg = service.validate_provider(
+        kind=cfg.provider.kind,
+        api_key_env=getattr(cfg.provider, "api_key_env", None),
+    )
+
+    skill_count = 0
+    try:
+        from tokoboros.og_engine.engine import SkillEngine
+
+        engine = SkillEngine()
+        engine.load_directory(paths.skills_dir)
+        skill_count = engine.node_count
+    except Exception:
+        skill_count = -1  # could not load skills directory
+
     checks = {
+        "python_version": sys.version.split()[0],
         "config_dir_exists": paths.config_dir.exists(),
         "data_dir_exists": paths.data_dir.exists(),
         "state_dir_exists": paths.state_dir.exists(),
         "settings_toml_exists": paths.global_config_toml.exists(),
         "provider_kind": cfg.provider.kind,
         "provider_model": cfg.provider.model,
+        "provider_api_key": "ok" if provider_ok else provider_msg,
         "permissions_tier": cfg.permissions.tier,
+        "skills_loaded": skill_count,
+        "session_cost_cap_usd": os.environ.get("TOKOBOROS_MAX_SESSION_COST_USD", "unset"),
         "onboarding_needs_setup": service.needs_setup(),
         "secret_backend": store.healthcheck(),
         "environment_detection": service.detect_environment(),
@@ -1284,6 +1404,401 @@ def security_audit(
 
     if exit_code != 0:
         raise typer.Exit(exit_code)
+
+
+schedule_app = typer.Typer(help="Manage proactive scheduled tasks (cron / interval / once).")
+app.add_typer(schedule_app, name="schedule")
+
+
+def _get_scheduler() -> Scheduler:
+    return Scheduler(ScheduleStore(get_tokoboros_paths().schedules_file))
+
+
+@schedule_app.command("add")
+def schedule_add(
+    name: str = typer.Argument(..., help="Short name for the schedule."),
+    task: str = typer.Argument(..., help="Instruction the agent runs when it fires."),
+    cron: str | None = typer.Option(None, "--cron", help="5-field cron, e.g. '0 9 * * 1-5'."),
+    every: int | None = typer.Option(None, "--every", help="Interval in seconds."),
+    at: str | None = typer.Option(None, "--at", help="One-shot ISO datetime (UTC)."),
+    deliver_to: str = typer.Option("chat", "--deliver-to", help="chat | webhook | log."),
+    webhook_url: str | None = typer.Option(None, "--webhook-url", help="Webhook URL."),
+):
+    """Add a proactive schedule. Provide exactly one of --cron / --every / --at."""
+    chosen = [("cron", cron), ("interval", every), ("once", at)]
+    selected = [(k, v) for k, v in chosen if v is not None]
+    if len(selected) != 1:
+        console.print("[red]Provide exactly one of --cron, --every, or --at.[/red]")
+        raise typer.Exit(2)
+    kind = selected[0][0]
+    scheduler = _get_scheduler()
+    try:
+        schedule = scheduler.add(
+            name=name,
+            task=task,
+            kind=kind,
+            cron=cron,
+            interval_seconds=every,
+            run_at=at,
+            deliver_to=deliver_to,
+            webhook_url=webhook_url,
+        )
+    except ValueError as e:
+        console.print(f"[red]Invalid schedule:[/red] {e}")
+        raise typer.Exit(2) from e
+    console.print(
+        f"[green]Scheduled[/green] '{schedule.name}' ({kind}) — id {schedule.schedule_id}\n"
+        f"Next run: {schedule.next_run}"
+    )
+
+
+@schedule_app.command("list")
+def schedule_list():
+    """List all configured schedules."""
+    schedules = _get_scheduler().list_schedules()
+    if not schedules:
+        console.print("[dim]No schedules configured.[/dim]")
+        return
+    for s in schedules:
+        state = "enabled" if s.enabled else "disabled"
+        console.print(
+            f"[bold]{s.name}[/bold] [{s.kind.value}, {state}] id={s.schedule_id}\n"
+            f"  task: {s.task}\n  next_run: {s.next_run}  runs: {s.run_count}"
+        )
+
+
+@schedule_app.command("remove")
+def schedule_remove(schedule_id: str = typer.Argument(..., help="Schedule id to remove.")):
+    """Remove a schedule by id."""
+    if _get_scheduler().cancel(schedule_id):
+        console.print(f"[green]Removed[/green] {schedule_id}")
+    else:
+        console.print(f"[yellow]No schedule found:[/yellow] {schedule_id}")
+        raise typer.Exit(1)
+
+
+@schedule_app.command("run-due")
+def schedule_run_due():
+    """Run every schedule that is currently due (intended for cron/daemon invocation)."""
+    scheduler = _get_scheduler()
+    due = scheduler.due()
+    if not due:
+        console.print("[dim]No schedules are due.[/dim]")
+        return
+
+    agent = boot_agent()
+    try:
+
+        def fire(schedule):
+            console.print(f"[cyan]Running[/cyan] '{schedule.name}': {schedule.task}")
+            reply = agent.chat(schedule.task)
+            _deliver_schedule_result(schedule, reply)
+
+        fired = scheduler.tick(fire)
+        console.print(f"[green]Fired {len(fired)} schedule(s).[/green]")
+    finally:
+        try:
+            agent.shutdown()
+        except Exception:
+            pass
+
+
+def _deliver_schedule_result(schedule, reply: str) -> None:
+    """Deliver a scheduled task's result to its configured destination."""
+    if schedule.deliver_to == "webhook" and schedule.webhook_url:
+        import urllib.request
+
+        from tokoboros.core.net_guard import validate_outbound_url
+
+        # The webhook URL is agent/user-supplied — block SSRF / file:// / internal hosts.
+        ok, reason = validate_outbound_url(schedule.webhook_url)
+        if not ok:
+            console.print(f"[red]Webhook blocked[/red] ({reason}): {schedule.webhook_url}")
+            return
+
+        payload = json.dumps({"schedule": schedule.name, "result": reply}).encode("utf-8")
+        request = urllib.request.Request(
+            schedule.webhook_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            urllib.request.urlopen(request, timeout=15)  # noqa: S310 (user-provided URL)
+        except Exception as e:
+            console.print(f"[yellow]Webhook delivery failed:[/yellow] {e}")
+    else:
+        console.print(Panel(Markdown(reply), title=f"Scheduled: {schedule.name}"))
+
+
+channel_app = typer.Typer(help="Talk to Tokoboros from external chat apps (Telegram, ...).")
+app.add_typer(channel_app, name="channel")
+
+
+@channel_app.command("telegram")
+def channel_telegram(
+    token: str | None = typer.Option(
+        None, "--token", envvar="TELEGRAM_BOT_TOKEN", help="Telegram bot token from @BotFather."
+    ),
+    allow: str | None = typer.Option(
+        None, "--allow", help="Comma-separated Telegram chat ids to restrict access to."
+    ),
+    poll_interval: float = typer.Option(2.0, "--interval", help="Seconds between polls."),
+):
+    """Run a Telegram bot that relays messages to Tokoboros (one session per chat)."""
+    import time
+
+    from tokoboros.channels import ChannelRouter
+    from tokoboros.channels.runner import GatewaySessionRunner
+    from tokoboros.channels.telegram import TelegramAdapter
+
+    if not token:
+        console.print(
+            "[red]No bot token.[/red] Pass --token or set TELEGRAM_BOT_TOKEN "
+            "(create a bot via @BotFather)."
+        )
+        raise typer.Exit(2)
+
+    allowlist = [a.strip() for a in allow.split(",") if a.strip()] if allow else None
+    adapter = TelegramAdapter(token)
+    runner = GatewaySessionRunner()
+    router = ChannelRouter(runner, allowlist=allowlist)
+    console.print("[green]Telegram bot running.[/green] Press Ctrl+C to stop.")
+    try:
+        while True:
+            for inbound in adapter.poll_once():
+                console.print(
+                    f"[cyan]{inbound.sender_name or inbound.sender_id}[/cyan]: {inbound.text}"
+                )
+                adapter.send(router.dispatch(inbound))
+            time.sleep(poll_interval)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopping Telegram bot...[/dim]")
+    finally:
+        runner.shutdown()
+
+
+skill_app = typer.Typer(help="Manage and import agent skills (.og / SKILL.md).")
+app.add_typer(skill_app, name="skill")
+
+
+@skill_app.command("import")
+def skill_import(
+    path: str = typer.Argument(..., help="A SKILL.md file or a directory containing .md skills."),
+):
+    """Import SKILL.md (Agent Skills) file(s) into Tokoboros' token-efficient .og library."""
+    from tokoboros.gateway.workspace import get_skills_dir
+    from tokoboros.og_engine.engine import SkillEngine
+
+    target = Path(path)
+    if not target.exists():
+        console.print(f"[red]Not found:[/red] {path}")
+        raise typer.Exit(2)
+
+    engine = SkillEngine()
+    skills_dir = get_skills_dir()
+    engine.load_directory(skills_dir)
+
+    files = sorted(target.glob("**/*.md")) if target.is_dir() else [target]
+    if not files:
+        console.print("[yellow]No .md files found.[/yellow]")
+        return
+
+    imported = 0
+    for md in files:
+        result = engine.import_skill_md(md)
+        if result.get("status") == "imported":
+            imported += 1
+            kw = ", ".join(result.get("keywords", [])[:5])
+            console.print(
+                f"[green]Imported[/green] {md.name} → {result['name']}  [dim]({kw})[/dim]"
+            )
+        else:
+            console.print(f"[yellow]Skipped[/yellow] {md.name}: {result.get('reason')}")
+
+    console.print(
+        f"\n[bold]Imported {imported}/{len(files)} skill(s)[/bold] into {skills_dir / 'imported'}."
+    )
+
+
+@skill_app.command("list")
+def skill_list():
+    """List all loaded .og skills (name, role, keywords)."""
+    from tokoboros.gateway.workspace import get_skills_dir
+    from tokoboros.og_engine.engine import SkillEngine
+
+    engine = SkillEngine()
+    engine.load_directory(get_skills_dir())
+    skills = engine.list_all_skills()
+    if not skills:
+        console.print("[dim]No skills loaded.[/dim]")
+        return
+    for item in sorted(skills, key=lambda s: s["name"]):
+        keywords = item.get("keywords", "")
+        console.print(
+            f"[bold]{item['name']}[/bold] [dim][{item.get('role', 'skill')}][/dim]  {keywords}"
+        )
+    console.print(f"\n[bold]{len(skills)} skill(s) loaded.[/bold]")
+
+
+@skill_app.command("export")
+def skill_export(
+    name: str = typer.Argument(..., help="Exact skill node name (see `skill list`)."),
+    output: str | None = typer.Option(None, "--output", "-o", help="Write to a file vs stdout."),
+):
+    """Export a loaded skill back to .og text."""
+    from tokoboros.gateway.workspace import get_skills_dir
+    from tokoboros.og_engine.engine import SkillEngine
+
+    engine = SkillEngine()
+    engine.load_directory(get_skills_dir())
+    text = engine.export_skill(name)
+    if text is None:
+        console.print(f"[red]Skill not found:[/red] {name} [dim](see `tokoboros skill list`)[/dim]")
+        raise typer.Exit(1)
+    if output:
+        Path(output).write_text(text, encoding="utf-8")
+        console.print(f"[green]Exported[/green] {name} → {output}")
+    else:
+        console.print(text)
+
+
+@skill_app.command("report")
+def skill_report(
+    stale_days: int = typer.Option(
+        30, "--stale-days", help="Days of inactivity before a skill is flagged stale."
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Output machine-readable JSON (for CI/automation)."
+    ),
+) -> None:
+    """Show skill-usage analytics: most-used, never-used, and stale skills.
+
+    This realizes the .og self-optimization loop — usage is tracked every time
+    the agent calls load_skill, so this report reveals which skills earn their
+    keep and which are dead weight worth pruning or refining.
+    """
+    from tokoboros.gateway.workspace import get_skills_dir
+    from tokoboros.og_engine.engine import SkillEngine
+
+    engine = SkillEngine()
+    engine.load_directory(get_skills_dir())
+
+    report = engine.get_usage_report()
+    stale = engine.get_stale_skills(stale_days=stale_days)
+    never_used = [s for s in stale if s["status"] == "never_used"]
+    aged = [s for s in stale if s["status"] == "stale"]
+
+    if json_output:
+        # Plain print (not console.print) so Rich never soft-wraps the JSON payload.
+        print(
+            json.dumps(
+                {"report": report, "stale": aged, "never_used": never_used},
+                indent=2,
+                default=str,
+            )
+        )
+        return
+
+    if report["total_skills"] == 0:
+        console.print("[dim]No skills loaded.[/dim]")
+        return
+
+    summary = (
+        f"Total: [bold]{report['total_skills']}[/bold]   "
+        f"Tracked: [bold]{report['tracked_skills']}[/bold]   "
+        f"Stale (>{stale_days}d): [yellow]{report['stale_count']}[/yellow]   "
+        f"Never used: [yellow]{report['never_used_count']}[/yellow]"
+    )
+    console.print(Panel(summary, title="Skill Usage Report", border_style="cyan"))
+
+    top = report.get("top_skills", [])
+    if top:
+        console.print("[bold]Most used[/bold]")
+        for item in top:
+            last = item.get("last_used") or "-"
+            console.print(
+                f"  [green]{item['use_count']:>4}x[/green]  {item['name']}  [dim]{last}[/dim]"
+            )
+
+    if aged:
+        console.print(f"\n[bold yellow]Stale (>{stale_days}d inactive)[/bold yellow]")
+        for item in sorted(aged, key=lambda s: s.get("days_inactive") or 0, reverse=True):
+            console.print(
+                f"  [dim]{item['days_inactive']}d ago[/dim]  {item['name']} "
+                f"[dim](used {item['use_count']}x)[/dim]"
+            )
+
+    if never_used:
+        console.print("\n[bold]Never used[/bold] [dim](candidates to prune or promote)[/dim]")
+        for item in sorted(never_used, key=lambda s: s["name"]):
+            console.print(f"  [dim]-[/dim] {item['name']}")
+
+
+@skill_app.command("lint")
+def skill_lint(
+    path: str = typer.Argument(..., help="A .og file or a directory of .og skill files."),
+    strict: bool = typer.Option(
+        False, "--strict", help="Treat warnings as failures (exit non-zero) — good for CI."
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Output machine-readable JSON (for CI/automation)."
+    ),
+) -> None:
+    """Lint .og skill files for structure + token efficiency before shipping them.
+
+    Flags un-routable nodes (missing ::index entry/keywords), missing or oversized
+    ::dense blocks, empty nodes, and dangling ::index entries — the conventions the
+    3-pass loader and search depend on. Exits non-zero on errors (or any warning with
+    --strict), so it can gate community skill packs in CI.
+    """
+    from tokoboros.og_engine.engine import lint_og_file
+
+    target = Path(path)
+    if not target.exists():
+        console.print(f"[red]Not found:[/red] {path}")
+        raise typer.Exit(2)
+
+    if target.is_dir():
+        files = sorted(target.glob("**/*.og"))
+    else:
+        files = [target]
+    if not files:
+        console.print("[yellow]No .og files found.[/yellow]")
+        return
+
+    reports = [lint_og_file(f) for f in files]
+
+    total_errors = sum(r["summary"]["errors"] for r in reports)
+    total_warnings = sum(r["summary"]["warnings"] for r in reports)
+
+    if json_output:
+        # Plain print (not console.print) so Rich never soft-wraps the JSON payload.
+        print(json.dumps({"reports": reports}, indent=2, default=str))
+    else:
+        _level_style = {"error": "red", "warning": "yellow", "info": "dim"}
+        for report in reports:
+            name = Path(report["file"]).name
+            count = report["node_count"]
+            if not report["issues"]:
+                console.print(f"[green]OK[/green] {name} [dim]({count} node(s))[/dim]")
+                continue
+            verdict = "[red]FAIL[/red]" if not report["ok"] else "[yellow]WARN[/yellow]"
+            console.print(f"{verdict} {name} [dim]({count} node(s))[/dim]")
+            for issue in report["issues"]:
+                color = _level_style.get(issue["level"], "white")
+                console.print(
+                    f"  [{color}]{issue['level']:<7}[/{color}] "
+                    f"[bold]{issue['node']}[/bold] [dim]{issue['code']}[/dim]: {issue['message']}"
+                )
+        console.print(
+            f"\n[bold]{len(files)} file(s)[/bold]  "
+            f"[red]{total_errors} error(s)[/red]  "
+            f"[yellow]{total_warnings} warning(s)[/yellow]"
+        )
+
+    failed = total_errors > 0 or (strict and total_warnings > 0)
+    if failed:
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

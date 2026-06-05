@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import secrets
+import time
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -9,15 +13,27 @@ from typing import Any
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from tokoboros.core.rate_limit import RateLimiter
 from tokoboros.gateway.control_plane import (
     PROTOCOL_VERSION,
     GatewayControlPlane,
     GatewayProtocolError,
     GatewayUnavailableError,
 )
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _parse_allowlist(raw: str | None) -> set[str]:
+    return {item.strip() for item in raw.split(",")} - {""} if raw else set()
 
 
 class ErrorResponse(BaseModel):
@@ -100,6 +116,43 @@ class PermissionsRequest(BaseModel):
 
 class MemoryRequest(BaseModel):
     memory: dict[str, Any]
+
+
+class OpenAIMessage(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    role: str
+    content: Any = None  # string or list of content blocks
+
+
+class OpenAIChatRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    messages: list[OpenAIMessage]
+    model: str | None = None
+    stream: bool = False
+
+
+class ChannelInboundRequest(BaseModel):
+    sender_id: str
+    text: str
+    sender_name: str = ""
+
+
+def _last_user_text(messages: list[OpenAIMessage]) -> str:
+    """Extract the latest user message text from an OpenAI-style message list."""
+    for message in reversed(messages):
+        if message.role != "user":
+            continue
+        content = message.content
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = [
+                str(block.get("text", ""))
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            return " ".join(parts).strip()
+    return ""
 
 
 class SetupApplyRequest(BaseModel):
@@ -231,6 +284,60 @@ def create_gateway_app(
     ) -> Any:
         return control_plane.read_session_events(session_id=session_id, after=after, limit=limit)
 
+    @sessions.get("/{session_id}/stream")
+    async def stream_session_events(
+        session_id: str,
+        request: Request,
+        after: int = Query(default=0, ge=0),
+        poll_interval: float = Query(default=1.0, ge=0.0, le=10.0),
+        max_idle_cycles: int = Query(default=30, ge=1, le=600),
+    ) -> StreamingResponse:
+        """Server-Sent Events stream of runtime events — replaces client polling.
+
+        Pushes events as they arrive, then closes after ``max_idle_cycles`` idle
+        polls (an EventSource auto-reconnects, so this stays cheap and robust).
+        Clients resume with the last ``id`` they saw via the ``after`` query param.
+        """
+        # Validate up front so unknown-session / unattached-stream surface as proper
+        # HTTP errors instead of mid-stream failures.
+        control_plane.read_session_events(session_id=session_id, after=after, limit=1)
+
+        async def event_stream() -> AsyncIterator[str]:
+            cursor = after
+            idle = 0
+            yield ": connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    batch = control_plane.read_session_events(
+                        session_id=session_id, after=cursor, limit=100
+                    )
+                except (GatewayProtocolError, GatewayUnavailableError):
+                    # Session was closed (or the runtime detached) mid-stream. The
+                    # response has already started, so end gracefully instead of
+                    # letting the exception abort the connection.
+                    yield "event: closed\ndata: {}\n\n"
+                    break
+                events = batch.get("events", [])
+                if events:
+                    idle = 0
+                    for event in events:
+                        cursor = event["sequence"]
+                        yield (
+                            f"id: {event['sequence']}\n"
+                            f"event: {event['event_type']}\n"
+                            f"data: {json.dumps(event)}\n\n"
+                        )
+                else:
+                    idle += 1
+                    if idle >= max_idle_cycles:
+                        break
+                    yield ": keepalive\n\n"
+                await asyncio.sleep(poll_interval)
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
     @runtime_ops.get("/runtime/events")
     async def get_runtime_events(
         session_id: str | None = Query(default=None),
@@ -291,9 +398,84 @@ def create_gateway_app(
     async def post_setup_apply(payload: SetupApplyRequest) -> Any:
         return control_plane.apply_setup(payload.model_dump(mode="python"))
 
+    # OpenAI-compatible facade — lets users point Open WebUI / LibreChat / any
+    # OpenAI client at Tokoboros. Maps the latest user message to an auto-managed
+    # agent session (the agent keeps its own conversation memory).
+    openai_compat = APIRouter(tags=["openai"], dependencies=protected_dependencies)
+    openai_limiter = RateLimiter(_int_env("TOKOBOROS_OPENAI_RATE_LIMIT", 60), 60.0)
+
+    @openai_compat.post("/v1/chat/completions")
+    async def openai_chat_completions(payload: OpenAIChatRequest) -> Any:
+        prompt = _last_user_text(payload.messages)
+        if not prompt:
+            raise HTTPException(status_code=400, detail="no user message content")
+        if not openai_limiter.allow("openai"):
+            raise HTTPException(status_code=429, detail="rate limit exceeded; slow down")
+        result = control_plane.complete_chat(prompt)
+        reply = result.get("response", "")
+        return {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": payload.model or "tokoboros",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": reply},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
+
+    @openai_compat.get("/v1/models")
+    async def openai_models() -> Any:
+        data: list[dict[str, Any]] = []
+        try:
+            models = control_plane.models()
+            for item in models if isinstance(models, list) else []:
+                model_id = item.get("id") if isinstance(item, dict) else str(item)
+                if model_id:
+                    data.append({"id": model_id, "object": "model", "owned_by": "tokoboros"})
+        except Exception:
+            pass
+        if not data:
+            data = [{"id": "tokoboros", "object": "model", "owned_by": "tokoboros"}]
+        return {"object": "list", "data": data}
+
+    # Generic inbound webhook: any platform (Slack Events, Discord, Twilio SMS, a
+    # custom form) can POST a message and reach the agent, with per-sender session
+    # continuity. Bespoke adapters are optional sugar on top of this.
+    channels_router = APIRouter(tags=["channels"], dependencies=protected_dependencies)
+    # Per-sender abuse protection for the externally-reachable webhook.
+    channel_limiter = RateLimiter(_int_env("TOKOBOROS_CHANNEL_RATE_LIMIT", 30), 60.0)
+    channel_allowlist = _parse_allowlist(os.environ.get("TOKOBOROS_CHANNEL_ALLOWLIST"))
+
+    @channels_router.post("/channels/{channel}/inbound")
+    async def channel_inbound(channel: str, payload: ChannelInboundRequest) -> Any:
+        if not payload.text.strip():
+            raise HTTPException(status_code=400, detail="text is required")
+        sender = payload.sender_id
+        # Optional allowlist accepts either a bare sender id or "channel:sender".
+        if channel_allowlist and not (
+            sender in channel_allowlist or f"{channel}:{sender}" in channel_allowlist
+        ):
+            raise HTTPException(status_code=403, detail="sender is not allowed")
+        session_key = f"{channel}:{sender}"
+        if not channel_limiter.allow(session_key):
+            raise HTTPException(status_code=429, detail="rate limit exceeded; slow down")
+        result = control_plane.complete_chat(payload.text, session_key=session_key)
+        return {
+            "channel": channel,
+            "recipient_id": sender,
+            "reply": result.get("response", ""),
+        }
+
     app.include_router(system)
     app.include_router(sessions)
     app.include_router(runtime_ops)
     app.include_router(config)
     app.include_router(setup)
+    app.include_router(openai_compat)
+    app.include_router(channels_router)
     return app

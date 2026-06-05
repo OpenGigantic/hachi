@@ -17,6 +17,8 @@ class SessionStateSnapshot:
     model_name: str
     boot_ready: bool
     pending_job_count: int
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
