@@ -29,6 +29,11 @@ _RETRYABLE_HINTS = ("overloaded", "rate limit", "timeout", "timed out", "tempora
 _MAX_LLM_RETRIES = 3
 _LLM_RETRY_BASE_DELAY = 1.0
 
+# Estimated-token threshold above which the loop losslessly clears large, re-fetchable
+# tool outputs from older turns (see MemoryManager.clear_stale_tool_results). Set high
+# so ordinary short conversations are never touched — only genuinely large contexts.
+_TOOL_RESULT_CLEAR_TOKENS = 12000
+
 
 def _is_retryable_llm_error(exc: Exception) -> bool:
     """Best-effort detection of transient LLM/provider errors (provider-agnostic).
@@ -322,6 +327,22 @@ class ExecutionLoop:
                             "new_skill": self.memory.active_skill,
                         },
                     )
+
+                # Lossless context reclamation: once history grows large, replace big
+                # re-fetchable tool outputs in older turns with a short placeholder.
+                # Keeps every tool_use/tool_result pair intact (no API 400) and costs
+                # no tokens, running BEFORE the lossy LLM-summary compaction. Guarded
+                # by getattr so alternate memory backends without it are unaffected.
+                _estimate = getattr(self.memory, "estimate_token_count", None)
+                _clear = getattr(self.memory, "clear_stale_tool_results", None)
+                if (
+                    callable(_estimate)
+                    and callable(_clear)
+                    and _estimate() > _TOOL_RESULT_CLEAR_TOKENS
+                ):
+                    cleared = _clear()
+                    if cleared:
+                        self.on_event("tool_results_cleared", {"count": cleared})
 
                 self.on_event("thinking", {"iteration": iterations})
 
