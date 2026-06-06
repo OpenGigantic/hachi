@@ -174,6 +174,17 @@ def search_transcript(
     return hits
 
 
+def transcript_overflow(child_count: int, cap: int) -> int:
+    """How many oldest transcript widgets to drop to stay within ``cap``.
+
+    Pure (no Textual) so the trimming policy is unit-testable. Returns 0 when
+    under the cap (and for a non-positive cap, which disables trimming).
+    """
+    if cap <= 0:
+        return 0
+    return max(0, child_count - cap)
+
+
 class TokoGlyph(Static):
     """Brand header strip: the Toko eye + wordmark, colored by live state.
 
