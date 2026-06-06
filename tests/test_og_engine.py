@@ -131,3 +131,27 @@ def test_usage_tracking_records_and_flags_stale(tmp_path: Path) -> None:
     statuses = {s["name"]: s["status"] for s in stale}
     # run_tests was never loaded → reported as never_used
     assert statuses.get("run_tests") == "never_used"
+
+
+def test_skill_inventory_joins_metadata_and_usage(tmp_path: Path) -> None:
+    engine = _engine()
+    engine._usage_path = tmp_path / "skill_usage.json"
+    engine._usage = {}
+    engine.record_use("deploy_to_prod")
+    engine.record_use("deploy_to_prod")
+
+    inventory = engine.get_skill_inventory()
+    by_name = {row["name"]: row for row in inventory}
+
+    # Every loaded node appears, even never-used ones.
+    assert "deploy_to_prod" in by_name
+    assert "run_tests" in by_name
+    # Usage stats are joined in.
+    assert by_name["deploy_to_prod"]["use_count"] == 2
+    assert by_name["run_tests"]["use_count"] == 0
+    assert by_name["run_tests"]["last_used"] is None
+    # Node metadata is carried.
+    assert by_name["deploy_to_prod"]["keyword_count"] >= 1
+    assert by_name["deploy_to_prod"]["role"]
+    # Sorted most-used first.
+    assert inventory[0]["name"] == "deploy_to_prod"

@@ -1027,3 +1027,27 @@ class SkillEngine:
             "stale_count": len([s for s in stale if s["status"] == "stale"]),
             "top_skills": tracked[:10],
         }
+
+    def get_skill_inventory(self) -> list[dict[str, Any]]:
+        """Return a per-node inventory of every loaded skill with usage stats.
+
+        Unlike ``get_usage_report`` (which only surfaces the top-10 tracked
+        skills), this lists ALL nodes — joining each node's metadata with its
+        usage record — so a UI can show the full loaded-skills picture. Sorted
+        by use_count desc, then name. ``last_used`` is ``None`` for never-used
+        skills.
+        """
+        inventory: list[dict[str, Any]] = []
+        for name, node in self._nodes.items():
+            entry = self._usage.get(name) or {}
+            inventory.append(
+                {
+                    "name": name,
+                    "role": node.role,
+                    "keyword_count": len(node.keywords),
+                    "use_count": int(entry.get("use_count", 0) or 0),
+                    "last_used": entry.get("last_used"),
+                }
+            )
+        inventory.sort(key=lambda item: (-item["use_count"], item["name"]))
+        return inventory

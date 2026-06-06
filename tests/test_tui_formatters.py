@@ -15,6 +15,7 @@ from tokoboros.tui.formatters import (
     format_memory,
     format_ops,
     format_permissions,
+    format_skills,
     format_subagents,
     format_usage,
 )
@@ -191,3 +192,56 @@ def test_memory_groups_tasks_and_recall() -> None:
     assert "deploy" in out
     assert "Memory Recall" in out
     assert "dark mode" in out
+    # Backward-compat: omitting skills keeps the old two-section layout.
+    assert "Loaded Skills" not in out
+
+
+def test_skills_table_lists_inventory() -> None:
+    out = _render(
+        format_skills(
+            [
+                {
+                    "name": "deploy_to_prod",
+                    "role": "skill",
+                    "keyword_count": 5,
+                    "use_count": 3,
+                    "last_used": "2026-06-05T09:00:00",
+                },
+                {
+                    "name": "rotate_secrets",
+                    "role": "skill",
+                    "keyword_count": 2,
+                    "use_count": 0,
+                    "last_used": None,
+                },
+            ]
+        )
+    )
+    assert "Loaded Skills" in out
+    assert "deploy_to_prod" in out
+    assert "rotate_secrets" in out
+    assert "2026-06-05T09:00:00" in out
+
+
+def test_skills_table_handles_empty() -> None:
+    assert "no skills loaded" in _render(format_skills([]))
+
+
+def test_memory_includes_skills_when_provided() -> None:
+    out = _render(
+        format_memory(
+            tasks=[],
+            recalls=[],
+            skills=[
+                {
+                    "name": "search_web",
+                    "role": "skill",
+                    "keyword_count": 4,
+                    "use_count": 7,
+                    "last_used": "2026-06-06",
+                }
+            ],
+        )
+    )
+    assert "Loaded Skills" in out
+    assert "search_web" in out
