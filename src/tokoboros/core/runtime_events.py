@@ -20,6 +20,7 @@ BOOT_FAILED = "boot.failed"
 SESSION_CHAT_STARTED = "session.chat.started"
 SESSION_CHAT_COMPLETED = "session.chat.completed"
 SESSION_PERSISTED = "session.persisted"
+SESSION_RESUMED = "session.resumed"
 SESSION_SHUTDOWN = "session.shutdown"
 
 # Model output lifecycle

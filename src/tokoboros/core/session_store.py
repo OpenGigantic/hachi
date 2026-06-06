@@ -239,6 +239,38 @@ class SessionStore:
 
         return [dict(row) for row in rows]
 
+    def get_latest_session_id(self) -> str | None:
+        """Return the id of the most recently started session, or None if empty."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM sessions ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+        return str(row["id"]) if row else None
+
+    def get_session_messages(self, session_id: str, limit: int = 200) -> list[dict[str, Any]]:
+        """Return the chronological message transcript for a single session.
+
+        Used to resume a prior conversation: the returned user/assistant turns are
+        replayed into the new session's active memory so context carries over.
+
+        Args:
+            session_id: The session whose transcript to load.
+            limit: Cap on the number of most-recent messages returned (kept in
+                chronological order). Bounds context bloat on very long sessions.
+
+        Returns:
+            List of dicts with role, content, tool_name, timestamp — oldest first.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT role, content, tool_name, timestamp FROM messages "
+                "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+
+        # Fetched newest-first to honour the limit, then reversed to chronological.
+        return [dict(row) for row in reversed(rows)]
+
     def shutdown(self) -> None:
         """Close the database connection."""
         try:

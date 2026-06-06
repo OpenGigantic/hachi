@@ -144,35 +144,26 @@ def test_gateway_command_passes_runtime_flag(monkeypatch) -> None:
     assert captured["attach_runtime"] is False
 
 
-def test_run_command_starts_gateway_and_passes_url_to_tui(monkeypatch) -> None:
+def test_run_command_launches_tui_in_local_mode(monkeypatch) -> None:
     state: dict[str, object] = {
-        "start_called": False,
-        "stop_called": False,
-        "runtime_shutdown": False,
-        "gateway_url": None,
+        "gateway_started": False,
+        "tui_launched": False,
+        "resume_session_id": "sentinel",
     }
-
-    class FakeServer:
-        def stop(self) -> None:
-            state["stop_called"] = True
-
-    class FakeRuntime:
-        def shutdown(self) -> None:
-            state["runtime_shutdown"] = True
 
     def _fake_start_gateway_server(
         host: str = "127.0.0.1",
         port: int = 0,
         attach_runtime: bool = False,
     ):
-        state["start_called"] = True
-        assert host == "127.0.0.1"
-        assert port == 0
-        assert attach_runtime is True
-        return FakeServer(), "http://127.0.0.1:8111", FakeRuntime()
+        state["gateway_started"] = True
+        raise AssertionError("run should not start the HTTP gateway in local mode")
 
-    def _fake_run_tui(gateway_base_url: str | None = None) -> None:
-        state["gateway_url"] = gateway_base_url
+    def _fake_run_tui(
+        gateway_base_url: str | None = None, resume_session_id: str | None = None
+    ) -> None:
+        state["tui_launched"] = True
+        state["resume_session_id"] = resume_session_id
 
     monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
     monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
@@ -183,10 +174,28 @@ def test_run_command_starts_gateway_and_passes_url_to_tui(monkeypatch) -> None:
     result = runner.invoke(app, ["run"])
 
     assert result.exit_code == 0
-    assert state["start_called"] is True
-    assert state["stop_called"] is True
-    assert state["runtime_shutdown"] is True
-    assert state["gateway_url"] == "http://127.0.0.1:8111"
+    assert state["gateway_started"] is False
+    assert state["tui_launched"] is True
+    assert state["resume_session_id"] is None
+
+
+def test_bare_invocation_launches_tui(monkeypatch) -> None:
+    state: dict[str, object] = {"tui_launched": False}
+
+    def _fake_run_tui(
+        gateway_base_url: str | None = None, resume_session_id: str | None = None
+    ) -> None:
+        state["tui_launched"] = True
+
+    monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
+    monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("tokoboros.cli.main.ensure_device_permissions", lambda _console: None)
+    monkeypatch.setattr("tokoboros.cli.main.run_tui", _fake_run_tui)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert state["tui_launched"] is True
 
 
 def test_run_repl_skips_gateway_bootstrap(monkeypatch) -> None:
@@ -221,30 +230,13 @@ def test_run_repl_skips_gateway_bootstrap(monkeypatch) -> None:
 
 def test_run_command_falls_back_to_repl_when_tui_launch_fails(monkeypatch) -> None:
     state: dict[str, bool] = {
-        "start_called": False,
-        "stop_called": False,
-        "runtime_shutdown": False,
         "repl_called": False,
     }
 
-    class FakeServer:
-        def stop(self) -> None:
-            state["stop_called"] = True
-
-    class FakeRuntime:
-        def shutdown(self) -> None:
-            state["runtime_shutdown"] = True
-
-    def _fake_start_gateway_server(
-        host: str = "127.0.0.1",
-        port: int = 0,
-        attach_runtime: bool = False,
-    ):
-        state["start_called"] = True
-        return FakeServer(), "http://127.0.0.1:8111", FakeRuntime()
-
-    def _boom_run_tui(gateway_base_url: str | None = None) -> None:
-        raise RuntimeError(f"tui failed at {gateway_base_url}")
+    def _boom_run_tui(
+        gateway_base_url: str | None = None, resume_session_id: str | None = None
+    ) -> None:
+        raise RuntimeError("tui failed")
 
     def _fake_repl() -> None:
         state["repl_called"] = True
@@ -252,17 +244,13 @@ def test_run_command_falls_back_to_repl_when_tui_launch_fails(monkeypatch) -> No
     monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
     monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
     monkeypatch.setattr("tokoboros.cli.main.ensure_device_permissions", lambda _console: None)
-    monkeypatch.setattr("tokoboros.cli.main._start_gateway_server", _fake_start_gateway_server)
     monkeypatch.setattr("tokoboros.cli.main.run_tui", _boom_run_tui)
     monkeypatch.setattr("tokoboros.cli.main._run_repl", _fake_repl)
 
     result = runner.invoke(app, ["run"])
 
     assert result.exit_code == 0
-    assert state["start_called"] is True
     assert state["repl_called"] is True
-    assert state["runtime_shutdown"] is True
-    assert state["stop_called"] is True
     assert "Falling back to compatibility REPL" in result.stdout
 
 

@@ -84,6 +84,8 @@ class TokoSplash(Static):
 class UserBubble(Static):
     """A single user prompt, marked with a left accent bar."""
 
+    TOOLTIP = "Click to copy"
+
     def __init__(self, text: str) -> None:
         self.message_text = text
         body = Text()
@@ -93,9 +95,22 @@ class UserBubble(Static):
         body.append(text, style=theme.FOREGROUND)
         super().__init__(body, classes="msg msg-user")
 
+    def on_click(self) -> None:
+        """Copy the prompt text to the system clipboard and refocus the composer."""
+        self.app.copy_to_clipboard(self.message_text)
+        self.app.notify("Message copied  ·  Ctrl+V or right-click to paste", timeout=2)
+        try:
+            from textual.widgets import Input as _Input
+
+            self.app.screen.query_one("#composer", _Input).focus()
+        except Exception:
+            pass
+
 
 class AgentMessage(Static):
     """An assistant reply rendered as Markdown under a role header."""
+
+    TOOLTIP = "Click to copy"
 
     def __init__(self, text: str) -> None:
         self.message_text = text
@@ -108,6 +123,17 @@ class AgentMessage(Static):
         else:
             renderable = Group(header, Text("(no response)", style=theme.MUTED))
         super().__init__(renderable, classes="msg msg-agent")
+
+    def on_click(self) -> None:
+        """Copy the response text to the system clipboard and refocus the composer."""
+        self.app.copy_to_clipboard(self.message_text)
+        self.app.notify("Response copied  ·  Ctrl+V or right-click to paste", timeout=2)
+        try:
+            from textual.widgets import Input as _Input
+
+            self.app.screen.query_one("#composer", _Input).focus()
+        except Exception:
+            pass
 
 
 class ErrorCard(Static):

@@ -8,7 +8,7 @@ from pathlib import Path
 from tokoboros.core.loop import ToolRegistry
 from tokoboros.core.mcp_client import MCPServerConnection
 from tokoboros.core.rest_adapter import UniversalRestAdapter
-from tokoboros.tools.os_tools import _raw_run_terminal_command
+from tokoboros.tools.os_tools import _raw_run_shell_script, _raw_run_terminal_command
 
 
 class _FakeVault:
@@ -35,6 +35,97 @@ def test_run_terminal_command_supports_pwd_builtin(tmp_path: Path) -> None:
     result = _raw_run_terminal_command("pwd", cwd=str(tmp_path))
     assert str(tmp_path.resolve()) in result
     assert "Exit Code: 0" in result
+
+
+def test_run_terminal_command_mkdir_creates_directory(tmp_path: Path) -> None:
+    new_dir = tmp_path / "abvc"
+    result = _raw_run_terminal_command(f"mkdir {new_dir}", cwd=str(tmp_path))
+    assert "Exit Code: 0" in result
+    assert new_dir.is_dir()
+
+
+def test_run_terminal_command_mkdir_nested(tmp_path: Path) -> None:
+    nested = tmp_path / "a" / "b" / "c"
+    result = _raw_run_terminal_command(f"mkdir {nested}", cwd=str(tmp_path))
+    assert "Exit Code: 0" in result
+    assert nested.is_dir()
+
+
+def test_run_terminal_command_rm_removes_file(tmp_path: Path) -> None:
+    f = tmp_path / "test.txt"
+    f.write_text("hello")
+    result = _raw_run_terminal_command(f"rm {f}", cwd=str(tmp_path))
+    assert "Exit Code: 0" in result
+    assert not f.exists()
+
+
+def test_run_terminal_command_cp_copies_file(tmp_path: Path) -> None:
+    src = tmp_path / "src.txt"
+    src.write_text("data")
+    dst = tmp_path / "dst.txt"
+    result = _raw_run_terminal_command(f"cp {src} {dst}", cwd=str(tmp_path))
+    assert "Exit Code: 0" in result
+    assert dst.read_text() == "data"
+
+
+def test_run_terminal_command_mv_moves_file(tmp_path: Path) -> None:
+    src = tmp_path / "old.txt"
+    src.write_text("content")
+    dst = tmp_path / "new.txt"
+    result = _raw_run_terminal_command(f"mv {src} {dst}", cwd=str(tmp_path))
+    assert "Exit Code: 0" in result
+    assert dst.read_text() == "content"
+    assert not src.exists()
+
+
+def test_run_terminal_command_echo(tmp_path: Path) -> None:
+    result = _raw_run_terminal_command("echo hello world", cwd=str(tmp_path))
+    assert "hello world" in result
+    assert "Exit Code: 0" in result
+
+
+def test_run_terminal_command_cat_reads_file(tmp_path: Path) -> None:
+    f = tmp_path / "read_me.txt"
+    f.write_text("file contents here")
+    result = _raw_run_terminal_command(f"cat {f}", cwd=str(tmp_path))
+    assert "file contents here" in result
+    assert "Exit Code: 0" in result
+
+
+def test_run_terminal_command_which_finds_python(tmp_path: Path) -> None:
+    result = _raw_run_terminal_command("which python", cwd=str(tmp_path))
+    # Either found (exit 0) or not found (exit 1) — just must not crash.
+    assert "Exit Code:" in result
+
+
+def test_run_shell_script_executes_multi_line_output(tmp_path: Path) -> None:
+    if os.name == "nt":
+        script = 'Write-Output "hello"\nWrite-Output "world"'
+    else:
+        script = 'echo "hello"\necho "world"'
+    result = _raw_run_shell_script(script, cwd=str(tmp_path))
+    assert "hello" in result
+    assert "world" in result
+    assert "Exit Code: 0" in result
+
+
+def test_run_shell_script_rejects_empty_script(tmp_path: Path) -> None:
+    result = _raw_run_shell_script("   ", cwd=str(tmp_path))
+    assert "Error" in result
+
+
+def test_run_shell_script_rejects_invalid_cwd() -> None:
+    result = _raw_run_shell_script("echo ok", cwd="/nonexistent/path/xyz")
+    assert "Error" in result
+
+
+def test_run_shell_script_handles_nonzero_exit(tmp_path: Path) -> None:
+    if os.name == "nt":
+        script = "exit 1"
+    else:
+        script = "exit 1"
+    result = _raw_run_shell_script(script, cwd=str(tmp_path))
+    assert "Exit Code: 1" in result
 
 
 def test_read_file_returns_directory_listing_for_directory(tmp_path: Path) -> None:
