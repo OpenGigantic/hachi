@@ -1928,6 +1928,44 @@ def skill_search(
         )
 
 
+@skill_app.command("changelog")
+def skill_changelog(
+    name: str = typer.Argument(..., help="Exact skill node name (see `skill list`)."),
+    as_json: bool = typer.Option(False, "--json", help="Emit the changelog as JSON."),
+):
+    """Show a skill's version + ::changelog entries — the .og delta-load story:
+    check what changed (a few tokens) without re-reading the heavy content."""
+    from tokoboros.gateway.workspace import get_skills_dir
+    from tokoboros.og_engine.engine import SkillEngine
+
+    engine = SkillEngine()
+    engine.load_directory(get_skills_dir())
+    result = engine.get_node_changelog(name)
+    if result is None:
+        console.print(f"[red]Skill not found:[/red] {name} [dim](see `tokoboros skill list`)[/dim]")
+        raise typer.Exit(1)
+
+    if as_json:
+        # Plain print: Rich's console soft-wraps long JSON to terminal width.
+        print(json.dumps(result, indent=2))
+        return
+
+    version = result.get("version") or "(unversioned)"
+    header = f"[bold]{name}[/bold]  v{version}"
+    if result.get("updated"):
+        header += f"  [dim](updated {result['updated']})[/dim]"
+    console.print(header)
+    entries = result.get("changelog") or []
+    if not entries:
+        console.print("  [dim]no changelog entries[/dim]")
+        return
+    for entry in entries:
+        console.print(
+            f"  {entry.get('date', '')}  [cyan]{entry.get('action', '')}[/cyan]  "
+            f"{entry.get('target', '')}  {entry.get('description', '')}".rstrip()
+        )
+
+
 @skill_app.command("report")
 def skill_report(
     stale_days: int = typer.Option(
