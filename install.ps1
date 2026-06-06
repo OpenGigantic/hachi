@@ -1,6 +1,6 @@
 # Tokoboros one-liner installer (Windows / PowerShell)
 #
-#   irm https://raw.githubusercontent.com/opensource/tokoboros/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/OpenGigantic/tokoboros/main/install.ps1 | iex
 #
 # Bootstraps uv (which manages Python), fetches Tokoboros, installs deps, and
 # launches the guided setup. Override the source repo or install location with
@@ -8,7 +8,7 @@
 #Requires -Version 5
 $ErrorActionPreference = "Stop"
 
-$RepoUrl = if ($env:TOKOBOROS_REPO) { $env:TOKOBOROS_REPO } else { "https://github.com/opensource/tokoboros" }
+$RepoUrl = if ($env:TOKOBOROS_REPO) { $env:TOKOBOROS_REPO } else { "https://github.com/OpenGigantic/tokoboros" }
 $InstallDir = if ($env:TOKOBOROS_HOME) { $env:TOKOBOROS_HOME } else { "$env:USERPROFILE\.tokoboros-src" }
 
 function Info($message) { Write-Host "==> $message" -ForegroundColor Cyan }
