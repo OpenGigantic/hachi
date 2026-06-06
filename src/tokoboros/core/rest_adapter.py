@@ -19,7 +19,7 @@ import httpx
 
 from tokoboros.core.credential_vault import CredentialVault
 from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.secret_scanner import redact_secrets
+from tokoboros.core.secret_scanner import outbound_redaction_disabled, redact_secrets
 from tokoboros.core.untrusted_content import guard_untrusted
 from tokoboros.og_engine.parser import OGNode
 
@@ -28,19 +28,16 @@ from tokoboros.og_engine.parser import OGNode
 _MAX_REST_RESPONSE_CHARS = 6_000
 
 
-def _outbound_secrets_allowed() -> bool:
-    """True if the user opted out of outbound secret redaction (power-user escape hatch)."""
-    return os.environ.get("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", "").lower() in {"1", "true", "yes"}
-
-
 def _redact_mapping_secrets(mapping: dict | None) -> tuple[dict | None, int]:
     """Redact provider-secret-pattern values (sk-ant-, AKIA, ghp_, …) from a params/json dict.
 
     REST auth is injected via vault-interpolated *headers*, never via these request
     kwargs, so this only strips a credential the agent accidentally placed in a query
     param or body — it never breaks a legitimate call. Returns ``(mapping, count)``.
+
+    The opt-out (``TOKOBOROS_ALLOW_OUTBOUND_SECRETS``) is the shared outbound policy.
     """
-    if mapping is None or _outbound_secrets_allowed():
+    if mapping is None or outbound_redaction_disabled():
         return mapping, 0
     total = 0
     redacted: dict = {}
