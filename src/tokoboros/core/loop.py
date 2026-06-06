@@ -18,6 +18,7 @@ from collections.abc import Callable
 from typing import Any
 
 from tokoboros.core.llm import BaseLLMClient, Message, ToolCall
+from tokoboros.core.tool_results import ToolResultBlocks
 from tokoboros.core.turn_context import TurnContext
 
 logger = logging.getLogger(__name__)
@@ -268,8 +269,7 @@ class ExecutionLoop:
             return f"token budget reached ({snap.total_tokens:,} >= {self.max_tokens:,})"
         if self.max_cost_usd > 0 and snap.estimated_cost_usd >= self.max_cost_usd:
             return (
-                f"cost budget reached (~${snap.estimated_cost_usd:.4f} "
-                f">= ${self.max_cost_usd:.2f})"
+                f"cost budget reached (~${snap.estimated_cost_usd:.4f} >= ${self.max_cost_usd:.2f})"
             )
         return None
 
@@ -415,14 +415,26 @@ class ExecutionLoop:
                         result = f"Tool Execution Error: {str(e)}"
                         tool_error = True
 
+                    # Most tools return text (stringified here). A tool that needs
+                    # the model to *see* richer content (e.g. an image) returns a
+                    # ToolResultBlocks, whose blocks pass through to the tool_result
+                    # content untouched. Only this exact type opts into pass-through,
+                    # so tools that return plain dicts keep being stringified.
+                    if isinstance(result, ToolResultBlocks):
+                        result_content: Any = list(result.blocks)
+                        result_summary = result.summary or "[multimodal content]"
+                    else:
+                        result_content = str(result)
+                        result_summary = result_content
+
                     self.on_event(
-                        "tool_result", {"name": tool_call.name, "result": str(result)[:500]}
+                        "tool_result", {"name": tool_call.name, "result": result_summary[:500]}
                     )
 
                     tr: dict[str, Any] = {
                         "type": "tool_result",
                         "tool_use_id": tool_call.id,
-                        "content": str(result),
+                        "content": result_content,
                     }
                     if tool_error:
                         tr["is_error"] = True  # FIX H6: signal failure to the Anthropic API
