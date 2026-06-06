@@ -14,7 +14,7 @@ Thank you for your interest in contributing to Tokoboros! This document provides
 
 ```bash
 # Clone the repository
-git clone https://github.com/AetherMind-Labs/tokoboros.git
+git clone https://github.com/OpenGigantic/tokoboros.git
 cd tokoboros
 
 # Create/update local environment and include development dependencies
@@ -40,9 +40,9 @@ uv run pytest
 ### Linting & Formatting
 
 ```bash
-uv run ruff check src/
-uv run ruff format src/
-uv run mypy src/tokoboros/
+uv run ruff check src tests
+uv run ruff format src tests
+uv run mypy src --ignore-missing-imports
 ```
 
 ## Project Structure
@@ -91,7 +91,7 @@ If you are contributing new `.og` skill files:
 1. Use the full ObjectGraph tag specification (`::meta`, `::index`, `::dense`, `::full`, `::steps`, `::assertion`, etc.).
 2. Every skill node must have `keywords` for search indexing.
 3. Include `::assertion` blocks where applicable for self-validating execution.
-4. Follow the [GraphMark Specification](GraphMark_Complete_Specification.md) for tag reference.
+4. Follow the [ObjectGraph Specification](ObjectGraph_Complete_Specification.md) for tag reference.
 
 ## Reporting Issues
 
