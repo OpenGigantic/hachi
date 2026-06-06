@@ -89,6 +89,15 @@ class SubAgentReportSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class SkillSnapshot:
+    name: str
+    role: str
+    keyword_count: int
+    use_count: int
+    last_used: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeEventSnapshot:
     name: str
     payload: dict[str, Any]

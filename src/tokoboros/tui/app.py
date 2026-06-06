@@ -1397,12 +1397,13 @@ class OpsScreen(SnapshotScreen):
 
 
 class MemoryScreen(SnapshotScreen):
-    title_text = "Memory"
+    title_text = "Memory & Skills"
 
     def _build_snapshot(self, agent: AgentSession) -> RenderableType:
         recalls = [asdict(row) for row in agent.query_memory_recall("recent context", top_k=5)]
         tasks = [asdict(row) for row in agent.snapshot_task_ledger(limit=8)]
-        return format_memory(tasks, recalls)
+        skills = [asdict(row) for row in agent.snapshot_skills(limit=40)]
+        return format_memory(tasks, recalls, skills)
 
 
 class IntegrationsScreen(SnapshotScreen):

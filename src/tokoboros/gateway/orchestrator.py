@@ -66,6 +66,7 @@ from tokoboros.core.runtime_read_models import (
     RuntimeEventSnapshot,
     RuntimeReadModelStore,
     SessionStateSnapshot,
+    SkillSnapshot,
     SubAgentReportSnapshot,
     TaskLedgerItemSnapshot,
 )
@@ -485,6 +486,25 @@ class AgentSession:
                 summary=record.summary,
             )
             for record in records
+        )
+
+    def snapshot_skills(self, limit: int = 100) -> tuple[SkillSnapshot, ...]:
+        """Immutable inventory of loaded .og skills with usage stats.
+
+        Surfaces the ObjectGraph moat in the TUI: which skills are loaded, how
+        often each has been used, and when. Sorted by use_count desc (most-used
+        first) by the engine.
+        """
+        rows = self.skill_engine.get_skill_inventory()[:limit]
+        return tuple(
+            SkillSnapshot(
+                name=str(row.get("name", "")),
+                role=str(row.get("role", "")),
+                keyword_count=int(row.get("keyword_count", 0) or 0),
+                use_count=int(row.get("use_count", 0) or 0),
+                last_used=row.get("last_used"),
+            )
+            for row in rows
         )
 
     def query_recent_sessions(self, limit: int = 10) -> tuple[dict[str, Any], ...]:
