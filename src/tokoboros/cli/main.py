@@ -2386,5 +2386,73 @@ def skill_lint(
         raise typer.Exit(1)
 
 
+memory_app = typer.Typer(help="Inspect the agent's long-term memory vault.")
+app.add_typer(memory_app, name="memory")
+
+
+@memory_app.command("search")
+def memory_search(
+    query: str = typer.Argument(..., help="Natural-language query to search memory for."),
+    top_k: int = typer.Option(5, "--top-k", "-k", help="Max number of results."),
+    profile: bool = typer.Option(
+        False, "--profile", help="Search the user_profile collection instead of core memory."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit results as JSON."),
+):
+    """Semantic search over the long-term memory vault from the terminal.
+
+    Searches core_memory by default (what the agent has learned about the
+    workspace); --profile searches the bounded user_profile (identity/prefs)."""
+    from tokoboros.core.memory_vault import MemoryVault
+
+    vault = MemoryVault()
+    if profile:
+        rows = vault.search_user_profile(query, top_k)
+    else:
+        rows = vault.semantic_search(query, top_k)
+    scope = "user profile" if profile else "core memory"
+
+    if as_json:
+        # Plain print: Rich's console soft-wraps long JSON to terminal width.
+        print(json.dumps({"query": query, "scope": scope, "results": rows}, indent=2))
+        return
+
+    if not rows:
+        console.print(f"[dim]No {scope} facts matched:[/dim] {query}")
+        return
+    console.print(f"[bold]{len(rows)}[/bold] {scope} match(es) for [cyan]{query}[/cyan]:")
+    for row in rows:
+        ts = row.get("timestamp", "")
+        category = row.get("category", "")
+        console.print(
+            f"  [dim]{ts}[/dim] [magenta]{category}[/magenta]  {row.get('raw_content', '')}"
+        )
+
+
+@memory_app.command("stats")
+def memory_stats(
+    as_json: bool = typer.Option(False, "--json", help="Emit counts as JSON."),
+):
+    """Show how many facts are stored in each memory collection."""
+    from tokoboros.core.memory_vault import MemoryVault
+
+    vault = MemoryVault()
+    stats = {
+        "core_memory": vault.collection.count(),
+        "user_profile": vault.user_collection.count(),
+        "agent_profile": vault.agent_profile.count(),
+        "delegation_log": vault.delegation_collection.count(),
+        "quarantine": vault.quarantine_collection.count(),
+    }
+
+    if as_json:
+        print(json.dumps(stats, indent=2))
+        return
+
+    console.print("[bold]Memory vault[/bold]")
+    for name, count in stats.items():
+        console.print(f"  {name:<16} [cyan]{count}[/cyan]")
+
+
 if __name__ == "__main__":
     app()
