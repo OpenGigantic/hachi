@@ -789,6 +789,33 @@ class SkillEngine:
             return [e.model_dump() for e in og_file.changelog]
         return []
 
+    def get_node_changelog(self, name: str) -> dict[str, Any] | None:
+        """Return a skill node's version + changelog for delta-loading.
+
+        This realizes the ObjectGraph "delta load" idea: instead of re-reading a
+        skill's heavy content to find out whether it changed, an agent that loaded
+        the skill earlier can check just its current version and changelog entries
+        (a few tokens) and decide whether a fresh ``load_skill`` is even warranted.
+
+        Args:
+            name: The exact skill node id.
+
+        Returns:
+            A dict with ``name``, ``version``, ``updated``, and ``changelog``
+            (list of entry dicts), or ``None`` if the node is unknown.
+        """
+        node = self._nodes.get(name)
+        if not node:
+            return None
+        filepath = node.source_file
+        meta = self.get_file_meta(filepath) or {}
+        return {
+            "name": name,
+            "version": meta.get("version", ""),
+            "updated": meta.get("updated", ""),
+            "changelog": self.get_file_changelog(filepath),
+        }
+
     def get_nodes_by_role(self, role: str) -> list[OGNode]:
         """
         Retrieve all nodes matching a specific role.
