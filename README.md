@@ -179,6 +179,7 @@ uv run tokoboros setup --tier lightning
 # Inspect config and canonical paths
 uv run tokoboros config --paths
 uv run tokoboros config-validate --json   # validate settings + provider key (CI-friendly exit code)
+uv run tokoboros models                    # list the provider's models (live), capped by allowed_models
 
 # Manage secret storage metadata and health
 uv run tokoboros secrets --list

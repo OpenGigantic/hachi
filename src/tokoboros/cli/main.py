@@ -1329,6 +1329,69 @@ def config_validate(
 
 
 @app.command()
+def models(
+    json_output: bool = typer.Option(
+        False, "--json", help="Output machine-readable JSON (for CI/automation)."
+    ),
+):
+    """List the models the configured provider exposes (queried live), narrowed by
+    the allowed_models guardrail when set. Marks the active model."""
+    from tokoboros.core.llm import create_llm_client, resolve_available_models
+
+    cfg = load_effective_config()
+    provider = cfg.provider
+    current = provider.model
+    allowed = list(getattr(provider, "allowed_models", []) or [])
+
+    provider_config = {
+        "kind": provider.kind,
+        "model": provider.model,
+        "api_key_ref": getattr(provider, "api_key_ref", None),
+        "api_key_env": getattr(provider, "api_key_env", None),
+        "base_url": getattr(provider, "base_url", None),
+    }
+    client = create_llm_client(provider_config, secret_store=create_default_secret_store())
+    try:
+        discovered = client.list_models()
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+    options = resolve_available_models(discovered, allowed, current)
+    source = "allowlist" if allowed else ("provider" if discovered else "configured")
+    result = {
+        "provider": provider.kind,
+        "current": current,
+        "source": source,
+        "restricted": bool(allowed),
+        "models": options,
+    }
+
+    if json_output:
+        # Plain print: Rich's console soft-wraps long JSON to terminal width.
+        print(json.dumps(result, indent=2))
+        return
+
+    console.print(
+        f"[bold]Models[/bold] for [cyan]{provider.kind}[/cyan]  [dim](source: {source})[/dim]"
+    )
+    if not options:
+        console.print("  [dim]no models available[/dim]")
+        return
+    for name in options:
+        mark = "  [green](current)[/green]" if name == current else ""
+        console.print(f"  • {name}{mark}")
+    if allowed:
+        console.print("  [dim]switching is restricted to the configured allowlist.[/dim]")
+    elif not discovered:
+        console.print(
+            "  [dim]live discovery unavailable (offline or no API key); "
+            "showing the configured model.[/dim]"
+        )
+
+
+@app.command()
 def secrets(
     list_only: bool = typer.Option(False, "--list", help="List stored secret metadata."),
     delete: str | None = typer.Option(None, "--delete", help="Delete a secret by logical name."),
