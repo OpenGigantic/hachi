@@ -1447,15 +1447,6 @@ class TokoborosTextualApp(App[None]):
             {"boot.failed", "job.failed", "mcp.server.failed", "gateway.events.error"}
         )
 
-    def _provider_summary(self) -> str:
-        config = self._runtime_config()
-        provider = config.get("provider", {})
-        if not isinstance(provider, dict):
-            return "unknown / unknown"
-        kind = str(provider.get("kind", "unknown"))
-        model = str(provider.get("model", "unknown"))
-        return f"{kind} / {model}"
-
     def _permission_tier(self) -> str:
         config = self._runtime_config()
         permissions = config.get("permissions", {})
@@ -1473,31 +1464,6 @@ class TokoborosTextualApp(App[None]):
         if self._agent:
             return "local"
         return "booting"
-
-    def _runtime_banner_text(self) -> str:
-        workspace = get_workspace_dir().name
-        session_id = self._gateway_session_id
-        if not session_id and self._agent:
-            try:
-                session_id = self._agent.snapshot_session_state().session_id
-            except Exception:
-                session_id = ""
-
-        session_label = session_id[:12] if session_id else "none"
-        return (
-            f"workspace={workspace} | session={session_label} | "
-            f"provider={self._provider_summary()} | tier={self._permission_tier()} | "
-            f"runtime={self.runtime_status_text()} | jobs={self._active_job_count()} | "
-            f"approvals={self._pending_approval_count()} | warnings={self._warning_count()} | "
-            f"stream={self._event_stream_signal()}"
-        )
-
-    def _update_runtime_banner(self) -> None:
-        try:
-            banner = self.query_one("#runtime-banner", Static)
-        except Exception:
-            return
-        banner.update(self._runtime_banner_text())
 
     def _provider_model(self) -> str:
         provider = self._runtime_config().get("provider", {})
@@ -1631,8 +1597,6 @@ class TokoborosTextualApp(App[None]):
                 daemon=True,
             )
             self._boot_thread.start()
-
-        self._update_runtime_banner()
 
         restored_mode = self._hydrated_state.last_mode
         if (
@@ -1859,13 +1823,11 @@ class TokoborosTextualApp(App[None]):
             if toko_state is not None:
                 screen.set_toko_state(toko_state)
             screen.ingest_runtime_event(event_type, payload)
-        self._update_runtime_banner()
         self.refresh_sidebar()
 
     def _on_boot_complete(self, agent: AgentSession | None, error_text: str | None) -> None:
         self._agent = agent
         self._boot_error = error_text
-        self._update_runtime_banner()
 
         if error_text:
             self.notify(f"Boot failed: {error_text}", severity="error", timeout=8)
@@ -1980,7 +1942,6 @@ class TokoborosTextualApp(App[None]):
         self._activity = ("Idle", "idle")
         if screen is not None:
             self._refresh_snapshot_mode(screen)
-        self._update_runtime_banner()
         self.refresh_sidebar()
         self._persist_ui_state()
 
@@ -2222,7 +2183,6 @@ class TokoborosTextualApp(App[None]):
             target=self._boot_runtime, name="tui-boot", daemon=True
         )
         self._boot_thread.start()
-        self._update_runtime_banner()
 
     @staticmethod
     def _safe_shutdown_agent(agent: AgentSession) -> None:
@@ -2234,7 +2194,6 @@ class TokoborosTextualApp(App[None]):
     def action_interrupt(self) -> None:
         self._gateway_stop_event.set()
         self._resolve_all_pending_approvals("Interrupted by operator")
-        self._update_runtime_banner()
         self.notify(
             "Interrupt requested. Event polling stopped and pending approvals were dismissed.",
             timeout=4,
@@ -2268,7 +2227,6 @@ class TokoborosTextualApp(App[None]):
         screen = self._current_screen()
         if screen is not None:
             self._refresh_snapshot_mode(screen)
-        self._update_runtime_banner()
         self.refresh_sidebar()
         self.notify("Refreshed", timeout=1)
 
@@ -2289,7 +2247,6 @@ class TokoborosTextualApp(App[None]):
 
     def _switch_mode(self, mode_name: str) -> None:
         self.switch_mode(mode_name)
-        self._update_runtime_banner()
         self._persist_ui_state()
 
     def action_mode_session(self) -> None:
@@ -2326,7 +2283,6 @@ class TokoborosTextualApp(App[None]):
             setup_resume_json=self._setup_controller.serialize_resume(),
         )
         self._state_store.save_snapshot(self._hydrated_state)
-        self._update_runtime_banner()
 
     def complete_setup(self) -> None:
         if not self._setup_controller:
@@ -2366,7 +2322,6 @@ class TokoborosTextualApp(App[None]):
             if session_screen is not None:
                 session_screen.clear_transcript()
 
-        self._update_runtime_banner()
         self._boot_thread = threading.Thread(
             target=self._boot_runtime, name="tui-boot", daemon=True
         )
@@ -2386,7 +2341,6 @@ class TokoborosTextualApp(App[None]):
             setup_resume_json=self._hydrated_state.setup_resume_json,
         )
         self._persist_ui_state()
-        self._update_runtime_banner()
 
     def _persist_ui_state(self) -> None:
         composer_value = ""
@@ -2413,7 +2367,6 @@ class TokoborosTextualApp(App[None]):
         )
         self._hydrated_state = snapshot
         self._state_store.save_snapshot(snapshot)
-        self._update_runtime_banner()
 
     def on_unmount(self) -> None:
         # Teardown must never raise — Textual prints any exception here straight to
