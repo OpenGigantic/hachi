@@ -1383,6 +1383,7 @@ class OpsScreen(SnapshotScreen):
         usage = agent.snapshot_usage()
         subagents = [asdict(report) for report in agent.query_subagent_reports(top_k=8)]
         permissions = [asdict(row) for row in agent.snapshot_permission_audit(limit=10)]
+        tool_calls = [asdict(call) for call in agent.snapshot_tool_calls(limit=12)]
         model = agent.snapshot_session_state().model_name
         return format_ops(
             jobs,
@@ -1392,6 +1393,7 @@ class OpsScreen(SnapshotScreen):
             usage=usage,
             subagents=subagents,
             permissions=permissions,
+            tool_calls=tool_calls,
             model=model,
         )
 

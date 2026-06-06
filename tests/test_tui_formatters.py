@@ -17,6 +17,7 @@ from tokoboros.tui.formatters import (
     format_permissions,
     format_skills,
     format_subagents,
+    format_tool_timeline,
     format_usage,
 )
 
@@ -177,6 +178,61 @@ def test_ops_dashboard_includes_new_panels() -> None:
     assert "Permission Audit" in out
     assert "Active Jobs" in out
     assert "MCP" in out
+
+
+def test_tool_timeline_lists_calls_newest_first() -> None:
+    out = _render(
+        format_tool_timeline(
+            [
+                {
+                    "name": "read_file",
+                    "status": "completed",
+                    "detail": "ok",
+                    "duration_seconds": 0.25,
+                },
+                {
+                    "name": "run_terminal_command",
+                    "status": "failed",
+                    "detail": "error: boom",
+                    "duration_seconds": 2.5,
+                },
+            ]
+        )
+    )
+    assert "Tool Timeline" in out
+    assert "read_file" in out
+    assert "run_terminal_command" in out
+    assert "completed" in out
+    assert "failed" in out
+    assert "250ms" in out  # sub-second → ms
+    assert "2.5s" in out
+    # Newest first: the last list entry renders above the first.
+    assert out.index("run_terminal_command") < out.index("read_file")
+
+
+def test_tool_timeline_empty() -> None:
+    assert "no tool calls yet" in _render(format_tool_timeline([]))
+
+
+def test_ops_includes_tool_timeline_when_provided() -> None:
+    out = _render(
+        format_ops(
+            jobs=[],
+            failures=[],
+            mcp={"server_count": 0, "total_tool_count": 0, "servers": []},
+            events=[],
+            tool_calls=[
+                {
+                    "name": "search_memory",
+                    "status": "running",
+                    "detail": "",
+                    "duration_seconds": 0.0,
+                }
+            ],
+        )
+    )
+    assert "Tool Timeline" in out
+    assert "search_memory" in out
 
 
 def test_memory_groups_tasks_and_recall() -> None:

@@ -14,6 +14,7 @@ from tokoboros.core.runtime_read_models import (
     RuntimeEventSnapshot,
     SessionStateSnapshot,
     SubAgentReportSnapshot,
+    ToolCallSnapshot,
 )
 from tokoboros.tui.app import (
     APP_CSS,
@@ -69,6 +70,17 @@ class _FakeOpsAgent:
             ),
         )
 
+    def snapshot_tool_calls(self, limit: int = 12):
+        return (
+            ToolCallSnapshot(
+                name="read_file",
+                status="completed",
+                detail="ok",
+                duration_seconds=0.25,
+                timestamp="t",
+            ),
+        )
+
     def snapshot_session_state(self):
         return SessionStateSnapshot(
             session_id="s",
@@ -96,6 +108,8 @@ def test_ops_screen_builds_full_dashboard() -> None:
         "allow",
         "Active Jobs",
         "MCP",
+        "Tool Timeline",
+        "read_file",
     ):
         assert needle in out, needle
 
