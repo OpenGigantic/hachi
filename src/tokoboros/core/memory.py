@@ -27,6 +27,12 @@ from tokoboros.core.llm import Message
 
 logger = logging.getLogger(__name__)
 
+# Placeholder swapped in for large, re-fetchable tool outputs in older turns. The
+# wording tells the model the output is recoverable by re-running the tool.
+_CLEARED_TOOL_RESULT = (
+    "[tool result cleared to reclaim context — re-run the tool if you need this output again]"
+)
+
 
 class TaskRecord:
     """
@@ -388,6 +394,46 @@ class MemoryManager:
                     if isinstance(block, dict):
                         total_chars += len(str(block))
         return total_chars // 4
+
+    def clear_stale_tool_results(self, keep_recent_messages: int = 6, min_chars: int = 600) -> int:
+        """Losslessly reclaim context by shrinking large, re-fetchable tool outputs.
+
+        Unlike the LLM-summary compaction, this drops NO messages and rewrites NO
+        structure — it only replaces the *content* of oversized ``tool_result``
+        blocks in older messages with a short placeholder. Every ``tool_use`` keeps
+        its paired ``tool_result`` (so the Anthropic API never 400s), and the model
+        can simply re-run a tool if it needs the output again. It costs no tokens
+        (no LLM call), so it runs as the cheap first line of defense before the lossy
+        summary compaction.
+
+        Args:
+            keep_recent_messages: Never touch the most recent N messages — recent
+                tool output is the most likely to still be needed.
+            min_chars: Only clear tool_result contents larger than this (small
+                results aren't worth the churn and re-fetch hint).
+
+        Returns:
+            The number of tool_result blocks cleared (0 if nothing qualified).
+        """
+        if len(self._history) <= keep_recent_messages:
+            return 0
+
+        cleared = 0
+        older = self._history[: len(self._history) - keep_recent_messages]
+        for msg in older:
+            if not isinstance(msg.content, list):
+                continue
+            for block in msg.content:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                content = block.get("content")
+                if content == _CLEARED_TOOL_RESULT:
+                    continue  # already cleared — idempotent
+                size = len(content) if isinstance(content, str) else len(str(content))
+                if size > min_chars:
+                    block["content"] = _CLEARED_TOOL_RESULT
+                    cleared += 1
+        return cleared
 
     def reset(self):
         """
