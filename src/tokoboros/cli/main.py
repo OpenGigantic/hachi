@@ -1268,6 +1268,66 @@ def config(
         )
 
 
+@app.command("config-validate")
+def config_validate(
+    json_output: bool = typer.Option(
+        False, "--json", help="Output machine-readable JSON (for CI/automation)."
+    ),
+):
+    """Validate the effective configuration and exit non-zero on any problem.
+
+    Checks that settings.toml parses, the schema is sound (provider kind,
+    permission tier, max_tokens), the configured model is consistent with the
+    allowed_models guardrail, and the provider API key resolves. CI-friendly."""
+    import tomllib
+
+    from tokoboros.core.config_validate import validate_config
+
+    paths = get_tokoboros_paths()
+    checks: list[dict] = []
+
+    # load_effective_config silently falls back to defaults on malformed TOML, so
+    # parse the raw file here to surface syntax errors rather than hide them.
+    toml_path = paths.global_config_toml
+    if toml_path.exists():
+        try:
+            with toml_path.open("rb") as handle:
+                tomllib.load(handle)
+            checks.append({"name": "settings_toml_parses", "ok": True, "detail": str(toml_path)})
+        except Exception as exc:
+            checks.append(
+                {"name": "settings_toml_parses", "ok": False, "detail": f"parse error: {exc}"}
+            )
+    else:
+        checks.append(
+            {"name": "settings_toml_parses", "ok": True, "detail": "no settings.toml (defaults)"}
+        )
+
+    cfg = load_effective_config()
+    service = OnboardingService(paths=paths)
+    key_ok, key_msg = service.validate_provider(
+        kind=cfg.provider.kind, api_key_env=getattr(cfg.provider, "api_key_env", None)
+    )
+    report = validate_config(cfg, provider_key_ok=key_ok, provider_key_detail=key_msg)
+
+    all_checks = checks + report["checks"]
+    overall = all(c["ok"] for c in all_checks)
+    result = {"ok": overall, "checks": all_checks}
+
+    if json_output:
+        # Plain print: Rich's console soft-wraps long JSON to terminal width.
+        print(json.dumps(result, indent=2))
+        raise typer.Exit(0 if overall else 1)
+
+    console.print("[bold]Config validation[/bold]")
+    for check in all_checks:
+        mark = "[green]✓[/green]" if check["ok"] else "[red]✗[/red]"
+        console.print(f"  {mark} {check['name']}  [dim]{check['detail']}[/dim]")
+    verdict = "[green]Config OK[/green]" if overall else "[red]Config has problems[/red]"
+    console.print(f"\n{verdict}")
+    raise typer.Exit(0 if overall else 1)
+
+
 @app.command()
 def secrets(
     list_only: bool = typer.Option(False, "--list", help="List stored secret metadata."),
