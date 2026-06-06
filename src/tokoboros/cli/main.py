@@ -30,6 +30,7 @@ from tokoboros.core.onboarding import OnboardingService
 from tokoboros.core.paths import get_tokoboros_paths
 from tokoboros.core.permissions import PermissionGate
 from tokoboros.core.secret_store import create_default_secret_store
+from tokoboros.core.session_store import SessionStore
 from tokoboros.gateway.control_plane import (
     ConnectRequest,
     GatewayControlPlane,
@@ -49,12 +50,72 @@ from tokoboros.gateway.workspace import (
 from tokoboros.jobs.scheduler import Scheduler, ScheduleStore
 from tokoboros.tui.app import run_tui
 
-app = typer.Typer(help="Tokoboros - The Autonomous Agent Engine powered by ObjectGraph")
+app = typer.Typer(
+    help="Tokoboros - The Autonomous Agent Engine powered by ObjectGraph",
+    no_args_is_help=False,
+    invoke_without_command=True,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 console = Console()
 
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _resolve_version() -> str:
+    """Best-effort package version for ``--version`` (falls back to a literal)."""
+    try:
+        from importlib.metadata import version
+
+        return version("tokoboros")
+    except Exception:
+        return "0.1.0"
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        console.print(f"tokoboros {_resolve_version()}")
+        raise typer.Exit()
+
+
+@app.callback(invoke_without_command=True)
+def _main(
+    ctx: typer.Context,
+    version: bool = typer.Option(  # noqa: ARG001 - consumed eagerly by the callback
+        False,
+        "--version",
+        "-v",
+        help="Show the Tokoboros version and exit.",
+        callback=_version_callback,
+        is_eager=True,
+    ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        "-r",
+        help="Pick a past session to resume (full context reload).",
+    ),
+    continue_latest: bool = typer.Option(
+        False,
+        "--continue",
+        "-c",
+        help="Resume the most recent session.",
+    ),
+    repl: bool = typer.Option(
+        False,
+        "--repl",
+        help="Launch the legacy Rich REPL instead of the Textual TUI.",
+    ),
+) -> None:
+    """Tokoboros — your autonomous personal assistant.
+
+    Run `tokoboros` with no command to start the assistant. Use a subcommand
+    (run, setup, doctor, skill, ...) for everything else; `tokoboros -h` lists them.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    _launch_assistant(repl=repl, resume=resume, continue_latest=continue_latest)
 
 
 class _InProcessGatewayRuntime:
@@ -982,19 +1043,59 @@ def _run_repl() -> None:
             console.print(f"\n[bold red]Error:[/] {e}")
 
 
-@app.command()
-def run(
-    repl: bool = typer.Option(
-        False,
-        "--repl",
-        help="Launch the legacy Rich REPL instead of the Textual TUI.",
-    ),
-):
-    """
-    Start Tokoboros.
+def _resolve_resume_target(*, resume: bool, continue_latest: bool) -> str | None:
+    """Resolve which prior session (if any) to resume into the new TUI session.
 
-    Default: Textual TUI.
-    Fallback: pass --repl for the legacy terminal REPL.
+    ``--continue`` picks the most recent session non-interactively; ``--resume``
+    prints a numbered list and asks the operator to choose. Returns the chosen
+    session id, or None when nothing is selected.
+    """
+    if not (resume or continue_latest):
+        return None
+
+    store = SessionStore()
+    try:
+        if continue_latest:
+            sid = store.get_latest_session_id()
+            if not sid:
+                console.print("[yellow]No previous session to continue. Starting fresh.[/yellow]")
+            return sid
+
+        sessions = store.get_recent_sessions(limit=10)
+        if not sessions:
+            console.print("[yellow]No previous sessions found. Starting fresh.[/yellow]")
+            return None
+
+        console.print(Rule("[bold magenta]Resume a session[/bold magenta]", style="magenta"))
+        for index, item in enumerate(sessions, start=1):
+            started = str(item.get("started_at", ""))[:19].replace("T", " ")
+            turns = item.get("total_turns", 0)
+            model = item.get("model", "unknown")
+            console.print(
+                f"  [cyan]{index}[/cyan]. {started}  ·  {turns} turns  ·  [dim]{model}[/dim]"
+            )
+
+        choice = Prompt.ask(
+            "Select a session number (or press Enter to start fresh)", default=""
+        ).strip()
+        if not choice:
+            return None
+        try:
+            selected = sessions[int(choice) - 1]
+        except (ValueError, IndexError):
+            console.print("[yellow]Invalid selection. Starting fresh.[/yellow]")
+            return None
+        return str(selected.get("id"))
+    finally:
+        store.shutdown()
+
+
+def _launch_assistant(*, repl: bool, resume: bool, continue_latest: bool) -> None:
+    """Shared entry point for `tokoboros` and `tokoboros run`.
+
+    Boots the Textual TUI in-process (local mode) so chat, interactive permission
+    approvals, and slash commands all operate directly on the live AgentSession.
+    The standalone HTTP gateway lives behind `tokoboros gateway` for web clients.
     """
     ensure_workspace()
     _apply_quick_setup_if_needed()
@@ -1004,24 +1105,43 @@ def run(
         _run_repl()
         return
 
-    gateway_server: GatewayHTTPServer | None = None
-    gateway_runtime: _InProcessGatewayRuntime | None = None
+    resume_session_id = _resolve_resume_target(resume=resume, continue_latest=continue_latest)
+
     try:
-        gateway_server, gateway_base_url, gateway_runtime = _start_gateway_server(
-            host="127.0.0.1",
-            port=0,
-            attach_runtime=True,
-        )
-        run_tui(gateway_base_url=gateway_base_url)
+        run_tui(resume_session_id=resume_session_id)
     except Exception as e:
         console.print(f"[bold red]Failed to launch Textual UI:[/] {e}")
         console.print("[yellow]Falling back to compatibility REPL...[/yellow]")
         _run_repl()
-    finally:
-        if gateway_runtime is not None:
-            gateway_runtime.shutdown()
-        if gateway_server is not None:
-            gateway_server.stop()
+
+
+@app.command()
+def run(
+    repl: bool = typer.Option(
+        False,
+        "--repl",
+        help="Launch the legacy Rich REPL instead of the Textual TUI.",
+    ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        "-r",
+        help="Pick a past session to resume (full context reload).",
+    ),
+    continue_latest: bool = typer.Option(
+        False,
+        "--continue",
+        "-c",
+        help="Resume the most recent session.",
+    ),
+):
+    """
+    Start Tokoboros.
+
+    Default: Textual TUI.
+    Fallback: pass --repl for the legacy terminal REPL.
+    """
+    _launch_assistant(repl=repl, resume=resume, continue_latest=continue_latest)
 
 
 @app.command("run-repl")

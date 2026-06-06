@@ -12,6 +12,7 @@ import json
 import os
 import re
 import threading
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal
@@ -166,6 +167,9 @@ Screen {
 }
 
 /* --- Transcript message widgets --------------------------------------- */
+.msg:hover {
+  background: $surface-lighten-1;
+}
 .msg {
   height: auto;
   margin: 0 0 1 0;
@@ -288,16 +292,35 @@ Screen {
   color: $text-muted;
 }
 
-#setup-body {
-  margin: 1 2;
+#setup-main {
+  height: 1fr;
+  margin: 1 2 0 2;
+}
+
+#setup-rail {
+  width: 26;
+  height: 1fr;
   border: round #30363d;
   background: $surface;
-  padding: 1 2;
+  padding: 1 1;
+  margin: 0 1 0 0;
+}
+
+#setup-content {
+  width: 1fr;
   height: 1fr;
 }
 
-#setup-options {
+#setup-body {
+  border: round #30363d;
+  background: $surface;
+  padding: 1 2;
   height: auto;
+  margin: 0 0 1 0;
+}
+
+#setup-options {
+  height: 1fr;
   padding: 0 1;
 }
 
@@ -306,8 +329,16 @@ Screen {
   width: 100%;
 }
 
+#setup-review {
+  height: 1fr;
+  border: round #30363d;
+  background: $surface;
+  padding: 1 2;
+  display: none;
+}
+
 #setup-nav {
-  margin: 0 2 1 2;
+  margin: 1 2 1 2;
   height: auto;
 }
 
@@ -369,8 +400,33 @@ _HELP_ROWS: tuple[tuple[str, str], ...] = (
     ("Ctrl+P", "Command palette"),
     ("Ctrl+R", "Refresh the current screen"),
     ("Ctrl+C", "Interrupt: stop polling, dismiss approvals"),
+    ("Ctrl+Y", "Copy last response to clipboard"),
+    ("Ctrl+Q", "Quit Tokoboros"),
     ("?", "Toggle this help"),
     ("Escape", "Close a dialog / deny an approval"),
+    ("Click message", "Copy that message to clipboard"),
+    ("Ctrl+V / right-click", "Paste into the composer"),
+)
+
+# Slash commands typed into the composer. Each entry is (usage, description).
+# Kept as a single source of truth: the help modal renders it and
+# ``TokoborosTextualApp.handle_slash_command`` dispatches on the verbs here.
+_SLASH_HELP: tuple[tuple[str, str], ...] = (
+    ("/help", "Show this help"),
+    ("/clear", "Clear the conversation context and transcript"),
+    ("/compact", "Compress older context to reclaim tokens"),
+    ("/new", "Start a fresh conversation (alias of /clear)"),
+    ("/sessions", "List recent sessions (resume with `tokoboros -r`)"),
+    ("/model [name]", "Show or switch the active model"),
+    ("/memory <query>", "Search long-term memory"),
+    ("/remember <fact>", "Save a fact to long-term memory"),
+    ("/forget <query>", "Remove matching facts from long-term memory"),
+    ("/copy", "Copy the last response to clipboard"),
+    ("/plan <task>", "Plan-first: outline before acting"),
+    ("/deep-research <q>", "Thorough, multi-source research answer"),
+    ("/settings", "Open the Settings screen"),
+    ("/setup", "Open the Setup wizard"),
+    ("/quit", "Quit Tokoboros (alias /exit)"),
 )
 
 
@@ -387,9 +443,17 @@ class HelpModal(ModalScreen[None]):
         for key, description in _HELP_ROWS:
             rows.append(f"  {key:<18}", style=f"bold {theme.PRIMARY}")
             rows.append(f"{description}\n", style=theme.FOREGROUND)
+
+        slash = Text()
+        for usage, description in _SLASH_HELP:
+            slash.append(f"  {usage:<20}", style=f"bold {theme.PRIMARY}")
+            slash.append(f"{description}\n", style=theme.FOREGROUND)
+
         with Vertical(id="help-card"):
             yield Static(Text("Keyboard shortcuts", style=f"bold {theme.ACCENT}"))
             yield Static(rows)
+            yield Static(Text("Slash commands", style=f"bold {theme.ACCENT}"))
+            yield Static(slash)
             yield Button("Close", id="help-close", variant="primary")
 
     def action_close(self) -> None:
@@ -566,13 +630,18 @@ class SetupScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static("Tokoboros Setup", classes="mode-title")
         yield Static("", id="setup-progress")
-        yield Static("Preparing setup…", id="setup-body")
-        with Vertical(id="setup-options"):
-            # All option buttons are created once; visibility is toggled per
-            # step in render_step to avoid dynamic mount/remove id collisions.
-            for options in _SETUP_STEP_OPTIONS.values():
-                for button_id, label, desc in options:
-                    yield Button(f"  {label} — {desc}", id=button_id)
+        with Horizontal(id="setup-main"):
+            yield Static("", id="setup-rail")
+            with Vertical(id="setup-content"):
+                yield Static("Preparing setup…", id="setup-body")
+                with VerticalScroll(id="setup-options"):
+                    # All option buttons are created once; visibility is toggled
+                    # per step in render_step to avoid dynamic mount/remove id
+                    # collisions.
+                    for options in _SETUP_STEP_OPTIONS.values():
+                        for button_id, label, desc in options:
+                            yield Button(f"  {label} — {desc}", id=button_id)
+                yield Static("", id="setup-review")
         with Horizontal(id="setup-nav"):
             yield Button("← Back", id="setup-back")
             yield Button("Skip for now", id="setup-skip")
@@ -580,13 +649,74 @@ class SetupScreen(Screen):
             yield Button("Finish", id="setup-finish", variant="success")
 
     def on_mount(self) -> None:
+        # Create the wizard on demand so Setup is usable any time (Ctrl+7),
+        # not only during first-run onboarding.
+        app = self.app
+        if isinstance(app, TokoborosTextualApp):
+            app.ensure_setup_controller()
         self.render_step()
 
     def _controller(self) -> SetupWizardController | None:
         app = self.app
         if isinstance(app, TokoborosTextualApp):
+            app.ensure_setup_controller()
             return app.setup_controller
         return None
+
+    _STEP_LABELS = {
+        "welcome": "Capability tier",
+        "provider": "Model provider",
+        "safety": "Permissions",
+        "memory": "Memory",
+        "integrations": "Integrations",
+        "advanced": "Advanced",
+        "finish": "Review & finish",
+    }
+
+    def _render_rail(self, controller: SetupWizardController) -> None:
+        current = controller.current_step
+        rail = Text()
+        rail.append("Steps\n\n", style=f"bold {theme.ACCENT}")
+        for step in controller.steps:
+            label = self._STEP_LABELS.get(step, step.title())
+            if step == current:
+                rail.append("▶ ", style=f"bold {theme.PRIMARY}")
+                rail.append(f"{label}\n", style=f"bold {theme.FOREGROUND}")
+            else:
+                rail.append("  ")
+                rail.append(f"{label}\n", style=theme.MUTED)
+        self.query_one("#setup-rail", Static).update(rail)
+
+    def _render_review(self, controller: SetupWizardController) -> None:
+        answers = controller.answers
+        provider = answers.get("provider", {})
+        provider_kind = provider.get("kind", "anthropic") if isinstance(provider, dict) else "—"
+        provider_model = provider.get("model", "") if isinstance(provider, dict) else ""
+        memory = answers.get("memory", {})
+        memory_on = isinstance(memory, dict) and bool(memory.get("enable_semantic_memory"))
+        integrations = answers.get("integrations", {})
+        enabled = [
+            name
+            for name, entry in integrations.items()
+            if isinstance(entry, dict) and entry.get("enabled")
+        ]
+
+        review = Text()
+        review.append("Review your choices\n\n", style=f"bold {theme.ACCENT}")
+
+        def row(label: str, value: str) -> None:
+            review.append(f"  {label:<16}", style=theme.MUTED)
+            review.append(f"{value}\n", style=theme.FOREGROUND)
+
+        row("Tier", controller.selected_tier)
+        row("Provider", f"{provider_kind} {provider_model}".strip())
+        row("Permissions", str(answers.get("permission_tier", "guided")))
+        row("Memory", "on" if memory_on else "off")
+        row("Integrations", ", ".join(enabled) if enabled else "none")
+        review.append("\nPress ", style=theme.MUTED)
+        review.append("Finish", style=f"bold {theme.SUCCESS}")
+        review.append(" to apply and boot the runtime.", style=theme.MUTED)
+        self.query_one("#setup-review", Static).update(review)
 
     def _option_selected(self, button_id: str, controller: SetupWizardController) -> bool:
         answers = controller.answers
@@ -634,6 +764,8 @@ class SetupScreen(Screen):
             )
         )
 
+        self._render_rail(controller)
+
         title, description = _SETUP_STEP_COPY.get(step, (step.title(), ""))
         body = self.query_one("#setup-body", Static)
         body.update(
@@ -645,6 +777,7 @@ class SetupScreen(Screen):
             )
         )
 
+        is_finish = step == "finish"
         current_ids = {button_id for button_id, _, _ in _SETUP_STEP_OPTIONS.get(step, [])}
         for options in _SETUP_STEP_OPTIONS.values():
             for button_id, label, desc in options:
@@ -656,10 +789,18 @@ class SetupScreen(Screen):
                     button.label = f"{'✓ ' if selected else '  '}{label} — {desc}"
                     button.variant = "primary" if selected else "default"
 
+        # The options list and the review panel are mutually exclusive: the final
+        # step swaps the (empty) option list for a summary of every choice.
+        self.query_one("#setup-options").display = not is_finish
+        review = self.query_one("#setup-review", Static)
+        review.display = is_finish
+        if is_finish:
+            self._render_review(controller)
+
         self.query_one("#setup-back", Button).disabled = controller.step_index() == 0
-        self.query_one("#setup-next", Button).disabled = step == "finish"
-        self.query_one("#setup-skip", Button).disabled = step == "finish"
-        self.query_one("#setup-finish", Button).disabled = step != "finish"
+        self.query_one("#setup-next", Button).disabled = is_finish
+        self.query_one("#setup-skip", Button).disabled = is_finish
+        self.query_one("#setup-finish", Button).disabled = not is_finish
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         controller = self._controller()
@@ -799,6 +940,13 @@ class SessionScreen(Screen):
         # messages (user/agent) still scroll into view via the default path.
         self._append(Static(Text(text, style=style), classes="system-line"), scroll=False)
 
+    def clear_transcript(self) -> None:
+        """Remove every rendered message/card from the transcript (used by /clear)."""
+        transcript = self._transcript()
+        for child in list(transcript.children):
+            child.remove()
+        self._tool_cards.clear()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "composer":
             return
@@ -806,10 +954,14 @@ class SessionScreen(Screen):
         event.input.value = ""
         if not prompt:
             return
-        self.set_toko_state("thinking")
         app = self.app
-        if isinstance(app, TokoborosTextualApp):
-            app.submit_prompt(prompt)
+        if not isinstance(app, TokoborosTextualApp):
+            return
+        if prompt.startswith("/"):
+            app.handle_slash_command(prompt)
+            return
+        self.set_toko_state("thinking")
+        app.submit_prompt(prompt)
 
     def on_resize(self, _event: object) -> None:
         try:
@@ -1181,13 +1333,20 @@ class TokoborosTextualApp(App[None]):
         Binding("ctrl+p", "command_palette", "Palette"),
         Binding("ctrl+c", "interrupt", "Interrupt"),
         Binding("ctrl+r", "refresh_current", "Refresh"),
+        Binding("ctrl+y", "copy_last_response", "Copy response", show=False),
+        Binding("ctrl+q", "quit", "Quit"),
         Binding("question_mark", "help", "Help"),
     ]
 
-    def __init__(self, gateway_base_url: str | None = None) -> None:
+    def __init__(
+        self,
+        gateway_base_url: str | None = None,
+        resume_session_id: str | None = None,
+    ) -> None:
         super().__init__()
         self._agent: AgentSession | None = None
         self._boot_error: str | None = None
+        self._resume_session_id = resume_session_id
         self._gateway_base_url = (gateway_base_url or "").rstrip("/")
         self._gateway_connected = False
         self._gateway_session_id: str = ""
@@ -1222,6 +1381,16 @@ class TokoborosTextualApp(App[None]):
 
     @property
     def setup_controller(self) -> SetupWizardController | None:
+        return self._setup_controller
+
+    def ensure_setup_controller(self) -> SetupWizardController:
+        """Create the setup wizard on demand so Setup works any time, not just
+        during first-run onboarding."""
+        if self._setup_controller is None:
+            self._setup_controller = SetupWizardController(
+                self._onboarding,
+                persisted_resume_json=self._hydrated_state.setup_resume_json,
+            )
         return self._setup_controller
 
     def active_agent(self) -> AgentSession | None:
@@ -1489,6 +1658,7 @@ class TokoborosTextualApp(App[None]):
             agent = boot_agent(
                 on_event=self._runtime_event_from_thread,
                 on_permission_request=self._request_permission_decision,
+                resume_session_id=self._resume_session_id,
             )
             self._queue_ui_callback(self._on_boot_complete, agent, None)
         except Exception as exc:  # pragma: no cover - UI fallback path
@@ -1601,7 +1771,11 @@ class TokoborosTextualApp(App[None]):
         with self._approval_lock:
             self._approval_waiters[request.request_id] = (waiter, holder)
 
-        if not self._queue_ui_callback(self._show_permission_modal, request):
+        # call_from_thread runs _show_permission_modal inside the Textual event loop,
+        # ensuring the active_app ContextVar is set so push_screen works correctly.
+        try:
+            self.call_from_thread(self._show_permission_modal, request)
+        except Exception:
             with self._approval_lock:
                 self._approval_waiters.pop(request.request_id, None)
             return PermissionDecision(action="deny", rationale="UI not ready")
@@ -1704,13 +1878,31 @@ class TokoborosTextualApp(App[None]):
         self._activity = ("Idle", "idle")
         screen = self._current_screen()
         if isinstance(screen, SessionScreen):
+            self._render_resumed_transcript(agent, screen)
             screen.ingest_runtime_event("boot.complete", {})
 
         if screen is not None:
             self._refresh_snapshot_mode(screen)
         self.refresh_sidebar()
 
-    def submit_prompt(self, prompt: str) -> None:
+    def _render_resumed_transcript(self, agent: AgentSession | None, screen: SessionScreen) -> None:
+        """Replay a resumed session's prior turns into the transcript view."""
+        if agent is None:
+            return
+        transcript = getattr(agent, "resumed_transcript", [])
+        if not transcript:
+            return
+        screen._mount_system_line(
+            f"Resumed previous session — {len(transcript)} messages restored.",
+            style=theme.SUCCESS,
+        )
+        for role, content in transcript:
+            if role == "user":
+                screen.append_user_prompt(content)
+            else:
+                screen.render_assistant_text(content)
+
+    def submit_prompt(self, prompt: str, display_text: str | None = None) -> None:
         if self._boot_error:
             self.notify(
                 "Runtime is not available. Check boot failure in transcript.", severity="error"
@@ -1731,7 +1923,9 @@ class TokoborosTextualApp(App[None]):
 
         screen = self._current_screen()
         if isinstance(screen, SessionScreen):
-            screen.append_user_prompt(prompt)
+            # display_text lets slash commands (e.g. /plan) show a friendly bubble
+            # while sending an expanded instruction to the model.
+            screen.append_user_prompt(display_text or prompt)
         self.refresh_sidebar()
 
         target = self._run_gateway_chat if self._gateway_connected else self._run_chat
@@ -1790,6 +1984,253 @@ class TokoborosTextualApp(App[None]):
         self.refresh_sidebar()
         self._persist_ui_state()
 
+    # ==========================================
+    # Slash commands (typed into the composer)
+    # ==========================================
+
+    def _session_note(self, text: str, *, style: str | None = None) -> None:
+        """Write an informational line into the session transcript (or notify)."""
+        screen = self._current_screen()
+        if isinstance(screen, SessionScreen):
+            screen._mount_system_line(text, style=style or theme.MUTED)
+        else:
+            self.notify(text)
+
+    def handle_slash_command(self, raw: str) -> None:
+        """Parse and dispatch a ``/command`` typed into the composer."""
+        body = raw[1:].strip()
+        parts = body.split(maxsplit=1)
+        verb = parts[0].lower() if parts else ""
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        handlers: dict[str, Callable[[str], object]] = {
+            "help": lambda _a: self.action_help(),
+            "clear": self._cmd_clear,
+            "new": self._cmd_clear,
+            "compact": self._cmd_compact,
+            "copy": lambda _a: self.action_copy_last_response(),
+            "sessions": self._cmd_sessions,
+            "model": self._cmd_model,
+            "memory": self._cmd_memory,
+            "remember": self._cmd_remember,
+            "forget": self._cmd_forget,
+            "plan": self._cmd_plan,
+            "deep-research": self._cmd_deep_research,
+            "research": self._cmd_deep_research,
+            "settings": lambda _a: self._switch_mode("settings"),
+            "setup": lambda _a: self.action_mode_setup(),
+            "quit": lambda _a: self.exit(),
+            "exit": lambda _a: self.exit(),
+        }
+        handler = handlers.get(verb)
+        if handler is None:
+            self._session_note(
+                f"Unknown command: /{verb}. Type /help for the list.", style=theme.WARNING
+            )
+            return
+        handler(arg)
+
+    def _cmd_clear(self, _arg: str) -> None:
+        agent = self._agent
+        if agent is not None:
+            try:
+                agent.memory.reset()
+            except Exception:
+                pass
+        screen = self._current_screen()
+        if isinstance(screen, SessionScreen):
+            screen.clear_transcript()
+            screen._mount_system_line("Context cleared.", style=theme.SUCCESS)
+        self.last_agent_text = ""
+        self.refresh_sidebar()
+
+    def _cmd_compact(self, _arg: str) -> None:
+        agent = self._agent
+        if agent is None:
+            self._session_note("Runtime is still booting.", style=theme.WARNING)
+            return
+        cleared = 0
+        try:
+            agent.memory.apply_pending_compaction()
+            cleared = agent.memory.clear_stale_tool_results()
+        except Exception as exc:
+            self._session_note(f"Compaction failed: {exc}", style=theme.ERROR)
+            return
+        self._session_note(
+            f"Context compacted — reclaimed {cleared} stale tool-result block(s).",
+            style=theme.SUCCESS,
+        )
+        self.refresh_sidebar()
+
+    def _cmd_sessions(self, _arg: str) -> None:
+        agent = self._agent
+        sessions = list(agent.query_recent_sessions(limit=10)) if agent else []
+        if not sessions:
+            self._session_note("No recent sessions found.", style=theme.MUTED)
+            return
+        lines = ["Recent sessions (resume one with:  tokoboros -r):"]
+        for index, item in enumerate(sessions, start=1):
+            started = str(item.get("started_at", ""))[:19].replace("T", " ")
+            lines.append(
+                f"  {index}. {started}  ·  {item.get('total_turns', 0)} turns"
+                f"  ·  {item.get('model', '?')}"
+            )
+        self._session_note("\n".join(lines))
+
+    def _cmd_model(self, arg: str) -> None:
+        from tokoboros.core.config_loader import load_effective_config, write_global_config
+
+        try:
+            config = load_effective_config()
+        except Exception as exc:
+            self._session_note(f"Could not load config: {exc}", style=theme.ERROR)
+            return
+
+        if not arg:
+            current = config.provider.model
+            catalog = {
+                "anthropic": ["claude-haiku-4-5", "claude-sonnet-4-5"],
+                "openai-compatible": ["gpt-4.1-mini", "gpt-4.1"],
+                "ollama": ["llama3.1:8b", "qwen2.5-coder:7b"],
+            }
+            options = catalog.get(config.provider.kind, [current])
+            lines = [f"Active model: {current}  ({config.provider.kind})", "Available:"]
+            lines += [f"  • {name}{'  (current)' if name == current else ''}" for name in options]
+            lines.append("Switch with:  /model <name>")
+            self._session_note("\n".join(lines))
+            return
+
+        try:
+            config.provider.model = arg
+            write_global_config(config)
+        except Exception as exc:
+            self._session_note(f"Failed to set model: {exc}", style=theme.ERROR)
+            return
+        self._session_note(
+            f"Model set to {arg}. Rebooting runtime (conversation preserved)…",
+            style=theme.SUCCESS,
+        )
+        self._reboot_runtime(resume_current=True)
+
+    def _cmd_memory(self, arg: str) -> None:
+        if not arg:
+            self._session_note("Usage: /memory <query>", style=theme.WARNING)
+            return
+        agent = self._agent
+        if agent is None:
+            self._session_note("Runtime is still booting.", style=theme.WARNING)
+            return
+        try:
+            results = agent.query_memory_recall(arg, top_k=8)
+        except Exception as exc:
+            self._session_note(f"Memory search failed: {exc}", style=theme.ERROR)
+            return
+        if not results:
+            self._session_note(f"No memory matches for: {arg}", style=theme.MUTED)
+            return
+        lines = [f"Memory matches for '{arg}':"]
+        lines += [f"  • {row.content[:140]}" for row in results]
+        self._session_note("\n".join(lines))
+
+    def _cmd_remember(self, arg: str) -> None:
+        if not arg:
+            self._session_note("Usage: /remember <fact>", style=theme.WARNING)
+            return
+        self.set_toko_state_safe("thinking")
+        self.submit_prompt(
+            "Save the following to long-term memory using your memory tools, "
+            f"then confirm briefly: {arg}",
+            display_text=f"/remember {arg}",
+        )
+
+    def _cmd_forget(self, arg: str) -> None:
+        if not arg:
+            self._session_note("Usage: /forget <query>", style=theme.WARNING)
+            return
+        self.set_toko_state_safe("thinking")
+        self.submit_prompt(
+            "Search long-term memory and delete any facts matching the following, "
+            f"then confirm what was removed: {arg}",
+            display_text=f"/forget {arg}",
+        )
+
+    def _cmd_plan(self, arg: str) -> None:
+        if not arg:
+            self._session_note("Usage: /plan <task>", style=theme.WARNING)
+            return
+        self.set_toko_state_safe("thinking")
+        self.submit_prompt(
+            "[PLAN MODE] Before doing anything, think step by step and present a clear, "
+            "numbered plan of how you will accomplish the task. Do not execute until the "
+            f"plan is laid out. Task:\n{arg}",
+            display_text=f"/plan {arg}",
+        )
+
+    def _cmd_deep_research(self, arg: str) -> None:
+        if not arg:
+            self._session_note("Usage: /deep-research <question>", style=theme.WARNING)
+            return
+        self.set_toko_state_safe("thinking")
+        self.submit_prompt(
+            "[DEEP RESEARCH] Investigate the following thoroughly. Consult multiple sources "
+            "(use your web/browse tools where available), cross-check claims, and synthesize "
+            "a well-structured answer with citations. Question:\n" + arg,
+            display_text=f"/deep-research {arg}",
+        )
+
+    def set_toko_state_safe(self, state: str) -> None:
+        """Drive the brand glyph without raising if the session screen is not active."""
+        screen = self._current_screen()
+        if isinstance(screen, SessionScreen):
+            screen.set_toko_state(state)
+
+    def _reboot_runtime(self, resume_current: bool = False) -> None:
+        """Tear down the live agent and boot a fresh one (e.g. after a model switch).
+
+        When ``resume_current`` is set, the in-flight session id is replayed into the
+        new agent so the conversation continues seamlessly with the new settings.
+        """
+        if self._chat_thread and self._chat_thread.is_alive():
+            self._session_note("Finish the current turn before switching.", style=theme.WARNING)
+            return
+
+        old_agent = self._agent
+        resume_id: str | None = None
+        if resume_current and old_agent is not None:
+            try:
+                resume_id = old_agent.snapshot_session_state().session_id or None
+            except Exception:
+                resume_id = None
+
+        self._agent = None
+        self._boot_error = None
+        self._resume_session_id = resume_id
+
+        if old_agent is not None:
+            threading.Thread(
+                target=lambda a=old_agent: self._safe_shutdown_agent(a),
+                name="tui-agent-shutdown",
+                daemon=True,
+            ).start()
+
+        screen = self._current_screen()
+        if isinstance(screen, SessionScreen):
+            screen.clear_transcript()
+            screen._mount_system_line("Rebooting runtime…", style=theme.MUTED)
+
+        self._boot_thread = threading.Thread(
+            target=self._boot_runtime, name="tui-boot", daemon=True
+        )
+        self._boot_thread.start()
+        self._update_runtime_banner()
+
+    @staticmethod
+    def _safe_shutdown_agent(agent: AgentSession) -> None:
+        try:
+            agent.shutdown()
+        except Exception:
+            pass
+
     def action_interrupt(self) -> None:
         self._gateway_stop_event.set()
         self._resolve_all_pending_approvals("Interrupted by operator")
@@ -1798,6 +2239,25 @@ class TokoborosTextualApp(App[None]):
             "Interrupt requested. Event polling stopped and pending approvals were dismissed.",
             timeout=4,
         )
+
+    def action_copy_last_response(self) -> None:
+        """Copy the most recent agent response to the system clipboard (Ctrl+Y / /copy)."""
+        if not self.last_agent_text:
+            self.notify("No response to copy yet.", severity="warning", timeout=2)
+            return
+        self.copy_to_clipboard(self.last_agent_text)
+        self.notify("Response copied  ·  Ctrl+V or right-click to paste", timeout=2)
+        # Re-focus composer so paste lands in the right widget.
+        self._refocus_composer()
+
+    def _refocus_composer(self) -> None:
+        """Return keyboard focus to the composer Input if it is visible."""
+        try:
+            from textual.widgets import Input as _Input
+
+            self.screen.query_one("#composer", _Input).focus()
+        except Exception:
+            pass
 
     def action_help(self) -> None:
         if isinstance(self._current_screen(), HelpModal):
@@ -1851,6 +2311,7 @@ class TokoborosTextualApp(App[None]):
         self._switch_mode("settings")
 
     def action_mode_setup(self) -> None:
+        self.ensure_setup_controller()
         self._switch_mode("setup")
 
     def persist_setup_resume(self) -> None:
@@ -1888,6 +2349,23 @@ class TokoborosTextualApp(App[None]):
         )
         self._state_store.save_snapshot(self._hydrated_state)
         self.switch_mode("session")
+
+        # Re-running setup after the runtime is already up: retire the old agent so
+        # the fresh config (provider/permissions/memory) takes effect cleanly.
+        old_agent = self._agent
+        self._agent = None
+        self._boot_error = None
+        self._resume_session_id = None
+        if old_agent is not None:
+            threading.Thread(
+                target=lambda a=old_agent: self._safe_shutdown_agent(a),
+                name="tui-agent-shutdown",
+                daemon=True,
+            ).start()
+            session_screen = self.screen if isinstance(self.screen, SessionScreen) else None
+            if session_screen is not None:
+                session_screen.clear_transcript()
+
         self._update_runtime_banner()
         self._boot_thread = threading.Thread(
             target=self._boot_runtime, name="tui-boot", daemon=True
@@ -1938,23 +2416,40 @@ class TokoborosTextualApp(App[None]):
         self._update_runtime_banner()
 
     def on_unmount(self) -> None:
-        self._gateway_stop_event.set()
-        self._resolve_all_pending_approvals("App shutting down")
-        if self._boot_thread and self._boot_thread.is_alive():
-            self._boot_thread.join(timeout=1.0)
-        if self._chat_thread and self._chat_thread.is_alive():
-            self._chat_thread.join(timeout=1.0)
-        if self._gateway_event_thread and self._gateway_event_thread.is_alive():
-            self._gateway_event_thread.join(timeout=1.0)
-        self._persist_ui_state()
+        # Teardown must never raise — Textual prints any exception here straight to
+        # the terminal after the UI is gone, which is exactly the ugly exit we are
+        # avoiding. Each step is isolated so one failure cannot abort the rest.
+        try:
+            self._gateway_stop_event.set()
+        except Exception:
+            pass
+        try:
+            self._resolve_all_pending_approvals("App shutting down")
+        except Exception:
+            pass
+        for thread in (self._boot_thread, self._chat_thread, self._gateway_event_thread):
+            try:
+                if thread and thread.is_alive():
+                    thread.join(timeout=1.0)
+            except Exception:
+                pass
+        try:
+            self._persist_ui_state()
+        except Exception:
+            pass
         if self._agent:
             try:
                 self._agent.shutdown()
             except Exception:
                 pass
-        self._state_store.shutdown()
+        try:
+            self._state_store.shutdown()
+        except Exception:
+            pass
 
 
-def run_tui(gateway_base_url: str | None = None) -> None:
+def run_tui(gateway_base_url: str | None = None, resume_session_id: str | None = None) -> None:
     """Entrypoint used by the CLI command."""
-    TokoborosTextualApp(gateway_base_url=gateway_base_url).run()
+    TokoborosTextualApp(
+        gateway_base_url=gateway_base_url, resume_session_id=resume_session_id
+    ).run()

@@ -159,6 +159,12 @@ class MemoryManager:
           - user_facts: routed to vault.upsert_user_fact() (bounded profile)
           - workspace_facts: routed to vault.upsert_fact() (unbounded store)
         """
+        import os
+
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            logger.debug("Skipping fact extraction: ANTHROPIC_API_KEY not set")
+            return
+
         from tokoboros.core.llm import AnthropicClient
         from tokoboros.core.llm import Message as LLMMessage
 
@@ -445,6 +451,30 @@ class MemoryManager:
         self._active_skill = None
         self._skill_start_index = 0
         self._last_user_query = ""
+
+    def seed_history(self, messages: list[Message]) -> int:
+        """Replay prior-session messages into active history (resume support).
+
+        Unlike :meth:`add_message`, this appends in bulk without firing the
+        per-message sliding window — callers are expected to pass an already
+        bounded slice. The most recent user message (if any) is captured as the
+        last query so context headers stay accurate.
+
+        Args:
+            messages: Chronologically ordered messages to prepend as context.
+
+        Returns:
+            The number of messages seeded.
+        """
+        if not messages:
+            return 0
+
+        self._history.extend(messages)
+        for msg in reversed(messages):
+            if msg.role == "user" and isinstance(msg.content, str):
+                self._last_user_query = msg.content
+                break
+        return len(messages)
 
     def _sliding_window_compact(self):
         """Trim oldest messages when history exceeds the max window size.

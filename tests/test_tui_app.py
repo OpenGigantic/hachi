@@ -313,11 +313,8 @@ def test_request_permission_decision_handles_approve_deny_and_allow_once(monkeyp
             )
 
         monkeypatch.setattr(app, "_show_permission_modal", _fake_show_modal)
-        monkeypatch.setattr(
-            app,
-            "_queue_ui_callback",
-            lambda callback, *args: (callback(*args), True)[1],
-        )
+        # call_from_thread replaced _queue_ui_callback; patch it to invoke the modal directly.
+        monkeypatch.setattr(app, "call_from_thread", lambda fn, *args: fn(*args))
 
         decision = app._request_permission_decision(_sample_permission_request())
 
@@ -336,11 +333,7 @@ def test_request_permission_decision_returns_dismissed_when_modal_closes_without
         )
 
     monkeypatch.setattr(app, "_show_permission_modal", _fake_show_modal)
-    monkeypatch.setattr(
-        app,
-        "_queue_ui_callback",
-        lambda callback, *args: (callback(*args), True)[1],
-    )
+    monkeypatch.setattr(app, "call_from_thread", lambda fn, *args: fn(*args))
 
     decision = app._request_permission_decision(_sample_permission_request())
 
@@ -359,7 +352,8 @@ def test_request_permission_decision_times_out_and_cleans_waiter(monkeypatch) ->
             return
 
     monkeypatch.setattr("tokoboros.tui.app.threading.Event", _TimeoutEvent)
-    monkeypatch.setattr(app, "_queue_ui_callback", lambda _callback, *_args: True)
+    # call_from_thread replaced _queue_ui_callback; make it a no-op so the waiter times out.
+    monkeypatch.setattr(app, "call_from_thread", lambda fn, *args: None)
 
     request = _sample_permission_request("req-timeout")
     decision = app._request_permission_decision(request)

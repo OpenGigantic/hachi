@@ -48,7 +48,7 @@ Already have the source? Just run the conversational setup:
 
 ```bash
 uv run tokoboros quickstart   # pick a provider, we validate your API key up front, choose a safety level
-uv run tokoboros run          # start chatting
+tokoboros                     # start chatting (no subcommand needed)
 ```
 
 `quickstart` checks your provider API key **before** the first message (instead of failing mid-conversation) — the most common first-run snag for new users.
@@ -124,11 +124,25 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 ### Run
 
 ```bash
-uv run tokoboros run
+# Just type tokoboros — no subcommand needed
+tokoboros
 ```
 
-By default, `tokoboros run` starts the gateway-backed Textual operator console.
-Use `uv run tokoboros run --repl` to launch the legacy Rich REPL instead.
+Once installed, plain `tokoboros` launches the Textual assistant directly (same as
+`tokoboros run`). Useful flags work on the bare command too:
+
+```bash
+tokoboros                 # start the assistant
+tokoboros -c              # continue the most recent conversation (full context reload)
+tokoboros -r              # pick a past session to resume
+tokoboros --repl          # legacy Rich REPL
+tokoboros --version       # print version
+tokoboros -h              # list every command
+```
+
+The Textual console boots the agent in-process, so interactive permission approvals
+and in-chat slash commands operate on the live session. (The HTTP gateway used by the
+web frontend lives behind `tokoboros gateway`.)
 
 On first run, Tokoboros will:
 
@@ -137,11 +151,22 @@ On first run, Tokoboros will:
 3. Copy default skill files to `~/.tokoboros/skills/`
 4. Launch the Textual operator console, or resume setup if configuration is incomplete
 
+#### Slash commands (type in the chat composer)
+
+`/help` lists them all. Highlights: `/clear`, `/compact`, `/new`, `/sessions`,
+`/model [name]`, `/memory <query>`, `/remember <fact>`, `/forget <query>`,
+`/plan <task>`, `/deep-research <question>`, `/settings`, `/setup`, `/quit`.
+
 ### Common Commands
 
 ```bash
-# Launch Textual UI (default)
+# Launch Textual UI (default — subcommand optional)
+tokoboros
 uv run tokoboros run
+
+# Resume a conversation
+tokoboros -c                # most recent session
+tokoboros -r                # choose from a list
 
 # Launch legacy REPL
 uv run tokoboros run --repl

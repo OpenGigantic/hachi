@@ -27,7 +27,7 @@ from tokoboros.core.checkpoints import CheckpointManager
 from tokoboros.core.cost import CostTracker
 from tokoboros.core.credential_vault import CredentialVault
 from tokoboros.core.integrations import IntegrationRuntime
-from tokoboros.core.llm import create_llm_client
+from tokoboros.core.llm import Message, create_llm_client
 from tokoboros.core.loop import ExecutionLoop, ToolRegistry
 from tokoboros.core.mcp_client import MCPManager
 from tokoboros.core.memory import MemoryManager
@@ -50,6 +50,7 @@ from tokoboros.core.runtime_events import (
     SESSION_CHAT_COMPLETED,
     SESSION_CHAT_STARTED,
     SESSION_PERSISTED,
+    SESSION_RESUMED,
     SESSION_SHUTDOWN,
     RuntimeEvent,
     adapt_event,
@@ -388,6 +389,15 @@ class AgentSession:
         self._session_store: SessionStore | None = None
         self._session_id: str | None = None
 
+        # Resume support: prior-session turns replayed for TUI transcript rendering.
+        # (role, content) pairs, oldest first; empty unless booted with resume.
+        self._resumed_transcript: list[tuple[str, str]] = []
+
+    @property
+    def resumed_transcript(self) -> list[tuple[str, str]]:
+        """User/assistant turns carried over from a resumed session (oldest first)."""
+        return list(self._resumed_transcript)
+
     def _emit_event(self, event_name: str, payload: dict[str, Any] | None = None) -> None:
         self._event_emitter(event_name, payload or {})
 
@@ -403,6 +413,38 @@ class AgentSession:
         """
         self._session_store = store
         self._session_id = store.start_session(model=model)
+
+    def resume_from_session(self, source_session_id: str, max_messages: int = 40) -> int:
+        """Replay a prior session's transcript into active memory (full context reload).
+
+        The bound SessionStore must already be set. Prior user/assistant turns are
+        seeded into the MemoryManager so the next LLM call sees the earlier
+        conversation, and cached as ``resumed_transcript`` for the UI to render.
+        Tool rows are skipped — only the visible dialogue is restored.
+
+        Args:
+            source_session_id: The session whose transcript to load.
+            max_messages: Cap on how many recent messages to carry over.
+
+        Returns:
+            The number of messages seeded into memory.
+        """
+        if not self._session_store:
+            return 0
+
+        rows = self._session_store.get_session_messages(source_session_id, limit=max_messages)
+        seeded: list[Message] = []
+        transcript: list[tuple[str, str]] = []
+        for row in rows:
+            role = str(row.get("role", ""))
+            content = row.get("content") or ""
+            if role not in {"user", "assistant"} or not content:
+                continue
+            seeded.append(Message(role=role, content=content))
+            transcript.append((role, content))
+
+        self._resumed_transcript = transcript
+        return self.memory.seed_history(seeded)
 
     # ==========================================
     # TUI Read-Model Snapshots
@@ -859,6 +901,7 @@ def _configure_mcp_servers(
 def boot_agent(
     on_event: Callable[..., None] | None = None,
     on_permission_request: Callable[[PermissionRequest], PermissionDecision] | None = None,
+    resume_session_id: str | None = None,
 ) -> AgentSession:
     """
     Factory function to initialize and boot the Tokoboros agent.
@@ -1275,6 +1318,19 @@ def boot_agent(
     )
     session.set_vault(vault)
     session.set_session_store(session_store, model=model_name)
+    if resume_session_id:
+        try:
+            seeded = session.resume_from_session(resume_session_id)
+            emit_runtime_event(
+                SESSION_RESUMED,
+                {
+                    "source_session_id": resume_session_id,
+                    "messages_restored": seeded,
+                },
+            )
+        except Exception:
+            # Resume is best-effort — a corrupt/missing transcript must not block boot.
+            pass
     session._sub_agent_client = sub_agent_client  # closed on shutdown alongside the main client
     session._browser_controller = browser_controller  # closed on shutdown (no-op if never used)
 

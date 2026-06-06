@@ -12,7 +12,9 @@ If no gate is provided, tools run unrestricted (used only during internal boot o
 
 import os
 import shlex
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -139,6 +141,9 @@ def _raw_run_terminal_command(command: str, cwd: str = ".", timeout: int = 120) 
             ]
 
         executable = Path(argv[0]).name.lower()
+        # Strip .exe suffix so "mkdir.exe" and "mkdir" both match.
+        executable = executable.removesuffix(".exe")
+
         if executable in {"pwd", "cd"}:
             return f"--- STDOUT ---\n{target_cwd}\n\nExit Code: 0"
 
@@ -151,6 +156,125 @@ def _raw_run_terminal_command(command: str, cwd: str = ".", timeout: int = 120) 
             if list_target.is_file():
                 return f"--- STDOUT ---\n{list_target.name}\n\nExit Code: 0"
             return f"--- STDOUT ---\n{_format_directory_listing(list_target)}\n\nExit Code: 0"
+
+        # --- Shell built-ins that have no standalone executable on Windows ---
+        # Implement them natively so the agent doesn't need run_shell_script for basics.
+
+        if executable in {"mkdir", "md"}:
+            # mkdir [-p] <dir> [<dir> ...]
+            dirs = [a for a in argv[1:] if not a.startswith("-")]
+            if not dirs:
+                return "Error: mkdir requires at least one directory argument."
+            created = []
+            for d in dirs:
+                target = _normalize_user_path(d) if not Path(d).is_absolute() else Path(d)
+                if not target.is_absolute():
+                    target = target_cwd / target
+                target.mkdir(parents=True, exist_ok=True)
+                created.append(str(target))
+            return f"--- STDOUT ---\nCreated: {', '.join(created)}\n\nExit Code: 0"
+
+        if executable in {"rmdir", "rd"}:
+            if len(argv) < 2:
+                return "Error: rmdir requires a directory argument."
+            target = Path(argv[-1])
+            if not target.is_absolute():
+                target = target_cwd / target
+            target = target.resolve()
+            if not target.exists():
+                return f"Error: '{target}' does not exist."
+            if not target.is_dir():
+                return f"Error: '{target}' is not a directory."
+            recursive = any(a in {"-r", "-rf", "/s", "/q"} for a in argv[1:])
+            if recursive:
+                shutil.rmtree(target)
+            else:
+                target.rmdir()
+            return f"--- STDOUT ---\nRemoved: {target}\n\nExit Code: 0"
+
+        if executable in {"rm", "del", "erase"}:
+            if len(argv) < 2:
+                return "Error: rm requires at least one argument."
+            recursive = any(a in {"-r", "-rf", "-f"} for a in argv[1:])
+            targets = [a for a in argv[1:] if not a.startswith("-")]
+            removed = []
+            for t in targets:
+                p = Path(t) if Path(t).is_absolute() else target_cwd / t
+                p = p.resolve()
+                if p.is_dir() and recursive:
+                    shutil.rmtree(p)
+                    removed.append(str(p))
+                elif p.is_file():
+                    p.unlink()
+                    removed.append(str(p))
+                else:
+                    return f"Error: '{p}' does not exist or is a directory (use -r to remove dirs)."
+            return f"--- STDOUT ---\nRemoved: {', '.join(removed)}\n\nExit Code: 0"
+
+        if executable in {"cp", "copy"}:
+            if len(argv) < 3:
+                return "Error: cp requires source and destination arguments."
+            src = Path(argv[-2])
+            dst = Path(argv[-1])
+            if not src.is_absolute():
+                src = (target_cwd / src).resolve()
+            if not dst.is_absolute():
+                dst = (target_cwd / dst).resolve()
+            if not src.exists():
+                return f"Error: Source '{src}' does not exist."
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if src.is_dir():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, dst)
+            return f"--- STDOUT ---\nCopied '{src}' → '{dst}'\n\nExit Code: 0"
+
+        if executable in {"mv", "move"}:
+            if len(argv) < 3:
+                return "Error: mv requires source and destination arguments."
+            src = Path(argv[-2])
+            dst = Path(argv[-1])
+            if not src.is_absolute():
+                src = (target_cwd / src).resolve()
+            if not dst.is_absolute():
+                dst = (target_cwd / dst).resolve()
+            if not src.exists():
+                return f"Error: Source '{src}' does not exist."
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+            return f"--- STDOUT ---\nMoved '{src}' → '{dst}'\n\nExit Code: 0"
+
+        if executable == "echo":
+            text = " ".join(argv[1:])
+            return f"--- STDOUT ---\n{text}\n\nExit Code: 0"
+
+        if executable in {"touch"}:
+            if len(argv) < 2:
+                return "Error: touch requires a filename."
+            for name in argv[1:]:
+                p = Path(name) if Path(name).is_absolute() else target_cwd / name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.touch()
+            return f"--- STDOUT ---\nTouched: {', '.join(argv[1:])}\n\nExit Code: 0"
+
+        if executable in {"cat", "type"}:
+            if len(argv) < 2:
+                return "Error: cat/type requires a filename."
+            parts = []
+            for name in argv[1:]:
+                p = Path(name) if Path(name).is_absolute() else target_cwd / name
+                if not p.exists():
+                    return f"Error: '{p}' does not exist."
+                parts.append(p.read_text(encoding="utf-8", errors="replace"))
+            return f"--- STDOUT ---\n{''.join(parts)}\n\nExit Code: 0"
+
+        if executable in {"which", "where"}:
+            if len(argv) < 2:
+                return "Error: which/where requires a command name."
+            found = shutil.which(argv[1])
+            if found:
+                return f"--- STDOUT ---\n{found}\n\nExit Code: 0"
+            return f"--- STDERR ---\n{argv[1]}: not found\n\nExit Code: 1"
 
         result = subprocess.run(
             argv,
@@ -177,6 +301,63 @@ def _raw_run_terminal_command(command: str, cwd: str = ".", timeout: int = 120) 
         return f"Error: Command timed out after {timeout} seconds."
     except Exception as e:
         return f"Error executing command: {str(e)}"
+
+
+def _raw_run_shell_script(script: str, cwd: str = ".", timeout: int = 120) -> str:
+    """Execute a multi-line shell script via PowerShell (Windows) or bash (Linux/Mac)."""
+    try:
+        target_cwd = Path(cwd).resolve()
+        if not target_cwd.exists() or not target_cwd.is_dir():
+            return f"Error: Working directory '{target_cwd}' is invalid."
+
+        if not script.strip():
+            return "Error: Empty script is not allowed."
+
+        suffix = ".ps1" if os.name == "nt" else ".sh"
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=suffix, delete=False, encoding="utf-8"
+        ) as f:
+            f.write(script)
+            script_path = Path(f.name)
+
+        try:
+            if os.name == "nt":
+                argv = [
+                    "powershell.exe",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(script_path),
+                ]
+            else:
+                argv = ["bash", str(script_path)]
+
+            result = subprocess.run(
+                argv,
+                shell=False,
+                cwd=target_cwd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+
+            output = []
+            if result.stdout:
+                output.append(f"--- STDOUT ---\n{result.stdout.strip()}")
+            if result.stderr:
+                output.append(f"--- STDERR ---\n{result.stderr.strip()}")
+            if not output:
+                output.append("Script executed successfully with no output.")
+            output.append(f"\nExit Code: {result.returncode}")
+            return "\n".join(output)
+        finally:
+            script_path.unlink(missing_ok=True)
+
+    except subprocess.TimeoutExpired:
+        return f"Error: Script timed out after {timeout} seconds."
+    except Exception as e:
+        return f"Error executing script: {str(e)}"
 
 
 # ==========================================
@@ -291,6 +472,21 @@ def _make_guarded_run_terminal(gate: Any):
     return guarded_run_terminal
 
 
+def _make_guarded_run_shell_script(gate: Any):
+    """Create a permission-gated run_shell_script tool."""
+
+    def guarded_run_shell_script(script: str, cwd: str = ".") -> str:
+        # Gate on the shell interpreter name — if the user can run powershell/bash,
+        # they can run a script through it.
+        shell = "powershell" if os.name == "nt" else "bash"
+        cmd_result = gate.check_command(shell)
+        if not cmd_result.allowed:
+            return f"Permission Denied: {cmd_result.reason}"
+        return _raw_run_shell_script(script, cwd, timeout=gate.terminal_timeout)
+
+    return guarded_run_shell_script
+
+
 # ==========================================
 # JSON Schemas
 # ==========================================
@@ -332,12 +528,15 @@ WRITE_FILE_SCHEMA = {
 
 RUN_TERMINAL_COMMAND_SCHEMA = {
     "name": "run_terminal_command",
-    "description": "Execute a single command with arguments (no shell operators). Use this to run "
-    "scripts, interact with git, move files, or run tests.",
+    "description": (
+        "Execute a single command with arguments (no shell operators). Use this to run "
+        "a specific executable with known args (e.g. `git status`, `python script.py`). "
+        "For multi-step scripts, piping, redirection, or `&&` chaining, use run_shell_script."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "command": {"type": "string", "description": "The bash/shell command to execute."},
+            "command": {"type": "string", "description": "The command to execute."},
             "cwd": {
                 "type": "string",
                 "description": "The working directory where the command should be run. "
@@ -345,6 +544,31 @@ RUN_TERMINAL_COMMAND_SCHEMA = {
             },
         },
         "required": ["command"],
+    },
+}
+
+RUN_SHELL_SCRIPT_SCHEMA = {
+    "name": "run_shell_script",
+    "description": (
+        "Execute a shell script with full shell capabilities: piping (`|`), redirection (`>`), "
+        "conditionals (`if`/`&&`/`||`), loops, and multi-line logic. "
+        "On Windows runs via PowerShell; on Linux/Mac via bash. "
+        "Use this when run_terminal_command is too restrictive. "
+        "For pure Python computation use python_sandbox instead."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "script": {
+                "type": "string",
+                "description": "The shell script to execute (multi-line supported).",
+            },
+            "cwd": {
+                "type": "string",
+                "description": "Working directory for the script. Defaults to '.'.",
+            },
+        },
+        "required": ["script"],
     },
 }
 
@@ -368,10 +592,12 @@ def register_os_tools(registry: ToolRegistry, gate: Any | None = None, checkpoin
         registry.register(READ_FILE_SCHEMA, _make_guarded_read_file(gate))
         registry.register(WRITE_FILE_SCHEMA, _make_guarded_write_file(gate, checkpoints))
         registry.register(RUN_TERMINAL_COMMAND_SCHEMA, _make_guarded_run_terminal(gate))
+        registry.register(RUN_SHELL_SCRIPT_SCHEMA, _make_guarded_run_shell_script(gate))
     else:
         registry.register(READ_FILE_SCHEMA, _raw_read_file)
         registry.register(WRITE_FILE_SCHEMA, _raw_write_file)
         registry.register(RUN_TERMINAL_COMMAND_SCHEMA, _raw_run_terminal_command)
+        registry.register(RUN_SHELL_SCRIPT_SCHEMA, _raw_run_shell_script)
 
     if checkpoints is not None:
         registry.register(ROLLBACK_CHANGES_SCHEMA, _make_rollback_changes(checkpoints))
