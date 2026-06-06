@@ -48,6 +48,7 @@ from tokoboros.tui.formatters import (
     format_integrations,
     format_memory,
     format_ops,
+    format_search_results,
     format_settings,
     format_welcome,
 )
@@ -65,6 +66,7 @@ from tokoboros.tui.widgets import (
     TokoSplash,
     ToolCard,
     UserBubble,
+    search_transcript,
 )
 
 TierName = Literal["lightning", "recommended", "enhanced", "power"]
@@ -464,6 +466,7 @@ _SLASH_HELP: tuple[tuple[str, str], ...] = (
     ("/new", "Start a fresh conversation (alias of /clear)"),
     ("/sessions", "List recent sessions (resume with `tokoboros -r`)"),
     ("/model [name]", "Show or switch the active model"),
+    ("/search <query>", "Find text in this conversation's transcript"),
     ("/memory <query>", "Search long-term memory"),
     ("/remember <fact>", "Save a fact to long-term memory"),
     ("/forget <query>", "Remove matching facts from long-term memory"),
@@ -1194,6 +1197,16 @@ class SessionScreen(Screen):
             child.remove()
         self._tool_cards.clear()
         self._welcome_widgets = []
+
+    def collect_transcript(self) -> list[tuple[str, str]]:
+        """Snapshot the rendered conversation as (role, text) pairs for search."""
+        entries: list[tuple[str, str]] = []
+        for child in self._transcript().children:
+            if isinstance(child, UserBubble):
+                entries.append(("you", child.message_text))
+            elif isinstance(child, AgentMessage):
+                entries.append(("tokoboros", child.message_text))
+        return entries
 
     def show_welcome(self, starters: tuple[str, ...]) -> None:
         """Render the first-run greeting + clickable starter-prompt chips."""
@@ -2277,6 +2290,7 @@ class TokoborosTextualApp(App[None]):
             "compact": self._cmd_compact,
             "copy": lambda _a: self.action_copy_last_response(),
             "sessions": self._cmd_sessions,
+            "search": self._cmd_search,
             "model": self._cmd_model,
             "memory": self._cmd_memory,
             "remember": self._cmd_remember,
@@ -2328,6 +2342,20 @@ class TokoborosTextualApp(App[None]):
             style=theme.SUCCESS,
         )
         self.refresh_sidebar()
+
+    def _cmd_search(self, arg: str) -> None:
+        if not arg:
+            self._session_note("Usage: /search <query>", style=theme.WARNING)
+            return
+        screen = self._current_screen()
+        if not isinstance(screen, SessionScreen):
+            self._session_note("Search is only available in the chat view.", style=theme.WARNING)
+            return
+        hits = search_transcript(screen.collect_transcript(), arg)
+        screen._append(
+            Static(format_search_results(arg, hits), classes="system-line"),
+            scroll=True,
+        )
 
     def _cmd_sessions(self, _arg: str) -> None:
         agent = self._agent

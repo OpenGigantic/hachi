@@ -136,6 +136,44 @@ class InputHistory:
         return self._draft
 
 
+def search_transcript(
+    entries: Sequence[tuple[str, str]],
+    query: str,
+    *,
+    context: int = 40,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Case-insensitive substring search over (role, text) transcript entries.
+
+    Pure (no Textual) so it is unit-testable. Returns one hit per matching
+    message: ``index`` (1-based message number), ``role``, a ``snippet`` of
+    context around the first match (ellipsized when clipped), and ``count`` of
+    occurrences in that message. Capped at ``limit`` hits.
+    """
+    cleaned = query.strip()
+    if not cleaned:
+        return []
+    needle = cleaned.lower()
+    hits: list[dict[str, Any]] = []
+    for number, (role, text) in enumerate(entries, start=1):
+        haystack = text.lower()
+        count = haystack.count(needle)
+        if count == 0:
+            continue
+        pos = haystack.find(needle)
+        start = max(0, pos - context)
+        end = min(len(text), pos + len(cleaned) + context)
+        snippet = text[start:end].replace("\n", " ").strip()
+        if start > 0:
+            snippet = "…" + snippet
+        if end < len(text):
+            snippet = snippet + "…"
+        hits.append({"index": number, "role": role, "snippet": snippet, "count": count})
+        if len(hits) >= limit:
+            break
+    return hits
+
+
 class TokoGlyph(Static):
     """Brand header strip: the Toko eye + wordmark, colored by live state.
 

@@ -15,6 +15,7 @@ from tokoboros.tui.formatters import (
     format_memory,
     format_ops,
     format_permissions,
+    format_search_results,
     format_skills,
     format_subagents,
     format_tool_timeline,
@@ -178,6 +179,27 @@ def test_ops_dashboard_includes_new_panels() -> None:
     assert "Permission Audit" in out
     assert "Active Jobs" in out
     assert "MCP" in out
+
+
+def test_search_results_render_hits() -> None:
+    out = _render(
+        format_search_results(
+            "gateway",
+            [
+                {"index": 2, "role": "tokoboros", "snippet": "run the gateway server", "count": 2},
+            ],
+        )
+    )
+    assert "gateway" in out
+    assert "tokoboros" in out
+    assert "run the gateway server" in out
+    assert "2 match" in out  # total occurrences summarized
+
+
+def test_search_results_empty_is_friendly() -> None:
+    out = _render(format_search_results("zzz", []))
+    assert "No matches" in out
+    assert "zzz" in out
 
 
 def test_tool_timeline_lists_calls_newest_first() -> None:
