@@ -27,8 +27,13 @@ from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
 from textual.widgets import Button, Footer, Input, RichLog, Static, TextArea
 
-from tokoboros.core.onboarding import OnboardingService, SetupStep
+from tokoboros.core.onboarding import (
+    OnboardingService,
+    SetupStep,
+    default_api_key_env_for,
+)
 from tokoboros.core.permissions import PermissionDecision, PermissionRequest
+from tokoboros.core.secret_store import create_default_secret_store
 from tokoboros.gateway.orchestrator import AgentSession, boot_agent
 from tokoboros.gateway.workspace import get_skills_dir, get_workspace_dir, load_config
 from tokoboros.tui import theme
@@ -503,6 +508,9 @@ class SetupWizardController:
         self.current_step: SetupStep = "welcome"
         self._steps: list[SetupStep] = ["welcome", "provider", "safety", "finish"]
         self.can_resume = False
+        # The pasted API key is held in memory only (never serialized to the resume
+        # blob); on finish it is persisted to the secret store + process env.
+        self.pasted_key: str | None = None
 
         if self.state.selected_tier in {"lightning", "recommended", "enhanced", "power"}:
             self.selected_tier = self.state.selected_tier  # type: ignore[assignment]
@@ -561,6 +569,77 @@ class SetupWizardController:
         self.answers[key] = value
         self.can_resume = True
 
+    # --- API-key handling (provider step) --------------------------------
+    def set_api_key(self, key: str | None) -> None:
+        self.pasted_key = (key or "").strip() or None
+
+    def provider_kind(self) -> str:
+        provider = self.answers.get("provider")
+        return str(provider.get("kind", "")).lower() if isinstance(provider, dict) else ""
+
+    def provider_is_keyless(self) -> bool:
+        return self.provider_kind() == "ollama"
+
+    def provider_key_status(self) -> tuple[bool, str]:
+        """Validate the selected provider + (pasted key or env var). (ok, message)."""
+        kind = self.provider_kind()
+        if not kind:
+            return False, "Pick a provider above."
+        provider = self.answers.get("provider", {})
+        env_name = (
+            str(
+                (provider.get("api_key_env") if isinstance(provider, dict) else "")
+                or default_api_key_env_for(kind)
+                or ""
+            ).strip()
+            or None
+        )
+        return self.service.validate_provider(
+            kind=kind, api_key=self.pasted_key, api_key_env=env_name
+        )
+
+    def preselect_provider(self) -> None:
+        """On first entry to the provider step, default to whatever the env offers."""
+        if isinstance(self.answers.get("provider"), dict):
+            return
+        env = self.environment
+        if env.get("ollama_cli"):
+            self.answers["provider"] = {
+                "kind": "ollama",
+                "model": "llama3.1:8b",
+                "base_url": "http://127.0.0.1:11434/v1",
+            }
+        elif env.get("anthropic_env"):
+            self.answers["provider"] = {
+                "kind": "anthropic",
+                "model": "claude-haiku-4-5",
+                "api_key_env": "ANTHROPIC_API_KEY",
+            }
+        elif env.get("openai_env"):
+            self.answers["provider"] = {
+                "kind": "openai-compatible",
+                "model": "gpt-4.1-mini",
+                "api_key_env": "OPENAI_API_KEY",
+            }
+
+    def _persist_api_key_if_pasted(self) -> None:
+        """Persist a pasted key to the secret store + process env; set api_key_ref."""
+        key = (self.pasted_key or "").strip()
+        provider = self.answers.get("provider")
+        if not key or not isinstance(provider, dict) or self.provider_is_keyless():
+            return
+        env_name = str(
+            provider.get("api_key_env") or default_api_key_env_for(self.provider_kind()) or ""
+        ).strip()
+        if not env_name:
+            return
+        os.environ[env_name] = key  # immediate boot + this process
+        provider["api_key_ref"] = env_name
+        try:
+            create_default_secret_store().set(env_name, key)
+        except Exception:
+            pass  # keyring + passphrase unavailable → env-only for this session
+
     def back(self) -> None:
         idx = self.step_index()
         if idx > 0:
@@ -584,6 +663,7 @@ class SetupWizardController:
         )
 
     def finish(self) -> dict[str, Any]:
+        self._persist_api_key_if_pasted()
         payload = self.service.build_tier_plan(self.selected_tier, self.answers)
         applied = self.service.apply_setup(payload)
         return applied.model_dump(mode="python")
@@ -669,6 +749,12 @@ class SetupScreen(Screen):
                     for options in _SETUP_STEP_OPTIONS.values():
                         for button_id, label, desc in options:
                             yield Button(f"  {label} — {desc}", id=button_id)
+                yield Input(
+                    placeholder="Paste your API key (or leave blank to use the env var)",
+                    password=True,
+                    id="setup-api-key",
+                )
+                yield Static("", id="setup-key-status")
                 yield Static("", id="setup-review")
         with Horizontal(id="setup-nav"):
             yield Button("← Back", id="setup-back")
@@ -781,6 +867,8 @@ class SetupScreen(Screen):
             return
 
         step = controller.current_step
+        if step == "provider":
+            controller.preselect_provider()
         idx = controller.step_index() + 1
         total = len(controller.steps)
 
@@ -816,6 +904,22 @@ class SetupScreen(Screen):
                     selected = self._option_selected(button_id, controller)
                     button.label = f"{'✓ ' if selected else '  '}{label} — {desc}"
                     button.variant = "primary" if selected else "default"
+
+        # API-key entry: only on the provider step, and only for a key-requiring
+        # provider whose key isn't already resolvable.
+        key_input = self.query_one("#setup-api-key", Input)
+        key_status = self.query_one("#setup-key-status", Static)
+        show_key = step == "provider" and not controller.provider_is_keyless()
+        key_input.display = show_key
+        key_status.display = show_key
+        if show_key:
+            ok, message = controller.provider_key_status()
+            key_status.update(
+                Text(
+                    ("✓ " if ok else "⚠ ") + message.splitlines()[0],
+                    style=theme.SUCCESS if ok else theme.WARNING,
+                )
+            )
 
         # The options list and the review panel are mutually exclusive: the final
         # step swaps the (empty) option list for a summary of every choice.
@@ -911,6 +1015,12 @@ class SetupScreen(Screen):
         elif button_id == "setup-skip":
             controller.skip()
         elif button_id == "setup-finish":
+            ok, message = controller.provider_key_status()
+            if not ok and not controller.provider_is_keyless():
+                self.app.notify(f"Can't finish — {message.splitlines()[0]}", timeout=6)
+                controller.current_step = "provider"
+                self.render_step()
+                return
             app = self.app
             if isinstance(app, TokoborosTextualApp):
                 app.complete_setup()
@@ -919,6 +1029,14 @@ class SetupScreen(Screen):
         app = self.app
         if isinstance(app, TokoborosTextualApp):
             app.persist_setup_resume()
+        self.render_step()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "setup-api-key":
+            return
+        controller = self._controller()
+        if controller is not None:
+            controller.set_api_key(event.value)
         self.render_step()
 
 
