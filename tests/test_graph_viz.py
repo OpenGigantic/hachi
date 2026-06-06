@@ -9,7 +9,12 @@ import pytest
 from typer.testing import CliRunner
 
 from tokoboros.cli.main import app
-from tokoboros.og_engine.graph_viz import render_dot, render_graph, render_mermaid
+from tokoboros.og_engine.graph_viz import (
+    render_dot,
+    render_graph,
+    render_html,
+    render_mermaid,
+)
 
 runner = CliRunner()
 
@@ -79,9 +84,37 @@ def test_dot_is_valid_digraph_with_edges() -> None:
     assert '"deploy_to_prod" [fillcolor=' in out
 
 
+def test_html_is_self_contained_with_embedded_data() -> None:
+    out = render_html(_GRAPH)
+    assert out.startswith("<!DOCTYPE html>")
+    assert "vis-network" in out  # the interactive graph library (CDN)
+    # node/edge data embedded as JSON (no separate data file needed)
+    assert '"id": "deploy_to_prod"' in out
+    assert '"from": "deploy_to_prod"' in out and '"to": "run_tests"' in out
+    # counts surfaced in the legend, and no leftover placeholders
+    assert "3 skills" in out
+    assert "__NODES__" not in out and "__COUNT__" not in out
+
+
+def test_html_marks_missing_nodes() -> None:
+    graph = {
+        "skill_count": 1,
+        "edge_count": 1,
+        "nodes": [{"name": "a", "role": "skill", "direct": ["ghost"], "has_cycle": False}],
+        "edges": [["a", "ghost"]],
+        "roots": [],
+        "missing": ["ghost"],
+        "cyclic": [],
+    }
+    out = render_html(graph)
+    assert "(missing)" in out
+    assert '"borderDashes"' in out  # missing nodes drawn dashed
+
+
 def test_render_graph_dispatch_and_bad_format() -> None:
     assert render_graph(_GRAPH, "mermaid").startswith("graph TD")
     assert render_graph(_GRAPH, "DOT").startswith("digraph")  # case-insensitive
+    assert render_graph(_GRAPH, "html").startswith("<!DOCTYPE html>")
     with pytest.raises(ValueError):
         render_graph(_GRAPH, "svg")
 
@@ -113,6 +146,18 @@ def test_cli_viz_dot_to_file(monkeypatch, tmp_path) -> None:
     content = out_file.read_text(encoding="utf-8")
     assert content.startswith("digraph skills {")
     assert '"deploy_to_prod" -> "run_tests";' in content
+
+
+def test_cli_viz_html_to_file(monkeypatch, tmp_path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    out_file = tmp_path / "skills.html"
+    result = runner.invoke(app, ["skill", "viz", "-f", "html", "-o", str(out_file)])
+    assert result.exit_code == 0, result.output
+    assert out_file.exists()
+    content = out_file.read_text(encoding="utf-8")
+    assert content.startswith("<!DOCTYPE html>")
+    assert "vis-network" in content
+    assert '"id": "deploy_to_prod"' in content
 
 
 def test_cli_viz_bad_format_exits_2(monkeypatch, tmp_path) -> None:

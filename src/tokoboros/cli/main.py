@@ -2208,7 +2208,9 @@ def skill_graph(
 
 @skill_app.command("viz")
 def skill_viz(
-    fmt: str = typer.Option("mermaid", "--format", "-f", help="Diagram format: mermaid | dot."),
+    fmt: str = typer.Option(
+        "mermaid", "--format", "-f", help="Diagram format: mermaid | dot | html."
+    ),
     output: str | None = typer.Option(
         None, "--output", "-o", help="Write to this file instead of stdout."
     ),
@@ -2216,8 +2218,9 @@ def skill_viz(
     """Visualize the skill dependency graph as a diagram.
 
     `mermaid` renders inline on GitHub/Markdown/Obsidian with no tooling; `dot`
-    is Graphviz source (pipe to `dot -Tsvg -o skills.svg`). Nodes are colored by
-    role; entry-point roots, dependency cycles, and missing deps are highlighted."""
+    is Graphviz source (pipe to `dot -Tsvg -o skills.svg`); `html` is a
+    self-contained interactive graph (drag/zoom/hover) — open it in a browser.
+    Nodes are colored by role; roots, cycles, and missing deps are highlighted."""
     from tokoboros.gateway.workspace import get_skills_dir
     from tokoboros.og_engine.engine import SkillEngine
     from tokoboros.og_engine.graph_viz import render_graph

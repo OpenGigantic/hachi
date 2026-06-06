@@ -208,6 +208,7 @@ uv run tokoboros skill assert deploy_to_prod -p env=prod  # check ::assertion pr
 uv run tokoboros skill graph                   # whole-library dependency graph (roots, missing, cycles)
 uv run tokoboros skill viz -f mermaid          # render the graph as Mermaid (paste into Markdown/GitHub)
 uv run tokoboros skill viz -f dot -o skills.dot  # Graphviz source → `dot -Tsvg skills.dot -o skills.svg`
+uv run tokoboros skill viz -f html -o skills.html # self-contained interactive graph (drag/zoom/hover)
 uv run tokoboros skill export deploy_to_prod -o deploy.og
 uv run tokoboros skill lint ./my-skills/      # structure + ::dense token-budget check (--strict for CI)
 uv run tokoboros skill report                 # which skills earn their keep vs. dead weight
@@ -227,7 +228,8 @@ uv run tokoboros channel telegram
 `requires` graph across your skills — colored by role, with entry-point **roots**
 (blue), dependency **cycles** (red), and **missing** deps (dashed) highlighted.
 `mermaid` renders inline on GitHub/Markdown/Obsidian with no tooling; `dot`
-feeds Graphviz. For example, `tokoboros skill viz` produces:
+feeds Graphviz; `html` is a self-contained interactive graph you can drag, zoom,
+and hover (open it in a browser). For example, `tokoboros skill viz` produces:
 
 ```mermaid
 graph TD
