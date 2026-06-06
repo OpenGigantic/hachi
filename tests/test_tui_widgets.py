@@ -13,13 +13,49 @@ from rich.console import Console
 
 from tokoboros.tui import theme
 from tokoboros.tui.app import _event_input_summary, _looks_like_error
-from tokoboros.tui.formatters import format_session_info, format_settings
+from tokoboros.tui.formatters import format_session_info, format_settings, format_welcome
+from tokoboros.tui.widgets import submit_starter
 
 
 def _render(renderable) -> str:
     console = Console(file=StringIO(), width=80, no_color=True)
     console.print(renderable)
     return console.file.getvalue()
+
+
+def test_welcome_greets_the_user() -> None:
+    out = _render(format_welcome())
+    assert "Welcome to Tokoboros" in out
+    assert "suggestion" in out
+
+
+class _FakeScreen:
+    def __init__(self) -> None:
+        self.cleared = False
+        self.state: str | None = None
+
+    def clear_welcome(self) -> None:
+        self.cleared = True
+
+    def set_toko_state(self, state: str) -> None:
+        self.state = state
+
+
+class _FakeApp:
+    def __init__(self) -> None:
+        self.screen = _FakeScreen()
+        self.submitted: list[str] = []
+
+    def submit_prompt(self, prompt: str) -> None:
+        self.submitted.append(prompt)
+
+
+def test_submit_starter_clears_welcome_and_submits() -> None:
+    app = _FakeApp()
+    submit_starter(app, "What can you do?")
+    assert app.submitted == ["What can you do?"]
+    assert app.screen.cleared is True
+    assert app.screen.state == "thinking"
 
 
 # --- theme ---------------------------------------------------------------
