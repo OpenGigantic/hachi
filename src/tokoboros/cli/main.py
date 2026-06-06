@@ -1531,7 +1531,12 @@ def _deliver_schedule_result(schedule, reply: str) -> None:
             console.print(f"[red]Webhook blocked[/red] ({reason}): {schedule.webhook_url}")
             return
 
-        payload = json.dumps({"schedule": schedule.name, "result": reply}).encode("utf-8")
+        # Scrub leaked credentials from the result before it leaves the machine
+        # (same guard as outbound messaging / REST). Opt out via the shared env var.
+        from tokoboros.core.secret_scanner import redact_outbound
+
+        safe_reply, _redacted = redact_outbound(reply)
+        payload = json.dumps({"schedule": schedule.name, "result": safe_reply}).encode("utf-8")
         request = urllib.request.Request(
             schedule.webhook_url,
             data=payload,
