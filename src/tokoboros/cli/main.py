@@ -2038,6 +2038,84 @@ def skill_assert(
     raise typer.Exit(0 if ok else 1)
 
 
+@skill_app.command("graph")
+def skill_graph(
+    as_json: bool = typer.Option(False, "--json", help="Emit the dependency graph as JSON."),
+):
+    """Show the whole-library skill dependency graph (who requires whom).
+
+    Builds an adjacency view across every loaded skill from their typed
+    `requires` edges, then flags entry-point roots, missing (referenced but not
+    loaded) dependencies, and any dependency cycles — the .og dependency-aware
+    traversal at library scale."""
+    from tokoboros.gateway.workspace import get_skills_dir
+    from tokoboros.og_engine.engine import SkillEngine
+
+    engine = SkillEngine()
+    engine.load_directory(get_skills_dir())
+
+    names = sorted(node.name for node in engine.get_all_nodes())
+    roles = {node.name: node.role for node in engine.get_all_nodes()}
+    nodes: list[dict] = []
+    edges: list[list[str]] = []
+    depended_on: set[str] = set()
+    missing: set[str] = set()
+    cyclic: list[str] = []
+
+    for name in names:
+        chain = engine.get_dependency_chain(name) or {}
+        direct = list(chain.get("direct", []))
+        nodes.append(
+            {
+                "name": name,
+                "role": roles.get(name, ""),
+                "direct": direct,
+                "missing": list(chain.get("missing", [])),
+                "has_cycle": bool(chain.get("has_cycle", False)),
+            }
+        )
+        for dep in direct:
+            edges.append([name, dep])
+            if dep in names:
+                depended_on.add(dep)
+            else:
+                missing.add(dep)
+        if chain.get("has_cycle"):
+            cyclic.append(name)
+
+    roots = [name for name in names if name not in depended_on]
+    graph = {
+        "skill_count": len(names),
+        "edge_count": len(edges),
+        "edges": edges,
+        "roots": roots,
+        "missing": sorted(missing),
+        "cyclic": cyclic,
+        "nodes": nodes,
+    }
+
+    if as_json:
+        # Plain print: Rich's console soft-wraps long JSON to terminal width.
+        print(json.dumps(graph, indent=2))
+        return
+
+    if not names:
+        console.print("[dim]No skills loaded.[/dim]")
+        return
+    console.print(f"[bold]Skill dependency graph[/bold]  ({len(names)} skills, {len(edges)} edges)")
+    for node in nodes:
+        arrow = " → " + ", ".join(node["direct"]) if node["direct"] else "  [dim](no deps)[/dim]"
+        flag = "  [red]⚠ cycle[/red]" if node["has_cycle"] else ""
+        console.print(f"  [bold]{node['name']}[/bold] [dim]({node['role']})[/dim]{arrow}{flag}")
+    if roots:
+        console.print(f"\n  [cyan]entry-point roots:[/cyan] {', '.join(roots)}")
+    if missing:
+        missing_list = ", ".join(sorted(missing))
+        console.print(f"  [yellow]missing (referenced, not loaded):[/yellow] {missing_list}")
+    if cyclic:
+        console.print(f"  [red]cycles in:[/red] {', '.join(cyclic)}")
+
+
 @skill_app.command("report")
 def skill_report(
     stale_days: int = typer.Option(
