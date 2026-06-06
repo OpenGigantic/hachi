@@ -33,6 +33,10 @@ class ProviderSettings(BaseModel):
     base_url: str | None = None
     api_key_ref: str | None = None
     api_key_env: str | None = None
+    # Hard guardrail: when non-empty, ONLY these models may be selected via
+    # `/model` / `--model`. Empty (default) = no restriction (any model the
+    # provider exposes is allowed).
+    allowed_models: list[str] = Field(default_factory=list)
 
 
 class PermissionsSettings(BaseModel):

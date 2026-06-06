@@ -77,6 +77,18 @@ TierName = Literal["lightning", "recommended", "enhanced", "power"]
 # resize handler and the metrics-routing in refresh_sidebar.
 NARROW_WIDTH = 90
 
+# Fallback model lists per provider, used by /model only when live discovery
+# from the provider API is unavailable (offline / no /models endpoint).
+_CURATED_MODELS: dict[str, list[str]] = {
+    "anthropic": ["claude-haiku-4-5", "claude-sonnet-4-5"],
+    "openai-compatible": ["gpt-4.1-mini", "gpt-4.1"],
+    "openrouter": ["anthropic/claude-3.5-sonnet", "openai/gpt-4.1"],
+    "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+    "together": ["meta-llama/Llama-3.3-70B-Instruct-Turbo"],
+    "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+    "ollama": ["llama3.1:8b", "qwen2.5-coder:7b"],
+}
+
 # One-click suggestions shown on the empty first-run transcript — a discovery
 # prompt, a dev task, and an everyday task to showcase breadth.
 _STARTER_PROMPTS: tuple[str, ...] = (
@@ -2425,6 +2437,7 @@ class TokoborosTextualApp(App[None]):
 
     def _cmd_model(self, arg: str) -> None:
         from tokoboros.core.config_loader import load_effective_config, write_global_config
+        from tokoboros.core.llm import can_switch_model, resolve_available_models
 
         try:
             config = load_effective_config()
@@ -2432,18 +2445,33 @@ class TokoborosTextualApp(App[None]):
             self._session_note(f"Could not load config: {exc}", style=theme.ERROR)
             return
 
+        current = config.provider.model
+        allowed = list(getattr(config.provider, "allowed_models", []) or [])
+
         if not arg:
-            current = config.provider.model
-            catalog = {
-                "anthropic": ["claude-haiku-4-5", "claude-sonnet-4-5"],
-                "openai-compatible": ["gpt-4.1-mini", "gpt-4.1"],
-                "ollama": ["llama3.1:8b", "qwen2.5-coder:7b"],
-            }
-            options = catalog.get(config.provider.kind, [current])
-            lines = [f"Active model: {current}  ({config.provider.kind})", "Available:"]
+            # Prefer live discovery from the provider; fall back to a curated list.
+            discovered: list[str] = []
+            if self._agent is not None:
+                discovered = self._agent.list_provider_models()
+            source = "provider" if discovered else "defaults"
+            if not discovered:
+                discovered = _CURATED_MODELS.get(config.provider.kind, [current])
+            options = resolve_available_models(discovered, allowed, current)
+            label = "allowlist" if allowed else source
+            lines = [f"Active model: {current}  ({config.provider.kind})", f"Available ({label}):"]
             lines += [f"  • {name}{'  (current)' if name == current else ''}" for name in options]
+            if allowed:
+                lines.append("Switching is restricted to the configured allowlist.")
             lines.append("Switch with:  /model <name>")
             self._session_note("\n".join(lines))
+            return
+
+        if not can_switch_model(arg, allowed):
+            self._session_note(
+                f"'{arg}' is not in the allowed model list: {', '.join(allowed)}. "
+                "Edit [provider].allowed_models to change this.",
+                style=theme.WARNING,
+            )
             return
 
         try:
