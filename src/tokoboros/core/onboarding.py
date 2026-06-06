@@ -49,7 +49,15 @@ TIER_STEP_PLANS: dict[str, list[SetupStep]] = {
 }
 
 
-_PROVIDER_KINDS = {"anthropic", "openai-compatible", "openrouter", "ollama"}
+_PROVIDER_KINDS = {
+    "anthropic",
+    "openai-compatible",
+    "openrouter",
+    "groq",
+    "together",
+    "deepseek",
+    "ollama",
+}
 _PERMISSION_TIERS = {"sandbox", "guided", "unrestricted"}
 
 # Providers that require an API key (ollama runs locally and does not).
@@ -62,6 +70,12 @@ _PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
     "anthropic": {"model": "claude-haiku-4-5", "api_key_env": "ANTHROPIC_API_KEY"},
     "openai-compatible": {"model": "gpt-4o-mini", "api_key_env": "OPENAI_API_KEY"},
     "openrouter": {"model": "openai/gpt-4o-mini", "api_key_env": "OPENROUTER_API_KEY"},
+    "groq": {"model": "llama-3.3-70b-versatile", "api_key_env": "GROQ_API_KEY"},
+    "together": {
+        "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "api_key_env": "TOGETHER_API_KEY",
+    },
+    "deepseek": {"model": "deepseek-chat", "api_key_env": "DEEPSEEK_API_KEY"},
     "ollama": {"model": "llama3.1", "api_key_env": ""},
 }
 
@@ -129,8 +143,7 @@ class OnboardingService:
         kind_n = (kind or "").strip().lower()
         if kind_n not in _PROVIDER_KINDS:
             return False, (
-                f"Unknown provider '{kind}'. Choose one of: "
-                "anthropic, openai-compatible, openrouter, ollama."
+                f"Unknown provider '{kind}'. Choose one of: {', '.join(sorted(_PROVIDER_KINDS))}."
             )
         if kind_n in _KEYLESS_PROVIDERS:
             return True, "Local provider — no API key required."
@@ -163,7 +176,7 @@ class OnboardingService:
         """
         kind_n = (kind or "").strip().lower()
         if kind_n not in _PROVIDER_KINDS:
-            raise ValueError("kind must be one of: anthropic, openai-compatible, ollama")
+            raise ValueError(f"kind must be one of: {', '.join(sorted(_PROVIDER_KINDS))}")
         resolved_model = (model or default_model_for(kind_n)).strip()
         resolved_env = (api_key_env or default_api_key_env_for(kind_n)).strip() or None
 
