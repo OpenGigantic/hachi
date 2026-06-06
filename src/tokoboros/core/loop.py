@@ -19,6 +19,7 @@ from typing import Any
 
 from tokoboros.core.llm import BaseLLMClient, Message, ToolCall
 from tokoboros.core.tool_results import ToolResultBlocks
+from tokoboros.core.tracing import span
 from tokoboros.core.turn_context import TurnContext
 
 logger = logging.getLogger(__name__)
@@ -361,7 +362,8 @@ class ExecutionLoop:
                     gen_kwargs["dynamic_system"] = dynamic_system
 
                 # 1. Ask the LLM to generate the next step (with transient-error retry)
-                response = self._generate_with_retry(**gen_kwargs)
+                with span("llm.generate", model=getattr(self.llm_client, "model", "unknown")):
+                    response = self._generate_with_retry(**gen_kwargs)
 
                 # Account for token usage / estimated cost and surface it live.
                 if self.cost_tracker is not None:
@@ -427,7 +429,8 @@ class ExecutionLoop:
 
                     tool_error = False
                     try:
-                        result = self.registry.execute(tool_call)
+                        with span("tool.call", tool=tool_call.name):
+                            result = self.registry.execute(tool_call)
                     except SuspendWorkflow as e:
                         suspend_reason = e.reason
                         break

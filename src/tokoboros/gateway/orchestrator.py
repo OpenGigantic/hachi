@@ -72,6 +72,7 @@ from tokoboros.core.runtime_read_models import (
 from tokoboros.core.secret_store import create_default_secret_store
 from tokoboros.core.session_store import SessionStore
 from tokoboros.core.sub_agent import DEFAULT_SUB_AGENT_MODEL
+from tokoboros.core.tracing import configure_from_env
 from tokoboros.core.turn_context import TurnContext
 from tokoboros.gateway.workspace import (
     get_skills_dir,
@@ -923,6 +924,9 @@ def boot_agent(
     Returns:
         An active AgentSession ready to receive user input.
     """
+    # Enable OpenTelemetry tracing when TOKOBOROS_TRACING is set (no-op otherwise).
+    configure_from_env()
+
     read_models = RuntimeReadModelStore()
     job_queue = InMemoryJobQueue()
 
