@@ -189,7 +189,7 @@ ROUTING PROTOCOL (3-pass — load only what you need):
 
 SKILL COMPLIANCE:
 - When a skill has ::steps, follow them in exact order — do NOT skip or reorder
-- When a skill has ::assertion blocks, you MUST run each assertion and verify it passes
+- When a skill has ::assertion blocks, you MUST verify each one passes — call check_skill_assertions(name, params) with your intended parameter values; if `ok` is false, fix the failing inputs or supply the missing values before proceeding
 - When a skill has ::warning blocks, treat them as hard constraints — never violate them
 - When a skill has ::code blocks, use them as reference implementations — adapt, don't ignore
 
