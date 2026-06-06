@@ -172,6 +172,7 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "list_skills",
         "peek_skill",
         "load_skill",
+        "check_skill_assertions",
         "skill_changelog",
         "save_skill",
         "use_tools",
