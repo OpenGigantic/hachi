@@ -42,12 +42,21 @@ def test_toko_state_for_event_unknown_is_none() -> None:
 
 
 def test_toko_glyph_render_carries_wordmark_and_eye() -> None:
-    rendered = TokoGlyph._render_state("working")
+    rendered = TokoGlyph()._render_state("working")
     plain = rendered.plain
     assert theme.TOKO_WORDMARK in plain
     eye, _color = theme.toko_eye("working")
     assert eye in plain
     assert "working" in plain
+
+
+def test_toko_glyph_status_surfaces_model_and_tokens() -> None:
+    glyph = TokoGlyph()
+    glyph._status = {"model": "claude-haiku-4-5", "tokens": 12345, "cost": 0.0123}
+    plain = glyph._render_state("working").plain
+    assert "claude-haiku-4-5" in plain
+    assert "12,345 tok" in plain
+    assert "~$0.0123" in plain
 
 
 def test_toko_glyph_paints_without_method_collision() -> None:
