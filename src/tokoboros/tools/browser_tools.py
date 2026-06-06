@@ -17,6 +17,7 @@ from typing import Any
 from tokoboros.core.browser import BrowserController, BrowserUnavailable
 from tokoboros.core.loop import ToolRegistry
 from tokoboros.core.net_guard import validate_outbound_url
+from tokoboros.core.untrusted_content import guard_untrusted
 
 # Browsing performs live web actions (form fills, clicks); keep it out of the
 # locked-down sandbox tier. Guided + unrestricted may use it.
@@ -61,7 +62,10 @@ def _make_browse_web(controller: BrowserController, gate: Any | None) -> Callabl
         body: str = page.get("text", "")
         if page.get("truncated"):
             body += "\n\n[... page text truncated ...]"
-        return header + body
+        # Spotlight fetched web content: if it carries a prompt-injection, wrap it
+        # so the model treats the page as untrusted data, not as instructions.
+        guarded, _flagged = guard_untrusted(header + body, source=nav.get("url", url))
+        return guarded
 
     return browse_web
 
