@@ -78,6 +78,18 @@ def _make_load_skill(engine: SkillEngine):
     return load_skill
 
 
+def _make_skill_changelog(engine: SkillEngine):
+    """Factory: creates the skill_changelog tool closure bound to the engine instance."""
+
+    def skill_changelog(name: str) -> str:
+        result = engine.get_node_changelog(name)
+        if result is None:
+            return f"Skill '{name}' not found. Use search_skills or list_skills to find it."
+        return json.dumps(result, indent=2)
+
+    return skill_changelog
+
+
 def _make_save_skill(engine: SkillEngine):
     """Factory: creates the save_skill tool closure bound to the engine instance."""
 
@@ -197,6 +209,28 @@ LOAD_SKILL_SCHEMA = {
                     "edges — or ['all']. Omit for the execution-critical default set."
                 ),
             },
+        },
+        "required": ["name"],
+    },
+}
+
+
+SKILL_CHANGELOG_SCHEMA = {
+    "name": "skill_changelog",
+    "description": (
+        "Delta-load check for a skill. Return a skill's current version, last-updated "
+        "date, and changelog WITHOUT loading its heavy content. Use this when you (or a "
+        "previous session) already loaded a skill and want to know whether it changed "
+        "before spending tokens to load_skill it again — if the version/changelog is "
+        "unchanged since you last read it, you can reuse what you already know."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "The exact skill node name (e.g., 'deploy_to_prod').",
+            }
         },
         "required": ["name"],
     },
@@ -326,4 +360,5 @@ def register_og_tools(registry: ToolRegistry, engine: SkillEngine):
     registry.register(LIST_SKILLS_SCHEMA, _make_list_skills(engine))
     registry.register(PEEK_SKILL_SCHEMA, _make_peek_skill(engine))
     registry.register(LOAD_SKILL_SCHEMA, _make_load_skill(engine))
+    registry.register(SKILL_CHANGELOG_SCHEMA, _make_skill_changelog(engine))
     registry.register(SAVE_SKILL_SCHEMA, _make_save_skill(engine))
