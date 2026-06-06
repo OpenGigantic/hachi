@@ -132,6 +132,15 @@ class BaseLLMClient(abc.ABC):
         """
         pass
 
+    def list_models(self) -> list[str]:
+        """Return the model ids the provider currently exposes.
+
+        Best-effort and network-bound: implementations must NEVER raise — they
+        return ``[]`` when discovery is unavailable (offline, no endpoint, auth
+        error) so callers can fall back to a curated/configured list.
+        """
+        return []
+
 
 class AnthropicClient(BaseLLMClient):
     """
@@ -226,6 +235,15 @@ class AnthropicClient(BaseLLMClient):
         )
 
         return LLMResponse(content=text_content.strip(), tool_calls=tool_calls, usage=usage)
+
+    def list_models(self) -> list[str]:
+        """List Claude models via the Anthropic models API (sorted; [] on error)."""
+        try:
+            page = self.client.models.list()
+            ids = [str(m.id) for m in page.data if getattr(m, "id", None)]
+            return sorted(ids)
+        except Exception:
+            return []
 
 
 class OpenAICompatibleClient(BaseLLMClient):
@@ -348,6 +366,57 @@ class OpenAICompatibleClient(BaseLLMClient):
         )
 
         return LLMResponse(content=str(content).strip(), tool_calls=tool_calls, usage=usage)
+
+    def list_models(self) -> list[str]:
+        """List models via the OpenAI-compatible /models endpoint (sorted; [] on error).
+
+        Works for hosted OpenAI-compatible providers and local Ollama (its
+        /v1/models endpoint), which is how those are wired here.
+        """
+        headers = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        try:
+            response = self._http.get(f"{self.base_url}/models", headers=headers)
+            response.raise_for_status()
+            data = response.json().get("data", [])
+            ids = [str(m["id"]) for m in data if isinstance(m, dict) and m.get("id")]
+            return sorted(ids)
+        except Exception:
+            return []
+
+
+def resolve_available_models(
+    discovered: list[str],
+    allowed: list[str],
+    current: str = "",
+) -> list[str]:
+    """The switchable model list for the UI.
+
+    ``allowed`` (the config guardrail) is a HARD cap: when non-empty, the list is
+    exactly the allowlist; otherwise it is whatever the provider exposed
+    (``discovered``). The ``current`` model is always included so it can be shown
+    and marked. Order is preserved and duplicates removed.
+    """
+    source = list(allowed) if allowed else list(discovered)
+    result: list[str] = []
+    for name in source:
+        if name and name not in result:
+            result.append(name)
+    if current and current not in result:
+        result.insert(0, current)
+    return result
+
+
+def can_switch_model(target: str, allowed: list[str]) -> bool:
+    """Guardrail check: may ``target`` be selected?
+
+    An empty ``allowed`` list means unrestricted. Otherwise the target must be a
+    member of the allowlist.
+    """
+    if not allowed:
+        return True
+    return target in allowed
 
 
 # Named OpenAI-compatible providers → their default base URL. All speak the same

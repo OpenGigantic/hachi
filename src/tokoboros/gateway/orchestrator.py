@@ -508,6 +508,21 @@ class AgentSession:
             for row in rows
         )
 
+    def list_provider_models(self) -> list[str]:
+        """Best-effort live model discovery from the active provider.
+
+        Delegates to the LLM client's ``list_models`` (network-bound); returns
+        ``[]`` on any failure so callers fall back to a curated/configured list.
+        """
+        client = getattr(self.loop, "llm_client", None)
+        lister = getattr(client, "list_models", None)
+        if not callable(lister):
+            return []
+        try:
+            return list(lister())
+        except Exception:
+            return []
+
     def query_recent_sessions(self, limit: int = 10) -> tuple[dict[str, Any], ...]:
         """Recent persisted sessions from SessionStore."""
         if not self._session_store:

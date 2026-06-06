@@ -20,7 +20,23 @@ on Linux); run `tokoboros doctor` to see the resolved paths.
 | `TOKOBOROS_MODEL` | `claude-haiku-4-5` | Override the configured model id. |
 | `TOKOBOROS_MAX_TOKENS` | `8192` | Max output tokens per LLM call. |
 
-Supported provider kinds: `anthropic`, `openai-compatible`, `openrouter`, `ollama`.
+Supported provider kinds: `anthropic`, `openai-compatible`, `openrouter`, `groq`, `together`, `deepseek`, `ollama`.
+
+### Model selection & guardrail (`settings.toml`)
+
+```toml
+[provider]
+kind = "anthropic"
+model = "claude-haiku-4-5"
+# Hard guardrail: when set, ONLY these models may be selected via /model.
+# Leave empty (or omit) to allow any model the provider exposes.
+allowed_models = ["claude-haiku-4-5", "claude-sonnet-4-5"]
+```
+
+In the TUI, `/model` lists the models the provider currently exposes (discovered
+live via the provider's models API, falling back to a curated list when offline).
+If `allowed_models` is set, the list — and what `/model <name>` will switch to —
+is restricted to exactly those entries.
 
 ## Safety, budgets & rate limits
 
