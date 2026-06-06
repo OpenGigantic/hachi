@@ -69,6 +69,7 @@ uv run tokoboros run          # start chatting
 - 🔌 **Native Integrations** — Google Workspace (Gmail, Drive, Calendar), Notion, Slack — all via OAuth
 - 🌐 **Universal REST Adapter** — Define any REST API in a `.og` file, and Tokoboros auto-generates the tool
 - 🕸️ **Browser Automation** — A real headless browser (`browse_web`, `browser_act`, `browser_screenshot`) for live web research and multi-step flows; SSRF-guarded and permission-gated (optional: `pip install 'tokoboros[browser]'` + `playwright install chromium`)
+- 👁️ **Vision Input** — `view_image` lets the agent look at a local screenshot/photo/diagram/chart (PNG/JPEG/GIF/WebP) and reason about it; permission-gated, no extra deps (Anthropic provider)
 - 🧩 **MCP Support** — Model Context Protocol servers for filesystem and external tools
 - 📊 **Skill Lifecycle** — Usage tracking, stale detection, and analytics for all `.og` skills
 - 🧬 **Long-Term Memory** — Semantic search vault with async prefetch and frozen session snapshots

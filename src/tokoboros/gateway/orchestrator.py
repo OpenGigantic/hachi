@@ -90,6 +90,7 @@ from tokoboros.tools.og_tools import USE_TOOLS_SCHEMA, _make_use_tools, register
 from tokoboros.tools.os_tools import register_os_tools
 from tokoboros.tools.sandbox_tools import register_sandbox_tools
 from tokoboros.tools.schedule_tools import register_schedule_tools
+from tokoboros.tools.vision_tools import register_vision_tools
 from tokoboros.tools.workflow_tools import register_workflow_tools
 
 
@@ -201,6 +202,7 @@ _GROUP_BY_TOOL_NAME: dict[str, str] = {
     "core_suspend_workflow": "workflow",
     "send_slack_message": "messaging",
     "send_discord_message": "messaging",
+    "view_image": "vision",
 }
 
 
@@ -1123,6 +1125,14 @@ def boot_agent(
     # Outbound messaging (Slack/Discord). Credentials resolve lazily at call time, so these
     # register cleanly even with no token set (they return a "not configured" hint until then).
     register_messaging_tools(tool_registry)
+
+    # Vision input — view local images. Image blocks only flow to the Anthropic
+    # provider, so the tool is provider-aware (it reports instead of analyzing on others).
+    register_vision_tools(
+        tool_registry,
+        runtime_gate,
+        provider_kind=str(provider_config.get("kind", "anthropic")),
+    )
 
     # Proactive scheduling (cron/interval/once) — persisted across restarts.
     scheduler = Scheduler(ScheduleStore(get_tokoboros_paths().schedules_file))
