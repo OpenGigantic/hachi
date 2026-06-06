@@ -4,7 +4,7 @@
 
 **The Autonomous Agent Engine Powered by ObjectGraph (.og)**
 
-*A multi-agent orchestration framework that reduces token costs by up to 90% using a structured, queryable, agent-native file format.*
+*A multi-agent orchestration framework that cuts skill-loading token waste with a structured, queryable, agent-native file format — agents load only the skill nodes a task needs instead of dumping entire skill files into context.*
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -20,9 +20,9 @@ Tokoboros is an autonomous AI agent framework built from the ground up to solve 
 
 | Problem | How Tokoboros Solves It |
 |---|---|
-| **Token Waste** | ObjectGraph (.og) files enable partial, query-aware loading — agents read ~30 tokens instead of entire 50,000-token documents |
+| **Token Waste** | ObjectGraph (.og) files enable partial, query-aware loading — agents read a compact `::index` routing table and pull only the skill nodes a task needs, instead of loading whole skill files |
 | **Context Pollution** | A delegation architecture spawns isolated sub-agents, keeping the orchestrator's context window pristine |
-| **Cost Explosion** | Native Anthropic prompt caching + structured file indexing reduces API costs by up to 90% |
+| **Cost Explosion** | Native Anthropic prompt caching + structured file indexing means agents pay for the skill nodes they use, not whole files — on the bundled skills this is ~80–97% fewer skill-loading tokens, reproducible via `tests/test_og_benchmark.py` (CI enforces ≥80%) |
 
 Unlike traditional agent frameworks that dump everything into the system prompt and pray, Tokoboros treats skill files as **queryable databases** and agents as **specialized workers** — each with their own clean context window, strict behavioral constraints, and deterministic validation.
 
@@ -30,9 +30,9 @@ Unlike traditional agent frameworks that dump everything into the system prompt 
 
 ## Features
 
-- 🧠 **ObjectGraph (.og) Engine** — A structured, agent-native file format with 20+ semantic tags for zero-hallucination skill execution
+- 🧠 **ObjectGraph (.og) Engine** — A structured, agent-native file format with 20+ semantic tags for structured, deterministic skill execution
 - 🔀 **Multi-Agent Delegation** — Fire-and-forget sub-agents with isolated context windows for complex, multi-step tasks
-- 💰 **Prompt Caching** — Native Anthropic cache breakpoints on system prompts and tool schemas (up to 90% input token savings)
+- 💰 **Prompt Caching** — Native Anthropic cache breakpoints on system prompts and tool schemas to avoid re-paying for stable input tokens
 - 🔐 **Permission Gating** — Declarative `device-permissions.og` manifest controlling filesystem, terminal, and MCP access
 - 🔌 **Native Integrations** — Google Workspace (Gmail, Drive, Calendar), Notion, Slack — all via OAuth
 - 🌐 **Universal REST Adapter** — Define any REST API in a `.og` file, and Tokoboros auto-generates the tool
@@ -53,7 +53,7 @@ Unlike traditional agent frameworks that dump everything into the system prompt 
 
 ```bash
 # Clone the repository
-git clone https://github.com/AetherMind-Labs/tokoboros.git
+git clone https://github.com/OpenGigantic/tokoboros.git
 cd tokoboros
 
 # Create and activate a virtual environment
@@ -150,14 +150,22 @@ tokoboros/
 
 ## The ObjectGraph (.og) Format
 
-ObjectGraph is the core innovation behind Tokoboros. It is a **structured, queryable, agent-native file format** that replaces Markdown for AI agent skill files.
+ObjectGraph is the core innovation behind Tokoboros. It is a **structured, queryable, agent-native file format** for AI agent skill files. The core bet: **context bloat is a format problem**, so the fix belongs in the file format itself.
+
+`.og` uses a familiar, Markdown-like syntax with added `::` semantic blocks, so skills stay human-readable and are low-effort to port. The differentiators that make it a moat:
+
+- **Node-level (sub-file) progressive disclosure** — an agent reads a skill's `::index` routing table (~30 tokens), then pulls only the `::dense` summaries and `::full` bodies for the nodes a task actually needs. Disclosure happens *below* the file boundary, not just at it.
+- **Typed `requires` dependency edges** — `::edges` declare typed relationships (`requires`, `precedes`, …) so the engine can traverse and pull in prerequisite nodes deterministically instead of re-reading whole files.
+- **Agent-authored, self-improving skills** — agents write and refine their own `.og` skills, and per-skill usage analytics drive a feedback loop that prunes dead weight and sharpens what earns its keep.
+
+**Honest competitive context:** progressive disclosure itself is not unique — Anthropic Agent Skills do file-level metadata → body → bundled-files disclosure, and MCP filters which tools an agent sees. ObjectGraph's edge is going *below* the file level with typed, dependency-aware traversal plus a self-improving skill loop, rather than treating each skill file as one all-or-nothing unit.
 
 ### Why Not Markdown?
 
 | | Markdown | ObjectGraph (.og) |
 |---|---|---|
 | **Reading Model** | Full file every time | 3-pass: Index → Dense → Full |
-| **Token Cost (per query)** | ~1,800 tokens | ~200 tokens |
+| **Token Cost (per query)** | Whole file every read | Only the nodes a task needs — ~80–97% fewer skill-loading tokens on the bundled skills, reproducible via `tests/test_og_benchmark.py` (CI enforces ≥80%) |
 | **Query Routing** | None (read everything) | `::index` routing table |
 | **Compression** | None | `::dense` keyword blocks |
 | **Validation** | Prompt-dependent | `::assertion` blocks |
