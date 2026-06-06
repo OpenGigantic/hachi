@@ -23,10 +23,16 @@ _EMPTY = "—"
 _STATUS_COLORS = {
     "completed": "green",
     "ready": "green",
+    "success": "green",
+    "allow": "green",
     "running": "cyan",
     "starting": "cyan",
     "failed": "red",
+    "error": "red",
+    "deny": "red",
     "pending": "yellow",
+    "timeout": "yellow",
+    "requested": "yellow",
     "cancelled": "dim",
 }
 
@@ -129,21 +135,98 @@ def format_recalls(recalls: list[dict[str, Any]]) -> Table:
     return table
 
 
+def format_usage(usage: dict[str, Any], model: str = "") -> Table:
+    """Token + cost breakdown for the Ops dashboard (cache-read tokens called out)."""
+    table = _titled("Usage & Cost", "Metric", "Value")
+    if not usage or not usage.get("call_count"):
+        table.add_row(Text("no LLM calls yet", style="dim"), "")
+        return table
+
+    def _n(key: str) -> str:
+        return f"{int(usage.get(key, 0) or 0):,}"
+
+    table.add_row("model", _truncate(model or _EMPTY, 30))
+    table.add_row("LLM calls", str(usage.get("call_count", 0)))
+    table.add_row("input tokens", _n("input_tokens"))
+    table.add_row("output tokens", _n("output_tokens"))
+    table.add_row(
+        Text("cache-read tokens", style="green"),
+        Text(
+            f"{int(usage.get('cache_read_tokens', 0) or 0):,}  (served from cache)", style="green"
+        ),
+    )
+    table.add_row("cache-write tokens", _n("cache_creation_tokens"))
+    table.add_row(Text("total tokens", style="bold"), Text(_n("total_tokens"), style="bold"))
+    cost = float(usage.get("estimated_cost_usd", 0.0) or 0.0)
+    table.add_row(Text("est. cost", style=theme.ACCENT), Text(f"~${cost:.4f}", style=theme.ACCENT))
+    return table
+
+
+def format_subagents(reports: list[dict[str, Any]]) -> Table:
+    """Sub-agent / delegation execution reports (role, status, iters, duration, summary)."""
+    table = _titled("Sub-agents (delegations)", "Role", "Status", "Iters", "Duration", "Summary")
+    if not reports:
+        table.add_row(Text("no delegations yet", style="dim"), "", "", "", "")
+        return table
+    for report in reports:
+        duration = report.get("duration_seconds")
+        duration_s = f"{float(duration):.1f}s" if isinstance(duration, int | float) else _EMPTY
+        table.add_row(
+            _truncate(report.get("role"), 16),
+            _status(report.get("status")),
+            str(report.get("iterations") or ""),
+            duration_s,
+            _truncate(report.get("summary"), 50),
+        )
+    return table
+
+
+def format_permissions(audit: list[dict[str, Any]]) -> Table:
+    """Recent permission-gate decisions (tool, operation, target, decision)."""
+    table = _titled("Permission Audit", "Tool", "Operation", "Target", "Decision")
+    if not audit:
+        table.add_row(Text("no permission checks", style="dim"), "", "", "")
+        return table
+    for row in audit:
+        table.add_row(
+            _truncate(row.get("tool"), 20),
+            _truncate(row.get("operation"), 14),
+            _truncate(row.get("target"), 36),
+            _status(row.get("decision")),
+        )
+    return table
+
+
 def format_ops(
     jobs: list[dict[str, Any]],
     failures: list[dict[str, Any]],
     mcp: dict[str, Any],
     events: list[dict[str, Any]],
+    *,
+    usage: dict[str, Any] | None = None,
+    subagents: list[dict[str, Any]] | None = None,
+    permissions: list[dict[str, Any]] | None = None,
+    model: str = "",
 ) -> RenderableType:
-    return Group(
-        format_jobs(jobs, title="Active Jobs"),
-        Text(""),
-        format_jobs(failures, title="Failed Jobs"),
-        Text(""),
-        format_mcp(mcp),
-        Text(""),
-        format_events(events),
+    """Compose the Ops dashboard. The new panels render only when their data is
+    provided, so the original 4-arg call (jobs/failures/mcp/events) still works."""
+    sections: list[RenderableType] = []
+    if usage is not None:
+        sections.extend([format_usage(usage, model), Text("")])
+    if subagents is not None:
+        sections.extend([format_subagents(subagents), Text("")])
+    sections.extend(
+        [
+            format_jobs(jobs, title="Active Jobs"),
+            Text(""),
+            format_jobs(failures, title="Failed Jobs"),
+            Text(""),
+        ]
     )
+    if permissions is not None:
+        sections.extend([format_permissions(permissions), Text("")])
+    sections.extend([format_mcp(mcp), Text(""), format_events(events)])
+    return Group(*sections)
 
 
 def format_memory(tasks: list[dict[str, Any]], recalls: list[dict[str, Any]]) -> RenderableType:

@@ -14,6 +14,9 @@ from tokoboros.tui.formatters import (
     format_jobs,
     format_memory,
     format_ops,
+    format_permissions,
+    format_subagents,
+    format_usage,
 )
 
 
@@ -82,6 +85,97 @@ def test_ops_groups_all_sections() -> None:
     assert "Failed Jobs" in out
     assert "MCP" in out
     assert "Recent Events" in out
+
+
+def test_usage_table_shows_breakdown() -> None:
+    usage = {
+        "input_tokens": 1000,
+        "output_tokens": 200,
+        "cache_read_tokens": 5000,
+        "cache_creation_tokens": 50,
+        "total_tokens": 6250,
+        "estimated_cost_usd": 0.0123,
+        "call_count": 3,
+    }
+    out = _render(format_usage(usage, model="claude-haiku-4-5"))
+    assert "Usage" in out
+    assert "claude-haiku-4-5" in out
+    assert "cache-read" in out and "cache" in out
+    assert "6,250" in out  # total tokens, thousands-separated
+    assert "0.0123" in out  # estimated cost
+
+
+def test_usage_empty_when_no_calls() -> None:
+    assert "no LLM calls yet" in _render(format_usage({}))
+
+
+def test_subagents_table_lists_delegations() -> None:
+    out = _render(
+        format_subagents(
+            [
+                {
+                    "role": "coder",
+                    "status": "success",
+                    "iterations": 4,
+                    "duration_seconds": 12.5,
+                    "summary": "built the API",
+                }
+            ]
+        )
+    )
+    assert "Sub-agents" in out
+    assert "coder" in out
+    assert "success" in out
+    assert "built the API" in out
+    assert "12.5s" in out
+
+
+def test_subagents_empty() -> None:
+    assert "no delegations yet" in _render(format_subagents([]))
+
+
+def test_permissions_table_lists_audit() -> None:
+    out = _render(
+        format_permissions(
+            [
+                {
+                    "tool": "run_terminal_command",
+                    "operation": "execute",
+                    "target": "rm -rf /tmp/x",
+                    "decision": "deny",
+                }
+            ]
+        )
+    )
+    assert "Permission Audit" in out
+    assert "run_terminal" in out
+    assert "execute" in out
+    assert "deny" in out
+
+
+def test_permissions_empty() -> None:
+    assert "no permission checks" in _render(format_permissions([]))
+
+
+def test_ops_dashboard_includes_new_panels() -> None:
+    out = _render(
+        format_ops(
+            jobs=[],
+            failures=[],
+            mcp={"server_count": 0, "total_tool_count": 0, "servers": []},
+            events=[],
+            usage={"call_count": 2, "total_tokens": 100, "estimated_cost_usd": 0.01},
+            subagents=[{"role": "researcher", "status": "success", "summary": "found it"}],
+            permissions=[{"tool": "write_file", "operation": "write", "decision": "allow"}],
+            model="claude-sonnet-4",
+        )
+    )
+    # New panels present alongside the original sections.
+    assert "Usage" in out
+    assert "Sub-agents" in out
+    assert "Permission Audit" in out
+    assert "Active Jobs" in out
+    assert "MCP" in out
 
 
 def test_memory_groups_tasks_and_recall() -> None:
