@@ -63,6 +63,10 @@ local-models = [
 browser = [
     "playwright>=1.48.0",
 ]
+tracing = [
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+]
 
 [project.scripts]
 tokoboros = "tokoboros.cli.main:app"

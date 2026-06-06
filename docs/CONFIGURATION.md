@@ -73,6 +73,7 @@ Some capabilities ship as optional dependency groups so the base install stays l
 | `browser` | `pip install 'tokoboros[browser]'` then `playwright install chromium` | Headless browser tools (`browse_web`, `browser_act`, `browser_screenshot`). Disabled in the `sandbox` permission tier; URLs are validated like other outbound calls. |
 | `google` | `pip install 'tokoboros[google]'` | Google Workspace integration (`GOOGLE_CLIENT_ID`/`SECRET`). |
 | `slack` | `pip install 'tokoboros[slack]'` | Slack SDK. |
+| `tracing` | `pip install 'tokoboros[tracing]'` | OpenTelemetry tracing. Enable at runtime with `TOKOBOROS_TRACING=true` (console exporter); emits spans for LLM and tool calls. No-op when the extra is absent or the flag is unset. |
 
 ## Integrations & secrets
 

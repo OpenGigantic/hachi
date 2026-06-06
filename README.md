@@ -75,6 +75,7 @@ tokoboros                     # start chatting (no subcommand needed)
 - 📊 **Skill Lifecycle** — Usage tracking, stale detection, and analytics for all `.og` skills
 - 🧬 **Long-Term Memory** — Semantic search vault with async prefetch and frozen session snapshots
 - 🛡️ **Security Audit Command** — Built-in `security-audit` CLI checks for risky local runtime posture
+- 📡 **OpenTelemetry Tracing** — Opt-in spans for LLM calls and tool calls so you can see where a turn spends its time (`pip install 'tokoboros[tracing]'` + `TOKOBOROS_TRACING=true`); zero overhead and no-op when off
 - ⚡ **3-Pass Selective Loading** — Agents read a skill's index → dense summary → full content on demand, loading only what a task needs instead of dumping whole skill files (reproducible benchmark: `tests/test_og_benchmark.py`, CI-enforced ≥80% savings)
 - 🕸️ **Typed Skill Traversal** — Resolve a skill's prerequisite chain via its `requires` edges (`skill_dependencies`), verify its `::assertion` preconditions before acting (`check_skill_assertions`), and delta-check whether it changed since last load (`skill_changelog`) — all without loading heavy content
 - ✍️ **Autonomous Skill Authoring** — The agent writes & refines its own `.og` skills (`save_skill`); import the wider ecosystem with `tokoboros skill import` (SKILL.md → `.og`)
