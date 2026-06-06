@@ -14,7 +14,14 @@ from rich.console import Console
 from tokoboros.tui import theme
 from tokoboros.tui.app import _event_input_summary, _looks_like_error
 from tokoboros.tui.formatters import format_session_info, format_settings, format_welcome
-from tokoboros.tui.widgets import submit_starter
+from tokoboros.tui.widgets import SlashPalette, submit_starter
+
+_CMDS = (
+    ("/help", "Show help"),
+    ("/memory <query>", "Search memory"),
+    ("/model [name]", "Switch model"),
+    ("/quit", "Quit"),
+)
 
 
 def _render(renderable) -> str:
@@ -56,6 +63,44 @@ def test_submit_starter_clears_welcome_and_submits() -> None:
     assert app.submitted == ["What can you do?"]
     assert app.screen.cleared is True
     assert app.screen.state == "thinking"
+
+
+def test_slash_palette_filters_to_prefix() -> None:
+    palette = SlashPalette(_CMDS)
+    assert palette.update("/me") is True
+    verbs = [verb for verb, _ in palette.matches]
+    assert "/memory <query>" in verbs
+    assert "/model [name]" not in verbs  # '/me' is not a prefix of '/model'
+
+
+def test_slash_palette_hidden_without_leading_slash_or_after_space() -> None:
+    palette = SlashPalette(_CMDS)
+    assert palette.update("hello") is False
+    assert palette.update("") is False
+    assert palette.update("/memory now") is False  # space → past the verb
+
+
+def test_slash_palette_move_wraps() -> None:
+    palette = SlashPalette(_CMDS)
+    palette.update("/")  # all commands match
+    assert palette.index == 0
+    palette.move(-1)
+    assert palette.index == len(palette.matches) - 1
+    palette.move(1)
+    assert palette.index == 0
+
+
+def test_slash_palette_selected_verb_strips_arg_hints() -> None:
+    palette = SlashPalette(_CMDS)
+    palette.update("/mem")
+    assert palette.selected_verb() == "/memory"
+
+
+def test_slash_palette_render_lists_matches() -> None:
+    palette = SlashPalette(_CMDS)
+    palette.update("/m")
+    out = _render(palette.render())
+    assert "/memory" in out and "/model" in out
 
 
 # --- theme ---------------------------------------------------------------
