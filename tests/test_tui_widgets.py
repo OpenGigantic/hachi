@@ -13,7 +13,12 @@ from rich.console import Console
 
 from tokoboros.tui import theme
 from tokoboros.tui.app import _event_input_summary, _looks_like_error
-from tokoboros.tui.formatters import format_session_info, format_settings, format_welcome
+from tokoboros.tui.formatters import (
+    format_session_info,
+    format_settings,
+    format_status_bar,
+    format_welcome,
+)
 from tokoboros.tui.widgets import InputHistory, SlashPalette, submit_starter
 
 _CMDS = (
@@ -214,6 +219,41 @@ def test_format_session_info_handles_empty_tools_and_tokens() -> None:
     )
     assert "no tool activity yet" in out
     assert "12,345" in out
+
+
+# --- status bar formatter ------------------------------------------------
+def test_format_status_bar_with_usage_shows_model_tokens_cost() -> None:
+    out = _render(
+        format_status_bar(
+            eye=theme.toko_eye("working")[0],
+            eye_color=theme.toko_eye("working")[1],
+            state="working",
+            model="claude-haiku-4-5",
+            tokens=12345,
+            cost=0.0123,
+        )
+    )
+    assert theme.TOKO_WORDMARK in out
+    assert "claude-haiku-4-5" in out
+    assert "12,345 tok" in out
+    assert "~$0.0123" in out
+    assert "working" in out
+
+
+def test_format_status_bar_without_usage_is_brand_and_state_only() -> None:
+    out = _render(
+        format_status_bar(
+            eye=theme.toko_eye("idle")[0],
+            eye_color=theme.toko_eye("idle")[1],
+            state="idle",
+        )
+    )
+    assert theme.TOKO_WORDMARK in out
+    assert "idle" in out
+    # no tokens/cost until the first turn produces usage ("tok " unit, distinct
+    # from the "tok" inside the "tokoboros" wordmark)
+    assert "tok " not in out
+    assert "$" not in out
 
 
 # --- settings formatter --------------------------------------------------
