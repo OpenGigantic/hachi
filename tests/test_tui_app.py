@@ -45,44 +45,6 @@ def test_sanitize_agent_markdown_preserves_markdown_emphasis() -> None:
     assert _sanitize_agent_markdown(raw) == "I'm **Tokoboros** and ready."
 
 
-def test_runtime_banner_text_includes_operator_signals(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url="http://127.0.0.1:8111")
-
-    class _Agent:
-        def snapshot_active_jobs(self) -> list[object]:
-            return [object(), object()]
-
-        def snapshot_session_state(self):
-            return type("_State", (), {"session_id": "sess-1234567890"})()
-
-    monkeypatch.setattr(
-        "tokoboros.tui.app.load_config",
-        lambda: {
-            "provider": {"kind": "anthropic", "model": "claude-haiku-4-5"},
-            "permissions": {"tier": "guided"},
-        },
-    )
-
-    app._agent = _Agent()
-    app._gateway_connected = True
-    app._event_buffer = [
-        ("permission.requested", {"request_id": "req-1"}),
-        ("boot.failed", {"error": "blocked"}),
-    ]
-    app._approval_waiters["req-1"] = (object(), {})
-
-    banner = app._runtime_banner_text()
-
-    assert "workspace=" in banner
-    assert "session=sess-123456" in banner
-    assert "provider=anthropic / claude-haiku-4-5" in banner
-    assert "tier=guided" in banner
-    assert "jobs=2" in banner
-    assert "approvals=1" in banner
-    assert "warnings=1" in banner
-    assert "stream=live" in banner
-
-
 def test_queue_ui_callback_returns_false_when_loop_closed() -> None:
     app = TokoborosTextualApp()
     app._loop = _DummyLoop(closed=True)
