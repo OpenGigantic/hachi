@@ -1834,6 +1834,68 @@ def skill_deps(
         console.print("  [red]⚠ dependency cycle detected[/red]")
 
 
+@skill_app.command("show")
+def skill_show(
+    name: str = typer.Argument(..., help="Exact skill node name (see `skill list`)."),
+    as_json: bool = typer.Option(False, "--json", help="Emit the skill view as JSON."),
+):
+    """Inspect one skill's Pass-2 view: metadata, dense summary, and a manifest of
+    heavy blocks with their token cost — without loading the full body (the .og
+    3-pass model). Shows why selective loading saves tokens."""
+    from tokoboros.gateway.workspace import get_skills_dir
+    from tokoboros.og_engine.engine import SkillEngine
+
+    engine = SkillEngine()
+    engine.load_directory(get_skills_dir())
+
+    node = engine.get_node(name)
+    if node is None:
+        console.print(f"[red]Skill not found:[/red] {name} [dim](see `tokoboros skill list`)[/dim]")
+        raise typer.Exit(1)
+
+    peeked = engine.peek([name]).get(name, {})
+    changelog = engine.get_node_changelog(name) or {}
+    available = peeked.get("available_blocks", {})
+    result = {
+        "name": name,
+        "role": node.role,
+        "scope": node.scope,
+        "version": changelog.get("version", ""),
+        "keywords": list(node.keywords),
+        "requires": list(node.requires),
+        "requires_auth": list(node.requires_auth),
+        "dense": peeked.get("dense", ""),
+        "warning": peeked.get("warning", ""),
+        "available_blocks": available,
+        "full_load_tokens": sum(available.values()),
+    }
+
+    if as_json:
+        # Plain print: Rich's console soft-wraps long JSON to terminal width.
+        print(json.dumps(result, indent=2))
+        return
+
+    console.print(f"[bold]{name}[/bold]  [dim]({node.role} · {node.scope})[/dim]")
+    if result["version"]:
+        console.print(f"  version:   {result['version']}")
+    console.print(f"  keywords:  {', '.join(result['keywords']) or '(none)'}")
+    console.print(f"  requires:  {', '.join(result['requires']) or '(none)'}")
+    if result["requires_auth"]:
+        console.print(f"  auth:      {', '.join(result['requires_auth'])}")
+    console.print(f"  dense:     {result['dense'] or '(none)'}")
+    if result["warning"]:
+        console.print(f"  [yellow]warning:   {result['warning']}[/yellow]")
+    if available:
+        blocks = ", ".join(f"{block} (~{cost} tok)" for block, cost in available.items())
+        console.print(f"  blocks:    {blocks}")
+        console.print(
+            f"  [dim]full load ≈ {result['full_load_tokens']} tokens "
+            "(loaded only on demand via load_skill)[/dim]"
+        )
+    else:
+        console.print("  blocks:    [dim](dense-only; no heavy content)[/dim]")
+
+
 @skill_app.command("report")
 def skill_report(
     stale_days: int = typer.Option(
