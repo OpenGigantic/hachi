@@ -72,6 +72,11 @@ from tokoboros.tui.widgets import (
 
 TierName = Literal["lightning", "recommended", "enhanced", "power"]
 
+# Below this width the sidebar collapses (CSS `#session-root.narrow #sidebar`),
+# so the docked header takes over as the live-metrics surface. Shared by the
+# resize handler and the metrics-routing in refresh_sidebar.
+NARROW_WIDTH = 90
+
 # One-click suggestions shown on the empty first-run transcript — a discovery
 # prompt, a dev task, and an everyday task to showcase breadth.
 _STARTER_PROMPTS: tuple[str, ...] = (
@@ -119,6 +124,15 @@ def _looks_like_error(text: str) -> bool:
     """Heuristic: does a tool-result preview describe a failure?"""
     lowered = text.lower()
     return any(token in lowered for token in ("failed", "error:", "traceback", "exception"))
+
+
+def _strip_metrics(info: dict[str, Any]) -> dict[str, Any]:
+    """Copy ``info`` without the live metrics (model/tokens/cost).
+
+    Used to keep the docked header brand+state only while the sidebar is the
+    visible metrics surface, so model/tokens/cost never render in both at once.
+    """
+    return {key: value for key, value in info.items() if key not in ("model", "tokens", "cost")}
 
 
 APP_CSS = """
@@ -1288,7 +1302,12 @@ class SessionScreen(Screen):
             root = self.query_one("#session-root", Horizontal)
         except Exception:
             return
-        root.set_class(self.size.width < 90, "narrow")
+        root.set_class(self.size.width < NARROW_WIDTH, "narrow")
+        # The sidebar just appeared/disappeared — re-route live metrics between
+        # it and the docked header so they never show in both places at once.
+        app = self.app
+        if isinstance(app, TokoborosTextualApp):
+            app.refresh_sidebar()
 
     # --- transcript rendering --------------------------------------------
     def append_user_prompt(self, text: str) -> None:
@@ -1839,14 +1858,17 @@ class TokoborosTextualApp(App[None]):
 
     def refresh_sidebar(self) -> None:
         info = self._sidebar_info()
-        # The docked header is the always-visible status bar (the sole status
-        # surface when the sidebar collapses in narrow terminals), so feed it
-        # app-level — not gated on the SessionScreen being active.
+        screen = self._current_screen()
+        # The sidebar shows the live metrics only when it is actually visible:
+        # on the SessionScreen AND wide enough not to be collapsed. Everywhere
+        # else (narrow, or a non-session screen) the docked header carries them.
+        # Routing here means model/tokens/cost never appear in both at once.
+        sidebar_visible = isinstance(screen, SessionScreen) and self.size.width >= NARROW_WIDTH
         try:
-            self.query_one("#toko-header", TokoGlyph).set_status(info)
+            header_info = info if not sidebar_visible else _strip_metrics(info)
+            self.query_one("#toko-header", TokoGlyph).set_status(header_info)
         except Exception:
             pass
-        screen = self._current_screen()
         if not isinstance(screen, SessionScreen):
             return
         try:
