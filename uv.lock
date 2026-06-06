@@ -3100,6 +3100,10 @@ notion = [
 slack = [
     { name = "slack-sdk" },
 ]
+tracing = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -3115,6 +3119,8 @@ requires-dist = [
     { name = "keyring", specifier = ">=25.5.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11.0" },
     { name = "notion-client", marker = "extra == 'notion'", specifier = ">=2.2.1" },
+    { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.27.0" },
+    { name = "opentelemetry-sdk", marker = "extra == 'tracing'", specifier = ">=1.27.0" },
     { name = "platformdirs", specifier = ">=4.3.0" },
     { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.48.0" },
     { name = "pydantic", specifier = ">=2.9.0" },
@@ -3127,7 +3133,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
 ]
-provides-extras = ["dev", "google", "notion", "slack", "memory", "local-models", "browser"]
+provides-extras = ["dev", "google", "notion", "slack", "memory", "local-models", "browser", "tracing"]
 
 [[package]]
 name = "tomlkit"
