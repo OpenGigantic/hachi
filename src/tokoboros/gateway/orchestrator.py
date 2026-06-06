@@ -466,6 +466,15 @@ class AgentSession:
             estimated_cost_usd=round(cost.estimated_cost_usd, 6) if cost else 0.0,
         )
 
+    def snapshot_usage(self) -> dict[str, Any]:
+        """Detailed token/cost breakdown for the Ops dashboard.
+
+        Exposes the full CostSnapshot (input/output/cache-read/cache-creation/total
+        tokens, call_count, estimated_cost_usd). Empty dict before the first LLM call.
+        """
+        tracker = getattr(self.loop, "cost_tracker", None)
+        return tracker.snapshot().to_dict() if tracker is not None else {}
+
     def snapshot_task_ledger(self, limit: int = 50) -> tuple[TaskLedgerItemSnapshot, ...]:
         """Immutable task ledger records for timeline views."""
         records = self.memory.task_ledger[-limit:]

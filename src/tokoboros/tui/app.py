@@ -1102,7 +1102,20 @@ class OpsScreen(SnapshotScreen):
         failures = [asdict(job) for job in agent.snapshot_failed_jobs(limit=10)]
         mcp = _mcp_to_dict(agent.snapshot_mcp_inventory())
         events = [asdict(evt) for evt in agent.snapshot_runtime_events(limit=10)]
-        return format_ops(jobs, failures, mcp, events)
+        usage = agent.snapshot_usage()
+        subagents = [asdict(report) for report in agent.query_subagent_reports(top_k=8)]
+        permissions = [asdict(row) for row in agent.snapshot_permission_audit(limit=10)]
+        model = agent.snapshot_session_state().model_name
+        return format_ops(
+            jobs,
+            failures,
+            mcp,
+            events,
+            usage=usage,
+            subagents=subagents,
+            permissions=permissions,
+            model=model,
+        )
 
 
 class MemoryScreen(SnapshotScreen):
