@@ -62,6 +62,7 @@ max_session_tokens = 500000
 | `DISCORD_BOT_TOKEN` | – | Discord bot token (alternative to a webhook; pass a channel id). |
 | `TOKOBOROS_REST_ALLOWLIST` | – | Comma list of hosts the Universal REST Adapter may call. |
 | `TOKOBOROS_REST_ALLOW_PRIVATE` | `false` | Allow REST/webhook **and browser** calls to private/loopback hosts (use with care). |
+| `TOKOBOROS_ALLOW_OUTBOUND_SECRETS` | `false` | When `true`, disables automatic redaction of API keys/tokens/private keys in outbound Slack/Discord messages. Leave off so secrets can't be accidentally leaked. |
 
 ## Optional features (extras)
 
