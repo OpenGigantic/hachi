@@ -8,25 +8,22 @@ message rather than raised, so the agent can recover or report it.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 
 from tokoboros.channels.discord import DiscordError, DiscordSender
 from tokoboros.channels.slack import SlackError, SlackSender
 from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.secret_scanner import redact_secrets
+from tokoboros.core.secret_scanner import redact_outbound
 
 
 def _guard_outbound(text: str) -> tuple[str, str]:
-    """Redact secrets from outbound text unless explicitly disabled.
+    """Redact secrets from outbound text via the shared outbound-redaction policy.
 
     Returns ``(safe_text, note)`` — ``note`` is a non-empty suffix to append to the
-    tool result when something was redacted, so the agent knows it happened. Set
-    ``TOKOBOROS_ALLOW_OUTBOUND_SECRETS=true`` to opt out (power-user escape hatch).
+    tool result when something was redacted, so the agent knows it happened. The opt-out
+    (``TOKOBOROS_ALLOW_OUTBOUND_SECRETS=true``) is honored inside ``redact_outbound``.
     """
-    if os.environ.get("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", "").lower() in ("1", "true", "yes"):
-        return text, ""
-    safe, count = redact_secrets(text)
+    safe, count = redact_outbound(text)
     note = f" ({count} secret(s) redacted before sending for your safety.)" if count else ""
     return safe, note
 
