@@ -229,8 +229,33 @@ def format_ops(
     return Group(*sections)
 
 
-def format_memory(tasks: list[dict[str, Any]], recalls: list[dict[str, Any]]) -> RenderableType:
-    return Group(format_tasks(tasks), Text(""), format_recalls(recalls))
+def format_skills(skills: list[dict[str, Any]]) -> Table:
+    """Loaded .og skill inventory with usage stats (the ObjectGraph moat)."""
+    table = _titled("Loaded Skills (.og)", "Skill", "Role", "Keywords", "Used", "Last used")
+    if not skills:
+        table.add_row(Text("no skills loaded", style="dim"), "", "", "", "")
+        return table
+    for skill in skills:
+        used = int(skill.get("use_count", 0) or 0)
+        table.add_row(
+            _truncate(skill.get("name"), 28),
+            _truncate(skill.get("role"), 14),
+            str(skill.get("keyword_count", 0)),
+            Text(str(used), style="dim" if used == 0 else theme.ACCENT),
+            _truncate(skill.get("last_used") or _EMPTY, 25),
+        )
+    return table
+
+
+def format_memory(
+    tasks: list[dict[str, Any]],
+    recalls: list[dict[str, Any]],
+    skills: list[dict[str, Any]] | None = None,
+) -> RenderableType:
+    parts: list[RenderableType] = [format_tasks(tasks), Text(""), format_recalls(recalls)]
+    if skills is not None:
+        parts.extend([Text(""), format_skills(skills)])
+    return Group(*parts)
 
 
 def format_integrations(mcp: dict[str, Any]) -> RenderableType:
