@@ -69,6 +69,7 @@ from tokoboros.core.runtime_read_models import (
     SkillSnapshot,
     SubAgentReportSnapshot,
     TaskLedgerItemSnapshot,
+    ToolCallSnapshot,
 )
 from tokoboros.core.secret_store import create_default_secret_store
 from tokoboros.core.session_store import SessionStore
@@ -579,6 +580,10 @@ class AgentSession:
             )
 
         return tuple(runtime_reports[-top_k:])
+
+    def snapshot_tool_calls(self, limit: int = 50) -> tuple[ToolCallSnapshot, ...]:
+        """Recent tool-call timeline (start→completion pairs with durations)."""
+        return self._read_models.tool_calls(limit=limit)
 
     def snapshot_runtime_events(self, limit: int = 100) -> tuple[RuntimeEventSnapshot, ...]:
         """Recent normalized runtime events for operator diagnostics."""

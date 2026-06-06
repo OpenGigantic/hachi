@@ -197,6 +197,35 @@ def format_permissions(audit: list[dict[str, Any]]) -> Table:
     return table
 
 
+def _fmt_duration(seconds: Any) -> str:
+    try:
+        value = float(seconds or 0.0)
+    except (TypeError, ValueError):
+        return _EMPTY
+    if value <= 0:
+        return _EMPTY
+    if value < 1:
+        return f"{value * 1000:.0f}ms"
+    return f"{value:.1f}s"
+
+
+def format_tool_timeline(calls: list[dict[str, Any]]) -> Table:
+    """Recent tool calls as a timeline: tool, status, duration, result preview."""
+    table = _titled("Tool Timeline", "Tool", "Status", "Duration", "Detail")
+    if not calls:
+        table.add_row(Text("no tool calls yet", style="dim"), "", "", "")
+        return table
+    # Newest first so the most recent activity is at the top of the panel.
+    for call in reversed(calls):
+        table.add_row(
+            _truncate(call.get("name"), 22),
+            _status(call.get("status")),
+            _fmt_duration(call.get("duration_seconds")),
+            _truncate(call.get("detail"), 44),
+        )
+    return table
+
+
 def format_ops(
     jobs: list[dict[str, Any]],
     failures: list[dict[str, Any]],
@@ -206,6 +235,7 @@ def format_ops(
     usage: dict[str, Any] | None = None,
     subagents: list[dict[str, Any]] | None = None,
     permissions: list[dict[str, Any]] | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
     model: str = "",
 ) -> RenderableType:
     """Compose the Ops dashboard. The new panels render only when their data is
@@ -213,6 +243,8 @@ def format_ops(
     sections: list[RenderableType] = []
     if usage is not None:
         sections.extend([format_usage(usage, model), Text("")])
+    if tool_calls is not None:
+        sections.extend([format_tool_timeline(tool_calls), Text("")])
     if subagents is not None:
         sections.extend([format_subagents(subagents), Text("")])
     sections.extend(
