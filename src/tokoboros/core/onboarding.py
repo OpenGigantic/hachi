@@ -229,6 +229,7 @@ class OnboardingService:
             model = provider.get("model")
             base_url = provider.get("base_url")
             api_key_env = provider.get("api_key_env")
+            api_key_ref = provider.get("api_key_ref")
 
             if kind is not None:
                 normalized_kind = str(kind).strip()
@@ -246,6 +247,8 @@ class OnboardingService:
                 config.provider.base_url = str(base_url).strip() or None
             if api_key_env is not None:
                 config.provider.api_key_env = str(api_key_env).strip() or None
+            if api_key_ref is not None:
+                config.provider.api_key_ref = str(api_key_ref).strip() or None
 
         safety_tier = plan.answers.get("permission_tier")
         if safety_tier is not None:
