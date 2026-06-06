@@ -380,7 +380,6 @@ def test_doctor_command_reports_environment(monkeypatch, tmp_path: Path) -> None
 def test_security_audit_json_reports_findings_and_exit_code(monkeypatch, tmp_path: Path) -> None:
     permissions_file = tmp_path / "device-permissions.og"
     permissions_file.write_text("", encoding="utf-8")
-    captured: list[str] = []
 
     fake_config = SimpleNamespace(
         permissions=SimpleNamespace(tier="unrestricted"),
@@ -401,16 +400,17 @@ def test_security_audit_json_reports_findings_and_exit_code(monkeypatch, tmp_pat
     monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
     monkeypatch.delenv("TOKOBOROS_REST_ALLOWLIST", raising=False)
     monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "false")
-    monkeypatch.setattr(
-        "tokoboros.cli.main.console.print",
-        lambda payload, *args, **kwargs: captured.append(str(payload)),
+
+    # Force a narrow console: --json must emit via plain print() so the payload
+    # is NOT soft-wrapped to the terminal width (which would break json.loads).
+    result = runner.invoke(
+        app, ["security-audit", "--json", "--fail-on-high"], env={"COLUMNS": "40"}
     )
 
-    result = runner.invoke(app, ["security-audit", "--json", "--fail-on-high"])
-
     assert result.exit_code == 2
-    assert len(captured) == 1
-    payload = json.loads(captured[0])
+    # The machine-readable payload parses straight from stdout (regression: was
+    # routed through console.print, which wrapped long lines mid-token).
+    payload = json.loads(result.stdout)
     check_ids = {finding["check_id"] for finding in payload["findings"]}
 
     assert payload["status"] == "fail"

@@ -1508,8 +1508,10 @@ def security_audit(
 
     # Output format selection
     if json_output:
-        # Machine-readable JSON for CI integration
-        console.print(json.dumps(result, indent=2))
+        # Plain print (not console.print) so Rich never soft-wraps the JSON
+        # payload to the terminal width — that would inject newlines mid-token
+        # and break `json.loads` for CI consumers.
+        print(json.dumps(result, indent=2))
     else:
         # Human-friendly format with rich rendering
         border = "red" if high_count > 0 else "yellow" if medium_count > 0 else "green"
