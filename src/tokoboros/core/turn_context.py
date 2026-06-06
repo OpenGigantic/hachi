@@ -36,6 +36,13 @@ class TurnContext:
     # Composed system prompt (time-aware, memory-aware, frozen for this turn)
     system_prompt: str
 
+    # Prompt-cache-aware split of ``system_prompt``: ``cacheable_system`` is the
+    # stable prefix (brain/.og/perms + session-frozen profiles) that carries the
+    # cache breakpoint; ``dynamic_system`` is the per-turn tail (time, recalled
+    # context) that must sit AFTER the breakpoint so it never invalidates the cache.
+    cacheable_system: str = ""
+    dynamic_system: str = ""
+
     # Workspace state snapshots (frozen at turn start)
     active_skill: str | None = None
     user_profile_snapshot: str | None = None
@@ -86,24 +93,33 @@ class TurnContext:
         """
         timestamp = datetime.datetime.now(datetime.UTC).isoformat()
 
-        # Compose the final system prompt (immutable for this turn)
-        time_header = _build_time_header()
-        composed_prompt = time_header
-
+        # --- Cacheable prefix: stable across the session ---------------------
+        # The brain/.og/permissions base plus session-frozen profiles do not
+        # change turn-to-turn, so they carry the prompt-cache breakpoint and are
+        # read from cache (0.1x) on every subsequent turn.
+        cacheable_parts = [system_prompt_base]
         if user_profile_snapshot:
-            composed_prompt += (
-                f"\n\n--- USER PROFILE (captured for this turn) ---\n{user_profile_snapshot}"
+            cacheable_parts.append(
+                f"\n\n--- USER PROFILE (captured for this session) ---\n{user_profile_snapshot}"
             )
-
         if agent_profile_snapshot:
-            composed_prompt += (
-                f"\n\n--- AGENT PROFILE (captured for this turn) ---\n{agent_profile_snapshot}"
+            cacheable_parts.append(
+                f"\n\n--- AGENT PROFILE (captured for this session) ---\n{agent_profile_snapshot}"
             )
+        cacheable_system = "".join(cacheable_parts)
 
+        # --- Dynamic tail: changes every turn -------------------------------
+        # The time header (changes every second) and per-query recalled context
+        # MUST stay after the cache breakpoint, or they'd force a fresh cache
+        # write of the whole prefix on every turn (the classic caching anti-pattern).
+        dynamic_parts = [_build_time_header()]
         if recalled_context:
-            composed_prompt += f"\n\n--- RECALLED CONTEXT ---\n{recalled_context}"
+            dynamic_parts.append(f"\n\n--- RECALLED CONTEXT ---\n{recalled_context}")
+        dynamic_system = "".join(dynamic_parts)
 
-        composed_prompt += f"\n\n{system_prompt_base}"
+        # Full prompt keeps the stable content first (model reads instructions
+        # before per-turn context); also the single-block fallback path then caches.
+        composed_prompt = f"{cacheable_system}\n\n{dynamic_system}"
 
         return cls(
             turn_id=turn_id,
@@ -111,6 +127,8 @@ class TurnContext:
             timestamp=timestamp,
             user_input=user_input,
             system_prompt=composed_prompt,
+            cacheable_system=cacheable_system,
+            dynamic_system=dynamic_system,
             active_skill=active_skill,
             user_profile_snapshot=user_profile_snapshot,
             agent_profile_snapshot=agent_profile_snapshot,

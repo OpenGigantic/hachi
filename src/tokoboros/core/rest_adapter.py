@@ -21,6 +21,21 @@ from tokoboros.core.credential_vault import CredentialVault
 from tokoboros.core.loop import ToolRegistry
 from tokoboros.og_engine.parser import OGNode
 
+# Safety cap so a verbose REST response can't flood the agent's context. Tools
+# that need a tight result should declare `fields=` in their ::api block instead.
+_MAX_REST_RESPONSE_CHARS = 6_000
+
+
+def _truncate_rest_response(text: str, limit: int = _MAX_REST_RESPONSE_CHARS) -> str:
+    """Cap an over-long REST response, telling the model how to get a tighter one."""
+    if len(text) <= limit:
+        return text
+    dropped = len(text) - limit
+    return (
+        f"{text[:limit]}\n\n... [truncated {dropped} chars — add a `fields=` directive "
+        "to this skill's ::api block to return only the keys you need]"
+    )
+
 
 class UniversalRestAdapter:
     """
@@ -262,9 +277,22 @@ class UniversalRestAdapter:
                     response.raise_for_status()
 
                     try:
-                        return json.dumps(response.json(), indent=2)
+                        data = response.json()
                     except json.JSONDecodeError:
-                        return response.text
+                        return _truncate_rest_response(response.text)
+
+                    # Optional .og field projection: an ::api block may declare
+                    # `fields=a, b` to return only those top-level keys, keeping
+                    # tool output (and token cost) tight. Falls back to the full
+                    # response, then a generic size cap as a last resort.
+                    fields = api_def.get("fields")
+                    if fields and isinstance(data, dict):
+                        wanted = [f.strip() for f in fields.split(",") if f.strip()]
+                        projected = {k: data[k] for k in wanted if k in data}
+                        if projected:
+                            data = projected
+
+                    return _truncate_rest_response(json.dumps(data, indent=2))
 
             except httpx.HTTPStatusError as exc:
                 return f"HTTP Error {exc.response.status_code}: {exc.response.text}"
@@ -276,5 +304,6 @@ class UniversalRestAdapter:
         # Set the name of the function to the tool name (helps with debugging stack traces)
         dynamic_api_tool.__name__ = tool_name
 
-        # Register the dynamic function with the ToolRegistry
-        self.registry.register(llm_schema, dynamic_api_tool)
+        # Register the dynamic function with the ToolRegistry under the skill's group,
+        # so load_skill(node_name) lazily unlocks exactly this skill's REST tools.
+        self.registry.register(llm_schema, dynamic_api_tool, group=node_name)

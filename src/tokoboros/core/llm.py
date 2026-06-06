@@ -114,14 +114,18 @@ class BaseLLMClient(abc.ABC):
         messages: list[Message],
         system_prompt: str | None = None,
         tools: list[dict[str, Any]] | None = None,
+        dynamic_system: str | None = None,
     ) -> LLMResponse:
         """
         Generate a response from the LLM based on the conversation history.
 
         Args:
             messages: The conversation history.
-            system_prompt: Optional top-level instructions for the model.
+            system_prompt: Stable top-level instructions (the cacheable prefix).
             tools: Optional JSON Schema definitions of available tools.
+            dynamic_system: Optional per-turn system content (time, recalled
+                context) kept AFTER the cache breakpoint so it never invalidates
+                the cached prefix. Providers without caching simply append it.
 
         Returns:
             An LLMResponse containing the text output and any requested tool calls.
@@ -159,6 +163,7 @@ class AnthropicClient(BaseLLMClient):
         messages: list[Message],
         system_prompt: str | None = None,
         tools: list[dict[str, Any]] | None = None,
+        dynamic_system: str | None = None,
     ) -> LLMResponse:
         """
         Generate a response from the Anthropic Claude model using Prompt Caching.
@@ -179,10 +184,15 @@ class AnthropicClient(BaseLLMClient):
         }
 
         if system_prompt:
-            # Apply prompt caching breakpoint to the system prompt block
-            kwargs["system"] = [
+            # Cache the STABLE prefix only (breakpoint here). Per-turn content goes
+            # in a second, uncached block AFTER the breakpoint so the cached prefix
+            # is reused (0.1x reads) instead of rewritten every turn.
+            system_blocks: list[dict[str, Any]] = [
                 {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
             ]
+            if dynamic_system:
+                system_blocks.append({"type": "text", "text": dynamic_system})
+            kwargs["system"] = system_blocks
 
         if tools:
             # Apply prompt caching breakpoint to the tools array.
@@ -272,6 +282,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         messages: list[Message],
         system_prompt: str | None = None,
         tools: list[dict[str, Any]] | None = None,
+        dynamic_system: str | None = None,
     ) -> LLMResponse:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -279,7 +290,10 @@ class OpenAICompatibleClient(BaseLLMClient):
 
         payload_messages: list[dict[str, Any]] = []
         if system_prompt:
-            payload_messages.append({"role": "system", "content": system_prompt})
+            # No provider-side prompt caching here, so just recombine the stable
+            # prefix and the per-turn tail into one system message.
+            content = f"{system_prompt}\n\n{dynamic_system}" if dynamic_system else system_prompt
+            payload_messages.append({"role": "system", "content": content})
 
         for msg in messages:
             if msg.role == "system":

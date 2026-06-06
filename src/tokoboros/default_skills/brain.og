@@ -197,4 +197,5 @@ SKILL AUTHORING (self-improvement):
 - After solving a non-trivial task with no existing skill, call save_skill to persist it.
 - Keep ::dense to a few pipe-separated keywords (NOT sentences); put prose in full and actions in steps.
 - Calling save_skill again with the same name refines the existing skill (version + changelog auto-update).
+- If save_skill returns lint_advisories (e.g. missing keywords, no content), refine and save again so the skill stays searchable and useful.
 ::end

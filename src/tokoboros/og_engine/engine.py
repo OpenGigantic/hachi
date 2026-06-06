@@ -656,13 +656,27 @@ class SkillEngine:
         path.write_text(serialize_og_file(og), encoding="utf-8")
         self.load_file(path)  # hot-load so the skill is usable immediately
 
-        return {
+        # Lint the just-written skill and surface advisory feedback so the agent
+        # can self-correct on its next refinement (the quality side of the
+        # self-improvement loop). Dense budget + index are already guaranteed
+        # above, so what remains is searchability/content/dependency hygiene.
+        report = lint_og_file(path)
+        advisories = [
+            f"{issue['code']}: {issue['message']}"
+            for issue in report["issues"]
+            if issue["level"] in ("warning", "info")
+        ]
+
+        result: dict[str, Any] = {
             "status": "updated" if is_update else "created",
             "name": slug,
             "path": str(path),
             "version": version,
             "dense_tokens": dense_tokens,
         }
+        if advisories:
+            result["lint_advisories"] = advisories
+        return result
 
     @staticmethod
     def _bump_patch(version: str) -> str:

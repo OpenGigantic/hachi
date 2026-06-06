@@ -68,6 +68,7 @@ uv run tokoboros run          # start chatting
 - 🗂️ **Job Queue Foundations** — Runtime jobs are tracked with retry/backoff and surfaced in gateway read models
 - 🔌 **Native Integrations** — Google Workspace (Gmail, Drive, Calendar), Notion, Slack — all via OAuth
 - 🌐 **Universal REST Adapter** — Define any REST API in a `.og` file, and Tokoboros auto-generates the tool
+- 🕸️ **Browser Automation** — A real headless browser (`browse_web`, `browser_act`, `browser_screenshot`) for live web research and multi-step flows; SSRF-guarded and permission-gated (optional: `pip install 'tokoboros[browser]'` + `playwright install chromium`)
 - 🧩 **MCP Support** — Model Context Protocol servers for filesystem and external tools
 - 📊 **Skill Lifecycle** — Usage tracking, stale detection, and analytics for all `.og` skills
 - 🧬 **Long-Term Memory** — Semantic search vault with async prefetch and frozen session snapshots
@@ -76,6 +77,7 @@ uv run tokoboros run          # start chatting
 - ✍️ **Autonomous Skill Authoring** — The agent writes & refines its own `.og` skills (`save_skill`); import the wider ecosystem with `tokoboros skill import` (SKILL.md → `.og`)
 - ⏰ **Proactive Scheduling** — `tokoboros schedule add` runs tasks on cron/interval/once with delivery to chat or a webhook
 - 💬 **Multi-Channel + OpenAI-Compatible API** — Reach the agent from Telegram or any platform via a generic inbound webhook, or point Open WebUI / LibreChat at the `/v1/chat/completions` endpoint
+- 📣 **Outbound Slack & Discord** — The agent posts proactively (`send_slack_message`, `send_discord_message`) via bot token or webhook; SSRF-guarded, credentials resolved lazily at call time
 - 🔄 **Model Freedom** — Anthropic, OpenAI-compatible, **OpenRouter** (200+ models), and local **Ollama** — no lock-in
 - 💵 **Cost Controls** — Live token/cost tracking plus per-session budget caps and per-sender rate limits
 - ↩️ **Edit Undo** — File writes are snapshotted; `rollback_changes` restores the previous version

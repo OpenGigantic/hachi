@@ -56,8 +56,22 @@ max_session_tokens = 500000
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `TELEGRAM_BOT_TOKEN` | – | Bot token for `tokoboros channel telegram`. |
+| `SLACK_BOT_TOKEN` | – | Slack bot token for `send_slack_message` (`chat.postMessage`; pass a channel). |
+| `SLACK_WEBHOOK_URL` | – | Slack incoming-webhook URL (single channel; alternative to a bot token). |
+| `DISCORD_WEBHOOK_URL` | – | Discord webhook URL for `send_discord_message` (single channel). |
+| `DISCORD_BOT_TOKEN` | – | Discord bot token (alternative to a webhook; pass a channel id). |
 | `TOKOBOROS_REST_ALLOWLIST` | – | Comma list of hosts the Universal REST Adapter may call. |
-| `TOKOBOROS_REST_ALLOW_PRIVATE` | `false` | Allow REST/webhook calls to private/loopback hosts (use with care). |
+| `TOKOBOROS_REST_ALLOW_PRIVATE` | `false` | Allow REST/webhook **and browser** calls to private/loopback hosts (use with care). |
+
+## Optional features (extras)
+
+Some capabilities ship as optional dependency groups so the base install stays lean:
+
+| Extra | Install | Enables |
+|-------|---------|---------|
+| `browser` | `pip install 'tokoboros[browser]'` then `playwright install chromium` | Headless browser tools (`browse_web`, `browser_act`, `browser_screenshot`). Disabled in the `sandbox` permission tier; URLs are validated like other outbound calls. |
+| `google` | `pip install 'tokoboros[google]'` | Google Workspace integration (`GOOGLE_CLIENT_ID`/`SECRET`). |
+| `slack` | `pip install 'tokoboros[slack]'` | Slack SDK. |
 
 ## Integrations & secrets
 

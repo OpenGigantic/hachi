@@ -24,7 +24,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
-from textual.widgets import Button, Footer, Header, Input, RichLog, Static, TextArea
+from textual.widgets import Button, Footer, Input, RichLog, Static, TextArea
 
 from tokoboros.core.onboarding import OnboardingService, SetupStep
 from tokoboros.core.permissions import PermissionDecision, PermissionRequest
@@ -49,6 +49,8 @@ from tokoboros.tui.widgets import (
     AgentMessage,
     ErrorCard,
     SidebarPanel,
+    TokoGlyph,
+    TokoSplash,
     ToolCard,
     UserBubble,
 )
@@ -112,9 +114,25 @@ Screen {
 }
 
 /* --- Session screen ---------------------------------------------------- */
+#toko-header {
+  dock: top;
+  height: 1;
+  padding: 0 2;
+  background: $surface;
+  color: $foreground;
+  content-align: center middle;
+}
+
 #session-root {
   height: 1fr;
   width: 100%;
+}
+
+.toko-splash {
+  height: auto;
+  width: 100%;
+  content-align: center top;
+  padding: 1 0 0 0;
 }
 
 #transcript {
@@ -751,24 +769,35 @@ class SessionScreen(Screen):
             id="composer",
         )
 
+    def set_toko_state(self, state: str) -> None:
+        """Drive the brand header glyph; no-op if it is not mounted yet."""
+        try:
+            self.query_one("#toko-header", TokoGlyph).set_state(state)
+        except Exception:
+            return
+
     def on_mount(self) -> None:
         app = self.app
         if isinstance(app, TokoborosTextualApp):
             self.query_one("#composer", Input).value = app.hydrated_draft
             app.refresh_sidebar()
+        self._append(TokoSplash(), scroll=False)
         self._mount_system_line("Booting runtime…")
 
     # --- mounting helpers -------------------------------------------------
     def _transcript(self) -> VerticalScroll:
         return self.query_one("#transcript", VerticalScroll)
 
-    def _append(self, widget: Widget) -> None:
+    def _append(self, widget: Widget, *, scroll: bool = True) -> None:
         transcript = self._transcript()
         transcript.mount(widget)
-        transcript.scroll_end(animate=False)
+        if scroll:
+            transcript.scroll_end(animate=False)
 
     def _mount_system_line(self, text: str, *, style: str = theme.MUTED) -> None:
-        self._append(Static(Text(text, style=style), classes="system-line"))
+        # Boot/system lines must not scroll the boot splash off-screen; real
+        # messages (user/agent) still scroll into view via the default path.
+        self._append(Static(Text(text, style=style), classes="system-line"), scroll=False)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "composer":
@@ -777,6 +806,7 @@ class SessionScreen(Screen):
         event.input.value = ""
         if not prompt:
             return
+        self.set_toko_state("thinking")
         app = self.app
         if isinstance(app, TokoborosTextualApp):
             app.submit_prompt(prompt)
@@ -882,7 +912,14 @@ class SnapshotScreen(Screen):
             self.refresh_from_agent(app.active_agent())
 
     def refresh_from_agent(self, agent: AgentSession | None) -> None:
-        body = self.query_one("#snapshot-body", Static)
+        # Subclasses such as AuthoringScreen replace the snapshot layout and have
+        # no #snapshot-body. Textual still runs this inherited on_mount for them
+        # (it invokes every on_mount in the MRO), and ^r refresh routes here too,
+        # so a missing body must be a no-op rather than a NoMatches crash.
+        body_matches = self.query("#snapshot-body")
+        if not body_matches:
+            return
+        body = body_matches.first(Static)
         if not agent:
             app = self.app
             if hasattr(app, "runtime_status_text"):
@@ -1371,7 +1408,10 @@ class TokoborosTextualApp(App[None]):
             self._activity = ("Failed", "failed")
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        # The Toko brand glyph *is* the header: a centered wordmark whose eye
+        # encodes live runtime state. Replaces the stock Header so the two do
+        # not collide at the docked top row.
+        yield TokoGlyph(id="toko-header")
         # The runtime/provider/tier summary lives only in the session sidebar
         # (format_session_info) — no bottom banner, to avoid duplicating it.
         yield Footer()
@@ -1638,6 +1678,12 @@ class TokoborosTextualApp(App[None]):
 
         screen = self._current_screen()
         if isinstance(screen, SessionScreen):
+            is_tool_error = event_type == "tool.call.completed" and _looks_like_error(
+                _sanitize_legacy_rich_markup(str(payload.get("result_preview", "")))
+            )
+            toko_state = theme.toko_state_for_event(event_type, is_error=is_tool_error)
+            if toko_state is not None:
+                screen.set_toko_state(toko_state)
             screen.ingest_runtime_event(event_type, payload)
         self._update_runtime_banner()
         self.refresh_sidebar()
