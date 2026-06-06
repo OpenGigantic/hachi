@@ -140,7 +140,7 @@ Screen {
   padding: 0 2;
   background: $surface;
   color: $foreground;
-  content-align: center middle;
+  content-align: left middle;
 }
 
 #session-root {
@@ -1793,6 +1793,14 @@ class TokoborosTextualApp(App[None]):
         return info
 
     def refresh_sidebar(self) -> None:
+        info = self._sidebar_info()
+        # The docked header is the always-visible status bar (the sole status
+        # surface when the sidebar collapses in narrow terminals), so feed it
+        # app-level — not gated on the SessionScreen being active.
+        try:
+            self.query_one("#toko-header", TokoGlyph).set_status(info)
+        except Exception:
+            pass
         screen = self._current_screen()
         if not isinstance(screen, SessionScreen):
             return
@@ -1800,7 +1808,7 @@ class TokoborosTextualApp(App[None]):
             sidebar = screen.query_one("#sidebar", SidebarPanel)
         except Exception:
             return
-        sidebar.update_info(self._sidebar_info())
+        sidebar.update_info(info)
 
     def _note_activity(self, event_type: str, payload: dict[str, Any]) -> None:
         if event_type == "session.chat.started":

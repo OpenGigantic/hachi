@@ -22,7 +22,7 @@ from textual.widgets import Static
 
 from tokoboros.tui import theme
 from tokoboros.tui.art import ouroboros
-from tokoboros.tui.formatters import format_session_info
+from tokoboros.tui.formatters import format_session_info, format_status_bar
 
 
 class SlashPalette:
@@ -150,16 +150,21 @@ class TokoGlyph(Static):
 
     def __init__(self, **kwargs: Any) -> None:
         self._frame = 0
+        self._status: dict[str, Any] = {}  # model / tokens / cost (live)
         super().__init__(self._render_state("idle"), classes="toko-glyph", **kwargs)
 
     def on_mount(self) -> None:
         # Advance animated states only; static states make _tick a cheap no-op.
         self.set_interval(0.13, self._tick)
 
-    def _tick(self) -> None:
+    def _current_eye(self) -> str | None:
         frames = theme.TOKO_EYE_FRAMES.get(self.state)
-        if not frames:
+        return frames[self._frame] if frames else None
+
+    def _tick(self) -> None:
+        if self.state not in theme.TOKO_EYE_FRAMES:
             return
+        frames = theme.TOKO_EYE_FRAMES[self.state]
         self._frame = (self._frame + 1) % len(frames)
         self.update(self._render_state(self.state, eye=frames[self._frame]))
 
@@ -167,21 +172,29 @@ class TokoGlyph(Static):
         """Update the displayed runtime state (idle/thinking/working/…)."""
         self.state = state
 
+    def set_status(self, info: dict[str, Any]) -> None:
+        """Feed live status (model/tokens/cost) shown alongside the brand."""
+        self._status = info or {}
+        self.update(self._render_state(self.state, eye=self._current_eye()))
+
     def watch_state(self, state: str) -> None:
         self._frame = 0
         frames = theme.TOKO_EYE_FRAMES.get(state)
         self.update(self._render_state(state, eye=frames[0] if frames else None))
 
-    @staticmethod
-    def _render_state(state: str, eye: str | None = None) -> Text:
+    def _render_state(self, state: str, eye: str | None = None) -> Text:
         glyph, color = theme.toko_eye(state)
         if eye is not None:
             glyph = eye
-        body = Text()
-        body.append(f"{glyph} ", style=f"bold {color}")
-        body.append(theme.TOKO_WORDMARK, style=f"bold {theme.FOREGROUND}")
-        body.append(f"  · {state}", style=theme.MUTED)
-        return body
+        bar: Text = format_status_bar(
+            eye=glyph,
+            eye_color=color,
+            state=state,
+            model=str(self._status.get("model", "") or ""),
+            tokens=int(self._status.get("tokens", 0) or 0),
+            cost=float(self._status.get("cost", 0.0) or 0.0),
+        )
+        return bar
 
 
 class TokoSplash(Static):

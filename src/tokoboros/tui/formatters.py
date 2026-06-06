@@ -237,6 +237,34 @@ def format_integrations(mcp: dict[str, Any]) -> RenderableType:
     return format_mcp(mcp)
 
 
+def format_status_bar(
+    *,
+    eye: str,
+    eye_color: str,
+    state: str,
+    model: str = "",
+    tokens: int = 0,
+    cost: float = 0.0,
+) -> Text:
+    """The always-visible header bar: brand + live model · tokens · cost · state.
+
+    Pure (no Textual) so it can be unit-tested via a Rich console. Token/cost are
+    omitted until the first turn produces usage.
+    """
+    bar = Text()
+    bar.append(f"{eye} ", style=f"bold {eye_color}")
+    bar.append(theme.TOKO_WORDMARK, style=f"bold {theme.FOREGROUND}")
+    if model:
+        bar.append("   ·  ", style=theme.BORDER_MUTED)
+        bar.append(str(model), style=theme.PRIMARY)
+    if tokens:
+        bar.append("   ", style=theme.MUTED)
+        bar.append(f"{int(tokens):,} tok", style=theme.ACCENT)
+        bar.append(f"  ~${float(cost):.4f}", style=theme.ACCENT)
+    bar.append(f"   ·  {state}", style=theme.MUTED)
+    return bar
+
+
 def format_welcome() -> RenderableType:
     """The friendly first-run greeting shown above the clickable starter prompts."""
     title = Text()
