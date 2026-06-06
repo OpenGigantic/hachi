@@ -23,7 +23,28 @@ from tokoboros.tui.app import (
     TokoborosTextualApp,
     _sanitize_agent_markdown,
     _sanitize_legacy_rich_markup,
+    _strip_metrics,
 )
+
+
+def test_strip_metrics_removes_only_live_metrics() -> None:
+    info = {
+        "status": "Idle",
+        "status_kind": "idle",
+        "model": "claude-haiku-4-5",
+        "tier": "guided",
+        "tokens": 7226,
+        "cost": 0.0095,
+    }
+    stripped = _strip_metrics(info)
+    # Live metrics gone (so the header shows brand+state only)...
+    assert "model" not in stripped
+    assert "tokens" not in stripped
+    assert "cost" not in stripped
+    # ...everything else preserved, original untouched.
+    assert stripped["status"] == "Idle"
+    assert stripped["tier"] == "guided"
+    assert "tokens" in info  # did not mutate the input
 
 
 class _FakeOpsAgent:
