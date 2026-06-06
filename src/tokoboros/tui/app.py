@@ -56,6 +56,7 @@ from tokoboros.tui.theme import TOKOBOROS_THEME
 from tokoboros.tui.widgets import (
     AgentMessage,
     ErrorCard,
+    InputHistory,
     SidebarPanel,
     SlashMenu,
     SlashPalette,
@@ -1062,7 +1063,12 @@ class Composer(Input):
     def __init__(self, *args: Any, commands: tuple[tuple[str, str], ...], **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.palette = SlashPalette(commands)
+        self.history = InputHistory()
         self._menu: SlashMenu | None = None
+
+    def _set_value(self, value: str) -> None:
+        self.value = value
+        self.cursor_position = len(value)
 
     def attach_menu(self, menu: SlashMenu) -> None:
         self._menu = menu
@@ -1088,28 +1094,40 @@ class Composer(Input):
             self._menu.display = False
 
     async def on_key(self, event: events.Key) -> None:
-        if not self.palette.visible:
-            return
-        if event.key == "down":
-            self.palette.move(1)
-        elif event.key == "up":
-            self.palette.move(-1)
-        elif event.key == "tab":
-            self.complete_selected()
+        if self.palette.visible:
+            if event.key == "down":
+                self.palette.move(1)
+            elif event.key == "up":
+                self.palette.move(-1)
+            elif event.key == "tab":
+                self.complete_selected()
+                event.stop()
+                event.prevent_default()
+                return
+            elif event.key == "escape":
+                self.hide_menu()
+                event.stop()
+                event.prevent_default()
+                return
+            else:
+                return
+            if self._menu is not None:
+                self._menu.show(self.palette)
             event.stop()
             event.prevent_default()
             return
-        elif event.key == "escape":
-            self.hide_menu()
-            event.stop()
-            event.prevent_default()
-            return
-        else:
-            return
-        if self._menu is not None:
-            self._menu.show(self.palette)
-        event.stop()
-        event.prevent_default()
+
+        # Menu hidden → ↑/↓ recall previously-submitted prompts.
+        if event.key in ("up", "down"):
+            recalled = (
+                self.history.prev(self.value)
+                if event.key == "up"
+                else self.history.next(self.value)
+            )
+            if recalled is not None:
+                self._set_value(recalled)
+                event.stop()
+                event.prevent_default()
 
 
 class SessionScreen(Screen):
@@ -1211,6 +1229,8 @@ class SessionScreen(Screen):
         event.input.value = ""
         if not prompt:
             return
+        if isinstance(composer, Composer):
+            composer.history.add(prompt)
         app = self.app
         if not isinstance(app, TokoborosTextualApp):
             return
