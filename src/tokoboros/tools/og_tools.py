@@ -108,6 +108,18 @@ def _make_check_skill_assertions(engine: SkillEngine):
     return check_skill_assertions
 
 
+def _make_skill_dependencies(engine: SkillEngine):
+    """Factory: creates the skill_dependencies tool closure bound to the engine."""
+
+    def skill_dependencies(name: str) -> str:
+        result = engine.get_dependency_chain(name)
+        if result is None:
+            return f"Skill '{name}' not found. Use search_skills or list_skills to find it."
+        return json.dumps(result, indent=2)
+
+    return skill_dependencies
+
+
 def _make_skill_changelog(engine: SkillEngine):
     """Factory: creates the skill_changelog tool closure bound to the engine instance."""
 
@@ -239,6 +251,28 @@ LOAD_SKILL_SCHEMA = {
                     "edges — or ['all']. Omit for the execution-critical default set."
                 ),
             },
+        },
+        "required": ["name"],
+    },
+}
+
+
+SKILL_DEPENDENCIES_SCHEMA = {
+    "name": "skill_dependencies",
+    "description": (
+        "Resolve a skill's full prerequisite chain via its typed `requires` edges — the "
+        "other skills you should load_skill before executing this one — WITHOUT loading "
+        "any heavy content. Returns `direct` (immediate deps), `chain` (the ordered "
+        "transitive closure), `missing` (referenced deps not currently loaded), and "
+        "`has_cycle`. Use it after peek_skill when a skill declares dependencies."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "The exact skill node name to resolve dependencies for.",
+            }
         },
         "required": ["name"],
     },
@@ -420,6 +454,7 @@ def register_og_tools(registry: ToolRegistry, engine: SkillEngine):
     registry.register(LIST_SKILLS_SCHEMA, _make_list_skills(engine))
     registry.register(PEEK_SKILL_SCHEMA, _make_peek_skill(engine))
     registry.register(LOAD_SKILL_SCHEMA, _make_load_skill(engine))
+    registry.register(SKILL_DEPENDENCIES_SCHEMA, _make_skill_dependencies(engine))
     registry.register(CHECK_SKILL_ASSERTIONS_SCHEMA, _make_check_skill_assertions(engine))
     registry.register(SKILL_CHANGELOG_SCHEMA, _make_skill_changelog(engine))
     registry.register(SAVE_SKILL_SCHEMA, _make_save_skill(engine))

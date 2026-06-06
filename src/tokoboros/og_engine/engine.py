@@ -816,6 +816,76 @@ class SkillEngine:
             "changelog": self.get_file_changelog(filepath),
         }
 
+    @staticmethod
+    def _direct_deps(node: OGNode) -> list[str]:
+        """Combine a node's ``requires`` field with any ``->[:requires] <id>`` edges.
+
+        Mirrors the dependency extraction in :meth:`resolve_node`'s footer so both
+        agree on what a skill directly depends on.
+        """
+        deps = list(node.requires)
+        for edge_line in node.edges:
+            if "[:requires]" in edge_line:
+                dep_id = edge_line.split("]")[-1].strip()
+                if dep_id and dep_id not in deps:
+                    deps.append(dep_id)
+        return deps
+
+    def get_dependency_chain(self, name: str, max_depth: int = 10) -> dict[str, Any] | None:
+        """Resolve a skill's transitive ``requires`` dependency chain.
+
+        Realizes ObjectGraph's typed dependency-aware traversal: from a skill node,
+        walk its ``requires`` / ``->[:requires]`` edges to discover every prerequisite
+        skill the agent should ``load_skill`` before executing — without loading any
+        heavy content. Shared dependencies are visited once; back-edges are reported as
+        a cycle rather than looping forever.
+
+        Args:
+            name: The exact skill node id.
+            max_depth: Safety bound on traversal depth.
+
+        Returns:
+            ``{name, direct, chain, missing, has_cycle}`` where ``direct`` is the
+            immediate dependencies, ``chain`` is the ordered transitive closure
+            (excluding the root), ``missing`` are referenced deps not currently
+            loaded, and ``has_cycle`` flags a dependency loop. ``None`` if unknown.
+        """
+        if name not in self._nodes:
+            return None
+
+        direct = self._direct_deps(self._nodes[name])
+        chain: list[str] = []
+        missing: list[str] = []
+        visited: set[str] = set()
+        has_cycle = False
+
+        def walk(current: str, depth: int, path: frozenset[str]) -> None:
+            nonlocal has_cycle
+            node = self._nodes.get(current)
+            if node is None or depth > max_depth:
+                return
+            for dep in self._direct_deps(node):
+                if dep in path:  # back-edge into the current path → cycle
+                    has_cycle = True
+                    continue
+                if dep in visited:  # already resolved on another branch (diamond)
+                    continue
+                visited.add(dep)
+                if dep in self._nodes:
+                    chain.append(dep)
+                    walk(dep, depth + 1, path | {dep})
+                elif dep not in missing:
+                    missing.append(dep)
+
+        walk(name, 0, frozenset({name}))
+        return {
+            "name": name,
+            "direct": direct,
+            "chain": chain,
+            "missing": missing,
+            "has_cycle": has_cycle,
+        }
+
     def get_nodes_by_role(self, role: str) -> list[OGNode]:
         """
         Retrieve all nodes matching a specific role.
