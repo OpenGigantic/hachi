@@ -1966,6 +1966,78 @@ def skill_changelog(
         )
 
 
+# Module-level singleton: a list-typed typer.Option as an inline default trips
+# flake8-bugbear B008 (mutable-container annotation), so hoist it out per the hint.
+_ASSERT_PARAM_OPTION = typer.Option(
+    None, "--param", "-p", help="Parameter value as key=value (repeatable)."
+)
+
+
+@skill_app.command("assert")
+def skill_assert(
+    name: str = typer.Argument(..., help="Exact skill node name (see `skill list`)."),
+    param: list[str] | None = _ASSERT_PARAM_OPTION,
+    as_json: bool = typer.Option(False, "--json", help="Emit the assertion report as JSON."),
+):
+    """Check a skill's ::assertion preconditions against parameter values.
+
+    Deterministic — a bounded comparison grammar over the params you supply, no
+    shell or LLM. Exits non-zero if any assertion fails or needs a value, so it
+    works as a CI gate. Supply inputs with --param k=v (repeatable)."""
+    from tokoboros.core.assertion_eval import evaluate_assertions
+    from tokoboros.gateway.workspace import get_skills_dir
+    from tokoboros.og_engine.engine import SkillEngine
+
+    params: dict[str, str] = {}
+    for item in param or []:
+        if "=" not in item:
+            console.print(f"[red]Invalid --param (expected key=value):[/red] {item}")
+            raise typer.Exit(2)
+        key, value = item.split("=", 1)
+        params[key.strip()] = value.strip()
+
+    engine = SkillEngine()
+    engine.load_directory(get_skills_dir())
+    node = engine.get_node(name)
+    if node is None:
+        console.print(f"[red]Skill not found:[/red] {name} [dim](see `tokoboros skill list`)[/dim]")
+        raise typer.Exit(1)
+
+    results = evaluate_assertions(node.assertions, params)
+    ok = all(r.status not in ("fail", "unknown") for r in results)
+    report = {
+        "skill": name,
+        "ok": ok,
+        "results": [
+            {
+                "assertion": r.assertion,
+                "status": r.status,
+                "message": r.message,
+                "detail": r.detail,
+            }
+            for r in results
+        ],
+    }
+
+    if as_json:
+        # Plain print: Rich's console soft-wraps long JSON to terminal width.
+        print(json.dumps(report, indent=2))
+        raise typer.Exit(0 if ok else 1)
+
+    if not results:
+        console.print(f"[dim]{name} has no ::assertion block.[/dim]")
+        return
+    status_style = {"pass": "green", "fail": "red", "unknown": "yellow", "manual": "dim"}
+    for r in results:
+        style = status_style.get(r.status, "white")
+        line = f"  [{style}]{r.status.upper():7}[/{style}] {r.message or r.assertion}"
+        if r.detail:
+            line += f"  [dim]({r.detail})[/dim]"
+        console.print(line)
+    console.print(f"{name}: {'[green]OK[/green]' if ok else '[red]FAILED[/red]'}")
+    raise typer.Exit(0 if ok else 1)
+
+
 @skill_app.command("report")
 def skill_report(
     stale_days: int = typer.Option(
