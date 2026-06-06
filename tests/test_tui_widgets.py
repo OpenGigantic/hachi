@@ -19,7 +19,12 @@ from tokoboros.tui.formatters import (
     format_status_bar,
     format_welcome,
 )
-from tokoboros.tui.widgets import InputHistory, SlashPalette, submit_starter
+from tokoboros.tui.widgets import (
+    InputHistory,
+    SlashPalette,
+    search_transcript,
+    submit_starter,
+)
 
 _CMDS = (
     ("/help", "Show help"),
@@ -143,6 +148,44 @@ def test_input_history_respects_cap() -> None:
     assert h.prev("") == "3"
     assert h.prev("") == "2"
     assert h.prev("") == "2"  # '1' was dropped by the cap
+
+
+# --- transcript search ---------------------------------------------------
+_TRANSCRIPT = [
+    ("you", "How do I deploy the gateway?"),
+    ("tokoboros", "Run `tokoboros gateway` to start the gateway server locally."),
+    ("you", "Thanks!"),
+]
+
+
+def test_search_transcript_finds_case_insensitive_matches() -> None:
+    hits = search_transcript(_TRANSCRIPT, "GATEWAY")
+    # Two messages mention the gateway (the user question + the agent reply).
+    assert [h["index"] for h in hits] == [1, 2]
+    assert hits[0]["role"] == "you"
+    assert hits[1]["role"] == "tokoboros"
+    # The agent reply mentions "gateway" twice.
+    assert hits[1]["count"] == 2
+
+
+def test_search_transcript_snippet_is_ellipsized_when_clipped() -> None:
+    long_text = "x" * 100 + "needle" + "y" * 100
+    hits = search_transcript([("you", long_text)], "needle", context=10)
+    snippet = hits[0]["snippet"]
+    assert "needle" in snippet
+    assert snippet.startswith("…")
+    assert snippet.endswith("…")
+
+
+def test_search_transcript_empty_query_and_no_match() -> None:
+    assert search_transcript(_TRANSCRIPT, "   ") == []
+    assert search_transcript(_TRANSCRIPT, "nonexistent-token") == []
+
+
+def test_search_transcript_respects_limit() -> None:
+    entries = [("you", "match here")] * 50
+    hits = search_transcript(entries, "match", limit=5)
+    assert len(hits) == 5
 
 
 # --- theme ---------------------------------------------------------------

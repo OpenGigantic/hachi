@@ -322,6 +322,26 @@ def format_status_bar(
     return bar
 
 
+def format_search_results(query: str, hits: list[dict[str, Any]]) -> RenderableType:
+    """Render in-conversation transcript search hits (or a friendly miss)."""
+    if not hits:
+        return Text(f'No matches for "{query}" in this conversation.', style=theme.MUTED)
+    total = sum(int(h.get("count", 1) or 1) for h in hits)
+    table = _titled(
+        f'{total} match(es) for "{query}"  ·  {len(hits)} message(s)',
+        "#",
+        "Role",
+        "Match",
+    )
+    for hit in hits:
+        table.add_row(
+            str(hit.get("index", "")),
+            _truncate(hit.get("role"), 12),
+            _truncate(hit.get("snippet"), 72),
+        )
+    return table
+
+
 def format_welcome() -> RenderableType:
     """The friendly first-run greeting shown above the clickable starter prompts."""
     title = Text()
