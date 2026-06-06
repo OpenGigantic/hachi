@@ -67,6 +67,7 @@ from tokoboros.tui.widgets import (
     ToolCard,
     UserBubble,
     search_transcript,
+    transcript_overflow,
 )
 
 TierName = Literal["lightning", "recommended", "enhanced", "power"]
@@ -1136,6 +1137,13 @@ class Composer(Input):
 class SessionScreen(Screen):
     """Primary chat workspace: scrollable transcript, live sidebar, composer."""
 
+    # Cap the number of mounted transcript widgets so a very long session does
+    # not grow Textual's widget tree without bound (memory + relayout cost).
+    # Oldest widgets are pruned; recent context (and any in-flight tool cards,
+    # which are always newest) stay mounted. /search still covers older text
+    # while it is on screen; full history lives in the SessionStore regardless.
+    MAX_TRANSCRIPT_WIDGETS = 400
+
     def __init__(self) -> None:
         super().__init__()
         self._tool_cards: dict[str, list[ToolCard]] = {}
@@ -1182,8 +1190,29 @@ class SessionScreen(Screen):
     def _append(self, widget: Widget, *, scroll: bool = True) -> None:
         transcript = self._transcript()
         transcript.mount(widget)
+        self._prune_transcript()
         if scroll:
             transcript.scroll_end(animate=False)
+
+    def _prune_transcript(self) -> None:
+        """Drop the oldest transcript widgets once the cap is exceeded."""
+        transcript = self._transcript()
+        children = list(transcript.children)
+        overflow = transcript_overflow(len(children), self.MAX_TRANSCRIPT_WIDGETS)
+        if overflow <= 0:
+            return
+        for child in children[:overflow]:
+            if isinstance(child, ToolCard):
+                self._forget_tool_card(child)
+            child.remove()
+
+    def _forget_tool_card(self, card: ToolCard) -> None:
+        """Drop a pruned tool card from the id→cards index (avoid stale refs)."""
+        for name, cards in list(self._tool_cards.items()):
+            if card in cards:
+                cards.remove(card)
+            if not cards:
+                self._tool_cards.pop(name, None)
 
     def _mount_system_line(self, text: str, *, style: str = theme.MUTED) -> None:
         # Boot/system lines must not scroll the boot splash off-screen; real

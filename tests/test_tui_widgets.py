@@ -24,6 +24,7 @@ from tokoboros.tui.widgets import (
     SlashPalette,
     search_transcript,
     submit_starter,
+    transcript_overflow,
 )
 
 _CMDS = (
@@ -186,6 +187,22 @@ def test_search_transcript_respects_limit() -> None:
     entries = [("you", "match here")] * 50
     hits = search_transcript(entries, "match", limit=5)
     assert len(hits) == 5
+
+
+# --- transcript cap ------------------------------------------------------
+def test_transcript_overflow_under_cap_returns_zero() -> None:
+    assert transcript_overflow(10, 400) == 0
+    assert transcript_overflow(400, 400) == 0
+
+
+def test_transcript_overflow_over_cap_returns_excess() -> None:
+    assert transcript_overflow(405, 400) == 5
+    assert transcript_overflow(1000, 400) == 600
+
+
+def test_transcript_overflow_disabled_for_nonpositive_cap() -> None:
+    assert transcript_overflow(10_000, 0) == 0
+    assert transcript_overflow(10_000, -1) == 0
 
 
 # --- theme ---------------------------------------------------------------
