@@ -201,6 +201,7 @@ uv run tokoboros skill import ./my-skill.md
 uv run tokoboros skill list
 uv run tokoboros skill search "deploy to prod" # Pass-1 routing: which skills match a query by keyword
 uv run tokoboros skill show deploy_to_prod     # Pass-2 view: metadata + dense + heavy-block token costs
+uv run tokoboros skill changelog deploy_to_prod # version + ::changelog entries (delta-load: what changed)
 uv run tokoboros skill export deploy_to_prod -o deploy.og
 uv run tokoboros skill lint ./my-skills/      # structure + ::dense token-budget check (--strict for CI)
 uv run tokoboros skill report                 # which skills earn their keep vs. dead weight
