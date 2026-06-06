@@ -4,9 +4,25 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from tokoboros.core.runtime_events import RuntimeEvent
+
+
+def _looks_like_error(text: str) -> bool:
+    """Heuristic: does a tool-result preview describe a failure?"""
+    lowered = text.lower()
+    return any(token in lowered for token in ("failed", "error:", "traceback", "exception"))
+
+
+def _duration_seconds(start: str, end: str) -> float:
+    """Best-effort seconds between two ISO timestamps; 0.0 if unparseable."""
+    try:
+        delta = datetime.fromisoformat(end) - datetime.fromisoformat(start)
+        return max(0.0, delta.total_seconds())
+    except (ValueError, TypeError):
+        return 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +105,15 @@ class SubAgentReportSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolCallSnapshot:
+    name: str
+    status: str  # running | completed | failed
+    detail: str  # result preview (or "")
+    duration_seconds: float
+    timestamp: str  # when the call started
+
+
+@dataclass(frozen=True, slots=True)
 class SkillSnapshot:
     name: str
     role: str
@@ -115,6 +140,10 @@ class RuntimeReadModelStore:
         self._permission_audit: list[PermissionAuditSnapshot] = []
         self._subagent_reports: list[SubAgentReportSnapshot] = []
         self._events: list[RuntimeEventSnapshot] = []
+        self._tool_calls: list[ToolCallSnapshot] = []
+        # name -> FIFO of indices into _tool_calls still in the "running" state,
+        # so a completed event resolves the matching earlier start.
+        self._pending_tool_calls: dict[str, list[int]] = {}
 
     def append_event(self, event: RuntimeEvent) -> None:
         with self._lock:
@@ -126,6 +155,54 @@ class RuntimeReadModelStore:
 
             if event.name == "boot.complete":
                 self._boot_ready = True
+
+            if event.name == "tool.call.started":
+                name = str(event.payload.get("name", "tool"))
+                self._tool_calls.append(
+                    ToolCallSnapshot(
+                        name=name,
+                        status="running",
+                        detail="",
+                        duration_seconds=0.0,
+                        timestamp=event.timestamp,
+                    )
+                )
+                self._pending_tool_calls.setdefault(name, []).append(len(self._tool_calls) - 1)
+
+            if event.name == "tool.call.completed":
+                name = str(event.payload.get("name", "tool"))
+                preview = str(event.payload.get("result_preview", ""))
+                pending = self._pending_tool_calls.get(name)
+                if pending:
+                    idx = pending.pop(0)
+                    started = self._tool_calls[idx]
+                    self._tool_calls[idx] = ToolCallSnapshot(
+                        name=name,
+                        status="failed" if _looks_like_error(preview) else "completed",
+                        detail=preview,
+                        duration_seconds=_duration_seconds(started.timestamp, event.timestamp),
+                        timestamp=started.timestamp,
+                    )
+                else:
+                    # Completed with no recorded start (e.g. truncated history).
+                    self._tool_calls.append(
+                        ToolCallSnapshot(
+                            name=name,
+                            status="failed" if _looks_like_error(preview) else "completed",
+                            detail=preview,
+                            duration_seconds=0.0,
+                            timestamp=event.timestamp,
+                        )
+                    )
+
+            if len(self._tool_calls) > 500:
+                drop = len(self._tool_calls) - 500
+                self._tool_calls = self._tool_calls[-500:]
+                # Re-base the pending indices after trimming the front.
+                self._pending_tool_calls = {
+                    key: [i - drop for i in idxs if i - drop >= 0]
+                    for key, idxs in self._pending_tool_calls.items()
+                }
 
             if event.name == "job.started":
                 job_id = str(event.payload.get("job_id", "job:unknown"))
@@ -236,3 +313,8 @@ class RuntimeReadModelStore:
     def runtime_events(self, limit: int = 100) -> tuple[RuntimeEventSnapshot, ...]:
         with self._lock:
             return tuple(self._events[-limit:])
+
+    def tool_calls(self, limit: int = 50) -> tuple[ToolCallSnapshot, ...]:
+        """Most-recent tool calls (oldest→newest), paired start→completion."""
+        with self._lock:
+            return tuple(self._tool_calls[-limit:])
