@@ -19,12 +19,39 @@ import httpx
 
 from tokoboros.core.credential_vault import CredentialVault
 from tokoboros.core.loop import ToolRegistry
+from tokoboros.core.secret_scanner import redact_secrets
 from tokoboros.core.untrusted_content import guard_untrusted
 from tokoboros.og_engine.parser import OGNode
 
 # Safety cap so a verbose REST response can't flood the agent's context. Tools
 # that need a tight result should declare `fields=` in their ::api block instead.
 _MAX_REST_RESPONSE_CHARS = 6_000
+
+
+def _outbound_secrets_allowed() -> bool:
+    """True if the user opted out of outbound secret redaction (power-user escape hatch)."""
+    return os.environ.get("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", "").lower() in {"1", "true", "yes"}
+
+
+def _redact_mapping_secrets(mapping: dict | None) -> tuple[dict | None, int]:
+    """Redact provider-secret-pattern values (sk-ant-, AKIA, ghp_, …) from a params/json dict.
+
+    REST auth is injected via vault-interpolated *headers*, never via these request
+    kwargs, so this only strips a credential the agent accidentally placed in a query
+    param or body — it never breaks a legitimate call. Returns ``(mapping, count)``.
+    """
+    if mapping is None or _outbound_secrets_allowed():
+        return mapping, 0
+    total = 0
+    redacted: dict = {}
+    for key, value in mapping.items():
+        if isinstance(value, str):
+            safe, count = redact_secrets(value)
+            redacted[key] = safe
+            total += count
+        else:
+            redacted[key] = value
+    return redacted, total
 
 
 def _truncate_rest_response(text: str, limit: int = _MAX_REST_RESPONSE_CHARS) -> str:
@@ -260,6 +287,13 @@ class UniversalRestAdapter:
             # Clean up empty payloads
             params = params if params else None
             json_payload = json_payload if json_payload else None
+
+            # Scrub accidental provider secrets from the outbound request so a key the
+            # agent happened to read can't be exfiltrated to a third-party API. Vault
+            # auth uses headers (above), not these kwargs, so this never strips a real
+            # credential. Opt out with TOKOBOROS_ALLOW_OUTBOUND_SECRETS=true.
+            params, _redacted_params = _redact_mapping_secrets(params)
+            json_payload, _redacted_body = _redact_mapping_secrets(json_payload)
 
             # 4. Execute HTTP Request
             validation_error = self._validate_outbound_url(url, includes_secret=secret_interpolated)
