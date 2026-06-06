@@ -1682,6 +1682,36 @@ def skill_export(
         console.print(text)
 
 
+@skill_app.command("deps")
+def skill_deps(
+    name: str = typer.Argument(..., help="Exact skill node name (see `skill list`)."),
+    as_json: bool = typer.Option(False, "--json", help="Emit the dependency report as JSON."),
+):
+    """Resolve a skill's transitive `requires` dependency chain (load these first)."""
+    from tokoboros.gateway.workspace import get_skills_dir
+    from tokoboros.og_engine.engine import SkillEngine
+
+    engine = SkillEngine()
+    engine.load_directory(get_skills_dir())
+    result = engine.get_dependency_chain(name)
+    if result is None:
+        console.print(f"[red]Skill not found:[/red] {name} [dim](see `tokoboros skill list`)[/dim]")
+        raise typer.Exit(1)
+
+    if as_json:
+        # Plain print: Rich's console soft-wraps long JSON to terminal width.
+        print(json.dumps(result, indent=2))
+        return
+
+    console.print(f"[bold]{name}[/bold] dependencies:")
+    console.print(f"  direct:     {', '.join(result['direct']) or '(none)'}")
+    console.print(f"  full chain: {', '.join(result['chain']) or '(none)'}")
+    if result["missing"]:
+        console.print(f"  [yellow]missing (not loaded):[/yellow] {', '.join(result['missing'])}")
+    if result["has_cycle"]:
+        console.print("  [red]⚠ dependency cycle detected[/red]")
+
+
 @skill_app.command("report")
 def skill_report(
     stale_days: int = typer.Option(
