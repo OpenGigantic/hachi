@@ -3,16 +3,101 @@ from __future__ import annotations
 import asyncio
 import json
 
+from rich.console import Console
 from textual.app import App
 
 from tokoboros.core.permissions import PermissionDecision, PermissionRequest
+from tokoboros.core.runtime_read_models import (
+    JobSnapshot,
+    MCPInventorySnapshot,
+    PermissionAuditSnapshot,
+    RuntimeEventSnapshot,
+    SessionStateSnapshot,
+    SubAgentReportSnapshot,
+)
 from tokoboros.tui.app import (
     APP_CSS,
     AuthoringScreen,
+    OpsScreen,
     TokoborosTextualApp,
     _sanitize_agent_markdown,
     _sanitize_legacy_rich_markup,
 )
+
+
+class _FakeOpsAgent:
+    """Minimal AgentSession stand-in exercising every accessor OpsScreen uses."""
+
+    def snapshot_active_jobs(self):
+        return (JobSnapshot(job_id="j1", kind="subagent", label="delegate", status="running"),)
+
+    def snapshot_failed_jobs(self, limit: int = 10):
+        return ()
+
+    def snapshot_mcp_inventory(self):
+        return MCPInventorySnapshot(server_count=0, total_tool_count=0, servers=())
+
+    def snapshot_runtime_events(self, limit: int = 10):
+        return (
+            RuntimeEventSnapshot(
+                name="tool.call.started", payload={"name": "read_file"}, timestamp="t"
+            ),
+        )
+
+    def snapshot_usage(self):
+        return {"call_count": 2, "total_tokens": 6210, "estimated_cost_usd": 0.012}
+
+    def query_subagent_reports(self, top_k: int = 8):
+        return (
+            SubAgentReportSnapshot(
+                role="coder",
+                status="success",
+                duration_seconds=12.5,
+                iterations=4,
+                summary="built API",
+            ),
+        )
+
+    def snapshot_permission_audit(self, limit: int = 10):
+        return (
+            PermissionAuditSnapshot(
+                operation="execute",
+                tool="run_terminal_command",
+                target="ls",
+                decision="allow",
+                reason="",
+            ),
+        )
+
+    def snapshot_session_state(self):
+        return SessionStateSnapshot(
+            session_id="s",
+            active_skill=None,
+            last_user_query="",
+            model_name="claude-haiku-4-5",
+            boot_ready=True,
+            pending_job_count=0,
+        )
+
+
+def test_ops_screen_builds_full_dashboard() -> None:
+    # Call _build_snapshot directly (self is unused for data assembly) so we don't
+    # need a mounted Textual app; verifies every accessor signature + panel renders.
+    renderable = OpsScreen._build_snapshot(None, _FakeOpsAgent())
+    console = Console(width=120, record=True, force_terminal=False)
+    console.print(renderable)
+    out = console.export_text()
+    for needle in (
+        "Usage",
+        "claude-haiku-4-5",
+        "Sub-agents",
+        "coder",
+        "Permission Audit",
+        "allow",
+        "Active Jobs",
+        "MCP",
+    ):
+        assert needle in out, needle
 
 
 class _DummyLoop:
