@@ -19,6 +19,7 @@ import httpx
 
 from tokoboros.core.credential_vault import CredentialVault
 from tokoboros.core.loop import ToolRegistry
+from tokoboros.core.untrusted_content import guard_untrusted
 from tokoboros.og_engine.parser import OGNode
 
 # Safety cap so a verbose REST response can't flood the agent's context. Tools
@@ -279,7 +280,9 @@ class UniversalRestAdapter:
                     try:
                         data = response.json()
                     except json.JSONDecodeError:
-                        return _truncate_rest_response(response.text)
+                        text = _truncate_rest_response(response.text)
+                        guarded, _flagged = guard_untrusted(text, source=url)
+                        return guarded
 
                     # Optional .og field projection: an ::api block may declare
                     # `fields=a, b` to return only those top-level keys, keeping
@@ -292,7 +295,11 @@ class UniversalRestAdapter:
                         if projected:
                             data = projected
 
-                    return _truncate_rest_response(json.dumps(data, indent=2))
+                    result = _truncate_rest_response(json.dumps(data, indent=2))
+                    # Spotlight third-party API responses: if the payload carries a
+                    # prompt-injection, wrap it so the model treats it as data only.
+                    guarded, _flagged = guard_untrusted(result, source=url)
+                    return guarded
 
             except httpx.HTTPStatusError as exc:
                 return f"HTTP Error {exc.response.status_code}: {exc.response.text}"
