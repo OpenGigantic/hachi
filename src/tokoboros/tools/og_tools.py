@@ -27,6 +27,7 @@ future sessions. Calling save_skill again for the same skill refines it (self-im
 
 import json
 
+from tokoboros.core.assertion_eval import evaluate_assertions
 from tokoboros.core.loop import ToolRegistry
 from tokoboros.og_engine.engine import SkillEngine
 
@@ -76,6 +77,35 @@ def _make_load_skill(engine: SkillEngine):
         return context
 
     return load_skill
+
+
+def _make_check_skill_assertions(engine: SkillEngine):
+    """Factory: creates the check_skill_assertions tool closure bound to the engine."""
+
+    def check_skill_assertions(name: str, params: dict | None = None) -> str:
+        node = engine.get_node(name)
+        if node is None:
+            return f"Skill '{name}' not found. Load it with load_skill first."
+        params = params or {}
+        results = evaluate_assertions(node.assertions, params)
+        payload = {
+            "skill": name,
+            "ok": all(r.status not in ("fail", "unknown") for r in results),
+            "results": [
+                {
+                    "assertion": r.assertion,
+                    "status": r.status,
+                    "message": r.message,
+                    "detail": r.detail,
+                }
+                for r in results
+            ],
+            "failed": [r.message or r.assertion for r in results if r.status == "fail"],
+            "needs_values": [r.detail for r in results if r.status == "unknown"],
+        }
+        return json.dumps(payload, indent=2)
+
+    return check_skill_assertions
 
 
 def _make_skill_changelog(engine: SkillEngine):
@@ -207,6 +237,36 @@ LOAD_SKILL_SCHEMA = {
                     "Optional subset of blocks to render: any of warning, dense, summary, "
                     "full, steps, code, table, list, example, note, reference, assertions, "
                     "edges — or ['all']. Omit for the execution-critical default set."
+                ),
+            },
+        },
+        "required": ["name"],
+    },
+}
+
+
+CHECK_SKILL_ASSERTIONS_SCHEMA = {
+    "name": "check_skill_assertions",
+    "description": (
+        "Deterministically verify a skill's ::assertion preconditions BEFORE you execute "
+        "it. Pass the skill name and the parameter values you intend to use; this evaluates "
+        'each assertion (e.g. "channel_name must not be empty") and reports pass/fail. '
+        "If `ok` is false, fix the failing inputs (see `failed`) or supply the missing values "
+        "(see `needs_values`) before proceeding. Assertions it can't auto-check are marked "
+        "'manual' for you to verify yourself."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "The exact skill node name whose assertions to check.",
+            },
+            "params": {
+                "type": "object",
+                "description": (
+                    "The parameter values you plan to use, as a key→value map "
+                    '(e.g. {"channel_name": "#ops", "base": "USD", "target": "EUR"}).'
                 ),
             },
         },
@@ -360,5 +420,6 @@ def register_og_tools(registry: ToolRegistry, engine: SkillEngine):
     registry.register(LIST_SKILLS_SCHEMA, _make_list_skills(engine))
     registry.register(PEEK_SKILL_SCHEMA, _make_peek_skill(engine))
     registry.register(LOAD_SKILL_SCHEMA, _make_load_skill(engine))
+    registry.register(CHECK_SKILL_ASSERTIONS_SCHEMA, _make_check_skill_assertions(engine))
     registry.register(SKILL_CHANGELOG_SCHEMA, _make_skill_changelog(engine))
     registry.register(SAVE_SKILL_SCHEMA, _make_save_skill(engine))
