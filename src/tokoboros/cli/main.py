@@ -2176,56 +2176,24 @@ def skill_graph(
 
     engine = SkillEngine()
     engine.load_directory(get_skills_dir())
-
-    names = sorted(node.name for node in engine.get_all_nodes())
-    roles = {node.name: node.role for node in engine.get_all_nodes()}
-    nodes: list[dict] = []
-    edges: list[list[str]] = []
-    depended_on: set[str] = set()
-    missing: set[str] = set()
-    cyclic: list[str] = []
-
-    for name in names:
-        chain = engine.get_dependency_chain(name) or {}
-        direct = list(chain.get("direct", []))
-        nodes.append(
-            {
-                "name": name,
-                "role": roles.get(name, ""),
-                "direct": direct,
-                "missing": list(chain.get("missing", [])),
-                "has_cycle": bool(chain.get("has_cycle", False)),
-            }
-        )
-        for dep in direct:
-            edges.append([name, dep])
-            if dep in names:
-                depended_on.add(dep)
-            else:
-                missing.add(dep)
-        if chain.get("has_cycle"):
-            cyclic.append(name)
-
-    roots = [name for name in names if name not in depended_on]
-    graph = {
-        "skill_count": len(names),
-        "edge_count": len(edges),
-        "edges": edges,
-        "roots": roots,
-        "missing": sorted(missing),
-        "cyclic": cyclic,
-        "nodes": nodes,
-    }
+    graph = engine.get_skill_graph()
+    nodes = graph["nodes"]
+    roots = graph["roots"]
+    missing = graph["missing"]
+    cyclic = graph["cyclic"]
 
     if as_json:
         # Plain print: Rich's console soft-wraps long JSON to terminal width.
         print(json.dumps(graph, indent=2))
         return
 
-    if not names:
+    if not nodes:
         console.print("[dim]No skills loaded.[/dim]")
         return
-    console.print(f"[bold]Skill dependency graph[/bold]  ({len(names)} skills, {len(edges)} edges)")
+    console.print(
+        f"[bold]Skill dependency graph[/bold]  "
+        f"({graph['skill_count']} skills, {graph['edge_count']} edges)"
+    )
     for node in nodes:
         arrow = " → " + ", ".join(node["direct"]) if node["direct"] else "  [dim](no deps)[/dim]"
         flag = "  [red]⚠ cycle[/red]" if node["has_cycle"] else ""
@@ -2233,10 +2201,47 @@ def skill_graph(
     if roots:
         console.print(f"\n  [cyan]entry-point roots:[/cyan] {', '.join(roots)}")
     if missing:
-        missing_list = ", ".join(sorted(missing))
-        console.print(f"  [yellow]missing (referenced, not loaded):[/yellow] {missing_list}")
+        console.print(f"  [yellow]missing (referenced, not loaded):[/yellow] {', '.join(missing)}")
     if cyclic:
         console.print(f"  [red]cycles in:[/red] {', '.join(cyclic)}")
+
+
+@skill_app.command("viz")
+def skill_viz(
+    fmt: str = typer.Option("mermaid", "--format", "-f", help="Diagram format: mermaid | dot."),
+    output: str | None = typer.Option(
+        None, "--output", "-o", help="Write to this file instead of stdout."
+    ),
+):
+    """Visualize the skill dependency graph as a diagram.
+
+    `mermaid` renders inline on GitHub/Markdown/Obsidian with no tooling; `dot`
+    is Graphviz source (pipe to `dot -Tsvg -o skills.svg`). Nodes are colored by
+    role; entry-point roots, dependency cycles, and missing deps are highlighted."""
+    from tokoboros.gateway.workspace import get_skills_dir
+    from tokoboros.og_engine.engine import SkillEngine
+    from tokoboros.og_engine.graph_viz import render_graph
+
+    engine = SkillEngine()
+    engine.load_directory(get_skills_dir())
+    graph = engine.get_skill_graph()
+
+    try:
+        diagram = render_graph(graph, fmt)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
+
+    if output is not None:
+        out_path = Path(output)
+        out_path.write_text(diagram, encoding="utf-8")
+        console.print(
+            f"[green]Wrote {fmt} diagram[/green] ({graph['skill_count']} skills, "
+            f"{graph['edge_count']} edges) → [cyan]{out_path}[/cyan]"
+        )
+        return
+    # Plain print so the diagram source is copy-pasteable (no Rich wrapping/markup).
+    print(diagram)
 
 
 @skill_app.command("report")

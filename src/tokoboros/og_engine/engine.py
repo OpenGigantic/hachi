@@ -886,6 +886,59 @@ class SkillEngine:
             "has_cycle": has_cycle,
         }
 
+    def get_skill_graph(self) -> dict[str, Any]:
+        """Build the whole-library dependency graph from typed ``requires`` edges.
+
+        Aggregates every loaded node into an adjacency structure with entry-point
+        roots (nothing requires them), missing dependencies (referenced but not
+        loaded), and any dependency cycles — the data behind ``skill graph`` and
+        the Mermaid/DOT visualizations.
+
+        Returns:
+            ``{skill_count, edge_count, edges, roots, missing, cyclic, nodes}``
+            where ``nodes`` is ``[{name, role, direct, missing, has_cycle}]`` and
+            ``edges`` is ``[[from, to], ...]``.
+        """
+        names = sorted(node.name for node in self.get_all_nodes())
+        roles = {node.name: node.role for node in self.get_all_nodes()}
+        nodes: list[dict[str, Any]] = []
+        edges: list[list[str]] = []
+        depended_on: set[str] = set()
+        missing: set[str] = set()
+        cyclic: list[str] = []
+
+        for name in names:
+            chain = self.get_dependency_chain(name) or {}
+            direct = list(chain.get("direct", []))
+            nodes.append(
+                {
+                    "name": name,
+                    "role": roles.get(name, ""),
+                    "direct": direct,
+                    "missing": list(chain.get("missing", [])),
+                    "has_cycle": bool(chain.get("has_cycle", False)),
+                }
+            )
+            for dep in direct:
+                edges.append([name, dep])
+                if dep in roles:
+                    depended_on.add(dep)
+                else:
+                    missing.add(dep)
+            if chain.get("has_cycle"):
+                cyclic.append(name)
+
+        roots = [name for name in names if name not in depended_on]
+        return {
+            "skill_count": len(names),
+            "edge_count": len(edges),
+            "edges": edges,
+            "roots": roots,
+            "missing": sorted(missing),
+            "cyclic": cyclic,
+            "nodes": nodes,
+        }
+
     def get_nodes_by_role(self, role: str) -> list[OGNode]:
         """
         Retrieve all nodes matching a specific role.
