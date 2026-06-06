@@ -1896,6 +1896,38 @@ def skill_show(
         console.print("  blocks:    [dim](dense-only; no heavy content)[/dim]")
 
 
+@skill_app.command("search")
+def skill_search(
+    query: str = typer.Argument(..., help="Keywords / natural-language query to route on."),
+    as_json: bool = typer.Option(False, "--json", help="Emit matches as JSON."),
+):
+    """Test Pass-1 routing: which skills match a query by keyword (the agent's
+    first step, before peek/load). Shows the .og index doing O(1) routing."""
+    from tokoboros.gateway.workspace import get_skills_dir
+    from tokoboros.og_engine.engine import SkillEngine
+
+    engine = SkillEngine()
+    engine.load_directory(get_skills_dir())
+    # search() returns set-ordered results; sort for deterministic output.
+    matches = sorted(engine.search(query), key=lambda m: m["name"])
+
+    if as_json:
+        # Plain print: Rich's console soft-wraps long JSON to terminal width.
+        print(json.dumps({"query": query, "matches": matches}, indent=2))
+        return
+
+    if not matches:
+        console.print(
+            f"[yellow]No skills matched:[/yellow] {query} [dim](try `tokoboros skill list`)[/dim]"
+        )
+        return
+    console.print(f"[bold]{len(matches)} skill(s)[/bold] matched [cyan]{query}[/cyan]:")
+    for match in matches:
+        console.print(
+            f"  • [bold]{match['name']}[/bold]  [dim]({match['role']})[/dim]  {match['keywords']}"
+        )
+
+
 @skill_app.command("report")
 def skill_report(
     stale_days: int = typer.Option(
