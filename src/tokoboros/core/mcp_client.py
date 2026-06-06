@@ -27,6 +27,7 @@ import time
 from typing import Any
 
 from tokoboros.core.loop import ToolRegistry
+from tokoboros.core.untrusted_content import guard_untrusted
 
 
 class MCPServerConnection:
@@ -435,7 +436,13 @@ class MCPManager:
                 # Create a closure that routes to the correct server using the original tool name
                 def make_handler(srv: MCPServerConnection, original_name: str):
                     def handler(**kwargs) -> str:
-                        return srv.call_tool(original_name, kwargs)
+                        # MCP servers are third parties; spotlight their output if it
+                        # carries a prompt-injection (same guard as web/REST content).
+                        result = srv.call_tool(original_name, kwargs)
+                        guarded, _flagged = guard_untrusted(
+                            result, source=f"MCP tool '{original_name}' (server '{srv.name}')"
+                        )
+                        return guarded
 
                     return handler
 
