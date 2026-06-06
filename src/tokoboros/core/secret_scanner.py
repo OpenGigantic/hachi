@@ -12,6 +12,7 @@ outbound surface (messaging now; REST/browser are natural follow-ups).
 
 from __future__ import annotations
 
+import os
 import re
 
 REDACTION_PLACEHOLDER = "[REDACTED SECRET]"
@@ -59,3 +60,19 @@ def redact_secrets(text: str, placeholder: str = REDACTION_PLACEHOLDER) -> tuple
         redacted, n = pat.subn(placeholder, redacted)
         total += n
     return redacted, total
+
+
+def outbound_redaction_disabled() -> bool:
+    """True if the user opted out of outbound secret redaction (power-user escape hatch).
+
+    Controlled by ``TOKOBOROS_ALLOW_OUTBOUND_SECRETS`` — the single env var honored by
+    every outbound surface (messaging, REST, scheduled-webhook delivery).
+    """
+    return os.environ.get("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", "").lower() in {"1", "true", "yes"}
+
+
+def redact_outbound(text: str) -> tuple[str, int]:
+    """Redact secrets from outbound text unless the user opted out. Returns ``(text, count)``."""
+    if outbound_redaction_disabled():
+        return text, 0
+    return redact_secrets(text)
