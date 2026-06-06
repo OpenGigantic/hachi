@@ -136,6 +136,45 @@ class AgentMessage(Static):
             pass
 
 
+def submit_starter(app: Any, prompt: str) -> None:
+    """Route a clicked starter prompt through the app's normal submit path.
+
+    Extracted (and app/prompt-parameterized) so it can be unit-tested with a fake
+    app without a running Textual event loop. Clears the welcome block first, then
+    submits — mirroring the composer's Enter handler.
+    """
+    screen = getattr(app, "screen", None)
+    if screen is not None:
+        clear = getattr(screen, "clear_welcome", None)
+        if callable(clear):
+            clear()
+        set_state = getattr(screen, "set_toko_state", None)
+        if callable(set_state):
+            try:
+                set_state("thinking")
+            except Exception:
+                pass
+    submit = getattr(app, "submit_prompt", None)
+    if callable(submit):
+        submit(prompt)
+
+
+class StarterPrompt(Static):
+    """A clickable suggested-prompt chip shown on the empty first-run transcript."""
+
+    TOOLTIP = "Click to try this prompt"
+
+    def __init__(self, prompt: str) -> None:
+        self.prompt_text = prompt
+        body = Text()
+        body.append("→ ", style=theme.ACCENT)
+        body.append(prompt, style=theme.FOREGROUND)
+        super().__init__(body, classes="starter-prompt")
+
+    def on_click(self) -> None:
+        submit_starter(self.app, self.prompt_text)
+
+
 class ErrorCard(Static):
     """A runtime/chat error surfaced inline in the transcript."""
 

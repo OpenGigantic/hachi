@@ -237,6 +237,18 @@ def format_integrations(mcp: dict[str, Any]) -> RenderableType:
     return format_mcp(mcp)
 
 
+def format_welcome() -> RenderableType:
+    """The friendly first-run greeting shown above the clickable starter prompts."""
+    title = Text()
+    title.append("👋 ", style=theme.ACCENT)
+    title.append("Welcome to Tokoboros", style=f"bold {theme.FOREGROUND}")
+    subtitle = Text(
+        "Your terminal AI assistant. Type a prompt below, or click a suggestion to start:",
+        style=theme.MUTED,
+    )
+    return Group(title, Text(""), subtitle)
+
+
 def _kv(label: str, value: Any, *, value_style: str = theme.FOREGROUND) -> Text:
     line = Text()
     line.append(f"{label}  ", style=theme.MUTED)

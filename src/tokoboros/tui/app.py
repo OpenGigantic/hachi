@@ -43,6 +43,7 @@ from tokoboros.tui.formatters import (
     format_memory,
     format_ops,
     format_settings,
+    format_welcome,
 )
 from tokoboros.tui.state_store import TUIStateSnapshot, TUIStateStore
 from tokoboros.tui.theme import TOKOBOROS_THEME
@@ -50,6 +51,7 @@ from tokoboros.tui.widgets import (
     AgentMessage,
     ErrorCard,
     SidebarPanel,
+    StarterPrompt,
     TokoGlyph,
     TokoSplash,
     ToolCard,
@@ -57,6 +59,14 @@ from tokoboros.tui.widgets import (
 )
 
 TierName = Literal["lightning", "recommended", "enhanced", "power"]
+
+# One-click suggestions shown on the empty first-run transcript — a discovery
+# prompt, a dev task, and an everyday task to showcase breadth.
+_STARTER_PROMPTS: tuple[str, ...] = (
+    "What can you do?",
+    "Summarize my recent git commits",
+    "Organize my Downloads folder",
+)
 
 _GATEWAY_TOKEN: str = os.environ.get("TOKOBOROS_GATEWAY_API_TOKEN", "")
 _URLOPEN_TIMEOUT_S: int = 10
@@ -219,6 +229,24 @@ Screen {
   height: auto;
   margin: 0 0 1 0;
   color: $text-muted;
+}
+
+.welcome-card {
+  height: auto;
+  margin: 1 0 1 0;
+  padding: 0 1;
+}
+
+.starter-prompt {
+  height: auto;
+  margin: 0 0 1 2;
+  padding: 0 1;
+  border-left: thick $primary;
+  background: $surface;
+}
+
+.starter-prompt:hover {
+  background: $primary 20%;
 }
 
 /* --- Approval modal ---------------------------------------------------- */
@@ -900,6 +928,7 @@ class SessionScreen(Screen):
     def __init__(self) -> None:
         super().__init__()
         self._tool_cards: dict[str, list[ToolCard]] = {}
+        self._welcome_widgets: list[Widget] = []
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="session-root"):
@@ -946,6 +975,26 @@ class SessionScreen(Screen):
         for child in list(transcript.children):
             child.remove()
         self._tool_cards.clear()
+        self._welcome_widgets = []
+
+    def show_welcome(self, starters: tuple[str, ...]) -> None:
+        """Render the first-run greeting + clickable starter-prompt chips."""
+        card = Static(format_welcome(), classes="welcome-card")
+        self._append(card, scroll=False)
+        self._welcome_widgets = [card]
+        for prompt in starters:
+            chip = StarterPrompt(prompt)
+            self._append(chip, scroll=False)
+            self._welcome_widgets.append(chip)
+
+    def clear_welcome(self) -> None:
+        """Remove the welcome card + starter chips (on the first real message)."""
+        for widget in self._welcome_widgets:
+            try:
+                widget.remove()
+            except Exception:
+                pass
+        self._welcome_widgets = []
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "composer":
@@ -957,6 +1006,7 @@ class SessionScreen(Screen):
         app = self.app
         if not isinstance(app, TokoborosTextualApp):
             return
+        self.clear_welcome()
         if prompt.startswith("/"):
             app.handle_slash_command(prompt)
             return
@@ -1853,20 +1903,23 @@ class TokoborosTextualApp(App[None]):
         self._activity = ("Idle", "idle")
         screen = self._current_screen()
         if isinstance(screen, SessionScreen):
-            self._render_resumed_transcript(agent, screen)
+            resumed = self._render_resumed_transcript(agent, screen)
+            if not resumed:
+                # Fresh session: invite the first action instead of a bare splash.
+                screen.show_welcome(_STARTER_PROMPTS)
             screen.ingest_runtime_event("boot.complete", {})
 
         if screen is not None:
             self._refresh_snapshot_mode(screen)
         self.refresh_sidebar()
 
-    def _render_resumed_transcript(self, agent: AgentSession | None, screen: SessionScreen) -> None:
-        """Replay a resumed session's prior turns into the transcript view."""
+    def _render_resumed_transcript(self, agent: AgentSession | None, screen: SessionScreen) -> bool:
+        """Replay a resumed session's prior turns. Returns True if anything was restored."""
         if agent is None:
-            return
+            return False
         transcript = getattr(agent, "resumed_transcript", [])
         if not transcript:
-            return
+            return False
         screen._mount_system_line(
             f"Resumed previous session — {len(transcript)} messages restored.",
             style=theme.SUCCESS,
@@ -1876,6 +1929,7 @@ class TokoborosTextualApp(App[None]):
                 screen.append_user_prompt(content)
             else:
                 screen.render_assistant_text(content)
+        return True
 
     def submit_prompt(self, prompt: str, display_text: str | None = None) -> None:
         if self._boot_error:
