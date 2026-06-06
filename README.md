@@ -185,6 +185,11 @@ uv run tokoboros models                    # list the provider's models (live), 
 uv run tokoboros secrets --list
 uv run tokoboros secrets --check
 
+# Inspect long-term memory (semantic search + collection stats)
+uv run tokoboros memory search "what framework does this project use"
+uv run tokoboros memory search "preferences" --profile   # user_profile collection
+uv run tokoboros memory stats
+
 # Environment and security diagnostics
 uv run tokoboros doctor
 uv run tokoboros security-audit --json --fail-on-high
