@@ -350,6 +350,16 @@ class OpenAICompatibleClient(BaseLLMClient):
         return LLMResponse(content=str(content).strip(), tool_calls=tool_calls, usage=usage)
 
 
+# Named OpenAI-compatible providers → their default base URL. All speak the same
+# /chat/completions protocol, so one client serves them; a config `base_url` overrides.
+_OPENAI_COMPAT_PRESETS: dict[str, str] = {
+    "openrouter": "https://openrouter.ai/api/v1",
+    "groq": "https://api.groq.com/openai/v1",
+    "together": "https://api.together.xyz/v1",
+    "deepseek": "https://api.deepseek.com/v1",
+}
+
+
 def create_llm_client(
     provider_config: dict[str, Any], secret_store: SecretStore | None = None, max_tokens: int = 4096
 ) -> BaseLLMClient:
@@ -377,9 +387,10 @@ def create_llm_client(
             base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens
         )
 
-    if kind == "openrouter":
-        # OpenRouter is OpenAI-compatible and unlocks 200+ models behind one key.
-        resolved_base = str(base_url or "https://openrouter.ai/api/v1")
+    if kind in _OPENAI_COMPAT_PRESETS:
+        # Named OpenAI-compatible providers (OpenRouter, Groq, Together, DeepSeek):
+        # same wire protocol, different base URL. A config `base_url` still overrides.
+        resolved_base = str(base_url or _OPENAI_COMPAT_PRESETS[kind])
         return OpenAICompatibleClient(
             base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens
         )
