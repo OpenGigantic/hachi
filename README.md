@@ -69,12 +69,14 @@ uv run tokoboros run          # start chatting
 - 🔌 **Native Integrations** — Google Workspace (Gmail, Drive, Calendar), Notion, Slack — all via OAuth
 - 🌐 **Universal REST Adapter** — Define any REST API in a `.og` file, and Tokoboros auto-generates the tool
 - 🕸️ **Browser Automation** — A real headless browser (`browse_web`, `browser_act`, `browser_screenshot`) for live web research and multi-step flows; SSRF-guarded and permission-gated (optional: `pip install 'tokoboros[browser]'` + `playwright install chromium`)
-- 👁️ **Vision Input** — `view_image` lets the agent look at a local screenshot/photo/diagram/chart (PNG/JPEG/GIF/WebP) and reason about it; permission-gated, no extra deps (Anthropic provider)
+- 👁️ **Vision Input** — `view_image` lets the agent look at a screenshot/photo/diagram/chart from a **local file or an http(s) URL** (PNG/JPEG/GIF/WebP) and reason about it; permission-gated and SSRF-guarded (Anthropic provider)
+- 🧯 **Built-in Guardrails** — Outbound Slack/Discord messages and REST requests are scrubbed of leaked credentials (API keys, tokens, private keys redacted before they leave the machine); untrusted **web, REST, and MCP** content is spotlighted so injected instructions are treated as data, not commands
 - 🧩 **MCP Support** — Model Context Protocol servers for filesystem and external tools
 - 📊 **Skill Lifecycle** — Usage tracking, stale detection, and analytics for all `.og` skills
 - 🧬 **Long-Term Memory** — Semantic search vault with async prefetch and frozen session snapshots
 - 🛡️ **Security Audit Command** — Built-in `security-audit` CLI checks for risky local runtime posture
 - ⚡ **3-Pass Selective Loading** — Agents read a skill's index → dense summary → full content on demand, loading only what a task needs instead of dumping whole skill files (reproducible benchmark: `tests/test_og_benchmark.py`, CI-enforced ≥80% savings)
+- 🕸️ **Typed Skill Traversal** — Resolve a skill's prerequisite chain via its `requires` edges (`skill_dependencies`), verify its `::assertion` preconditions before acting (`check_skill_assertions`), and delta-check whether it changed since last load (`skill_changelog`) — all without loading heavy content
 - ✍️ **Autonomous Skill Authoring** — The agent writes & refines its own `.og` skills (`save_skill`); import the wider ecosystem with `tokoboros skill import` (SKILL.md → `.og`)
 - ⏰ **Proactive Scheduling** — `tokoboros schedule add` runs tasks on cron/interval/once with delivery to chat or a webhook
 - 💬 **Multi-Channel + OpenAI-Compatible API** — Reach the agent from Telegram or any platform via a generic inbound webhook, or point Open WebUI / LibreChat at the `/v1/chat/completions` endpoint

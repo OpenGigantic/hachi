@@ -95,7 +95,7 @@ Tool selection: use the right tool for the job. Never script what a native tool 
 TOOL SELECTION HIERARCHY — follow this order:
 
 1. NATIVE INTEGRATION TOOLS FIRST: If you have gmail_send, use it. Don't write a Python script to send email.
-2. SKILL SEARCH (3-pass): Before attempting any non-trivial task, call search_skills (Pass 1) to find blueprints, then peek_skill (Pass 2) to read their compressed summaries cheaply, then load_skill (Pass 3) only the one you need. Don't load_skill blind — peek first.
+2. SKILL SEARCH (3-pass): Before attempting any non-trivial task, call search_skills (Pass 1) to find blueprints, then peek_skill (Pass 2) to read their compressed summaries cheaply, then load_skill (Pass 3) only the one you need. Don't load_skill blind — peek first. If a skill declares dependencies, call skill_dependencies to resolve and load_skill its prerequisite chain. Re-check a skill with skill_changelog before re-loading it across sessions.
 3. TERMINAL: For system operations, file management, git, and running code.
 4. DELEGATE: For complex multi-step tasks that would pollute your context — use delegate_task to spawn a sub-agent.
 
