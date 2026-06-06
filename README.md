@@ -206,6 +206,8 @@ uv run tokoboros skill show deploy_to_prod     # Pass-2 view: metadata + dense +
 uv run tokoboros skill changelog deploy_to_prod # version + ::changelog entries (delta-load: what changed)
 uv run tokoboros skill assert deploy_to_prod -p env=prod  # check ::assertion preconditions (CI gate)
 uv run tokoboros skill graph                   # whole-library dependency graph (roots, missing, cycles)
+uv run tokoboros skill viz -f mermaid          # render the graph as Mermaid (paste into Markdown/GitHub)
+uv run tokoboros skill viz -f dot -o skills.dot  # Graphviz source → `dot -Tsvg skills.dot -o skills.svg`
 uv run tokoboros skill export deploy_to_prod -o deploy.og
 uv run tokoboros skill lint ./my-skills/      # structure + ::dense token-budget check (--strict for CI)
 uv run tokoboros skill report                 # which skills earn their keep vs. dead weight
@@ -217,6 +219,26 @@ uv run tokoboros schedule run-due
 
 # Talk to the agent from Telegram (needs TELEGRAM_BOT_TOKEN)
 uv run tokoboros channel telegram
+```
+
+#### Visualize the ObjectGraph
+
+`.og` is an *object graph*, so you can see it. `skill viz` renders the typed
+`requires` graph across your skills — colored by role, with entry-point **roots**
+(blue), dependency **cycles** (red), and **missing** deps (dashed) highlighted.
+`mermaid` renders inline on GitHub/Markdown/Obsidian with no tooling; `dot`
+feeds Graphviz. For example, `tokoboros skill viz` produces:
+
+```mermaid
+graph TD
+    deploy_to_prod["deploy_to_prod"]:::root
+    run_tests["run_tests"]:::role_skill
+    secret_rotation["secret_rotation"]:::root
+    deploy_to_prod --> run_tests
+    classDef root fill:#1f6feb,stroke:#1f6feb,color:#ffffff;
+    classDef cycle fill:#3d1d1d,stroke:#f85149,stroke-width:3px,color:#f85149;
+    classDef missing fill:#2d2d2d,stroke:#f85149,color:#f85149,stroke-dasharray:5 3;
+    classDef role_skill fill:#238636,stroke:#8b949e,color:#ffffff;
 ```
 
 ### Gateway and Web Frontend
