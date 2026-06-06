@@ -14,7 +14,7 @@ from rich.console import Console
 from tokoboros.tui import theme
 from tokoboros.tui.app import _event_input_summary, _looks_like_error
 from tokoboros.tui.formatters import format_session_info, format_settings, format_welcome
-from tokoboros.tui.widgets import SlashPalette, submit_starter
+from tokoboros.tui.widgets import InputHistory, SlashPalette, submit_starter
 
 _CMDS = (
     ("/help", "Show help"),
@@ -101,6 +101,43 @@ def test_slash_palette_render_lists_matches() -> None:
     palette.update("/m")
     out = _render(palette.render())
     assert "/memory" in out and "/model" in out
+
+
+def test_input_history_dedupes_and_skips_blank() -> None:
+    h = InputHistory()
+    h.add("a")
+    h.add("a")  # consecutive duplicate ignored
+    h.add("  ")  # blank ignored
+    h.add("b")
+    assert h.prev("") == "b"
+    assert h.prev("") == "a"
+    assert h.prev("") == "a"  # clamped at the oldest entry
+
+
+def test_input_history_prev_next_cycle_with_draft() -> None:
+    h = InputHistory()
+    h.add("one")
+    h.add("two")
+    assert h.prev("draft") == "two"  # stashes the in-progress draft
+    assert h.prev("draft") == "one"
+    assert h.next() == "two"
+    assert h.next() == "draft"  # past the newest → restored draft
+    assert h.next() is None  # already at the draft
+
+
+def test_input_history_empty() -> None:
+    h = InputHistory()
+    assert h.prev("x") is None
+    assert h.next("x") is None
+
+
+def test_input_history_respects_cap() -> None:
+    h = InputHistory(cap=2)
+    for item in ("1", "2", "3"):
+        h.add(item)
+    assert h.prev("") == "3"
+    assert h.prev("") == "2"
+    assert h.prev("") == "2"  # '1' was dropped by the cap
 
 
 # --- theme ---------------------------------------------------------------

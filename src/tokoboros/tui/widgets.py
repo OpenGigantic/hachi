@@ -88,6 +88,54 @@ class SlashMenu(Static):
             self.update(palette.render())
 
 
+class InputHistory:
+    """Pure ↑/↓ recall of previously-submitted prompts (no Textual deps).
+
+    A cursor walks from the live draft (bottom) up through prior entries. ``prev``
+    stashes the in-progress draft; ``next`` past the newest restores it.
+    """
+
+    def __init__(self, cap: int = 100) -> None:
+        self._items: list[str] = []
+        self._cap = cap
+        self._cursor: int | None = None  # None = at the live draft (below the newest)
+        self._draft = ""
+
+    def add(self, prompt: str) -> None:
+        """Record a submitted prompt (skip blanks + consecutive duplicates)."""
+        cleaned = (prompt or "").strip()
+        if cleaned and not (self._items and self._items[-1] == cleaned):
+            self._items.append(cleaned)
+            if len(self._items) > self._cap:
+                self._items = self._items[-self._cap :]
+        self.reset()
+
+    def reset(self) -> None:
+        self._cursor = None
+        self._draft = ""
+
+    def prev(self, current: str) -> str | None:
+        """Step to an older entry. Returns the value to show, or None if empty."""
+        if not self._items:
+            return None
+        if self._cursor is None:
+            self._draft = current  # stash the in-progress draft
+            self._cursor = len(self._items) - 1
+        elif self._cursor > 0:
+            self._cursor -= 1
+        return self._items[self._cursor]
+
+    def next(self, _current: str = "") -> str | None:
+        """Step to a newer entry; past the newest restores the stashed draft."""
+        if self._cursor is None:
+            return None
+        if self._cursor < len(self._items) - 1:
+            self._cursor += 1
+            return self._items[self._cursor]
+        self._cursor = None
+        return self._draft
+
+
 class TokoGlyph(Static):
     """Brand header strip: the Toko eye + wordmark, colored by live state.
 
