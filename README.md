@@ -4,7 +4,7 @@
 
 **The Autonomous Agent Engine Powered by ObjectGraph (.og)**
 
-_A multi-agent orchestration framework that reduces token costs by up to 90% using a structured, queryable, agent-native file format._
+_A multi-agent orchestration framework that cuts skill-loading token costs by loading only the skill nodes a task needs — via a structured, queryable, agent-native file format._
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -20,9 +20,9 @@ Tokoboros is an autonomous AI agent framework built from the ground up to solve 
 
 | Problem               | How Tokoboros Solves It                                                                                                       |
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| **Token Waste**       | ObjectGraph (.og) files enable partial, query-aware loading — agents read ~30 tokens instead of entire 50,000-token documents |
+| **Token Waste**       | ObjectGraph (.og) files enable partial, query-aware loading — an agent reads a skill's compact index (~30 tokens) and pulls only the node it needs, instead of the whole file |
 | **Context Pollution** | A delegation architecture spawns isolated sub-agents, keeping the orchestrator's context window pristine                      |
-| **Cost Explosion**    | Native Anthropic prompt caching + structured file indexing reduces API costs by up to 90%                                     |
+| **Cost Explosion**    | Native Anthropic prompt caching (cached input billed at a fraction of the base rate) plus query-aware skill loading keep per-turn token spend low |
 
 Unlike traditional agent frameworks that dump everything into the system prompt and pray, Tokoboros treats skill files as **queryable databases** and agents as **specialized workers** — each with their own clean context window, strict behavioral constraints, and deterministic validation.
 
@@ -33,13 +33,13 @@ Unlike traditional agent frameworks that dump everything into the system prompt 
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/opensource/tokoboros/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/OpenGigantic/tokoboros/main/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/opensource/tokoboros/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/OpenGigantic/tokoboros/main/install.ps1 | iex
 ```
 
 The installer bootstraps [`uv`](https://docs.astral.sh/uv/) (which manages Python for you), fetches Tokoboros, installs dependencies, and launches the guided setup. No prior Python setup required.
@@ -57,12 +57,12 @@ uv run tokoboros run          # start chatting
 
 ## Features
 
-- 🧠 **ObjectGraph (.og) Engine** — A structured, agent-native file format with 20+ semantic tags for zero-hallucination skill execution
+- 🧠 **ObjectGraph (.og) Engine** — A structured, agent-native file format with 20+ semantic tags for structured, deterministic skill execution
 - 🖥️ **Textual Operator Console** — Rich local UI with transcript, runtime timeline, setup flow, and operations views
 - 🌐 **Typed Gateway API** — FastAPI control plane for sessions, events, runtime read models, config, and setup
 - ⚛️ **Web Frontend Workspace** — TanStack Start frontend wired to gateway endpoints with generated OpenAPI client types
 - 🔀 **Multi-Agent Delegation** — Sub-agents with isolated context windows and searchable delegation reports
-- 💰 **Prompt Caching** — Native Anthropic cache breakpoints on system prompts and tool schemas (up to 90% input token savings)
+- 💰 **Prompt Caching** — Native Anthropic cache breakpoints on system prompts and tool schemas (cached input is billed at a fraction of the base rate)
 - 🔐 **Permission Gating** — Declarative `device-permissions.og` manifest controlling filesystem, terminal, and MCP access
 - 🧱 **Immutable Turn Context** — Per-turn execution state is frozen via `TurnContext` to avoid shared prompt mutation
 - 🗂️ **Job Queue Foundations** — Runtime jobs are tracked with retry/backoff and surfaced in gateway read models
@@ -73,7 +73,7 @@ uv run tokoboros run          # start chatting
 - 📊 **Skill Lifecycle** — Usage tracking, stale detection, and analytics for all `.og` skills
 - 🧬 **Long-Term Memory** — Semantic search vault with async prefetch and frozen session snapshots
 - 🛡️ **Security Audit Command** — Built-in `security-audit` CLI checks for risky local runtime posture
-- ⚡ **3-Pass Selective Loading** — Agents read a skill's index → dense summary → full content on demand (≈97% fewer tokens than dumping skill files)
+- ⚡ **3-Pass Selective Loading** — Agents read a skill's index → dense summary → full content on demand, loading only what a task needs instead of dumping whole skill files (reproducible benchmark: `tests/test_og_benchmark.py`, CI-enforced ≥80% savings)
 - ✍️ **Autonomous Skill Authoring** — The agent writes & refines its own `.og` skills (`save_skill`); import the wider ecosystem with `tokoboros skill import` (SKILL.md → `.og`)
 - ⏰ **Proactive Scheduling** — `tokoboros schedule add` runs tasks on cron/interval/once with delivery to chat or a webhook
 - 💬 **Multi-Channel + OpenAI-Compatible API** — Reach the agent from Telegram or any platform via a generic inbound webhook, or point Open WebUI / LibreChat at the `/v1/chat/completions` endpoint
@@ -301,20 +301,24 @@ tokoboros/
 
 ## The ObjectGraph (.og) Format
 
-ObjectGraph is the core innovation behind Tokoboros. It is a **structured, queryable, agent-native file format** that replaces Markdown for AI agent skill files.
+ObjectGraph is the core innovation behind Tokoboros. It is a **structured, queryable, agent-native file format** for AI agent skill files. It uses a familiar, Markdown-like syntax with added `::` semantic blocks, so skills stay human-readable and are low-effort to author and port.
 
 ### Why Not Markdown?
 
 |                            | Markdown               | ObjectGraph (.og)                  |
 | -------------------------- | ---------------------- | ---------------------------------- |
 | **Reading Model**          | Full file every time   | 3-pass: Index → Dense → Full       |
-| **Token Cost (per query)** | ~1,800 tokens          | ~200 tokens                        |
+| **Token Cost (per query)** | Whole file every time  | Only the node(s) needed¹           |
 | **Query Routing**          | None (read everything) | `::index` routing table            |
 | **Compression**            | None                   | `::dense` keyword blocks           |
 | **Validation**             | Prompt-dependent       | `::assertion` blocks               |
 | **Multi-Agent RBAC**       | None                   | `scope` attribute per node         |
 | **Dependency Tracking**    | None                   | `::edges` with typed relationships |
 | **Delta Loading**          | Full re-read           | `::changelog` diff entries         |
+
+¹ On the bundled skill set, loading just the node a task needs costs substantially fewer skill-loading tokens than dumping every skill into context — reproducible via [`tests/test_og_benchmark.py`](tests/test_og_benchmark.py) (CI-enforced at ≥80% savings).
+
+**How is this different from Anthropic Agent Skills or MCP?** Progressive disclosure on its own isn't unique — Anthropic Agent Skills load skill metadata first and the full `SKILL.md` only when it's relevant, and MCP can filter which tools are exposed. ObjectGraph goes _below the file level_: it routes and loads individual **nodes** within a skill, follows typed `::edges` (`->[:requires]`) to pull only the dependencies a task actually needs, and pairs this with agent-authored, self-improving skills and usage analytics. The bet is that context bloat is a **format** problem, not only a retrieval one.
 
 ### Example `.og` File
 

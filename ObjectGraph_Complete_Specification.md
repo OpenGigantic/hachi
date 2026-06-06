@@ -56,7 +56,7 @@
    - 9.1 [System Prompt Rules](#91-system-prompt-rules-for-agents)
    - 9.2 [Quality Rubric for Dense Blocks](#92-quality-rubric-for-dense-blocks)
 10. [Adoption Strategy](#10-adoption-strategy)
-    - 10.1 [Superset Compatibility](#101-superset-compatibility--zero-switching-cost)
+    - 10.1 [Markdown-Like Syntax](#101-markdown-like-syntax--low-migration-effort)
     - 10.2 [Migration Path](#102-migration-path)
     - 10.3 [Framework Integration](#103-framework-integration-priority)
 11. [Complete .og File Example](#11-complete-og-file-example)
@@ -68,16 +68,16 @@
 
 Large Language Model agents and multi-agent systems increasingly depend on massive skill files, complex knowledge bases, and enterprise configuration documents. While Markdown serves human readers well, it is fundamentally misaligned with autonomous agentic reading. Every time an agent reads a skill file, it reads the **entire file** — regardless of how much of it is relevant. For a massive 100,000-token enterprise runbook, this creates severe context window bloat, catastrophic token costs, and compounding history penalties over multi-turn workflows.
 
-**ObjectGraph (.og)** is a true **Agentic File System**. It is a file format and query protocol designed specifically for autonomous agents to navigate massive scale knowledge. It acts as a strict superset of Markdown, but adds a rich 4-dimensional semantic layer of structured tags that enable O(1) query-routing, dependency traversal (edges), executable programmatic assertions, role-based access control (RBAC), and session memory. 
-Together, these properties prevent context compounding and reduce agent token consumption by **up to 95%** on large-scale documentation, turning static text into an Executable Runbook.
+**ObjectGraph (.og)** is a true **Agentic File System**. It is a file format and query protocol designed specifically for autonomous agents to navigate massive scale knowledge. It uses a familiar, Markdown-like syntax and adds a rich 4-dimensional semantic layer of structured tags that enable O(1) query-routing, dependency traversal (edges), executable programmatic assertions, role-based access control (RBAC), and session memory.
+Together, these properties prevent context compounding and let an agent load only the nodes a task needs instead of the whole file, turning static text into an Executable Runbook. (For a reproducible measurement on the bundled skills, see [`tests/test_og_benchmark.py`](tests/test_og_benchmark.py), CI-enforced at ≥80% savings.)
 
 | Property | Detail |
 |---|---|
 | **Problem** | Agents must absorb massive Markdown files entirely, causing context compounding bloat |
 | **Solution** | ObjectGraph (.og) — structured, queryable, agent-native file format |
 | **Scale Target** | Enterprise documentation, massive mono-repos, complex operational runbooks |
-| **Token Savings** | Up to 95% reduction in token consumption on large files |
-| **Compatibility** | 100% Markdown superset — zero developer migration cost |
+| **Token Savings** | Loads only the nodes a task needs instead of the whole file — reproducible benchmark in [`tests/test_og_benchmark.py`](tests/test_og_benchmark.py) (CI-enforced ≥80%) |
+| **Compatibility** | Markdown-like syntax — skills stay human-readable and are low-effort to author and port |
 | **Capabilities** | Executable assertions, edge traversal, RBAC filtering, staleness signals |
 | **Tooling** | Transpiler (MD→OG) + OG Engine (Native LLM Tool Calling) |
 
@@ -174,7 +174,7 @@ ObjectGraph does not ask agents to learn a new language. It extends Markdown wit
 
 | Principle | Description |
 |---|---|
-| **P1 — Markdown Superset** | Every valid `.md` file is a valid `.og` file. No developer switching cost. |
+| **P1 — Markdown-Like Syntax** | A familiar Markdown-like base with added `::` semantic blocks — skills stay human-readable and low-effort to author and port. |
 | **P2 — Query-First Architecture** | Files answer queries, not pages. The index comes first, content comes on demand. |
 | **P3 — LLM as Traversal Engine** | The agent IS the query engine. No external infrastructure required. |
 | **P4 — Semantic Content Typing** | Every content block declares what kind of content it is — code, steps, table, warning. |
@@ -787,9 +787,11 @@ nodes = engine.search_index(file, query, agent_role="worker")
 
 ## 6. Token Efficiency Analysis
 
-### 6.1 Baseline vs ObjectGraph Comparison
+> **Note:** The figures in this section are an **illustrative cost model**, not a measured benchmark. They model the 3-pass cost formula against a hypothetical file to show where the savings come from. For an actual, reproducible measurement on the bundled skills, see [`tests/test_og_benchmark.py`](tests/test_og_benchmark.py), which compares loading one node against dumping every skill into context and is CI-enforced at ≥80% savings.
 
-The following analysis uses a realistic skill file: 600 lines, 8 major sections, covering installation, configuration, deployment, rollback, and troubleshooting.
+### 6.1 Baseline vs ObjectGraph Comparison (Illustrative Model)
+
+The following analysis uses a realistic skill file: 600 lines, 8 major sections, covering installation, configuration, deployment, rollback, and troubleshooting. The numbers below are an illustrative model, not a measured benchmark.
 
 | Scenario | Markdown Tokens | ObjectGraph Tokens | Savings |
 |---|---|---|---|
@@ -829,9 +831,9 @@ Total = 30 + (2 × 12) + (1 × 90)
 
 ---
 
-### 6.3 Real-World Benchmark Scenario
+### 6.3 Illustrative Cost Scenario
 
-Consider a production deployment pipeline agent running 50 skill file queries per day across 5 skill files. Monthly token cost comparison at Claude Sonnet pricing (~$3/MTok input):
+Consider a production deployment pipeline agent running 50 skill file queries per day across 5 skill files. The monthly token cost comparison below (at Claude Sonnet pricing, ~$3/MTok input) is an illustrative model, not a measured benchmark:
 
 | Metric | Markdown | ObjectGraph | Monthly Saving |
 |---|---|---|---|
@@ -1414,13 +1416,13 @@ When creating or updating knowledge/skill files, use .og format.
 
 ## 10. Adoption Strategy
 
-### 10.1 Superset Compatibility — Zero Switching Cost
+### 10.1 Markdown-Like Syntax — Low Migration Effort
 
-The single most important adoption decision is that ObjectGraph is a **strict Markdown superset**. This means every existing `.md` file is already a valid `.og` file — it just doesn't have the structured tags yet. Agents can read `.og` files even without GM Reader support because the content is still valid Markdown that renders normally.
+A key adoption decision is that ObjectGraph uses a **familiar, Markdown-like syntax**. Most of an existing `.md` skill's prose carries over directly; you add the structured `::` blocks (index, dense, edges, assertions) incrementally to unlock query-aware loading. Because the body stays Markdown-like, `.og` files remain human-readable and render legibly even without a dedicated reader.
 
-> **Every `.md` file is already a valid `.og` file — just without optimization benefits.**
+> **Porting a Markdown skill is incremental — keep the prose, add `::` semantic blocks to unlock the optimization benefits.**
 
-The adoption analogy is TypeScript vs JavaScript. TypeScript didn't ask JavaScript developers to relearn programming — it added types on top. ObjectGraph adds semantic structure on top of Markdown. The switching cost is zero. The benefit is immediate once you add the GM Reader.
+The adoption analogy is TypeScript vs JavaScript. TypeScript didn't ask JavaScript developers to relearn programming — it added types on top. ObjectGraph adds semantic structure on top of a Markdown-like base, so migration effort is low and the benefit grows as you annotate more of the file.
 
 ---
 
@@ -1672,7 +1674,7 @@ ObjectGraph (.og) is not just a new file format — it is a complete paradigm sh
 - A pure-Python GM Reader requiring no LLM, no database, no infrastructure
 - An MCP tool wrapper for immediate integration with any agent framework
 - System prompt rules enabling agents to write valid `.og` files natively
-- A token savings model demonstrating 60–97% reduction across realistic scenarios
+- A token savings model, plus a reproducible benchmark ([`tests/test_og_benchmark.py`](tests/test_og_benchmark.py), CI-enforced ≥80%) measuring load-one-node vs. dump-all-skills on the bundled skills
 
 ---
 
@@ -1706,7 +1708,7 @@ uv add og-reader og-transpiler
 
 # 2. Convert your first skill file
 og transpile my-skill.md
-# Output: my-skill.og (accuracy: 98.2%)
+# Output: my-skill.og (reports a per-file conversion accuracy score)
 
 # 3. Query it
 python -c "
@@ -1722,10 +1724,9 @@ print(results[0].full)    # full content when needed
 # ALWAYS use og_query instead of reading .og files directly.
 # Never read a .og file with read_file — always use og_query.
 
-# 5. Measure your savings
+# 5. Measure your savings on your own files
 og benchmark --before my-skill.md --after my-skill.og --queries queries.txt
-# Token reduction: 94.3%
-# Accuracy: 99.1%
+# Reports token reduction and conversion accuracy for your files
 ```
 
 ---
