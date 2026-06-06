@@ -20,6 +20,7 @@ from urllib import error, request
 
 from rich.console import RenderableType
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult, NoScreen, ScreenStackError
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -56,6 +57,8 @@ from tokoboros.tui.widgets import (
     AgentMessage,
     ErrorCard,
     SidebarPanel,
+    SlashMenu,
+    SlashPalette,
     StarterPrompt,
     TokoGlyph,
     TokoSplash,
@@ -252,6 +255,15 @@ Screen {
 
 .starter-prompt:hover {
   background: $primary 20%;
+}
+
+#slash-menu {
+  height: auto;
+  max-height: 9;
+  margin: 0 1;
+  padding: 0 1;
+  background: $surface;
+  border: round $primary;
 }
 
 /* --- Approval modal ---------------------------------------------------- */
@@ -1040,6 +1052,66 @@ class SetupScreen(Screen):
         self.render_step()
 
 
+class Composer(Input):
+    """The prompt input, augmented with a slash-command autocomplete menu.
+
+    Slash logic lives in the pure ``SlashPalette``; this subclass only routes keys
+    and refreshes the attached ``SlashMenu`` widget.
+    """
+
+    def __init__(self, *args: Any, commands: tuple[tuple[str, str], ...], **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.palette = SlashPalette(commands)
+        self._menu: SlashMenu | None = None
+
+    def attach_menu(self, menu: SlashMenu) -> None:
+        self._menu = menu
+
+    def refresh_menu(self) -> None:
+        self.palette.update(self.value)
+        if self._menu is not None:
+            self._menu.show(self.palette)
+
+    def complete_selected(self) -> bool:
+        """Fill the input with the selected command verb (+ trailing space)."""
+        verb = self.palette.selected_verb()
+        if verb is None:
+            return False
+        self.value = f"{verb} "
+        self.cursor_position = len(self.value)
+        self.refresh_menu()  # the trailing space hides the menu
+        return True
+
+    def hide_menu(self) -> None:
+        self.palette.visible = False
+        if self._menu is not None:
+            self._menu.display = False
+
+    async def on_key(self, event: events.Key) -> None:
+        if not self.palette.visible:
+            return
+        if event.key == "down":
+            self.palette.move(1)
+        elif event.key == "up":
+            self.palette.move(-1)
+        elif event.key == "tab":
+            self.complete_selected()
+            event.stop()
+            event.prevent_default()
+            return
+        elif event.key == "escape":
+            self.hide_menu()
+            event.stop()
+            event.prevent_default()
+            return
+        else:
+            return
+        if self._menu is not None:
+            self._menu.show(self.palette)
+        event.stop()
+        event.prevent_default()
+
+
 class SessionScreen(Screen):
     """Primary chat workspace: scrollable transcript, live sidebar, composer."""
 
@@ -1052,10 +1124,20 @@ class SessionScreen(Screen):
         with Horizontal(id="session-root"):
             yield VerticalScroll(id="transcript")
             yield SidebarPanel(id="sidebar")
-        yield Input(
-            placeholder="Send a prompt  ·  Enter to submit  ·  ? for help",
+        menu = SlashMenu(id="slash-menu")
+        menu.display = False
+        composer = Composer(
+            commands=_SLASH_HELP,
+            placeholder="Send a prompt  ·  / for commands  ·  Enter to submit  ·  ? for help",
             id="composer",
         )
+        composer.attach_menu(menu)
+        yield menu
+        yield composer
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if isinstance(event.input, Composer):
+            event.input.refresh_menu()
 
     def set_toko_state(self, state: str) -> None:
         """Drive the brand header glyph; no-op if it is not mounted yet."""
@@ -1117,6 +1199,14 @@ class SessionScreen(Screen):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "composer":
             return
+        composer = event.input
+        # If the slash menu is open and the user is still mid-verb, Enter completes
+        # the selected command (and stays put) instead of submitting a partial verb.
+        if isinstance(composer, Composer) and composer.palette.visible:
+            verb = composer.palette.selected_verb()
+            if verb is not None and event.value.strip() != verb:
+                composer.complete_selected()
+                return
         prompt = event.value.strip()
         event.input.value = ""
         if not prompt:

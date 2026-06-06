@@ -8,6 +8,7 @@ context (opencode style) rather than a raw event log.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from rich.align import Align
@@ -22,6 +23,69 @@ from textual.widgets import Static
 from tokoboros.tui import theme
 from tokoboros.tui.art import ouroboros
 from tokoboros.tui.formatters import format_session_info
+
+
+class SlashPalette:
+    """Pure state for the slash-command autocomplete menu (no Textual deps).
+
+    Driven by the composer's text: visible only while the text starts with ``/``
+    and has no space yet (i.e. the user is still typing the command verb). Holds the
+    filtered matches and the selected index; the widget just renders ``render()``.
+    """
+
+    def __init__(self, commands: Sequence[tuple[str, str]]) -> None:
+        self._commands = list(commands)  # (verb-with-hint, description)
+        self.visible = False
+        self.matches: list[tuple[str, str]] = []
+        self.index = 0
+
+    def update(self, text: str) -> bool:
+        """Recompute visibility + matches from the input text. Returns ``visible``."""
+        value = text or ""
+        if not value.startswith("/") or " " in value:
+            self.visible = False
+            self.matches = []
+            self.index = 0
+            return False
+        prefix = value.lower()
+        self.matches = [cmd for cmd in self._commands if cmd[0].lower().startswith(prefix)]
+        self.visible = bool(self.matches)
+        if self.index >= len(self.matches):
+            self.index = 0
+        return self.visible
+
+    def move(self, delta: int) -> None:
+        if self.matches:
+            self.index = (self.index + delta) % len(self.matches)
+
+    def selected_verb(self) -> str | None:
+        """The bare verb (arg hints like ``<query>``/``[name]`` stripped) or None."""
+        if not self.matches:
+            return None
+        return self.matches[self.index][0].split()[0]
+
+    def render(self) -> RenderableType:
+        rows: list[RenderableType] = []
+        for i, (verb, desc) in enumerate(self.matches):
+            selected = i == self.index
+            row = Text()
+            row.append("› " if selected else "  ", style=theme.ACCENT if selected else theme.MUTED)
+            row.append(
+                verb,
+                style=f"bold {theme.FOREGROUND}" if selected else theme.FOREGROUND,
+            )
+            row.append(f"  {desc}", style=theme.MUTED)
+            rows.append(row)
+        return Group(*rows) if rows else Text("")
+
+
+class SlashMenu(Static):
+    """Displays the SlashPalette matches just above the composer."""
+
+    def show(self, palette: SlashPalette) -> None:
+        self.display = palette.visible
+        if palette.visible:
+            self.update(palette.render())
 
 
 class TokoGlyph(Static):
