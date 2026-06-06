@@ -6,6 +6,7 @@
 method=GET
 endpoint=https://en.wikipedia.org/api/rest_v1/page/summary/{title}
 schema={"title": "string"}
+fields=title, description, extract, content_urls
 description=Fetches a concise, encyclopedic summary of any topic from Wikipedia. Spaces in the title should be replaced with underscores.
 
 ::dense

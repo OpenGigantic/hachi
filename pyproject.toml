@@ -60,6 +60,9 @@ memory = [
 local-models = [
     "httpx>=0.28.0",
 ]
+browser = [
+    "playwright>=1.48.0",
+]
 
 [project.scripts]
 tokoboros = "tokoboros.cli.main:app"

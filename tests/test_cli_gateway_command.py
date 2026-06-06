@@ -384,6 +384,9 @@ def test_doctor_command_reports_environment(monkeypatch, tmp_path: Path) -> None
     assert "anthropic" in result.stdout
     assert "secret_backend" in result.stdout
     assert "environment_detection" in result.stdout
+    # skills_health is reported; with no skills dir it degrades gracefully.
+    assert "skills_health" in result.stdout
+    assert "no skills directory yet" in result.stdout
 
 
 def test_security_audit_json_reports_findings_and_exit_code(monkeypatch, tmp_path: Path) -> None:

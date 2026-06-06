@@ -1194,14 +1194,28 @@ def doctor():
     )
 
     skill_count = 0
+    skills_health = "unknown"
     try:
-        from tokoboros.og_engine.engine import SkillEngine
+        from tokoboros.og_engine.engine import SkillEngine, lint_og_file
 
         engine = SkillEngine()
         engine.load_directory(paths.skills_dir)
         skill_count = engine.node_count
+
+        if paths.skills_dir.exists():
+            og_files = sorted(paths.skills_dir.glob("**/*.og"))
+            reports = [lint_og_file(f) for f in og_files]
+            errors = sum(r["summary"]["errors"] for r in reports)
+            warnings = sum(r["summary"]["warnings"] for r in reports)
+            skills_health = (
+                f"{len(og_files)} file(s), {errors} error(s), {warnings} warning(s) "
+                "(run `tokoboros skill lint` for detail)"
+            )
+        else:
+            skills_health = "no skills directory yet"
     except Exception:
         skill_count = -1  # could not load skills directory
+        skills_health = "error scanning skills"
 
     checks = {
         "python_version": sys.version.split()[0],
@@ -1214,6 +1228,7 @@ def doctor():
         "provider_api_key": "ok" if provider_ok else provider_msg,
         "permissions_tier": cfg.permissions.tier,
         "skills_loaded": skill_count,
+        "skills_health": skills_health,
         "session_cost_cap_usd": os.environ.get("TOKOBOROS_MAX_SESSION_COST_USD", "unset"),
         "onboarding_needs_setup": service.needs_setup(),
         "secret_backend": store.healthcheck(),

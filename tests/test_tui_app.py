@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
+
+from textual.app import App
 
 from tokoboros.core.permissions import PermissionDecision, PermissionRequest
 from tokoboros.tui.app import (
+    APP_CSS,
+    AuthoringScreen,
     TokoborosTextualApp,
     _sanitize_agent_markdown,
     _sanitize_legacy_rich_markup,
@@ -479,3 +484,25 @@ def test_on_unmount_joins_live_threads_and_cleans_waiters() -> None:
     assert "req-shutdown" not in app._approval_waiters
     assert agent.shutdown_calls == 1
     assert store.shutdown_calls == 1
+
+
+def test_authoring_screen_snapshot_refresh_is_noop_without_body() -> None:
+    """Regression: Textual runs every on_mount in the MRO, so AuthoringScreen
+    (which replaces the snapshot layout) also runs the inherited
+    SnapshotScreen.refresh_from_agent. With no #snapshot-body it must no-op, not
+    raise NoMatches. ^r refresh routes through the same method."""
+
+    class _Host(App[None]):
+        CSS = APP_CSS
+
+    async def _run() -> int:
+        host = _Host()
+        async with host.run_test(size=(100, 30)) as pilot:
+            screen = AuthoringScreen()
+            await host.push_screen(screen)
+            await pilot.pause()
+            # Direct call raised NoMatches before the fix.
+            screen.refresh_from_agent(None)
+            return len(screen.query("#snapshot-body"))
+
+    assert asyncio.run(_run()) == 0

@@ -69,14 +69,20 @@ class ToolRegistry:
     def __init__(self):
         self._tools: dict[str, Callable[..., Any]] = {}
         self._schemas: list[dict[str, Any]] = []
+        # tool_name -> lazy-loading group. Default "core" means a tool is always
+        # sent unless the orchestrator explicitly reclassifies it, so a forgotten
+        # tool fails safe (visible/callable) rather than silently hidden.
+        self._groups: dict[str, str] = {}
 
-    def register(self, schema: dict[str, Any], func: Callable[..., Any]):
+    def register(self, schema: dict[str, Any], func: Callable[..., Any], group: str = "core"):
         """
         Register a new tool.
 
         Args:
             schema: The JSON Schema definition of the tool (Anthropic/OpenAI format).
             func: The actual Python callable that executes the tool.
+            group: Lazy-loading group; "core" tools are always sent to the model,
+                   others are sent only when their group is active for the turn.
         """
         tool_name = schema.get("name")
         if not tool_name:
@@ -84,10 +90,42 @@ class ToolRegistry:
 
         self._tools[tool_name] = func
         self._schemas.append(schema)
+        self._groups[tool_name] = group
 
-    def get_schemas(self) -> list[dict[str, Any]]:
-        """Retrieve all registered tool schemas."""
-        return self._schemas
+    def classify(
+        self, core_names: set[str], group_by_name: dict[str, str], default: str = "core"
+    ) -> None:
+        """Stamp lazy-loading groups by tool name, applied once after registration.
+
+        Names in ``core_names`` become "core"; names in ``group_by_name`` take their
+        mapped group; tools already tagged with an explicit non-core group (e.g. the
+        per-skill REST tools) are left intact; everything else — including tools left
+        at the ``register`` default of "core" — takes ``default``. (The default group
+        is treated as "unclassified" here so the fallback actually applies.)
+        """
+        for name in self._tools:
+            if name in core_names:
+                self._groups[name] = "core"
+            elif name in group_by_name:
+                self._groups[name] = group_by_name[name]
+            elif self._groups.get(name, "core") == "core":
+                self._groups[name] = default
+
+    def available_groups(self) -> set[str]:
+        """Return the set of groups currently in use (for system-prompt listing)."""
+        return set(self._groups.values())
+
+    def get_schemas(self, active_groups: set[str] | None = None) -> list[dict[str, Any]]:
+        """Retrieve tool schemas.
+
+        ``active_groups=None`` returns every schema (backward-compatible default used
+        by sub-agents and existing callers). Otherwise returns "core" plus the active
+        groups, so the model only sees the lazily-loaded tools it has unlocked.
+        """
+        if active_groups is None:
+            return self._schemas
+        allowed = {"core"} | active_groups
+        return [s for s in self._schemas if self._groups.get(s.get("name"), "core") in allowed]
 
     def execute(self, tool_call: ToolCall) -> Any:
         """
@@ -156,6 +194,9 @@ class ExecutionLoop:
         self.max_cost_usd = max_cost_usd
         self.max_tokens = max_tokens
         self._current_turn_context: TurnContext | None = None
+        # Tool groups unlocked for the current turn (besides always-on "core").
+        # Reset each run(); mutated when the model calls use_tools / load_skill.
+        self._active_groups: set[str] = set()
 
     def add_user_message(self, text: str):
         """Add a user query to the active session history via the MemoryManager."""
@@ -179,6 +220,19 @@ class ExecutionLoop:
         if context_header:
             return f"{self.base_system_prompt}\n\n{context_header}"
         return self.base_system_prompt
+
+    def _system_blocks(self) -> tuple[str, str | None]:
+        """Return ``(cacheable prefix, per-turn tail)`` for the system prompt.
+
+        Uses the frozen TurnContext's precomputed cache-aware split when present
+        so the stable brain/.og prefix carries the cache breakpoint and the
+        volatile time/recall tail stays after it. Falls back to the full prompt as
+        a single (cacheable) block when there is no split — same as before.
+        """
+        tc = self._current_turn_context
+        if tc is not None and tc.cacheable_system:
+            return tc.cacheable_system, (tc.dynamic_system or None)
+        return self._build_system_prompt(), None
 
     def _generate_with_retry(self, **kwargs: Any):
         """Call the LLM with bounded exponential-backoff retry on transient errors.
@@ -236,6 +290,9 @@ class ExecutionLoop:
         prev_context = self._current_turn_context
         self._current_turn_context = turn_context
 
+        # Only "core" tools are sent until the model unlocks groups this turn.
+        self._active_groups = set()
+
         # FIX H5: honour max_iterations declared on the TurnContext (overrides default)
         if turn_context is not None:
             tc_max = getattr(turn_context, "max_iterations", None)
@@ -268,15 +325,22 @@ class ExecutionLoop:
 
                 self.on_event("thinking", {"iteration": iterations})
 
-                # Build the dynamic system prompt (includes task ledger)
-                system_prompt = self._build_system_prompt()
+                # Build the system prompt split into a stable cacheable prefix and a
+                # per-turn tail, so prompt caching reads the brain/.og prefix instead
+                # of rewriting it every turn (time/recall live in the dynamic tail).
+                cacheable_system, dynamic_system = self._system_blocks()
+                gen_kwargs: dict[str, Any] = {
+                    "messages": self.memory.history,
+                    "system_prompt": cacheable_system,
+                    "tools": self.registry.get_schemas(self._active_groups),
+                }
+                # Only pass the dynamic block when there is one, so clients without
+                # the cache-split parameter keep working unchanged.
+                if dynamic_system is not None:
+                    gen_kwargs["dynamic_system"] = dynamic_system
 
                 # 1. Ask the LLM to generate the next step (with transient-error retry)
-                response = self._generate_with_retry(
-                    messages=self.memory.history,
-                    system_prompt=system_prompt,
-                    tools=self.registry.get_schemas(),
-                )
+                response = self._generate_with_retry(**gen_kwargs)
 
                 # Account for token usage / estimated cost and surface it live.
                 if self.cost_tracker is not None:
@@ -318,11 +382,22 @@ class ExecutionLoop:
                 for tool_call in response.tool_calls:
                     self.on_event("tool_call", {"name": tool_call.name, "input": tool_call.input})
 
+                    # Lazy tool loading: the model unlocks an optional group for the
+                    # rest of this turn; the handler only confirms — state lives here.
+                    if tool_call.name == "use_tools":
+                        group = tool_call.input.get("group", "")
+                        if group:
+                            self._active_groups.add(group)
+
                     # Detect skill switch via load_skill calls (compaction deferred to next
                     # iteration)
                     if tool_call.name == "load_skill":
                         new_skill = tool_call.input.get("name", "")
                         if new_skill:
+                            # Auto-unlock the skill's own tool group (its REST APIs are
+                            # registered under group == skill name) so the model rarely
+                            # needs an explicit use_tools call after loading a skill.
+                            self._active_groups.add(new_skill)
                             # Phase 4: Track skill usage
                             if self.skill_engine:
                                 self.skill_engine.record_use(new_skill)

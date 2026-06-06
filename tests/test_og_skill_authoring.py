@@ -80,6 +80,38 @@ def test_resave_refines_with_changelog_and_version_bump(tmp_path: Path) -> None:
     assert reparsed.meta.version == "1.0.1"
 
 
+def test_well_formed_skill_has_no_lint_advisories(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    result = engine.upsert_skill(
+        name="Rotate API Keys",
+        keywords=["rotate", "api keys"],
+        dense="rotate|api keys|vault",
+        full="Stage the new key before retiring the old one.",
+        steps=["Generate new key.", "Retire old key."],
+    )
+    assert result["status"] == "created"
+    # Searchable + has Pass-3 content -> nothing to advise.
+    assert "lint_advisories" not in result
+
+
+def test_save_surfaces_lint_advisories_for_thin_skill(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    # No keywords (unsearchable) and no Pass-3 content (empty) -> advisory feedback,
+    # but still saved (advisories are not rejections).
+    result = engine.upsert_skill(
+        name="thin_skill",
+        keywords=[],
+        dense="thin|skill",
+    )
+    assert result["status"] == "created"
+    advisories = result.get("lint_advisories", [])
+    joined = " ".join(advisories)
+    assert "no-keywords" in joined
+    assert "empty-node" in joined
+    # The skill is still written and loadable despite the advisories.
+    assert engine.get_node("thin_skill") is not None
+
+
 def test_name_cannot_escape_skills_dir(tmp_path: Path) -> None:
     engine = _engine(tmp_path)
     result = engine.upsert_skill(

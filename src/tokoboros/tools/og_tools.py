@@ -212,7 +212,9 @@ SAVE_SKILL_SCHEMA = {
         "procedure. Calling it again with the same name refines the existing skill (its "
         "changelog and version are updated automatically). The `dense` block MUST be a compact "
         "pipe-separated keyword summary (a few words, NOT sentences) — oversized dense blocks "
-        "are rejected. Put the real prose in `full` and the actions in `steps`."
+        "are rejected. Put the real prose in `full` and the actions in `steps`. The result may "
+        "include `lint_advisories` (e.g. missing keywords, no Pass-3 content) — read them and "
+        "refine the skill so it stays searchable and useful."
     ),
     "input_schema": {
         "type": "object",
@@ -265,6 +267,46 @@ SAVE_SKILL_SCHEMA = {
         "required": ["name", "keywords", "dense"],
     },
 }
+
+
+# ==========================================
+# Lazy tool-loading meta-tool
+# ==========================================
+
+USE_TOOLS_SCHEMA = {
+    "name": "use_tools",
+    "description": (
+        "Activate an optional tool group for the rest of THIS turn, making its tools "
+        "callable on your next step. Only core tools are sent by default to keep your "
+        "context lean; call this when a task needs a capability that isn't currently "
+        "available. The available group names are listed in the system prompt. "
+        "Note: load_skill auto-activates a skill's own tools, so you rarely need this for "
+        "skills — use it for domain groups like 'schedule', 'sandbox', or 'browser'."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "group": {
+                "type": "string",
+                "description": "The tool group to activate for the rest of the turn.",
+            },
+        },
+        "required": ["group"],
+    },
+}
+
+
+def _make_use_tools(registry: ToolRegistry):
+    """Build the use_tools handler. It only confirms — the ExecutionLoop performs the
+    actual per-turn activation by intercepting the call (mirrors load_skill)."""
+
+    def use_tools(group: str) -> str:
+        groups = registry.available_groups() - {"core"}
+        if group in groups:
+            return f"Activated tool group '{group}'. Its tools are now available to call."
+        return f"Unknown group '{group}'. Available groups: {sorted(groups)}"
+
+    return use_tools
 
 
 # ==========================================

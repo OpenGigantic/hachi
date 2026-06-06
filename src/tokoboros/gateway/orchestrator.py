@@ -82,9 +82,11 @@ from tokoboros.gateway.workspace import (
 from tokoboros.jobs import InMemoryJobQueue, Job, JobQueue, JobStatus, JobWorker
 from tokoboros.jobs.scheduler import Scheduler, ScheduleStore
 from tokoboros.og_engine.engine import SkillEngine
+from tokoboros.tools.browser_tools import register_browser_tools
 from tokoboros.tools.delegation_tools import register_delegation_tools
 from tokoboros.tools.memory_tools import register_memory_tools, register_session_tools
-from tokoboros.tools.og_tools import register_og_tools
+from tokoboros.tools.messaging_tools import register_messaging_tools
+from tokoboros.tools.og_tools import USE_TOOLS_SCHEMA, _make_use_tools, register_og_tools
 from tokoboros.tools.os_tools import register_os_tools
 from tokoboros.tools.sandbox_tools import register_sandbox_tools
 from tokoboros.tools.schedule_tools import register_schedule_tools
@@ -152,6 +154,54 @@ class CapabilityRegistry:
 
 def _is_module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
+
+
+# --- Lazy tool-loading taxonomy ------------------------------------------
+# Curated "core" tools sent to the model on every turn. Everything else is
+# lazily unlocked via use_tools(group) / load_skill (see ToolRegistry.classify).
+_CORE_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        # filesystem / shell
+        "read_file",
+        "write_file",
+        "run_terminal_command",
+        "rollback_changes",
+        # ObjectGraph skills (3-pass) + the lazy-loading meta-tool
+        "search_skills",
+        "list_skills",
+        "peek_skill",
+        "load_skill",
+        "save_skill",
+        "use_tools",
+        # long-term memory / sessions
+        "core_save_memory",
+        "core_search_memory",
+        "core_delete_memory",
+        "core_save_user_profile",
+        "core_search_user_profile",
+        "core_delete_user_profile",
+        "core_search_sessions",
+        # delegation
+        "delegate_task",
+        "list_roles",
+        # web (the common case; richer browser actions are gated under "browser")
+        "browse_web",
+    }
+)
+
+# Non-core, statically-known tools → their on-demand group. Per-skill REST tools
+# are tagged at registration (group == skill name) and are not listed here.
+_GROUP_BY_TOOL_NAME: dict[str, str] = {
+    "browser_act": "browser",
+    "browser_screenshot": "browser",
+    "python_sandbox": "sandbox",
+    "schedule_task": "schedule",
+    "list_schedules": "schedule",
+    "cancel_schedule": "schedule",
+    "core_suspend_workflow": "workflow",
+    "send_slack_message": "messaging",
+    "send_discord_message": "messaging",
+}
 
 
 def _coerce_float(*candidates: Any) -> float:
@@ -713,6 +763,14 @@ class AgentSession:
                 except Exception:
                     pass
 
+        # Shut down the browser worker thread + headless browser if one was started.
+        browser = getattr(self, "_browser_controller", None)
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+
         self.integrations.shutdown()
         self._emit_event(MCP_SHUTDOWN, {"server_count": self.mcp_manager.server_count})
         self.mcp_manager.shutdown()
@@ -1053,8 +1111,18 @@ def boot_agent(
     checkpoint_manager = CheckpointManager(get_tokoboros_paths().checkpoints_dir)
     register_os_tools(tool_registry, runtime_gate, checkpoints=checkpoint_manager)
     register_og_tools(tool_registry, skill_engine)
+    # Lazy tool-loading meta-tool (core): lets the model unlock optional groups.
+    tool_registry.register(USE_TOOLS_SCHEMA, _make_use_tools(tool_registry), group="core")
     register_workflow_tools(tool_registry)
     register_sandbox_tools(tool_registry, runtime_gate)
+
+    # Headless browser automation (optional: needs `tokoboros[browser]` + a browser binary).
+    # The controller is lazy — no browser launches until the agent first calls browse_web.
+    browser_controller = register_browser_tools(tool_registry, runtime_gate)
+
+    # Outbound messaging (Slack/Discord). Credentials resolve lazily at call time, so these
+    # register cleanly even with no token set (they return a "not configured" hint until then).
+    register_messaging_tools(tool_registry)
 
     # Proactive scheduling (cron/interval/once) — persisted across restarts.
     scheduler = Scheduler(ScheduleStore(get_tokoboros_paths().schedules_file))
@@ -1123,6 +1191,29 @@ def boot_agent(
             instance.register_tools(tool_registry)
             native_registration_count += 1
 
+    # Classify tools into lazy-loading groups now that every tool is registered.
+    # Per-skill REST tools were already tagged at registration (group == skill name);
+    # classify() leaves those intact and stamps the rest.
+    tool_registry.classify(
+        core_names=set(_CORE_TOOL_NAMES),
+        group_by_name=_GROUP_BY_TOOL_NAME,
+        default="integrations",
+    )
+
+    # Tell the model which optional domain groups it can unlock on demand. Skill
+    # groups are omitted here — load_skill auto-activates those — so this lists only
+    # the static domain groups (e.g. schedule, sandbox, browser, workflow).
+    skill_group_names = {node.name for node in skill_engine.get_all_nodes()}
+    domain_groups = sorted(tool_registry.available_groups() - {"core"} - skill_group_names)
+    if domain_groups:
+        system_prompt += (
+            "\n--- OPTIONAL TOOL GROUPS (lazy-loaded) ---\n"
+            "To keep your context lean, only core tools are shown by default. These extra "
+            f"groups are available on demand: {', '.join(domain_groups)}.\n"
+            'Call use_tools(group="<name>") to activate a group for the rest of the turn. '
+            "load_skill(name=...) auto-activates that skill's own tools.\n"
+        )
+
     emit_runtime_event(
         BOOT_PROGRESS,
         {
@@ -1172,6 +1263,7 @@ def boot_agent(
     session.set_vault(vault)
     session.set_session_store(session_store, model=model_name)
     session._sub_agent_client = sub_agent_client  # closed on shutdown alongside the main client
+    session._browser_controller = browser_controller  # closed on shutdown (no-op if never used)
 
     emit_runtime_event(
         BOOT_COMPLETE,
