@@ -29,8 +29,15 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("openai_key", re.compile(r"sk-(?:proj-)?[A-Za-z0-9]{20,}")),
     ("aws_access_key", re.compile(r"AKIA[0-9A-Z]{16}")),
     ("github_token", re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}")),
+    ("github_fine_grained_pat", re.compile(r"github_pat_[A-Za-z0-9_]{40,}")),
     ("slack_token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
     ("google_api_key", re.compile(r"AIza[0-9A-Za-z_\-]{35}")),
+    ("google_oauth_secret", re.compile(r"GOCSPX-[A-Za-z0-9_\-]{20,}")),
+    ("stripe_key", re.compile(r"(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}")),
+    ("sendgrid_key", re.compile(r"SG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}")),
+    ("npm_token", re.compile(r"npm_[A-Za-z0-9]{36}")),
+    # JWT bearer token: three base64url segments, header begins `eyJ` (= base64 `{"`).
+    ("jwt", re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}")),
 ]
 
 
