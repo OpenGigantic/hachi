@@ -8,8 +8,10 @@ Tool layer: injectable notifiers so no OS calls or network activity.
 from __future__ import annotations
 
 import subprocess
+import time
 from email.mime.multipart import MIMEMultipart
 from unittest import mock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -332,6 +334,8 @@ def test_register_notification_tools_registers_both():
     names = {s["name"] for s in registry.get_schemas()}
     assert "notify_user" in names
     assert "send_email_digest" in names
+    assert "buffer_notification" in names
+    assert "flush_notification_digest" in names
 
 
 def test_registered_in_notifications_group():
@@ -344,3 +348,147 @@ def test_registered_in_notifications_group():
     )
     assert registry._groups["notify_user"] == "notifications"
     assert registry._groups["send_email_digest"] == "notifications"
+    assert registry._groups["buffer_notification"] == "notifications"
+    assert registry._groups["flush_notification_digest"] == "notifications"
+
+
+# ---------------------------------------------------------------------------
+# DigestBuffer
+# ---------------------------------------------------------------------------
+
+
+def test_digest_buffer_add_and_count() -> None:
+    from tokoboros.core.notifier import DigestBuffer
+
+    buf = DigestBuffer()
+    assert buf.pending_count() == 0
+    buf.add("msg1")
+    buf.add("msg2")
+    assert buf.pending_count() == 2
+
+
+def test_digest_buffer_flush_clears_items() -> None:
+    from tokoboros.core.notifier import DigestBuffer, EmailNotifier
+
+    mock_email = MagicMock(spec=EmailNotifier)
+    mock_email.is_configured.return_value = False
+    mock_desktop = MagicMock()
+    mock_desktop.send.return_value = "not available"
+
+    buf = DigestBuffer(email_notifier=mock_email, desktop_notifier=mock_desktop)
+    buf.add("notification A")
+    buf.add("notification B")
+
+    result = buf.flush()
+    assert result["item_count"] == 2
+    assert buf.pending_count() == 0
+
+
+def test_digest_buffer_flush_empty_returns_zero() -> None:
+    from tokoboros.core.notifier import DigestBuffer
+
+    buf = DigestBuffer()
+    result = buf.flush()
+    assert result["item_count"] == 0
+    assert result["error"] == ""
+
+
+def test_digest_buffer_flush_sends_email() -> None:
+    from tokoboros.core.notifier import DigestBuffer, EmailNotifier
+
+    sent: list[dict] = []
+
+    def _fake_sender(host, port, user, password, from_addr, to_addr, msg) -> None:
+        from email.mime.multipart import MIMEMultipart as _MMP
+        sent.append({"to": to_addr, "subject": msg["Subject"] if isinstance(msg, _MMP) else ""})
+
+    email = EmailNotifier(sender=_fake_sender)
+    mock_desktop = MagicMock()
+    mock_desktop.send.return_value = "notification sent"
+
+    buf = DigestBuffer(email_notifier=email, desktop_notifier=mock_desktop)
+    buf.add("task A done")
+    buf.add("task B done")
+
+    with patch.dict(
+        "os.environ",
+        {
+            "TOKOBOROS_SMTP_USER": "u@example.com",
+            "TOKOBOROS_SMTP_PASSWORD": "pw",
+            "TOKOBOROS_SMTP_TO": "recv@example.com",
+        },
+    ):
+        result = buf.flush(subject="Daily digest")
+
+    assert result["sent_email"] is True
+    assert result["item_count"] == 2
+    assert sent[0]["subject"] == "Daily digest"
+
+
+def test_digest_buffer_cancel_prevents_flush() -> None:
+    from tokoboros.core.notifier import DigestBuffer
+
+    flushed: list[bool] = []
+
+    class _TrackBuf(DigestBuffer):
+        def flush(self, **kwargs) -> dict:
+            flushed.append(True)
+            return super().flush(**kwargs)
+
+    buf = _TrackBuf()
+    buf.add("msg")
+    buf.flush_after(seconds=0.01)
+    buf.cancel()
+    time.sleep(0.05)
+    assert len(flushed) == 0
+
+
+# ---------------------------------------------------------------------------
+# buffer_notification and flush_notification_digest tools
+# ---------------------------------------------------------------------------
+
+
+def test_buffer_notification_tool_increments_count() -> None:
+    from tokoboros.core.notifier import DigestBuffer
+    from tokoboros.tools.notification_tools import _make_buffer_notification
+
+    buf = DigestBuffer()
+    fn = _make_buffer_notification(buf)
+    out1 = fn("first")
+    assert "1 item" in out1
+    out2 = fn("second")
+    assert "2 item" in out2
+
+
+def test_flush_digest_tool_empty_buffer() -> None:
+    from tokoboros.core.notifier import DigestBuffer
+    from tokoboros.tools.notification_tools import _make_flush_notification_digest
+
+    buf = DigestBuffer()
+    fn = _make_flush_notification_digest(buf)
+    out = fn()
+    assert "empty" in out.lower()
+
+
+def test_flush_digest_tool_sends_and_reports() -> None:
+    from tokoboros.core.notifier import DigestBuffer
+    from tokoboros.tools.notification_tools import (
+        _make_buffer_notification,
+        _make_flush_notification_digest,
+    )
+
+    mock_desktop = MagicMock()
+    mock_desktop.send.return_value = "notification sent"
+    mock_email = MagicMock()
+    mock_email.is_configured.return_value = False
+
+    buf = DigestBuffer(email_notifier=mock_email, desktop_notifier=mock_desktop)
+    add_fn = _make_buffer_notification(buf)
+    flush_fn = _make_flush_notification_digest(buf)
+
+    add_fn("reminder: standup at 10am")
+    add_fn("build passed")
+    out = flush_fn("My digest")
+
+    assert "2 item" in out
+    assert buf.pending_count() == 0

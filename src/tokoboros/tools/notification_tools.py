@@ -1,10 +1,12 @@
-"""LLM-callable notification tools (desktop pop-up + SMTP email digest).
+"""LLM-callable notification tools (desktop pop-up + SMTP email digest + batched digest).
 
 Lets the agent proactively alert the user outside the chat window:
 - ``notify_user``         — OS-native desktop notification (macOS / Linux / Windows).
 - ``send_email_digest``   — SMTP email notification / digest.
+- ``buffer_notification`` — Add a message to an in-process digest buffer.
+- ``flush_notification_digest`` — Flush the buffer as a batched email + desktop toast.
 
-Both tools degrade gracefully:
+Both one-shot tools degrade gracefully:
 - Desktop: returns a friendly "not available" string if OS tools are absent.
 - Email:   returns a "not configured" string if SMTP creds are unset.
 """
@@ -12,9 +14,20 @@ Both tools degrade gracefully:
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.notifier import DesktopNotifier, EmailNotifier
+from tokoboros.core.notifier import DesktopNotifier, DigestBuffer, EmailNotifier
+
+# Module-level shared digest buffer (one per process).
+_SHARED_DIGEST_BUFFER: DigestBuffer | None = None
+
+
+def _get_shared_buffer() -> DigestBuffer:
+    global _SHARED_DIGEST_BUFFER  # noqa: PLW0603
+    if _SHARED_DIGEST_BUFFER is None:
+        _SHARED_DIGEST_BUFFER = DigestBuffer()
+    return _SHARED_DIGEST_BUFFER
 
 # ---------------------------------------------------------------------------
 # Desktop notification tool
@@ -123,6 +136,83 @@ def _make_send_email_digest(
 
 
 # ---------------------------------------------------------------------------
+# Digest buffer tools
+# ---------------------------------------------------------------------------
+
+BUFFER_NOTIFICATION_SCHEMA = {
+    "name": "buffer_notification",
+    "description": (
+        "Add a message to the pending notification digest buffer. Use this when you want "
+        "to batch multiple notifications into one email/toast summary instead of sending "
+        "them individually. Call `flush_notification_digest` to send the batch."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "message": {
+                "type": "string",
+                "description": "Notification text to add to the digest buffer.",
+            },
+        },
+        "required": ["message"],
+    },
+}
+
+FLUSH_NOTIFICATION_DIGEST_SCHEMA = {
+    "name": "flush_notification_digest",
+    "description": (
+        "Send all buffered notifications as a single batched email digest and desktop "
+        "toast. Returns a summary of what was sent. If the buffer is empty, returns an "
+        "informational message. Clears the buffer after sending."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "subject": {
+                "type": "string",
+                "description": "Email subject for the digest (default: 'Tokoboros digest').",
+            },
+            "to": {
+                "type": "string",
+                "description": "Recipient email (falls back to TOKOBOROS_SMTP_TO).",
+            },
+        },
+        "required": [],
+    },
+}
+
+
+def _make_buffer_notification(buf: DigestBuffer | None) -> Callable[[str], str]:
+    def buffer_notification(message: str) -> str:
+        active = buf or _get_shared_buffer()
+        active.add(message)
+        return f"Added to digest buffer ({active.pending_count()} item(s) pending)."
+
+    return buffer_notification
+
+
+def _make_flush_notification_digest(
+    buf: DigestBuffer | None,
+) -> Callable[[str, str], str]:
+    def flush_notification_digest(subject: str = "Tokoboros digest", to: str = "") -> str:
+        active = buf or _get_shared_buffer()
+        if active.pending_count() == 0:
+            return "Digest buffer is empty — nothing to send."
+        result: dict[str, Any] = active.flush(subject=subject, to=to)
+        parts: list[str] = []
+        if result.get("sent_email"):
+            parts.append("email sent")
+        if result.get("sent_desktop"):
+            parts.append("desktop notification shown")
+        if not parts:
+            err = result.get("error", "unknown error")
+            return f"Digest flush attempted but nothing sent: {err}"
+        return f"Digest sent ({result['item_count']} item(s)) via {', '.join(parts)}."
+
+    return flush_notification_digest
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -132,13 +222,19 @@ def register_notification_tools(
     *,
     notifier: DesktopNotifier | None = None,
     email_notifier: EmailNotifier | None = None,
+    digest_buffer: DigestBuffer | None = None,
 ) -> None:
-    """Register desktop-notification and email-digest tools.
+    """Register desktop-notification, email-digest, and batched-digest tools.
 
     Args:
         registry: The agent's :class:`~tokoboros.core.loop.ToolRegistry`.
         notifier: Injectable :class:`DesktopNotifier`; defaults to live OS calls.
         email_notifier: Injectable :class:`EmailNotifier`; defaults to env-based config.
+        digest_buffer: Injectable :class:`DigestBuffer`; defaults to the shared instance.
     """
     registry.register(NOTIFY_USER_SCHEMA, _make_notify_user(notifier))
     registry.register(SEND_EMAIL_DIGEST_SCHEMA, _make_send_email_digest(email_notifier))
+    registry.register(BUFFER_NOTIFICATION_SCHEMA, _make_buffer_notification(digest_buffer))
+    registry.register(
+        FLUSH_NOTIFICATION_DIGEST_SCHEMA, _make_flush_notification_digest(digest_buffer)
+    )

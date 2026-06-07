@@ -20,7 +20,10 @@ import json
 import os
 import smtplib
 import sys
+import threading
+from collections import deque
 from collections.abc import Callable
+from datetime import UTC, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
@@ -235,3 +238,106 @@ def _platform() -> str:
     if sys.platform == "win32":
         return "windows"
     return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Notification digest buffer
+# ---------------------------------------------------------------------------
+
+
+class DigestBuffer:
+    """Thread-safe accumulator for batched notification digests.
+
+    Notifications are added via :meth:`add` and flushed (sent as one email
+    and/or desktop pop-up) via :meth:`flush`. A background timer can be
+    scheduled with :meth:`flush_after` to send automatically.
+
+    Each item is a ``(timestamp_iso, message)`` tuple stored in a deque.
+    """
+
+    def __init__(
+        self,
+        email_notifier: EmailNotifier | None = None,
+        desktop_notifier: DesktopNotifier | None = None,
+    ) -> None:
+        self._items: deque[tuple[str, str]] = deque()
+        self._lock = threading.Lock()
+        self._email = email_notifier
+        self._desktop = desktop_notifier
+        self._timer: threading.Timer | None = None
+
+    def add(self, message: str) -> None:
+        """Add a notification to the pending digest."""
+        ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+        with self._lock:
+            self._items.append((ts, message))
+
+    def pending_count(self) -> int:
+        """Return the number of buffered items not yet flushed."""
+        with self._lock:
+            return len(self._items)
+
+    def flush(
+        self,
+        subject: str = "Tokoboros digest",
+        to: str = "",
+    ) -> dict[str, Any]:
+        """Send all pending items as one digest and clear the buffer.
+
+        Returns a result dict with keys ``sent_email``, ``sent_desktop``,
+        ``item_count``, and ``error`` (empty string on success).
+        """
+        with self._lock:
+            items = list(self._items)
+            self._items.clear()
+
+        if not items:
+            return {"sent_email": False, "sent_desktop": False, "item_count": 0, "error": ""}
+
+        body = "\n".join(f"[{ts}] {msg}" for ts, msg in items)
+        result: dict[str, Any] = {
+            "sent_email": False,
+            "sent_desktop": False,
+            "item_count": len(items),
+            "error": "",
+        }
+
+        email_notifier = self._email or EmailNotifier.from_env()
+        if email_notifier.is_configured():
+            try:
+                send_result = email_notifier.send(subject=subject, body=body, to=to)
+                result["sent_email"] = bool(send_result.get("to"))
+            except Exception as exc:
+                result["error"] = str(exc)
+
+        desktop = self._desktop or DesktopNotifier()
+        desktop_body = (
+            f"{len(items)} notification(s) — check your email for details."
+            if result["sent_email"]
+            else body[:200]
+        )
+        desktop_result = desktop.send(title=subject, body=desktop_body)
+        result["sent_desktop"] = "sent" in desktop_result.lower()
+        return result
+
+    def flush_after(self, seconds: float, subject: str = "Tokoboros digest", to: str = "") -> None:
+        """Schedule a one-shot flush after *seconds*.
+
+        If a timer is already pending it is cancelled and replaced — calling
+        this multiple times just pushes the flush back.
+        """
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+            self._timer = threading.Timer(
+                seconds, self.flush, kwargs={"subject": subject, "to": to}
+            )
+            self._timer.daemon = True
+            self._timer.start()
+
+    def cancel(self) -> None:
+        """Cancel any pending scheduled flush without sending."""
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None

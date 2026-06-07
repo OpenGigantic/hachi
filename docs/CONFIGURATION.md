@@ -99,14 +99,21 @@ max_session_tokens = 500000
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `TELEGRAM_BOT_TOKEN` | – | Bot token for `tokoboros channel telegram`. |
+| `TELEGRAM_BOT_TOKEN` | – | Bot token for `tokoboros channel telegram` (inbound) **and** the `send_telegram_message` tool (outbound). |
+| `TELEGRAM_CHAT_ID` | – | Default chat id for `send_telegram_message` (user, group, or channel). Required unless passed per-call. |
 | `SLACK_BOT_TOKEN` | – | Slack bot token for `send_slack_message` (`chat.postMessage`; pass a channel). |
 | `SLACK_WEBHOOK_URL` | – | Slack incoming-webhook URL (single channel; alternative to a bot token). |
 | `DISCORD_WEBHOOK_URL` | – | Discord webhook URL for `send_discord_message` (single channel). |
 | `DISCORD_BOT_TOKEN` | – | Discord bot token (alternative to a webhook; pass a channel id). |
+| `TOKOBOROS_SMTP_HOST` | `smtp.gmail.com` | SMTP server for `send_email_digest` and notification digests. |
+| `TOKOBOROS_SMTP_PORT` | `587` | SMTP port (STARTTLS). |
+| `TOKOBOROS_SMTP_USER` | – | SMTP username / sender address. Required to enable email notifications. |
+| `TOKOBOROS_SMTP_PASSWORD` | – | SMTP password or app-specific password. |
+| `TOKOBOROS_SMTP_FROM` | `SMTP_USER` | Override the From: address (defaults to `SMTP_USER`). |
+| `TOKOBOROS_SMTP_TO` | – | Default recipient for `send_email_digest` and digest flushes. |
 | `TOKOBOROS_REST_ALLOWLIST` | – | Comma list of hosts the Universal REST Adapter may call. |
 | `TOKOBOROS_REST_ALLOW_PRIVATE` | `false` | Allow REST/webhook **and browser** calls to private/loopback hosts (use with care). |
-| `TOKOBOROS_ALLOW_OUTBOUND_SECRETS` | `false` | When `true`, disables automatic redaction of API keys/tokens/private keys in outbound Slack/Discord messages. Leave off so secrets can't be accidentally leaked. |
+| `TOKOBOROS_ALLOW_OUTBOUND_SECRETS` | `false` | When `true`, disables automatic redaction of API keys/tokens/private keys in outbound Slack/Discord/Telegram messages. Leave off so secrets can't be accidentally leaked. |
 
 ## Optional features (extras)
 
