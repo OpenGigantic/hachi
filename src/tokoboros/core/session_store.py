@@ -271,6 +271,29 @@ class SessionStore:
         # Fetched newest-first to honour the limit, then reversed to chronological.
         return [dict(row) for row in reversed(rows)]
 
+    def delete_session(self, session_id: str) -> bool:
+        """Permanently delete a session and all its messages from the store.
+
+        Both the ``sessions`` row and the associated ``messages`` rows are removed
+        atomically inside a single transaction.
+
+        Args:
+            session_id: The session to delete (must be an exact full ID).
+
+        Returns:
+            True if a session with that ID existed and was deleted; False otherwise.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT id FROM sessions WHERE id = ?", (session_id,)
+            )
+            if cur.fetchone() is None:
+                return False
+            self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            self._conn.commit()
+        return True
+
     def shutdown(self) -> None:
         """Close the database connection."""
         try:
