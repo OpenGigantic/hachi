@@ -101,6 +101,12 @@ max_session_tokens = 500000
 |----------|---------|---------|
 | `TELEGRAM_BOT_TOKEN` | – | Bot token for `tokoboros channel telegram` (inbound) **and** the `send_telegram_message` tool (outbound). |
 | `TELEGRAM_CHAT_ID` | – | Default chat id for `send_telegram_message` (user, group, or channel). Required unless passed per-call. |
+| `META_WHATSAPP_TOKEN` | – | Meta WhatsApp Business bearer token (`tokoboros channel whatsapp` inbound + `send_whatsapp_message` outbound). |
+| `META_WHATSAPP_PHONE_ID` | – | Meta sender phone-number ID (from the Meta App Dashboard). |
+| `META_WHATSAPP_VERIFY_TOKEN` | – | Webhook verify token to match in the Meta App Dashboard. Used by `tokoboros channel whatsapp` for the GET verification handshake. |
+| `TWILIO_ACCOUNT_SID` | – | Twilio Account SID (alternative to Meta Cloud API for WhatsApp). |
+| `TWILIO_AUTH_TOKEN` | – | Twilio Auth Token. |
+| `TWILIO_WHATSAPP_FROM` | – | Twilio WhatsApp sender (e.g. `whatsapp:+14155238886`). |
 | `SLACK_BOT_TOKEN` | – | Slack bot token for `send_slack_message` (`chat.postMessage`; pass a channel). |
 | `SLACK_WEBHOOK_URL` | – | Slack incoming-webhook URL (single channel; alternative to a bot token). |
 | `DISCORD_WEBHOOK_URL` | – | Discord webhook URL for `send_discord_message` (single channel). |
@@ -113,7 +119,7 @@ max_session_tokens = 500000
 | `TOKOBOROS_SMTP_TO` | – | Default recipient for `send_email_digest` and digest flushes. |
 | `TOKOBOROS_REST_ALLOWLIST` | – | Comma list of hosts the Universal REST Adapter may call. |
 | `TOKOBOROS_REST_ALLOW_PRIVATE` | `false` | Allow REST/webhook **and browser** calls to private/loopback hosts (use with care). |
-| `TOKOBOROS_ALLOW_OUTBOUND_SECRETS` | `false` | When `true`, disables automatic redaction of API keys/tokens/private keys in outbound Slack/Discord/Telegram messages. Leave off so secrets can't be accidentally leaked. |
+| `TOKOBOROS_ALLOW_OUTBOUND_SECRETS` | `false` | When `true`, disables automatic redaction of API keys/tokens/private keys in outbound Slack/Discord/WhatsApp/Telegram messages. Leave off so secrets can't be accidentally leaked. |
 
 ## Optional features (extras)
 

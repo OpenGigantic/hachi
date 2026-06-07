@@ -432,6 +432,47 @@ Logs go to `{state_dir}/gateway.log` — find the path with
 
 ---
 
+## 11c. Chat with Tokoboros on WhatsApp
+
+Tokoboros can receive and reply to WhatsApp messages via a local webhook server
+compatible with both the **Meta Cloud API** and **Twilio**.
+
+### Quick start (Meta Cloud API)
+
+```bash
+# 1. Set credentials (Meta App Dashboard → WhatsApp → API Setup)
+export META_WHATSAPP_TOKEN=<bearer-token>
+export META_WHATSAPP_PHONE_ID=<phone-number-id>
+export META_WHATSAPP_VERIFY_TOKEN=mysecret   # any string you choose
+
+# 2. Start the webhook server
+tokoboros channel whatsapp --port 8080 --verify-token "$META_WHATSAPP_VERIFY_TOKEN"
+
+# 3. Expose it publicly (ngrok, Cloudflare Tunnel, etc.)
+ngrok http 8080
+# → copy the HTTPS URL into Meta App Dashboard → Webhooks → Edit → Callback URL
+```
+
+### Quick start (Twilio)
+
+```bash
+export TWILIO_ACCOUNT_SID=ACxxx
+export TWILIO_AUTH_TOKEN=<auth-token>
+export TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
+
+tokoboros channel whatsapp --port 8080
+# Point Twilio Sandbox → "When a message comes in" to https://<your-host>/
+```
+
+### Restrict access
+
+```bash
+# Only allow messages from these E.164 numbers
+tokoboros channel whatsapp --allow "+447911123456,+14155238886"
+```
+
+---
+
 ## 12. Voice — transcribe and speak
 
 ### Transcribe audio
