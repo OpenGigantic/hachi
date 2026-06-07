@@ -213,9 +213,38 @@ class SkillEngine:
 
     Maintains a persistent usage database (JSON) that tracks how often each
     skill is loaded, when it was first/last used, and whether it has gone stale.
+
+    Scope enforcement is applied at query time via ``agent_role``. Nodes with
+    ``scope="all"`` or ``scope="public"`` are always visible. Nodes with any
+    other scope (e.g. ``"orchestrator"``, ``"admin"``) are only returned when
+    ``agent_role`` matches that scope. The default ``"all"`` therefore exposes
+    only publicly-visible nodes — callers that need elevated scopes (e.g. the
+    main orchestrator reading ``brain.og``) must pass their role explicitly.
     """
 
-    def __init__(self):
+    def __init__(self, agent_role: str = "*") -> None:
+        """Initialise the engine.
+
+        Args:
+            agent_role: The role of the agent that will query this engine.
+                Nodes whose ``scope`` does not match this role (or ``"all"`` /
+                ``"public"``) are hidden from all query results.
+
+                Special values:
+
+                - ``"*"`` (the default) bypasses all scope checks — every node
+                  is returned.  Use this for CLI diagnostic tools (``skill
+                  show``, ``skill search``, ``doctor``, etc.) where the human
+                  user should see the full library.
+                - ``"orchestrator"`` sees ``scope=all/public`` AND
+                  ``scope=orchestrator`` nodes (brain.og identity + rules).
+                  Pass this in :func:`create_agent_session` for the main
+                  session engine.
+                - Any other value (e.g. ``"analyst"``) sees only
+                  ``scope=all/public`` nodes, hiding orchestrator-internal
+                  nodes from worker sub-agents.
+        """
+        self._agent_role = agent_role
         self._nodes: dict[str, OGNode] = {}  # node_name -> OGNode
         self._keyword_index: dict[str, list[str]] = {}  # keyword -> [node_name, ...]
         self._files: dict[str, OGFile] = {}  # filepath -> OGFile (file-level metadata + index)
@@ -224,6 +253,18 @@ class SkillEngine:
         # Phase 4: Persistent usage tracking
         self._usage_path = Path.home() / ".tokoboros" / "brain" / "skill_usage.json"
         self._usage: dict[str, dict[str, Any]] = self._load_usage()
+
+    def _is_visible(self, node: OGNode) -> bool:
+        """Return True when this node is accessible to the engine's agent role.
+
+        ``scope="all"`` and ``scope="public"`` are always accessible.
+        Any other scope (e.g. ``"orchestrator"``, ``"admin"``) is only
+        accessible when ``self._agent_role`` exactly matches it.  The special
+        role ``"*"`` bypasses all checks — used by CLI diagnostic tools.
+        """
+        if self._agent_role == "*":
+            return True
+        return node.scope in ("all", "public", self._agent_role)
 
     def load_directory(self, skills_dir: Path):
         """
@@ -304,7 +345,9 @@ class SkillEngine:
 
         results = []
         for name in matched_names:
-            node = self._nodes[name]
+            node = self._nodes.get(name)
+            if node is None or not self._is_visible(node):
+                continue
             results.append(
                 {
                     "name": node.name,
@@ -318,14 +361,19 @@ class SkillEngine:
 
     def list_all_skills(self) -> list[dict[str, str]]:
         """
-        Return a summary of every loaded skill node.
-        Useful for the agent to understand what capabilities are available.
+        Return a summary of every loaded skill node visible to this engine's role.
+
+        Nodes whose scope does not match the engine's ``agent_role`` are silently
+        omitted, so the caller only sees skills it is allowed to use.
 
         Returns:
-            A list of dicts with 'name', 'role', and 'keywords' for each loaded node.
+            A list of dicts with 'name', 'role', and 'keywords' for each
+            accessible loaded node.
         """
         results = []
         for node in self._nodes.values():
+            if not self._is_visible(node):
+                continue
             results.append(
                 {
                     "name": node.name,
@@ -339,17 +387,24 @@ class SkillEngine:
         """
         Retrieve the full OGNode by its exact name.
 
+        Nodes outside the engine's agent role scope are treated as if they
+        do not exist (returns ``None``), so RBAC enforcement is consistent
+        whether a caller uses the tool path or the direct accessor.
+
         Args:
             name: The node identifier (e.g., 'deploy_to_prod').
 
         Returns:
-            The full OGNode or None if not found.
+            The full OGNode or None if not found or not accessible.
         """
-        return self._nodes.get(name)
+        node = self._nodes.get(name)
+        if node is None or not self._is_visible(node):
+            return None
+        return node
 
     def get_all_nodes(self) -> list[OGNode]:
-        """Return all indexed skill nodes."""
-        return list(self._nodes.values())
+        """Return all indexed skill nodes visible to this engine's agent role."""
+        return [n for n in self._nodes.values() if self._is_visible(n)]
 
     def peek(self, names: list[str]) -> dict[str, Any]:
         """Pass 2: return the compressed view of one or more nodes.
@@ -372,7 +427,7 @@ class SkillEngine:
         result: dict[str, Any] = {}
         for name in names:
             node = self._nodes.get(name)
-            if not node:
+            if not node or not self._is_visible(node):
                 result[name] = {"error": f"Skill '{name}' not found."}
                 continue
 
@@ -424,7 +479,7 @@ class SkillEngine:
             A formatted string containing only the requested content.
         """
         node = self._nodes.get(name)
-        if not node:
+        if not node or not self._is_visible(node):
             return f"Error: Skill '{name}' not found in the loaded skills."
 
         selected = list(blocks) if blocks else list(DEFAULT_LOAD_BLOCKS)
@@ -941,8 +996,9 @@ class SkillEngine:
 
     def get_nodes_by_role(self, role: str) -> list[OGNode]:
         """
-        Retrieve all nodes matching a specific role.
-        Used by the IntegrationRuntime to find 'env' and 'integration' nodes.
+        Retrieve all nodes matching a specific role that are visible to the engine's
+        agent role.  Used by the IntegrationRuntime to find 'env' and 'integration'
+        nodes; also used by the doctor command to count MCP server declarations.
 
         Args:
             role: The role to filter by (e.g., 'env', 'integration', 'skill').
@@ -950,12 +1006,14 @@ class SkillEngine:
         Returns:
             A list of OGNode objects matching the given role.
         """
-        return [node for node in self._nodes.values() if node.role == role]
+        return [n for n in self._nodes.values() if n.role == role and self._is_visible(n)]
 
     @property
     def node_count(self) -> int:
-        """Return the total number of indexed skill nodes."""
-        return len(self._nodes)
+        """Return the number of indexed skill nodes visible to this engine's role."""
+        if self._agent_role == "*":
+            return len(self._nodes)
+        return sum(1 for n in self._nodes.values() if self._is_visible(n))
 
     # ==========================================
     # Skill Lifecycle & Usage Tracking
@@ -1017,7 +1075,9 @@ class SkillEngine:
         cutoff = datetime.now(UTC) - timedelta(days=stale_days)
         stale = []
 
-        for name in self._nodes:
+        for name, node in self._nodes.items():
+            if not self._is_visible(node):
+                continue
             entry = self._usage.get(name)
             if not entry:
                 stale.append(
@@ -1058,7 +1118,8 @@ class SkillEngine:
         """
         tracked = []
         for name, entry in self._usage.items():
-            if name in self._nodes:
+            node = self._nodes.get(name)
+            if node is not None and self._is_visible(node):
                 tracked.append(
                     {
                         "name": name,
@@ -1074,7 +1135,7 @@ class SkillEngine:
         never_used = [s for s in stale if s["status"] == "never_used"]
 
         return {
-            "total_skills": len(self._nodes),
+            "total_skills": self.node_count,
             "tracked_skills": len(tracked),
             "never_used_count": len(never_used),
             "stale_count": len([s for s in stale if s["status"] == "stale"]),
@@ -1092,6 +1153,8 @@ class SkillEngine:
         """
         inventory: list[dict[str, Any]] = []
         for name, node in self._nodes.items():
+            if not self._is_visible(node):
+                continue
             entry = self._usage.get(name) or {}
             inventory.append(
                 {
