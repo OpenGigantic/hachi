@@ -2486,5 +2486,83 @@ def memory_stats(
         console.print(f"  {name:<16} [cyan]{count}[/cyan]")
 
 
+# ---------------------------------------------------------------------------
+# daemon subcommand group
+# ---------------------------------------------------------------------------
+
+daemon_app = typer.Typer(
+    help="Manage the Tokoboros always-on background gateway daemon.",
+    no_args_is_help=True,
+)
+app.add_typer(daemon_app, name="daemon")
+
+
+def _make_installer(host: str, port: int):  # type: ignore[return]
+    from tokoboros.daemon import DaemonConfig, DaemonInstaller
+
+    return DaemonInstaller(DaemonConfig(host=host, port=port))
+
+
+@daemon_app.command("install")
+def daemon_install(
+    host: str = typer.Option("127.0.0.1", "--host", help="Gateway bind address."),
+    port: int = typer.Option(8787, "--port", help="Gateway bind port."),
+) -> None:
+    """Install the gateway as a persistent background service (auto-starts on login).
+
+    Supports macOS (launchd), Linux (systemd --user), and Windows (Task Scheduler).
+    """
+    try:
+        msg = _make_installer(host, port).install()
+        console.print(f"[green]✓[/green] {msg}")
+    except Exception as exc:
+        console.print(f"[red]daemon install failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+@daemon_app.command("uninstall")
+def daemon_uninstall() -> None:
+    """Stop and remove the Tokoboros daemon service."""
+    try:
+        msg = _make_installer("127.0.0.1", 8787).uninstall()
+        console.print(f"[green]✓[/green] {msg}")
+    except Exception as exc:
+        console.print(f"[red]daemon uninstall failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+@daemon_app.command("start")
+def daemon_start() -> None:
+    """Start the installed daemon without reinstalling."""
+    try:
+        msg = _make_installer("127.0.0.1", 8787).start()
+        console.print(f"[green]✓[/green] {msg}")
+    except Exception as exc:
+        console.print(f"[red]daemon start failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+@daemon_app.command("stop")
+def daemon_stop() -> None:
+    """Stop the running daemon without uninstalling."""
+    try:
+        msg = _make_installer("127.0.0.1", 8787).stop()
+        console.print(f"[green]✓[/green] {msg}")
+    except Exception as exc:
+        console.print(f"[red]daemon stop failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+@daemon_app.command("status")
+def daemon_status() -> None:
+    """Show whether the gateway daemon is running."""
+    try:
+        msg = _make_installer("127.0.0.1", 8787).status()
+        console.print(msg)
+    except Exception as exc:
+        console.print(f"[red]daemon status failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
 if __name__ == "__main__":
     app()
