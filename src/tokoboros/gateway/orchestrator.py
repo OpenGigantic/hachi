@@ -90,6 +90,7 @@ from tokoboros.tools.browser_tools import register_browser_tools
 from tokoboros.tools.delegation_tools import register_delegation_tools
 from tokoboros.tools.memory_tools import register_memory_tools, register_session_tools
 from tokoboros.tools.messaging_tools import register_messaging_tools
+from tokoboros.tools.notification_tools import register_notification_tools
 from tokoboros.tools.og_tools import USE_TOOLS_SCHEMA, _make_use_tools, register_og_tools
 from tokoboros.tools.os_tools import register_os_tools
 from tokoboros.tools.sandbox_tools import register_sandbox_tools
@@ -211,6 +212,8 @@ _GROUP_BY_TOOL_NAME: dict[str, str] = {
     "send_slack_message": "messaging",
     "send_discord_message": "messaging",
     "send_whatsapp_message": "messaging",
+    "notify_user": "notifications",
+    "send_email_digest": "notifications",
     "view_image": "vision",
     "transcribe_audio": "voice",
     "speak_text": "voice",
@@ -1229,9 +1232,13 @@ def boot_agent(
     # The controller is lazy — no browser launches until the agent first calls browse_web.
     browser_controller = register_browser_tools(tool_registry, runtime_gate)
 
-    # Outbound messaging (Slack/Discord). Credentials resolve lazily at call time, so these
-    # register cleanly even with no token set (they return a "not configured" hint until then).
+    # Outbound messaging (Slack/Discord/WhatsApp). Credentials resolve lazily at call time, so
+    # these register cleanly even with no token set (return a "not configured" hint until then).
     register_messaging_tools(tool_registry)
+
+    # Desktop push notifications + SMTP email digests. Zero config for desktop;
+    # email requires TOKOBOROS_SMTP_* env vars (degrades gracefully if unset).
+    register_notification_tools(tool_registry)
 
     # Vision input — view local images. Image blocks only flow to the Anthropic
     # provider, so the tool is provider-aware (it reports instead of analyzing on others).
