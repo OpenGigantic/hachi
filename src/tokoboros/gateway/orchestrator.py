@@ -1318,6 +1318,8 @@ def boot_agent(
     tool_registry.classify(
         core_names=set(_CORE_TOOL_NAMES),
         group_by_name=_GROUP_BY_TOOL_NAME,
+        # Google integration tools all share the "google_" prefix → lazy "google" group.
+        prefix_groups={"google_": "google"},
         default="integrations",
     )
 
