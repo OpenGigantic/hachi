@@ -9,8 +9,9 @@ from pathlib import Path
 import pytest
 
 from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.voice import SpeechToText, TextToSpeech, VoiceError
+from tokoboros.core.voice import SpeechToText, TextToSpeech, VoiceError, probe_audio_info
 from tokoboros.tools.voice_tools import (
+    _make_get_audio_info,
     _make_speak_text,
     _make_transcribe_audio,
     register_voice_tools,
@@ -128,6 +129,7 @@ def test_register_voice_tools_registers_in_voice_group() -> None:
     names = {schema["name"] for schema in registry.get_schemas()}
     assert "transcribe_audio" in names
     assert "speak_text" in names
+    assert "get_audio_info" in names
     assert "voice" in registry.available_groups()
 
 
@@ -287,3 +289,102 @@ def test_speak_tool_failure_is_friendly(tmp_path: Path) -> None:
     tool = _make_speak_text(_Gate("guided"), tts)
     out = tool("hi", str(tmp_path / "x.mp3"))
     assert "Speech synthesis failed" in out
+
+
+# --------------------------------------------------------------------------- #
+# probe_audio_info (backend, keyless)
+# --------------------------------------------------------------------------- #
+
+def _write_wav(path: Path, sample_rate: int = 16000, n_channels: int = 1, n_frames: int = 16000) -> Path:
+    """Write a minimal PCM WAV file suitable for testing.
+
+    ``n_frames`` is the number of multi-channel frames.  Each frame contains
+    ``n_channels`` samples, so the total number of 16-bit values written is
+    ``n_frames * n_channels``.
+    """
+    import struct
+    import wave
+
+    total_samples = n_frames * n_channels
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(n_channels)
+        wf.setsampwidth(2)  # 16-bit
+        wf.setframerate(sample_rate)
+        wf.writeframes(struct.pack(f"<{total_samples}h", *([0] * total_samples)))
+    return path
+
+
+def test_probe_wav_returns_full_metadata(tmp_path: Path) -> None:
+    p = _write_wav(tmp_path / "clip.wav", sample_rate=44100, n_channels=2, n_frames=44100)
+    info = probe_audio_info(p)
+    assert info["probeable"] is True
+    assert info["format"] == "wav"
+    assert info["sample_rate"] == 44100
+    assert info["channels"] == 2
+    assert abs(info["duration_seconds"] - 1.0) < 0.01
+    assert info["size_bytes"] > 0
+
+
+def test_probe_non_wav_returns_size_only(tmp_path: Path) -> None:
+    mp3 = tmp_path / "track.mp3"
+    mp3.write_bytes(b"\xff\xfb" + b"\x00" * 100)
+    info = probe_audio_info(mp3)
+    assert info["probeable"] is False
+    assert info["format"] == "mp3"
+    assert info["size_bytes"] == 102
+    assert "duration_seconds" not in info
+
+
+def test_probe_missing_file_raises(tmp_path: Path) -> None:
+    with pytest.raises(VoiceError, match="not found"):
+        probe_audio_info(tmp_path / "ghost.wav")
+
+
+def test_probe_corrupt_wav_raises(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.wav"
+    bad.write_bytes(b"RIFF garbage not a real wav")
+    with pytest.raises(VoiceError, match="could not read WAV header"):
+        probe_audio_info(bad)
+
+
+# --------------------------------------------------------------------------- #
+# get_audio_info tool
+# --------------------------------------------------------------------------- #
+
+def test_audio_info_tool_blocked_in_sandbox(tmp_path: Path) -> None:
+    p = _write_wav(tmp_path / "clip.wav")
+    tool = _make_get_audio_info(_Gate("sandbox"))
+    out = tool(str(p))
+    assert "disabled in 'sandbox'" in out
+
+
+def test_audio_info_tool_path_denied(tmp_path: Path) -> None:
+    p = _write_wav(tmp_path / "clip.wav")
+    tool = _make_get_audio_info(_Gate("guided", allowed=False))
+    out = tool(str(p))
+    assert "Permission Denied" in out
+
+
+def test_audio_info_tool_happy_wav(tmp_path: Path) -> None:
+    p = _write_wav(tmp_path / "mono.wav", sample_rate=22050, n_channels=1, n_frames=22050)
+    tool = _make_get_audio_info(_Gate("guided"))
+    out = tool(str(p))
+    assert "WAV" in out
+    assert "22,050 Hz" in out
+    assert "mono" in out
+    assert "duration_seconds" in out  # JSON block present
+
+
+def test_audio_info_tool_non_wav_friendly(tmp_path: Path) -> None:
+    mp3 = tmp_path / "song.mp3"
+    mp3.write_bytes(b"\xff\xfb" + b"\x00" * 50)
+    tool = _make_get_audio_info(_Gate("guided"))
+    out = tool(str(mp3))
+    assert "MP3" in out
+    assert "not available" in out  # graceful non-WAV message
+
+
+def test_audio_info_tool_missing_file_friendly(tmp_path: Path) -> None:
+    tool = _make_get_audio_info(_Gate("guided"))
+    out = tool(str(tmp_path / "nope.wav"))
+    assert "Audio info failed" in out
