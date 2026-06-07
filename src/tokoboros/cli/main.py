@@ -1531,6 +1531,95 @@ def config_validate(
     raise typer.Exit(0 if overall else 1)
 
 
+@app.command("config-get")
+def config_get(
+    key: str | None = typer.Argument(None, help="Dot-separated key, e.g. provider.model."),
+    as_json: bool = typer.Option(False, "--json", help="Emit as JSON."),
+) -> None:
+    """Show one or all effective configuration values.
+
+    Pass a key (dot-separated) to show a single value, or omit to show all
+    top-level settings.  Read-only — use config-set to change values.
+    """
+    cfg = load_effective_config()
+    flat: dict[str, object] = {
+        "provider.kind": cfg.provider.kind,
+        "provider.model": cfg.provider.model,
+        "provider.base_url": getattr(cfg.provider, "base_url", None),
+        "safety_tier": cfg.safety_tier,
+        "max_tokens": cfg.max_tokens,
+        "session_cost_cap_usd": cfg.session_cost_cap_usd,
+        "workspace_dir": str(get_tokoboros_paths().workspace_dir),
+    }
+
+    if key is not None:
+        if key not in flat:
+            console.print(f"[red]Unknown key:[/red] {key!r}")
+            console.print(f"  Known keys: {', '.join(sorted(flat))}")
+            raise typer.Exit(1)
+        value = flat[key]
+        if as_json:
+            print(json.dumps({key: value}))
+        else:
+            console.print(f"{key} = {value!r}")
+        return
+
+    if as_json:
+        print(json.dumps(flat, default=str))
+        return
+    for k, v in sorted(flat.items()):
+        console.print(f"[bold]{k}[/bold] = {v!r}")
+
+
+@app.command("config-set")
+def config_set(
+    key: str = typer.Argument(..., help="Dot-separated key, e.g. provider.model."),
+    value: str = typer.Argument(..., help="New value (always stored as a string or parsed)."),
+    as_json: bool = typer.Option(False, "--json", help="Emit result as JSON."),
+) -> None:
+    """Set a configuration value and persist it to settings.toml.
+
+    Supports provider.model, safety_tier, max_tokens, session_cost_cap_usd,
+    and provider.base_url. Changes take effect on the next ``tokoboros run``.
+    """
+    cfg = load_effective_config()
+
+    try:
+        if key == "provider.model":
+            cfg.provider.model = value
+        elif key == "provider.base_url":
+            cfg.provider.base_url = value
+        elif key == "safety_tier":
+            if value not in {"sandbox", "guided", "unrestricted"}:
+                console.print(
+                    "[red]safety_tier must be one of:[/red] sandbox, guided, unrestricted"
+                )
+                raise typer.Exit(1)
+            cfg.safety_tier = value
+        elif key == "max_tokens":
+            cfg.max_tokens = int(value)
+        elif key == "session_cost_cap_usd":
+            cfg.session_cost_cap_usd = float(value)
+        else:
+            console.print(f"[red]Cannot set:[/red] {key!r}  (not a writable key)")
+            console.print(
+                "  Writable keys: provider.model, provider.base_url, safety_tier, "
+                "max_tokens, session_cost_cap_usd"
+            )
+            raise typer.Exit(1)
+    except (ValueError, TypeError) as exc:
+        console.print(f"[red]Invalid value for {key}:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    write_global_config(cfg)
+
+    if as_json:
+        print(json.dumps({"key": key, "value": value, "ok": True}))
+        return
+    console.print(f"[green]Set[/green] {key} = {value!r}")
+    console.print("[dim]Restart the agent for changes to take effect.[/dim]")
+
+
 @app.command()
 def models(
     json_output: bool = typer.Option(
