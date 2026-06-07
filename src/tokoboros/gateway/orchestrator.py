@@ -88,6 +88,7 @@ from tokoboros.jobs import InMemoryJobQueue, Job, JobQueue, JobStatus, JobWorker
 from tokoboros.jobs.scheduler import Scheduler, ScheduleStore
 from tokoboros.og_engine.engine import SkillEngine
 from tokoboros.tools.browser_tools import register_browser_tools
+from tokoboros.tools.config_tools import register_config_tools
 from tokoboros.tools.delegation_tools import register_delegation_tools
 from tokoboros.tools.memory_tools import register_memory_tools, register_session_tools
 from tokoboros.tools.messaging_tools import register_messaging_tools
@@ -1289,6 +1290,10 @@ def boot_agent(
 
     # Register MCP tools
     mcp_manager.register_tools(tool_registry)
+
+    # Agent-accessible configuration + MCP management tools.
+    # Registered AFTER MCP manager so list_mcp_servers sees all nodes.
+    register_config_tools(tool_registry, gate=runtime_gate)
 
     # Register Delegation tools (MUST be LAST — needs full parent registry)
     register_delegation_tools(
