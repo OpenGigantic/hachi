@@ -1914,6 +1914,41 @@ def schedule_list():
         )
 
 
+@schedule_app.command("show")
+def schedule_show(
+    schedule_id: str = typer.Argument(..., help="Schedule ID (or unique prefix) to inspect."),
+    as_json: bool = typer.Option(False, "--json", help="Emit full details as JSON."),
+) -> None:
+    """Show full details for a single schedule."""
+    schedule = _get_scheduler().get(schedule_id)
+    if schedule is None:
+        console.print(f"[red]Schedule not found:[/red] {schedule_id!r}")
+        raise typer.Exit(1)
+
+    if as_json:
+        print(json.dumps(schedule.to_dict()))
+        return
+
+    state = "[green]enabled[/green]" if schedule.enabled else "[yellow]disabled[/yellow]"
+    console.print(f"[bold]{schedule.name}[/bold]  {state}")
+    console.print(f"  ID:       {schedule.schedule_id}")
+    console.print(f"  Kind:     {schedule.kind.value}")
+    console.print(f"  Task:     {schedule.task}")
+    if schedule.cron:
+        console.print(f"  Cron:     {schedule.cron}")
+    if schedule.interval_seconds is not None:
+        console.print(f"  Interval: {schedule.interval_seconds}s")
+    if schedule.run_at:
+        console.print(f"  Run at:   {schedule.run_at}")
+    console.print(f"  Deliver:  {schedule.deliver_to}")
+    if schedule.webhook_url:
+        console.print(f"  Webhook:  {schedule.webhook_url}")
+    console.print(f"  Created:  {schedule.created_at}")
+    console.print(f"  Next run: {schedule.next_run or '(none)'}")
+    console.print(f"  Last run: {schedule.last_run or '(never)'}")
+    console.print(f"  Run count: {schedule.run_count}")
+
+
 @schedule_app.command("remove")
 def schedule_remove(schedule_id: str = typer.Argument(..., help="Schedule id to remove.")):
     """Remove a schedule by id."""
