@@ -1,4 +1,4 @@
-"""LLM-callable outbound messaging tools (Slack / Discord / WhatsApp).
+"""LLM-callable outbound messaging tools (Slack / Discord / WhatsApp / Telegram).
 
 Let the agent proactively post to messaging platforms — e.g. "send the summary to #ops"
 or "send this update to +447911123456 on WhatsApp". Credentials are resolved lazily from
@@ -9,13 +9,36 @@ can recover or report it.
 
 from __future__ import annotations
 
+import json
+import os
+import urllib.error
+import urllib.request
 from collections.abc import Callable
+from typing import Any
 
 from tokoboros.channels.discord import DiscordError, DiscordSender
 from tokoboros.channels.slack import SlackError, SlackSender
 from tokoboros.channels.whatsapp import WhatsAppError, WhatsAppSender
 from tokoboros.core.loop import ToolRegistry
 from tokoboros.core.secret_scanner import redact_outbound
+
+# ---------------------------------------------------------------------------
+# Telegram sender (stdlib only — no external deps)
+# ---------------------------------------------------------------------------
+
+_TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
+
+
+def _telegram_send(token: str, chat_id: str, text: str) -> dict[str, Any]:
+    """POST text to a Telegram chat. Returns the API response dict."""
+    url = _TELEGRAM_API.format(token=token, method="sendMessage")
+    payload = json.dumps({"chat_id": chat_id, "text": text}).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+        return json.loads(resp.read().decode())
+
+
+TelegramSender = Callable[[str, str, str], dict[str, Any]]
 
 
 def _guard_outbound(text: str) -> tuple[str, str]:
@@ -156,14 +179,65 @@ SEND_WHATSAPP_MESSAGE_SCHEMA = {
 }
 
 
+def _make_send_telegram(sender: TelegramSender | None) -> Callable[[str, str], str]:
+    def send_telegram_message(text: str, chat_id: str = "") -> str:
+        text, guard_note = _guard_outbound(text)
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        target = chat_id or os.environ.get("TELEGRAM_CHAT_ID", "")
+        if not token:
+            return (
+                "Telegram is not configured. Set TELEGRAM_BOT_TOKEN and optionally "
+                "TELEGRAM_CHAT_ID (or pass chat_id), then try again."
+            )
+        if not target:
+            return (
+                "No Telegram chat_id provided. Pass `chat_id` or set TELEGRAM_CHAT_ID."
+            )
+        try:
+            fn = sender or _telegram_send
+            fn(token, target, text)
+        except urllib.error.HTTPError as exc:
+            return f"Telegram send failed: HTTP {exc.code} — {exc.reason}"
+        except Exception as exc:
+            return f"Telegram send failed: {exc}"
+        return f"Sent Telegram message to chat {target}." + guard_note
+
+    return send_telegram_message
+
+
+SEND_TELEGRAM_MESSAGE_SCHEMA = {
+    "name": "send_telegram_message",
+    "description": (
+        "Send a message to a Telegram chat via a bot. Use this to proactively notify "
+        "the user or a group on Telegram — e.g. send a summary, reminder, or alert. "
+        "Requires TELEGRAM_BOT_TOKEN. Pass `chat_id` or set TELEGRAM_CHAT_ID."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "text": {"type": "string", "description": "The message text to send."},
+            "chat_id": {
+                "type": "string",
+                "description": (
+                    "Target chat id (user, group, or channel). Falls back to "
+                    "TELEGRAM_CHAT_ID env var when omitted."
+                ),
+            },
+        },
+        "required": ["text"],
+    },
+}
+
+
 def register_messaging_tools(
     registry: ToolRegistry,
     *,
     slack_sender: SlackSender | None = None,
     discord_sender: DiscordSender | None = None,
     whatsapp_sender: WhatsAppSender | None = None,
+    telegram_sender: TelegramSender | None = None,
 ) -> None:
-    """Register outbound Slack/Discord/WhatsApp tools.
+    """Register outbound Slack/Discord/WhatsApp/Telegram tools.
 
     Senders are optional — when omitted, credentials are resolved from the environment at
     call time, so the tools register cleanly even before any token is configured (they return
@@ -172,3 +246,4 @@ def register_messaging_tools(
     registry.register(SEND_SLACK_MESSAGE_SCHEMA, _make_send_slack(slack_sender))
     registry.register(SEND_DISCORD_MESSAGE_SCHEMA, _make_send_discord(discord_sender))
     registry.register(SEND_WHATSAPP_MESSAGE_SCHEMA, _make_send_whatsapp(whatsapp_sender))
+    registry.register(SEND_TELEGRAM_MESSAGE_SCHEMA, _make_send_telegram(telegram_sender))
