@@ -1212,8 +1212,11 @@ def _resolve_resume_target(*, resume: bool, continue_latest: bool) -> str | None
             started = str(item.get("started_at", ""))[:19].replace("T", " ")
             turns = item.get("total_turns", 0)
             model = item.get("model", "unknown")
+            title = (item.get("title") or "").strip()
+            title_prefix = f"[white]{title}[/white]  " if title else ""
             console.print(
-                f"  [cyan]{index}[/cyan]. {started}  ·  {turns} turns  ·  [dim]{model}[/dim]"
+                f"  [cyan]{index}[/cyan]. {title_prefix}{started}"
+                f"  ·  {turns} turns  ·  [dim]{model}[/dim]"
             )
 
         choice = Prompt.ask(

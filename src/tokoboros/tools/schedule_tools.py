@@ -84,9 +84,9 @@ def _make_cancel_schedule(scheduler: Scheduler) -> Callable[[str], str]:
 
 
 SCHEDULE_TASK_SCHEMA = {
-    "name": "schedule_task",
+    "name": "create_schedule",
     "description": (
-        "Schedule a task to run proactively later or on a recurring basis — without the user "
+        "Create a proactive schedule — run a task later or on a recurring basis without the user "
         "having to ask each time. Use for reminders, daily briefings, periodic checks, etc. "
         "Choose kind='cron' with a 5-field cron expression (e.g. '0 9 * * 1-5' = weekdays 9am), "
         "kind='interval' with interval_seconds, or kind='once' with run_at (ISO datetime). The "
@@ -135,8 +135,11 @@ LIST_SCHEDULES_SCHEMA = {
 }
 
 CANCEL_SCHEDULE_SCHEMA = {
-    "name": "cancel_schedule",
-    "description": "Cancel a proactive schedule by its schedule_id (from list_schedules).",
+    "name": "delete_schedule",
+    "description": (
+        "Delete (cancel/remove) a proactive schedule by its schedule_id. "
+        "Also callable as cancel_schedule. Use list_schedules first to find the id."
+    ),
     "input_schema": {
         "type": "object",
         "properties": {
@@ -147,8 +150,16 @@ CANCEL_SCHEDULE_SCHEMA = {
 }
 
 
+_CANCEL_ALIAS_SCHEMA = {
+    **CANCEL_SCHEDULE_SCHEMA,
+    "name": "cancel_schedule",
+    "description": "Alias for delete_schedule — cancel a proactive schedule by its schedule_id.",
+}
+
+
 def register_schedule_tools(registry: ToolRegistry, scheduler: Scheduler) -> None:
     """Mount the scheduling tools onto the provided ToolRegistry."""
     registry.register(SCHEDULE_TASK_SCHEMA, _make_schedule_task(scheduler))
     registry.register(LIST_SCHEDULES_SCHEMA, _make_list_schedules(scheduler))
     registry.register(CANCEL_SCHEDULE_SCHEMA, _make_cancel_schedule(scheduler))
+    registry.register(_CANCEL_ALIAS_SCHEMA, _make_cancel_schedule(scheduler))

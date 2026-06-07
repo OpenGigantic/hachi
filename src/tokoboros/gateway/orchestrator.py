@@ -86,7 +86,7 @@ from tokoboros.gateway.workspace import (
     load_config,
 )
 from tokoboros.jobs import InMemoryJobQueue, Job, JobQueue, JobStatus, JobWorker
-from tokoboros.jobs.scheduler import Scheduler, ScheduleStore
+from tokoboros.jobs.scheduler import Schedule, Scheduler, ScheduleRunner, ScheduleStore
 from tokoboros.og_engine.engine import SkillEngine
 from tokoboros.tools.browser_tools import register_browser_tools
 from tokoboros.tools.config_tools import register_config_tools
@@ -210,8 +210,10 @@ _GROUP_BY_TOOL_NAME: dict[str, str] = {
     "browser_act": "browser",
     "browser_screenshot": "browser",
     "python_sandbox": "sandbox",
+    "create_schedule": "schedule",
     "schedule_task": "schedule",
     "list_schedules": "schedule",
+    "delete_schedule": "schedule",
     "cancel_schedule": "schedule",
     "core_suspend_workflow": "workflow",
     "send_slack_message": "messaging",
@@ -918,6 +920,10 @@ class AgentSession:
 
     def shutdown(self):
         """Gracefully close all persistent connections, MCP servers, and session store."""
+        runner = getattr(self, "_schedule_runner", None)
+        if runner is not None:
+            runner.stop()
+
         self._drain_job_queue()
 
         # End the persistent session
@@ -1513,6 +1519,20 @@ def boot_agent(
             pass
     session._sub_agent_client = sub_agent_client  # closed on shutdown alongside the main client
     session._browser_controller = browser_controller  # closed on shutdown (no-op if never used)
+
+    # Start the background schedule runner now that session.chat() is available.
+    # The fire callback calls session.chat() so the agent executes the task and
+    # delivers the result via the session's normal event pipeline.
+    def _fire_schedule(s: Schedule) -> None:
+        try:
+            session.chat(s.task)
+        except Exception:
+            import logging as _logging
+            _logging.getLogger(__name__).exception("Schedule fire error for '%s'", s.name)
+
+    _schedule_runner = ScheduleRunner(scheduler, fire=_fire_schedule)
+    _schedule_runner.start()
+    session._schedule_runner = _schedule_runner  # stopped in shutdown()
 
     emit_runtime_event(
         BOOT_COMPLETE,
