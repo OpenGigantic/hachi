@@ -452,6 +452,57 @@ class MemoryManager:
         self._skill_start_index = 0
         self._last_user_query = ""
 
+    def repair_tool_pairs(self) -> int:
+        """Ensure every tool_use block has a tool_result immediately after its assistant message.
+
+        Scans history for assistant messages whose tool_use ids have no matching tool_result
+        in the following user message, and injects a synthetic tool_result so the Anthropic
+        API never rejects the request with a 400. Returns the number of synthetic results added.
+        """
+        repaired = 0
+        i = 0
+        while i < len(self._history):
+            msg = self._history[i]
+            if msg.role != "assistant" or not isinstance(msg.content, list):
+                i += 1
+                continue
+
+            tool_use_ids = [
+                b["id"]
+                for b in msg.content
+                if isinstance(b, dict) and b.get("type") == "tool_use"
+            ]
+            if not tool_use_ids:
+                i += 1
+                continue
+
+            # Collect tool_result ids from the immediately following user message, if any.
+            next_msg = self._history[i + 1] if i + 1 < len(self._history) else None
+            answered: set[str] = set()
+            if next_msg and next_msg.role == "user" and isinstance(next_msg.content, list):
+                answered = {
+                    b.get("tool_use_id", "")
+                    for b in next_msg.content
+                    if isinstance(b, dict) and b.get("type") == "tool_result"
+                }
+
+            missing = [tid for tid in tool_use_ids if tid not in answered]
+            if missing:
+                synthetic = [
+                    {"type": "tool_result", "tool_use_id": tid, "content": "[result unavailable]"}
+                    for tid in missing
+                ]
+                if next_msg and next_msg.role == "user" and isinstance(next_msg.content, list):
+                    # Append to the existing tool_result message.
+                    next_msg.content.extend(synthetic)
+                else:
+                    # Insert a new tool_result message right after.
+                    self._history.insert(i + 1, Message(role="user", content=synthetic))
+                repaired += len(missing)
+            i += 1
+
+        return repaired
+
     def seed_history(self, messages: list[Message]) -> int:
         """Replay prior-session messages into active history (resume support).
 
@@ -503,6 +554,34 @@ class MemoryManager:
         anchor = self._history[:2]
         # Ensure anchor does not overlap safe_cut
         safe_cut = max(safe_cut, 2)
+
+        # Nothing to drop — clamping consumed the entire candidate window.
+        # Inserting a checkpoint here would be a no-op at best and could break
+        # tool_use/tool_result pairs whose tool_use sits in anchor[1].
+        if safe_cut >= len(self._history):
+            return
+
+        # If any tool_use in the anchor has its matching tool_result in the
+        # retained slice, the checkpoint insertion would sit between them and
+        # break the pair, causing an Anthropic 400.  Skip compaction in that case.
+        anchor_tool_use_ids: set[str] = {
+            b["id"]
+            for msg in anchor
+            for b in (msg.content if isinstance(msg.content, list) else [])
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        }
+        if anchor_tool_use_ids:
+            retained = self._history[safe_cut:]
+            anchor_results_in_retained = any(
+                isinstance(b, dict)
+                and b.get("type") == "tool_result"
+                and b.get("tool_use_id") in anchor_tool_use_ids
+                for msg in retained
+                for b in (msg.content if isinstance(msg.content, list) else [])
+            )
+            if anchor_results_in_retained:
+                return
+
         dropped_messages = self._history[2:safe_cut]
         recent = self._history[safe_cut:]
 

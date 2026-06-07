@@ -70,7 +70,11 @@ class GmailService(GoogleService):
 
             subject = next((h["value"] for h in headers if h["name"] == "Subject"), "No Subject")
             sender = next((h["value"] for h in headers if h["name"] == "From"), "Unknown")
-            result.append(f"From: {sender}\nSubject: {subject}\nID: {msg_id}\n---")
+            thread_id = detail_resp.get("threadId", msg_id)
+            result.append(
+                f"From: {sender}\nSubject: {subject}\n"
+                f"Message-ID: {msg_id}\nThread-ID: {thread_id}\n---"
+            )
 
         return "\n".join(result)
 
@@ -96,7 +100,11 @@ class GmailService(GoogleService):
 
             subject = next((h["value"] for h in headers if h["name"] == "Subject"), "No Subject")
             sender = next((h["value"] for h in headers if h["name"] == "From"), "Unknown")
-            result.append(f"From: {sender}\nSubject: {subject}\nID: {msg_id}\n---")
+            thread_id = detail_resp.get("threadId", msg_id)
+            result.append(
+                f"From: {sender}\nSubject: {subject}\n"
+                f"Message-ID: {msg_id}\nThread-ID: {thread_id}\n---"
+            )
 
         return "\n".join(result)
 
