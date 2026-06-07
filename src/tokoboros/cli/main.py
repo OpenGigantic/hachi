@@ -2999,6 +2999,112 @@ def memory_stats(
         console.print(f"  {name:<16} [cyan]{count}[/cyan]")
 
 
+@memory_app.command("add")
+def memory_add(
+    text: str = typer.Argument(..., help="Fact text to store."),
+    to: str = typer.Option(
+        "core",
+        "--to",
+        help="Collection to write to: core | user | agent",
+    ),
+    category: str = typer.Option(
+        "",
+        "--category",
+        "-c",
+        help=(
+            "Category tag (core default: workspace_state; "
+            "user default: preference; agent default: directive)."
+        ),
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit result as JSON."),
+) -> None:
+    """Add a fact directly to the long-term memory vault.
+
+    Examples::
+
+        tokoboros memory add "The project uses PostgreSQL 15."
+        tokoboros memory add "User prefers dark mode." --to user
+        tokoboros memory add "Always cite sources." --to agent --category directive
+    """
+    from tokoboros.core.memory_vault import MemoryVault
+
+    valid_collections = {"core", "user", "agent"}
+    if to not in valid_collections:
+        console.print(
+            f"[red]Unknown collection:[/red] {to!r} — choose core, user, or agent."
+        )
+        raise typer.Exit(1)
+
+    vault = MemoryVault()
+    if to == "core":
+        cat = category or "workspace_state"
+        fact_id = vault.upsert_fact(text, category=cat)
+    elif to == "user":
+        cat = category or "preference"
+        fact_id = vault.upsert_user_fact(text, category=cat)
+    else:  # agent
+        cat = category or "directive"
+        fact_id = vault.upsert_agent_fact(text, category=cat)
+
+    if as_json:
+        print(json.dumps({"id": fact_id, "collection": to, "category": cat}))
+        return
+
+    if fact_id.startswith("BLOCKED:"):
+        console.print(f"[red]Blocked by memory guard:[/red] {fact_id}")
+        raise typer.Exit(1)
+    if fact_id == "LIMIT_REACHED":
+        console.print(
+            "[yellow]User profile is full.[/yellow] Remove facts with "
+            "`tokoboros memory forget` before adding more."
+        )
+        raise typer.Exit(1)
+
+    console.print(f"[green]Stored[/green] [dim]({to}/{cat})[/dim]  {fact_id[:16]}…")
+
+
+@memory_app.command("forget")
+def memory_forget(
+    fact_id: str = typer.Argument(..., help="Fact ID returned by `memory search` or `memory add`."),
+    from_: str = typer.Option(
+        "core",
+        "--from",
+        help="Collection to delete from: core | user | agent",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit result as JSON."),
+) -> None:
+    """Delete a fact from the memory vault by its ID.
+
+    Run `tokoboros memory search <query>` to find the ID shown on each result.
+    """
+    from tokoboros.core.memory_vault import MemoryVault
+
+    valid_collections = {"core", "user", "agent"}
+    if from_ not in valid_collections:
+        console.print(
+            f"[red]Unknown collection:[/red] {from_!r} — choose core, user, or agent."
+        )
+        raise typer.Exit(1)
+
+    vault = MemoryVault()
+    if from_ == "core":
+        ok = vault.delete_fact(fact_id)
+    elif from_ == "user":
+        ok = vault.delete_user_fact(fact_id)
+    else:  # agent
+        ok = vault.delete_agent_fact(fact_id)
+
+    if as_json:
+        print(json.dumps({"deleted": ok, "id": fact_id, "collection": from_}))
+        return
+
+    if ok:
+        console.print(f"[green]Deleted[/green] {fact_id[:16]}… from [dim]{from_}[/dim]")
+    else:
+        console.print(f"[yellow]Not found:[/yellow] {fact_id!r} in {from_} collection.")
+        raise typer.Exit(1)
+
+
 # ---------------------------------------------------------------------------
 # session subcommand group
 # ---------------------------------------------------------------------------
