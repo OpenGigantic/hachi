@@ -26,6 +26,9 @@ Security:
 import json
 import logging
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import wait as futures_wait
+from typing import Any
 
 from tokoboros.core.loop import ToolRegistry
 from tokoboros.core.permissions import PermissionGate
@@ -124,6 +127,7 @@ BLOCKED_TOOL_NAMES = frozenset(
     {
         # Delegation (no recursive spawning)
         "delegate_task",
+        "delegate_parallel_tasks",
         "list_roles",
         # Core memory (no long-term memory writes from sub-agents)
         "core_save_memory",
@@ -373,6 +377,201 @@ def _make_delegate_task(
     return delegate_task
 
 
+_PARALLEL_MAX_WORKERS = 3  # matches Hermes' "3 parallel sub-agents"
+_PARALLEL_DEFAULT_TIMEOUT = 300  # seconds per sub-agent
+
+
+def _make_delegate_parallel_tasks(
+    parent_registry: ToolRegistry,
+    gate: PermissionGate | None = None,
+    on_event: Callable[..., None] | None = None,
+    vault: Any = None,
+    job_queue: Any = None,
+    sub_agent_llm: Any = None,
+    cost_tracker: Any = None,
+) -> Callable[..., str]:
+    """Factory: creates the delegate_parallel_tasks tool handler.
+
+    Each task in the list is dispatched to a separate sub-agent thread,
+    up to :data:`_PARALLEL_MAX_WORKERS` concurrently.  All results are
+    collected before returning.
+
+    Args:
+        parent_registry: The orchestrator's full ToolRegistry.
+        gate:            The device permission gate.
+        on_event:        Optional progress callback.
+        vault:           Optional MemoryVault for delegation persistence.
+        job_queue:       Optional job queue.
+        sub_agent_llm:   Credential-resolved LLM client for sub-agents.
+        cost_tracker:    Shared cost tracker (thread-safe).
+
+    Returns:
+        A callable that accepts ``tasks`` and returns a JSON result string.
+    """
+    # Build a single-task dispatcher we can call from threads.
+    _single = _make_delegate_task(
+        parent_registry, gate, on_event, vault, job_queue, sub_agent_llm, cost_tracker
+    )
+
+    def delegate_parallel_tasks(
+        tasks: list[dict[str, str]],
+        timeout_sec: int = _PARALLEL_DEFAULT_TIMEOUT,
+    ) -> str:
+        """Run up to 3 sub-agent tasks in parallel and return all results.
+
+        Each item in ``tasks`` must have ``role`` and ``task`` keys and may have
+        an optional ``context`` key.  Sub-agents run concurrently (max 3 at a
+        time).  Slower tasks do not block faster ones from completing.
+
+        Args:
+            tasks: List of ``{"role": "...", "task": "...", "context": "..."}``
+                   dicts — at most 10 items.
+            timeout_sec: Per-task timeout in seconds (default 300).
+
+        Returns:
+            JSON string with ``results`` list (one entry per task), each with
+            ``role``, ``task``, ``status`` ("ok" | "timeout" | "error"),
+            ``output``, and ``index``.
+        """
+        if not tasks:
+            return json.dumps({"results": [], "message": "No tasks provided."})
+
+        items = tasks[:10]  # cap at 10 to avoid runaway spawning
+
+        if on_event:
+            on_event(
+                "delegation_parallel_start",
+                {"count": len(items), "roles": [t.get("role", "?") for t in items]},
+            )
+
+        results: list[dict[str, Any]] = [{}] * len(items)
+        futures: list[Future[str]] = []
+
+        with ThreadPoolExecutor(
+            max_workers=min(_PARALLEL_MAX_WORKERS, len(items)),
+            thread_name_prefix="toko-subagent",
+        ) as pool:
+            for idx, task_spec in enumerate(items):
+                role = str(task_spec.get("role", "researcher"))
+                task = str(task_spec.get("task", ""))
+                context = str(task_spec.get("context", ""))
+                fut: Future[str] = pool.submit(_single, role, task, context)
+                # Attach metadata to retrieve later
+                fut._toko_idx = idx  # type: ignore[attr-defined]
+                fut._toko_role = role  # type: ignore[attr-defined]
+                fut._toko_task = task  # type: ignore[attr-defined]
+                futures.append(fut)
+
+            done, timed_out = futures_wait(futures, timeout=timeout_sec)
+
+        for fut in futures:
+            idx = fut._toko_idx  # type: ignore[attr-defined]
+            role = fut._toko_role  # type: ignore[attr-defined]
+            task = fut._toko_task  # type: ignore[attr-defined]
+            if fut in done:
+                exc = fut.exception()
+                if exc is not None:
+                    results[idx] = {
+                        "index": idx,
+                        "role": role,
+                        "task": task[:100],
+                        "status": "error",
+                        "output": f"Sub-agent error: {exc}",
+                    }
+                else:
+                    results[idx] = {
+                        "index": idx,
+                        "role": role,
+                        "task": task[:100],
+                        "status": "ok",
+                        "output": fut.result(),
+                    }
+            else:
+                # Timed out — cancel the future (best-effort)
+                fut.cancel()
+                results[idx] = {
+                    "index": idx,
+                    "role": role,
+                    "task": task[:100],
+                    "status": "timeout",
+                    "output": (
+                        f"Sub-agent did not complete within {timeout_sec}s. "
+                        "Consider breaking the task into smaller steps."
+                    ),
+                }
+
+        ok_count = sum(1 for r in results if r.get("status") == "ok")
+        if on_event:
+            on_event(
+                "delegation_parallel_complete",
+                {"total": len(items), "ok": ok_count},
+            )
+
+        return json.dumps(
+            {
+                "results": results,
+                "summary": f"{ok_count}/{len(items)} tasks completed successfully.",
+            },
+            indent=2,
+        )
+
+    return delegate_parallel_tasks
+
+
+DELEGATE_PARALLEL_TASKS_SCHEMA: dict[str, Any] = {
+    "name": "delegate_parallel_tasks",
+    "description": (
+        "Dispatch up to 3 sub-agent tasks in parallel and wait for all results. "
+        "Use this when you have multiple INDEPENDENT work items that do not depend on "
+        "each other — e.g. researching 3 different APIs concurrently, running "
+        "separate code audits in parallel, or generating multiple content drafts at once. "
+        "Do NOT use for tasks that must run in sequence. "
+        "Each task runs in full isolation with its own tool scope and context. "
+        "Returns a JSON object with `results` (one per task) and a `summary`."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "tasks": {
+                "type": "array",
+                "description": "List of tasks to run in parallel (max 10).",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "role": {
+                            "type": "string",
+                            "description": (
+                                "Sub-agent role (e.g. 'researcher', 'coder'). "
+                                "Use list_roles to see available roles."
+                            ),
+                        },
+                        "task": {
+                            "type": "string",
+                            "description": "Self-contained task description for this sub-agent.",
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "Optional background context string.",
+                        },
+                    },
+                    "required": ["role", "task"],
+                },
+                "maxItems": 10,
+            },
+            "timeout_sec": {
+                "type": "integer",
+                "description": (
+                    "Maximum seconds to wait per sub-agent (default 300). "
+                    "Timed-out tasks are marked with status='timeout'."
+                ),
+                "default": 300,
+            },
+        },
+        "required": ["tasks"],
+    },
+}
+
+
 def _enqueue_delegation_persistence(job_queue, vault, report: SubAgentReport) -> None:
     """Persist a delegation result through the job queue when available.
 
@@ -504,6 +703,12 @@ def register_delegation_tools(
     registry.register(
         DELEGATE_TASK_SCHEMA,
         _make_delegate_task(
+            registry, gate, on_event, vault, job_queue, sub_agent_llm, cost_tracker
+        ),
+    )
+    registry.register(
+        DELEGATE_PARALLEL_TASKS_SCHEMA,
+        _make_delegate_parallel_tasks(
             registry, gate, on_event, vault, job_queue, sub_agent_llm, cost_tracker
         ),
     )
