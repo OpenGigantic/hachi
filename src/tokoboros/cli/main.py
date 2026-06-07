@@ -1949,6 +1949,43 @@ def schedule_show(
     console.print(f"  Run count: {schedule.run_count}")
 
 
+@schedule_app.command("pause")
+def schedule_pause(
+    schedule_id: str = typer.Argument(..., help="Schedule ID to pause."),
+    as_json: bool = typer.Option(False, "--json", help="Emit result as JSON."),
+) -> None:
+    """Pause a schedule so it stops firing without being deleted.
+
+    Resume it later with `tokoboros schedule resume <id>`.
+    """
+    ok = _get_scheduler().set_enabled(schedule_id, False)
+    if as_json:
+        print(json.dumps({"paused": ok, "id": schedule_id}))
+        return
+    if ok:
+        console.print(f"[yellow]Paused[/yellow] {schedule_id}")
+    else:
+        console.print(f"[red]Schedule not found:[/red] {schedule_id!r}")
+        raise typer.Exit(1)
+
+
+@schedule_app.command("resume")
+def schedule_resume(
+    schedule_id: str = typer.Argument(..., help="Schedule ID to resume."),
+    as_json: bool = typer.Option(False, "--json", help="Emit result as JSON."),
+) -> None:
+    """Resume a previously paused schedule."""
+    ok = _get_scheduler().set_enabled(schedule_id, True)
+    if as_json:
+        print(json.dumps({"resumed": ok, "id": schedule_id}))
+        return
+    if ok:
+        console.print(f"[green]Resumed[/green] {schedule_id}")
+    else:
+        console.print(f"[red]Schedule not found:[/red] {schedule_id!r}")
+        raise typer.Exit(1)
+
+
 @schedule_app.command("remove")
 def schedule_remove(schedule_id: str = typer.Argument(..., help="Schedule id to remove.")):
     """Remove a schedule by id."""
