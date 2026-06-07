@@ -3437,6 +3437,79 @@ def session_export(
         print(text)
 
 
+@session_app.command("stats")
+def session_stats(
+    as_json: bool = typer.Option(False, "--json", help="Emit result as JSON."),
+) -> None:
+    """Show aggregate statistics across all stored sessions."""
+    import json as _json
+    from collections import Counter
+
+    from tokoboros.core.session_store import SessionStore
+
+    store = SessionStore()
+    sessions = store.get_recent_sessions(limit=10_000)
+    store.shutdown()
+
+    total_sessions = len(sessions)
+    if total_sessions == 0:
+        if as_json:
+            print(_json.dumps({"total_sessions": 0}))
+        else:
+            console.print("[yellow]No sessions found.[/yellow]")
+        raise typer.Exit(0)
+
+    total_turns = sum(int(s.get("total_turns") or 0) for s in sessions)
+    avg_turns = round(total_turns / total_sessions, 1)
+
+    # Date range — started_at is ISO8601 string; first 10 chars = YYYY-MM-DD
+    dates = [str(s.get("started_at") or "")[:10] for s in sessions if s.get("started_at")]
+    first_session = min(dates) if dates else ""
+    last_session = max(dates) if dates else ""
+
+    # Most active date
+    date_counter: Counter[str] = Counter(d for d in dates if d)
+    most_active_date, most_active_count = (
+        date_counter.most_common(1)[0] if date_counter else ("", 0)
+    )
+
+    # Most-used model
+    models = [str(s.get("model") or "") for s in sessions if s.get("model")]
+    model_counter: Counter[str] = Counter(models)
+    most_used_model = model_counter.most_common(1)[0][0] if model_counter else ""
+
+    stats: dict = {
+        "total_sessions": total_sessions,
+        "total_turns": total_turns,
+        "avg_turns_per_session": avg_turns,
+        "first_session": first_session,
+        "last_session": last_session,
+        "most_active_date": most_active_date,
+        "most_active_date_count": most_active_count,
+        "most_used_model": most_used_model,
+    }
+
+    if as_json:
+        print(_json.dumps(stats))
+        return
+
+    from rich.table import Table
+
+    table = Table(title="Session Statistics", show_header=False, box=None, padding=(0, 2))
+    table.add_column("Field", style="bold")
+    table.add_column("Value")
+    table.add_row("Total sessions", str(total_sessions))
+    table.add_row("Total turns", str(total_turns))
+    table.add_row("Avg turns/session", str(avg_turns))
+    table.add_row("Date range", f"{first_session} → {last_session}" if first_session else "—")
+    table.add_row(
+        "Most active day",
+        f"{most_active_date} ({most_active_count} sessions)" if most_active_date else "—",
+    )
+    table.add_row("Most-used model", most_used_model or "—")
+    console.print(table)
+
+
 # ---------------------------------------------------------------------------
 # daemon subcommand group
 # ---------------------------------------------------------------------------
