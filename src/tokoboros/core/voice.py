@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -65,6 +66,82 @@ _SUPPORTED_EXTENSIONS = frozenset(
 
 # Hard ceiling on audio bytes (the OpenAI endpoint caps at ~25 MB); fail fast.
 _MAX_AUDIO_BYTES = 25 * 1024 * 1024
+
+
+_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+        "of", "with", "by", "from", "is", "was", "are", "were", "be", "been",
+        "i", "you", "we", "he", "she", "it", "they", "that", "this", "so",
+        "as", "if", "not", "do", "did", "have", "has", "had", "will", "would",
+        "can", "could", "my", "your", "our", "his", "her", "its", "their",
+        "what", "which", "who", "how", "when", "where", "then", "than",
+    }
+)
+
+
+def summarize_transcript(text: str, *, top_sentences: int = 3) -> dict[str, Any]:
+    """Extract key sentences from a transcript using word-frequency scoring.
+
+    Pure Python — no third-party dependencies, no LLM call, no network I/O.
+    Sentences are selected by the average frequency of their non-stop-word
+    tokens, then re-ordered by their original position in the transcript so the
+    summary preserves narrative flow.
+
+    Args:
+        text: The raw transcript string.
+        top_sentences: How many key sentences to extract (default 3).
+
+    Returns:
+        A dict with:
+          - ``word_count``               — total words in the transcript
+          - ``sentence_count``           — total sentences detected
+          - ``key_sentences``            — list of up to *top_sentences* strings
+          - ``estimated_reading_seconds`` — rough read-time at 200 wpm
+    """
+    if not text.strip():
+        return {
+            "word_count": 0,
+            "sentence_count": 0,
+            "key_sentences": [],
+            "estimated_reading_seconds": 0,
+        }
+
+    # --- split into sentences (handles ., !, ?) ---
+    raw_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    word_count = len(text.split())
+
+    # --- word-frequency table (non-stop content words, len > 2) ---
+    freq: dict[str, int] = {}
+    for tok in re.findall(r"[a-z]+", text.lower()):
+        if tok not in _STOPWORDS and len(tok) > 2:
+            freq[tok] = freq.get(tok, 0) + 1
+
+    # --- score: mean frequency of content words per sentence ---
+    def _score(s: str) -> float:
+        words = [w for w in re.findall(r"[a-z]+", s.lower()) if w not in _STOPWORDS and len(w) > 2]
+        if not words:
+            return 0.0
+        return sum(freq.get(w, 0) for w in words) / len(words)
+
+    scored = sorted(
+        ((i, s) for i, s in enumerate(raw_sentences)),
+        key=lambda pair: _score(pair[1]),
+        reverse=True,
+    )
+    top = scored[: max(top_sentences, 1)]
+    # restore original order for narrative coherence
+    key_sentences = [s for _, s in sorted(top, key=lambda pair: pair[0])]
+
+    # ~200 words/min reading speed
+    estimated_reading_seconds = round((word_count / 200) * 60)
+
+    return {
+        "word_count": word_count,
+        "sentence_count": len(raw_sentences),
+        "key_sentences": key_sentences,
+        "estimated_reading_seconds": estimated_reading_seconds,
+    }
 
 
 def probe_audio_info(path: str | Path) -> dict[str, Any]:

@@ -1,6 +1,8 @@
 """Voice tools — transcribe audio (STT), speak text (TTS), audio playback, and metadata.
 
 ``transcribe_audio`` reads a local audio file and returns its transcript;
+``transcribe_and_summarize`` transcribes AND extracts the most information-dense
+sentences using pure-Python word-frequency scoring (no LLM, no extra deps);
 ``speak_text`` synthesizes speech to a local audio file; ``play_audio`` plays
 a local audio file through the system's speakers (no API key required);
 ``get_audio_info`` probes a local audio file for metadata (duration, sample rate,
@@ -15,7 +17,7 @@ API key is configured they return a friendly hint rather than failing.
 ``winsound`` / ``paplay`` / ``mpv``) and is keyless; it too degrades gracefully
 when no suitable player is installed.
 
-All four tools are registered under the lazy ``voice`` tool group.
+All five tools are registered under the lazy ``voice`` tool group.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from tokoboros.core.voice import (
     TextToSpeech,
     VoiceError,
     probe_audio_info,
+    summarize_transcript,
 )
 from tokoboros.tools.os_tools import _normalize_user_path
 
@@ -270,6 +273,84 @@ def _make_play_audio(
     return play_audio
 
 
+TRANSCRIBE_AND_SUMMARIZE_SCHEMA: dict[str, Any] = {
+    "name": "transcribe_and_summarize",
+    "description": (
+        "Transcribe a local audio file and return both the full transcript and an "
+        "extractive summary (the most information-dense sentences, re-ordered by "
+        "original position). Useful for meeting recordings, voice notes, or any audio "
+        "where you want the key points without reading the whole transcript. Includes "
+        "word count and estimated reading time. Requires the same STT API key as "
+        "transcribe_audio. Supports mp3, m4a, wav, webm, flac, ogg, and more."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Local audio file path (absolute, ~, or relative).",
+            },
+            "top_sentences": {
+                "type": "integer",
+                "description": "Number of key sentences to extract for the summary (default 3).",
+                "default": 3,
+            },
+        },
+        "required": ["path"],
+    },
+}
+
+
+def _make_transcribe_and_summarize(
+    gate: Any | None, stt: SpeechToText | None
+) -> Callable[..., str]:
+    def transcribe_and_summarize(path: str, top_sentences: int = 3) -> str:
+        tier = _tier_blocked(gate)
+        if tier is not None:
+            return f"Permission Denied: audio transcription is disabled in '{tier}' tier."
+
+        target = _normalize_user_path(path)
+        if gate is not None:
+            check = gate.check_path(str(target), "read")
+            if not getattr(check, "allowed", True):
+                return f"Permission Denied: {getattr(check, 'reason', 'path not allowed')}"
+
+        active = stt or SpeechToText.from_env()
+        if not active.is_configured():
+            return (
+                "Speech-to-text is not configured. Set OPENAI_API_KEY (or "
+                "TOKOBOROS_STT_API_KEY) — optionally TOKOBOROS_STT_BASE_URL / "
+                "TOKOBOROS_STT_MODEL for a non-OpenAI Whisper endpoint — then try again."
+            )
+        try:
+            transcript = active.transcribe(target)
+        except VoiceError as exc:
+            return f"Transcription failed: {exc}"
+        except Exception as exc:  # never propagate
+            return f"Transcription failed: {exc}"
+
+        n = max(int(top_sentences), 1)
+        stats = summarize_transcript(transcript, top_sentences=n)
+
+        lines = [
+            f"Transcript of {target.name} "
+            f"({stats['word_count']} words, ~{stats['estimated_reading_seconds']}s to read):",
+            "",
+            "## Summary (key sentences)",
+        ]
+        if stats["key_sentences"]:
+            for sent in stats["key_sentences"]:
+                lines.append(f"- {sent}")
+        else:
+            lines.append("(transcript too short to summarize)")
+        lines.append("")
+        lines.append("## Full transcript")
+        lines.append(transcript)
+        return "\n".join(lines)
+
+    return transcribe_and_summarize
+
+
 def register_voice_tools(
     registry: Any,
     gate: Any | None = None,
@@ -280,14 +361,20 @@ def register_voice_tools(
     """Register the voice tools under the ``voice`` lazy tool group.
 
     Registers:
-    - ``transcribe_audio`` — STT, requires an API key
-    - ``speak_text`` — TTS, requires an API key
-    - ``play_audio``     — keyless playback via platform-native binary
-    - ``get_audio_info`` — keyless metadata probe (stdlib ``wave`` for WAV)
+    - ``transcribe_audio``         — STT, requires an API key
+    - ``transcribe_and_summarize`` — STT + extractive summary, requires an API key
+    - ``speak_text``               — TTS, requires an API key
+    - ``play_audio``               — keyless playback via platform-native binary
+    - ``get_audio_info``           — keyless metadata probe (stdlib ``wave`` for WAV)
     """
     registry.register(
         TRANSCRIBE_AUDIO_SCHEMA,
         _make_transcribe_audio(gate, stt),
+        group="voice",
+    )
+    registry.register(
+        TRANSCRIBE_AND_SUMMARIZE_SCHEMA,
+        _make_transcribe_and_summarize(gate, stt),
         group="voice",
     )
     registry.register(

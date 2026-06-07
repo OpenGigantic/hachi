@@ -181,7 +181,7 @@ def test_play_audio_player_exception(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Registration: 4 voice tools present
+# Registration: 5 voice tools present
 # ---------------------------------------------------------------------------
 
 
@@ -191,9 +191,10 @@ def test_register_voice_tools_includes_play_audio() -> None:
     names = {s["name"] for s in registry.get_schemas()}
     assert "play_audio" in names
     assert "transcribe_audio" in names
+    assert "transcribe_and_summarize" in names
     assert "speak_text" in names
     assert "get_audio_info" in names
-    assert len(names) == 4
+    assert len(names) == 5
 
 
 def test_play_audio_schema_shape() -> None:
