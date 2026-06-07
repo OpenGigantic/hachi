@@ -1289,7 +1289,9 @@ def boot_agent(
     # Register MCP tools
     mcp_manager.register_tools(tool_registry)
 
-    # Register Delegation tools (MUST be LAST — needs full parent registry)
+    # Register Delegation tools (MUST be LAST — needs full parent registry).
+    # Pass skill_engine so sub-agent OG tools are rebound to a role-scoped
+    # engine view, preventing sub-agents from reading scope=orchestrator nodes.
     register_delegation_tools(
         tool_registry,
         runtime_gate,
@@ -1298,6 +1300,7 @@ def boot_agent(
         job_queue=job_queue,
         sub_agent_llm=sub_agent_client,
         cost_tracker=cost_tracker,
+        skill_engine=skill_engine,
     )
 
     # Register native capability tools lazily, with setup stubs for incomplete states.
