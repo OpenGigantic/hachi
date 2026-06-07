@@ -1,0 +1,133 @@
+"""Speech-to-text (audio transcription) backend with graceful degradation.
+
+Transcribes a local audio file via an OpenAI-compatible ``/audio/transcriptions``
+endpoint — OpenAI Whisper, Groq Whisper, or any compatible server. Following the
+same test-complete pattern as the browser controller and the Slack/Discord
+senders:
+
+- credentials resolve **lazily from the environment** at call time (never at
+  import/boot), so this constructs cleanly even with nothing configured;
+- the actual HTTP POST goes through an injectable ``transcriber`` so tests run
+  fully offline;
+- the endpoint URL is **SSRF-validated** via ``net_guard`` before any request;
+- it raises :class:`VoiceError` (a readable message) rather than leaking a raw
+  HTTP/parse error — callers check :meth:`is_configured` first and surface
+  failures as friendly tool results.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import Callable
+from pathlib import Path
+
+from tokoboros.core.net_guard import validate_outbound_url
+
+# (url, file_bytes, filename, form_data, headers) -> (status_code, response_text)
+Transcriber = Callable[[str, bytes, str, dict[str, str], dict[str, str]], tuple[int, str]]
+
+_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+_DEFAULT_MODEL = "whisper-1"
+
+# Extensions the common Whisper endpoints accept; checked up front for a friendly
+# error instead of an opaque API rejection.
+_SUPPORTED_EXTENSIONS = frozenset(
+    {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".flac", ".ogg"}
+)
+
+# Hard ceiling on audio bytes (the OpenAI endpoint caps at ~25 MB); fail fast.
+_MAX_AUDIO_BYTES = 25 * 1024 * 1024
+
+
+class VoiceError(RuntimeError):
+    """Raised when transcription is misconfigured or the backend rejects the request."""
+
+
+def _default_transcriber(
+    url: str, file_bytes: bytes, filename: str, form_data: dict[str, str], headers: dict[str, str]
+) -> tuple[int, str]:
+    import httpx
+
+    files = {"file": (filename, file_bytes)}
+    with httpx.Client(timeout=120.0, follow_redirects=False) as client:
+        resp = client.post(url, files=files, data=form_data, headers=headers)
+        return resp.status_code, resp.text
+
+
+class SpeechToText:
+    """Transcribe audio via an OpenAI-compatible transcription endpoint."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str | None = None,
+        transcriber: Transcriber | None = None,
+        allow_private: bool = False,
+    ) -> None:
+        self._api_key = api_key or None
+        self._base_url = (base_url or _DEFAULT_BASE_URL).rstrip("/")
+        self._model = model or _DEFAULT_MODEL
+        self._transcriber = transcriber or _default_transcriber
+        self._allow_private = allow_private
+
+    @classmethod
+    def from_env(cls, transcriber: Transcriber | None = None) -> SpeechToText:
+        """Build from environment: TOKOBOROS_STT_* overrides, else OpenAI defaults."""
+        return cls(
+            api_key=os.environ.get("TOKOBOROS_STT_API_KEY") or os.environ.get("OPENAI_API_KEY"),
+            base_url=os.environ.get("TOKOBOROS_STT_BASE_URL") or os.environ.get("OPENAI_BASE_URL"),
+            model=os.environ.get("TOKOBOROS_STT_MODEL"),
+            transcriber=transcriber,
+            allow_private=os.environ.get("TOKOBOROS_REST_ALLOW_PRIVATE", "").strip().lower()
+            in {"1", "true", "yes"},
+        )
+
+    def is_configured(self) -> bool:
+        return bool(self._api_key)
+
+    def transcribe(self, audio_path: str | Path) -> str:
+        """Transcribe a local audio file to text. Raises VoiceError on any failure."""
+        if not self._api_key:
+            raise VoiceError(
+                "speech-to-text is not configured "
+                "(set OPENAI_API_KEY or TOKOBOROS_STT_API_KEY)"
+            )
+        path = Path(audio_path)
+        if not path.exists() or not path.is_file():
+            raise VoiceError(f"audio file not found: {path}")
+        if path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
+            raise VoiceError(
+                f"unsupported audio format '{path.suffix or '(none)'}'. "
+                f"Supported: {', '.join(sorted(_SUPPORTED_EXTENSIONS))}"
+            )
+
+        url = f"{self._base_url}/audio/transcriptions"
+        ok, reason = validate_outbound_url(url, allow_private=self._allow_private)
+        if not ok:
+            raise VoiceError(f"blocked transcription endpoint: {reason}")
+
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise VoiceError(f"could not read audio: {exc}") from exc
+        if len(raw) > _MAX_AUDIO_BYTES:
+            raise VoiceError(
+                f"audio is {len(raw) // (1024 * 1024)} MB, exceeding the "
+                f"{_MAX_AUDIO_BYTES // (1024 * 1024)} MB limit"
+            )
+
+        headers = {"Authorization": f"Bearer {self._api_key}"}
+        status, body = self._transcriber(url, raw, path.name, {"model": self._model}, headers)
+        if status != 200:
+            raise VoiceError(f"transcription API returned HTTP {status}: {body[:200]}")
+        try:
+            parsed = json.loads(body) if body else {}
+        except json.JSONDecodeError as exc:
+            raise VoiceError(f"could not parse transcription response: {exc}") from exc
+        text = parsed.get("text")
+        if not isinstance(text, str):
+            raise VoiceError("transcription response did not include a 'text' field")
+        return text.strip()

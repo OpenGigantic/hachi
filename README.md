@@ -70,6 +70,7 @@ tokoboros                     # start chatting (no subcommand needed)
 - 🌐 **Universal REST Adapter** — Define any REST API in a `.og` file, and Tokoboros auto-generates the tool
 - 🕸️ **Browser Automation** — A real headless browser (`browse_web`, `browser_act`, `browser_screenshot`) for live web research and multi-step flows; SSRF-guarded and permission-gated (optional: `pip install 'tokoboros[browser]'` + `playwright install chromium`)
 - 👁️ **Vision Input** — `view_image` lets the agent look at a screenshot/photo/diagram/chart from a **local file or an http(s) URL** (PNG/JPEG/GIF/WebP) and reason about it; permission-gated and SSRF-guarded (Anthropic provider)
+- 🎙️ **Voice Input** — `transcribe_audio` turns a local voice note/recording (mp3/m4a/wav/webm/…) into text via any OpenAI-compatible Whisper endpoint; permission-gated, SSRF-guarded, and degrades gracefully when no key is set
 - 🧯 **Built-in Guardrails** — Outbound Slack/Discord messages and REST requests are scrubbed of leaked credentials (API keys, tokens, private keys redacted before they leave the machine); untrusted **web, REST, and MCP** content is spotlighted so injected instructions are treated as data, not commands
 - 🧩 **MCP Support** — Model Context Protocol servers for filesystem and external tools
 - 📊 **Skill Lifecycle** — Usage tracking, stale detection, and analytics for all `.og` skills
