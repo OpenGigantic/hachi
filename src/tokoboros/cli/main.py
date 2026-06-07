@@ -3579,11 +3579,20 @@ def session_show(
     store.shutdown()
 
     title = (meta.get("title") or "").strip() if meta else ""
+    total_tokens = int(meta.get("total_tokens") or 0) if meta else 0
+    total_cost_usd = float(meta.get("total_cost_usd") or 0.0) if meta else 0.0
 
     if as_json:
         print(
             json.dumps(
-                {"session_id": session_id, "title": title, "messages": messages}, indent=2
+                {
+                    "session_id": session_id,
+                    "title": title,
+                    "total_tokens": total_tokens,
+                    "total_cost_usd": total_cost_usd,
+                    "messages": messages,
+                },
+                indent=2,
             )
         )
         return
@@ -3594,7 +3603,14 @@ def session_show(
 
     if title:
         console.print(f"[bold white]{title}[/bold white]")
-    console.print(f"[bold]Session[/bold] [cyan]{session_id}[/cyan]  ({len(messages)} messages)")
+    cost_str = (
+        f"  ·  {total_tokens:,} tok  ~${total_cost_usd:.4f}"
+        if total_tokens
+        else ""
+    )
+    console.print(
+        f"[bold]Session[/bold] [cyan]{session_id}[/cyan]  ({len(messages)} messages){cost_str}"
+    )
     console.print()
     for msg in messages:
         role = msg.get("role", "?")
@@ -3824,6 +3840,8 @@ def session_stats(
 
     total_turns = sum(int(s.get("total_turns") or 0) for s in sessions)
     avg_turns = round(total_turns / total_sessions, 1)
+    total_tokens = sum(int(s.get("total_tokens") or 0) for s in sessions)
+    total_cost_usd = sum(float(s.get("total_cost_usd") or 0.0) for s in sessions)
 
     # Date range — started_at is ISO8601 string; first 10 chars = YYYY-MM-DD
     dates = [str(s.get("started_at") or "")[:10] for s in sessions if s.get("started_at")]
@@ -3845,6 +3863,8 @@ def session_stats(
         "total_sessions": total_sessions,
         "total_turns": total_turns,
         "avg_turns_per_session": avg_turns,
+        "total_tokens": total_tokens,
+        "total_cost_usd": round(total_cost_usd, 6),
         "first_session": first_session,
         "last_session": last_session,
         "most_active_date": most_active_date,
@@ -3864,6 +3884,10 @@ def session_stats(
     table.add_row("Total sessions", str(total_sessions))
     table.add_row("Total turns", str(total_turns))
     table.add_row("Avg turns/session", str(avg_turns))
+    table.add_row(
+        "Total API spend",
+        f"{total_tokens:,} tokens  ~${total_cost_usd:.4f}" if total_tokens else "—",
+    )
     table.add_row("Date range", f"{first_session} → {last_session}" if first_session else "—")
     table.add_row(
         "Most active day",
