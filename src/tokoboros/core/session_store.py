@@ -99,6 +99,14 @@ class SessionStore:
         if "title" not in existing:
             self._conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
             self._conn.commit()
+        if "total_tokens" not in existing:
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN total_tokens INTEGER DEFAULT 0")
+            self._conn.commit()
+        if "total_cost_usd" not in existing:
+            self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN total_cost_usd REAL DEFAULT 0.0"
+            )
+            self._conn.commit()
 
     # ==========================================
     # Session Lifecycle
@@ -166,6 +174,33 @@ class SessionStore:
             self._conn.commit()
 
         logger.debug("Session titled: %s -> %r", session_id, title)
+
+    def record_session_cost(
+        self, session_id: str, total_tokens: int, total_cost_usd: float
+    ) -> None:
+        """Persist cumulative token and cost totals for a session.
+
+        Called after each turn so the values stay up-to-date even if the
+        process crashes before :meth:`end_session` is called.
+
+        Args:
+            session_id: The session to update.
+            total_tokens: Cumulative token count for the session so far.
+            total_cost_usd: Cumulative estimated cost in US dollars.
+        """
+        with self._lock:
+            self._conn.execute(
+                "UPDATE sessions SET total_tokens = ?, total_cost_usd = ? WHERE id = ?",
+                (total_tokens, total_cost_usd, session_id),
+            )
+            self._conn.commit()
+
+        logger.debug(
+            "Session cost recorded: %s — %d tokens / $%.6f",
+            session_id,
+            total_tokens,
+            total_cost_usd,
+        )
 
     def get_sessions_missing_title(self, limit: int = 1000) -> list[dict[str, Any]]:
         """Return sessions that have no title yet (oldest first), for backfill.
@@ -285,7 +320,8 @@ class SessionStore:
         """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT id, started_at, ended_at, model, total_turns, title "
+                "SELECT id, started_at, ended_at, model, total_turns, title, "
+                "total_tokens, total_cost_usd "
                 "FROM sessions ORDER BY started_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -296,7 +332,8 @@ class SessionStore:
         """Return the metadata row for a single session, or None if not found."""
         with self._lock:
             row = self._conn.execute(
-                "SELECT id, started_at, ended_at, model, total_turns, title "
+                "SELECT id, started_at, ended_at, model, total_turns, title, "
+                "total_tokens, total_cost_usd "
                 "FROM sessions WHERE id = ?",
                 (session_id,),
             ).fetchone()

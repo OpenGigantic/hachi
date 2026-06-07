@@ -883,6 +883,19 @@ class AgentSession:
             except Exception:
                 pass
 
+            # Persist cumulative cost/token totals for this session.
+            try:
+                tracker = getattr(self.loop, "cost_tracker", None)
+                if tracker is not None:
+                    snap = tracker.snapshot()
+                    self._session_store.record_session_cost(
+                        self._session_id,
+                        snap.total_tokens,
+                        snap.estimated_cost_usd,
+                    )
+            except Exception:
+                pass
+
             # Generate a session title once, from the opening exchange. Runs on the
             # job queue so it never blocks this turn (drained at the next turn /
             # shutdown); falls back to inline generation when no queue is wired.
