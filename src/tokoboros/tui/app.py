@@ -2363,6 +2363,8 @@ class TokoborosTextualApp(App[None]):
             "research": self._cmd_deep_research,
             "speak": self._cmd_speak,
             "transcribe": self._cmd_transcribe,
+            "notify": self._cmd_notify,
+            "schedules": self._cmd_schedules,
             "settings": lambda _a: self._switch_mode("settings"),
             "setup": lambda _a: self.action_mode_setup(),
             "quit": lambda _a: self.exit(),
@@ -2575,6 +2577,46 @@ class TokoborosTextualApp(App[None]):
             f'file at: "{arg}"',
             display_text=f"/transcribe {arg}",
         )
+
+    def _cmd_notify(self, arg: str) -> None:
+        if not arg:
+            self._session_note("Usage: /notify <message>", style=theme.WARNING)
+            return
+        self.set_toko_state_safe("thinking")
+        self.submit_prompt(
+            f'Use the notify_user tool to send a desktop notification with the title '
+            f'"Tokoboros" and body: "{arg}"',
+            display_text=f"/notify {arg}",
+        )
+
+    def _cmd_schedules(self, _arg: str) -> None:
+        try:
+            from tokoboros.core.paths import get_tokoboros_paths
+            from tokoboros.jobs.scheduler import Scheduler, ScheduleStore
+
+            store = Scheduler(ScheduleStore(get_tokoboros_paths().schedules_file))
+            schedules = store.list_schedules()
+        except Exception as exc:
+            self._session_note(f"Could not read schedules: {exc}", style=theme.ERROR)
+            return
+
+        if not schedules:
+            self._session_note("No schedules configured. Add one: tokoboros schedule add")
+            return
+
+        lines = [f"{len(schedules)} schedule(s):"]
+        for s in schedules[:10]:
+            state = "✓" if getattr(s, "enabled", True) else "⏸"
+            kind = getattr(s, "kind", None)
+            kind_str = kind.value if kind is not None else "?"
+            next_run = str(getattr(s, "next_run", "") or "")[:16].replace("T", " ")
+            lines.append(
+                f"  {state} [{kind_str}] {s.name!r}"
+                f"  → next: {next_run or '(none)'}"
+            )
+        if len(schedules) > 10:
+            lines.append(f"  … and {len(schedules) - 10} more")
+        self._session_note("\n".join(lines))
 
     def set_toko_state_safe(self, state: str) -> None:
         """Drive the brand glyph without raising if the session screen is not active."""

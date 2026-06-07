@@ -179,3 +179,80 @@ def test_slash_command_transcribe_no_arg_warns(monkeypatch) -> None:
     monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
     app.handle_slash_command("/transcribe")
     assert any("Usage" in note for note in notes)
+
+
+def test_slash_command_notify_submits_notification_prompt(monkeypatch) -> None:
+    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    sent: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(app, "set_toko_state_safe", lambda _s: None)
+    monkeypatch.setattr(
+        app,
+        "submit_prompt",
+        lambda prompt, display_text=None: sent.append((prompt, display_text)),
+    )
+    app.handle_slash_command("/notify Meeting starts in 5 minutes")
+    assert len(sent) == 1
+    expanded, display = sent[0]
+    assert "notify_user" in expanded
+    assert "Meeting starts in 5 minutes" in expanded
+    assert display == "/notify Meeting starts in 5 minutes"
+
+
+def test_slash_command_notify_no_arg_warns(monkeypatch) -> None:
+    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    notes: list[str] = []
+    monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
+    app.handle_slash_command("/notify")
+    assert any("Usage" in note for note in notes)
+
+
+def test_slash_command_schedules_shows_list(monkeypatch) -> None:
+    from unittest.mock import MagicMock
+
+    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    notes: list[str] = []
+    monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
+
+    fake_sched = MagicMock()
+    fake_sched.name = "daily-standup"
+    fake_sched.enabled = True
+    fake_sched.kind.value = "cron"
+    fake_sched.next_run = "2026-06-08T09:00:00"
+
+    fake_scheduler = MagicMock()
+    fake_scheduler.list_schedules.return_value = [fake_sched]
+
+    with __import__("unittest.mock", fromlist=["patch"]).patch(
+        "tokoboros.jobs.scheduler.Scheduler", return_value=fake_scheduler
+    ), __import__("unittest.mock", fromlist=["patch"]).patch(
+        "tokoboros.jobs.scheduler.ScheduleStore"
+    ), __import__("unittest.mock", fromlist=["patch"]).patch(
+        "tokoboros.core.paths.get_tokoboros_paths"
+    ):
+        app.handle_slash_command("/schedules")
+
+    assert notes
+    combined = "\n".join(notes)
+    assert "daily-standup" in combined
+
+
+def test_slash_command_schedules_no_schedules(monkeypatch) -> None:
+    from unittest.mock import MagicMock
+
+    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    notes: list[str] = []
+    monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
+
+    fake_scheduler = MagicMock()
+    fake_scheduler.list_schedules.return_value = []
+
+    with __import__("unittest.mock", fromlist=["patch"]).patch(
+        "tokoboros.jobs.scheduler.Scheduler", return_value=fake_scheduler
+    ), __import__("unittest.mock", fromlist=["patch"]).patch(
+        "tokoboros.jobs.scheduler.ScheduleStore"
+    ), __import__("unittest.mock", fromlist=["patch"]).patch(
+        "tokoboros.core.paths.get_tokoboros_paths"
+    ):
+        app.handle_slash_command("/schedules")
+
+    assert any("No schedules" in n for n in notes)
