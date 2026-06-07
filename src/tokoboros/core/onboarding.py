@@ -92,7 +92,7 @@ def default_api_key_env_for(kind: str) -> str:
 
 class OnboardingService:
     def __init__(self, paths: TokoborosPaths | None = None):
-        self.paths = paths or get_tokoboros_paths()
+        self.paths: TokoborosPaths = paths if paths is not None else get_tokoboros_paths()
         ensure_directories(self.paths)
         import_legacy_workspace(self.paths)
 
@@ -107,21 +107,81 @@ class OnboardingService:
             return OnboardingState()
 
     def save_state(self, state: OnboardingState) -> Path:
-        self.paths.onboarding_state_file.parent.mkdir(parents=True, exist_ok=True)
-        self.paths.onboarding_state_file.write_text(
-            state.model_dump_json(indent=2),
-            encoding="utf-8",
-        )
-        return self.paths.onboarding_state_file
+        dest: Path = self.paths.onboarding_state_file
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(state.model_dump_json(indent=2), encoding="utf-8")
+        return dest
 
     def detect_environment(self, project_dir: Path | None = None) -> dict[str, Any]:
+        """Probe the runtime environment for available providers and credentials.
+
+        Returns a flat dict of boolean flags suitable for auto-selection logic.
+        Keys ending in ``_env`` mean the corresponding API-key env var is set.
+        Ollama is detected by CLI presence (no key needed).
+        """
         return {
             "anthropic_env": bool(os.environ.get("ANTHROPIC_API_KEY")),
             "openai_env": bool(os.environ.get("OPENAI_API_KEY")),
+            "groq_env": bool(os.environ.get("GROQ_API_KEY")),
+            "together_env": bool(os.environ.get("TOGETHER_API_KEY")),
+            "deepseek_env": bool(os.environ.get("DEEPSEEK_API_KEY")),
+            "openrouter_env": bool(os.environ.get("OPENROUTER_API_KEY")),
             "ollama_cli": shutil.which("ollama") is not None,
             "legacy_workspace_exists": self.paths.legacy_dir.exists(),
             "project_dir": str(project_dir) if project_dir else None,
         }
+
+    def best_provider_from_env(self) -> dict[str, str] | None:
+        """Return the highest-priority auto-detected provider config, or None.
+
+        Priority (highest first):
+        anthropic → openai-compatible → groq → together → deepseek → openrouter → ollama.
+        Returns a provider dict ready for ``apply_setup`` / ``build_tier_plan``.
+        """
+        detected = self.detect_environment()
+        if detected["anthropic_env"]:
+            return {
+                "kind": "anthropic",
+                "model": _PROVIDER_DEFAULTS["anthropic"]["model"],
+                "api_key_env": "ANTHROPIC_API_KEY",
+            }
+        if detected["openai_env"]:
+            return {
+                "kind": "openai-compatible",
+                "model": _PROVIDER_DEFAULTS["openai-compatible"]["model"],
+                "api_key_env": "OPENAI_API_KEY",
+            }
+        if detected["groq_env"]:
+            return {
+                "kind": "groq",
+                "model": _PROVIDER_DEFAULTS["groq"]["model"],
+                "api_key_env": "GROQ_API_KEY",
+            }
+        if detected["together_env"]:
+            return {
+                "kind": "together",
+                "model": _PROVIDER_DEFAULTS["together"]["model"],
+                "api_key_env": "TOGETHER_API_KEY",
+            }
+        if detected["deepseek_env"]:
+            return {
+                "kind": "deepseek",
+                "model": _PROVIDER_DEFAULTS["deepseek"]["model"],
+                "api_key_env": "DEEPSEEK_API_KEY",
+            }
+        if detected["openrouter_env"]:
+            return {
+                "kind": "openrouter",
+                "model": _PROVIDER_DEFAULTS["openrouter"]["model"],
+                "api_key_env": "OPENROUTER_API_KEY",
+            }
+        if detected["ollama_cli"]:
+            return {
+                "kind": "ollama",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "model": _PROVIDER_DEFAULTS["ollama"]["model"],
+            }
+        return None
 
     def validate_provider(
         self,
@@ -237,7 +297,7 @@ class OnboardingService:
                     raise ValueError(
                         "provider.kind must be one of: anthropic, openai-compatible, ollama"
                     )
-                config.provider.kind = normalized_kind  # type: ignore[assignment]
+                config.provider.kind = normalized_kind
             if model is not None:
                 normalized_model = str(model).strip()
                 if not normalized_model:
@@ -255,7 +315,7 @@ class OnboardingService:
             normalized_tier = str(safety_tier).strip()
             if normalized_tier not in _PERMISSION_TIERS:
                 raise ValueError("permission_tier must be one of: sandbox, guided, unrestricted")
-            config.permissions.tier = normalized_tier  # type: ignore[assignment]
+            config.permissions.tier = normalized_tier
 
         memory_answers = plan.answers.get("memory", {})
         if isinstance(memory_answers, dict):
