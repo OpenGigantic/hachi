@@ -3292,6 +3292,151 @@ def session_search(
         )
 
 
+@session_app.command("delete")
+def session_delete(
+    session_id: str = typer.Argument(..., help="Session ID (or prefix) to delete."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
+    as_json: bool = typer.Option(False, "--json", help="Emit result as JSON."),
+) -> None:
+    """Permanently delete a session and all its messages from the local store.
+
+    The deletion is irreversible.  Pass the full session ID or a unique prefix
+    from 'tokoboros session list'.
+    """
+    from tokoboros.core.session_store import SessionStore
+
+    store = SessionStore()
+
+    # Resolve prefix → full ID (same logic as session show/export).
+    if len(session_id) < 36:
+        candidates = store.get_recent_sessions(limit=200)
+        matches = [s["id"] for s in candidates if str(s["id"]).startswith(session_id)]
+        if not matches:
+            store.shutdown()
+            if as_json:
+                print(json.dumps({"ok": False, "error": f"No session: {session_id}"}))
+            else:
+                console.print(f"[red]No session found with prefix:[/red] {session_id}")
+            raise typer.Exit(1)
+        if len(matches) > 1:
+            store.shutdown()
+            if as_json:
+                print(json.dumps({"ok": False, "error": "Ambiguous", "matches": matches[:5]}))
+            else:
+                console.print(
+                    f"[yellow]Ambiguous prefix '{session_id}' matches"
+                    f" {len(matches)} sessions.[/yellow]  Use a longer prefix."
+                )
+                for m in matches[:5]:
+                    console.print(f"  {m}")
+            raise typer.Exit(1)
+        session_id = matches[0]
+
+    if not yes and not as_json:
+        confirmed = typer.confirm(
+            f"Delete session {session_id}? This cannot be undone.", default=False
+        )
+        if not confirmed:
+            console.print("[dim]Aborted.[/dim]")
+            store.shutdown()
+            return
+
+    deleted = store.delete_session(session_id)
+    store.shutdown()
+
+    if as_json:
+        print(json.dumps({"ok": deleted, "session_id": session_id}))
+        if not deleted:
+            raise typer.Exit(1)
+        return
+
+    if deleted:
+        console.print(f"[green]Deleted[/green] session [cyan]{session_id}[/cyan].")
+    else:
+        console.print(f"[red]Session not found:[/red] {session_id}")
+        raise typer.Exit(1)
+
+
+@session_app.command("export")
+def session_export(
+    session_id: str = typer.Argument(..., help="Session ID (or prefix) to export."),
+    output: str = typer.Option("", "--output", "-o", help="Output file path (default: stdout)."),
+    fmt: str = typer.Option("md", "--format", "-f", help="Output format: md or json."),
+    limit: int = typer.Option(0, "--limit", "-n", help="Max messages (0 = all)."),
+) -> None:
+    """Export a session transcript to Markdown or JSON.
+
+    Writes to stdout by default; pass -o FILE to write to a file instead.
+    Pass the full session ID or a unique prefix from 'tokoboros session list'.
+    """
+    from tokoboros.core.session_store import SessionStore
+
+    if fmt not in ("md", "json"):
+        console.print(f"[red]Unknown format:[/red] {fmt!r} — choose 'md' or 'json'.")
+        raise typer.Exit(1)
+
+    store = SessionStore()
+
+    # Resolve prefix → full ID.
+    if len(session_id) < 36:
+        candidates = store.get_recent_sessions(limit=200)
+        matches = [s["id"] for s in candidates if str(s["id"]).startswith(session_id)]
+        if not matches:
+            store.shutdown()
+            console.print(f"[red]No session found with prefix:[/red] {session_id}")
+            raise typer.Exit(1)
+        if len(matches) > 1:
+            store.shutdown()
+            console.print(
+                f"[yellow]Ambiguous prefix '{session_id}' matches {len(matches)} sessions.[/yellow]"
+                " Use a longer prefix."
+            )
+            for m in matches[:5]:
+                console.print(f"  {m}")
+            raise typer.Exit(1)
+        session_id = matches[0]
+
+    lim = limit if limit > 0 else 10_000
+    messages = store.get_session_messages(session_id, limit=lim)
+    store.shutdown()
+
+    if fmt == "json":
+        text = json.dumps({"session_id": session_id, "messages": messages}, indent=2)
+    else:
+        # Build a clean Markdown transcript.
+        lines: list[str] = [f"# Session {session_id}\n"]
+        for msg in messages:
+            role = msg.get("role", "?")
+            content = (msg.get("content") or "").strip()
+            tool = msg.get("tool_name") or ""
+            ts = (msg.get("timestamp") or "")[:19].replace("T", " ")
+
+            if role == "user":
+                heading = f"## You  _{ts}_"
+            elif role == "assistant":
+                heading = f"## Agent  _{ts}_"
+            elif role == "tool" and tool:
+                heading = f"### Tool: {tool}  _{ts}_"
+            else:
+                heading = f"### {role}  _{ts}_"
+
+            lines.append(heading)
+            if content:
+                lines.append(content)
+            lines.append("")
+        text = "\n".join(lines)
+
+    if output:
+        out_path = Path(output)
+        out_path.write_text(text, encoding="utf-8")
+        console.print(
+            f"[green]Exported[/green] {len(messages)} message(s)"
+            f" → [cyan]{out_path}[/cyan]"
+        )
+    else:
+        print(text)
+
+
 # ---------------------------------------------------------------------------
 # daemon subcommand group
 # ---------------------------------------------------------------------------
