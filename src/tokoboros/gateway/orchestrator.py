@@ -74,6 +74,7 @@ from tokoboros.core.runtime_read_models import (
 )
 from tokoboros.core.secret_store import create_default_secret_store
 from tokoboros.core.session_store import SessionStore
+from tokoboros.core.session_titler import generate_title
 from tokoboros.core.sub_agent import DEFAULT_SUB_AGENT_MODEL
 from tokoboros.core.tracing import configure_from_env
 from tokoboros.core.turn_context import TurnContext
@@ -403,6 +404,8 @@ class AgentSession:
         # Phase 3: Session persistence
         self._session_store: SessionStore | None = None
         self._session_id: str | None = None
+        # Auto-title is generated once, from the first turn's exchange.
+        self._title_generated: bool = False
 
         # Resume support: prior-session turns replayed for TUI transcript rendering.
         # (role, content) pairs, oldest first; empty unless booted with resume.
@@ -716,6 +719,46 @@ class AgentSession:
         """Compatibility wrapper for the queue-backed prefetch pipeline."""
         self._enqueue_prefetch_job(query, turn_id="compat")  # legacy callers have no turn_id
 
+    def _run_title_job(self, session_id: str, user_input: str, assistant_response: str) -> str:
+        """Generate and persist a title for *session_id* from its first exchange.
+
+        Best-effort: a model call produces the title, with a deterministic
+        fallback baked into :func:`generate_title`. Persisting is guarded so a
+        store hiccup never surfaces as a turn error.
+        """
+        # Prefer the cheaper sub-agent client (a smaller model on Anthropic);
+        # fall back to the main loop client when no sub-agent client is wired.
+        client = getattr(self, "_sub_agent_client", None) or getattr(
+            self.loop, "llm_client", None
+        )
+        title = generate_title(user_input, assistant_response, llm_client=client)
+        if self._session_store:
+            try:
+                self._session_store.set_session_title(session_id, title)
+            except Exception:
+                pass
+        return title
+
+    def _enqueue_title_job(self, session_id: str, user_input: str, response: str) -> None:
+        """Queue first-turn title generation, or run it inline if no queue exists."""
+        if not self._job_queue:
+            self._run_title_job(session_id, user_input, response)
+            return
+
+        job = Job(
+            job_id="",
+            name="session_title",
+            status=JobStatus.PENDING,
+            func=self._run_title_job,
+            args=(session_id, user_input, response),
+            job_type="background",
+            session_id=session_id,
+        )
+        try:
+            self._job_queue.enqueue(job)
+        except Exception:
+            self._run_title_job(session_id, user_input, response)
+
     def _pop_prefetch(self) -> list[dict]:
         """Consume and delete the prefetched results for the last enqueued turn.
 
@@ -835,6 +878,13 @@ class AgentSession:
                 )
             except Exception:
                 pass
+
+            # Generate a session title once, from the opening exchange. Runs on the
+            # job queue so it never blocks this turn (drained at the next turn /
+            # shutdown); falls back to inline generation when no queue is wired.
+            if not self._title_generated:
+                self._title_generated = True
+                self._enqueue_title_job(self._session_id, user_input, response or "")
 
         self._emit_event(
             SESSION_CHAT_COMPLETED,
