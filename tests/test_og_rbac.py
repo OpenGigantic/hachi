@@ -304,6 +304,9 @@ def test_register_delegation_tools_passes_engine() -> None:
         mock_factory.return_value = lambda: None
         register_delegation_tools(registry, skill_engine=engine)
 
-    # Verify skill_engine keyword arg was passed to the factory
-    _, kwargs = mock_factory.call_args
-    assert kwargs.get("skill_engine") is engine
+    # Verify skill_engine keyword arg was passed in at least one call to the factory.
+    # _make_delegate_parallel_tasks also calls _make_delegate_task (without skill_engine)
+    # so we check call_args_list rather than call_args (which is the most recent call).
+    assert any(
+        c.kwargs.get("skill_engine") is engine for c in mock_factory.call_args_list
+    ), f"skill_engine not found in any call: {mock_factory.call_args_list}"
