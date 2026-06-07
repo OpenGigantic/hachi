@@ -2467,6 +2467,122 @@ def skill_lint(
         raise typer.Exit(1)
 
 
+@skill_app.command("benchmark")
+def skill_benchmark(
+    dir_path: str | None = typer.Option(
+        None, "--dir", help="Skill directory to benchmark. Defaults to the bundled default_skills."
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON (for CI / sharing)."
+    ),
+    threshold: float = typer.Option(
+        0.80,
+        "--threshold",
+        help="Minimum required savings fraction (0–1). Exit 1 if below. Default 0.80.",
+    ),
+) -> None:
+    """Benchmark the 3-pass .og model against a dump-all baseline.
+
+    Proves the ObjectGraph token-efficiency moat: loading skills via
+    search → peek → resolve uses a fraction of the tokens compared to
+    naively concatenating every skill into the prompt. Run this against
+    your custom skill pack to see your own savings figure.
+
+    Exits 1 when savings fall below --threshold (useful as a CI gate).
+    """
+    import json as _json
+
+    from tokoboros.og_engine.engine import SkillEngine, estimate_tokens
+
+    # Resolve skill directory.
+    if dir_path is not None:
+        skills_dir = Path(dir_path)
+        if not skills_dir.exists():
+            console.print(f"[red]Directory not found:[/red] {dir_path}")
+            raise typer.Exit(2)
+    else:
+        from tokoboros.gateway.workspace import get_skills_dir
+
+        skills_dir = get_skills_dir()
+
+    engine = SkillEngine()
+    engine.load_directory(skills_dir)
+    nodes = engine.get_all_nodes()
+
+    if len(nodes) < 3:
+        console.print(
+            "[yellow]Not enough skill nodes to run a meaningful benchmark "
+            f"(found {len(nodes)}).[/yellow]"
+        )
+        raise typer.Exit(2)
+
+    # Baseline: dump every skill's full content in one shot.
+    baseline_text = "\n".join(engine.resolve_node(n.name, blocks=["all"]) for n in nodes)
+    baseline = estimate_tokens(baseline_text)
+
+    # Pick the first indexed keyword as the representative query.
+    keywords = list(engine._keyword_index.keys())
+    if not keywords:
+        console.print(
+            "[yellow]No indexed keywords in bundled skills — cannot run benchmark.[/yellow]"
+        )
+        raise typer.Exit(2)
+    query = keywords[0]
+
+    results = engine.search(query)
+    candidates = [r["name"] for r in results][:5]
+
+    p1 = estimate_tokens(_json.dumps(results[:5]))
+    p2 = estimate_tokens(_json.dumps(engine.peek(candidates)))
+    p3 = estimate_tokens(engine.resolve_node(candidates[0]))
+    three_pass = p1 + p2 + p3
+
+    savings = 1.0 - (three_pass / baseline) if baseline > 0 else 0.0
+    passed = savings >= threshold
+
+    if as_json:
+        # Plain print so Rich never soft-wraps the payload.
+        print(
+            _json.dumps(
+                {
+                    "nodes": len(nodes),
+                    "baseline_tokens": baseline,
+                    "three_pass_tokens": three_pass,
+                    "savings_pct": round(savings, 6),
+                    "p1_tokens": p1,
+                    "p2_tokens": p2,
+                    "p3_tokens": p3,
+                    "threshold": threshold,
+                    "passed": passed,
+                    "query": query,
+                },
+                indent=2,
+            )
+        )
+    else:
+        verdict_color = "green" if passed else "red"
+        verdict_icon = "✓" if passed else "✗"
+        console.print(
+            Panel(
+                f"[bold]ObjectGraph Token-Savings Benchmark[/bold]\n\n"
+                f"Skills loaded:    [bold]{len(nodes)}[/bold] nodes\n"
+                f"Baseline (dump):  [bold]{baseline:,}[/bold] tok\n"
+                f"3-pass total:     [bold]{three_pass:,}[/bold] tok  "
+                f"[dim](p1={p1:,}, p2={p2:,}, p3={p3:,})[/dim]\n"
+                f"Token savings:    [{verdict_color}][bold]{savings:.1%}[/bold]  "
+                f"{verdict_icon} {'above' if passed else 'below'} "
+                f"{threshold:.0%} threshold[/{verdict_color}]\n\n"
+                f"Query: [cyan]{query!r}[/cyan]\n\n"
+                "[dim]Share these results: paste the --json output in your README "
+                "or submit to the Tokoboros skill registry.[/dim]",
+                border_style=verdict_color,
+            )
+        )
+
+    if not passed:
+        raise typer.Exit(1)
+
+
 memory_app = typer.Typer(help="Inspect the agent's long-term memory vault.")
 app.add_typer(memory_app, name="memory")
 
