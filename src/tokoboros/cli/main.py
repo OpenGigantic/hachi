@@ -1926,6 +1926,142 @@ def channel_telegram(
 skill_app = typer.Typer(help="Manage and import agent skills (.og / SKILL.md).")
 app.add_typer(skill_app, name="skill")
 
+# Sub-app for community skill packs
+pack_app = typer.Typer(help="Install and manage community skill packs.")
+skill_app.add_typer(pack_app, name="pack")
+
+
+@pack_app.command("list")
+def pack_list(
+    as_json: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """List all installed community skill packs."""
+    from tokoboros.core.community_packs import list_packs
+    from tokoboros.gateway.workspace import get_skills_dir
+
+    skills_dir = get_skills_dir()
+    packs = list_packs(skills_dir)
+
+    if as_json:
+        print(
+            __import__("json").dumps(
+                [
+                    {
+                        "name": p.name,
+                        "source": p.source,
+                        "file_count": p.file_count,
+                        "version": p.version,
+                        "description": p.description,
+                    }
+                    for p in packs
+                ],
+                indent=2,
+            )
+        )
+        return
+
+    if not packs:
+        console.print("[dim]No community packs installed.[/dim]")
+        console.print(
+            "Install one with: [bold]tokoboros skill pack install user/repo[/bold]"
+        )
+        return
+
+    from rich.table import Table
+
+    table = Table(title="Installed Community Skill Packs", show_lines=False)
+    table.add_column("Name", style="bold cyan")
+    table.add_column("Skills", justify="right")
+    table.add_column("Version")
+    table.add_column("Description")
+    for p in packs:
+        table.add_row(
+            p.name,
+            str(p.file_count),
+            p.version or "[dim]-[/dim]",
+            p.description or "[dim]-[/dim]",
+        )
+    console.print(table)
+
+
+@pack_app.command("install")
+def pack_install(
+    spec: str = typer.Argument(
+        ...,
+        help=(
+            "Pack source: GitHub 'user/repo[@ref]', full archive URL (.tar.gz/.zip), "
+            "single .og URL, or local directory path."
+        ),
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Output result as JSON."),
+) -> None:
+    """Install a community skill pack from GitHub or a URL.
+
+    Examples::
+
+        tokoboros skill pack install alice/devops-skills
+        tokoboros skill pack install alice/devops-skills@v2
+        tokoboros skill pack install https://github.com/alice/skills/archive/main.tar.gz
+        tokoboros skill pack install /path/to/local/skills-dir
+    """
+    from tokoboros.core.community_packs import install_pack
+    from tokoboros.gateway.workspace import get_skills_dir
+
+    skills_dir = get_skills_dir()
+    try:
+        info = install_pack(spec, skills_dir)
+    except (ValueError, FileNotFoundError, OSError) as exc:
+        console.print(f"[red]Install failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    if as_json:
+        print(
+            __import__("json").dumps(
+                {
+                    "name": info.name,
+                    "source": info.source,
+                    "installed_path": str(info.installed_path),
+                    "file_count": info.file_count,
+                    "version": info.version,
+                    "description": info.description,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    console.print(
+        f"[green]Installed[/green] pack [bold cyan]{info.name}[/bold cyan] "
+        f"({info.file_count} skill(s)"
+        + (f", v{info.version}" if info.version else "")
+        + ")"
+    )
+    if info.description:
+        console.print(f"  {info.description}")
+    console.print(
+        f"  Skills loaded from: [dim]{info.installed_path}[/dim]"
+    )
+    console.print(
+        "Run [bold]tokoboros skill list[/bold] to see new skills."
+    )
+
+
+@pack_app.command("remove")
+def pack_remove(
+    name: str = typer.Argument(..., help="The pack name to remove."),
+) -> None:
+    """Remove an installed community skill pack."""
+    from tokoboros.core.community_packs import remove_pack
+    from tokoboros.gateway.workspace import get_skills_dir
+
+    skills_dir = get_skills_dir()
+    removed = remove_pack(name, skills_dir)
+    if removed:
+        console.print(f"[green]Removed[/green] pack [bold]{name}[/bold].")
+    else:
+        console.print(f"[yellow]Pack '{name}' not found.[/yellow]")
+        raise typer.Exit(1)
+
 
 @skill_app.command("import")
 def skill_import(
