@@ -167,6 +167,7 @@ def test_run_command_launches_tui_in_local_mode(monkeypatch) -> None:
 
     monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
     monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
     monkeypatch.setattr("tokoboros.cli.main.ensure_device_permissions", lambda _console: None)
     monkeypatch.setattr("tokoboros.cli.main._start_gateway_server", _fake_start_gateway_server)
     monkeypatch.setattr("tokoboros.cli.main.run_tui", _fake_run_tui)
@@ -189,6 +190,7 @@ def test_bare_invocation_launches_tui(monkeypatch) -> None:
 
     monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
     monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
     monkeypatch.setattr("tokoboros.cli.main.ensure_device_permissions", lambda _console: None)
     monkeypatch.setattr("tokoboros.cli.main.run_tui", _fake_run_tui)
 
@@ -217,6 +219,7 @@ def test_run_repl_skips_gateway_bootstrap(monkeypatch) -> None:
 
     monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
     monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
     monkeypatch.setattr("tokoboros.cli.main.ensure_device_permissions", lambda _console: None)
     monkeypatch.setattr("tokoboros.cli.main._run_repl", _fake_run_repl)
     monkeypatch.setattr("tokoboros.cli.main._start_gateway_server", _fake_start_gateway_server)
@@ -243,6 +246,7 @@ def test_run_command_falls_back_to_repl_when_tui_launch_fails(monkeypatch) -> No
 
     monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
     monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
     monkeypatch.setattr("tokoboros.cli.main.ensure_device_permissions", lambda _console: None)
     monkeypatch.setattr("tokoboros.cli.main.run_tui", _boom_run_tui)
     monkeypatch.setattr("tokoboros.cli.main._run_repl", _fake_repl)
@@ -256,7 +260,7 @@ def test_run_command_falls_back_to_repl_when_tui_launch_fails(monkeypatch) -> No
 
 def test_apply_quick_setup_runs_only_when_needed(monkeypatch) -> None:
     state: dict[str, int] = {
-        "detect": 0,
+        "best_provider": 0,
         "build": 0,
         "apply": 0,
     }
@@ -268,9 +272,13 @@ def test_apply_quick_setup_runs_only_when_needed(monkeypatch) -> None:
         def needs_setup(self) -> bool:
             return self._needs_setup
 
-        def detect_environment(self) -> dict[str, bool]:
-            state["detect"] += 1
-            return {"anthropic_env": True}
+        def best_provider_from_env(self) -> dict:
+            state["best_provider"] += 1
+            return {
+                "kind": "anthropic",
+                "model": "claude-haiku-4-5",
+                "api_key_env": "ANTHROPIC_API_KEY",
+            }
 
         def build_tier_plan(self, tier: str, answers: dict) -> dict:
             state["build"] += 1
@@ -285,7 +293,7 @@ def test_apply_quick_setup_runs_only_when_needed(monkeypatch) -> None:
     monkeypatch.setattr("tokoboros.cli.main.OnboardingService", FakeOnboardingService)
     _apply_quick_setup_if_needed()
 
-    assert state == {"detect": 1, "build": 1, "apply": 1}
+    assert state == {"best_provider": 1, "build": 1, "apply": 1}
 
 
 def test_apply_quick_setup_skips_when_already_configured(monkeypatch) -> None:

@@ -594,35 +594,21 @@ def _build_gateway_control_plane(
 
 
 def _apply_quick_setup_if_needed() -> None:
+    """Silently apply a sensible default config on first run.
+
+    Uses :meth:`~tokoboros.core.onboarding.OnboardingService.best_provider_from_env`
+    to pick the highest-priority provider whose credentials are present. Falls
+    back to anthropic (key may be missing — ``_pre_flight_check`` surfaces that).
+    """
     service = OnboardingService()
     if not service.needs_setup():
         return
 
-    detected = service.detect_environment()
-    provider: dict[str, str] = {
+    provider = service.best_provider_from_env() or {
         "kind": "anthropic",
         "model": "claude-haiku-4-5",
         "api_key_env": "ANTHROPIC_API_KEY",
     }
-
-    if detected.get("ollama_cli"):
-        provider = {
-            "kind": "ollama",
-            "base_url": "http://127.0.0.1:11434/v1",
-            "model": "llama3.1:8b",
-        }
-    elif detected.get("openai_env"):
-        provider = {
-            "kind": "openai-compatible",
-            "api_key_env": "OPENAI_API_KEY",
-            "model": "gpt-4.1-mini",
-        }
-    elif detected.get("anthropic_env"):
-        provider = {
-            "kind": "anthropic",
-            "api_key_env": "ANTHROPIC_API_KEY",
-            "model": "claude-haiku-4-5",
-        }
 
     plan = service.build_tier_plan(
         "lightning",
@@ -632,6 +618,55 @@ def _apply_quick_setup_if_needed() -> None:
         },
     )
     service.apply_setup(plan)
+
+
+def _pre_flight_check() -> bool:
+    """Validate that the configured provider is ready to use.
+
+    Runs **after** ``_apply_quick_setup_if_needed`` so the config is always
+    present. Returns *True* when the provider is ready; prints a clear
+    actionable banner and returns *False* when the API key is missing or the
+    provider config is broken.
+
+    This is the zero-config safety net: users with a key present sail through
+    silently; users who forgot to export their key see a one-liner fix before
+    the boot sequence even starts.
+    """
+    from tokoboros.core.onboarding import OnboardingService, default_api_key_env_for
+
+    cfg = load_effective_config()
+    service = OnboardingService()
+    api_key_env = getattr(cfg.provider, "api_key_env", None)
+    ok, msg = service.validate_provider(kind=cfg.provider.kind, api_key_env=api_key_env)
+    if ok:
+        return True
+
+    env_name = api_key_env or default_api_key_env_for(cfg.provider.kind) or "YOUR_API_KEY_ENV"
+    provider_links: dict[str, str] = {
+        "anthropic": "https://console.anthropic.com/settings/keys",
+        "openai-compatible": "https://platform.openai.com/api-keys",
+        "groq": "https://console.groq.com/keys",
+        "together": "https://api.together.xyz/settings/api-keys",
+        "deepseek": "https://platform.deepseek.com/api_keys",
+        "openrouter": "https://openrouter.ai/keys",
+    }
+    link = provider_links.get(cfg.provider.kind, "")
+    link_line = f"Get a key: [link]{link}[/link]\n" if link else ""
+
+    console.print(
+        Panel(
+            f"[bold red]API key missing — cannot start.[/bold red]\n\n"
+            f"{msg}\n\n"
+            f"[bold]Fix (one command):[/bold]\n"
+            f"  [green]export {env_name}=<your-key>[/green]\n\n"
+            f"{link_line}"
+            f"Then run [bold]tokoboros run[/bold] again.\n"
+            f"Or run [bold]tokoboros quickstart[/bold] to choose a different provider.",
+            title="[bold red]Not Ready[/bold red]",
+            border_style="red",
+        )
+    )
+    return False
 
 
 def _render_event(event_type: str, data: dict):
@@ -1099,6 +1134,8 @@ def _launch_assistant(*, repl: bool, resume: bool, continue_latest: bool) -> Non
     """
     ensure_workspace()
     _apply_quick_setup_if_needed()
+    if not _pre_flight_check():
+        raise typer.Exit(1)
     ensure_device_permissions(console)
 
     if repl:
@@ -1229,12 +1266,24 @@ def setup(
     )
     service.apply_setup(plan)
 
+    # Validate the API key immediately after saving — surface missing keys now,
+    # not cryptically at boot time.
+    key_ok, key_msg = service.validate_provider(
+        kind=provider["kind"], api_key_env=provider.get("api_key_env")
+    )
+    key_status = (
+        "[green]✓ API key found.[/green]"
+        if key_ok
+        else f"[yellow]⚠ {key_msg}[/yellow]"
+    )
+
     console.print(
         Panel(
             "[bold green]Setup saved.[/bold green]\n\n"
             f"Tier: [cyan]{tier}[/cyan]\n"
             f"Provider: [cyan]{provider['kind']}[/cyan]\n"
             f"Permission tier: [cyan]{permission_tier}[/cyan]\n"
+            f"{key_status}\n\n"
             "You can rerun setup anytime with [bold]tokoboros setup[/bold].",
             title="Onboarding",
         )
