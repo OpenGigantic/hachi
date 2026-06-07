@@ -210,6 +210,7 @@ _GROUP_BY_TOOL_NAME: dict[str, str] = {
     "core_suspend_workflow": "workflow",
     "send_slack_message": "messaging",
     "send_discord_message": "messaging",
+    "send_whatsapp_message": "messaging",
     "view_image": "vision",
     "transcribe_audio": "voice",
     "speak_text": "voice",
