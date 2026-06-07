@@ -9,8 +9,12 @@ from pathlib import Path
 import pytest
 
 from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.voice import SpeechToText, VoiceError
-from tokoboros.tools.voice_tools import _make_transcribe_audio, register_voice_tools
+from tokoboros.core.voice import SpeechToText, TextToSpeech, VoiceError
+from tokoboros.tools.voice_tools import (
+    _make_speak_text,
+    _make_transcribe_audio,
+    register_voice_tools,
+)
 
 
 class _Result:
@@ -123,6 +127,7 @@ def test_register_voice_tools_registers_in_voice_group() -> None:
     register_voice_tools(registry, _Gate("guided"))
     names = {schema["name"] for schema in registry.get_schemas()}
     assert "transcribe_audio" in names
+    assert "speak_text" in names
     assert "voice" in registry.available_groups()
 
 
@@ -162,3 +167,123 @@ def test_tool_failure_is_friendly(tmp_path: Path) -> None:
     tool = _make_transcribe_audio(_Gate("guided"), stt)
     out = tool(str(_wav(tmp_path)))
     assert "Transcription failed" in out
+
+
+# --------------------------------------------------------------------------- #
+# TextToSpeech backend
+# --------------------------------------------------------------------------- #
+def _ok_synthesizer(audio: bytes = b"ID3fakeaudio"):
+    def _s(url, payload, headers):
+        assert url.endswith("/audio/speech")
+        assert headers.get("Authorization", "").startswith("Bearer ")
+        assert payload["input"]
+        return 200, audio
+
+    return _s
+
+
+def test_tts_not_configured_without_key() -> None:
+    assert TextToSpeech().is_configured() is False
+
+
+def test_tts_synthesize_writes_file(tmp_path: Path) -> None:
+    out = tmp_path / "reply.mp3"
+    tts = TextToSpeech(api_key="sk-test", synthesizer=_ok_synthesizer(b"AUDIO"))
+    result = tts.synthesize("hello there", out)
+    assert result == out
+    assert out.read_bytes() == b"AUDIO"
+
+
+def test_tts_format_inferred_from_extension(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def _s(url, payload, headers):
+        captured.update(payload)
+        return 200, b"AUDIO"
+
+    tts = TextToSpeech(api_key="sk-test", synthesizer=_s)
+    tts.synthesize("hi", tmp_path / "note.wav", voice="nova")
+    assert captured["response_format"] == "wav"
+    assert captured["voice"] == "nova"
+
+
+def test_tts_unconfigured_raises(tmp_path: Path) -> None:
+    with pytest.raises(VoiceError):
+        TextToSpeech().synthesize("hi", tmp_path / "x.mp3")
+
+
+def test_tts_empty_text_raises(tmp_path: Path) -> None:
+    tts = TextToSpeech(api_key="sk-test", synthesizer=_ok_synthesizer())
+    with pytest.raises(VoiceError, match="empty"):
+        tts.synthesize("   ", tmp_path / "x.mp3")
+
+
+def test_tts_unsupported_format_raises(tmp_path: Path) -> None:
+    tts = TextToSpeech(api_key="sk-test", synthesizer=_ok_synthesizer())
+    with pytest.raises(VoiceError, match="unsupported audio format"):
+        tts.synthesize("hi", tmp_path / "x.txt")
+
+
+def test_tts_ssrf_blocks_private_endpoint(tmp_path: Path) -> None:
+    tts = TextToSpeech(
+        api_key="sk-test",
+        base_url="http://127.0.0.1:9/v1",
+        synthesizer=_ok_synthesizer(),
+        allow_private=False,
+    )
+    with pytest.raises(VoiceError, match="blocked speech endpoint"):
+        tts.synthesize("hi", tmp_path / "x.mp3")
+
+
+def test_tts_http_error_raises(tmp_path: Path) -> None:
+    def _s(url, payload, headers):
+        return 401, b"unauthorized"
+
+    tts = TextToSpeech(api_key="sk-test", synthesizer=_s)
+    with pytest.raises(VoiceError, match="HTTP 401"):
+        tts.synthesize("hi", tmp_path / "x.mp3")
+
+
+def test_tts_empty_audio_raises(tmp_path: Path) -> None:
+    tts = TextToSpeech(api_key="sk-test", synthesizer=lambda u, p, h: (200, b""))
+    with pytest.raises(VoiceError, match="no audio"):
+        tts.synthesize("hi", tmp_path / "x.mp3")
+
+
+# --------------------------------------------------------------------------- #
+# speak_text tool
+# --------------------------------------------------------------------------- #
+def test_speak_tool_blocked_in_sandbox(tmp_path: Path) -> None:
+    tool = _make_speak_text(_Gate("sandbox"), TextToSpeech(api_key="sk-test"))
+    out = tool("hi", str(tmp_path / "x.mp3"))
+    assert "disabled in 'sandbox'" in out
+
+
+def test_speak_tool_path_denied(tmp_path: Path) -> None:
+    tts = TextToSpeech(api_key="sk-test", synthesizer=_ok_synthesizer())
+    tool = _make_speak_text(_Gate("guided", allowed=False), tts)
+    out = tool("hi", str(tmp_path / "x.mp3"))
+    assert "Permission Denied" in out
+
+
+def test_speak_tool_not_configured_is_friendly(tmp_path: Path) -> None:
+    tool = _make_speak_text(_Gate("guided"), TextToSpeech())  # no key
+    out = tool("hi", str(tmp_path / "x.mp3"))
+    assert "not configured" in out
+    assert "OPENAI_API_KEY" in out
+
+
+def test_speak_tool_happy_path(tmp_path: Path) -> None:
+    out_file = tmp_path / "reply.mp3"
+    tts = TextToSpeech(api_key="sk-test", synthesizer=_ok_synthesizer(b"AUDIO"))
+    tool = _make_speak_text(_Gate("guided"), tts)
+    out = tool("hello", str(out_file))
+    assert "Saved spoken audio to" in out
+    assert out_file.read_bytes() == b"AUDIO"
+
+
+def test_speak_tool_failure_is_friendly(tmp_path: Path) -> None:
+    tts = TextToSpeech(api_key="sk-test", synthesizer=lambda u, p, h: (500, b"err"))
+    tool = _make_speak_text(_Gate("guided"), tts)
+    out = tool("hi", str(tmp_path / "x.mp3"))
+    assert "Speech synthesis failed" in out
