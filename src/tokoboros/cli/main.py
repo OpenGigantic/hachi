@@ -1620,6 +1620,85 @@ def config_set(
     console.print("[dim]Restart the agent for changes to take effect.[/dim]")
 
 
+@app.command("google-auth")
+def google_auth(
+    as_json: bool = typer.Option(False, "--json", help="Emit result as JSON."),
+    revoke: bool = typer.Option(
+        False, "--revoke", help="Clear stored Google credentials and exit."
+    ),
+) -> None:
+    """Authenticate with Google Workspace (Gmail, Calendar, Drive, …).
+
+    Opens a browser window to complete the OAuth consent flow.  Credentials
+    are cached in the secure store so subsequent runs do not re-prompt.
+
+    Requires GOOGLE_CLIENT_ID (and optionally GOOGLE_CLIENT_SECRET) to be set
+    in your environment.  Run ``tokoboros doctor`` to check the current status.
+    """
+    import os
+
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    if not client_id:
+        msg = (
+            "GOOGLE_CLIENT_ID is not set.  "
+            "Create OAuth 2.0 credentials at https://console.cloud.google.com/apis/credentials "
+            "and export GOOGLE_CLIENT_ID=<your-id> before running this command."
+        )
+        if as_json:
+            print(json.dumps({"ok": False, "error": "GOOGLE_CLIENT_ID not set", "detail": msg}))
+            raise typer.Exit(1)
+        console.print(f"[red]Error:[/red] {msg}")
+        raise typer.Exit(1)
+
+    from tokoboros.core.oauth import OAuthManager
+
+    oauth = OAuthManager(secret_store=create_default_secret_store())
+
+    if revoke:
+        oauth.save_token("google", {})
+        if as_json:
+            print(json.dumps({"ok": True, "revoked": True}))
+            return
+        console.print("[green]Google credentials cleared.[/green]")
+        return
+
+    # Collect all scopes from the hub so we request them in one consent screen.
+    from tokoboros.integrations.google import GoogleIntegrationHub
+
+    hub = GoogleIntegrationHub()
+    all_scopes: list[str] = []
+    for svc in hub._services:
+        for scope in svc.required_scopes:
+            if scope not in all_scopes:
+                all_scopes.append(scope)
+
+    try:
+        token = oauth.get_google_credentials(all_scopes)
+        ok = bool(token)
+    except Exception as exc:
+        if as_json:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+            raise typer.Exit(1) from exc
+        console.print(f"[red]Authentication failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    if as_json:
+        print(json.dumps({"ok": ok, "scopes_requested": len(all_scopes)}))
+        if not ok:
+            raise typer.Exit(1)
+        return
+
+    if ok:
+        console.print("[green]✓[/green] Google Workspace authenticated successfully.")
+        console.print(
+            f"  [dim]{len(all_scopes)} scope(s) granted — "
+            "Gmail, Calendar, Drive and more are now available.[/dim]"
+        )
+    else:
+        console.print("[red]Authentication did not return a token.[/red]")
+        raise typer.Exit(1)
+
+
 @app.command()
 def models(
     json_output: bool = typer.Option(
