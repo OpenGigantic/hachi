@@ -1,8 +1,9 @@
-"""Speech-to-text (audio transcription) backend with graceful degradation.
+"""Voice backends (speech-to-text + text-to-speech) with graceful degradation.
 
-Transcribes a local audio file via an OpenAI-compatible ``/audio/transcriptions``
-endpoint — OpenAI Whisper, Groq Whisper, or any compatible server. Following the
-same test-complete pattern as the browser controller and the Slack/Discord
+:class:`SpeechToText` transcribes a local audio file via an OpenAI-compatible
+``/audio/transcriptions`` endpoint; :class:`TextToSpeech` synthesizes speech to a
+file via ``/audio/speech`` (OpenAI, Groq, or any compatible server). Both follow
+the same test-complete pattern as the browser controller and the Slack/Discord
 senders:
 
 - credentials resolve **lazily from the environment** at call time (never at
@@ -27,8 +28,17 @@ from tokoboros.core.net_guard import validate_outbound_url
 # (url, file_bytes, filename, form_data, headers) -> (status_code, response_text)
 Transcriber = Callable[[str, bytes, str, dict[str, str], dict[str, str]], tuple[int, str]]
 
+# (url, json_payload, headers) -> (status_code, audio_bytes)
+Synthesizer = Callable[[str, dict[str, object], dict[str, str]], tuple[int, bytes]]
+
 _DEFAULT_BASE_URL = "https://api.openai.com/v1"
 _DEFAULT_MODEL = "whisper-1"
+
+_DEFAULT_TTS_MODEL = "tts-1"
+_DEFAULT_TTS_VOICE = "alloy"
+# Output formats an OpenAI-compatible /audio/speech endpoint produces, keyed by
+# the file extension we map them from.
+_TTS_FORMATS = frozenset({"mp3", "opus", "aac", "flac", "wav", "pcm"})
 
 # Extensions the common Whisper endpoints accept; checked up front for a friendly
 # error instead of an opaque API rejection.
@@ -41,7 +51,7 @@ _MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
 
 class VoiceError(RuntimeError):
-    """Raised when transcription is misconfigured or the backend rejects the request."""
+    """Raised when a voice backend is misconfigured or rejects the request."""
 
 
 def _default_transcriber(
@@ -131,3 +141,99 @@ class SpeechToText:
         if not isinstance(text, str):
             raise VoiceError("transcription response did not include a 'text' field")
         return text.strip()
+
+
+def _default_synthesizer(
+    url: str, payload: dict[str, object], headers: dict[str, str]
+) -> tuple[int, bytes]:
+    import httpx
+
+    with httpx.Client(timeout=120.0, follow_redirects=False) as client:
+        resp = client.post(url, json=payload, headers=headers)
+        return resp.status_code, resp.content
+
+
+class TextToSpeech:
+    """Synthesize speech from text via an OpenAI-compatible /audio/speech endpoint.
+
+    Mirrors :class:`SpeechToText`: lazy env credentials, an injectable
+    ``synthesizer`` for offline tests, SSRF-validated endpoint, readable
+    :class:`VoiceError` on failure. The output audio format is inferred from the
+    target file's extension (defaulting to mp3).
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str | None = None,
+        voice: str | None = None,
+        synthesizer: Synthesizer | None = None,
+        allow_private: bool = False,
+    ) -> None:
+        self._api_key = api_key or None
+        self._base_url = (base_url or _DEFAULT_BASE_URL).rstrip("/")
+        self._model = model or _DEFAULT_TTS_MODEL
+        self._voice = voice or _DEFAULT_TTS_VOICE
+        self._synthesizer = synthesizer or _default_synthesizer
+        self._allow_private = allow_private
+
+    @classmethod
+    def from_env(cls, synthesizer: Synthesizer | None = None) -> TextToSpeech:
+        """Build from environment: TOKOBOROS_TTS_* overrides, else OpenAI defaults."""
+        return cls(
+            api_key=os.environ.get("TOKOBOROS_TTS_API_KEY") or os.environ.get("OPENAI_API_KEY"),
+            base_url=os.environ.get("TOKOBOROS_TTS_BASE_URL") or os.environ.get("OPENAI_BASE_URL"),
+            model=os.environ.get("TOKOBOROS_TTS_MODEL"),
+            voice=os.environ.get("TOKOBOROS_TTS_VOICE"),
+            synthesizer=synthesizer,
+            allow_private=os.environ.get("TOKOBOROS_REST_ALLOW_PRIVATE", "").strip().lower()
+            in {"1", "true", "yes"},
+        )
+
+    def is_configured(self) -> bool:
+        return bool(self._api_key)
+
+    def synthesize(self, text: str, out_path: str | Path, voice: str | None = None) -> Path:
+        """Synthesize ``text`` to an audio file at ``out_path``. Raises VoiceError on failure."""
+        if not self._api_key:
+            raise VoiceError(
+                "text-to-speech is not configured (set OPENAI_API_KEY or TOKOBOROS_TTS_API_KEY)"
+            )
+        if not text.strip():
+            raise VoiceError("nothing to speak: text is empty")
+
+        path = Path(out_path)
+        fmt = path.suffix.lstrip(".").lower() or "mp3"
+        if fmt not in _TTS_FORMATS:
+            raise VoiceError(
+                f"unsupported audio format '{path.suffix or '(none)'}'. "
+                f"Supported: {', '.join(sorted(_TTS_FORMATS))}"
+            )
+
+        url = f"{self._base_url}/audio/speech"
+        ok, reason = validate_outbound_url(url, allow_private=self._allow_private)
+        if not ok:
+            raise VoiceError(f"blocked speech endpoint: {reason}")
+
+        payload: dict[str, object] = {
+            "model": self._model,
+            "input": text,
+            "voice": voice or self._voice,
+            "response_format": fmt,
+        }
+        headers = {"Authorization": f"Bearer {self._api_key}"}
+        status, audio = self._synthesizer(url, payload, headers)
+        if status != 200:
+            detail = audio[:200].decode("utf-8", "replace") if audio else ""
+            raise VoiceError(f"speech API returned HTTP {status}: {detail}")
+        if not audio:
+            raise VoiceError("speech API returned no audio")
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(audio)
+        except OSError as exc:
+            raise VoiceError(f"could not write audio file: {exc}") from exc
+        return path
