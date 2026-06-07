@@ -2361,6 +2361,8 @@ class TokoborosTextualApp(App[None]):
             "plan": self._cmd_plan,
             "deep-research": self._cmd_deep_research,
             "research": self._cmd_deep_research,
+            "speak": self._cmd_speak,
+            "transcribe": self._cmd_transcribe,
             "settings": lambda _a: self._switch_mode("settings"),
             "setup": lambda _a: self.action_mode_setup(),
             "quit": lambda _a: self.exit(),
@@ -2550,6 +2552,28 @@ class TokoborosTextualApp(App[None]):
             "(use your web/browse tools where available), cross-check claims, and synthesize "
             "a well-structured answer with citations. Question:\n" + arg,
             display_text=f"/deep-research {arg}",
+        )
+
+    def _cmd_speak(self, arg: str) -> None:
+        if not arg:
+            self._session_note("Usage: /speak <text to synthesize>", style=theme.WARNING)
+            return
+        self.set_toko_state_safe("thinking")
+        self.submit_prompt(
+            f'Use the speak_text tool to synthesize the following text to audio and tell me '
+            f'where the file was saved: "{arg}"',
+            display_text=f"/speak {arg}",
+        )
+
+    def _cmd_transcribe(self, arg: str) -> None:
+        if not arg:
+            self._session_note("Usage: /transcribe <audio file path>", style=theme.WARNING)
+            return
+        self.set_toko_state_safe("thinking")
+        self.submit_prompt(
+            f"Use the transcribe_and_summarize tool to transcribe and summarize the audio "
+            f'file at: "{arg}"',
+            display_text=f"/transcribe {arg}",
         )
 
     def set_toko_state_safe(self, state: str) -> None:
