@@ -1055,8 +1055,11 @@ def boot_agent(
         },
     )
 
-    # 2. Initialize the Skill Engine (the .og brain)
-    skill_engine = SkillEngine()
+    # 2. Initialize the Skill Engine (the .og brain).
+    # The main session agent is the orchestrator — pass its role so that
+    # brain.og's orchestrator-scoped identity and rule nodes are visible,
+    # while hypothetical admin-only or worker-only nodes remain hidden.
+    skill_engine = SkillEngine(agent_role="orchestrator")
     skills_dir = get_skills_dir()
     skill_engine.load_directory(skills_dir)
 
