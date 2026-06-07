@@ -21,6 +21,8 @@ class ConfigMeta(BaseModel):
 class AgentSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    name: str = ""
+    persona: str = ""
     max_tokens: int = 8192
     temperature: float = 0.0
 
