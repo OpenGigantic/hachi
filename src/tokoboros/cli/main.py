@@ -1844,6 +1844,43 @@ def schedule_run_due():
             pass
 
 
+@schedule_app.command("run-now")
+def schedule_run_now(
+    schedule_id: str = typer.Argument(..., help="Schedule ID to run immediately."),
+) -> None:
+    """Run a specific schedule immediately, regardless of its next-run time.
+
+    Useful for one-off manual triggers, testing, and debugging scheduled tasks.
+    The schedule's ``last_run`` and ``run_count`` are updated normally; cron and
+    interval schedules stay enabled and advance to their next fire time.
+    """
+    import datetime
+
+    scheduler = _get_scheduler()
+    schedule = scheduler.get(schedule_id)
+    if schedule is None:
+        console.print(f"[red]Schedule not found:[/red] {schedule_id!r}")
+        raise typer.Exit(1)
+
+    console.print(f"[cyan]Running[/cyan] '{schedule.name}': {schedule.task}")
+    agent = boot_agent()
+    try:
+        reply = agent.chat(schedule.task)
+        _deliver_schedule_result(schedule, reply)
+        scheduler.mark_fired(schedule, datetime.datetime.now(datetime.UTC))
+        console.print(f"[green]Done.[/green] '{schedule.name}' completed successfully.")
+        if reply:
+            console.print(f"[dim]Result:[/dim] {reply[:200]}{'…' if len(reply) > 200 else ''}")
+    except Exception as exc:
+        console.print(f"[red]Error running schedule:[/red] {exc}")
+        raise typer.Exit(1) from None
+    finally:
+        try:
+            agent.shutdown()
+        except Exception:
+            pass
+
+
 def _deliver_schedule_result(schedule, reply: str) -> None:
     """Deliver a scheduled task's result to its configured destination."""
     if schedule.deliver_to == "webhook" and schedule.webhook_url:
