@@ -99,6 +99,28 @@ class ToolRegistry:
         self._schemas.append(schema)
         self._groups[tool_name] = group
 
+    def update_handler(self, tool_name: str, func: Callable[..., Any]) -> bool:
+        """Replace the callable for an already-registered tool without touching its schema.
+
+        Used by sub-agent builders to rebind a tool to a scoped resource (e.g. a
+        role-filtered ``SkillEngine``) without duplicating the schema in
+        ``_schemas``.  Calling :meth:`register` for an already-registered tool
+        would append the schema a second time, causing the model to see duplicate
+        tool definitions.
+
+        Args:
+            tool_name: The ``name`` field of the tool to update.
+            func:      The new callable to bind.
+
+        Returns:
+            ``True`` if the tool was found and updated; ``False`` if it was not
+            registered (no-op in that case).
+        """
+        if tool_name not in self._tools:
+            return False
+        self._tools[tool_name] = func
+        return True
+
     def classify(
         self,
         core_names: set[str],
