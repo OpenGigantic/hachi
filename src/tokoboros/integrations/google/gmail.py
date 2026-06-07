@@ -1,6 +1,6 @@
-"""
-Gmail Service Plugin
-"""
+"""Gmail Service Plugin."""
+
+from __future__ import annotations
 
 import logging
 
@@ -16,7 +16,7 @@ class GmailService(GoogleService):
         return ["https://www.googleapis.com/auth/gmail.modify"]
 
     def send_email(
-        self, to: str, subject: str, body: str, attachment_paths: list[str] = None
+        self, to: str, subject: str, body: str, attachment_paths: list[str] | None = None
     ) -> str:
         """Sends an email using the Gmail API, optionally with attachments."""
         import base64
@@ -118,7 +118,9 @@ class GmailService(GoogleService):
         draft_id = response.get("id", "Unknown")
         return f"Draft created successfully. Draft ID: {draft_id}"
 
-    def reply_thread(self, thread_id: str, body: str, attachment_paths: list[str] = None) -> str:
+    def reply_thread(
+        self, thread_id: str, body: str, attachment_paths: list[str] | None = None
+    ) -> str:
         """Replies to an existing email thread, optionally with attachments."""
         import base64
         import mimetypes
@@ -296,6 +298,7 @@ class GmailService(GoogleService):
             return f"Failed to read thread: {str(e)}"
 
     def register_tools(self, registry: ToolRegistry) -> None:
+        """Register Gmail tools into the agent's tool registry."""
         registry.register(
             {
                 "name": "google_send_email",

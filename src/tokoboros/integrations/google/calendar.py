@@ -1,6 +1,8 @@
-"""
-Google Calendar Service Plugin
-"""
+"""Google Calendar Service Plugin."""
+
+from __future__ import annotations
+
+import datetime
 
 from tokoboros.core.loop import ToolRegistry
 from tokoboros.integrations.google.service import GoogleService
@@ -18,10 +20,12 @@ class CalendarService(GoogleService):
         end_time_iso: str,
         description: str = "",
         create_meet_link: bool = False,
-        attendees: list[str] = None,
+        attendees: list[str] | None = None,
     ) -> str:
         """Creates a Google Calendar event, optionally attaching a Google Meet link."""
-        event = {
+        from typing import Any as _Any
+
+        event: dict[str, _Any] = {
             "summary": summary,
             "description": description,
             "start": {"dateTime": start_time_iso},
@@ -31,7 +35,7 @@ class CalendarService(GoogleService):
         if attendees:
             event["attendees"] = [{"email": email.strip()} for email in attendees]
 
-        params = {}
+        params: dict[str, _Any] = {}
         if create_meet_link:
             import uuid
 
@@ -57,9 +61,7 @@ class CalendarService(GoogleService):
 
     def get_upcoming_events(self, max_results: int = 5) -> str:
         """Gets the next upcoming calendar events."""
-        import datetime
-
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None).isoformat() + "Z"
 
         response = self.client.get(
             "/calendar/v3/calendars/primary/events",
@@ -84,11 +86,9 @@ class CalendarService(GoogleService):
 
     def find_free_time(self, duration_minutes: int = 60, days_ahead: int = 3) -> str:
         """Scans the calendar to find the next available time slot."""
-        import datetime
-
-        now = datetime.datetime.utcnow()
-        time_min = now.isoformat() + "Z"
-        time_max = (now + datetime.timedelta(days=days_ahead)).isoformat() + "Z"
+        now_dt = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+        time_min = now_dt.isoformat() + "Z"
+        time_max = (now_dt + datetime.timedelta(days=days_ahead)).isoformat() + "Z"
 
         response = self.client.post(
             "/calendar/v3/freeBusy",
@@ -116,9 +116,9 @@ class CalendarService(GoogleService):
     def update_event(
         self,
         event_id: str,
-        summary: str = None,
-        start_time_iso: str = None,
-        end_time_iso: str = None,
+        summary: str | None = None,
+        start_time_iso: str | None = None,
+        end_time_iso: str | None = None,
     ) -> str:
         """Updates an existing calendar event."""
         # First, fetch the existing event
@@ -143,6 +143,7 @@ class CalendarService(GoogleService):
         return f"Event {event_id} has been deleted."
 
     def register_tools(self, registry: ToolRegistry) -> None:
+        """Register Google Calendar tools into the agent's tool registry."""
         registry.register(
             {
                 "name": "google_create_event",
