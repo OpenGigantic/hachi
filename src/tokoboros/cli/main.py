@@ -1420,7 +1420,11 @@ def secrets(
 
 
 @app.command()
-def doctor():
+def doctor(
+    json_output: bool = typer.Option(
+        False, "--json", help="Output machine-readable JSON (for CI/automation)."
+    ),
+):
     """Run environment diagnostics for onboarding and runtime health."""
     import sys
 
@@ -1501,6 +1505,10 @@ def doctor():
         "secret_backend": store.healthcheck(),
         "environment_detection": service.detect_environment(),
     }
+    if json_output:
+        # Plain print: Rich's console soft-wraps long JSON to terminal width.
+        print(json.dumps(checks, indent=2))
+        return
     console.print(
         Panel(json.dumps(checks, indent=2), title="Tokoboros Doctor", border_style="green")
     )

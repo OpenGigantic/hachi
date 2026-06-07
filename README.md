@@ -192,6 +192,7 @@ uv run tokoboros memory stats
 
 # Environment and security diagnostics
 uv run tokoboros doctor
+uv run tokoboros doctor --json            # machine-readable diagnostics (CI/automation)
 uv run tokoboros security-audit --json --fail-on-high
 
 # Start standalone gateway server

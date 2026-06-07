@@ -388,6 +388,62 @@ def test_doctor_command_reports_environment(monkeypatch, tmp_path: Path) -> None
     assert "session_token_cap" in result.stdout
 
 
+def test_doctor_json_is_parseable(monkeypatch, tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    data_dir = tmp_path / "data"
+    for directory in (config_dir, data_dir):
+        directory.mkdir()
+    settings_toml = config_dir / "settings.toml"
+    settings_toml.write_text("[provider]\nkind='anthropic'\n", encoding="utf-8")
+
+    fake_paths = SimpleNamespace(
+        config_dir=config_dir,
+        data_dir=data_dir,
+        state_dir=tmp_path / "state",
+        global_config_toml=settings_toml,
+        legacy_dir=tmp_path / "legacy",
+        skills_dir=data_dir / "skills",
+    )
+    fake_config = SimpleNamespace(
+        provider=SimpleNamespace(kind="anthropic", model="claude-haiku-4-5", api_key_env=None),
+        permissions=SimpleNamespace(tier="guided"),
+    )
+
+    class FakeOnboardingService:
+        def __init__(self, paths) -> None:
+            self.paths = paths
+
+        def needs_setup(self) -> bool:
+            return False
+
+        def validate_provider(self, *, kind, api_key_env=None):
+            return (True, "ok")
+
+        def detect_environment(self) -> dict[str, bool]:
+            return {"anthropic_env": True}
+
+    class FakeSecretStore:
+        def healthcheck(self) -> dict[str, str]:
+            return {"backend": "memory", "status": "ok"}
+
+    monkeypatch.setattr("tokoboros.cli.main.get_tokoboros_paths", lambda: fake_paths)
+    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: fake_config)
+    monkeypatch.setattr("tokoboros.cli.main.OnboardingService", FakeOnboardingService)
+    monkeypatch.setattr(
+        "tokoboros.cli.main.create_default_secret_store", lambda paths=None: FakeSecretStore()
+    )
+
+    # Narrow console: --json must emit via plain print() so the payload is NOT
+    # soft-wrapped to the terminal width (which would break json.loads).
+    result = runner.invoke(app, ["doctor", "--json"], env={"COLUMNS": "40"})
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["provider_kind"] == "anthropic"
+    assert "safety_and_limits" in payload
+    assert payload["safety_and_limits"]["tracing"] in ("off", "true", "false")
+    assert "mcp_servers_declared" in payload
+
+
 def test_security_audit_json_reports_findings_and_exit_code(monkeypatch, tmp_path: Path) -> None:
     permissions_file = tmp_path / "device-permissions.og"
     permissions_file.write_text("", encoding="utf-8")
