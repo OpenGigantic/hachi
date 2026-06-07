@@ -1376,6 +1376,12 @@ def boot_agent(
     max_session_tokens = _coerce_int(
         limits_cfg.get("max_session_tokens"), os.environ.get("TOKOBOROS_MAX_SESSION_TOKENS")
     )
+    max_turn_cost_usd = _coerce_float(
+        limits_cfg.get("max_turn_cost_usd"), os.environ.get("TOKOBOROS_MAX_TURN_COST_USD")
+    )
+    max_turn_tokens = _coerce_int(
+        limits_cfg.get("max_turn_tokens"), os.environ.get("TOKOBOROS_MAX_TURN_TOKENS")
+    )
 
     # 9. Instantiate the Brain Loop (cost_tracker created earlier, shared with sub-agents)
     loop = ExecutionLoop(
@@ -1388,6 +1394,8 @@ def boot_agent(
         cost_tracker=cost_tracker,
         max_cost_usd=max_session_cost_usd,
         max_tokens=max_session_tokens,
+        max_cost_per_turn=max_turn_cost_usd,
+        max_tokens_per_turn=max_turn_tokens,
     )
 
     # 10. Create the Session
