@@ -2365,6 +2365,7 @@ class TokoborosTextualApp(App[None]):
             "transcribe": self._cmd_transcribe,
             "notify": self._cmd_notify,
             "schedules": self._cmd_schedules,
+            "export": self._cmd_export,
             "settings": lambda _a: self._switch_mode("settings"),
             "setup": lambda _a: self.action_mode_setup(),
             "quit": lambda _a: self.exit(),
@@ -2617,6 +2618,44 @@ class TokoborosTextualApp(App[None]):
         if len(schedules) > 10:
             lines.append(f"  … and {len(schedules) - 10} more")
         self._session_note("\n".join(lines))
+
+    def _cmd_export(self, arg: str) -> None:
+        agent = self._agent
+        if agent is None:
+            self._session_note("Runtime is still booting.", style=theme.WARNING)
+            return
+        session_id = getattr(agent, "_session_id", None)
+        if not session_id:
+            self._session_note("No active session to export.", style=theme.WARNING)
+            return
+        try:
+            from tokoboros.core.paths import get_tokoboros_paths
+            from tokoboros.core.session_store import SessionStore
+
+            store = SessionStore()
+            messages = store.get_session_messages(session_id, limit=500)
+            meta = store.get_session(session_id)
+            store.shutdown()
+            title = (meta.get("title") or session_id) if meta else session_id
+            out_path = (
+                Path(arg) if arg else
+                get_tokoboros_paths().state_dir / f"session-{session_id[:8]}.md"
+            )
+            lines = [f"# {title}\n"]
+            for msg in messages:
+                role = msg.get("role", "?")
+                content = (msg.get("content") or "").strip()
+                ts = (msg.get("timestamp") or "")[:19].replace("T", " ")
+                if role == "user":
+                    lines.append(f"**You** _{ts}_\n\n{content}\n")
+                elif role == "assistant":
+                    lines.append(f"**Agent** _{ts}_\n\n{content}\n")
+            out_path.write_text("\n---\n\n".join(lines), encoding="utf-8")
+            self._session_note(
+                f"Exported {len(messages)} messages → {out_path}", style=theme.SUCCESS
+            )
+        except Exception as exc:
+            self._session_note(f"Export failed: {exc}", style=theme.ERROR)
 
     def set_toko_state_safe(self, state: str) -> None:
         """Drive the brand glyph without raising if the session screen is not active."""
