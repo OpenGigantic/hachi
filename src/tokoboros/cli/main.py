@@ -1438,12 +1438,14 @@ def doctor():
 
     skill_count = 0
     skills_health = "unknown"
+    mcp_servers_declared = 0
     try:
         from tokoboros.og_engine.engine import SkillEngine, lint_og_file
 
         engine = SkillEngine()
         engine.load_directory(paths.skills_dir)
         skill_count = engine.node_count
+        mcp_servers_declared = len(engine.get_nodes_by_role("mcp"))
 
         if paths.skills_dir.exists():
             og_files = sorted(paths.skills_dir.glob("**/*.og"))
@@ -1459,6 +1461,26 @@ def doctor():
     except Exception:
         skill_count = -1  # could not load skills directory
         skills_health = "error scanning skills"
+        mcp_servers_declared = -1
+
+    # Runtime safety + limits posture: the levers that silently stop or constrain
+    # an autonomous run. Surfaced so "why did it halt / get rate-limited / refuse
+    # to send" is diagnosable at a glance.
+    safety_and_limits = {
+        "session_cost_cap_usd": os.environ.get("TOKOBOROS_MAX_SESSION_COST_USD", "unset"),
+        "session_token_cap": os.environ.get("TOKOBOROS_MAX_SESSION_TOKENS", "unset"),
+        "channel_rate_limit": os.environ.get("TOKOBOROS_CHANNEL_RATE_LIMIT", "default"),
+        "openai_rate_limit": os.environ.get("TOKOBOROS_OPENAI_RATE_LIMIT", "default"),
+        "channel_allowlist": os.environ.get("TOKOBOROS_CHANNEL_ALLOWLIST", "unset"),
+        "outbound_secret_guard": (
+            "disabled"
+            if os.environ.get("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", "").strip().lower()
+            in {"1", "true", "yes"}
+            else "enabled"
+        ),
+        "rest_allow_private": os.environ.get("TOKOBOROS_REST_ALLOW_PRIVATE", "false"),
+        "tracing": os.environ.get("TOKOBOROS_TRACING", "off"),
+    }
 
     checks = {
         "python_version": sys.version.split()[0],
@@ -1472,7 +1494,9 @@ def doctor():
         "permissions_tier": cfg.permissions.tier,
         "skills_loaded": skill_count,
         "skills_health": skills_health,
-        "session_cost_cap_usd": os.environ.get("TOKOBOROS_MAX_SESSION_COST_USD", "unset"),
+        "mcp_servers_declared": mcp_servers_declared,
+        "session_cost_cap_usd": safety_and_limits["session_cost_cap_usd"],
+        "safety_and_limits": safety_and_limits,
         "onboarding_needs_setup": service.needs_setup(),
         "secret_backend": store.healthcheck(),
         "environment_detection": service.detect_environment(),
