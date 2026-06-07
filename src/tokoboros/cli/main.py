@@ -3180,9 +3180,11 @@ def session_list(
         ended = (s.get("ended_at") or "")[:19].replace("T", " ")
         model = s.get("model", "unknown")
         turns = s.get("total_turns", 0)
+        title = (s.get("title") or "").strip()
         status = f"ended {ended}" if ended else "[yellow]active[/yellow]"
+        title_line = f"  [white]{title}[/white]\n" if title else ""
         console.print(
-            f"  [cyan]{sid}[/cyan]  {started}  [dim]{model}[/dim]"
+            f"{title_line}  [cyan]{sid}[/cyan]  {started}  [dim]{model}[/dim]"
             f"  {turns} turn(s)  {status}"
         )
 
@@ -3221,16 +3223,25 @@ def session_show(
         session_id = matches[0]
 
     messages = store.get_session_messages(session_id, limit=limit)
+    meta = store.get_session(session_id)
     store.shutdown()
 
+    title = (meta.get("title") or "").strip() if meta else ""
+
     if as_json:
-        print(json.dumps({"session_id": session_id, "messages": messages}, indent=2))
+        print(
+            json.dumps(
+                {"session_id": session_id, "title": title, "messages": messages}, indent=2
+            )
+        )
         return
 
     if not messages:
         console.print(f"[dim]No messages found for session {session_id}.[/dim]")
         return
 
+    if title:
+        console.print(f"[bold white]{title}[/bold white]")
     console.print(f"[bold]Session[/bold] [cyan]{session_id}[/cyan]  ({len(messages)} messages)")
     console.print()
     for msg in messages:
@@ -3579,6 +3590,125 @@ def session_clean(
             f"[green]Deleted[/green] [bold]{deleted}[/bold] session(s) "
             f"older than [bold]{cutoff_iso[:10]}[/bold]."
         )
+
+
+@session_app.command("retitle")
+def session_retitle(
+    session_id: str = typer.Argument(
+        None, help="Session ID or prefix to retitle. Omit to backfill all untitled sessions."
+    ),
+    limit: int = typer.Option(
+        50, "--limit", "-n", help="Max sessions to backfill when no ID is given."
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Regenerate even when a title already exists."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit results as JSON."),
+) -> None:
+    """Generate titles for past sessions.
+
+    With no SESSION_ID, titles every session that lacks one (oldest first). Pass a
+    session ID or prefix to (re)title a single session; add --force to overwrite an
+    existing title. Falls back to a truncation of the first message when no model
+    provider is configured.
+    """
+    from tokoboros.core.llm import create_llm_client
+    from tokoboros.core.session_store import SessionStore
+    from tokoboros.core.session_titler import generate_title
+
+    store = SessionStore()
+
+    # Resolve which sessions to title.
+    if session_id:
+        target_id = session_id
+        if len(session_id) < 16:
+            candidates = store.get_recent_sessions(limit=10_000)
+            matches = [s["id"] for s in candidates if str(s["id"]).startswith(session_id)]
+            if not matches:
+                console.print(f"[red]No session found with prefix:[/red] {session_id}")
+                store.shutdown()
+                raise typer.Exit(1)
+            if len(matches) > 1:
+                console.print(
+                    f"[yellow]Ambiguous prefix '{session_id}'.[/yellow] Use a longer prefix."
+                )
+                store.shutdown()
+                raise typer.Exit(1)
+            target_id = matches[0]
+        targets = [{"id": target_id}]
+    else:
+        targets = store.get_sessions_missing_title(limit=limit)
+
+    if not targets:
+        store.shutdown()
+        if as_json:
+            print(json.dumps({"retitled": 0, "sessions": []}))
+        else:
+            console.print("[dim]No sessions need titling.[/dim]")
+        return
+
+    # Build a provider client; if unavailable, generate_title() falls back to a
+    # deterministic truncation rather than failing the whole command.
+    client = None
+    try:
+        provider = load_effective_config().provider
+        provider_config = {
+            "kind": provider.kind,
+            "model": provider.model,
+            "api_key_ref": getattr(provider, "api_key_ref", None),
+            "api_key_env": getattr(provider, "api_key_env", None),
+            "base_url": getattr(provider, "base_url", None),
+        }
+        client = create_llm_client(provider_config, secret_store=create_default_secret_store())
+    except Exception as exc:
+        console.print(
+            f"[yellow]No model client available ({exc}); using fallback titles.[/yellow]"
+        )
+
+    results: list[dict[str, str]] = []
+    try:
+        for t in targets:
+            sid = str(t["id"])
+            meta = store.get_session(sid)
+            if meta and (meta.get("title") or "").strip() and not force:
+                continue
+            messages = store.get_session_messages(sid, limit=10)
+            first_user = next(
+                (m["content"] for m in messages if m.get("role") == "user" and m.get("content")),
+                "",
+            )
+            first_asst = next(
+                (
+                    m["content"]
+                    for m in messages
+                    if m.get("role") == "assistant" and m.get("content")
+                ),
+                "",
+            )
+            if not str(first_user).strip():
+                continue
+            title = generate_title(first_user, first_asst, llm_client=client)
+            store.set_session_title(sid, title)
+            results.append({"id": sid, "title": title})
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+        store.shutdown()
+
+    if as_json:
+        print(json.dumps({"retitled": len(results), "sessions": results}, indent=2))
+        return
+
+    if not results:
+        console.print(
+            "[dim]Nothing to retitle — targeted sessions are already titled "
+            "(use --force to overwrite).[/dim]"
+        )
+        return
+    console.print(f"[green]Titled[/green] {len(results)} session(s):")
+    for r in results:
+        console.print(f"  [cyan]{r['id'][:12]}[/cyan]  {r['title']}")
 
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ Lightweight SQLite backend that persists every session's messages, tool calls,
 and metadata for cross-session search, analytics, and audit trails.
 
 Schema:
-    sessions: id, started_at, ended_at, model, total_turns
+    sessions: id, started_at, ended_at, model, total_turns, title
     messages: id, session_id, role, content, tool_name, timestamp
 
 Thread-safety is handled via a reentrant lock around all writes.
@@ -66,7 +66,8 @@ class SessionStore:
                 started_at  TEXT NOT NULL,
                 ended_at    TEXT,
                 model       TEXT,
-                total_turns INTEGER DEFAULT 0
+                total_turns INTEGER DEFAULT 0,
+                title       TEXT
             );
 
             CREATE TABLE IF NOT EXISTS messages (
@@ -84,6 +85,20 @@ class SessionStore:
             -- idx_msg_content removed: leading-wildcard LIKE cannot use a B-tree index.
         """)
         self._conn.commit()
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """Apply additive migrations to databases created by older versions.
+
+        ``CREATE TABLE IF NOT EXISTS`` leaves a pre-existing ``sessions`` table
+        untouched, so a column added to the definition above never reaches an
+        already-created DB. Adding it explicitly (idempotent) keeps old stores
+        forward-compatible.
+        """
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(sessions)")}
+        if "title" not in existing:
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+            self._conn.commit()
 
     # ==========================================
     # Session Lifecycle
@@ -134,6 +149,44 @@ class SessionStore:
             self._conn.commit()
 
         logger.debug("Session ended: %s (%d turns)", session_id, turns)
+
+    def set_session_title(self, session_id: str, title: str) -> None:
+        """Set (or overwrite) the human-readable title for a session.
+
+        Args:
+            session_id: The session to title.
+            title: The display title. Stored verbatim; callers are responsible
+                for length-capping and cleaning (see ``core.session_titler``).
+        """
+        with self._lock:
+            self._conn.execute(
+                "UPDATE sessions SET title = ? WHERE id = ?",
+                (title, session_id),
+            )
+            self._conn.commit()
+
+        logger.debug("Session titled: %s -> %r", session_id, title)
+
+    def get_sessions_missing_title(self, limit: int = 1000) -> list[dict[str, Any]]:
+        """Return sessions that have no title yet (oldest first), for backfill.
+
+        A session with at least one user message is eligible; empty sessions are
+        skipped since there is nothing to title.
+
+        Args:
+            limit: Maximum number of sessions to return.
+
+        Returns:
+            List of dicts with id, started_at, model.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, started_at, model FROM sessions "
+                "WHERE title IS NULL OR title = '' "
+                "ORDER BY started_at ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     # ==========================================
     # Message Logging
@@ -232,12 +285,22 @@ class SessionStore:
         """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT id, started_at, ended_at, model, total_turns "
+                "SELECT id, started_at, ended_at, model, total_turns, title "
                 "FROM sessions ORDER BY started_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
 
         return [dict(row) for row in rows]
+
+    def get_session(self, session_id: str) -> dict[str, Any] | None:
+        """Return the metadata row for a single session, or None if not found."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, started_at, ended_at, model, total_turns, title "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def get_latest_session_id(self) -> str | None:
         """Return the id of the most recently started session, or None if empty."""
