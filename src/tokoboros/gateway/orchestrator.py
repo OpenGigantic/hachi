@@ -31,6 +31,7 @@ from tokoboros.core.llm import Message, create_llm_client
 from tokoboros.core.loop import ExecutionLoop, ToolRegistry
 from tokoboros.core.mcp_client import MCPManager
 from tokoboros.core.memory import MemoryManager
+from tokoboros.core.memory_provider import ChromaMemoryProvider, resolve_provider
 from tokoboros.core.memory_vault import MemoryVault
 from tokoboros.core.paths import get_tokoboros_paths
 from tokoboros.core.permissions import (
@@ -1262,8 +1263,19 @@ def boot_agent(
     for node in skill_engine.get_all_nodes():
         rest_adapter.register_node_apis(node)
 
-    # Initialize and register the Long-Term Memory Vault
-    vault = MemoryVault()
+    # Initialize and register the Long-Term Memory Vault (backend-selectable).
+    # backend="chroma" (default) — ChromaDB persistent vault, full semantic tools.
+    # backend="in_memory" — lightweight in-process store, no ChromaDB required;
+    #   semantic memory tools degrade gracefully (return an informational message).
+    from tokoboros.core.settings import MemorySettings
+
+    _raw_memory = config.get("memory", {})
+    _memory_settings = MemorySettings.model_validate(_raw_memory)
+    _provider = resolve_provider(_memory_settings)
+    _provider.initialize(brain_dir=str(get_tokoboros_paths().data_dir))
+    vault: MemoryVault | None = (
+        _provider.vault if isinstance(_provider, ChromaMemoryProvider) else None
+    )
     memory.set_vault(vault)
     register_memory_tools(tool_registry, vault, job_queue=job_queue)
 
