@@ -86,11 +86,14 @@ def _mock_store(
     search_results=None,
 ) -> MagicMock:
     store = MagicMock()
-    store.get_recent_sessions.return_value = sessions if sessions is not None else FAKE_SESSIONS
+    sess = sessions if sessions is not None else FAKE_SESSIONS
+    store.get_recent_sessions.return_value = sess
     store.get_session_messages.return_value = messages if messages is not None else FAKE_MESSAGES
     store.search_sessions.return_value = (
         search_results if search_results is not None else FAKE_SEARCH_RESULTS
     )
+    # Real stores return a metadata dict (with a `title` key) or None.
+    store.get_session.return_value = {**sess[0], "title": sess[0].get("title")} if sess else None
     return store
 
 
