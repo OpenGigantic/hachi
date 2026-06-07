@@ -2170,6 +2170,45 @@ def skill_changelog(
         )
 
 
+@skill_app.command("traverse")
+def skill_traverse(
+    name: str = typer.Argument(..., help="Exact skill node name (see `skill list`)."),
+    as_json: bool = typer.Option(False, "--json", help="Emit the traverse hints as JSON."),
+) -> None:
+    """Show a skill's ::traverse hints — priority, entry node, and depth limit.
+
+    Traverse hints guide how the agent navigates the skill graph:
+    - priority (high/normal/low) — controls ranking in `skill search` results
+    - entry — preferred sub-node to load first when this is a subgraph root
+    - depth — how many requires edges to follow automatically
+    """
+    from tokoboros.gateway.workspace import get_skills_dir
+    from tokoboros.og_engine.engine import SkillEngine
+
+    engine = SkillEngine()
+    engine.load_directory(get_skills_dir())
+    result = engine.get_traverse_hints(name)
+    if result is None:
+        console.print(f"[red]Skill not found:[/red] {name} [dim](see `tokoboros skill list`)[/dim]")
+        raise typer.Exit(1)
+
+    if as_json:
+        # Plain print: Rich's console soft-wraps long JSON to terminal width.
+        print(json.dumps(result, indent=2))
+        return
+
+    hints = result.get("traverse") or {}
+    if not hints:
+        console.print(f"[dim]{name} has no ::traverse hints.[/dim]")
+        return
+
+    console.print(f"[bold]{name}[/bold] traverse hints:")
+    _KEY_LABELS = {"priority": "Priority", "entry": "Entry node", "depth": "Max depth"}
+    for key, value in hints.items():
+        label = _KEY_LABELS.get(key, key)
+        console.print(f"  [cyan]{label}:[/cyan] {value}")
+
+
 # Module-level singleton: a list-typed typer.Option as an inline default trips
 # flake8-bugbear B008 (mutable-container annotation), so hoist it out per the hint.
 _ASSERT_PARAM_OPTION = typer.Option(
