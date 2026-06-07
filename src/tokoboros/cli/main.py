@@ -2019,7 +2019,7 @@ def _deliver_schedule_result(schedule, reply: str) -> None:
         console.print(Panel(Markdown(reply), title=f"Scheduled: {schedule.name}"))
 
 
-channel_app = typer.Typer(help="Talk to Tokoboros from external chat apps (Telegram, ...).")
+channel_app = typer.Typer(help="Talk to Tokoboros from external chat apps (Telegram, WhatsApp, …).")
 app.add_typer(channel_app, name="channel")
 
 
@@ -2063,6 +2063,64 @@ def channel_telegram(
     except KeyboardInterrupt:
         console.print("\n[dim]Stopping Telegram bot...[/dim]")
     finally:
+        runner.shutdown()
+
+
+@channel_app.command("whatsapp")
+def channel_whatsapp(
+    port: int = typer.Option(8080, "--port", help="Local port to bind the webhook server to."),
+    host: str = typer.Option("0.0.0.0", "--host", help="Host to bind."),  # noqa: S104
+    verify_token: str | None = typer.Option(
+        None,
+        "--verify-token",
+        envvar="META_WHATSAPP_VERIFY_TOKEN",
+        help="Webhook verify token to configure in Meta App Dashboard.",
+    ),
+    allow: str | None = typer.Option(
+        None,
+        "--allow",
+        help="Comma-separated sender phone numbers (E.164) to restrict access to.",
+    ),
+) -> None:
+    """Run a WhatsApp webhook receiver that relays inbound messages to Tokoboros."""
+    from tokoboros.channels import ChannelRouter
+    from tokoboros.channels.runner import GatewaySessionRunner
+    from tokoboros.channels.whatsapp import WhatsAppAdapter, WhatsAppWebhookServer
+
+    allowlist = {a.strip() for a in allow.split(",") if a.strip()} if allow else set()
+    runner = GatewaySessionRunner()
+    router = ChannelRouter(runner, allowlist=list(allowlist) if allowlist else None)
+    adapter = WhatsAppAdapter()
+
+    def dispatch(msg: object) -> None:
+        console.print(
+            f"[cyan]{getattr(msg, 'sender_name', None) or getattr(msg, 'sender_id', '?')}[/cyan]:"
+            f" {getattr(msg, 'text', '')}"
+        )
+        try:
+            adapter.send(router.dispatch(msg))  # type: ignore[arg-type]
+        except Exception as exc:
+            console.print(f"[red]WhatsApp reply failed:[/red] {exc}")
+
+    server = WhatsAppWebhookServer(
+        host=host,
+        port=port,
+        verify_token=verify_token or "",
+        dispatcher=dispatch,
+        allowed_senders=allowlist,
+    )
+    console.print(
+        f"[green]WhatsApp webhook server running[/green] on http://{host}:{port}/\n"
+        "Configure your Meta App Dashboard webhook URL to point here (path: /)\n"
+        f"  Verify token: [bold]{verify_token or '(none)'}[/bold]\n"
+        "Press Ctrl+C to stop."
+    )
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopping WhatsApp webhook server...[/dim]")
+    finally:
+        server.server_close()
         runner.shutdown()
 
 

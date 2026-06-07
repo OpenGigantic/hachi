@@ -1,4 +1,4 @@
-"""WhatsApp outbound sender + adapter.
+"""WhatsApp outbound sender + adapter + inbound webhook receiver.
 
 Supports two providers (auto-detected from environment variables):
 
@@ -10,6 +10,9 @@ Supports two providers (auto-detected from environment variables):
   Basic Auth.  Requires ``TWILIO_ACCOUNT_SID``, ``TWILIO_AUTH_TOKEN``, and
   ``TWILIO_WHATSAPP_FROM`` (e.g. ``whatsapp:+14155238886``).
 
+Inbound messages (webhook server) are handled by :class:`WhatsAppWebhookServer`,
+which exposes an HTTP endpoint compatible with Meta's and Twilio's webhook delivery.
+
 Credentials are read from the environment at call time (never at import/boot).
 The ``poster`` is injectable so tests run fully offline. Outbound URLs are
 validated through ``net_guard`` (SSRF mitigation).
@@ -18,7 +21,10 @@ validated through ``net_guard`` (SSRF mitigation).
 from __future__ import annotations
 
 import base64
+import http.server
+import json
 import os
+import urllib.parse
 from collections.abc import Callable
 from typing import Any
 
@@ -265,3 +271,184 @@ class WhatsAppAdapter(ChannelAdapter):
                 "META_WHATSAPP_PHONE_ID or Twilio credentials."
             )
         self._sender.send(to=message.recipient_id, text=message.text)
+
+
+# ---------------------------------------------------------------------------
+# Inbound webhook parsing
+# ---------------------------------------------------------------------------
+
+
+def parse_meta_webhook(body: bytes) -> list[InboundMessage]:
+    """Parse a Meta WhatsApp Cloud API webhook POST body into inbound messages.
+
+    Handles the nested ``entry → changes → value → messages`` structure.
+    Non-text message types (image, sticker, …) are skipped.
+
+    Args:
+        body: Raw UTF-8 JSON bytes from the POST request.
+
+    Returns:
+        List of :class:`~tokoboros.channels.base.InboundMessage` objects (may be empty).
+    """
+    try:
+        data: dict[str, Any] = json.loads(body)
+    except json.JSONDecodeError:
+        return []
+
+    if data.get("object") != "whatsapp_business_account":
+        return []
+
+    results: list[InboundMessage] = []
+    for entry in data.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
+            # Build a wa_id → display name map from contacts list.
+            contacts: dict[str, str] = {
+                c.get("wa_id", ""): c.get("profile", {}).get("name", "")
+                for c in value.get("contacts", [])
+            }
+            for msg in value.get("messages", []):
+                if msg.get("type") != "text":
+                    continue
+                sender_id = msg.get("from", "")
+                text = msg.get("text", {}).get("body", "")
+                if not sender_id or not text:
+                    continue
+                sender_name = contacts.get(sender_id, sender_id)
+                results.append(
+                    InboundMessage(
+                        channel="whatsapp",
+                        sender_id=sender_id,
+                        sender_name=sender_name,
+                        text=text,
+                    )
+                )
+    return results
+
+
+def parse_twilio_webhook(body: bytes) -> list[InboundMessage]:
+    """Parse a Twilio WhatsApp webhook POST body (form-encoded) into inbound messages.
+
+    Twilio delivers: ``From=whatsapp%3A%2B14155…&Body=Hello&AccountSid=…``
+
+    Args:
+        body: Raw URL-encoded form bytes from the POST request.
+
+    Returns:
+        List with at most one :class:`~tokoboros.channels.base.InboundMessage`.
+    """
+    try:
+        params = urllib.parse.parse_qs(body.decode("utf-8", errors="replace"))
+    except Exception:
+        return []
+
+    raw_from = params.get("From", [""])[0]
+    text = params.get("Body", [""])[0].strip()
+
+    # Twilio prefixes sender with "whatsapp:" — strip it for a clean sender_id.
+    sender_id = raw_from.removeprefix("whatsapp:").strip()
+    if not sender_id or not text:
+        return []
+
+    return [
+        InboundMessage(
+            channel="whatsapp",
+            sender_id=sender_id,
+            sender_name=params.get("ProfileName", [sender_id])[0],
+            text=text,
+        )
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Webhook HTTP server (stdlib — no external deps)
+# ---------------------------------------------------------------------------
+
+# Dispatcher: receives an InboundMessage, returns reply text (or "").
+WebhookDispatcher = Callable[[InboundMessage], str]
+
+
+class _WhatsAppRequestHandler(http.server.BaseHTTPRequestHandler):
+    """HTTP request handler for WhatsApp webhook delivery."""
+
+    server: WhatsAppWebhookServer  # set on creation by HTTPServer
+
+    def log_message(self, fmt: str, *args: object) -> None:  # silence default stderr spam
+        pass
+
+    def do_GET(self) -> None:
+        """Handle Meta webhook verification challenge."""
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+
+        mode = params.get("hub.mode", [""])[0]
+        token = params.get("hub.verify_token", [""])[0]
+        challenge = params.get("hub.challenge", [""])[0]
+
+        expected = self.server.verify_token
+        if mode == "subscribe" and (not expected or token == expected):
+            self._respond(200, challenge.encode())
+        else:
+            self._respond(403, b"Forbidden")
+
+    def do_POST(self) -> None:
+        """Handle inbound message from Meta or Twilio."""
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length) if length > 0 else b""
+
+        content_type = self.headers.get("Content-Type", "")
+        if "application/x-www-form-urlencoded" in content_type:
+            messages = parse_twilio_webhook(body)
+        else:
+            messages = parse_meta_webhook(body)
+
+        allowed = self.server.allowed_senders
+        dispatcher = self.server.dispatcher
+
+        for msg in messages:
+            if allowed and msg.sender_id not in allowed:
+                continue
+            if dispatcher:
+                try:
+                    dispatcher(msg)
+                except Exception:
+                    pass
+
+        self._respond(200, b"OK")
+
+    def _respond(self, status: int, body: bytes) -> None:
+        self.send_response(status)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class WhatsAppWebhookServer(http.server.HTTPServer):
+    """Stdlib HTTP server that receives WhatsApp webhook deliveries.
+
+    Inject ``dispatcher`` to handle inbound messages without network calls in tests.
+    ``verify_token`` should match the token configured in the Meta App Dashboard.
+
+    Usage::
+
+        server = WhatsAppWebhookServer(
+            host="0.0.0.0", port=8080,
+            verify_token="my-secret",
+            dispatcher=lambda msg: router.dispatch(msg),
+        )
+        server.serve_forever()
+    """
+
+    def __init__(
+        self,
+        *,
+        host: str = "0.0.0.0",
+        port: int = 8080,
+        verify_token: str = "",
+        dispatcher: WebhookDispatcher | None = None,
+        allowed_senders: set[str] | None = None,
+    ) -> None:
+        self.verify_token = verify_token
+        self.dispatcher = dispatcher
+        self.allowed_senders = allowed_senders or set()
+        super().__init__((host, port), _WhatsAppRequestHandler)
