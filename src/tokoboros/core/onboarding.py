@@ -57,6 +57,8 @@ _PROVIDER_KINDS = {
     "together",
     "deepseek",
     "ollama",
+    "gemini",
+    "chatgpt-web",
 }
 _PERMISSION_TIERS = {"sandbox", "guided", "unrestricted"}
 
@@ -77,6 +79,8 @@ _PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
     },
     "deepseek": {"model": "deepseek-chat", "api_key_env": "DEEPSEEK_API_KEY"},
     "ollama": {"model": "llama3.1", "api_key_env": ""},
+    "gemini": {"model": "gemini-2.0-flash", "api_key_env": "GEMINI_API_KEY"},
+    "chatgpt-web": {"model": "gpt-4o", "api_key_env": "CHATGPT_SESSION_TOKEN"},
 }
 
 
@@ -126,6 +130,9 @@ class OnboardingService:
             "together_env": bool(os.environ.get("TOGETHER_API_KEY")),
             "deepseek_env": bool(os.environ.get("DEEPSEEK_API_KEY")),
             "openrouter_env": bool(os.environ.get("OPENROUTER_API_KEY")),
+            "gemini_env": bool(
+                os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_AI_API_KEY")
+            ),
             "ollama_cli": shutil.which("ollama") is not None,
             "legacy_workspace_exists": self.paths.legacy_dir.exists(),
             "project_dir": str(project_dir) if project_dir else None,
@@ -135,7 +142,7 @@ class OnboardingService:
         """Return the highest-priority auto-detected provider config, or None.
 
         Priority (highest first):
-        anthropic → openai-compatible → groq → together → deepseek → openrouter → ollama.
+        anthropic → openai-compatible → groq → together → deepseek → openrouter → gemini → ollama.
         Returns a provider dict ready for ``apply_setup`` / ``build_tier_plan``.
         """
         detected = self.detect_environment()
@@ -174,6 +181,15 @@ class OnboardingService:
                 "kind": "openrouter",
                 "model": _PROVIDER_DEFAULTS["openrouter"]["model"],
                 "api_key_env": "OPENROUTER_API_KEY",
+            }
+        if detected["gemini_env"]:
+            api_key_env = (
+                "GEMINI_API_KEY" if os.environ.get("GEMINI_API_KEY") else "GOOGLE_AI_API_KEY"
+            )
+            return {
+                "kind": "gemini",
+                "model": _PROVIDER_DEFAULTS["gemini"]["model"],
+                "api_key_env": api_key_env,
             }
         if detected["ollama_cli"]:
             return {

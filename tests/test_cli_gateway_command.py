@@ -39,6 +39,7 @@ def test_gateway_command_starts_and_stops_server(monkeypatch) -> None:
 
     monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
     monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
     monkeypatch.setattr("tokoboros.cli.main.GatewayHTTPServer", FakeServer)
     monkeypatch.setattr("tokoboros.cli.main._wait_until_interrupted", _raise_interrupt)
     monkeypatch.setenv("TOKOBOROS_GATEWAY_API_TOKEN", "test-token")
@@ -70,6 +71,7 @@ def test_gateway_command_returns_error_when_server_fails(monkeypatch) -> None:
 
     monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
     monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
     monkeypatch.setattr("tokoboros.cli.main.GatewayHTTPServer", FailingServer)
 
     result = runner.invoke(app, ["gateway", "--port", "9000"])
@@ -81,6 +83,7 @@ def test_gateway_command_returns_error_when_server_fails(monkeypatch) -> None:
 def test_gateway_command_requires_auth_token_for_non_loopback_host(monkeypatch) -> None:
     monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
     monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
     monkeypatch.delenv("TOKOBOROS_GATEWAY_API_TOKEN", raising=False)
 
     result = runner.invoke(app, ["gateway", "--host", "0.0.0.0", "--port", "9000"])
@@ -113,6 +116,7 @@ def test_gateway_command_reads_auth_token_from_file(monkeypatch, tmp_path: Path)
 
     monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
     monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
     monkeypatch.setattr("tokoboros.cli.main.GatewayHTTPServer", FakeServer)
     monkeypatch.setattr("tokoboros.cli.main._wait_until_interrupted", _raise_interrupt)
     monkeypatch.delenv("TOKOBOROS_GATEWAY_API_TOKEN", raising=False)

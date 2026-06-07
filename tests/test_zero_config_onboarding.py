@@ -225,3 +225,137 @@ def test_validate_provider_deepseek_with_key(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setenv("DEEPSEEK_API_KEY", "dsk-test")
     ok, msg = _service(tmp_path).validate_provider(kind="deepseek", api_key_env="DEEPSEEK_API_KEY")
     assert ok
+
+
+# ---------------------------------------------------------------------------
+# _interactive_first_run_setup — CLI-level interactive recovery
+# ---------------------------------------------------------------------------
+
+
+def test_interactive_setup_accepts_typed_key(tmp_path: Path) -> None:
+    """User picks option 1 (type key now) and the key is written to env + .env file."""
+    import os
+    from unittest.mock import MagicMock, patch
+
+    from tokoboros.cli.main import _interactive_first_run_setup
+
+    env_name = "ANTHROPIC_API_KEY"
+    key_value = "sk-ant-test-key-abc"
+
+    mock_paths = MagicMock()
+    mock_paths.config_dir = tmp_path
+
+    mock_svc = MagicMock(
+        detect_environment=MagicMock(return_value={"ollama_cli": False}),
+        best_provider_from_env=MagicMock(return_value=None),
+        build_tier_plan=MagicMock(return_value=MagicMock(answers={})),
+        apply_setup=MagicMock(),
+    )
+
+    with patch("tokoboros.cli.main.OnboardingService", return_value=mock_svc):
+        with patch("tokoboros.cli.main.get_tokoboros_paths", return_value=mock_paths):
+            with patch("tokoboros.cli.main.Prompt.ask", side_effect=["1", key_value]):
+                result = _interactive_first_run_setup(env_name, "anthropic")
+
+    assert result is True
+    assert os.environ.get(env_name) == key_value
+    env_file = tmp_path / ".env"
+    assert env_file.exists()
+    assert f"{env_name}={key_value}" in env_file.read_text()
+
+    os.environ.pop(env_name, None)
+
+
+def test_interactive_setup_skip_returns_false() -> None:
+    """User picks skip — returns False without setting anything."""
+    from unittest.mock import MagicMock, patch
+
+    from tokoboros.cli.main import _interactive_first_run_setup
+
+    mock_svc = MagicMock(
+        detect_environment=MagicMock(return_value={"ollama_cli": False}),
+    )
+    with patch("tokoboros.cli.main.OnboardingService", return_value=mock_svc):
+        # 1=type key, 2=gemini, 3=skip (no ollama)
+        with patch("tokoboros.cli.main.Prompt.ask", return_value="3"):
+            result = _interactive_first_run_setup("ANTHROPIC_API_KEY", "anthropic")
+    assert result is False
+
+
+def test_interactive_setup_switches_to_ollama() -> None:
+    """User picks Ollama (detected), setup re-applied without a key."""
+    from unittest.mock import MagicMock, patch
+
+    from tokoboros.cli.main import _interactive_first_run_setup
+
+    mock_svc = MagicMock(
+        detect_environment=MagicMock(return_value={"ollama_cli": True}),
+        best_provider_from_env=MagicMock(
+            return_value={"kind": "ollama", "model": "llama3", "base_url": "http://127.0.0.1:11434/v1"}
+        ),
+        build_tier_plan=MagicMock(return_value=MagicMock(answers={})),
+        apply_setup=MagicMock(),
+    )
+    with patch("tokoboros.cli.main.OnboardingService", return_value=mock_svc):
+        # 1=type key, 2=ollama, 3=gemini, 4=skip
+        with patch("tokoboros.cli.main.Prompt.ask", return_value="2"):
+            result = _interactive_first_run_setup("ANTHROPIC_API_KEY", "anthropic")
+    assert result is True
+    mock_svc.apply_setup.assert_called_once()
+
+
+def test_interactive_setup_returns_false_on_eof() -> None:
+    """EOFError (non-interactive pipe, CI) is gracefully handled."""
+    from unittest.mock import MagicMock, patch
+
+    from tokoboros.cli.main import _interactive_first_run_setup
+
+    mock_svc = MagicMock(detect_environment=MagicMock(return_value={"ollama_cli": False}))
+    with patch("tokoboros.cli.main.OnboardingService", return_value=mock_svc):
+        with patch("tokoboros.cli.main.Prompt.ask", side_effect=EOFError):
+            result = _interactive_first_run_setup("ANTHROPIC_API_KEY", "anthropic")
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _pre_flight_check — TTY / non-TTY behaviour
+# ---------------------------------------------------------------------------
+
+
+def test_pre_flight_check_passes_when_key_present() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from tokoboros.cli.main import _pre_flight_check
+
+    provider = MagicMock(kind="anthropic", api_key_env="ANTHROPIC_API_KEY")
+    mock_svc = MagicMock(validate_provider=MagicMock(return_value=(True, "OK")))
+
+    mock_cfg = MagicMock(provider=provider)
+    with patch("tokoboros.cli.main.load_effective_config", return_value=mock_cfg):
+        with patch("tokoboros.cli.main.OnboardingService", return_value=mock_svc):
+            with patch("sys.stdin") as mock_stdin:
+                mock_stdin.isatty.return_value = False
+                result = _pre_flight_check()
+    assert result is True
+
+
+def test_pre_flight_check_fails_non_interactive_no_prompt() -> None:
+    """Non-TTY: _pre_flight_check must not call _interactive_first_run_setup."""
+    from unittest.mock import MagicMock, patch
+
+    from tokoboros.cli.main import _pre_flight_check
+
+    provider = MagicMock(kind="anthropic", api_key_env="ANTHROPIC_API_KEY")
+    mock_svc = MagicMock(validate_provider=MagicMock(return_value=(False, "Key missing")))
+    mock_cfg = MagicMock(provider=provider)
+
+    with patch("tokoboros.cli.main.load_effective_config", return_value=mock_cfg):
+        with patch("tokoboros.cli.main.OnboardingService", return_value=mock_svc):
+            with patch("sys.stdin") as mock_stdin:
+                mock_stdin.isatty.return_value = False
+                with patch(
+                    "tokoboros.cli.main._interactive_first_run_setup"
+                ) as mock_interactive:
+                    result = _pre_flight_check()
+    assert result is False
+    mock_interactive.assert_not_called()

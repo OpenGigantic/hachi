@@ -12,6 +12,7 @@ Commands:
 
 import json
 import os
+import sys
 import threading
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -26,7 +27,7 @@ from rich.rule import Rule
 
 from tokoboros.core.config_loader import load_effective_config, write_global_config
 from tokoboros.core.credential_vault import CredentialVault
-from tokoboros.core.onboarding import OnboardingService
+from tokoboros.core.onboarding import OnboardingService, default_api_key_env_for
 from tokoboros.core.paths import get_tokoboros_paths
 from tokoboros.core.permissions import PermissionGate
 from tokoboros.core.secret_store import create_default_secret_store
@@ -475,6 +476,8 @@ def _run_gateway_http_server(host: str, port: int, attach_runtime: bool) -> None
     """Run typed gateway endpoints for web and TUI consumers."""
     ensure_workspace()
     _apply_quick_setup_if_needed()
+    if not _pre_flight_check():
+        raise typer.Exit(1)
     server: GatewayHTTPServer | None = None
     runtime: _InProcessGatewayRuntime | None = None
     try:
@@ -620,6 +623,103 @@ def _apply_quick_setup_if_needed() -> None:
     service.apply_setup(plan)
 
 
+def _interactive_first_run_setup(env_name: str, provider_kind: str) -> bool:
+    """Interactively collect an API key when running in a terminal.
+
+    Called by ``_pre_flight_check`` when a key is missing and stdin is a TTY.
+    Offers three paths in priority order:
+
+    1. Type the key right now — written to ``os.environ`` for this session and
+       appended to ``~/.config/tokoboros/.env`` for future sessions.
+    2. Switch to a free alternative (Gemini free tier or local Ollama).
+    3. Skip — return *False* and let ``_pre_flight_check`` abort the boot.
+
+    Returns *True* if a key was accepted or a free provider was configured.
+    """
+    service = OnboardingService()
+    detected = service.detect_environment()
+
+    # Build a menu of free alternatives available right now.
+    free_opts: list[tuple[str, str]] = []
+    if detected.get("ollama_cli"):
+        free_opts.append(("ollama", "Ollama (free, runs locally — already detected)"))
+    # Gemini free tier is always an option (user may have a key or can get one).
+    free_opts.append(("gemini", "Gemini free tier (get a key at https://aistudio.google.com/)"))
+
+    console.print(
+        "\n[bold yellow]You can still start right now — choose an option:[/bold yellow]\n"
+        f"  [cyan]1[/cyan] Enter my [bold]{provider_kind}[/bold] API key now"
+    )
+    for i, (_, label) in enumerate(free_opts, start=2):
+        console.print(f"  [cyan]{i}[/cyan] Switch to: {label}")
+    console.print(f"  [cyan]{len(free_opts) + 2}[/cyan] Skip (I'll set the key manually)")
+
+    valid_choices = [str(i) for i in range(1, len(free_opts) + 3)]
+    try:
+        pick = Prompt.ask("Your choice", choices=valid_choices, default="1")
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+    if pick == "1":
+        # User wants to enter the key directly.
+        try:
+            key_value = Prompt.ask(f"Paste your {env_name}", password=True)
+        except (EOFError, KeyboardInterrupt):
+            return False
+        key_value = (key_value or "").strip()
+        if not key_value:
+            console.print("[red]No key entered — aborting.[/red]")
+            return False
+        # Inject into this process immediately.
+        os.environ[env_name] = key_value
+        # Persist to .env so future runs pick it up without a shell export.
+        paths = get_tokoboros_paths()
+        env_file = paths.config_dir / ".env"
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
+        lines = [ln for ln in lines if not ln.startswith(f"{env_name}=")]
+        lines.append(f"{env_name}={key_value}")
+        env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        console.print(f"[green]✓[/green] Key saved to {env_file} and active for this session.")
+        return True
+
+    # Switch to a free alternative.
+    opt_index = int(pick) - 2  # 0-based into free_opts
+    if 0 <= opt_index < len(free_opts):
+        alt_kind = free_opts[opt_index][0]
+        if alt_kind == "gemini":
+            try:
+                key_value = Prompt.ask("Paste your GEMINI_API_KEY", password=True)
+            except (EOFError, KeyboardInterrupt):
+                return False
+            key_value = (key_value or "").strip()
+            if not key_value:
+                console.print("[red]No key entered — aborting.[/red]")
+                return False
+            os.environ["GEMINI_API_KEY"] = key_value
+            paths = get_tokoboros_paths()
+            env_file = paths.config_dir / ".env"
+            env_file.parent.mkdir(parents=True, exist_ok=True)
+            lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
+            lines = [ln for ln in lines if not ln.startswith("GEMINI_API_KEY=")]
+            lines.append(f"GEMINI_API_KEY={key_value}")
+            env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # Re-configure the provider to use the chosen alternative.
+        provider_cfg = service.best_provider_from_env() or {
+            "kind": alt_kind,
+            "model": "gemini-2.0-flash" if alt_kind == "gemini" else "llama3",
+        }
+        plan = service.build_tier_plan(
+            "lightning", {"provider": provider_cfg, "permission_tier": "guided"}
+        )
+        service.apply_setup(plan)
+        console.print(f"[green]✓[/green] Switched to [bold]{provider_cfg['kind']}[/bold].")
+        return True
+
+    # Skip chosen.
+    return False
+
+
 def _pre_flight_check() -> bool:
     """Validate that the configured provider is ready to use.
 
@@ -628,12 +728,9 @@ def _pre_flight_check() -> bool:
     actionable banner and returns *False* when the API key is missing or the
     provider config is broken.
 
-    This is the zero-config safety net: users with a key present sail through
-    silently; users who forgot to export their key see a one-liner fix before
-    the boot sequence even starts.
+    When stdin is a TTY, offers an interactive recovery path so first-time
+    users can paste their key without dropping to a shell.
     """
-    from tokoboros.core.onboarding import OnboardingService, default_api_key_env_for
-
     cfg = load_effective_config()
     service = OnboardingService()
     api_key_env = getattr(cfg.provider, "api_key_env", None)
@@ -649,6 +746,7 @@ def _pre_flight_check() -> bool:
         "together": "https://api.together.xyz/settings/api-keys",
         "deepseek": "https://platform.deepseek.com/api_keys",
         "openrouter": "https://openrouter.ai/keys",
+        "gemini": "https://aistudio.google.com/",
     }
     link = provider_links.get(cfg.provider.kind, "")
     link_line = f"Get a key: [link]{link}[/link]\n" if link else ""
@@ -666,6 +764,16 @@ def _pre_flight_check() -> bool:
             border_style="red",
         )
     )
+
+    # Interactive recovery: offer to collect the key right now when in a TTY.
+    if sys.stdin.isatty():
+        fixed = _interactive_first_run_setup(env_name, cfg.provider.kind)
+        if fixed:
+            cfg2 = load_effective_config()
+            api_key_env2 = getattr(cfg2.provider, "api_key_env", None)
+            ok2, _ = service.validate_provider(kind=cfg2.provider.kind, api_key_env=api_key_env2)
+            return ok2
+
     return False
 
 
@@ -795,8 +903,6 @@ def quickstart(
     immediately (instead of failing on the first message), choose a safety level,
     and you're ready to run ``tokoboros run``.
     """
-    from tokoboros.core.onboarding import OnboardingService, default_api_key_env_for
-
     console.print(
         Panel(
             "[bold]Welcome to Tokoboros[/bold] 🪢\nLet's get you set up in under a minute.",
