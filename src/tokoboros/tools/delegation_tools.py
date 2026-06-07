@@ -26,6 +26,7 @@ Security:
 import json
 import logging
 from collections.abc import Callable
+from typing import Any
 
 from tokoboros.core.loop import ToolRegistry
 from tokoboros.core.permissions import PermissionGate
@@ -167,17 +168,41 @@ _CORE_TOOLS = frozenset(
 )
 
 
+_OG_SKILL_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "search_skills",
+        "list_skills",
+        "peek_skill",
+        "load_skill",
+        "skill_dependencies",
+        "check_skill_assertions",
+        "skill_changelog",
+        "skill_traverse_hints",
+        "save_skill",
+    }
+)
+"""OG skill tools that reference the SkillEngine — rebindable per sub-agent role."""
+
+
 def _build_scoped_registry(
     parent_registry: ToolRegistry,
     gate: PermissionGate | None = None,
     tool_patterns: str = "",
+    skill_engine: Any = None,
+    sub_agent_role: str = "",
 ) -> ToolRegistry:
     """Build a restricted ToolRegistry for a sub-agent.
 
-    Two-stage filtering:
-        1. BLOCK: Remove tools in BLOCKED_TOOL_NAMES (security boundary)
-        2. ALLOW: If tool_patterns is set, only include tools matching
-           the declared patterns (role-based scoping)
+    Three-stage filtering + optional OG tool rebinding:
+        1. BLOCK:  Remove tools in BLOCKED_TOOL_NAMES (security boundary).
+        2. ALLOW:  If tool_patterns is set, only include tools matching
+                   the declared patterns (role-based scoping).
+        3. REBIND: If ``skill_engine`` and ``sub_agent_role`` are provided,
+                   rebind the OG skill-reading tools to a
+                   ``skill_engine.with_role(sub_agent_role)`` view so the
+                   sub-agent can only see skill nodes accessible to its role.
+                   Without this step sub-agents would inherit the orchestrator's
+                   engine and see ``scope=orchestrator`` nodes.
 
     tool_patterns is a pipe-separated string from the role .og file's
     ``::meta tools:`` field. Each pattern is either an exact name or a
@@ -190,6 +215,11 @@ def _build_scoped_registry(
         parent_registry: The orchestrator's full ToolRegistry.
         gate:            Optional PermissionGate (same as orchestrator's).
         tool_patterns:   Pipe-separated tool name patterns (from role .og meta.tools).
+        skill_engine:    Optional SkillEngine; when provided together with
+                         ``sub_agent_role``, the OG tools are rebound to a
+                         scope-filtered view of this engine.
+        sub_agent_role:  The sub-agent's role string (e.g. ``"coder"``).  Used
+                         as the ``agent_role`` argument for the engine view.
 
     Returns:
         A new ToolRegistry with security-blocked and role-filtered tools removed.
@@ -236,7 +266,65 @@ def _build_scoped_registry(
         if handler:
             scoped.register(schema, handler)
 
+    # Stage 3: Rebind OG skill tools to a scope-filtered engine view.
+    # This prevents sub-agents from reading skill nodes outside their scope
+    # (e.g. scope=orchestrator nodes in brain.og).
+    if skill_engine is not None and sub_agent_role:
+        _rebind_og_tools_for_role(scoped, skill_engine, sub_agent_role)
+
     return scoped
+
+
+def _rebind_og_tools_for_role(
+    registry: ToolRegistry,
+    skill_engine: Any,
+    sub_agent_role: str,
+) -> None:
+    """Rebind OG skill tools in *registry* to a role-scoped engine view.
+
+    Creates a ``skill_engine.with_role(sub_agent_role)`` lightweight view and
+    updates each registered OG tool handler via :meth:`ToolRegistry.update_handler`
+    (no schema duplication).
+
+    Args:
+        registry:       The sub-agent's scoped ToolRegistry (mutated in-place).
+        skill_engine:   The parent SkillEngine (already loaded with skills).
+        sub_agent_role: Role to enforce — e.g. ``"coder"``, ``"researcher"``.
+                        Nodes whose ``scope`` is not ``"all"``, ``"public"``, or
+                        this value will be hidden from the sub-agent.
+    """
+    from tokoboros.tools.og_tools import (
+        _make_check_skill_assertions,
+        _make_list_skills,
+        _make_load_skill,
+        _make_peek_skill,
+        _make_save_skill,
+        _make_search_skills,
+        _make_skill_changelog,
+        _make_skill_dependencies,
+        _make_skill_traverse_hints,
+    )
+
+    scoped_engine = skill_engine.with_role(sub_agent_role)
+    factories = {
+        "search_skills": _make_search_skills,
+        "list_skills": _make_list_skills,
+        "peek_skill": _make_peek_skill,
+        "load_skill": _make_load_skill,
+        "skill_dependencies": _make_skill_dependencies,
+        "check_skill_assertions": _make_check_skill_assertions,
+        "skill_changelog": _make_skill_changelog,
+        "skill_traverse_hints": _make_skill_traverse_hints,
+        "save_skill": _make_save_skill,
+    }
+    for tool_name, factory in factories.items():
+        updated = registry.update_handler(tool_name, factory(scoped_engine))
+        if updated:
+            logger.debug(
+                "Rebound OG tool '%s' to scope-filtered engine (role=%s)",
+                tool_name,
+                sub_agent_role,
+            )
 
 
 # ==========================================
@@ -252,6 +340,7 @@ def _make_delegate_task(
     job_queue=None,
     sub_agent_llm=None,
     cost_tracker=None,
+    skill_engine: Any = None,
 ) -> Callable[..., str]:
     """Factory: creates the delegate_task tool handler.
 
@@ -265,6 +354,10 @@ def _make_delegate_task(
         on_event:        Optional progress callback for the CLI/UI.
         vault:           Optional MemoryVault for persisting delegation results.
         job_queue:       Optional job queue for persistence work.
+        skill_engine:    Optional SkillEngine; when provided, OG skill tools in
+                         the sub-agent registry are rebound to a
+                         ``skill_engine.with_role(role)`` view, preventing the
+                         sub-agent from reading ``scope=orchestrator`` nodes.
 
     Returns:
         A callable that accepts (role, task, context) and returns a report string.
@@ -311,8 +404,16 @@ def _make_delegate_task(
             except Exception:
                 pass  # Fall back to unfiltered tools if .og parsing fails
 
-            # Build the scoped tool registry (filtered by role + security)
-            scoped_registry = _build_scoped_registry(parent_registry, gate, tool_patterns)
+            # Build the scoped tool registry (filtered by role + security).
+            # Pass skill_engine so OG tools are rebound to the sub-agent's
+            # scope-filtered engine view (hides scope=orchestrator nodes).
+            scoped_registry = _build_scoped_registry(
+                parent_registry,
+                gate,
+                tool_patterns,
+                skill_engine=skill_engine,
+                sub_agent_role=role,
+            )
 
             # Create and run the sub-agent. Pass the credential-resolved LLM client
             # down so the sub-agent uses the SAME working provider/key as the main
@@ -487,6 +588,7 @@ def register_delegation_tools(
     job_queue=None,
     sub_agent_llm=None,
     cost_tracker=None,
+    skill_engine: Any = None,
 ) -> None:
     """Mount delegation tools onto the provided ToolRegistry.
 
@@ -495,16 +597,22 @@ def register_delegation_tools(
     scoped copies for sub-agents.
 
     Args:
-        registry:  The orchestrator's tool registry (will be the parent for sub-agents).
-        gate:      The device PermissionGate instance.
-        on_event:  Optional callback for delegation progress events.
-        vault:     Optional MemoryVault for persisting delegation results.
-        job_queue: Optional job queue for delegation persistence.
+        registry:     The orchestrator's tool registry (will be the parent for sub-agents).
+        gate:         The device PermissionGate instance.
+        on_event:     Optional callback for delegation progress events.
+        vault:        Optional MemoryVault for persisting delegation results.
+        job_queue:    Optional job queue for delegation persistence.
+        skill_engine: Optional SkillEngine passed from the orchestrator.  When
+                      provided, sub-agent OG tools are rebound to a
+                      ``skill_engine.with_role(role)`` view so each sub-agent
+                      only sees skill nodes within its declared scope
+                      (closes the scope=orchestrator information-leak).
     """
     registry.register(
         DELEGATE_TASK_SCHEMA,
         _make_delegate_task(
-            registry, gate, on_event, vault, job_queue, sub_agent_llm, cost_tracker
+            registry, gate, on_event, vault, job_queue, sub_agent_llm, cost_tracker,
+            skill_engine=skill_engine,
         ),
     )
     registry.register(
