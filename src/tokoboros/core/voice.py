@@ -1,10 +1,11 @@
-"""Voice backends (speech-to-text + text-to-speech) with graceful degradation.
+"""Voice backends (speech-to-text, text-to-speech, audio playback) with graceful degradation.
 
 :class:`SpeechToText` transcribes a local audio file via an OpenAI-compatible
 ``/audio/transcriptions`` endpoint; :class:`TextToSpeech` synthesizes speech to a
-file via ``/audio/speech`` (OpenAI, Groq, or any compatible server). Both follow
-the same test-complete pattern as the browser controller and the Slack/Discord
-senders:
+file via ``/audio/speech`` (OpenAI, Groq, or any compatible server);
+:class:`AudioPlayer` plays a local audio file through the system's speakers using
+a platform-native binary — no API key required.  All three follow the same
+test-complete pattern as the browser controller and the Slack/Discord senders:
 
 - credentials resolve **lazily from the environment** at call time (never at
   import/boot), so this constructs cleanly even with nothing configured;
@@ -14,6 +15,11 @@ senders:
 - it raises :class:`VoiceError` (a readable message) rather than leaking a raw
   HTTP/parse error — callers check :meth:`is_configured` first and surface
   failures as friendly tool results.
+
+:class:`AudioPlayer` is **keyless** — it uses ``afplay`` on macOS, the stdlib
+``winsound`` module (WAV) or ``mpv``/``ffplay`` on Windows, and ``paplay`` /
+``aplay`` / ``mpv`` on Linux.  When no player is found it returns a friendly
+install hint rather than raising.
 
 :func:`probe_audio_info` is a **keyless** helper that uses only the Python
 standard library to inspect a local audio file.  Full metadata (duration,
@@ -26,6 +32,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
+import sys
 import wave
 from collections.abc import Callable
 from pathlib import Path
@@ -304,3 +313,140 @@ class TextToSpeech:
         except OSError as exc:
             raise VoiceError(f"could not write audio file: {exc}") from exc
         return path
+
+
+# ==========================================
+# AudioPlayer — platform-native playback
+# ==========================================
+
+# (path) -> (exit_code, stderr_text)
+Player = Callable[[Path], tuple[int, str]]
+
+# Linux players tried in order (first found wins).
+_LINUX_PLAYERS = ("paplay", "aplay", "mpv", "ffplay", "mplayer", "vlc")
+# Cross-platform fallbacks (Windows + Linux when primary isn't available).
+_FALLBACK_PLAYERS = ("mpv", "ffplay", "vlc")
+
+
+def _detect_player_binary() -> str | None:
+    """Return the name/path of the first available audio-player binary, or None.
+
+    On macOS ``afplay`` is always present (bundled OS utility) so this rarely
+    returns None there.  On Linux the first binary from ``_LINUX_PLAYERS`` that
+    is on ``$PATH`` wins.  On Windows the ``winsound`` stdlib module covers WAV;
+    for other formats this falls back to the same ``_FALLBACK_PLAYERS`` list.
+    """
+    if sys.platform == "darwin":
+        return shutil.which("afplay")
+    if sys.platform == "win32":
+        # winsound is always available in CPython on Windows; treat as a virtual
+        # "player" name so is_available() returns True for WAV.
+        try:
+            import winsound as _ws  # noqa: F401
+
+            return "winsound"
+        except ImportError:
+            pass
+        for name in _FALLBACK_PLAYERS:
+            found = shutil.which(name)
+            if found:
+                return found
+        return None
+    # Linux / other POSIX
+    for name in _LINUX_PLAYERS:
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def _default_player(path: Path) -> tuple[int, str]:
+    """Play *path* using the first available system player.
+
+    Returns ``(exit_code, stderr_text)``.  ``exit_code == 0`` means success;
+    non-zero means the player reported an error or no suitable player was found.
+    Uses ``subprocess.run`` with a list-form command — never ``shell=True``.
+    """
+    ext = path.suffix.lower()
+
+    if sys.platform == "darwin":
+        afplay = shutil.which("afplay")
+        if not afplay:
+            return 1, "afplay not found (should be built into macOS)"
+        result = subprocess.run(  # noqa: S603
+            [afplay, str(path)], capture_output=True, timeout=300
+        )
+        return result.returncode, result.stderr.decode("utf-8", "replace")
+
+    if sys.platform == "win32":
+        # WAV: use the stdlib winsound module — no subprocess needed.
+        if ext == ".wav":
+            try:
+                import winsound
+
+                winsound.PlaySound(str(path), winsound.SND_FILENAME)
+                return 0, ""
+            except Exception as exc:
+                return 1, str(exc)
+        # Non-WAV: try installed third-party players.
+        for name in _FALLBACK_PLAYERS:
+            binary = shutil.which(name)
+            if binary:
+                result = subprocess.run(  # noqa: S603
+                    [binary, str(path)], capture_output=True, timeout=300
+                )
+                return result.returncode, result.stderr.decode("utf-8", "replace")
+        return (
+            1,
+            "No audio player found for non-WAV files on Windows. "
+            "Install mpv (https://mpv.io) or VLC and add it to PATH.",
+        )
+
+    # Linux / other POSIX
+    for name in _LINUX_PLAYERS:
+        binary = shutil.which(name)
+        if binary:
+            result = subprocess.run(  # noqa: S603
+                [binary, str(path)], capture_output=True, timeout=300
+            )
+            return result.returncode, result.stderr.decode("utf-8", "replace")
+    return (
+        1,
+        "No audio player found. Install paplay (PulseAudio), aplay (ALSA), "
+        "mpv, or ffplay and ensure the binary is in PATH.",
+    )
+
+
+class AudioPlayer:
+    """Play a local audio file through the system speakers.
+
+    Mirrors the ``SpeechToText`` / ``TextToSpeech`` pattern:
+
+    - An **injectable** ``player`` callable lets tests run fully offline without
+      actually invoking a system binary.
+    - :meth:`is_available` reflects whether a real player is found on the current
+      machine (always True in tests that inject a fake player).
+    - Never raises — all failures come back as a ``(non-zero, message)`` tuple.
+
+    Usage::
+
+        ap = AudioPlayer()
+        if ap.is_available():
+            code, err = ap.play(Path("hello.mp3"))
+    """
+
+    def __init__(self, player: Player | None = None) -> None:
+        self._player: Player = player or _default_player
+
+    @staticmethod
+    def is_available() -> bool:
+        """Return True when a suitable audio-player binary (or stdlib module) is found."""
+        return _detect_player_binary() is not None
+
+    def play(self, path: Path) -> tuple[int, str]:
+        """Play *path* and return ``(exit_code, stderr_text)``.
+
+        A ``0`` exit code indicates success.  The caller is responsible for
+        validating the path before calling this method.
+        """
+        return self._player(path)
