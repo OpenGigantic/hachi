@@ -3142,6 +3142,122 @@ def memory_forget(
         raise typer.Exit(1)
 
 
+@memory_app.command("import")
+def memory_import(
+    file: str = typer.Argument(
+        ..., help="Path to the exported conversation file (JSON)."
+    ),
+    format: str = typer.Option(
+        "auto",
+        "--format",
+        "-f",
+        help="Export format: chatgpt | gemini | hermes | auto (default: auto-detect).",
+    ),
+    no_memory: bool = typer.Option(
+        False,
+        "--no-memory",
+        help="Skip writing summary facts to MemoryVault (sessions are still imported).",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Parse and report what would be imported without writing anything.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit result as JSON."),
+) -> None:
+    """Import conversation history from a ChatGPT, Gemini, or Hermes export file.
+
+    After export, run:
+
+    \b
+    ChatGPT  — download conversations.json from chatgpt.com > Settings > Data exports
+    Gemini   — Google Takeout > Gemini > conversations.json
+    Hermes   — any JSON file containing [{role, content}] turns
+
+    Each conversation becomes a searchable session (visible in `tokoboros session list`)
+    and a summary fact in long-term memory for semantic retrieval.
+    """
+    from pathlib import Path
+
+    from tokoboros.core.memory_importer import ImportResult, ingest, parse_file
+    from tokoboros.core.memory_vault import MemoryVault
+    from tokoboros.core.session_store import SessionStore
+
+    path = Path(file)
+    if not path.exists():
+        console.print(f"[red]File not found:[/red] {file}")
+        raise typer.Exit(1)
+
+    # Parse
+    try:
+        conversations, detected_format = parse_file(path, format=format)
+    except (ValueError, json.JSONDecodeError) as exc:
+        console.print(f"[red]Parse error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    if dry_run:
+        result = ImportResult(
+            format_detected=detected_format,
+            conversations_parsed=len(conversations),
+            sessions_created=0,
+            memory_facts_added=0,
+            skipped=sum(1 for c in conversations if not c.turns),
+        )
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "dry_run": True,
+                        "format": detected_format,
+                        "conversations_found": result.conversations_parsed,
+                        "would_import": result.conversations_parsed - result.skipped,
+                        "skipped_empty": result.skipped,
+                    }
+                )
+            )
+        else:
+            console.print(
+                f"[cyan]Dry run[/cyan] — detected format: [bold]{detected_format}[/bold]\n"
+                f"  Found {result.conversations_parsed} conversation(s), "
+                f"{result.skipped} empty (would skip).\n"
+                f"  Would create {result.conversations_parsed - result.skipped} session(s) "
+                f"and memory facts."
+            )
+        return
+
+    # Ingest
+    store = SessionStore()
+    vault = None if no_memory else MemoryVault()
+    try:
+        result = ingest(conversations, store, vault, model_label=f"import:{detected_format}")
+    finally:
+        store.shutdown()
+
+    result.format_detected = detected_format
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "format": result.format_detected,
+                    "conversations_parsed": result.conversations_parsed,
+                    "sessions_created": result.sessions_created,
+                    "memory_facts_added": result.memory_facts_added,
+                    "skipped": result.skipped,
+                }
+            )
+        )
+        return
+
+    console.print(
+        f"[green]Import complete[/green] — format: [bold]{result.format_detected}[/bold]\n"
+        f"  Parsed:  {result.conversations_parsed} conversation(s)\n"
+        f"  Created: {result.sessions_created} session(s)\n"
+        f"  Memory:  {result.memory_facts_added} fact(s) added\n"
+        f"  Skipped: {result.skipped} empty conversation(s)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # session subcommand group
 # ---------------------------------------------------------------------------
