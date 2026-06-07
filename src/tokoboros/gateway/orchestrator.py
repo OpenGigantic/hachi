@@ -218,6 +218,7 @@ _GROUP_BY_TOOL_NAME: dict[str, str] = {
     "send_email_digest": "notifications",
     "view_image": "vision",
     "transcribe_audio": "voice",
+    "transcribe_and_summarize": "voice",
     "speak_text": "voice",
     "play_audio": "voice",
     "get_audio_info": "voice",
