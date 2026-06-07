@@ -91,6 +91,7 @@ from tokoboros.og_engine.engine import SkillEngine
 from tokoboros.tools.browser_tools import register_browser_tools
 from tokoboros.tools.config_tools import register_config_tools
 from tokoboros.tools.delegation_tools import register_delegation_tools
+from tokoboros.tools.google_tools import GOOGLE_TOOL_NAMES, register_google_tools
 from tokoboros.tools.memory_tools import register_memory_tools, register_session_tools
 from tokoboros.tools.messaging_tools import register_messaging_tools
 from tokoboros.tools.notification_tools import register_notification_tools
@@ -227,6 +228,7 @@ _GROUP_BY_TOOL_NAME: dict[str, str] = {
     "speak_text": "voice",
     "play_audio": "voice",
     "get_audio_info": "voice",
+    **{name: "google" for name in GOOGLE_TOOL_NAMES},
 }
 
 
@@ -1322,6 +1324,10 @@ def boot_agent(
     # Voice input — transcribe local audio files. Credentials (OpenAI/compatible
     # Whisper) resolve lazily; the tool degrades to a "not configured" hint until set.
     register_voice_tools(tool_registry, runtime_gate)
+
+    # Google Workspace (Gmail, Calendar, Drive, Docs, Sheets, Contacts, Meet, Tasks).
+    # Only mounted when GOOGLE_CLIENT_ID is set; degrades to a friendly stub otherwise.
+    register_google_tools(tool_registry)
 
     # Presentation generation — build .pptx from natural language.
     register_presentation_tools(tool_registry, runtime_gate)
