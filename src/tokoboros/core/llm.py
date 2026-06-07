@@ -426,6 +426,9 @@ _OPENAI_COMPAT_PRESETS: dict[str, str] = {
     "groq": "https://api.groq.com/openai/v1",
     "together": "https://api.together.xyz/v1",
     "deepseek": "https://api.deepseek.com/v1",
+    # Google Gemini — official OpenAI-compatible endpoint (free tier available).
+    # Get a free key at https://aistudio.google.com/  (set GEMINI_API_KEY).
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
 }
 
 
@@ -454,6 +457,37 @@ def create_llm_client(
         )
         return OpenAICompatibleClient(
             base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens
+        )
+
+    if kind == "gemini":
+        # Google Gemini — official OpenAI-compatible endpoint (free tier).
+        # Falls back to GEMINI_API_KEY then GOOGLE_AI_API_KEY env vars.
+        if not api_key:
+            api_key = _resolve_api_key("GEMINI_API_KEY") or _resolve_api_key("GOOGLE_AI_API_KEY")
+        resolved_base = str(base_url or _OPENAI_COMPAT_PRESETS["gemini"])
+        # Default model if caller left the generic "claude-haiku-4-5" unchanged.
+        if model == "claude-haiku-4-5":
+            model = "gemini-2.0-flash"
+        return OpenAICompatibleClient(
+            base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens
+        )
+
+    if kind == "chatgpt-web":
+        # Unofficial ChatGPT web-session provider.
+        # ⚠ This uses the reverse-engineered ChatGPT web API and may violate
+        #   OpenAI's Terms of Service. Use only on accounts you own and accept
+        #   the risk of account suspension.
+        from tokoboros.core.unofficial_providers import ChatGPTWebClient
+
+        session_token = (
+            api_key
+            or _resolve_api_key("CHATGPT_SESSION_TOKEN")
+            or _resolve_api_key("CHATGPT_ACCESS_TOKEN")
+        )
+        return ChatGPTWebClient(
+            session_token=session_token,
+            model=model if model != "claude-haiku-4-5" else "gpt-4o",
+            max_tokens=max_tokens,
         )
 
     if kind in _OPENAI_COMPAT_PRESETS:
