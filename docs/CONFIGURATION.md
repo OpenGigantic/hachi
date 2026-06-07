@@ -50,6 +50,18 @@ The `transcribe_audio` tool transcribes a local audio file via an OpenAI-compati
 | `TOKOBOROS_STT_BASE_URL` | `OPENAI_BASE_URL` or `https://api.openai.com/v1` | Whisper-compatible endpoint (e.g. Groq, a local server). |
 | `TOKOBOROS_STT_MODEL` | `whisper-1` | Transcription model id. |
 
+### Voice output (text-to-speech)
+
+The `speak_text` tool synthesizes speech to a local audio file via an OpenAI-compatible
+`/audio/speech` endpoint. Same lazy-cred + graceful-degradation pattern.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `TOKOBOROS_TTS_API_KEY` | `OPENAI_API_KEY` | API key for synthesis (falls back to the OpenAI key). |
+| `TOKOBOROS_TTS_BASE_URL` | `OPENAI_BASE_URL` or `https://api.openai.com/v1` | Speech-compatible endpoint. |
+| `TOKOBOROS_TTS_MODEL` | `tts-1` | Synthesis model id. |
+| `TOKOBOROS_TTS_VOICE` | `alloy` | Default voice (provider-specific). |
+
 ## Safety, budgets & rate limits
 
 | Variable | Default | Purpose |
