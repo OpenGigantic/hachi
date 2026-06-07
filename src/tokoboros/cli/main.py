@@ -3510,6 +3510,77 @@ def session_stats(
     console.print(table)
 
 
+@session_app.command("clean")
+def session_clean(
+    older_than: int = typer.Option(
+        30, "--older-than", "-d", help="Delete sessions older than this many days."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without deleting."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
+    as_json: bool = typer.Option(False, "--json", help="Emit result as JSON."),
+) -> None:
+    """Delete sessions older than N days to reclaim disk space."""
+    import datetime
+    import json as _json
+
+    from tokoboros.core.session_store import SessionStore
+
+    cutoff_dt = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=older_than)
+    cutoff_iso = cutoff_dt.isoformat()
+
+    store = SessionStore()
+    # Count matching sessions up front for preview / confirmation.
+    all_sessions = store.get_recent_sessions(limit=10_000)
+    matching = [s for s in all_sessions if str(s.get("started_at") or "") < cutoff_iso]
+    count = len(matching)
+
+    if count == 0:
+        store.shutdown()
+        if as_json:
+            print(_json.dumps({"deleted": 0, "cutoff": cutoff_iso[:10], "dry_run": dry_run}))
+        else:
+            console.print(
+                f"[yellow]Nothing to clean[/yellow] — no sessions older than {older_than} day(s)."
+            )
+        raise typer.Exit(0)
+
+    if dry_run:
+        store.shutdown()
+        if as_json:
+            print(
+                _json.dumps(
+                    {"deleted": 0, "would_delete": count, "cutoff": cutoff_iso[:10],
+                     "dry_run": True}
+                )
+            )
+        else:
+            console.print(
+                f"[cyan]Dry run:[/cyan] would delete [bold]{count}[/bold] session(s) "
+                f"older than [bold]{cutoff_iso[:10]}[/bold]."
+            )
+        raise typer.Exit(0)
+
+    if not yes and not as_json:
+        confirmed = typer.confirm(
+            f"Permanently delete {count} session(s) older than {older_than} day(s)?",
+            default=False,
+        )
+        if not confirmed:
+            store.shutdown()
+            raise typer.Exit(0)
+
+    deleted = store.delete_sessions_before(cutoff_iso)
+    store.shutdown()
+
+    if as_json:
+        print(_json.dumps({"deleted": deleted, "cutoff": cutoff_iso[:10], "dry_run": False}))
+    else:
+        console.print(
+            f"[green]Deleted[/green] [bold]{deleted}[/bold] session(s) "
+            f"older than [bold]{cutoff_iso[:10]}[/bold]."
+        )
+
+
 # ---------------------------------------------------------------------------
 # daemon subcommand group
 # ---------------------------------------------------------------------------

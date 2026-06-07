@@ -294,6 +294,38 @@ class SessionStore:
             self._conn.commit()
         return True
 
+    def delete_sessions_before(self, cutoff_iso: str) -> int:
+        """Delete all sessions that started before *cutoff_iso* and their messages.
+
+        Both the ``sessions`` rows and the associated ``messages`` rows are removed
+        atomically inside a single transaction.
+
+        Args:
+            cutoff_iso: ISO-8601 timestamp string (e.g. ``"2026-05-01T00:00:00"``).
+                Sessions whose ``started_at`` is strictly less than this value are
+                removed.
+
+        Returns:
+            The number of sessions deleted (0 if none matched the cutoff).
+        """
+        with self._lock:
+            # Find IDs first so we can delete messages and count in one pass.
+            rows = self._conn.execute(
+                "SELECT id FROM sessions WHERE started_at < ?", (cutoff_iso,)
+            ).fetchall()
+            if not rows:
+                return 0
+            ids = [row[0] for row in rows]
+            placeholders = ",".join("?" * len(ids))
+            self._conn.execute(
+                f"DELETE FROM messages WHERE session_id IN ({placeholders})", ids  # noqa: S608
+            )
+            self._conn.execute(
+                f"DELETE FROM sessions WHERE id IN ({placeholders})", ids  # noqa: S608
+            )
+            self._conn.commit()
+        return len(ids)
+
     def shutdown(self) -> None:
         """Close the database connection."""
         try:
