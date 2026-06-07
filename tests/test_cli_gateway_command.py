@@ -364,6 +364,10 @@ def test_doctor_command_reports_environment(monkeypatch, tmp_path: Path) -> None
         "tokoboros.cli.main.create_default_secret_store",
         lambda paths=None: FakeSecretStore(),
     )
+    # Exercise the safety/limits surfacing deterministically.
+    monkeypatch.setenv("TOKOBOROS_MAX_SESSION_COST_USD", "5.0")
+    monkeypatch.setenv("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", "true")
+    monkeypatch.delenv("TOKOBOROS_MAX_SESSION_TOKENS", raising=False)
 
     result = runner.invoke(app, ["doctor"])
 
@@ -375,6 +379,13 @@ def test_doctor_command_reports_environment(monkeypatch, tmp_path: Path) -> None
     # skills_health is reported; with no skills dir it degrades gracefully.
     assert "skills_health" in result.stdout
     assert "no skills directory yet" in result.stdout
+    # MCP count + the new safety/limits posture section.
+    assert "mcp_servers_declared" in result.stdout
+    assert "safety_and_limits" in result.stdout
+    assert "5.0" in result.stdout  # cost cap echoed
+    # The outbound-secret guard is reported disabled when the override is set.
+    assert '"outbound_secret_guard": "disabled"' in result.stdout
+    assert "session_token_cap" in result.stdout
 
 
 def test_security_audit_json_reports_findings_and_exit_code(monkeypatch, tmp_path: Path) -> None:
