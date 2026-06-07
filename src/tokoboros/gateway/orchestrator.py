@@ -95,6 +95,7 @@ from tokoboros.tools.os_tools import register_os_tools
 from tokoboros.tools.sandbox_tools import register_sandbox_tools
 from tokoboros.tools.schedule_tools import register_schedule_tools
 from tokoboros.tools.vision_tools import register_vision_tools
+from tokoboros.tools.voice_tools import register_voice_tools
 from tokoboros.tools.workflow_tools import register_workflow_tools
 
 
@@ -210,6 +211,7 @@ _GROUP_BY_TOOL_NAME: dict[str, str] = {
     "send_slack_message": "messaging",
     "send_discord_message": "messaging",
     "view_image": "vision",
+    "transcribe_audio": "voice",
 }
 
 
@@ -1232,6 +1234,10 @@ def boot_agent(
         runtime_gate,
         provider_kind=str(provider_config.get("kind", "anthropic")),
     )
+
+    # Voice input — transcribe local audio files. Credentials (OpenAI/compatible
+    # Whisper) resolve lazily; the tool degrades to a "not configured" hint until set.
+    register_voice_tools(tool_registry, runtime_gate)
 
     # Proactive scheduling (cron/interval/once) — persisted across restarts.
     scheduler = Scheduler(ScheduleStore(get_tokoboros_paths().schedules_file))

@@ -38,6 +38,18 @@ live via the provider's models API, falling back to a curated list when offline)
 If `allowed_models` is set, the list — and what `/model <name>` will switch to —
 is restricted to exactly those entries.
 
+### Voice input (speech-to-text)
+
+The `transcribe_audio` tool transcribes a local audio file via an OpenAI-compatible
+`/audio/transcriptions` endpoint. Credentials resolve lazily; the tool degrades to a
+"not configured" hint until set.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `TOKOBOROS_STT_API_KEY` | `OPENAI_API_KEY` | API key for transcription (falls back to the OpenAI key). |
+| `TOKOBOROS_STT_BASE_URL` | `OPENAI_BASE_URL` or `https://api.openai.com/v1` | Whisper-compatible endpoint (e.g. Groq, a local server). |
+| `TOKOBOROS_STT_MODEL` | `whisper-1` | Transcription model id. |
+
 ## Safety, budgets & rate limits
 
 | Variable | Default | Purpose |
