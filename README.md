@@ -9,6 +9,7 @@ _A multi-agent orchestration framework that cuts skill-loading token costs by lo
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-purple.svg)](https://docs.astral.sh/ruff/)
+[![.og token savings: 97.2%](https://img.shields.io/badge/.og%20token%20savings-97.2%25-brightgreen)](docs/BENCHMARK.md)
 
 </div>
 
@@ -20,7 +21,7 @@ Tokoboros is an autonomous AI agent framework built from the ground up to solve 
 
 | Problem               | How Tokoboros Solves It                                                                                                       |
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| **Token Waste**       | ObjectGraph (.og) files enable partial, query-aware loading — an agent reads a skill's compact index (~30 tokens) and pulls only the node it needs, instead of the whole file |
+| **Token Waste**       | ObjectGraph (.og) files enable partial, query-aware loading — an agent reads a skill's compact index (~30 tokens) and pulls only the node it needs, instead of the whole file. [Measured: **97.2% fewer tokens** vs dump-all](docs/BENCHMARK.md) |
 | **Context Pollution** | A delegation architecture spawns isolated sub-agents, keeping the orchestrator's context window pristine                      |
 | **Cost Explosion**    | Native Anthropic prompt caching (cached input billed at a fraction of the base rate) plus query-aware skill loading keep per-turn token spend low |
 
