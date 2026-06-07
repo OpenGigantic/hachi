@@ -16,7 +16,6 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 from typer.testing import CliRunner
 
 from tokoboros.cli.main import app
