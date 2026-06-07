@@ -197,6 +197,8 @@ class ExecutionLoop:
         cost_tracker=None,
         max_cost_usd: float = 0.0,
         max_tokens: int = 0,
+        max_cost_per_turn: float = 0.0,
+        max_tokens_per_turn: int = 0,
     ):
         """Initialize the execution loop.
 
@@ -210,6 +212,12 @@ class ExecutionLoop:
                       Event types: "thinking", "tool_call", "tool_result", "text_chunk",
                       "compaction"
             skill_engine: Optional SkillEngine for usage tracking on load_skill calls.
+            max_cost_usd: Per-session cost cap in USD (0 = unlimited).
+            max_tokens: Per-session token cap (0 = unlimited).
+            max_cost_per_turn: Per-turn cost cap in USD (0 = unlimited). Stops the
+                agent mid-turn if a single user message would cost more than this.
+            max_tokens_per_turn: Per-turn token cap (0 = unlimited). Stops the agent
+                mid-turn if a single user message would consume more than this.
         """
         self.llm_client = llm_client
         self.registry = registry
@@ -222,6 +230,14 @@ class ExecutionLoop:
         # runaway tool-calling loop can't silently drain the user's API budget.
         self.max_cost_usd = max_cost_usd
         self.max_tokens = max_tokens
+        # Per-turn safety caps (0 = unlimited). Enforced after each LLM call within
+        # a single run() invocation so a runaway tool-calling sequence within one
+        # user message can't exhaust the user's API budget.
+        self.max_cost_per_turn = max_cost_per_turn
+        self.max_tokens_per_turn = max_tokens_per_turn
+        # Baseline snapshot taken at the start of each run(); used to compute deltas.
+        self._turn_tokens_start: int = 0
+        self._turn_cost_start: float = 0.0
         self._current_turn_context: TurnContext | None = None
         # Tool groups unlocked for the current turn (besides always-on "core").
         # Reset each run(); mutated when the model calls use_tools / load_skill.
@@ -301,6 +317,30 @@ class ExecutionLoop:
             )
         return None
 
+    def _turn_budget_exceeded(self) -> str | None:
+        """Return a reason string if a per-turn budget cap is hit, else None.
+
+        Compares the current cumulative snapshot against the baseline recorded at
+        the start of this ``run()`` call, so only the spend incurred by the current
+        user message is counted — not earlier turns in the same session.
+        """
+        if self.cost_tracker is None or (
+            self.max_cost_per_turn <= 0 and self.max_tokens_per_turn <= 0
+        ):
+            return None
+        snap = self.cost_tracker.snapshot()
+        turn_tokens = snap.total_tokens - self._turn_tokens_start
+        turn_cost = snap.estimated_cost_usd - self._turn_cost_start
+        if self.max_tokens_per_turn > 0 and turn_tokens >= self.max_tokens_per_turn:
+            return (
+                f"per-turn token limit reached ({turn_tokens:,} >= {self.max_tokens_per_turn:,})"
+            )
+        if self.max_cost_per_turn > 0 and turn_cost >= self.max_cost_per_turn:
+            return (
+                f"per-turn cost limit reached (~${turn_cost:.4f} >= ${self.max_cost_per_turn:.2f})"
+            )
+        return None
+
     def run(self, max_iterations: int = 15, turn_context: TurnContext | None = None) -> str:
         """
         Execute the autonomous loop until the model stops calling tools or hits the limit.
@@ -320,6 +360,13 @@ class ExecutionLoop:
 
         # Only "core" tools are sent until the model unlocks groups this turn.
         self._active_groups = set()
+
+        # Record the cost/token baseline at turn start so _turn_budget_exceeded()
+        # can compute deltas rather than checking cumulative session totals.
+        if self.cost_tracker is not None:
+            _snap = self.cost_tracker.snapshot()
+            self._turn_tokens_start = _snap.total_tokens
+            self._turn_cost_start = _snap.estimated_cost_usd
 
         # FIX H5: honour max_iterations declared on the TurnContext (overrides default)
         if turn_context is not None:
@@ -392,6 +439,13 @@ class ExecutionLoop:
                     model_name = getattr(self.llm_client, "model", "unknown")
                     self.cost_tracker.record(model_name, response.usage)
                     self.on_event("usage", self.cost_tracker.snapshot().to_dict())
+
+                # Stop this turn if a per-turn budget cap is now exceeded.
+                turn_budget_reason = self._turn_budget_exceeded()
+                if turn_budget_reason:
+                    self.on_event("budget_exceeded", {"reason": turn_budget_reason})
+                    self.memory.complete_current_task(f"Stopped: {turn_budget_reason}")
+                    return f"[BUDGET LIMIT REACHED] {turn_budget_reason}"
 
                 # Record the assistant's generation in history
                 assistant_content: list[dict[str, Any]] = []
