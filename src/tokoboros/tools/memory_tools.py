@@ -60,6 +60,8 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=
 
     def save_memory(facts: list) -> str:
         """Save one or more workspace facts with intelligent dedup and contradiction resolution."""
+        if not vault:
+            return "Long-term memory is not available (backend=in_memory has no semantic store)."
         if not facts:
             return "No facts provided."
 
@@ -120,6 +122,8 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=
 
     def search_memory(query: str, top_k: int = 5) -> str:
         """Semantic search against the workspace memory vault."""
+        if not vault:
+            return "Long-term memory is not available (backend=in_memory has no semantic store)."
         try:
             results = vault.semantic_search(query, top_k)
             if not results:
@@ -134,6 +138,8 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=
 
     def delete_memory(fact_id: str) -> str:
         """Delete a workspace fact by ID."""
+        if not vault:
+            return "Long-term memory is not available (backend=in_memory has no semantic store)."
         if vault.delete_fact(fact_id):
             return f"Successfully deleted memory fact: {fact_id}"
         return f"Failed to delete memory fact: {fact_id}. It may not exist."
@@ -144,6 +150,8 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=
 
     def save_user_profile(facts: list) -> str:
         """Save one or more user identity facts into the bounded profile collection."""
+        if not vault:
+            return "Long-term memory is not available (backend=in_memory has no semantic store)."
         if not facts:
             return "No facts provided."
 
@@ -176,6 +184,8 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=
 
     def search_user_profile(query: str, top_k: int = 10) -> str:
         """Semantic search against the user profile collection."""
+        if not vault:
+            return "Long-term memory is not available (backend=in_memory has no semantic store)."
         try:
             results = vault.search_user_profile(query, top_k)
             if not results:
@@ -192,6 +202,8 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=
 
     def delete_user_profile(fact_id: str) -> str:
         """Delete a user identity fact by ID."""
+        if not vault:
+            return "Long-term memory is not available (backend=in_memory has no semantic store)."
         if vault.delete_user_fact(fact_id):
             return f"Successfully deleted user profile fact: {fact_id}"
         return f"Failed to delete user profile fact: {fact_id}. It may not exist."
