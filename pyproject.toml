@@ -67,6 +67,9 @@ tracing = [
     "opentelemetry-api>=1.27.0",
     "opentelemetry-sdk>=1.27.0",
 ]
+presentations = [
+    "python-pptx>=1.0.0",
+]
 
 [project.scripts]
 tokoboros = "tokoboros.cli.main:app"
