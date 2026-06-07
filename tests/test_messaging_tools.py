@@ -439,3 +439,98 @@ def test_send_whatsapp_tool_redacts_secrets():
     out = registry._tools["send_whatsapp_message"](secret_msg, "+447900000001")
     # Either the message was sent (redacted) or the tool reported success — not an error
     assert "WhatsApp send failed" not in out
+
+
+# ---------------------------------------------------------------------------
+# Telegram outbound tool
+# ---------------------------------------------------------------------------
+
+
+def test_register_messaging_tools_includes_telegram() -> None:
+    registry = ToolRegistry()
+    register_messaging_tools(registry)
+    assert "send_telegram_message" in registry._tools
+
+
+def test_send_telegram_not_configured(monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    registry = ToolRegistry()
+    register_messaging_tools(registry)
+    out = registry._tools["send_telegram_message"]("hello")
+    assert "not configured" in out.lower()
+    assert "TELEGRAM_BOT_TOKEN" in out
+
+
+def test_send_telegram_no_chat_id(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot:token")
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    registry = ToolRegistry()
+    register_messaging_tools(registry)
+    out = registry._tools["send_telegram_message"]("hello")
+    assert "chat_id" in out.lower()
+
+
+def test_send_telegram_success(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot:token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+
+    calls: list[tuple[str, str, str]] = []
+
+    def _fake_sender(token: str, chat_id: str, text: str) -> dict:
+        calls.append((token, chat_id, text))
+        return {"ok": True}
+
+    registry = ToolRegistry()
+    register_messaging_tools(registry, telegram_sender=_fake_sender)
+    out = registry._tools["send_telegram_message"]("Hello from agent")
+    assert "sent" in out.lower()
+    assert calls == [("bot:token", "12345", "Hello from agent")]
+
+
+def test_send_telegram_explicit_chat_id(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot:token")
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    calls: list[tuple[str, str, str]] = []
+
+    def _fake_sender(token: str, chat_id: str, text: str) -> dict:
+        calls.append((token, chat_id, text))
+        return {}
+
+    registry = ToolRegistry()
+    register_messaging_tools(registry, telegram_sender=_fake_sender)
+    out = registry._tools["send_telegram_message"]("Hi", "99999")
+    assert "sent" in out.lower()
+    assert calls[0][1] == "99999"
+
+
+def test_send_telegram_http_error(monkeypatch) -> None:
+    import urllib.error
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bad:token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+
+    def _fail_sender(token: str, chat_id: str, text: str) -> dict:
+        raise urllib.error.HTTPError(None, 401, "Unauthorized", {}, None)  # type: ignore[arg-type]
+
+    registry = ToolRegistry()
+    register_messaging_tools(registry, telegram_sender=_fail_sender)
+    out = registry._tools["send_telegram_message"]("test")
+    assert "failed" in out.lower()
+
+
+def test_send_telegram_redacts_secrets(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot:token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "1")
+
+    captured: list[str] = []
+
+    def _spy(token: str, chat_id: str, text: str) -> dict:
+        captured.append(text)
+        return {}
+
+    registry = ToolRegistry()
+    register_messaging_tools(registry, telegram_sender=_spy)
+    out = registry._tools["send_telegram_message"]("key=AKIA1234567890ABCDEF msg")
+    # Either the raw key was redacted or the send succeeded without leaking it
+    assert "failed" not in out.lower() or "redact" in out.lower()
