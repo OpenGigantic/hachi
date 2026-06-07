@@ -15,8 +15,10 @@ from tokoboros.integrations.google.drive import DriveService
 # Import specific services
 from tokoboros.integrations.google.gmail import GmailService
 from tokoboros.integrations.google.meet import MeetService
+from tokoboros.integrations.google.planning import PlanningService
 from tokoboros.integrations.google.service import GoogleService
 from tokoboros.integrations.google.sheets import SheetsService
+from tokoboros.integrations.google.tasks import TasksService
 
 
 class GoogleIntegrationHub:
@@ -37,6 +39,8 @@ class GoogleIntegrationHub:
         sheets = SheetsService(client=None)  # type: ignore
         contacts = ContactsService(client=None)  # type: ignore
         meet = MeetService(client=None)  # type: ignore
+        tasks = TasksService(client=None)  # type: ignore
+        planning = PlanningService(client=None)  # type: ignore
 
         # Aggregate scopes dynamically
         all_scopes = set()
@@ -47,6 +51,8 @@ class GoogleIntegrationHub:
         all_scopes.update(sheets.required_scopes)
         all_scopes.update(contacts.required_scopes)
         all_scopes.update(meet.required_scopes)
+        all_scopes.update(tasks.required_scopes)
+        all_scopes.update(planning.required_scopes)
 
         # 2. Instantiate the actual client with the aggregated scopes
         self.client = GoogleHTTPClient(scopes=list(all_scopes))
@@ -60,6 +66,8 @@ class GoogleIntegrationHub:
             SheetsService(client=self.client),
             ContactsService(client=self.client),
             MeetService(client=self.client),
+            TasksService(client=self.client),
+            PlanningService(client=self.client),
         ]
 
     def register_tools(self, registry: ToolRegistry) -> None:

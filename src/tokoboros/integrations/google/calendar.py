@@ -142,6 +142,99 @@ class CalendarService(GoogleService):
         self.client.delete(f"/calendar/v3/calendars/primary/events/{event_id}")
         return f"Event {event_id} has been deleted."
 
+    def create_recurring_event(
+        self,
+        summary: str,
+        start_time_iso: str,
+        end_time_iso: str,
+        recurrence_rule: str,
+        description: str = "",
+        attendees: list[str] | None = None,
+        create_meet_link: bool = False,
+    ) -> str:
+        """Creates a recurring Google Calendar event using an RFC 5545 RRULE.
+
+        Common recurrence_rule examples:
+          - Daily:         RRULE:FREQ=DAILY
+          - Every weekday: RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR
+          - Weekly Monday: RRULE:FREQ=WEEKLY;BYDAY=MO
+          - Monthly 1st:   RRULE:FREQ=MONTHLY;BYDAY=1MO
+          - Until a date:  RRULE:FREQ=DAILY;UNTIL=20261231T235959Z
+          - N occurrences: RRULE:FREQ=WEEKLY;COUNT=10
+        """
+        from typing import Any as _Any
+
+        event: dict[str, _Any] = {
+            "summary": summary,
+            "description": description,
+            "start": {"dateTime": start_time_iso},
+            "end": {"dateTime": end_time_iso},
+            "recurrence": [recurrence_rule],
+        }
+
+        if attendees:
+            event["attendees"] = [{"email": e.strip()} for e in attendees]
+
+        params: dict[str, _Any] = {}
+        if create_meet_link:
+            import uuid
+
+            event["conferenceData"] = {
+                "createRequest": {
+                    "requestId": str(uuid.uuid4()),
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
+            }
+            params["conferenceDataVersion"] = 1
+
+        response = self.client.post(
+            "/calendar/v3/calendars/primary/events", params=params, json_data=event
+        )
+        link = response.get("htmlLink", "")
+        meet_link = response.get("hangoutLink", "")
+        result = f"Recurring event created! Rule: {recurrence_rule}  Link: {link}"
+        if meet_link:
+            result += f"\nMeet: {meet_link}"
+        return result
+
+    def get_events_for_date(self, date_iso: str, max_results: int = 20) -> str:
+        """Return all calendar events that fall on a given date (YYYY-MM-DD).
+
+        Used by the day-planning tool to fetch what's scheduled on a specific day.
+        """
+        time_min = f"{date_iso}T00:00:00Z"
+        time_max = f"{date_iso}T23:59:59Z"
+
+        response = self.client.get(
+            "/calendar/v3/calendars/primary/events",
+            params={
+                "timeMin": time_min,
+                "timeMax": time_max,
+                "maxResults": max_results,
+                "singleEvents": "true",
+                "orderBy": "startTime",
+            },
+        )
+        events = response.get("items", [])
+        if not events:
+            return f"No events scheduled for {date_iso}."
+
+        lines = []
+        for e in events:
+            start = e["start"].get("dateTime", e["start"].get("date", ""))
+            end = e["end"].get("dateTime", e["end"].get("date", ""))
+            # Show only the time portion for readability.
+            start_t = start[11:16] if len(start) > 10 else start
+            end_t = end[11:16] if len(end) > 10 else end
+            attendee_count = len(e.get("attendees", []))
+            attend_note = f" ({attendee_count} attendees)" if attendee_count else ""
+            meet = " 📹" if e.get("hangoutLink") else ""
+            lines.append(
+                f"{start_t}–{end_t}  {e.get('summary', 'Busy')}{attend_note}{meet}"
+                f"  [id={e.get('id', '')}]"
+            )
+        return "\n".join(lines)
+
     def register_tools(self, registry: ToolRegistry) -> None:
         """Register Google Calendar tools into the agent's tool registry."""
         registry.register(
@@ -258,4 +351,80 @@ class CalendarService(GoogleService):
                 },
             },
             self.delete_event,
+        )
+
+        registry.register(
+            {
+                "name": "google_create_recurring_event",
+                "description": (
+                    "Create a recurring Google Calendar event using an RFC 5545 RRULE. "
+                    "Use this for standing meetings, daily standups, weekly reviews, etc. "
+                    "Common recurrence_rule examples — "
+                    "daily: 'RRULE:FREQ=DAILY', "
+                    "every weekday: 'RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR', "
+                    "weekly on Monday: 'RRULE:FREQ=WEEKLY;BYDAY=MO', "
+                    "10 occurrences: 'RRULE:FREQ=WEEKLY;COUNT=10', "
+                    "until a date: 'RRULE:FREQ=DAILY;UNTIL=20261231T235959Z'."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string", "description": "Event title."},
+                        "start_time_iso": {
+                            "type": "string",
+                            "description": "Start time with timezone offset "
+                            "(e.g. 2026-06-09T10:00:00+05:30).",
+                        },
+                        "end_time_iso": {
+                            "type": "string",
+                            "description": "End time with timezone offset.",
+                        },
+                        "recurrence_rule": {
+                            "type": "string",
+                            "description": "RFC 5545 RRULE string "
+                            "(e.g. 'RRULE:FREQ=WEEKLY;BYDAY=MO').",
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Optional event description / agenda.",
+                        },
+                        "attendees": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Email addresses to invite.",
+                        },
+                        "create_meet_link": {
+                            "type": "boolean",
+                            "description": "Attach a Google Meet link to every occurrence.",
+                        },
+                    },
+                    "required": ["summary", "start_time_iso", "end_time_iso", "recurrence_rule"],
+                },
+            },
+            self.create_recurring_event,
+        )
+
+        registry.register(
+            {
+                "name": "google_get_events_for_date",
+                "description": (
+                    "Fetch all calendar events on a specific date (YYYY-MM-DD). "
+                    "Use this to see what's scheduled before planning a day."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "date_iso": {
+                            "type": "string",
+                            "description": "The date to query in YYYY-MM-DD format.",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Maximum events to return (default 20).",
+                        },
+                    },
+                    "required": ["date_iso"],
+                },
+            },
+            self.get_events_for_date,
         )
