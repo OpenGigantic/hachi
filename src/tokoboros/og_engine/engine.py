@@ -343,21 +343,29 @@ class SkillEngine:
                 if term in kw or kw in term:
                     matched_names.update(names)
 
+        _PRIORITY_ORDER = {"high": 0, "normal": 1, "low": 2}
+
         results = []
         for name in matched_names:
             node = self._nodes.get(name)
             if node is None or not self._is_visible(node):
                 continue
+            priority = (node.traverse or {}).get("priority", "normal")
+            sort_key = _PRIORITY_ORDER.get(priority, 1)
             results.append(
-                {
-                    "name": node.name,
-                    "role": node.role,
-                    "keywords": ", ".join(node.keywords),
-                    "source_file": node.source_file,
-                }
+                (
+                    sort_key,
+                    {
+                        "name": node.name,
+                        "role": node.role,
+                        "keywords": ", ".join(node.keywords),
+                        "source_file": node.source_file,
+                    },
+                )
             )
 
-        return results
+        results.sort(key=lambda t: t[0])
+        return [r for _, r in results]
 
     def list_all_skills(self) -> list[dict[str, str]]:
         """
@@ -456,6 +464,7 @@ class SkillEngine:
                 "warning": node.warning,
                 "requires": list(node.requires),
                 "available_blocks": available,
+                "traverse": node.traverse or {},
             }
         return result
 
@@ -869,6 +878,34 @@ class SkillEngine:
             "version": meta.get("version", ""),
             "updated": meta.get("updated", ""),
             "changelog": self.get_file_changelog(filepath),
+        }
+
+    def get_traverse_hints(self, name: str) -> dict[str, Any] | None:
+        """Return the ``::traverse`` hints for a skill node.
+
+        Traverse hints guide how the agent (or the engine) should navigate the
+        skill graph when loading this node:
+
+        - ``priority`` — ``"high"`` / ``"normal"`` / ``"low"``; controls where
+          this node appears in ``search()`` results.
+        - ``entry`` — preferred starting node when this skill acts as a subgraph
+          root (e.g. ``entry: auth`` tells the agent to load ``auth`` first).
+        - ``depth`` — maximum edge-follow depth (e.g. ``depth: 2``).
+
+        Args:
+            name: The exact skill node id.
+
+        Returns:
+            A dict with ``name`` + all traverse key/value pairs, or ``None``
+            if the node is unknown.  Returns an empty ``traverse`` dict if the
+            node exists but has no ``::traverse`` block.
+        """
+        node = self._nodes.get(name)
+        if not node:
+            return None
+        return {
+            "name": name,
+            "traverse": dict(node.traverse or {}),
         }
 
     @staticmethod
