@@ -2864,6 +2864,156 @@ def memory_stats(
 
 
 # ---------------------------------------------------------------------------
+# session subcommand group
+# ---------------------------------------------------------------------------
+
+session_app = typer.Typer(
+    help="Inspect past agent sessions — list, show transcripts, and search history.",
+    no_args_is_help=True,
+)
+app.add_typer(session_app, name="session")
+
+
+@session_app.command("list")
+def session_list(
+    limit: int = typer.Option(10, "--limit", "-n", help="Max sessions to show."),
+    as_json: bool = typer.Option(False, "--json", help="Emit as JSON."),
+) -> None:
+    """List the most recent agent sessions with date, model, and turn count."""
+    from tokoboros.core.session_store import SessionStore
+
+    store = SessionStore()
+    sessions = store.get_recent_sessions(limit=limit)
+    store.shutdown()
+
+    if as_json:
+        print(json.dumps(sessions, indent=2))
+        return
+
+    if not sessions:
+        console.print("[dim]No sessions recorded yet.[/dim]")
+        return
+
+    console.print(f"[bold]Last {len(sessions)} session(s):[/bold]")
+    for s in sessions:
+        sid = s.get("id", "")
+        started = (s.get("started_at") or "")[:19].replace("T", " ")
+        ended = (s.get("ended_at") or "")[:19].replace("T", " ")
+        model = s.get("model", "unknown")
+        turns = s.get("total_turns", 0)
+        status = f"ended {ended}" if ended else "[yellow]active[/yellow]"
+        console.print(
+            f"  [cyan]{sid}[/cyan]  {started}  [dim]{model}[/dim]"
+            f"  {turns} turn(s)  {status}"
+        )
+
+
+@session_app.command("show")
+def session_show(
+    session_id: str = typer.Argument(..., help="Session ID (or prefix) to display."),
+    limit: int = typer.Option(50, "--limit", "-n", help="Max messages to display."),
+    as_json: bool = typer.Option(False, "--json", help="Emit transcript as JSON."),
+) -> None:
+    """Print the message transcript for a session.
+
+    Pass the full session ID or a unique prefix from 'tokoboros session list'.
+    """
+    from tokoboros.core.session_store import SessionStore
+
+    store = SessionStore()
+
+    # Allow prefix matching: get recent sessions and match by prefix
+    if len(session_id) < 16:
+        candidates = store.get_recent_sessions(limit=200)
+        matches = [s["id"] for s in candidates if str(s["id"]).startswith(session_id)]
+        if not matches:
+            console.print(f"[red]No session found with prefix:[/red] {session_id}")
+            store.shutdown()
+            raise typer.Exit(1)
+        if len(matches) > 1:
+            console.print(
+                f"[yellow]Ambiguous prefix '{session_id}' matches {len(matches)} sessions.[/yellow]"
+                " Use a longer prefix."
+            )
+            for m in matches[:5]:
+                console.print(f"  {m}")
+            store.shutdown()
+            raise typer.Exit(1)
+        session_id = matches[0]
+
+    messages = store.get_session_messages(session_id, limit=limit)
+    store.shutdown()
+
+    if as_json:
+        print(json.dumps({"session_id": session_id, "messages": messages}, indent=2))
+        return
+
+    if not messages:
+        console.print(f"[dim]No messages found for session {session_id}.[/dim]")
+        return
+
+    console.print(f"[bold]Session[/bold] [cyan]{session_id}[/cyan]  ({len(messages)} messages)")
+    console.print()
+    for msg in messages:
+        role = msg.get("role", "?")
+        content = (msg.get("content") or "").strip()
+        tool = msg.get("tool_name") or ""
+        ts = (msg.get("timestamp") or "")[:19].replace("T", " ")
+
+        if role == "user":
+            label = "[bold green]You[/bold green]"
+        elif role == "assistant":
+            label = "[bold blue]Agent[/bold blue]"
+        elif role == "tool" and tool:
+            label = f"[dim]Tool({tool})[/dim]"
+        else:
+            label = f"[dim]{role}[/dim]"
+
+        # Truncate very long messages for terminal readability
+        display = content[:400] + ("…" if len(content) > 400 else "")
+        console.print(f"[dim]{ts}[/dim] {label}")
+        if display:
+            console.print(f"  {display}")
+        console.print()
+
+
+@session_app.command("search")
+def session_search(
+    query: str = typer.Argument(..., help="Text to search for across all sessions."),
+    limit: int = typer.Option(10, "--limit", "-n", help="Max results to show."),
+    as_json: bool = typer.Option(False, "--json", help="Emit results as JSON."),
+) -> None:
+    """Search across all past session transcripts for a keyword or phrase."""
+    from tokoboros.core.session_store import SessionStore
+
+    store = SessionStore()
+    results = store.search_sessions(query, limit=limit)
+    store.shutdown()
+
+    if as_json:
+        print(json.dumps({"query": query, "results": results}, indent=2))
+        return
+
+    if not results:
+        console.print(f"[dim]No sessions matched:[/dim] {query}")
+        return
+
+    console.print(
+        f"[bold]{len(results)}[/bold] result(s) for [cyan]{query}[/cyan]:"
+    )
+    for r in results:
+        sid = r.get("session_id", "")
+        date = (r.get("session_date") or "")[:10]
+        model = r.get("model", "?")
+        role = r.get("role", "?")
+        snippet = r.get("snippet", "")
+        console.print(
+            f"  [cyan]{sid}[/cyan] [dim]{date}  {model}[/dim]"
+            f"  [magenta]{role}[/magenta]  {snippet}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # daemon subcommand group
 # ---------------------------------------------------------------------------
 
