@@ -1307,6 +1307,54 @@ def gateway(
     _run_gateway_http_server(host=host, port=port, attach_runtime=runtime)
 
 
+@app.command("gateway-status")
+def gateway_status(
+    host: str = typer.Option("127.0.0.1", "--host", help="Gateway host to check."),
+    port: int = typer.Option(8787, "--port", help="Gateway port to check."),
+    as_json: bool = typer.Option(False, "--json", help="Emit result as JSON."),
+    timeout: float = typer.Option(2.0, "--timeout", help="Connection timeout in seconds."),
+) -> None:
+    """Check whether a local Tokoboros gateway is reachable and healthy."""
+    import urllib.error
+    import urllib.request
+
+    url = f"http://{host}:{port}/health"
+    result: dict = {"host": host, "port": port, "url": url}
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            body = resp.read().decode("utf-8", errors="replace")
+            result["status"] = "reachable"
+            result["http_status"] = resp.status
+            try:
+                result["detail"] = json.loads(body)
+            except Exception:
+                result["detail"] = body[:200]
+    except urllib.error.URLError as exc:
+        result["status"] = "unreachable"
+        result["error"] = str(exc.reason)
+    except Exception as exc:
+        result["status"] = "error"
+        result["error"] = str(exc)
+
+    if as_json:
+        print(json.dumps(result))
+        raise typer.Exit(0 if result.get("status") == "reachable" else 1)
+
+    ok = result.get("status") == "reachable"
+    icon = "[green]●[/green]" if ok else "[red]●[/red]"
+    state = "reachable" if ok else result.get("status", "unknown")
+    console.print(f"{icon} {host}:{port} — {state}")
+    if not ok:
+        console.print(f"  [dim]{result.get('error', '')}[/dim]")
+        console.print(
+            f"  Start gateway with: [bold]tokoboros gateway --host {host} --port {port}[/bold]"
+        )
+        raise typer.Exit(1)
+    http_status = result.get("http_status", "")
+    console.print(f"  HTTP {http_status}  {url}")
+
+
 @app.command("gateway-openapi")
 def gateway_openapi(
     output: Path = typer.Option(  # noqa: B008

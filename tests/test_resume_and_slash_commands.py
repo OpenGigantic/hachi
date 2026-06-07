@@ -236,6 +236,50 @@ def test_slash_command_schedules_shows_list(monkeypatch) -> None:
     assert "daily-standup" in combined
 
 
+def test_slash_command_export_no_runtime_warns(monkeypatch) -> None:
+    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    notes: list[str] = []
+    monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
+    app._agent = None  # No runtime
+    app.handle_slash_command("/export")
+    assert any("booting" in n.lower() or "runtime" in n.lower() for n in notes)
+
+
+def test_slash_command_export_writes_file(monkeypatch, tmp_path) -> None:
+    from unittest.mock import MagicMock
+
+    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    notes: list[str] = []
+    monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
+
+    fake_agent = MagicMock()
+    fake_agent._session_id = "abc123def456"
+    app._agent = fake_agent
+
+    fake_store = MagicMock()
+    fake_store.get_session_messages.return_value = [
+        {"role": "user", "content": "hello", "tool_name": None,
+         "timestamp": "2026-06-07T10:00:00"},
+        {"role": "assistant", "content": "hi there", "tool_name": None,
+         "timestamp": "2026-06-07T10:00:01"},
+    ]
+    fake_store.get_session.return_value = {"title": "Test Session", "total_tokens": 0,
+                                           "total_cost_usd": 0.0}
+
+    out_file = tmp_path / "out.md"
+    with __import__("unittest.mock", fromlist=["patch"]).patch(
+        "tokoboros.core.session_store.SessionStore", return_value=fake_store
+    ):
+        app.handle_slash_command(f"/export {out_file}")
+
+    assert out_file.exists()
+    content = out_file.read_text()
+    assert "hello" in content
+    assert "hi there" in content
+    combined_notes = "\n".join(notes)
+    assert "Exported" in combined_notes
+
+
 def test_slash_command_schedules_no_schedules(monkeypatch) -> None:
     from unittest.mock import MagicMock
 
