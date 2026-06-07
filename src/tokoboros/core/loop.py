@@ -100,15 +100,26 @@ class ToolRegistry:
         self._groups[tool_name] = group
 
     def classify(
-        self, core_names: set[str], group_by_name: dict[str, str], default: str = "core"
+        self,
+        core_names: set[str],
+        group_by_name: dict[str, str],
+        prefix_groups: dict[str, str] | None = None,
+        default: str = "core",
     ) -> None:
         """Stamp lazy-loading groups by tool name, applied once after registration.
 
-        Names in ``core_names`` become "core"; names in ``group_by_name`` take their
-        mapped group; tools already tagged with an explicit non-core group (e.g. the
-        per-skill REST tools) are left intact; everything else — including tools left
-        at the ``register`` default of "core" — takes ``default``. (The default group
-        is treated as "unclassified" here so the fallback actually applies.)
+        Resolution order (first match wins):
+        1. ``core_names`` → ``"core"``
+        2. ``group_by_name`` exact match → mapped group
+        3. ``prefix_groups`` prefix match → mapped group (longest prefix wins)
+        4. Tools already tagged with an explicit non-core group are left intact
+        5. Everything else (or tools still at the ``register`` default of "core") → ``default``
+
+        Args:
+            core_names: Tool names that should be in the "core" (always-on) group.
+            group_by_name: Exact name → group mapping for statically-known tools.
+            prefix_groups: Prefix → group mapping, e.g. ``{"google_": "google"}``.
+            default: Group assigned to any otherwise-unclassified tool.
         """
         for name in self._tools:
             if name in core_names:
@@ -116,6 +127,17 @@ class ToolRegistry:
             elif name in group_by_name:
                 self._groups[name] = group_by_name[name]
             elif self._groups.get(name, "core") == "core":
+                # Only reclassify tools that haven't been given an explicit group.
+                if prefix_groups:
+                    # Longest matching prefix wins to avoid ambiguity.
+                    match = max(
+                        (p for p in prefix_groups if name.startswith(p)),
+                        key=len,
+                        default=None,
+                    )
+                    if match:
+                        self._groups[name] = prefix_groups[match]
+                        continue
                 self._groups[name] = default
 
     def available_groups(self) -> set[str]:
