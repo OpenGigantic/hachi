@@ -266,6 +266,31 @@ class SkillEngine:
             return True
         return node.scope in ("all", "public", self._agent_role)
 
+    def with_role(self, agent_role: str) -> "SkillEngine":
+        """Return a lightweight read-only view of this engine with a different role.
+
+        The view shares the same underlying node/keyword/file data (no copy) but
+        applies scope-filtering for ``agent_role`` on all queries.  Safe for
+        concurrent use — the view never mutates shared state.
+
+        Typical use: build one orchestrator-level engine at session boot, then
+        create per-sub-agent views with ``engine.with_role(role)`` so each
+        sub-agent only sees the skill nodes appropriate to its scope.
+
+        Args:
+            agent_role: The role to enforce.  ``"*"`` bypasses all checks;
+                ``"orchestrator"`` additionally reveals ``scope=orchestrator``
+                nodes; any other value sees only ``scope=all/public`` nodes.
+
+        Returns:
+            A new ``SkillEngine`` instance sharing data with this one, with
+            ``_agent_role`` set to ``agent_role``.
+        """
+        view = SkillEngine.__new__(SkillEngine)
+        view.__dict__.update(self.__dict__)
+        view._agent_role = agent_role
+        return view
+
     def load_directory(self, skills_dir: Path):
         """
         Scan a directory for .og files and index all nodes found within them.
