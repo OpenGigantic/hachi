@@ -14,14 +14,22 @@ senders:
 - it raises :class:`VoiceError` (a readable message) rather than leaking a raw
   HTTP/parse error — callers check :meth:`is_configured` first and surface
   failures as friendly tool results.
+
+:func:`probe_audio_info` is a **keyless** helper that uses only the Python
+standard library to inspect a local audio file.  Full metadata (duration,
+sample rate, channels) is available for WAV files.  For other formats only
+the file size and extension are reported — "format not probeable" is the
+friendly response rather than an error.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import wave
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from tokoboros.core.net_guard import validate_outbound_url
 
@@ -48,6 +56,65 @@ _SUPPORTED_EXTENSIONS = frozenset(
 
 # Hard ceiling on audio bytes (the OpenAI endpoint caps at ~25 MB); fail fast.
 _MAX_AUDIO_BYTES = 25 * 1024 * 1024
+
+
+def probe_audio_info(path: str | Path) -> dict[str, Any]:
+    """Probe a local audio file for metadata without any API key or network call.
+
+    Uses only the Python standard library.  Full metadata (duration in seconds,
+    sample rate in Hz, channel count) is available for PCM-WAV files.  For all
+    other formats only the file size and format hint (derived from the extension)
+    are returned — the ``probeable`` flag tells the caller whether the richer
+    fields are present.
+
+    Args:
+        path: Absolute or relative path to the audio file.
+
+    Returns:
+        A dict with at least:
+          - ``file`` — resolved absolute path (str)
+          - ``format`` — extension without leading dot, lower-case (e.g. ``"wav"``)
+          - ``size_bytes`` — file size in bytes
+          - ``probeable`` — ``True`` when duration/sample_rate/channels are present
+
+        When ``probeable`` is ``True`` the dict additionally contains:
+          - ``duration_seconds`` — float, e.g. ``3.71``
+          - ``sample_rate`` — int, e.g. ``44100``
+          - ``channels`` — int, e.g. ``1`` (mono) or ``2`` (stereo)
+
+    Raises:
+        VoiceError: If the file does not exist, is not a regular file, or the
+            WAV header is corrupt.
+    """
+    p = Path(path).resolve()
+    if not p.exists() or not p.is_file():
+        raise VoiceError(f"audio file not found: {p}")
+
+    fmt = p.suffix.lstrip(".").lower() or "unknown"
+    size = p.stat().st_size
+
+    info: dict[str, Any] = {
+        "file": str(p),
+        "format": fmt,
+        "size_bytes": size,
+        "probeable": False,
+    }
+
+    if fmt == "wav":
+        try:
+            with wave.open(str(p), "rb") as wf:
+                n_channels = wf.getnchannels()
+                sample_rate = wf.getframerate()
+                n_frames = wf.getnframes()
+                duration = n_frames / sample_rate if sample_rate > 0 else 0.0
+            info["probeable"] = True
+            info["duration_seconds"] = round(duration, 3)
+            info["sample_rate"] = sample_rate
+            info["channels"] = n_channels
+        except wave.Error as exc:
+            raise VoiceError(f"could not read WAV header: {exc}") from exc
+
+    return info
 
 
 class VoiceError(RuntimeError):
