@@ -128,3 +128,54 @@ def test_slash_command_plan_expands_prompt(monkeypatch) -> None:
     assert "PLAN MODE" in expanded
     assert "ship the feature" in expanded
     assert display == "/plan ship the feature"
+
+
+def test_slash_command_speak_submits_tts_prompt(monkeypatch) -> None:
+    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    sent: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(app, "set_toko_state_safe", lambda _s: None)
+    monkeypatch.setattr(
+        app,
+        "submit_prompt",
+        lambda prompt, display_text=None: sent.append((prompt, display_text)),
+    )
+    app.handle_slash_command("/speak Hello world")
+    assert len(sent) == 1
+    expanded, display = sent[0]
+    assert "speak_text" in expanded
+    assert "Hello world" in expanded
+    assert display == "/speak Hello world"
+
+
+def test_slash_command_speak_no_arg_warns(monkeypatch) -> None:
+    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    notes: list[str] = []
+    monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
+    app.handle_slash_command("/speak")
+    assert any("Usage" in note for note in notes)
+    assert any("speak" in note.lower() for note in notes)
+
+
+def test_slash_command_transcribe_submits_stt_prompt(monkeypatch) -> None:
+    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    sent: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(app, "set_toko_state_safe", lambda _s: None)
+    monkeypatch.setattr(
+        app,
+        "submit_prompt",
+        lambda prompt, display_text=None: sent.append((prompt, display_text)),
+    )
+    app.handle_slash_command("/transcribe /home/user/meeting.wav")
+    assert len(sent) == 1
+    expanded, display = sent[0]
+    assert "transcribe_and_summarize" in expanded
+    assert "/home/user/meeting.wav" in expanded
+    assert display == "/transcribe /home/user/meeting.wav"
+
+
+def test_slash_command_transcribe_no_arg_warns(monkeypatch) -> None:
+    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    notes: list[str] = []
+    monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
+    app.handle_slash_command("/transcribe")
+    assert any("Usage" in note for note in notes)
