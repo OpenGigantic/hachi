@@ -17,10 +17,14 @@ on Linux); run `tokoboros doctor` to see the resolved paths.
 | `OPENROUTER_API_KEY` | – | API key for the `openrouter` provider (200+ models). |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Base URL for `openai-compatible`. |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434/v1` | Endpoint for the local `ollama` provider. |
+| `GEMINI_API_KEY` | – | Free API key for the `gemini` provider (get one at https://aistudio.google.com/). |
+| `GOOGLE_AI_API_KEY` | – | Alias for `GEMINI_API_KEY` (checked if the primary is unset). |
+| `CHATGPT_SESSION_TOKEN` | – | Browser session cookie for the `chatgpt-web` unofficial provider. |
+| `CHATGPT_ACCESS_TOKEN` | – | Pre-resolved JWT access token for `chatgpt-web` (alternative to session cookie). |
 | `TOKOBOROS_MODEL` | `claude-haiku-4-5` | Override the configured model id. |
 | `TOKOBOROS_MAX_TOKENS` | `8192` | Max output tokens per LLM call. |
 
-Supported provider kinds: `anthropic`, `openai-compatible`, `openrouter`, `groq`, `together`, `deepseek`, `ollama`.
+Supported provider kinds: `anthropic`, `openai-compatible`, `openrouter`, `groq`, `together`, `deepseek`, `ollama`, `gemini`, `chatgpt-web`.
 
 ### Model selection & guardrail (`settings.toml`)
 
