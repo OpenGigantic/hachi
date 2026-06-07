@@ -132,3 +132,57 @@ Some capabilities ship as optional dependency groups so the base install stays l
 |----------|---------|---------|
 | `TOKOBOROS_REPO` | the public repo | Source repo for `install.sh` / `install.ps1`. |
 | `TOKOBOROS_HOME` | `~/.tokoboros-src` | Where the installer clones Tokoboros. |
+
+## Always-on background daemon
+
+Tokoboros can run the gateway as a persistent background service that starts
+automatically when you log in.  This powers proactive scheduling — the
+`schedule run-due` tick happens continuously without a manual `tokoboros schedule run-due` call.
+
+### Install / manage
+
+```bash
+# Install the daemon (auto-starts the gateway on every login)
+tokoboros daemon install
+
+# Custom bind address / port
+tokoboros daemon install --host 0.0.0.0 --port 8888
+
+# Check if the daemon is running
+tokoboros daemon status
+
+# Start / stop without re-installing
+tokoboros daemon start
+tokoboros daemon stop
+
+# Remove the daemon completely
+tokoboros daemon uninstall
+```
+
+### Platform details
+
+| Platform | Mechanism | Service file |
+|----------|-----------|-------------|
+| macOS | launchd user agent (`launchctl load -w`) | `~/Library/LaunchAgents/ai.tokoboros.gateway.plist` |
+| Linux | systemd user service (`systemctl --user enable --now`) | `~/.config/systemd/user/tokoboros.service` |
+| Windows | Task Scheduler (`schtasks /sc ONLOGON`) | Task name: `Tokoboros Gateway` |
+
+The daemon writes stdout/stderr to `{state_dir}/gateway.log`
+(run `tokoboros doctor --json | jq .state_dir` to find the path).
+
+### Schedule runner
+
+Once the daemon is running, scheduled tasks fire automatically.
+You can still run due schedules manually:
+
+```bash
+tokoboros schedule run-due
+```
+
+For a lightweight cron-only setup (no full gateway), call `run-due` from the
+system cron instead of installing the daemon:
+
+```
+# crontab -e
+*/5 * * * * tokoboros schedule run-due >> ~/.tokoboros-schedule.log 2>&1
+```

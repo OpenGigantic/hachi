@@ -18,6 +18,7 @@ Each recipe shows the exact commands to run and what you will see.
 9. [Write and load a custom skill (.og)](#9-write-and-load-a-custom-skill-og)
 10. [Delegate to a sub-agent](#10-delegate-to-a-sub-agent)
 11. [Schedule recurring tasks](#11-schedule-recurring-tasks)
+11b. [Run the agent as an always-on background daemon](#11b-run-the-agent-as-an-always-on-background-daemon)
 12. [Voice — transcribe and speak](#12-voice--transcribe-and-speak)
 13. [Permissions & security tiers](#13-permissions--security-tiers)
 14. [Diagnose problems](#14-diagnose-problems)
@@ -393,6 +394,41 @@ survive restarts.
 tokoboros schedule list
 tokoboros schedule delete <schedule-id>
 ```
+
+---
+
+## 11b. Run the agent as an always-on background daemon
+
+By default, scheduled tasks only fire when you manually run
+`tokoboros schedule run-due`. Install the daemon so they fire automatically
+24/7, even when no terminal is open.
+
+```bash
+# Install the gateway as a background service (auto-starts on login)
+tokoboros daemon install
+
+# Check the daemon is running
+tokoboros daemon status
+
+# Temporarily stop it (does NOT uninstall)
+tokoboros daemon stop
+tokoboros daemon start
+
+# Remove completely
+tokoboros daemon uninstall
+```
+
+The daemon binds to `127.0.0.1:8787` by default. Use `--host`/`--port` to
+change:
+
+```bash
+tokoboros daemon install --host 0.0.0.0 --port 8888
+```
+
+Logs go to `{state_dir}/gateway.log` — find the path with
+`tokoboros doctor --json | jq -r '.state_dir'`.
+
+**Platform:** macOS (launchd) · Linux (systemd --user) · Windows (Task Scheduler).
 
 ---
 
