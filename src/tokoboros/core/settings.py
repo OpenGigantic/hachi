@@ -45,11 +45,15 @@ class PermissionsSettings(BaseModel):
     tier: PermissionTier = "guided"
 
 
+MemoryBackend = Literal["chroma", "in_memory"]
+
+
 class MemorySettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     enable_session_history: bool = True
     enable_semantic_memory: bool = True
+    backend: MemoryBackend = "chroma"
 
 
 class CapabilityState(BaseModel):
