@@ -1,16 +1,21 @@
-"""Voice tools — transcribe audio (STT), speak text (TTS), and audio metadata.
+"""Voice tools — transcribe audio (STT), speak text (TTS), audio playback, and metadata.
 
 ``transcribe_audio`` reads a local audio file and returns its transcript;
-``speak_text`` synthesizes speech to a local audio file; ``get_audio_info``
-probes a local audio file for metadata (duration, sample rate, channels for WAV;
-size + format hint for all others) **without any API key**.
+``speak_text`` synthesizes speech to a local audio file; ``play_audio`` plays
+a local audio file through the system's speakers (no API key required);
+``get_audio_info`` probes a local audio file for metadata (duration, sample rate,
+channels for WAV; size + format hint for all others) **without any API key**.
 
 The STT/TTS tools go through the OpenAI-compatible voice backends
 (:class:`SpeechToText` / :class:`TextToSpeech`), are permission-gated (read/write
 path checks; disabled in the ``sandbox`` tier), and gracefully degrade — if no
 API key is configured they return a friendly hint rather than failing.
 
-All three tools are registered under the lazy ``voice`` tool group.
+``play_audio`` uses :class:`AudioPlayer` (platform-native binary — ``afplay`` /
+``winsound`` / ``paplay`` / ``mpv``) and is keyless; it too degrades gracefully
+when no suitable player is installed.
+
+All four tools are registered under the lazy ``voice`` tool group.
 """
 
 from __future__ import annotations
@@ -19,7 +24,13 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from tokoboros.core.voice import SpeechToText, TextToSpeech, VoiceError, probe_audio_info
+from tokoboros.core.voice import (
+    AudioPlayer,
+    SpeechToText,
+    TextToSpeech,
+    VoiceError,
+    probe_audio_info,
+)
 from tokoboros.tools.os_tools import _normalize_user_path
 
 _BLOCKED_TIERS = {"sandbox"}
@@ -199,17 +210,79 @@ def _make_get_audio_info(gate: Any | None) -> Callable[[str], str]:
     return get_audio_info
 
 
+PLAY_AUDIO_SCHEMA: dict[str, Any] = {
+    "name": "play_audio",
+    "description": (
+        "Play a local audio file through the system's speakers. "
+        "Uses the platform's built-in player — afplay on macOS, winsound (WAV) "
+        "or mpv/ffplay on Windows, paplay/aplay/mpv on Linux. "
+        "No API key required. Blocks until playback finishes. "
+        "Most useful after speak_text to immediately hear the generated voice output."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Local audio file path to play (absolute, ~, or relative).",
+            },
+        },
+        "required": ["path"],
+    },
+}
+
+
+def _make_play_audio(
+    gate: Any | None, player: AudioPlayer | None
+) -> Callable[[str], str]:
+    def play_audio(path: str) -> str:
+        tier = _tier_blocked(gate)
+        if tier is not None:
+            return f"Permission Denied: audio playback is disabled in '{tier}' tier."
+
+        target = _normalize_user_path(path)
+        if gate is not None:
+            check = gate.check_path(str(target), "read")
+            if not getattr(check, "allowed", True):
+                return f"Permission Denied: {getattr(check, 'reason', 'path not allowed')}"
+
+        if not target.exists() or not target.is_file():
+            return f"Audio file not found: {target}"
+
+        active = player or AudioPlayer()
+        if not active.is_available():
+            return (
+                "No audio player available on this system. "
+                "Install paplay (Linux/PulseAudio), mpv, or ffplay and add it to PATH. "
+                "macOS afplay is built-in; Windows WAV uses the stdlib winsound module."
+            )
+
+        try:
+            returncode, stderr = active.play(target)
+        except Exception as exc:  # never propagate
+            return f"Playback failed: {exc}"
+
+        if returncode != 0:
+            detail = stderr.strip() or "(no details)"
+            return f"Playback failed (exit {returncode}): {detail}"
+        return f"Played: {target.name}"
+
+    return play_audio
+
+
 def register_voice_tools(
     registry: Any,
     gate: Any | None = None,
     stt: SpeechToText | None = None,
     tts: TextToSpeech | None = None,
+    player: AudioPlayer | None = None,
 ) -> None:
     """Register the voice tools under the ``voice`` lazy tool group.
 
     Registers:
     - ``transcribe_audio`` — STT, requires an API key
     - ``speak_text`` — TTS, requires an API key
+    - ``play_audio``     — keyless playback via platform-native binary
     - ``get_audio_info`` — keyless metadata probe (stdlib ``wave`` for WAV)
     """
     registry.register(
@@ -220,6 +293,11 @@ def register_voice_tools(
     registry.register(
         SPEAK_TEXT_SCHEMA,
         _make_speak_text(gate, tts),
+        group="voice",
+    )
+    registry.register(
+        PLAY_AUDIO_SCHEMA,
+        _make_play_audio(gate, player),
         group="voice",
     )
     registry.register(
