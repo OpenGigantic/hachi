@@ -96,6 +96,7 @@ from tokoboros.tools.messaging_tools import register_messaging_tools
 from tokoboros.tools.notification_tools import register_notification_tools
 from tokoboros.tools.og_tools import USE_TOOLS_SCHEMA, _make_use_tools, register_og_tools
 from tokoboros.tools.os_tools import register_os_tools
+from tokoboros.tools.presentation_tools import register_presentation_tools
 from tokoboros.tools.sandbox_tools import register_sandbox_tools
 from tokoboros.tools.schedule_tools import register_schedule_tools
 from tokoboros.tools.vision_tools import register_vision_tools
@@ -1305,6 +1306,9 @@ def boot_agent(
     # Voice input — transcribe local audio files. Credentials (OpenAI/compatible
     # Whisper) resolve lazily; the tool degrades to a "not configured" hint until set.
     register_voice_tools(tool_registry, runtime_gate)
+
+    # Presentation generation — build .pptx from natural language.
+    register_presentation_tools(tool_registry, runtime_gate)
 
     # Proactive scheduling (cron/interval/once) — persisted across restarts.
     scheduler = Scheduler(ScheduleStore(get_tokoboros_paths().schedules_file))
