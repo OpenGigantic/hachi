@@ -132,6 +132,18 @@ def _make_skill_changelog(engine: SkillEngine):
     return skill_changelog
 
 
+def _make_skill_traverse_hints(engine: SkillEngine):
+    """Factory: creates the skill_traverse_hints tool closure bound to the engine instance."""
+
+    def skill_traverse_hints(name: str) -> str:
+        result = engine.get_traverse_hints(name)
+        if result is None:
+            return f"Skill '{name}' not found. Use search_skills or list_skills to find it."
+        return json.dumps(result, indent=2)
+
+    return skill_traverse_hints
+
+
 def _make_save_skill(engine: SkillEngine):
     """Factory: creates the save_skill tool closure bound to the engine instance."""
 
@@ -331,6 +343,28 @@ SKILL_CHANGELOG_SCHEMA = {
 }
 
 
+SKILL_TRAVERSE_HINTS_SCHEMA = {
+    "name": "skill_traverse_hints",
+    "description": (
+        "Read the ::traverse hints for a skill — priority (high/normal/low), preferred entry "
+        "node, and depth limit. Use this to understand whether a skill should be loaded early "
+        "(priority=high), which sub-node is the best starting point (entry), and how deep to "
+        "follow requires edges (depth). These hints let you navigate large skill graphs "
+        "efficiently without loading every node."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "The exact skill node name (e.g., 'deploy_to_prod').",
+            }
+        },
+        "required": ["name"],
+    },
+}
+
+
 SAVE_SKILL_SCHEMA = {
     "name": "save_skill",
     "description": (
@@ -457,4 +491,5 @@ def register_og_tools(registry: ToolRegistry, engine: SkillEngine):
     registry.register(SKILL_DEPENDENCIES_SCHEMA, _make_skill_dependencies(engine))
     registry.register(CHECK_SKILL_ASSERTIONS_SCHEMA, _make_check_skill_assertions(engine))
     registry.register(SKILL_CHANGELOG_SCHEMA, _make_skill_changelog(engine))
+    registry.register(SKILL_TRAVERSE_HINTS_SCHEMA, _make_skill_traverse_hints(engine))
     registry.register(SAVE_SKILL_SCHEMA, _make_save_skill(engine))
