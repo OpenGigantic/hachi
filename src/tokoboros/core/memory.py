@@ -18,14 +18,25 @@ Architecture:
       can be plugged in later without changing the public API.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tokoboros.core.llm import Message
 
+if TYPE_CHECKING:
+    from tokoboros.core.conversation_memory import IterationState
+
 logger = logging.getLogger(__name__)
+
+# Estimated-token threshold above which prepare_for_turn() losslessly clears large,
+# re-fetchable tool outputs from older turns. Set high so ordinary short conversations
+# are never touched — only genuinely large contexts. Exposed at module level so tests
+# can monkeypatch it.
+_TOOL_RESULT_CLEAR_TOKENS = 12000
 
 # Placeholder swapped in for large, re-fetchable tool outputs in older turns. The
 # wording tells the model the output is recoverable by re-running the tool.
@@ -451,6 +462,50 @@ class MemoryManager:
         self._active_skill = None
         self._skill_start_index = 0
         self._last_user_query = ""
+
+    def prepare_for_turn(self) -> IterationState:
+        """Run all per-iteration memory housekeeping; return state for the loop.
+
+        Executes compaction, stale tool-result clearing, and tool-pair repair in
+        a single call so the ExecutionLoop does not need to reach into internals.
+
+        Returns:
+            An :class:`~tokoboros.core.conversation_memory.IterationState` snapshot
+            describing what housekeeping ran.
+        """
+        from tokoboros.core.conversation_memory import IterationState
+
+        compacted = False
+        old_skill = "unknown"
+        tool_results_cleared = 0
+        history_repaired = 0
+
+        if self.apply_pending_compaction():
+            compacted = True
+            old_skill = getattr(self, "_pending_old_skill", "unknown") or "unknown"
+
+        if self.estimate_token_count() > _TOOL_RESULT_CLEAR_TOKENS:
+            tool_results_cleared = self.clear_stale_tool_results()
+
+        history_repaired = self.repair_tool_pairs()
+
+        return IterationState(
+            compacted=compacted,
+            old_skill=old_skill,
+            tool_results_cleared=tool_results_cleared,
+            history_repaired=history_repaired,
+        )
+
+    def complete_task(self, user_query: str, result: str) -> None:
+        """Finish the current task: sync facts asynchronously and log to ledger.
+
+        Args:
+            user_query: The user's input that triggered this task.
+            result:     The agent's final response (or a budget/suspend message).
+        """
+        self.sync_turn(user_query, result)
+        self.complete_current_task(result[:100] if result else "Task completed")
+
 
     def repair_tool_pairs(self) -> int:
         """Ensure every tool_use block has a tool_result immediately after its assistant message.

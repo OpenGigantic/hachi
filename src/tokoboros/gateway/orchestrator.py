@@ -14,7 +14,6 @@ Phase 1 Update (Runtime Correctness):
     - Durable job queue for background work (replaces daemon threads)
 """
 
-import datetime
 import importlib.util
 import os
 import threading
@@ -40,6 +39,7 @@ from tokoboros.core.permissions import (
     PermissionGate,
     PermissionRequest,
 )
+from tokoboros.core.prompt_composer import build_stable_base
 from tokoboros.core.rest_adapter import UniversalRestAdapter
 from tokoboros.core.runtime_events import (
     BOOT_COMPLETE,
@@ -78,6 +78,7 @@ from tokoboros.core.session_titler import generate_title
 from tokoboros.core.sub_agent import DEFAULT_SUB_AGENT_MODEL
 from tokoboros.core.tracing import configure_from_env
 from tokoboros.core.turn_context import TurnContext
+from tokoboros.gateway.tool_registration import BootDeps, ToolRegistrar, ToolSpec
 from tokoboros.gateway.workspace import (
     get_skills_dir,
     get_workspace_dir,
@@ -786,22 +787,6 @@ class AgentSession:
     # Chat Entry Point
     # ==========================================
 
-    @staticmethod
-    def _build_time_header() -> str:
-        """Generate the dynamic time block (changes every turn — NOT cached)."""
-        local_dt = datetime.datetime.now().astimezone()
-        current_time = local_dt.strftime("%A, %Y-%m-%d %H:%M:%S")
-        tz_offset = local_dt.strftime("%z")
-        tz_fmt = f"{tz_offset[:3]}:{tz_offset[3:]}" if len(tz_offset) == 5 else tz_offset
-
-        return (
-            f"--- CURRENT TIME AND DATE ---\n"
-            f"The current local time is: {current_time}\n"
-            f"Your Local Timezone Offset is: {tz_fmt}\n"
-            f"Use this context to resolve relative times like 'today' or 'tomorrow', "
-            f"and ALWAYS append the timezone offset when creating ISO strings.\n\n"
-        )
-
     def chat(self, user_input: str) -> str:  # always returns str, never None
         """Send a message to the agent and trigger the autonomous loop.
 
@@ -1205,44 +1190,11 @@ def boot_agent(
         },
     )
 
-    # 5. Build the base system prompt
-    system_prompt = brain_prompt
-
+    # 5. Collect stable-base ingredients (prompt assembled after tool registration below)
     total_tools = integration_count + mcp_tool_count
-
-    if skill_count > 0:
-        system_prompt += (
-            "\n\n--- IMPORTANT: ObjectGraph Skills Available (3-pass loading) ---\n"
-            f"You have {skill_count} skill(s) loaded from .og files. Read them in three passes "
-            "so you only spend tokens on what you actually need:\n"
-            "1. `search_skills` (Pass 1) — ALWAYS call first to find relevant skills by keyword.\n"
-            "2. `peek_skill` (Pass 2) — read the candidates' compressed summaries cheaply to pick "
-            "the right one; don't load blind.\n"
-            "3. `load_skill` (Pass 3) — load the chosen skill's full instructions (optionally "
-            "narrowing to specific `blocks`), then follow them precisely.\n"
-            "If a skill has ASSERTIONS, you MUST run each assertion command and verify it passes "
-            "before continuing.\n"
-        )
-
-    if total_tools > 0:
-        system_prompt += (
-            "\n--- IMPORTANT: Live Service Integrations Active ---\n"
-            f"You have {total_tools} live service tool(s) connected.\n"
-            "These are REAL tools with persistent connections (e.g., email, calendar, APIs).\n"
-            "Use them directly when the user's request matches their purpose.\n"
-            "Do NOT write scripts or use run_terminal_command for tasks these tools handle.\n"
-        )
-
-    # 5.5 Inject Permission Context (tells the LLM its boundaries upfront)
-    system_prompt += runtime_gate.get_system_prompt_injection()
-
+    _permission_block = runtime_gate.get_system_prompt_injection()
     capability_snapshot = capability_registry.status_snapshot()
-    if capability_snapshot:
-        system_prompt += (
-            "\n--- OPTIONAL CAPABILITIES ---\n"
-            "Only use tools from capabilities that are enabled and configured.\n"
-            f"Status: {capability_snapshot}\n"
-        )
+    _capability_block = str(capability_snapshot) if capability_snapshot else ""
 
     emit_runtime_event(
         BOOT_PROGRESS,
@@ -1296,57 +1248,16 @@ def boot_agent(
         },
     )
 
-    # 8. Register all tools
+    # 8. Build infrastructure objects needed for tool registration.
+    # These are created before the TOOL_SPECS table so BootDeps can reference
+    # fully-constructed objects rather than lazy placeholders.
     tool_registry = ToolRegistry()
     # File-change checkpoints give the user an undo for agent edits (rollback_changes tool).
     checkpoint_manager = CheckpointManager(get_tokoboros_paths().checkpoints_dir)
-    register_os_tools(tool_registry, runtime_gate, checkpoints=checkpoint_manager)
-    register_og_tools(tool_registry, skill_engine)
-    # Lazy tool-loading meta-tool (core): lets the model unlock optional groups.
-    tool_registry.register(USE_TOOLS_SCHEMA, _make_use_tools(tool_registry), group="core")
-    register_workflow_tools(tool_registry)
-    register_sandbox_tools(tool_registry, runtime_gate)
-
-    # Headless browser automation (optional: needs `tokoboros[browser]` + a browser binary).
-    # The controller is lazy — no browser launches until the agent first calls browse_web.
-    browser_controller = register_browser_tools(tool_registry, runtime_gate)
-
-    # Outbound messaging (Slack/Discord/WhatsApp). Credentials resolve lazily at call time, so
-    # these register cleanly even with no token set (return a "not configured" hint until then).
-    register_messaging_tools(tool_registry)
-
-    # Desktop push notifications + SMTP email digests. Zero config for desktop;
-    # email requires TOKOBOROS_SMTP_* env vars (degrades gracefully if unset).
-    register_notification_tools(tool_registry)
-
-    # Vision input — view local images. Image blocks only flow to the Anthropic
-    # provider, so the tool is provider-aware (it reports instead of analyzing on others).
-    register_vision_tools(
-        tool_registry,
-        runtime_gate,
-        provider_kind=str(provider_config.get("kind", "anthropic")),
-    )
-
-    # Voice input — transcribe local audio files. Credentials (OpenAI/compatible
-    # Whisper) resolve lazily; the tool degrades to a "not configured" hint until set.
-    register_voice_tools(tool_registry, runtime_gate)
-
-    # Google Workspace (Gmail, Calendar, Drive, Docs, Sheets, Contacts, Meet, Tasks).
-    # Only mounted when GOOGLE_CLIENT_ID is set; degrades to a friendly stub otherwise.
-    register_google_tools(tool_registry)
-
-    # Presentation generation — build .pptx from natural language.
-    register_presentation_tools(tool_registry, runtime_gate)
-
     # Proactive scheduling (cron/interval/once) — persisted across restarts.
     scheduler = Scheduler(ScheduleStore(get_tokoboros_paths().schedules_file))
-    register_schedule_tools(tool_registry, scheduler)
-
-    # Register Universal REST APIs parsed from .og files
-    credential_vault = CredentialVault(secret_store=secret_store)
-    rest_adapter = UniversalRestAdapter(tool_registry, credential_vault)
-    for node in skill_engine.get_all_nodes():
-        rest_adapter.register_node_apis(node)
+    # Initialize Session Store (Phase 3: cross-session persistence)
+    session_store = SessionStore()
 
     # Initialize and register the Long-Term Memory Vault (backend-selectable).
     # backend="chroma" (default) — ChromaDB persistent vault, full semantic tools.
@@ -1362,35 +1273,161 @@ def boot_agent(
         _provider.vault if isinstance(_provider, ChromaMemoryProvider) else None
     )
     memory.set_vault(vault)
-    register_memory_tools(tool_registry, vault, job_queue=job_queue)
 
-    # Initialize Session Store (Phase 3: cross-session persistence)
-    session_store = SessionStore()
-    register_session_tools(tool_registry, session_store)
+    # Universal REST adapter for .og-defined APIs; built here so the rest_apis spec
+    # can close over it without a circular BootDeps reference.
+    credential_vault = CredentialVault(secret_store=secret_store)
+    rest_adapter = UniversalRestAdapter(tool_registry, credential_vault)
 
-    # Register direct integration tools
-    integrations.register_tools(tool_registry)
+    # 8b. Declarative tool registration — ordering constraints are explicit in the
+    # table below, not buried in prose comments.
+    def _make_deps() -> BootDeps:
+        return BootDeps(
+            gate=runtime_gate,
+            skill_engine=skill_engine,
+            checkpoint_manager=checkpoint_manager,
+            vault=vault,
+            job_queue=job_queue,
+            session_store=session_store,
+            integrations=integrations,
+            mcp_manager=mcp_manager,
+            scheduler=scheduler,
+            relay_event=relay_event,
+            sub_agent_llm=sub_agent_client,
+            cost_tracker=cost_tracker,
+            provider_kind=str(provider_config.get("kind", "anthropic")),
+            secret_store=secret_store,
+            tool_registry=tool_registry,
+        )
 
-    # Register MCP tools
-    mcp_manager.register_tools(tool_registry)
+    TOOL_SPECS: list[ToolSpec] = [
+        ToolSpec(
+            name="os",
+            register_fn=lambda d: register_os_tools(
+                d.tool_registry, d.gate, checkpoints=d.checkpoint_manager
+            ),
+        ),
+        ToolSpec(
+            name="og",
+            register_fn=lambda d: register_og_tools(d.tool_registry, d.skill_engine),
+        ),
+        ToolSpec(
+            # Lazy tool-loading meta-tool (core): lets the model unlock optional groups.
+            name="use_tools",
+            register_fn=lambda d: d.tool_registry.register(
+                USE_TOOLS_SCHEMA, _make_use_tools(d.tool_registry), group="core"
+            ),
+        ),
+        ToolSpec(name="workflow", register_fn=lambda d: register_workflow_tools(d.tool_registry)),
+        ToolSpec(
+            name="sandbox",
+            register_fn=lambda d: register_sandbox_tools(d.tool_registry, d.gate),
+        ),
+        ToolSpec(
+            # Headless browser automation (optional: needs `tokoboros[browser]` + a browser
+            # binary). The controller is lazy — no browser launches until the agent first calls
+            # browse_web. Return value is captured from registration_results["browser"].
+            name="browser",
+            register_fn=lambda d: register_browser_tools(d.tool_registry, d.gate),
+        ),
+        ToolSpec(
+            # Outbound messaging (Slack/Discord/WhatsApp). Credentials resolve lazily at call
+            # time, so these register cleanly even with no token set (return a "not configured"
+            # hint until then).
+            name="messaging",
+            register_fn=lambda d: register_messaging_tools(d.tool_registry),
+        ),
+        ToolSpec(
+            # Desktop push notifications + SMTP email digests. Zero config for desktop;
+            # email requires TOKOBOROS_SMTP_* env vars (degrades gracefully if unset).
+            name="notifications",
+            register_fn=lambda d: register_notification_tools(d.tool_registry),
+        ),
+        ToolSpec(
+            # Vision input — view local images. Image blocks only flow to the Anthropic
+            # provider, so the tool is provider-aware (it reports instead of analyzing on others).
+            name="vision",
+            register_fn=lambda d: register_vision_tools(
+                d.tool_registry, d.gate, provider_kind=d.provider_kind
+            ),
+        ),
+        ToolSpec(
+            # Voice input — transcribe local audio files. Credentials (OpenAI/compatible
+            # Whisper) resolve lazily; the tool degrades to a "not configured" hint until set.
+            name="voice",
+            register_fn=lambda d: register_voice_tools(d.tool_registry, d.gate),
+        ),
+        ToolSpec(
+            # Google Workspace (Gmail, Calendar, Drive, Docs, Sheets, Contacts, Meet, Tasks).
+            # Only mounted when GOOGLE_CLIENT_ID is set; degrades to a friendly stub otherwise.
+            name="google",
+            register_fn=lambda d: register_google_tools(d.tool_registry),
+        ),
+        ToolSpec(
+            # Presentation generation — build .pptx from natural language.
+            name="presentation",
+            register_fn=lambda d: register_presentation_tools(d.tool_registry, d.gate),
+        ),
+        ToolSpec(
+            name="schedule",
+            register_fn=lambda d: register_schedule_tools(d.tool_registry, d.scheduler),
+        ),
+        ToolSpec(
+            # Register Universal REST APIs parsed from .og files.
+            name="rest_apis",
+            register_fn=lambda d: [
+                rest_adapter.register_node_apis(node)
+                for node in d.skill_engine.get_all_nodes()
+            ],
+        ),
+        ToolSpec(
+            name="memory",
+            register_fn=lambda d: register_memory_tools(
+                d.tool_registry, d.vault, job_queue=d.job_queue
+            ),
+        ),
+        ToolSpec(
+            name="session",
+            register_fn=lambda d: register_session_tools(d.tool_registry, d.session_store),
+        ),
+        ToolSpec(
+            name="integration_tools",
+            register_fn=lambda d: d.integrations.register_tools(d.tool_registry),
+        ),
+        ToolSpec(
+            name="mcp_tools",
+            register_fn=lambda d: d.mcp_manager.register_tools(d.tool_registry),
+        ),
+        ToolSpec(
+            # Agent-accessible configuration + MCP management tools.
+            # Registered AFTER MCP manager so list_mcp_servers sees all nodes.
+            name="config",
+            after={"mcp_tools"},
+            register_fn=lambda d: register_config_tools(d.tool_registry, gate=d.gate),
+        ),
+        ToolSpec(
+            # MUST be LAST — needs full parent registry.
+            # Pass skill_engine so sub-agent OG tools are rebound to a role-scoped
+            # engine view, preventing sub-agents from reading scope=orchestrator nodes.
+            name="delegation",
+            last=True,
+            register_fn=lambda d: register_delegation_tools(
+                d.tool_registry,
+                d.gate,
+                d.relay_event,
+                d.vault,
+                job_queue=d.job_queue,
+                sub_agent_llm=d.sub_agent_llm,
+                cost_tracker=d.cost_tracker,
+                skill_engine=d.skill_engine,
+            ),
+        ),
+    ]
 
-    # Agent-accessible configuration + MCP management tools.
-    # Registered AFTER MCP manager so list_mcp_servers sees all nodes.
-    register_config_tools(tool_registry, gate=runtime_gate)
-
-    # Register Delegation tools (MUST be LAST — needs full parent registry).
-    # Pass skill_engine so sub-agent OG tools are rebound to a role-scoped
-    # engine view, preventing sub-agents from reading scope=orchestrator nodes.
-    register_delegation_tools(
-        tool_registry,
-        runtime_gate,
-        relay_event,
-        vault,
-        job_queue=job_queue,
-        sub_agent_llm=sub_agent_client,
-        cost_tracker=cost_tracker,
-        skill_engine=skill_engine,
-    )
+    deps = _make_deps()
+    registrar = ToolRegistrar()
+    registration_results = registrar.install(TOOL_SPECS, deps)
+    browser_controller = registration_results.get("browser")
 
     # Register native capability tools lazily, with setup stubs for incomplete states.
     native_registration_count = 0
@@ -1439,14 +1476,16 @@ def boot_agent(
     # the static domain groups (e.g. schedule, sandbox, browser, workflow).
     skill_group_names = {node.name for node in skill_engine.get_all_nodes()}
     domain_groups = sorted(tool_registry.available_groups() - {"core"} - skill_group_names)
-    if domain_groups:
-        system_prompt += (
-            "\n--- OPTIONAL TOOL GROUPS (lazy-loaded) ---\n"
-            "To keep your context lean, only core tools are shown by default. These extra "
-            f"groups are available on demand: {', '.join(domain_groups)}.\n"
-            'Call use_tools(group="<name>") to activate a group for the rest of the turn. '
-            "load_skill(name=...) auto-activates that skill's own tools.\n"
-        )
+
+    # 5.5 Assemble the stable base system prompt via PromptComposer (single call site).
+    system_prompt = build_stable_base(
+        brain_text=brain_prompt,
+        skill_count=skill_count,
+        integration_count=total_tools,
+        permission_block=_permission_block,
+        capability_block=_capability_block,
+        tool_groups=list(domain_groups) if domain_groups else None,
+    )
 
     emit_runtime_event(
         BOOT_PROGRESS,
