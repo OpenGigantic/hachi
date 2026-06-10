@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from tokoboros.core.config_loader import load_effective_config, write_global_config
 from tokoboros.core.onboarding import OnboardingService
 from tokoboros.core.paths import TokoborosPaths
 
@@ -36,6 +37,31 @@ def test_apply_setup_rejects_invalid_provider_kind(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="provider.kind must be one of"):
         service.apply_setup(payload)
+
+
+def test_apply_setup_normalizes_stale_model_when_provider_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("TOKOBOROS_MODEL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    paths = _paths(tmp_path)
+    baseline = load_effective_config(paths=paths)
+    baseline.provider.kind = "openai-compatible"
+    baseline.provider.model = "gpt-4.1-mini"
+    write_global_config(baseline, paths=paths)
+
+    service = OnboardingService(paths=paths)
+    payload = _base_plan()
+    payload["answers"] = {"provider": {"kind": "anthropic", "model": "gpt-4.1-mini"}}
+
+    service.apply_setup(payload)
+
+    updated = load_effective_config(paths=paths)
+    assert updated.provider.kind == "anthropic"
+    assert updated.provider.model == "claude-haiku-4-5"
 
 
 def test_apply_setup_rejects_invalid_permission_tier(tmp_path: Path) -> None:

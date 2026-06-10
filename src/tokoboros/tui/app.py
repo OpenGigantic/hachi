@@ -603,7 +603,7 @@ class SetupWizardController:
     def select_tier(self, tier: TierName) -> None:
         self.selected_tier = tier
         self._apply_tier(tier)
-        self.answers.setdefault("tier", tier)
+        self.answers["tier"] = tier
 
     def step_index(self) -> int:
         return self._steps.index(self.current_step)
@@ -904,6 +904,14 @@ class SetupScreen(Screen):
                 return enabled if button_id.endswith("enable") else not enabled
         return False
 
+    def _sync_api_key_from_input(self, controller: SetupWizardController) -> None:
+        """Keep controller key state aligned with the current input widget value."""
+        try:
+            key_value = self.query_one("#setup-api-key", Input).value
+        except Exception:
+            return
+        controller.set_api_key(key_value)
+
     def render_step(self) -> None:
         controller = self._controller()
         if not controller:
@@ -956,6 +964,7 @@ class SetupScreen(Screen):
         key_input.display = show_key
         key_status.display = show_key
         if show_key:
+            self._sync_api_key_from_input(controller)
             ok, message = controller.provider_key_status()
             key_status.update(
                 Text(
@@ -981,6 +990,10 @@ class SetupScreen(Screen):
         controller = self._controller()
         if not controller:
             return
+
+        # Users often click Next/Finish without pressing Enter in the key field.
+        # Sync whatever is currently typed so validation/persistence sees it.
+        self._sync_api_key_from_input(controller)
 
         button_id = event.button.id or ""
 
@@ -1073,6 +1086,14 @@ class SetupScreen(Screen):
         if isinstance(app, TokoborosTextualApp):
             app.persist_setup_resume()
         self.render_step()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "setup-api-key":
+            return
+        controller = self._controller()
+        if controller is not None:
+            controller.set_api_key(event.value)
+            self.render_step()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "setup-api-key":
@@ -1754,11 +1775,49 @@ class TokoborosTextualApp(App[None]):
         """Create the setup wizard on demand so Setup works any time, not just
         during first-run onboarding."""
         if self._setup_controller is None:
-            self._setup_controller = SetupWizardController(
+            controller = SetupWizardController(
                 self._onboarding,
                 persisted_resume_json=self._hydrated_state.setup_resume_json,
             )
+            # When there is no resume blob (e.g. first open after a completed
+            # setup), pre-fill selections from the saved config so the user
+            # sees their current choices rather than blank defaults.
+            if not controller.answers:
+                self._seed_setup_controller_from_config(controller)
+            self._setup_controller = controller
         return self._setup_controller
+
+    def _seed_setup_controller_from_config(self, controller: SetupWizardController) -> None:
+        """Populate setup wizard answers from the current on-disk config."""
+        try:
+            from tokoboros.core.config_loader import load_effective_config
+
+            config = load_effective_config()
+        except Exception:
+            return
+
+        provider: dict[str, Any] = {}
+        if config.provider.kind:
+            provider["kind"] = config.provider.kind
+        if config.provider.model:
+            provider["model"] = config.provider.model
+        if config.provider.api_key_env:
+            provider["api_key_env"] = config.provider.api_key_env
+        if config.provider.base_url:
+            provider["base_url"] = config.provider.base_url
+        if provider:
+            controller.answers["provider"] = provider
+
+        if config.permissions.tier:
+            controller.answers["permission_tier"] = config.permissions.tier
+
+        controller.answers["memory"] = {
+            "enable_session_history": config.memory.enable_session_history,
+            "enable_semantic_memory": config.memory.enable_semantic_memory,
+        }
+
+        if provider:
+            controller.can_resume = True
 
     def active_agent(self) -> AgentSession | None:
         return self._agent
@@ -2208,10 +2267,24 @@ class TokoborosTextualApp(App[None]):
         self._boot_error = error_text
 
         if error_text:
-            self.notify(f"Boot failed: {error_text}", severity="error", timeout=8)
-            screen = self._current_screen()
-            if isinstance(screen, SessionScreen):
-                screen.ingest_runtime_event("boot.failed", {"error": error_text})
+            _KEY_HINTS = ("api_key", "API_KEY", "must be provided", "set in the environment")
+            is_missing_key = any(hint in error_text for hint in _KEY_HINTS)
+            if is_missing_key:
+                friendly = (
+                    "Provider API key is missing or unresolvable. "
+                    "Press Ctrl+7 (or /setup) to open Setup and add your key."
+                )
+                self.notify(friendly, severity="warning", timeout=10)
+                screen = self._current_screen()
+                if isinstance(screen, SessionScreen):
+                    screen.ingest_runtime_event("boot.failed", {"error": friendly})
+                # Offer Setup so the user can fix this without restarting.
+                self.call_after_refresh(self.ensure_setup_controller)
+            else:
+                self.notify(f"Boot failed: {error_text}", severity="error", timeout=8)
+                screen = self._current_screen()
+                if isinstance(screen, SessionScreen):
+                    screen.ingest_runtime_event("boot.failed", {"error": error_text})
             return
 
         self.notify("Tokoboros is online", timeout=3)
@@ -2434,9 +2507,10 @@ class TokoborosTextualApp(App[None]):
         lines = ["Recent sessions (resume one with:  tokoboros -r):"]
         for index, item in enumerate(sessions, start=1):
             started = str(item.get("started_at", ""))[:19].replace("T", " ")
+            title = item.get("title") or "(untitled)"
             lines.append(
                 f"  {index}. {started}  ·  {item.get('total_turns', 0)} turns"
-                f"  ·  {item.get('model', '?')}"
+                f"  ·  {item.get('model', '?')}  ·  {title}"
             )
         self._session_note("\n".join(lines))
 
@@ -2605,15 +2679,30 @@ class TokoborosTextualApp(App[None]):
             self._session_note("No schedules configured. Add one: tokoboros schedule add")
             return
 
+        from datetime import UTC, datetime
+
+        local_tz = datetime.now(UTC).astimezone().tzinfo
+
+        def _fmt_next(next_run_iso: str | None) -> str:
+            if not next_run_iso:
+                return "(none)"
+            try:
+                dt = datetime.fromisoformat(next_run_iso)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=UTC)
+                local_dt = dt.astimezone(local_tz)
+                return local_dt.strftime("%Y-%m-%d %H:%M %Z")
+            except Exception:
+                return str(next_run_iso)[:16].replace("T", " ")
+
         lines = [f"{len(schedules)} schedule(s):"]
         for s in schedules[:10]:
             state = "✓" if getattr(s, "enabled", True) else "⏸"
             kind = getattr(s, "kind", None)
             kind_str = kind.value if kind is not None else "?"
-            next_run = str(getattr(s, "next_run", "") or "")[:16].replace("T", " ")
             lines.append(
                 f"  {state} [{kind_str}] {s.name!r}"
-                f"  → next: {next_run or '(none)'}"
+                f"  → next: {_fmt_next(getattr(s, 'next_run', None))}"
             )
         if len(schedules) > 10:
             lines.append(f"  … and {len(schedules) - 10} more")

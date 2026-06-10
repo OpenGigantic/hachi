@@ -43,13 +43,17 @@ class _FakeConfig:
 def test_update_provider_accepts_supported_kinds(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
+    cfg.provider.kind = "openai-compatible"
+    cfg.provider.model = "gpt-4.1-mini"
 
     monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: cfg)
     monkeypatch.setattr("tokoboros.cli.main.write_global_config", lambda _config: None)
 
-    anthropic = runtime.update_provider({"provider": {"kind": "anthropic", "model": "a"}})
+    anthropic = runtime.update_provider(
+        {"provider": {"kind": "anthropic", "model": "gpt-4.1-mini"}}
+    )
     assert anthropic["provider"]["kind"] == "anthropic"
-    assert anthropic["provider"]["model"] == "a"
+    assert anthropic["provider"]["model"] == "claude-haiku-4-5"
 
     openai = runtime.update_provider(
         {"provider": {"kind": "openai-compatible", "model": "gpt-4.1-mini"}}

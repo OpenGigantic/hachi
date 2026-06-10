@@ -224,7 +224,7 @@ def test_create_recurring_event_sends_rrule() -> None:
         {"htmlLink": "https://cal.example.com/e/1"},
     )
     result = _cal(client).create_recurring_event(
-        summary="Weekly Standup",
+        title="Weekly Standup",
         start_time_iso="2026-06-09T10:00:00+05:30",
         end_time_iso="2026-06-09T10:30:00+05:30",
         recurrence_rule="RRULE:FREQ=WEEKLY;BYDAY=MO",

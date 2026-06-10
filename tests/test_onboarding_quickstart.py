@@ -80,6 +80,13 @@ def test_validate_provider_anthropic_with_key(tmp_path: Path, monkeypatch) -> No
 
 def test_validate_provider_anthropic_missing_key(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # Stub the secret store so real keyring entries don't interfere with this test.
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "tokoboros.core.secret_store.create_default_secret_store",
+        lambda *_a, **_kw: SimpleNamespace(get=lambda _n: None),
+    )
     ok, msg = _service(tmp_path).validate_provider(kind="anthropic")
     assert not ok
     assert "ANTHROPIC_API_KEY" in msg  # actionable guidance names the env var

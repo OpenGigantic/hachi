@@ -16,7 +16,13 @@ def _paths(tmp_path: Path) -> TokoborosPaths:
     )
 
 
-def test_config_precedence_layers(monkeypatch, tmp_path: Path) -> None:
+def test_config_precedence_explicit_provider_wins_over_env(monkeypatch, tmp_path: Path) -> None:
+    """Explicit provider.kind in the config file must not be overridden by env vars.
+
+    The old behaviour (env always won) caused bug reports where switching from
+    OpenAI → Anthropic in the setup wizard had no effect while OPENAI_API_KEY
+    was still present in the environment.
+    """
     paths = _paths(tmp_path)
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.legacy_dir.mkdir(parents=True, exist_ok=True)
@@ -53,8 +59,30 @@ model = "project-model"
         paths=paths,
     )
 
-    assert cfg.provider.kind == "openai-compatible"
+    # Explicit config kind must survive; CLI model override must still apply.
+    assert cfg.provider.kind == "anthropic"
     assert cfg.provider.model == "cli-model"
+
+
+def test_config_precedence_env_auto_detects_without_explicit_config(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """When no config file has been written, env vars auto-detect the provider."""
+    paths = _paths(tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.legacy_dir.mkdir(parents=True, exist_ok=True)
+
+    project_dir = tmp_path / "project"
+    (project_dir / ".tokoboros").mkdir(parents=True, exist_ok=True)
+    (project_dir / ".env").write_text("OPENAI_API_KEY=testkey\n", encoding="utf-8")
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    cfg = load_effective_config(project_dir=project_dir, paths=paths)
+
+    # No explicit config → env-var detection should kick in.
+    assert cfg.provider.kind == "openai-compatible"
 
 
 def test_legacy_json_import_when_no_toml(tmp_path: Path) -> None:
@@ -105,3 +133,27 @@ def test_env_file_with_malformed_quotes_is_tolerated(monkeypatch, tmp_path: Path
 
     assert cfg.provider.kind == "openai-compatible"
     assert cfg.provider.model == "env-model"
+
+
+def test_openai_key_env_does_not_reset_existing_openai_model(monkeypatch, tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.legacy_dir.mkdir(parents=True, exist_ok=True)
+
+    (paths.config_dir / "settings.toml").write_text(
+        """
+[provider]
+kind = "openai-compatible"
+model = "gpt-5.4-nano"
+api_key_env = "OPENAI_API_KEY"
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    cfg = load_effective_config(paths=paths)
+
+    assert cfg.provider.kind == "openai-compatible"
+    assert cfg.provider.model == "gpt-5.4-nano"
