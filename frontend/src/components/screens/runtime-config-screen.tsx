@@ -8,6 +8,13 @@ import { updateGatewayProvider, validateGatewayProvider } from "@/lib/api/tokobo
 import { useGatewayConfigQuery, useGatewayModelsQuery } from "@/hooks/use-gateway-queries";
 import { Skeleton } from "@/components/ui/skeleton";
 
+const PROVIDER_DEFAULT_MODELS: Record<ProviderFormValues["providerKind"], string> = {
+  anthropic: "claude-haiku-4-5",
+  "openai-compatible": "gpt-4o-mini",
+  openrouter: "openai/gpt-4o-mini",
+  ollama: "llama3.1",
+};
+
 const providerSchema = z.object({
   providerKind: z.enum(["anthropic", "openai-compatible", "openrouter", "ollama"]),
   model: z.string().min(1, "Model is required"),
@@ -45,6 +52,8 @@ export function RuntimeConfigScreen() {
     },
     mode: "onChange",
   });
+  const providerKind = form.watch("providerKind");
+  const providerKindField = form.register("providerKind");
 
   useEffect(() => {
     if (!configQuery.data) {
@@ -76,10 +85,24 @@ export function RuntimeConfigScreen() {
   );
 
   const filteredModels = useMemo(() => {
-    const kind = form.watch("providerKind");
-    const subset = models.filter((item) => item.provider === kind);
+    const subset = models.filter((item) => item.provider === providerKind);
     return subset.length > 0 ? subset : models;
-  }, [form, models]);
+  }, [models, providerKind]);
+
+  useEffect(() => {
+    const currentModel = form.getValues("model");
+    const available = filteredModels.map((item) => item.id);
+    if (available.length === 0) {
+      return;
+    }
+
+    if (!available.includes(currentModel)) {
+      form.setValue("model", PROVIDER_DEFAULT_MODELS[providerKind] ?? available[0], {
+        shouldDirty: true,
+        shouldValidate: true,
+      });
+    }
+  }, [filteredModels, form, providerKind]);
 
   async function save(values: ProviderFormValues) {
     try {
@@ -154,7 +177,15 @@ export function RuntimeConfigScreen() {
         <label className="text-xs text-[#94adcd]">
           Provider
           <select
-            {...form.register("providerKind")}
+            {...providerKindField}
+            onChange={(event) => {
+              providerKindField.onChange(event);
+              const kind = event.target.value as ProviderFormValues["providerKind"];
+              form.setValue("model", PROVIDER_DEFAULT_MODELS[kind], {
+                shouldDirty: true,
+                shouldValidate: true,
+              });
+            }}
             className="mt-1 w-full rounded border border-[#304a65] bg-[#070f18] p-2 text-sm text-[#d5e7ff]"
           >
             <option value="anthropic">anthropic</option>

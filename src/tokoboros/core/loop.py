@@ -436,6 +436,15 @@ class ExecutionLoop:
                     if cleared:
                         self.on_event("tool_results_cleared", {"count": cleared})
 
+                # Repair any orphaned tool_use blocks before sending to the API.
+                # Edge cases (mid-loop errors, compaction races) can leave tool_use
+                # blocks without a matching tool_result, causing Anthropic 400s.
+                _repair = getattr(self.memory, "repair_tool_pairs", None)
+                if callable(_repair):
+                    fixed = _repair()
+                    if fixed:
+                        self.on_event("history_repaired", {"orphaned_tool_uses": fixed})
+
                 self.on_event("thinking", {"iteration": iterations})
 
                 # Build the system prompt split into a stable cacheable prefix and a

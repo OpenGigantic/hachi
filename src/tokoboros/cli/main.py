@@ -264,6 +264,8 @@ class _InProcessGatewayRuntime:
             raise GatewayProtocolError("provider payload must be an object")
 
         config = load_effective_config()
+        current_provider_kind = str(config.provider.kind).strip()
+        current_provider_model = str(config.provider.model).strip()
         kind = provider.get("kind")
         model = provider.get("model")
         base_url = provider.get("base_url")
@@ -282,7 +284,23 @@ class _InProcessGatewayRuntime:
             model_text = str(model).strip()
             if not model_text:
                 raise GatewayProtocolError("provider.model cannot be empty")
-            config.provider.model = model_text
+            from tokoboros.core.onboarding import resolve_provider_model
+
+            config.provider.model = resolve_provider_model(
+                str(config.provider.kind),
+                model_text,
+                previous_kind=current_provider_kind,
+                previous_model=current_provider_model,
+            )
+        elif kind is not None and str(config.provider.kind).strip() != current_provider_kind:
+            from tokoboros.core.onboarding import resolve_provider_model
+
+            config.provider.model = resolve_provider_model(
+                str(config.provider.kind),
+                None,
+                previous_kind=current_provider_kind,
+                previous_model=current_provider_model,
+            )
 
         if base_url is not None:
             config.provider.base_url = str(base_url).strip() or None

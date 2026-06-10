@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import tokoboros.tui.app as app_mod
 from tokoboros.core.config_loader import load_effective_config
 from tokoboros.core.onboarding import OnboardingService
 from tokoboros.core.paths import TokoborosPaths
-from tokoboros.tui.app import SetupWizardController
+from tokoboros.tui.app import SetupScreen, SetupWizardController
 
 
 def _paths(tmp_path: Path) -> TokoborosPaths:
@@ -64,6 +65,11 @@ def test_provider_key_status_ok_with_pasted_key(tmp_path: Path, monkeypatch) -> 
 
 def test_provider_key_status_missing_without_key(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # Also ensure the secret store (keyring) returns nothing for this test.
+    monkeypatch.setattr(
+        "tokoboros.core.secret_store.create_default_secret_store",
+        lambda *_a, **_kw: SimpleNamespace(get=lambda _n: None),
+    )
     ctrl = _controller(tmp_path)
     ctrl.set_answer("provider", {"kind": "anthropic", "api_key_env": "ANTHROPIC_API_KEY"})
     ok, msg = ctrl.provider_key_status()
@@ -115,3 +121,20 @@ def test_persist_skips_keyless_provider(tmp_path: Path, monkeypatch) -> None:
     )
     ctrl._persist_api_key_if_pasted()  # must not touch the secret store
     assert "api_key_ref" not in ctrl.answers["provider"]
+
+
+def test_setup_screen_input_change_updates_controller_key(tmp_path: Path, monkeypatch) -> None:
+    ctrl = _controller(tmp_path)
+    ctrl.set_answer("provider", {"kind": "openai-compatible", "api_key_env": "OPENAI_API_KEY"})
+    screen = SetupScreen()
+
+    monkeypatch.setattr(screen, "_controller", lambda: ctrl)
+    monkeypatch.setattr(screen, "render_step", lambda: None)
+
+    event = SimpleNamespace(
+        input=SimpleNamespace(id="setup-api-key"),
+        value="sk-openai-test123",
+    )
+    screen.on_input_changed(event)  # type: ignore[arg-type]
+
+    assert ctrl.pasted_key == "sk-openai-test123"
