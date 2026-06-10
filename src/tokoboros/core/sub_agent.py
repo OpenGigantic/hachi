@@ -32,11 +32,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tokoboros.core.llm import AnthropicClient, BaseLLMClient, Message
 from tokoboros.core.loop import AgentException, ExecutionLoop, ToolRegistry
 from tokoboros.og_engine.parser import OGFile, parse_og_file
+
+if TYPE_CHECKING:
+    from tokoboros.core.conversation_memory import IterationState
 
 logger = logging.getLogger(__name__)
 
@@ -133,15 +136,19 @@ class SubAgentMemory:
     around a message list. Sub-agents are short-lived and disposable — they
     don't need any of the sophisticated memory management features.
 
-    Implements the exact interface consumed by ExecutionLoop:
+    Implements the ConversationMemory protocol consumed by ExecutionLoop:
         - history (property)
+        - active_skill (property)
         - add_message(msg)
+        - prepare_for_turn() -> IterationState
+        - complete_task(user_query, result)
+        - signal_skill_switch(name)
+
+    Legacy attributes kept for backward compatibility:
         - get_context_header() -> str
         - apply_pending_compaction() -> bool
         - sync_turn(query, response)
         - complete_current_task(summary)
-        - signal_skill_switch(name)
-        - active_skill (property)
         - _last_user_query (attribute)
     """
 
@@ -187,6 +194,18 @@ class SubAgentMemory:
     def signal_skill_switch(self, new_skill_name: str) -> None:
         """Sub-agents do not switch skills. No-op."""
         self._active_skill = new_skill_name
+
+    def prepare_for_turn(self) -> IterationState:
+        """Sub-agents perform no housekeeping — return a zero-state snapshot."""
+        from tokoboros.core.conversation_memory import IterationState
+
+        return IterationState(
+            compacted=False, old_skill="", tool_results_cleared=0, history_repaired=0
+        )
+
+    def complete_task(self, user_query: str, result: str) -> None:
+        """Sub-agents do not maintain a task ledger or sync facts. No-op."""
+        pass
 
 
 # ==========================================

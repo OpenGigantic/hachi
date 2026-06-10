@@ -8,7 +8,7 @@ small results, or non-tool_result content.
 
 from __future__ import annotations
 
-import tokoboros.core.loop as loop_mod
+import tokoboros.core.memory as memory_mod
 from tokoboros.core.llm import LLMResponse, Message
 from tokoboros.core.loop import ExecutionLoop, ToolRegistry
 from tokoboros.core.memory import _CLEARED_TOOL_RESULT, MemoryManager
@@ -123,7 +123,7 @@ class _ScriptedLLM:
 
 
 def test_loop_clears_when_over_threshold(monkeypatch) -> None:
-    monkeypatch.setattr(loop_mod, "_TOOL_RESULT_CLEAR_TOKENS", 100)  # tiny → triggers
+    monkeypatch.setattr(memory_mod, "_TOOL_RESULT_CLEAR_TOKENS", 100)  # tiny → triggers
     big = "x" * 2000
     history = [_tool_result_msg("t1", big)] + [Message(role="user", content="q")] * 7
     mgr = _mgr_with(history)
@@ -144,7 +144,7 @@ def test_loop_clears_when_over_threshold(monkeypatch) -> None:
 
 
 def test_loop_does_not_clear_when_under_threshold(monkeypatch) -> None:
-    monkeypatch.setattr(loop_mod, "_TOOL_RESULT_CLEAR_TOKENS", 1_000_000)  # never triggers
+    monkeypatch.setattr(memory_mod, "_TOOL_RESULT_CLEAR_TOKENS", 1_000_000)  # never triggers
     big = "x" * 2000
     history = [_tool_result_msg("t1", big)] + [Message(role="user", content="q")] * 7
     mgr = _mgr_with(history)
