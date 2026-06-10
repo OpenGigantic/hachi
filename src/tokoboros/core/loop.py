@@ -30,11 +30,6 @@ _RETRYABLE_HINTS = ("overloaded", "rate limit", "timeout", "timed out", "tempora
 _MAX_LLM_RETRIES = 3
 _LLM_RETRY_BASE_DELAY = 1.0
 
-# Estimated-token threshold above which the loop losslessly clears large, re-fetchable
-# tool outputs from older turns (see MemoryManager.clear_stale_tool_results). Set high
-# so ordinary short conversations are never touched — only genuinely large contexts.
-_TOOL_RESULT_CLEAR_TOKENS = 12000
-
 
 def _is_retryable_llm_error(exc: Exception) -> bool:
     """Best-effort detection of transient LLM/provider errors (provider-agnostic).
@@ -282,8 +277,11 @@ class ExecutionLoop:
             # (already includes time header, memory snapshot, recall, and base prompt)
             return self._current_turn_context.system_prompt
 
-        # Fallback for compatibility: build from base_system_prompt + task ledger
-        context_header = self.memory.get_context_header()
+        # Fallback for compatibility: build from base_system_prompt + task ledger.
+        # get_context_header() is a legacy helper not in the ConversationMemory Protocol;
+        # guard with getattr so minimal backends (tests, sub-agents) remain unaffected.
+        _get_header = getattr(self.memory, "get_context_header", None)
+        context_header = _get_header() if callable(_get_header) else ""
         if context_header:
             return f"{self.base_system_prompt}\n\n{context_header}"
         return self.base_system_prompt
@@ -380,6 +378,15 @@ class ExecutionLoop:
         prev_context = self._current_turn_context
         self._current_turn_context = turn_context
 
+        # Capture the user query for complete_task() calls later in the turn.
+        # TurnContext is the authoritative source when present; fall back to the
+        # memory attribute for callers that don't supply a TurnContext (sub-agents,
+        # tests, legacy code paths).
+        if turn_context is not None:
+            user_input_for_turn: str = turn_context.user_input
+        else:
+            user_input_for_turn = getattr(self.memory, "_last_user_query", "")
+
         # Only "core" tools are sent until the model unlocks groups this turn.
         self._active_groups = set()
 
@@ -406,35 +413,24 @@ class ExecutionLoop:
                 budget_reason = self._budget_exceeded()
                 if budget_reason:
                     self.on_event("budget_exceeded", {"reason": budget_reason})
-                    self.memory.complete_current_task(f"Stopped: {budget_reason}")
+                    self.memory.complete_task(user_input_for_turn, f"Stopped: {budget_reason}")
                     return f"[BUDGET LIMIT REACHED] {budget_reason}"
 
-                # Apply any deferred compaction from a previous skill switch.
-                # This is the SAFE moment — all tool_use/tool_result pairs are complete.
-                if self.memory.apply_pending_compaction():
+                # Apply compaction, clearing, and repair — all behind the memory seam.
+                iter_state = self.memory.prepare_for_turn()
+                if iter_state.compacted:
                     self.on_event(
                         "compaction",
-                        {
-                            "old_skill": getattr(self.memory, "_pending_old_skill", "unknown"),
-                            "new_skill": self.memory.active_skill,
-                        },
+                        {"old_skill": iter_state.old_skill, "new_skill": self.memory.active_skill},
                     )
-
-                # Lossless context reclamation: once history grows large, replace big
-                # re-fetchable tool outputs in older turns with a short placeholder.
-                # Keeps every tool_use/tool_result pair intact (no API 400) and costs
-                # no tokens, running BEFORE the lossy LLM-summary compaction. Guarded
-                # by getattr so alternate memory backends without it are unaffected.
-                _estimate = getattr(self.memory, "estimate_token_count", None)
-                _clear = getattr(self.memory, "clear_stale_tool_results", None)
-                if (
-                    callable(_estimate)
-                    and callable(_clear)
-                    and _estimate() > _TOOL_RESULT_CLEAR_TOKENS
-                ):
-                    cleared = _clear()
-                    if cleared:
-                        self.on_event("tool_results_cleared", {"count": cleared})
+                if iter_state.tool_results_cleared:
+                    self.on_event(
+                        "tool_results_cleared", {"count": iter_state.tool_results_cleared}
+                    )
+                if iter_state.history_repaired:
+                    self.on_event(
+                        "history_repaired", {"orphaned_tool_uses": iter_state.history_repaired}
+                    )
 
                 # Repair any orphaned tool_use blocks before sending to the API.
                 # Edge cases (mid-loop errors, compaction races) can leave tool_use
@@ -475,7 +471,7 @@ class ExecutionLoop:
                 turn_budget_reason = self._turn_budget_exceeded()
                 if turn_budget_reason:
                     self.on_event("budget_exceeded", {"reason": turn_budget_reason})
-                    self.memory.complete_current_task(f"Stopped: {turn_budget_reason}")
+                    self.memory.complete_task(user_input_for_turn, f"Stopped: {turn_budget_reason}")
                     return f"[BUDGET LIMIT REACHED] {turn_budget_reason}"
 
                 # Record the assistant's generation in history
@@ -497,12 +493,8 @@ class ExecutionLoop:
 
                 # 2. If no tools were called, the agent has finished its task
                 if not response.tool_calls:
-                    # Auto-sync: extract facts from this turn in the background
-                    self.memory.sync_turn(self.memory._last_user_query, response.content or "")
-                    # Log the completed task to the ledger
-                    self.memory.complete_current_task(
-                        response.content[:100] if response.content else "Task completed"
-                    )
+                    # Sync facts and log the completed task via the memory seam.
+                    self.memory.complete_task(user_input_for_turn, response.content or "")
                     return response.content
 
                 # 3. Execute requested tools and detect skill switches
@@ -590,7 +582,7 @@ class ExecutionLoop:
                     self.memory.add_message(Message(role="user", content=tool_results))
 
                 if suspend_reason:
-                    self.memory.complete_current_task(f"Suspended: {suspend_reason}")
+                    self.memory.complete_task(user_input_for_turn, f"Suspended: {suspend_reason}")
                     return f"[WORKFLOW SUSPENDED] {suspend_reason}"
 
             raise AgentException(
