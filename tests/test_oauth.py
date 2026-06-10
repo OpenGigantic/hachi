@@ -87,16 +87,18 @@ def test_google_browser_flow_fails_closed_when_consent_is_cancelled(monkeypatch)
 
 def test_google_token_refresh_failure_propagates(monkeypatch) -> None:
     class _FailingResponse:
-        def raise_for_status(self) -> None:
-            raise RuntimeError("refresh failed")
+        status_code = 400
+        is_success = False
+        text = '{"error": "invalid_grant"}'
 
         def json(self):
-            return {}
+            return {"error": "invalid_grant", "error_description": "Token has been expired"}
 
     monkeypatch.setattr("tokoboros.core.oauth.GOOGLE_CLIENT_ID", "client-id")
     monkeypatch.setattr("tokoboros.core.oauth.httpx.post", lambda *_a, **_k: _FailingResponse())
 
     manager = OAuthManager(secret_store=_MemorySecretStore())
 
-    with pytest.raises(RuntimeError, match="refresh failed"):
+    # The real Google error (invalid_grant) is now surfaced instead of a generic 400.
+    with pytest.raises(RuntimeError, match="invalid_grant: Token has been expired"):
         manager._refresh_google_token({"refresh_token": "r1", "scope": "openid"})

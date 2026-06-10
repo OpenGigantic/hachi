@@ -84,52 +84,72 @@ def _read_env_file(project_dir: Path | None) -> dict[str, str]:
     return values
 
 
-def _env_overrides(project_dir: Path | None) -> dict[str, Any]:
+def _env_overrides(
+    project_dir: Path | None,
+    base_provider: dict[str, Any] | None = None,
+    *,
+    has_explicit_provider: bool = False,
+) -> dict[str, Any]:
     env_file = _read_env_file(project_dir)
+    current_provider = dict(base_provider or {})
+    base_kind = str(current_provider.get("kind", "")).strip().lower()
 
     def env_get(name: str) -> str | None:
         return os.environ.get(name) or env_file.get(name)
 
     result: dict[str, Any] = {}
 
-    if env_get("ANTHROPIC_API_KEY"):
-        result = _deep_merge(
-            result,
-            {
-                "provider": {
-                    "kind": "anthropic",
-                    "api_key_env": "ANTHROPIC_API_KEY",
-                    "model": env_get("TOKOBOROS_MODEL") or "claude-haiku-4-5",
-                }
-            },
-        )
+    # When the user has written an explicit provider choice to their config file,
+    # honour it — don't let env-var auto-detection override it.  Only
+    # TOKOBOROS_MODEL is still respected as an explicit per-run override.
+    if has_explicit_provider:
+        explicit_model = env_get("TOKOBOROS_MODEL")
+        if explicit_model:
+            result = _deep_merge(result, {"provider": {"model": explicit_model}})
+    else:
+        has_anthropic = bool(env_get("ANTHROPIC_API_KEY"))
+        openai_key = env_get("OPENAI_API_KEY")
+        openai_base = env_get("OPENAI_BASE_URL")
+        has_openai = bool(openai_key or openai_base)
+        has_ollama = bool(env_get("OLLAMA_HOST"))
 
-    openai_key = env_get("OPENAI_API_KEY")
-    openai_base = env_get("OPENAI_BASE_URL")
-    if openai_key or openai_base:
-        result = _deep_merge(
-            result,
-            {
-                "provider": {
-                    "kind": "openai-compatible",
-                    "api_key_env": "OPENAI_API_KEY",
-                    "base_url": openai_base,
-                    "model": env_get("OPENAI_MODEL") or "gpt-4.1-mini",
-                }
-            },
-        )
+        if has_anthropic:
+            provider_payload: dict[str, Any] = {
+                "kind": "anthropic",
+                "api_key_env": "ANTHROPIC_API_KEY",
+            }
+            explicit_model = env_get("TOKOBOROS_MODEL")
+            if explicit_model:
+                provider_payload["model"] = explicit_model
+            elif not (has_openai or has_ollama) and base_kind != "anthropic":
+                provider_payload["model"] = "claude-haiku-4-5"
+            result = _deep_merge(result, {"provider": provider_payload})
 
-    if env_get("OLLAMA_HOST"):
-        result = _deep_merge(
-            result,
-            {
-                "provider": {
-                    "kind": "ollama",
-                    "base_url": env_get("OLLAMA_HOST"),
-                    "model": env_get("OLLAMA_MODEL") or "llama3.1:8b",
-                }
-            },
-        )
+        if has_openai:
+            provider_payload = {
+                "kind": "openai-compatible",
+                "api_key_env": "OPENAI_API_KEY",
+            }
+            if openai_base:
+                provider_payload["base_url"] = openai_base
+            explicit_model = env_get("OPENAI_MODEL")
+            if explicit_model:
+                provider_payload["model"] = explicit_model
+            elif not has_ollama and base_kind != "openai-compatible":
+                provider_payload["model"] = "gpt-4.1-mini"
+            result = _deep_merge(result, {"provider": provider_payload})
+
+        if has_ollama:
+            provider_payload = {
+                "kind": "ollama",
+                "base_url": env_get("OLLAMA_HOST"),
+            }
+            explicit_model = env_get("OLLAMA_MODEL")
+            if explicit_model:
+                provider_payload["model"] = explicit_model
+            elif base_kind != "ollama":
+                provider_payload["model"] = "llama3.1:8b"
+            result = _deep_merge(result, {"provider": provider_payload})
 
     if env_get("TOKOBOROS_PERMISSION_TIER"):
         result = _deep_merge(
@@ -168,7 +188,18 @@ def load_effective_config(
         global_config = _legacy_json_as_config(paths.legacy_config_json)
 
     project = _project_config(project_dir)
-    env = _env_overrides(project_dir)
+    pre_env = _deep_merge(_deep_merge(defaults, global_config), project)
+    # Detect whether the user has explicitly written a provider kind to their
+    # config files.  When true, env-var auto-detection must not override it.
+    has_explicit_provider = bool(
+        global_config.get("provider", {}).get("kind")
+        or project.get("provider", {}).get("kind")
+    )
+    env = _env_overrides(
+        project_dir,
+        base_provider=pre_env.get("provider", {}),
+        has_explicit_provider=has_explicit_provider,
+    )
     cli = cli_overrides or {}
 
     merged = defaults
