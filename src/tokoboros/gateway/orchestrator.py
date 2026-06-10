@@ -14,7 +14,6 @@ Phase 1 Update (Runtime Correctness):
     - Durable job queue for background work (replaces daemon threads)
 """
 
-import datetime
 import importlib.util
 import os
 import threading
@@ -40,6 +39,7 @@ from tokoboros.core.permissions import (
     PermissionGate,
     PermissionRequest,
 )
+from tokoboros.core.prompt_composer import build_stable_base
 from tokoboros.core.rest_adapter import UniversalRestAdapter
 from tokoboros.core.runtime_events import (
     BOOT_COMPLETE,
@@ -786,22 +786,6 @@ class AgentSession:
     # Chat Entry Point
     # ==========================================
 
-    @staticmethod
-    def _build_time_header() -> str:
-        """Generate the dynamic time block (changes every turn — NOT cached)."""
-        local_dt = datetime.datetime.now().astimezone()
-        current_time = local_dt.strftime("%A, %Y-%m-%d %H:%M:%S")
-        tz_offset = local_dt.strftime("%z")
-        tz_fmt = f"{tz_offset[:3]}:{tz_offset[3:]}" if len(tz_offset) == 5 else tz_offset
-
-        return (
-            f"--- CURRENT TIME AND DATE ---\n"
-            f"The current local time is: {current_time}\n"
-            f"Your Local Timezone Offset is: {tz_fmt}\n"
-            f"Use this context to resolve relative times like 'today' or 'tomorrow', "
-            f"and ALWAYS append the timezone offset when creating ISO strings.\n\n"
-        )
-
     def chat(self, user_input: str) -> str:  # always returns str, never None
         """Send a message to the agent and trigger the autonomous loop.
 
@@ -1205,44 +1189,11 @@ def boot_agent(
         },
     )
 
-    # 5. Build the base system prompt
-    system_prompt = brain_prompt
-
+    # 5. Collect stable-base ingredients (prompt assembled after tool registration below)
     total_tools = integration_count + mcp_tool_count
-
-    if skill_count > 0:
-        system_prompt += (
-            "\n\n--- IMPORTANT: ObjectGraph Skills Available (3-pass loading) ---\n"
-            f"You have {skill_count} skill(s) loaded from .og files. Read them in three passes "
-            "so you only spend tokens on what you actually need:\n"
-            "1. `search_skills` (Pass 1) — ALWAYS call first to find relevant skills by keyword.\n"
-            "2. `peek_skill` (Pass 2) — read the candidates' compressed summaries cheaply to pick "
-            "the right one; don't load blind.\n"
-            "3. `load_skill` (Pass 3) — load the chosen skill's full instructions (optionally "
-            "narrowing to specific `blocks`), then follow them precisely.\n"
-            "If a skill has ASSERTIONS, you MUST run each assertion command and verify it passes "
-            "before continuing.\n"
-        )
-
-    if total_tools > 0:
-        system_prompt += (
-            "\n--- IMPORTANT: Live Service Integrations Active ---\n"
-            f"You have {total_tools} live service tool(s) connected.\n"
-            "These are REAL tools with persistent connections (e.g., email, calendar, APIs).\n"
-            "Use them directly when the user's request matches their purpose.\n"
-            "Do NOT write scripts or use run_terminal_command for tasks these tools handle.\n"
-        )
-
-    # 5.5 Inject Permission Context (tells the LLM its boundaries upfront)
-    system_prompt += runtime_gate.get_system_prompt_injection()
-
+    _permission_block = runtime_gate.get_system_prompt_injection()
     capability_snapshot = capability_registry.status_snapshot()
-    if capability_snapshot:
-        system_prompt += (
-            "\n--- OPTIONAL CAPABILITIES ---\n"
-            "Only use tools from capabilities that are enabled and configured.\n"
-            f"Status: {capability_snapshot}\n"
-        )
+    _capability_block = str(capability_snapshot) if capability_snapshot else ""
 
     emit_runtime_event(
         BOOT_PROGRESS,
@@ -1439,14 +1390,16 @@ def boot_agent(
     # the static domain groups (e.g. schedule, sandbox, browser, workflow).
     skill_group_names = {node.name for node in skill_engine.get_all_nodes()}
     domain_groups = sorted(tool_registry.available_groups() - {"core"} - skill_group_names)
-    if domain_groups:
-        system_prompt += (
-            "\n--- OPTIONAL TOOL GROUPS (lazy-loaded) ---\n"
-            "To keep your context lean, only core tools are shown by default. These extra "
-            f"groups are available on demand: {', '.join(domain_groups)}.\n"
-            'Call use_tools(group="<name>") to activate a group for the rest of the turn. '
-            "load_skill(name=...) auto-activates that skill's own tools.\n"
-        )
+
+    # 5.5 Assemble the stable base system prompt via PromptComposer (single call site).
+    system_prompt = build_stable_base(
+        brain_text=brain_prompt,
+        skill_count=skill_count,
+        integration_count=total_tools,
+        permission_block=_permission_block,
+        capability_block=_capability_block,
+        tool_groups=list(domain_groups) if domain_groups else None,
+    )
 
     emit_runtime_event(
         BOOT_PROGRESS,
