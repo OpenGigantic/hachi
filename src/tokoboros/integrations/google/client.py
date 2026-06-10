@@ -76,11 +76,48 @@ class GoogleHTTPClient:
                 wait = int(response.headers.get("Retry-After", "5"))
                 time.sleep(min(wait, self._MAX_WAIT_SECONDS))
                 continue
+            if response.status_code == 403:
+                self._raise_forbidden(url, response)
             response.raise_for_status()
             return response
         # Reached only when all retries were exhausted on a retryable status.
         response.raise_for_status()
         return response
+
+    @staticmethod
+    def _raise_forbidden(url: str, response: httpx.Response) -> None:
+        """Raise a human-readable error for 403 responses.
+
+        A 403 from the Google API almost always means the API is not enabled
+        in the Cloud project, not an OAuth scope problem.
+        """
+        detail = ""
+        try:
+            body = response.json()
+            err = body.get("error", {})
+            detail = err.get("message", "") if isinstance(err, dict) else str(err)
+        except Exception:
+            detail = response.text.strip()
+
+        # Detect "API not enabled" specifically — it has a consistent message pattern
+        api_name = url.split("/")[1] if "/" in url else url
+        if "has not been used" in detail or "disabled" in detail or "enable" in detail.lower():
+            hint = (
+                f" — the {api_name} API is not enabled for your Google Cloud project. "
+                "Go to https://console.cloud.google.com/apis/library, search for the API, "
+                "and click Enable."
+            )
+        else:
+            hint = (
+                " — check that the API is enabled at https://console.cloud.google.com/apis/library "
+                "and that your OAuth scopes are correct."
+            )
+
+        raise PermissionError(
+            f"Google API returned 403 Forbidden for {url}"
+            + (f": {detail}" if detail else "")
+            + hint
+        )
 
     def get(self, endpoint: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         """Executes an authenticated GET request."""

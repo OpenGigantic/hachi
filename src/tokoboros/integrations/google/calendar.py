@@ -13,9 +13,20 @@ class CalendarService(GoogleService):
     def required_scopes(self) -> list[str]:
         return ["https://www.googleapis.com/auth/calendar.events"]
 
+    @staticmethod
+    def _dt_field(iso: str) -> dict[str, str]:
+        """Build a Calendar API dateTime object with an explicit timeZone fallback.
+
+        Google requires either an offset in the dateTime string or a separate
+        timeZone field. This ensures a valid payload even when the LLM omits the offset.
+        """
+        if "+" in iso or (iso.endswith("Z")):
+            return {"dateTime": iso}
+        return {"dateTime": iso, "timeZone": "UTC"}
+
     def create_calendar_event(
         self,
-        summary: str,
+        title: str,
         start_time_iso: str,
         end_time_iso: str,
         description: str = "",
@@ -26,10 +37,10 @@ class CalendarService(GoogleService):
         from typing import Any as _Any
 
         event: dict[str, _Any] = {
-            "summary": summary,
+            "summary": title,
             "description": description,
-            "start": {"dateTime": start_time_iso},
-            "end": {"dateTime": end_time_iso},
+            "start": self._dt_field(start_time_iso),
+            "end": self._dt_field(end_time_iso),
         }
 
         if attendees:
@@ -144,7 +155,7 @@ class CalendarService(GoogleService):
 
     def create_recurring_event(
         self,
-        summary: str,
+        title: str,
         start_time_iso: str,
         end_time_iso: str,
         recurrence_rule: str,
@@ -165,10 +176,10 @@ class CalendarService(GoogleService):
         from typing import Any as _Any
 
         event: dict[str, _Any] = {
-            "summary": summary,
+            "summary": title,
             "description": description,
-            "start": {"dateTime": start_time_iso},
-            "end": {"dateTime": end_time_iso},
+            "start": self._dt_field(start_time_iso),
+            "end": self._dt_field(end_time_iso),
             "recurrence": [recurrence_rule],
         }
 
@@ -244,7 +255,7 @@ class CalendarService(GoogleService):
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "summary": {"type": "string", "description": "Title of the event"},
+                        "title": {"type": "string", "description": "Title of the event"},
                         "start_time_iso": {
                             "type": "string",
                             "description": "Start time in ISO format INCLUDING the local timezone "
@@ -267,7 +278,7 @@ class CalendarService(GoogleService):
                             "description": "List of email addresses to invite",
                         },
                     },
-                    "required": ["summary", "start_time_iso", "end_time_iso"],
+                    "required": ["title", "start_time_iso", "end_time_iso"],
                 },
             },
             self.create_calendar_event,
@@ -369,7 +380,7 @@ class CalendarService(GoogleService):
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "summary": {"type": "string", "description": "Event title."},
+                        "title": {"type": "string", "description": "Event title."},
                         "start_time_iso": {
                             "type": "string",
                             "description": "Start time with timezone offset "
@@ -398,7 +409,7 @@ class CalendarService(GoogleService):
                             "description": "Attach a Google Meet link to every occurrence.",
                         },
                     },
-                    "required": ["summary", "start_time_iso", "end_time_iso", "recurrence_rule"],
+                    "required": ["title", "start_time_iso", "end_time_iso", "recurrence_rule"],
                 },
             },
             self.create_recurring_event,

@@ -93,6 +93,48 @@ class OAuthManager:
         return GOOGLE_CLIENT_ID
 
     @staticmethod
+    def _exchange_token(payload: dict[str, str]) -> dict:
+        """POST to Google's token endpoint, surfacing the real error on failure.
+
+        Google returns the actual cause (``invalid_client``,
+        ``redirect_uri_mismatch``, ``invalid_grant``, …) in the JSON body of a
+        4xx response.  ``raise_for_status()`` discards that body, so we read it
+        first and raise a message the user can act on.
+        """
+        response = httpx.post("https://oauth2.googleapis.com/token", data=payload)
+        if response.is_success:
+            return response.json()
+
+        detail = ""
+        try:
+            body = response.json()
+            err = body.get("error", "")
+            desc = body.get("error_description", "")
+            detail = f"{err}: {desc}".strip(": ") if (err or desc) else ""
+        except Exception:
+            detail = response.text.strip()
+
+        hint = ""
+        if "invalid_client" in detail:
+            hint = (
+                " — check GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET. If your OAuth client is a "
+                '"Web application" type, GOOGLE_CLIENT_SECRET is required; for a "Desktop app" '
+                "client it is optional."
+            )
+        elif "redirect_uri_mismatch" in detail:
+            hint = (
+                " — use a 'Desktop app' OAuth client (it allows loopback redirects on any "
+                "port), or register the exact redirect URI in the Google Cloud console."
+            )
+        elif "invalid_grant" in detail:
+            hint = " — the authorization code expired or was already used; re-run to retry."
+
+        raise RuntimeError(
+            f"Google token endpoint returned {response.status_code} "
+            f"({detail or 'no error detail'}){hint}"
+        )
+
+    @staticmethod
     def _build_pkce() -> dict[str, str]:
         verifier = secrets.token_urlsafe(64)
         challenge = (
@@ -207,10 +249,7 @@ class OAuthManager:
         if GOOGLE_CLIENT_SECRET:
             token_payload["client_secret"] = GOOGLE_CLIENT_SECRET
 
-        token_response = httpx.post("https://oauth2.googleapis.com/token", data=token_payload)
-
-        token_response.raise_for_status()
-        data = token_response.json()
+        data = self._exchange_token(token_payload)
 
         # Calculate absolute expiration time
         data["expires_at"] = time.time() + data.get("expires_in", 3600)
@@ -233,10 +272,7 @@ class OAuthManager:
         if GOOGLE_CLIENT_SECRET:
             payload["client_secret"] = GOOGLE_CLIENT_SECRET
 
-        token_response = httpx.post("https://oauth2.googleapis.com/token", data=payload)
-
-        token_response.raise_for_status()
-        data = token_response.json()
+        data = self._exchange_token(payload)
 
         # Merge new data into old token to preserve scopes and other metadata
         for key, value in data.items():

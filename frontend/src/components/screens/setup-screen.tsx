@@ -9,6 +9,13 @@ import {
 } from "@/lib/api/tokoboros.functions";
 import { Skeleton } from "@/components/ui/skeleton";
 
+const PROVIDER_DEFAULT_MODELS = {
+  anthropic: "claude-haiku-4-5",
+  "openai-compatible": "gpt-4o-mini",
+  openrouter: "openai/gpt-4o-mini",
+  ollama: "llama3.1",
+} as const;
+
 export function SetupScreen() {
   const [loading, setLoading] = useState(true);
   const [ready, setReady] = useState(false);
@@ -122,7 +129,11 @@ export function SetupScreen() {
           Provider
           <select
             value={providerKind}
-            onChange={(event) => setProviderKind(event.target.value as typeof providerKind)}
+            onChange={(event) => {
+              const nextKind = event.target.value as typeof providerKind;
+              setProviderKind(nextKind);
+              setModel(PROVIDER_DEFAULT_MODELS[nextKind]);
+            }}
             disabled={submitting}
             className="mt-1 w-full rounded border border-[#304a65] bg-[#070f18] p-2 text-sm text-[#d5e7ff]"
           >

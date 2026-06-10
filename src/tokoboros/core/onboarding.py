@@ -94,6 +94,29 @@ def default_api_key_env_for(kind: str) -> str:
     return _PROVIDER_DEFAULTS.get(kind.strip().lower(), {}).get("api_key_env", "")
 
 
+def resolve_provider_model(
+    kind: str,
+    model: str | None,
+    *,
+    previous_kind: str | None = None,
+    previous_model: str | None = None,
+) -> str:
+    """Return a provider-appropriate model, preserving explicit overrides."""
+    normalized_kind = kind.strip().lower()
+    default_model = default_model_for(normalized_kind)
+    resolved_model = (model or "").strip()
+    previous_kind_n = previous_kind.strip().lower() if previous_kind else ""
+    previous_model_n = previous_model.strip() if previous_model else ""
+
+    if previous_kind_n and previous_model_n and normalized_kind != previous_kind_n:
+        if not resolved_model or resolved_model == previous_model_n:
+            return default_model or resolved_model or previous_model_n
+
+    if resolved_model:
+        return resolved_model
+    return default_model or previous_model_n
+
+
 class OnboardingService:
     def __init__(self, paths: TokoborosPaths | None = None):
         self.paths: TokoborosPaths = paths if paths is not None else get_tokoboros_paths()
@@ -226,13 +249,24 @@ class OnboardingService:
 
         env_name = (api_key_env or default_api_key_env_for(kind_n)).strip()
         resolved = api_key or (os.environ.get(env_name) if env_name else None)
+        # Also check the secret store (keyring) — a key pasted during a prior
+        # setup run is stored there and does not reappear in os.environ after a
+        # restart, but the LLM client can still use it.
+        if not resolved and env_name:
+            try:
+                from tokoboros.core.secret_store import create_default_secret_store
+
+                resolved = create_default_secret_store().get(env_name)
+            except Exception:
+                pass
         if not resolved:
             return False, (
                 f"No API key found for {kind_n}. Set it first, e.g.:\n"
                 f"  export {env_name or 'YOUR_API_KEY_ENV'}=sk-...\n"
                 "then re-run setup."
             )
-        return True, f"API key found in {env_name}."
+        source = "keyring" if not os.environ.get(env_name) else env_name
+        return True, f"API key found ({source})."
 
     def quick_setup(
         self,
@@ -277,7 +311,33 @@ class OnboardingService:
         completed = set(state.completed_steps)
         is_marked_done = {"provider", "safety"}.issubset(completed)
 
-        return not (provider_ready and tier_ready and is_marked_done)
+        if not (provider_ready and tier_ready and is_marked_done):
+            return True
+
+        # Even when setup is marked done, verify the provider key is actually
+        # resolvable so we route the user back to Setup instead of booting into
+        # a crash.  Keyless providers (Ollama) skip this check.
+        kind = str(config.provider.kind).strip().lower()
+        if kind not in _KEYLESS_PROVIDERS:
+            env_name = (
+                config.provider.api_key_env or default_api_key_env_for(kind) or ""
+            ).strip()
+            api_key_ref = (config.provider.api_key_ref or "").strip()
+
+            resolved: str | None = os.environ.get(env_name) if env_name else None
+            if not resolved:
+                lookup = api_key_ref or env_name
+                if lookup:
+                    try:
+                        from tokoboros.core.secret_store import create_default_secret_store
+
+                        resolved = create_default_secret_store().get(lookup)
+                    except Exception:
+                        pass
+            if not resolved:
+                return True
+
+        return False
 
     def build_tier_plan(self, tier: str, answers: dict[str, Any]) -> dict[str, Any]:
         normalized_tier = str(tier).strip().lower()
@@ -298,6 +358,8 @@ class OnboardingService:
     ) -> SetupPlan:
         plan = SetupPlan.model_validate(plan_payload)
         config = load_effective_config(project_dir=project_dir, paths=self.paths)
+        current_provider_kind = str(config.provider.kind).strip()
+        current_provider_model = str(config.provider.model).strip()
 
         provider = plan.answers.get("provider", {})
         if isinstance(provider, dict):
@@ -314,11 +376,26 @@ class OnboardingService:
                         "provider.kind must be one of: anthropic, openai-compatible, ollama"
                     )
                 config.provider.kind = normalized_kind
+            else:
+                normalized_kind = current_provider_kind
+
             if model is not None:
                 normalized_model = str(model).strip()
                 if not normalized_model:
                     raise ValueError("provider.model cannot be empty")
-                config.provider.model = normalized_model
+                config.provider.model = resolve_provider_model(
+                    normalized_kind,
+                    normalized_model,
+                    previous_kind=current_provider_kind,
+                    previous_model=current_provider_model,
+                )
+            elif normalized_kind != current_provider_kind:
+                config.provider.model = resolve_provider_model(
+                    normalized_kind,
+                    None,
+                    previous_kind=current_provider_kind,
+                    previous_model=current_provider_model,
+                )
             if base_url is not None:
                 config.provider.base_url = str(base_url).strip() or None
             if api_key_env is not None:

@@ -369,3 +369,39 @@ class Scheduler:
 
     def _persist(self) -> None:
         self._store.save(list(self._schedules.values()))
+
+
+class ScheduleRunner:
+    """Background thread that calls ``scheduler.tick()`` on a fixed interval.
+
+    Start it once at session boot; stop it on shutdown. The tick interval
+    defaults to 30 s so sub-minute interval schedules fire on time without
+    hammering the agent.
+    """
+
+    def __init__(
+        self,
+        scheduler: Scheduler,
+        fire: Callable[[Schedule], None],
+        tick_interval_seconds: int = 30,
+    ):
+        self._scheduler = scheduler
+        self._fire = fire
+        self._interval = tick_interval_seconds
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True, name="schedule-runner"
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self._interval):
+            try:
+                self._scheduler.tick(self._fire)
+            except Exception:
+                logger.exception("ScheduleRunner tick error")

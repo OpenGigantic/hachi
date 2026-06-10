@@ -108,8 +108,7 @@ def register_google_tools(registry: ToolRegistry) -> bool:
     # Re-tag every registered google_* tool with the lazy group so the
     # orchestrator's use_tools("google") activates them correctly.
     for name in GOOGLE_TOOL_NAMES:
-        entry = registry._tools.get(name)
-        if entry is not None:
-            entry["group"] = "google"
+        if name in registry._tools:
+            registry._groups[name] = "google"
 
     return True

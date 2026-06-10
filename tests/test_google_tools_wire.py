@@ -15,10 +15,13 @@ class _FakeRegistry:
 
     def __init__(self) -> None:
         self._tools: dict = {}
+        self._groups: dict = {}
 
     def register(self, schema: dict, fn, group: str | None = None) -> None:
         name = schema.get("name", "?")
         self._tools[name] = {"schema": schema, "fn": fn, "group": group}
+        if group:
+            self._groups[name] = group
 
 
 def _make_fake_hub(tool_names: list[str]) -> MagicMock:
@@ -105,10 +108,9 @@ class TestRegisterGoogleToolsWithCredentials:
             from tokoboros.tools import google_tools
             registry = _FakeRegistry()
             google_tools.register_google_tools(registry)
-        # After registration, tool should be tagged "google"
-        entry = registry._tools.get("google_send_email")
-        assert entry is not None
-        assert entry["group"] == "google"
+        # After registration, tool should be tagged "google" in _groups
+        assert registry._tools.get("google_send_email") is not None
+        assert registry._groups.get("google_send_email") == "google"
 
     def test_hub_register_tools_called_once(self, monkeypatch) -> None:
         monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
