@@ -78,6 +78,7 @@ from tokoboros.core.session_titler import generate_title
 from tokoboros.core.sub_agent import DEFAULT_SUB_AGENT_MODEL
 from tokoboros.core.tracing import configure_from_env
 from tokoboros.core.turn_context import TurnContext
+from tokoboros.gateway.tool_registration import BootDeps, ToolRegistrar, ToolSpec
 from tokoboros.gateway.workspace import (
     get_skills_dir,
     get_workspace_dir,
@@ -1247,57 +1248,16 @@ def boot_agent(
         },
     )
 
-    # 8. Register all tools
+    # 8. Build infrastructure objects needed for tool registration.
+    # These are created before the TOOL_SPECS table so BootDeps can reference
+    # fully-constructed objects rather than lazy placeholders.
     tool_registry = ToolRegistry()
     # File-change checkpoints give the user an undo for agent edits (rollback_changes tool).
     checkpoint_manager = CheckpointManager(get_tokoboros_paths().checkpoints_dir)
-    register_os_tools(tool_registry, runtime_gate, checkpoints=checkpoint_manager)
-    register_og_tools(tool_registry, skill_engine)
-    # Lazy tool-loading meta-tool (core): lets the model unlock optional groups.
-    tool_registry.register(USE_TOOLS_SCHEMA, _make_use_tools(tool_registry), group="core")
-    register_workflow_tools(tool_registry)
-    register_sandbox_tools(tool_registry, runtime_gate)
-
-    # Headless browser automation (optional: needs `tokoboros[browser]` + a browser binary).
-    # The controller is lazy — no browser launches until the agent first calls browse_web.
-    browser_controller = register_browser_tools(tool_registry, runtime_gate)
-
-    # Outbound messaging (Slack/Discord/WhatsApp). Credentials resolve lazily at call time, so
-    # these register cleanly even with no token set (return a "not configured" hint until then).
-    register_messaging_tools(tool_registry)
-
-    # Desktop push notifications + SMTP email digests. Zero config for desktop;
-    # email requires TOKOBOROS_SMTP_* env vars (degrades gracefully if unset).
-    register_notification_tools(tool_registry)
-
-    # Vision input — view local images. Image blocks only flow to the Anthropic
-    # provider, so the tool is provider-aware (it reports instead of analyzing on others).
-    register_vision_tools(
-        tool_registry,
-        runtime_gate,
-        provider_kind=str(provider_config.get("kind", "anthropic")),
-    )
-
-    # Voice input — transcribe local audio files. Credentials (OpenAI/compatible
-    # Whisper) resolve lazily; the tool degrades to a "not configured" hint until set.
-    register_voice_tools(tool_registry, runtime_gate)
-
-    # Google Workspace (Gmail, Calendar, Drive, Docs, Sheets, Contacts, Meet, Tasks).
-    # Only mounted when GOOGLE_CLIENT_ID is set; degrades to a friendly stub otherwise.
-    register_google_tools(tool_registry)
-
-    # Presentation generation — build .pptx from natural language.
-    register_presentation_tools(tool_registry, runtime_gate)
-
     # Proactive scheduling (cron/interval/once) — persisted across restarts.
     scheduler = Scheduler(ScheduleStore(get_tokoboros_paths().schedules_file))
-    register_schedule_tools(tool_registry, scheduler)
-
-    # Register Universal REST APIs parsed from .og files
-    credential_vault = CredentialVault(secret_store=secret_store)
-    rest_adapter = UniversalRestAdapter(tool_registry, credential_vault)
-    for node in skill_engine.get_all_nodes():
-        rest_adapter.register_node_apis(node)
+    # Initialize Session Store (Phase 3: cross-session persistence)
+    session_store = SessionStore()
 
     # Initialize and register the Long-Term Memory Vault (backend-selectable).
     # backend="chroma" (default) — ChromaDB persistent vault, full semantic tools.
@@ -1313,35 +1273,161 @@ def boot_agent(
         _provider.vault if isinstance(_provider, ChromaMemoryProvider) else None
     )
     memory.set_vault(vault)
-    register_memory_tools(tool_registry, vault, job_queue=job_queue)
 
-    # Initialize Session Store (Phase 3: cross-session persistence)
-    session_store = SessionStore()
-    register_session_tools(tool_registry, session_store)
+    # Universal REST adapter for .og-defined APIs; built here so the rest_apis spec
+    # can close over it without a circular BootDeps reference.
+    credential_vault = CredentialVault(secret_store=secret_store)
+    rest_adapter = UniversalRestAdapter(tool_registry, credential_vault)
 
-    # Register direct integration tools
-    integrations.register_tools(tool_registry)
+    # 8b. Declarative tool registration — ordering constraints are explicit in the
+    # table below, not buried in prose comments.
+    def _make_deps() -> BootDeps:
+        return BootDeps(
+            gate=runtime_gate,
+            skill_engine=skill_engine,
+            checkpoint_manager=checkpoint_manager,
+            vault=vault,
+            job_queue=job_queue,
+            session_store=session_store,
+            integrations=integrations,
+            mcp_manager=mcp_manager,
+            scheduler=scheduler,
+            relay_event=relay_event,
+            sub_agent_llm=sub_agent_client,
+            cost_tracker=cost_tracker,
+            provider_kind=str(provider_config.get("kind", "anthropic")),
+            secret_store=secret_store,
+            tool_registry=tool_registry,
+        )
 
-    # Register MCP tools
-    mcp_manager.register_tools(tool_registry)
+    TOOL_SPECS: list[ToolSpec] = [
+        ToolSpec(
+            name="os",
+            register_fn=lambda d: register_os_tools(
+                d.tool_registry, d.gate, checkpoints=d.checkpoint_manager
+            ),
+        ),
+        ToolSpec(
+            name="og",
+            register_fn=lambda d: register_og_tools(d.tool_registry, d.skill_engine),
+        ),
+        ToolSpec(
+            # Lazy tool-loading meta-tool (core): lets the model unlock optional groups.
+            name="use_tools",
+            register_fn=lambda d: d.tool_registry.register(
+                USE_TOOLS_SCHEMA, _make_use_tools(d.tool_registry), group="core"
+            ),
+        ),
+        ToolSpec(name="workflow", register_fn=lambda d: register_workflow_tools(d.tool_registry)),
+        ToolSpec(
+            name="sandbox",
+            register_fn=lambda d: register_sandbox_tools(d.tool_registry, d.gate),
+        ),
+        ToolSpec(
+            # Headless browser automation (optional: needs `tokoboros[browser]` + a browser
+            # binary). The controller is lazy — no browser launches until the agent first calls
+            # browse_web. Return value is captured from registration_results["browser"].
+            name="browser",
+            register_fn=lambda d: register_browser_tools(d.tool_registry, d.gate),
+        ),
+        ToolSpec(
+            # Outbound messaging (Slack/Discord/WhatsApp). Credentials resolve lazily at call
+            # time, so these register cleanly even with no token set (return a "not configured"
+            # hint until then).
+            name="messaging",
+            register_fn=lambda d: register_messaging_tools(d.tool_registry),
+        ),
+        ToolSpec(
+            # Desktop push notifications + SMTP email digests. Zero config for desktop;
+            # email requires TOKOBOROS_SMTP_* env vars (degrades gracefully if unset).
+            name="notifications",
+            register_fn=lambda d: register_notification_tools(d.tool_registry),
+        ),
+        ToolSpec(
+            # Vision input — view local images. Image blocks only flow to the Anthropic
+            # provider, so the tool is provider-aware (it reports instead of analyzing on others).
+            name="vision",
+            register_fn=lambda d: register_vision_tools(
+                d.tool_registry, d.gate, provider_kind=d.provider_kind
+            ),
+        ),
+        ToolSpec(
+            # Voice input — transcribe local audio files. Credentials (OpenAI/compatible
+            # Whisper) resolve lazily; the tool degrades to a "not configured" hint until set.
+            name="voice",
+            register_fn=lambda d: register_voice_tools(d.tool_registry, d.gate),
+        ),
+        ToolSpec(
+            # Google Workspace (Gmail, Calendar, Drive, Docs, Sheets, Contacts, Meet, Tasks).
+            # Only mounted when GOOGLE_CLIENT_ID is set; degrades to a friendly stub otherwise.
+            name="google",
+            register_fn=lambda d: register_google_tools(d.tool_registry),
+        ),
+        ToolSpec(
+            # Presentation generation — build .pptx from natural language.
+            name="presentation",
+            register_fn=lambda d: register_presentation_tools(d.tool_registry, d.gate),
+        ),
+        ToolSpec(
+            name="schedule",
+            register_fn=lambda d: register_schedule_tools(d.tool_registry, d.scheduler),
+        ),
+        ToolSpec(
+            # Register Universal REST APIs parsed from .og files.
+            name="rest_apis",
+            register_fn=lambda d: [
+                rest_adapter.register_node_apis(node)
+                for node in d.skill_engine.get_all_nodes()
+            ],
+        ),
+        ToolSpec(
+            name="memory",
+            register_fn=lambda d: register_memory_tools(
+                d.tool_registry, d.vault, job_queue=d.job_queue
+            ),
+        ),
+        ToolSpec(
+            name="session",
+            register_fn=lambda d: register_session_tools(d.tool_registry, d.session_store),
+        ),
+        ToolSpec(
+            name="integration_tools",
+            register_fn=lambda d: d.integrations.register_tools(d.tool_registry),
+        ),
+        ToolSpec(
+            name="mcp_tools",
+            register_fn=lambda d: d.mcp_manager.register_tools(d.tool_registry),
+        ),
+        ToolSpec(
+            # Agent-accessible configuration + MCP management tools.
+            # Registered AFTER MCP manager so list_mcp_servers sees all nodes.
+            name="config",
+            after={"mcp_tools"},
+            register_fn=lambda d: register_config_tools(d.tool_registry, gate=d.gate),
+        ),
+        ToolSpec(
+            # MUST be LAST — needs full parent registry.
+            # Pass skill_engine so sub-agent OG tools are rebound to a role-scoped
+            # engine view, preventing sub-agents from reading scope=orchestrator nodes.
+            name="delegation",
+            last=True,
+            register_fn=lambda d: register_delegation_tools(
+                d.tool_registry,
+                d.gate,
+                d.relay_event,
+                d.vault,
+                job_queue=d.job_queue,
+                sub_agent_llm=d.sub_agent_llm,
+                cost_tracker=d.cost_tracker,
+                skill_engine=d.skill_engine,
+            ),
+        ),
+    ]
 
-    # Agent-accessible configuration + MCP management tools.
-    # Registered AFTER MCP manager so list_mcp_servers sees all nodes.
-    register_config_tools(tool_registry, gate=runtime_gate)
-
-    # Register Delegation tools (MUST be LAST — needs full parent registry).
-    # Pass skill_engine so sub-agent OG tools are rebound to a role-scoped
-    # engine view, preventing sub-agents from reading scope=orchestrator nodes.
-    register_delegation_tools(
-        tool_registry,
-        runtime_gate,
-        relay_event,
-        vault,
-        job_queue=job_queue,
-        sub_agent_llm=sub_agent_client,
-        cost_tracker=cost_tracker,
-        skill_engine=skill_engine,
-    )
+    deps = _make_deps()
+    registrar = ToolRegistrar()
+    registration_results = registrar.install(TOOL_SPECS, deps)
+    browser_controller = registration_results.get("browser")
 
     # Register native capability tools lazily, with setup stubs for incomplete states.
     native_registration_count = 0
