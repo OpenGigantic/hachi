@@ -506,6 +506,7 @@ class MemoryManager:
         self.sync_turn(user_query, result)
         self.complete_current_task(result[:100] if result else "Task completed")
 
+
     def repair_tool_pairs(self) -> int:
         """Ensure every tool_use block has a tool_result immediately after its assistant message.
 
