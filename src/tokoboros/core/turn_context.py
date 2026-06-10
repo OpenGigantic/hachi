@@ -15,6 +15,8 @@ Benefits:
 import datetime
 from dataclasses import dataclass
 
+from tokoboros.core.prompt_composer import compose as _compose_prompt
+
 
 @dataclass(frozen=True, slots=True)
 class TurnContext:
@@ -93,29 +95,17 @@ class TurnContext:
         """
         timestamp = datetime.datetime.now(datetime.UTC).isoformat()
 
-        # --- Cacheable prefix: stable across the session ---------------------
-        # The brain/.og/permissions base plus session-frozen profiles do not
-        # change turn-to-turn, so they carry the prompt-cache breakpoint and are
-        # read from cache (0.1x) on every subsequent turn.
-        cacheable_parts = [system_prompt_base]
-        if user_profile_snapshot:
-            cacheable_parts.append(
-                f"\n\n--- USER PROFILE (captured for this session) ---\n{user_profile_snapshot}"
-            )
-        if agent_profile_snapshot:
-            cacheable_parts.append(
-                f"\n\n--- AGENT PROFILE (captured for this session) ---\n{agent_profile_snapshot}"
-            )
-        cacheable_system = "".join(cacheable_parts)
-
-        # --- Dynamic tail: changes every turn -------------------------------
-        # The time header (changes every second) and per-query recalled context
-        # MUST stay after the cache breakpoint, or they'd force a fresh cache
-        # write of the whole prefix on every turn (the classic caching anti-pattern).
-        dynamic_parts = [_build_time_header()]
-        if recalled_context:
-            dynamic_parts.append(f"\n\n--- RECALLED CONTEXT ---\n{recalled_context}")
-        dynamic_system = "".join(dynamic_parts)
+        # Delegate to PromptComposer for cache-aware prompt assembly.
+        # cacheable_system: stable prefix (brain/.og/perms + session-frozen profiles)
+        #   — carries the cache breakpoint, read from cache (0.1x) on every turn.
+        # dynamic_system: per-turn tail (time header + recalled context)
+        #   — must sit AFTER the breakpoint so it never invalidates the cache.
+        cacheable_system, dynamic_system = _compose_prompt(
+            stable_base=system_prompt_base,
+            user_profile_snapshot=user_profile_snapshot,
+            agent_profile_snapshot=agent_profile_snapshot,
+            recalled_context=recalled_context,
+        )
 
         # Full prompt keeps the stable content first (model reads instructions
         # before per-turn context); also the single-block fallback path then caches.
@@ -137,19 +127,3 @@ class TurnContext:
             surface=surface,
             source_ip=source_ip,
         )
-
-
-def _build_time_header() -> str:
-    """Generate the dynamic time block (changes every turn — NOT cached)."""
-    local_dt = datetime.datetime.now().astimezone()
-    current_time = local_dt.strftime("%A, %Y-%m-%d %H:%M:%S")
-    tz_offset = local_dt.strftime("%z")
-    tz_fmt = f"{tz_offset[:3]}:{tz_offset[3:]}" if len(tz_offset) == 5 else tz_offset
-
-    return (
-        f"--- CURRENT TIME AND DATE ---\n"
-        f"The current local time is: {current_time}\n"
-        f"Your Local Timezone Offset is: {tz_fmt}\n"
-        f"Use this context to resolve relative times like 'today' or 'tomorrow', "
-        f"and ALWAYS append the timezone offset when creating ISO strings.\n"
-    )
