@@ -449,7 +449,10 @@ def create_llm_client(
         api_key = _resolve_api_key(api_key_env)
 
     if kind == "anthropic":
-        return AnthropicClient(api_key=api_key, model=model, max_tokens=max_tokens)
+        # Always prefer ANTHROPIC_API_KEY for this kind so a misconfigured
+        # api_key_ref (e.g. the legacy default "OPENAI_API_KEY") doesn't shadow it.
+        kind_key = _resolve_api_key("ANTHROPIC_API_KEY") or api_key
+        return AnthropicClient(api_key=kind_key, model=model, max_tokens=max_tokens)
 
     if kind == "ollama":
         resolved_base = str(

@@ -6,20 +6,28 @@ Handles reading from channels and sending messages.
 import time
 
 from tokoboros.core.loop import ToolRegistry
+from tokoboros.core.secret_scanner import redact_outbound
 from tokoboros.integrations.slack.service import SlackService
 
 
 class SlackChat(SlackService):
+    @staticmethod
+    def _guard_outbound(text: str) -> tuple[str, str]:
+        safe, count = redact_outbound(text)
+        note = f" ({count} secret(s) redacted before sending for your safety.)" if count else ""
+        return safe, note
+
     def send_message(self, channel_id: str, text: str) -> str:
         """
         Sends a message to a Slack channel or user.
         """
+        text, guard_note = self._guard_outbound(text)
         payload = {"channel": channel_id, "text": text}
 
         try:
             res = self._post("/chat.postMessage", json_data=payload)
             ts = res.get("ts")
-            return f"Successfully sent message to {channel_id} at timestamp {ts}."
+            return f"Successfully sent message to {channel_id} at timestamp {ts}.{guard_note}"
         except Exception as e:
             return f"Failed to send Slack message: {str(e)}"
 
@@ -33,6 +41,9 @@ class SlackChat(SlackService):
         path = Path(file_path)
         if not path.exists():
             return f"File not found: {file_path}"
+
+        if initial_comment:
+            initial_comment, _note = self._guard_outbound(initial_comment)
 
         try:
             # Step 1: Get upload URL
