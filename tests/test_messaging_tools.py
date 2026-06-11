@@ -495,7 +495,7 @@ def test_send_telegram_explicit_chat_id(monkeypatch) -> None:
 
     def _fake_sender(token: str, chat_id: str, text: str) -> dict:
         calls.append((token, chat_id, text))
-        return {}
+        return {"ok": True, "result": {"message_id": 1}}
 
     registry = ToolRegistry()
     register_messaging_tools(registry, telegram_sender=_fake_sender)
@@ -527,7 +527,7 @@ def test_send_telegram_redacts_secrets(monkeypatch) -> None:
 
     def _spy(token: str, chat_id: str, text: str) -> dict:
         captured.append(text)
-        return {}
+        return {"ok": True}
 
     registry = ToolRegistry()
     register_messaging_tools(registry, telegram_sender=_spy)

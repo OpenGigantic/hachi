@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -127,6 +127,82 @@ class RuntimeEventSnapshot:
     name: str
     payload: dict[str, Any]
     timestamp: str
+    sequence: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class RecentToolSnapshot:
+    name: str
+    status: str  # running | completed | failed
+
+
+@dataclass(frozen=True, slots=True)
+class ActivitySnapshot:
+    """Derived 'what is the agent doing right now' state for status surfaces."""
+
+    label: str
+    state: str  # idle | running | pending | failed
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    recent_tools: tuple[RecentToolSnapshot, ...] = ()
+
+
+_IDLE_ACTIVITY = ActivitySnapshot(label="Idle", state="idle")
+
+
+def advance_activity(
+    prev: ActivitySnapshot, event_name: str, payload: dict[str, Any]
+) -> ActivitySnapshot:
+    """Fold one runtime event into the activity projection.
+
+    Pure function — the single owner of event→activity derivation. Both the
+    read model and the TUI status header call this so the two can never drift.
+    Events that don't affect activity return ``prev`` unchanged.
+    """
+    if event_name == "session.chat.started":
+        return replace(prev, label="Working…", state="running")
+    if event_name == "thinking.step":
+        step = payload.get("iteration", "?")
+        return replace(prev, label=f"Thinking · step {step}", state="running")
+    if event_name == "tool.call.started":
+        name = str(payload.get("name", "tool"))
+        started = (*prev.recent_tools, RecentToolSnapshot(name=name, status="running"))[-12:]
+        return replace(prev, label=f"Running {name}…", state="running", recent_tools=started)
+    if event_name == "tool.call.completed":
+        name = str(payload.get("name", "tool"))
+        preview = str(payload.get("result_preview", ""))
+        status = "failed" if _looks_like_error(preview) else "completed"
+        recent = _resolve_recent_tool(prev.recent_tools, name, status)
+        return replace(prev, recent_tools=recent)
+    if event_name == "permission.requested":
+        return replace(prev, label="Waiting for approval", state="pending")
+    if event_name == "permission.decided":
+        return replace(prev, label="Working…", state="running")
+    if event_name == "usage.updated":
+        return replace(
+            prev,
+            total_tokens=int(payload.get("total_tokens") or 0),
+            estimated_cost_usd=float(payload.get("estimated_cost_usd") or 0.0),
+        )
+    if event_name == "job.started":
+        return replace(prev, label=f"Running job: {payload.get('label', 'job')}", state="running")
+    if event_name in ("session.chat.completed", "job.completed"):
+        return replace(prev, label="Idle", state="idle")
+    if event_name in ("boot.failed", "job.failed"):
+        return replace(prev, label="Failed", state="failed")
+    return prev
+
+
+def _resolve_recent_tool(
+    recent: tuple[RecentToolSnapshot, ...], name: str, status: str
+) -> tuple[RecentToolSnapshot, ...]:
+    """Mark the most recent still-running tool of ``name`` with ``status`` (FIFO of one)."""
+    out = list(recent)
+    for i in range(len(out) - 1, -1, -1):
+        if out[i].name == name and out[i].status == "running":
+            out[i] = RecentToolSnapshot(name=name, status=status)
+            break
+    return tuple(out)
 
 
 class RuntimeReadModelStore:
@@ -144,14 +220,25 @@ class RuntimeReadModelStore:
         # name -> FIFO of indices into _tool_calls still in the "running" state,
         # so a completed event resolves the matching earlier start.
         self._pending_tool_calls: dict[str, list[int]] = {}
+        # Monotonic per-store event counter; the sole source of event sequence
+        # numbers that paging clients poll against.
+        self._sequence = 0
+        self._activity = _IDLE_ACTIVITY
 
     def append_event(self, event: RuntimeEvent) -> None:
         with self._lock:
+            self._sequence += 1
             self._events.append(
-                RuntimeEventSnapshot(event.name, dict(event.payload), event.timestamp)
+                RuntimeEventSnapshot(
+                    event.name, dict(event.payload), event.timestamp, self._sequence
+                )
             )
-            if len(self._events) > 1000:
-                self._events = self._events[-1000:]
+            # This log is the single source for sequence-based polling (the gateway
+            # events endpoint), so keep a generous tail for slow-polling clients.
+            if len(self._events) > 2000:
+                self._events = self._events[-2000:]
+
+            self._activity = advance_activity(self._activity, event.name, event.payload)
 
             if event.name == "boot.complete":
                 self._boot_ready = True
@@ -313,6 +400,20 @@ class RuntimeReadModelStore:
     def runtime_events(self, limit: int = 100) -> tuple[RuntimeEventSnapshot, ...]:
         with self._lock:
             return tuple(self._events[-limit:])
+
+    def read_events_since(self, after: int, limit: int = 100) -> tuple[RuntimeEventSnapshot, ...]:
+        """Events whose sequence is greater than ``after``, oldest→newest, capped at ``limit``.
+
+        The single source for sequence-based polling (the gateway events endpoint).
+        """
+        with self._lock:
+            fresh = [snap for snap in self._events if snap.sequence > after]
+            return tuple(fresh[:limit])
+
+    def activity(self) -> ActivitySnapshot:
+        """Current derived activity (label, state, usage, recent tools)."""
+        with self._lock:
+            return self._activity
 
     def tool_calls(self, limit: int = 50) -> tuple[ToolCallSnapshot, ...]:
         """Most-recent tool calls (oldest→newest), paired start→completion."""

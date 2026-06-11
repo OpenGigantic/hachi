@@ -11,17 +11,26 @@ from tokoboros.integrations.google.service import GoogleService
 class CalendarService(GoogleService):
     @property
     def required_scopes(self) -> list[str]:
-        return ["https://www.googleapis.com/auth/calendar.events"]
+        # calendar.events: create/update/delete events
+        # calendar.readonly: needed for freeBusy queries (/calendar/v3/freeBusy)
+        return [
+            "https://www.googleapis.com/auth/calendar.events",
+            "https://www.googleapis.com/auth/calendar.readonly",
+        ]
 
     @staticmethod
     def _dt_field(iso: str) -> dict[str, str]:
-        """Build a Calendar API dateTime object with an explicit timeZone fallback.
+        """Build a Calendar API dateTime object with an explicit timeZone.
 
-        Google requires either an offset in the dateTime string or a separate
-        timeZone field. This ensures a valid payload even when the LLM omits the offset.
+        Google requires a named timeZone for recurring events even when the dateTime
+        string already contains an offset or trailing 'Z'.  Including it for all
+        event types is safe and avoids 400s on RRULE requests.
         """
-        if "+" in iso or (iso.endswith("Z")):
-            return {"dateTime": iso}
+        if iso.endswith("Z"):
+            return {"dateTime": iso, "timeZone": "UTC"}
+        if "+" in iso:
+            # Offset is embedded; UTC is a safe fallback when the IANA zone is unknown.
+            return {"dateTime": iso, "timeZone": "UTC"}
         return {"dateTime": iso, "timeZone": "UTC"}
 
     def create_calendar_event(

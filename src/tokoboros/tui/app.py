@@ -34,6 +34,11 @@ from tokoboros.core.onboarding import (
     default_api_key_env_for,
 )
 from tokoboros.core.permissions import PermissionDecision, PermissionRequest
+from tokoboros.core.runtime_read_models import (
+    ActivitySnapshot,
+    _looks_like_error,
+    advance_activity,
+)
 from tokoboros.core.secret_store import create_default_secret_store
 from tokoboros.gateway.orchestrator import AgentSession, boot_agent
 from tokoboros.gateway.workspace import get_skills_dir, get_workspace_dir, load_config
@@ -130,12 +135,6 @@ def _event_input_summary(tool_input: Any) -> str:
             text = text[:39] + "…"
         parts.append(f"{key}={text}")
     return "  ".join(parts)
-
-
-def _looks_like_error(text: str) -> bool:
-    """Heuristic: does a tool-result preview describe a failure?"""
-    lowered = text.lower()
-    return any(token in lowered for token in ("failed", "error:", "traceback", "exception"))
 
 
 def _strip_metrics(info: dict[str, Any]) -> dict[str, Any]:
@@ -1758,6 +1757,9 @@ class TokoborosTextualApp(App[None]):
         self._activity: tuple[str, str] = ("Idle", "idle")
         self._usage: dict[str, Any] | None = None
         self._recent_tools: list[dict[str, str]] = []
+        # Event→activity derivation is owned by the read model's reducer; the
+        # header folds events through the same function so the two never drift.
+        self._activity_state = ActivitySnapshot("Idle", "idle")
 
     @property
     def hydrated_draft(self) -> str:
@@ -1949,35 +1951,17 @@ class TokoborosTextualApp(App[None]):
         sidebar.update_info(info)
 
     def _note_activity(self, event_type: str, payload: dict[str, Any]) -> None:
-        if event_type == "session.chat.started":
-            self._activity = ("Working…", "running")
-        elif event_type == "thinking.step":
-            self._activity = (f"Thinking · step {payload.get('iteration', '?')}", "running")
-        elif event_type == "tool.call.started":
-            name = str(payload.get("name", "tool"))
-            self._activity = (f"Running {name}…", "running")
-            self._recent_tools.append({"name": name, "status": "running"})
-            self._recent_tools = self._recent_tools[-12:]
-        elif event_type == "tool.call.completed":
-            name = str(payload.get("name", "tool"))
-            preview = _sanitize_legacy_rich_markup(str(payload.get("result_preview", "")))
-            status = "failed" if _looks_like_error(preview) else "completed"
-            for tool in reversed(self._recent_tools):
-                if tool["name"] == name and tool["status"] == "running":
-                    tool["status"] = status
-                    break
-        elif event_type == "permission.requested":
-            self._activity = ("Waiting for approval", "pending")
-        elif event_type == "permission.decided":
-            self._activity = ("Working…", "running")
-        elif event_type == "usage.updated":
-            self._usage = dict(payload)
-        elif event_type == "job.started":
-            self._activity = (f"Running job: {payload.get('label', 'job')}", "running")
-        elif event_type in {"session.chat.completed", "job.completed"}:
-            self._activity = ("Idle", "idle")
-        elif event_type in {"boot.failed", "job.failed"}:
-            self._activity = ("Failed", "failed")
+        # Fold the event through the read model's reducer (the single owner of
+        # event→activity derivation), then mirror it into the render fields.
+        self._activity_state = advance_activity(self._activity_state, event_type, payload)
+        state = self._activity_state
+        self._activity = (state.label, state.state)
+        self._recent_tools = [{"name": t.name, "status": t.status} for t in state.recent_tools]
+        if state.total_tokens or state.estimated_cost_usd:
+            self._usage = {
+                "total_tokens": state.total_tokens,
+                "estimated_cost_usd": state.estimated_cost_usd,
+            }
 
     def compose(self) -> ComposeResult:
         # The Toko brand glyph *is* the header: a centered wordmark whose eye
@@ -2526,12 +2510,12 @@ class TokoborosTextualApp(App[None]):
 
         current = config.provider.model
         allowed = list(getattr(config.provider, "allowed_models", []) or [])
+        discovered: list[str] = []
+        if self._agent is not None:
+            discovered = self._agent.list_provider_models()
 
         if not arg:
             # Prefer live discovery from the provider; fall back to a curated list.
-            discovered: list[str] = []
-            if self._agent is not None:
-                discovered = self._agent.list_provider_models()
             source = "provider" if discovered else "defaults"
             if not discovered:
                 discovered = _CURATED_MODELS.get(config.provider.kind, [current])
@@ -2549,6 +2533,16 @@ class TokoborosTextualApp(App[None]):
             self._session_note(
                 f"'{arg}' is not in the allowed model list: {', '.join(allowed)}. "
                 "Edit [provider].allowed_models to change this.",
+                style=theme.WARNING,
+            )
+            return
+
+        # When the provider exposes a live /models list, reject unknown names
+        # early so we fail locally instead of surfacing an upstream 404 later.
+        if discovered and arg != current and arg not in discovered:
+            self._session_note(
+                f"'{arg}' is not exposed by {config.provider.kind}. "
+                "Run /model (no args) to pick from available models.",
                 style=theme.WARNING,
             )
             return

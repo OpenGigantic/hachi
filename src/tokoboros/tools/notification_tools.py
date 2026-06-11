@@ -29,6 +29,7 @@ def _get_shared_buffer() -> DigestBuffer:
         _SHARED_DIGEST_BUFFER = DigestBuffer()
     return _SHARED_DIGEST_BUFFER
 
+
 # ---------------------------------------------------------------------------
 # Desktop notification tool
 # ---------------------------------------------------------------------------
@@ -207,7 +208,10 @@ def _make_flush_notification_digest(
         if not parts:
             err = result.get("error", "unknown error")
             return f"Digest flush attempted but nothing sent: {err}"
-        return f"Digest sent ({result['item_count']} item(s)) via {', '.join(parts)}."
+        summary = f"Digest sent ({result['item_count']} item(s)) via {', '.join(parts)}."
+        if result.get("error"):
+            summary += f" Warning: {result['error']}"
+        return summary
 
     return flush_notification_digest
 

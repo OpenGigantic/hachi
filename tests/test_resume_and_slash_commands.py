@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from tokoboros.core.llm import Message
 from tokoboros.core.memory import MemoryManager
@@ -111,6 +112,68 @@ def test_slash_command_settings_switches_mode(monkeypatch) -> None:
     monkeypatch.setattr(app, "_switch_mode", lambda mode: switched.append(mode))
     app.handle_slash_command("/settings")
     assert switched == ["settings"]
+
+
+def test_slash_command_model_rejects_unknown_discovered_model(monkeypatch) -> None:
+    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    notes: list[str] = []
+    writes: list[str] = []
+    reboots: list[bool] = []
+    app._agent = SimpleNamespace(list_provider_models=lambda: ["gpt-4.1", "gpt-4.1-mini"])
+
+    cfg = SimpleNamespace(
+        provider=SimpleNamespace(
+            kind="openai-compatible",
+            model="gpt-4.1-mini",
+            allowed_models=[],
+        )
+    )
+    monkeypatch.setattr("tokoboros.core.config_loader.load_effective_config", lambda: cfg)
+    monkeypatch.setattr(
+        "tokoboros.core.config_loader.write_global_config",
+        lambda _cfg: writes.append("write"),
+    )
+    monkeypatch.setattr(
+        app, "_reboot_runtime", lambda resume_current: reboots.append(resume_current)
+    )
+    monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
+
+    app.handle_slash_command("/model gpt-5.3-nano")
+
+    assert writes == []
+    assert reboots == []
+    assert any("not exposed" in note for note in notes)
+
+
+def test_slash_command_model_accepts_discovered_model(monkeypatch) -> None:
+    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    notes: list[str] = []
+    writes: list[str] = []
+    reboots: list[bool] = []
+    app._agent = SimpleNamespace(list_provider_models=lambda: ["gpt-4.1", "gpt-4.1-mini"])
+
+    cfg = SimpleNamespace(
+        provider=SimpleNamespace(
+            kind="openai-compatible",
+            model="gpt-4.1-mini",
+            allowed_models=[],
+        )
+    )
+    monkeypatch.setattr("tokoboros.core.config_loader.load_effective_config", lambda: cfg)
+    monkeypatch.setattr(
+        "tokoboros.core.config_loader.write_global_config",
+        lambda _cfg: writes.append("write"),
+    )
+    monkeypatch.setattr(
+        app, "_reboot_runtime", lambda resume_current: reboots.append(resume_current)
+    )
+    monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
+
+    app.handle_slash_command("/model gpt-4.1")
+
+    assert writes == ["write"]
+    assert reboots == [True]
+    assert any("Model set to gpt-4.1" in note for note in notes)
 
 
 def test_slash_command_plan_expands_prompt(monkeypatch) -> None:

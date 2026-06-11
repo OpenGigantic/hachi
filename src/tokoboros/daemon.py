@@ -102,8 +102,10 @@ def _build_argv(config: DaemonConfig) -> list[str]:
         cmd = [str(exe)]
     return cmd + [
         "gateway",
-        "--host", config.host,
-        "--port", str(config.port),
+        "--host",
+        config.host,
+        "--port",
+        str(config.port),
         "--runtime",
     ]
 
@@ -272,9 +274,7 @@ class DaemonInstaller:
         platform = _detect_platform()
         try:
             if platform == "macos":
-                result = self._run(
-                    ["launchctl", "list", _LAUNCHD_LABEL], capture=True
-                )
+                result = self._run(["launchctl", "list", _LAUNCHD_LABEL], capture=True)
                 lines = result.stdout.strip() if result.stdout else ""
                 return f"launchd: {lines or 'not running'}"
             if platform == "linux":
@@ -364,17 +364,25 @@ class DaemonInstaller:
 
     def _install_windows(self) -> str:
         argv = _build_argv(self._config)
-        # schtasks requires a single quoted string for /tr.
-        # We join with spaces — no shell=True; schtasks handles it.
-        tr = " ".join(argv)
-        self._run([
-            "schtasks", "/create",
-            "/tn", _TASK_NAME,
-            "/tr", tr,
-            "/sc", "ONLOGON",
-            "/it",   # Interactive (runs in current user session)
-            "/f",    # Force overwrite if already exists
-        ])
+        # schtasks /tr expects a single string. Quote any token that contains a
+        # space (e.g. "C:\Program Files\Python313\python.exe") so Task Scheduler
+        # does not split the path at the space boundary.
+        quoted = [f'"{tok}"' if " " in tok else tok for tok in argv]
+        tr = " ".join(quoted)
+        self._run(
+            [
+                "schtasks",
+                "/create",
+                "/tn",
+                _TASK_NAME,
+                "/tr",
+                tr,
+                "/sc",
+                "ONLOGON",
+                "/it",  # Interactive (runs in current user session)
+                "/f",  # Force overwrite if already exists
+            ]
+        )
         return (
             f"Installed Task Scheduler task '{_TASK_NAME}'.\n"
             "Gateway will start at next logon. To start now: "
