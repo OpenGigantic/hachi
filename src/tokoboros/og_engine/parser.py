@@ -300,6 +300,7 @@ NODE_PATTERN = re.compile(r"^::node\[(.+?)\]", re.MULTILINE)
 EDGE_PATTERN = re.compile(r"^->\[:(.+?)=(.+?)\]", re.MULTILINE)
 BLOCK_PATTERN = re.compile(
     r"^::(dense|assertion|steps|config|tool|api|full|code|list|table|warning|note|example|reference|edges|traverse|summary|schema-def)"
+    r"\b"
     r"(?:\[(.+?)\])?",
     re.MULTILINE,
 )

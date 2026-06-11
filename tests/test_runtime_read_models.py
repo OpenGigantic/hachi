@@ -1,0 +1,158 @@
+"""Tests for the activity projection and sequenced event log in RuntimeReadModelStore.
+
+These projections make the read model the single owner of event→derivation:
+the activity reducer is pure (the TUI status header folds events through the
+same function), and the event log carries monotonic sequence numbers the
+gateway events endpoint pages against.
+"""
+
+from __future__ import annotations
+
+from tokoboros.core.runtime_events import RuntimeEvent
+from tokoboros.core.runtime_read_models import (
+    ActivitySnapshot,
+    RuntimeReadModelStore,
+    advance_activity,
+)
+
+
+def _ev(name: str, payload: dict, timestamp: str = "2026-06-06T10:00:00") -> RuntimeEvent:
+    return RuntimeEvent(name=name, payload=payload, timestamp=timestamp)
+
+
+# --- advance_activity (pure reducer) --------------------------------------
+
+
+def test_chat_started_is_running() -> None:
+    out = advance_activity(ActivitySnapshot("Idle", "idle"), "session.chat.started", {})
+    assert (out.label, out.state) == ("Working…", "running")
+
+
+def test_thinking_includes_iteration() -> None:
+    out = advance_activity(ActivitySnapshot("Idle", "idle"), "thinking.step", {"iteration": 3})
+    assert out.label == "Thinking · step 3"
+    assert out.state == "running"
+
+
+def test_permission_requested_is_pending_then_decided_resumes() -> None:
+    pending = advance_activity(ActivitySnapshot("Idle", "idle"), "permission.requested", {})
+    assert (pending.label, pending.state) == ("Waiting for approval", "pending")
+    resumed = advance_activity(pending, "permission.decided", {})
+    assert (resumed.label, resumed.state) == ("Working…", "running")
+
+
+def test_completion_returns_to_idle() -> None:
+    busy = advance_activity(ActivitySnapshot("Idle", "idle"), "session.chat.started", {})
+    out = advance_activity(busy, "session.chat.completed", {})
+    assert (out.label, out.state) == ("Idle", "idle")
+
+
+def test_job_failed_is_failed() -> None:
+    out = advance_activity(ActivitySnapshot("Idle", "idle"), "job.failed", {})
+    assert (out.label, out.state) == ("Failed", "failed")
+
+
+def test_usage_updates_tokens_and_cost() -> None:
+    out = advance_activity(
+        ActivitySnapshot("Idle", "idle"),
+        "usage.updated",
+        {"total_tokens": 1234, "estimated_cost_usd": 0.5},
+    )
+    assert out.total_tokens == 1234
+    assert out.estimated_cost_usd == 0.5
+    # Usage does not disturb the activity label/state.
+    assert (out.label, out.state) == ("Idle", "idle")
+
+
+def test_unhandled_event_returns_prev_unchanged() -> None:
+    prev = ActivitySnapshot("Working…", "running")
+    assert advance_activity(prev, "mcp.server.ready", {}) is prev
+
+
+def test_tool_started_then_completed_resolves_recent_tool() -> None:
+    idle = ActivitySnapshot("Idle", "idle")
+    s1 = advance_activity(idle, "tool.call.started", {"name": "read_file"})
+    assert s1.label == "Running read_file…"
+    assert [(t.name, t.status) for t in s1.recent_tools] == [("read_file", "running")]
+
+    s2 = advance_activity(s1, "tool.call.completed", {"name": "read_file", "result_preview": "ok"})
+    assert [(t.name, t.status) for t in s2.recent_tools] == [("read_file", "completed")]
+
+
+def test_tool_completed_error_marks_recent_tool_failed() -> None:
+    s1 = advance_activity(ActivitySnapshot("Idle", "idle"), "tool.call.started", {"name": "boom"})
+    s2 = advance_activity(
+        s1, "tool.call.completed", {"name": "boom", "result_preview": "Traceback: kaboom"}
+    )
+    assert s2.recent_tools[0].status == "failed"
+
+
+def test_recent_tools_resolves_most_recent_running_first() -> None:
+    # The recent-tools strip resolves the most-recent running entry of a name
+    # (a reversed scan), preserving the pre-refactor header behavior. This is a
+    # display-strip nicety distinct from the FIFO-paired tool *timeline*.
+    state = ActivitySnapshot("Idle", "idle")
+    state = advance_activity(state, "tool.call.started", {"name": "t"})
+    state = advance_activity(state, "tool.call.started", {"name": "t"})
+    state = advance_activity(state, "tool.call.completed", {"name": "t", "result_preview": "ok"})
+    statuses = [t.status for t in state.recent_tools]
+    assert statuses == ["running", "completed"]
+
+
+def test_recent_tools_capped_at_twelve() -> None:
+    state = ActivitySnapshot("Idle", "idle")
+    for _ in range(20):
+        state = advance_activity(state, "tool.call.started", {"name": "t"})
+    assert len(state.recent_tools) == 12
+
+
+# --- store.activity() integration -----------------------------------------
+
+
+def test_store_activity_reflects_latest_event() -> None:
+    store = RuntimeReadModelStore()
+    assert store.activity().state == "idle"
+    store.append_event(_ev("session.chat.started", {}))
+    assert store.activity().state == "running"
+    store.append_event(_ev("tool.call.started", {"name": "grep"}))
+    assert store.activity().label == "Running grep…"
+    store.append_event(_ev("session.chat.completed", {}))
+    assert store.activity().state == "idle"
+
+
+# --- sequence numbers + read_events_since ---------------------------------
+
+
+def test_sequence_numbers_are_monotonic() -> None:
+    store = RuntimeReadModelStore()
+    store.append_event(_ev("a.b.c", {}))
+    store.append_event(_ev("d.e.f", {}))
+    store.append_event(_ev("g.h.i", {}))
+    seqs = [snap.sequence for snap in store.runtime_events()]
+    assert seqs == [1, 2, 3]
+
+
+def test_read_events_since_filters_by_sequence() -> None:
+    store = RuntimeReadModelStore()
+    for name in ("e1", "e2", "e3", "e4"):
+        store.append_event(_ev(name, {}))
+
+    fresh = store.read_events_since(after=2)
+    assert [snap.name for snap in fresh] == ["e3", "e4"]
+    assert [snap.sequence for snap in fresh] == [3, 4]
+
+
+def test_read_events_since_honours_limit() -> None:
+    store = RuntimeReadModelStore()
+    for i in range(10):
+        store.append_event(_ev(f"e{i}", {}))
+
+    batch = store.read_events_since(after=0, limit=3)
+    assert len(batch) == 3
+    assert [snap.sequence for snap in batch] == [1, 2, 3]
+
+
+def test_read_events_since_after_tip_is_empty() -> None:
+    store = RuntimeReadModelStore()
+    store.append_event(_ev("only", {}))
+    assert store.read_events_since(after=1) == ()
