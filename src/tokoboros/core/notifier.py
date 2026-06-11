@@ -43,9 +43,40 @@ def _default_runner(cmd: list[str], **kwargs: Any) -> Any:
     return subprocess.run(cmd, shell=False, **kwargs)  # noqa: S603
 
 
-def _safe_str(value: str) -> str:
-    """JSON-encode a string so it is safe to embed in osascript/PowerShell arguments."""
-    return json.dumps(value)
+def _applescript_literal(value: str) -> str:
+    """Encode *value* as an AppleScript double-quoted string literal.
+
+    AppleScript string literals are inert with respect to shell-style expansion —
+    ``$VAR``, ``$(...)`` subexpressions and backticks have no special meaning to
+    AppleScript — so JSON double-quote encoding is an injection-safe representation
+    here. ``ensure_ascii=False`` keeps Unicode (emoji, accents) literal instead of
+    emitting ``\\uXXXX`` escapes that AppleScript would not decode; ``\\n``/``\\t``
+    survive as AppleScript-recognised escapes (rendered as newline/tab).
+    """
+    return json.dumps(value, ensure_ascii=False)
+
+
+# Windows desktop notifications are dispatched through PowerShell. Untrusted text
+# (notification bodies are frequently summarised from email/web/tool output) must
+# NOT be interpolated into the ``-Command`` script: inside the double-quoted strings
+# ``json.dumps`` produces, PowerShell expands ``$var``, evaluates ``$(...)``
+# subexpressions and processes backtick escapes — a command-injection and
+# info-disclosure surface. Instead, title/body travel out-of-band as environment
+# variables and the script — a compile-time constant with no interpolation of user
+# text — reads them via ``$env:`` (whose values are NOT re-expanded as code).
+_WIN_NOTIFY_TITLE_ENV = "TOKOBOROS_NOTIFY_TITLE"
+_WIN_NOTIFY_BODY_ENV = "TOKOBOROS_NOTIFY_BODY"
+_WINDOWS_NOTIFY_SCRIPT = (
+    "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); "
+    "$n = New-Object System.Windows.Forms.NotifyIcon; "
+    "$n.Icon = [System.Drawing.SystemIcons]::Information; "
+    f"$n.BalloonTipTitle = $env:{_WIN_NOTIFY_TITLE_ENV}; "
+    f"$n.BalloonTipText = $env:{_WIN_NOTIFY_BODY_ENV}; "
+    "$n.Visible = $True; "
+    "$n.ShowBalloonTip(4000); "
+    "Start-Sleep -Milliseconds 4500; "
+    "$n.Dispose()"
+)
 
 
 class DesktopNotifier:
@@ -96,8 +127,12 @@ class DesktopNotifier:
     # ------------------------------------------------------------------
 
     def _send_macos(self, title: str, body: str) -> str:
-        # json.dumps adds proper AppleScript-safe quoting (double quotes + escapes).
-        script = f"display notification {_safe_str(body)} with title {_safe_str(title)}"
+        # AppleScript double-quoted literals do not perform shell-style expansion,
+        # so _applescript_literal is an injection-safe encoding of user text.
+        script = (
+            f"display notification {_applescript_literal(body)} "
+            f"with title {_applescript_literal(title)}"
+        )
         self._runner(["osascript", "-e", script], capture_output=True, timeout=10)
         return f"Desktop notification sent: {title!r}"
 
@@ -112,23 +147,36 @@ class DesktopNotifier:
 
     def _send_windows(self, title: str, body: str) -> str:
         # Use PowerShell WinForms balloon tip — no BurntToast required.
-        # json.dumps produces double-quoted strings PS understands.
-        script = (
-            "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); "
-            "$n = New-Object System.Windows.Forms.NotifyIcon; "
-            "$n.Icon = [System.Drawing.SystemIcons]::Information; "
-            f"$n.BalloonTipTitle = {_safe_str(title)}; "
-            f"$n.BalloonTipText = {_safe_str(body)}; "
-            "$n.Visible = $True; "
-            "$n.ShowBalloonTip(4000); "
-            "Start-Sleep -Milliseconds 4500; "
-            "$n.Dispose()"
-        )
-        self._runner(
-            ["powershell.exe", "-NonInteractive", "-NoProfile", "-Command", script],
+        # Title/body are passed out-of-band via environment variables (read by the
+        # constant _WINDOWS_NOTIFY_SCRIPT) so untrusted text is never parsed as
+        # PowerShell code. A fresh per-call env dict (no os.environ mutation) keeps
+        # this thread-safe; it inherits the current environment so PowerShell and its
+        # assemblies resolve normally.
+        env = {
+            **os.environ,
+            _WIN_NOTIFY_TITLE_ENV: title,
+            _WIN_NOTIFY_BODY_ENV: body,
+        }
+        proc = self._runner(
+            [
+                "powershell.exe",
+                "-NonInteractive",
+                "-NoProfile",
+                "-Command",
+                _WINDOWS_NOTIFY_SCRIPT,
+            ],
             capture_output=True,
             timeout=15,
+            env=env,
         )
+        if proc is not None and getattr(proc, "returncode", 0) != 0:
+            stderr = getattr(proc, "stderr", b"")
+            err_text = (
+                stderr.decode(errors="replace").strip()
+                if isinstance(stderr, bytes)
+                else str(stderr).strip()
+            )
+            return f"Desktop notification failed (rc={proc.returncode}): {err_text}"
         return f"Desktop notification sent: {title!r}"
 
 
@@ -183,8 +231,10 @@ class EmailNotifier:
         return cls(sender=sender)
 
     def is_configured(self) -> bool:
-        """Return True when SMTP credentials are available."""
-        return bool(os.environ.get("TOKOBOROS_SMTP_USER"))
+        """Return True when SMTP credentials (user AND password) are available."""
+        return bool(
+            os.environ.get("TOKOBOROS_SMTP_USER") and os.environ.get("TOKOBOROS_SMTP_PASSWORD")
+        )
 
     def send(self, subject: str, body: str, to: str = "") -> dict[str, str]:
         """Send an email notification.

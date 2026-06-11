@@ -7,7 +7,9 @@ Tool layer: injectable notifiers so no OS calls or network activity.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 import time
 from email.mime.multipart import MIMEMultipart
 from unittest import mock
@@ -16,7 +18,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.notifier import DesktopNotifier, EmailNotifier
+from tokoboros.core.notifier import (
+    _WIN_NOTIFY_BODY_ENV,
+    _WIN_NOTIFY_TITLE_ENV,
+    DesktopNotifier,
+    EmailNotifier,
+)
 from tokoboros.gateway.orchestrator import _CORE_TOOL_NAMES, _GROUP_BY_TOOL_NAME
 from tokoboros.tools.notification_tools import (
     _make_notify_user,
@@ -93,6 +100,28 @@ def test_desktop_macos_properly_escapes_special_chars():
     assert not runner.shell_used()
 
 
+def test_desktop_macos_encodes_newline_and_unicode():
+    """AppleScript path: newline becomes the ``\\n`` escape (AppleScript renders it
+    as a line break, not a raw newline that would break the ``-e`` script), Unicode
+    is kept literal (not ``\\uXXXX``), and shell-style tokens stay inert because
+    AppleScript double-quoted literals do not expand ``$()``/``$VAR``."""
+    runner = RecordingRunner()
+    n = DesktopNotifier(runner=runner)
+    with mock.patch("tokoboros.core.notifier._platform", return_value="macos"):
+        n.send("Tîtlé 🚀", "line1\nline2 — cost $5 $(whoami)")
+    script = runner.commands[0][-1]
+    # Newline encoded as the AppleScript \n escape (two chars: backslash + n).
+    assert "line1\\nline2" in script
+    # Unicode preserved literally (ensure_ascii=False), never \uXXXX-escaped.
+    assert "🚀" in script
+    assert "Tîtlé" in script
+    assert "\\u" not in script
+    # Shell-style tokens are literal text inside an AppleScript double-quoted string.
+    assert "$(whoami)" in script
+    assert "$5" in script
+    assert not runner.shell_used()
+
+
 # ---------------------------------------------------------------------------
 # DesktopNotifier — Linux
 # ---------------------------------------------------------------------------
@@ -131,14 +160,83 @@ def test_desktop_windows_calls_powershell():
     n = DesktopNotifier(runner=runner)
     with mock.patch("tokoboros.core.notifier._platform", return_value="windows"):
         msg = n.send("Win Alert", "body text")
-    cmd = runner.commands[0]
+    cmd, kwargs = runner.calls[0]
     assert "powershell.exe" in cmd[0]
     assert "-Command" in cmd
-    script = cmd[-1]
-    assert "Win Alert" in script
-    assert "body text" in script
+    # Title/body travel out-of-band via the environment, never interpolated into
+    # the executed script (see test_desktop_windows_no_powershell_injection).
+    assert kwargs["env"][_WIN_NOTIFY_TITLE_ENV] == "Win Alert"
+    assert kwargs["env"][_WIN_NOTIFY_BODY_ENV] == "body text"
     assert "sent" in msg.lower()
     assert not runner.shell_used()
+
+
+def test_desktop_windows_no_powershell_injection():
+    """Regression for the PowerShell command-injection flaw: a body containing
+    ``$(...)`` subexpressions, ``$env:`` references and a backtick must reach the
+    toast VERBATIM and must never be interpolated into the executed ``-Command``
+    script (where PowerShell would evaluate it).
+
+    Offline structural guard — runs on every platform. The end-to-end proof on a
+    real interpreter is ``test_desktop_windows_injection_live`` below.
+    """
+    runner = RecordingRunner()
+    n = DesktopNotifier(runner=runner)
+    evil_title = "Build `$(hostname)` done"
+    evil_body = "Result: $(2+2) and $(Get-Date -Format yyyy); var $env:PATH; tick `n end"
+    with mock.patch("tokoboros.core.notifier._platform", return_value="windows"):
+        n.send(evil_title, evil_body)
+
+    cmd, kwargs = runner.calls[0]
+    script = cmd[-1]
+
+    # 1) The untrusted text must NOT appear in the executed script at all — if it
+    #    did, PowerShell would parse $(...)/$env:/backtick inside it.
+    for needle in ("$(2+2)", "$(Get-Date", "$env:PATH", evil_body, evil_title):
+        assert needle not in script, f"untrusted text leaked into script: {needle!r}"
+
+    # 2) The constant script only *reads* the values via $env: (not re-expanded).
+    assert f"$env:{_WIN_NOTIFY_TITLE_ENV}" in script
+    assert f"$env:{_WIN_NOTIFY_BODY_ENV}" in script
+
+    # 3) The values are carried out-of-band, byte-for-byte verbatim.
+    assert kwargs["env"][_WIN_NOTIFY_TITLE_ENV] == evil_title
+    assert kwargs["env"][_WIN_NOTIFY_BODY_ENV] == evil_body
+
+    # 4) Still no OS shell anywhere.
+    assert not runner.shell_used()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="exercises real powershell.exe")
+def test_desktop_windows_injection_live():
+    """End-to-end proof on real PowerShell: a malicious value placed in the body
+    env var is read back via ``$env:`` VERBATIM — no ``$(...)`` evaluation, no
+    ``$env:`` expansion, backtick preserved. This exercises the exact env-read
+    mechanism the production ``_WINDOWS_NOTIFY_SCRIPT`` uses to populate the toast.
+    """
+    import shutil
+
+    if shutil.which("powershell.exe") is None:
+        pytest.skip("powershell.exe not on PATH")
+
+    evil_body = "Result: $(2+2) and $(Get-Date -Format yyyy); var $env:PATH; tick `n end"
+    env = {**os.environ, _WIN_NOTIFY_BODY_ENV: evil_body}
+    cp = subprocess.run(
+        [
+            "powershell.exe",
+            "-NonInteractive",
+            "-NoProfile",
+            "-Command",
+            f"[Console]::Out.Write($env:{_WIN_NOTIFY_BODY_ENV})",
+        ],
+        shell=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        env=env,
+    )
+    # Byte-for-byte: if any subexpression had evaluated, this would differ.
+    assert cp.stdout == evil_body
 
 
 # ---------------------------------------------------------------------------
@@ -189,10 +287,18 @@ def test_email_not_configured_without_smtp_user(monkeypatch):
     assert n.is_configured() is False
 
 
-def test_email_configured_with_smtp_user(monkeypatch):
+def test_email_configured_with_smtp_user_and_password(monkeypatch):
     monkeypatch.setenv("TOKOBOROS_SMTP_USER", "user@example.com")
+    monkeypatch.setenv("TOKOBOROS_SMTP_PASSWORD", "secret")
     n = EmailNotifier()
     assert n.is_configured() is True
+
+
+def test_email_not_configured_without_password(monkeypatch):
+    monkeypatch.setenv("TOKOBOROS_SMTP_USER", "user@example.com")
+    monkeypatch.delenv("TOKOBOROS_SMTP_PASSWORD", raising=False)
+    n = EmailNotifier()
+    assert n.is_configured() is False
 
 
 def test_email_send_success(monkeypatch):

@@ -15,7 +15,6 @@ import os
 import sys
 import threading
 from dataclasses import asdict
-from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -57,11 +56,47 @@ app = typer.Typer(
     invoke_without_command=True,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+
+# On Windows the default console encoding is often cp1252, which cannot represent
+# Unicode arrows/dashes used throughout CLI output.  Reconfigure stdout/stderr to
+# UTF-8 with replacement characters so output degrades gracefully instead of raising
+# UnicodeEncodeError.  The reconfigure() call is a no-op on Python builds where the
+# stream doesn't support it (e.g. when stdout is not a TextIOWrapper).
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            try:
+                _stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+def _load_dotenv_into_environ(dotenv_path: Path) -> None:
+    """Merge a .env file into os.environ (existing vars are NOT overwritten).
+
+    This ensures SMTP / Telegram / Slack credentials set in .env are visible to
+    all tools that read os.environ directly — not just the provider API-key path
+    in core/llm.py which has its own .env fallback.
+    """
+    if not dotenv_path.exists():
+        return
+    try:
+        for line in dotenv_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except Exception:
+        pass  # .env parse errors must never abort the CLI
+
+
+_load_dotenv_into_environ(Path.cwd() / ".env")
+
 console = Console()
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 def _resolve_version() -> str:
@@ -125,15 +160,11 @@ class _InProcessGatewayRuntime:
     def __init__(self) -> None:
         self._agents: dict[str, AgentSession] = {}
         self._agents_lock = threading.Lock()
-        self._events_by_session: dict[str, list[GatewayEvent]] = {}
-        self._sequence_by_session: dict[str, int] = {}
-        self._events_lock = threading.Lock()
 
     def _boot_session_agent(self, session_id: str) -> AgentSession:
-        def _emit(event_type: str, payload: dict) -> None:
-            self._on_runtime_event(session_id, event_type, payload)
-
-        return boot_agent(on_event=_emit)
+        # Events are recorded by the agent's own RuntimeReadModelStore (the single
+        # event log); read_events serves them by sequence. No parallel queue.
+        return boot_agent()
 
     def _get_agent(self, session_id: str) -> AgentSession:
         with self._agents_lock:
@@ -155,10 +186,6 @@ class _InProcessGatewayRuntime:
             except Exception:
                 pass
 
-        with self._events_lock:
-            self._events_by_session.setdefault(session_id, [])
-            self._sequence_by_session.setdefault(session_id, 0)
-
     def close_connection(self, session_id: str) -> None:
         with self._agents_lock:
             agent = self._agents.pop(session_id, None)
@@ -167,18 +194,22 @@ class _InProcessGatewayRuntime:
                 agent.shutdown()
             except Exception:
                 pass
-        with self._events_lock:
-            self._events_by_session.pop(session_id, None)
-            self._sequence_by_session.pop(session_id, None)
 
     def chat(self, session_id: str, prompt: str) -> str:
         agent = self._get_agent(session_id)
         return agent.chat(prompt)
 
     def read_events(self, session_id: str, after: int, limit: int) -> list[GatewayEvent]:
-        with self._events_lock:
-            queue = self._events_by_session.get(session_id, [])
-            return [event for event in queue if event.sequence > after][:limit]
+        snapshots = self._get_agent(session_id).snapshot_events_since(after, limit)
+        return [
+            GatewayEvent(
+                sequence=snap.sequence,
+                event_type=snap.name,
+                payload=snap.payload,
+                time=snap.timestamp,
+            )
+            for snap in snapshots
+        ]
 
     def session_state(self, session_id: str) -> dict:
         return asdict(self._get_agent(session_id).snapshot_session_state())
@@ -415,23 +446,6 @@ class _InProcessGatewayRuntime:
             "plan": plan.model_dump(mode="python", exclude_none=True),
             "state": service.resume_state().model_dump(mode="python", exclude_none=True),
         }
-
-    def _on_runtime_event(self, session_id: str, event_type: str, payload: dict) -> None:
-        with self._events_lock:
-            if session_id not in self._events_by_session:
-                return
-            next_sequence = self._sequence_by_session.get(session_id, 0) + 1
-            self._sequence_by_session[session_id] = next_sequence
-            self._events_by_session[session_id].append(
-                GatewayEvent(
-                    sequence=next_sequence,
-                    event_type=event_type,
-                    payload=dict(payload),
-                    time=_now_iso(),
-                )
-            )
-            if len(self._events_by_session[session_id]) > 2000:
-                self._events_by_session[session_id] = self._events_by_session[session_id][-2000:]
 
     def shutdown(self) -> None:
         with self._agents_lock:
@@ -1446,11 +1460,7 @@ def setup(
     key_ok, key_msg = service.validate_provider(
         kind=provider["kind"], api_key_env=provider.get("api_key_env")
     )
-    key_status = (
-        "[green]✓ API key found.[/green]"
-        if key_ok
-        else f"[yellow]⚠ {key_msg}[/yellow]"
-    )
+    key_status = "[green]✓ API key found.[/green]" if key_ok else f"[yellow]⚠ {key_msg}[/yellow]"
 
     console.print(
         Panel(
@@ -2145,8 +2155,10 @@ def schedule_list():
         return
     for s in schedules:
         state = "enabled" if s.enabled else "disabled"
+        # Escape the opening bracket so Rich doesn't interpret "[interval, enabled]"
+        # as a style tag and hide the kind/state text.
         console.print(
-            f"[bold]{s.name}[/bold] [{s.kind.value}, {state}] id={s.schedule_id}\n"
+            f"[bold]{s.name}[/bold] \\[{s.kind.value}, {state}] id={s.schedule_id}\n"
             f"  task: {s.task}\n  next_run: {s.next_run}  runs: {s.run_count}"
         )
 
@@ -2363,11 +2375,20 @@ def channel_telegram(
     console.print("[green]Telegram bot running.[/green] Press Ctrl+C to stop.")
     try:
         while True:
-            for inbound in adapter.poll_once():
-                console.print(
-                    f"[cyan]{inbound.sender_name or inbound.sender_id}[/cyan]: {inbound.text}"
-                )
-                adapter.send(router.dispatch(inbound))
+            try:
+                for inbound in adapter.poll_once():
+                    console.print(
+                        f"[cyan]{inbound.sender_name or inbound.sender_id}[/cyan]: {inbound.text}"
+                    )
+                    try:
+                        adapter.send(router.dispatch(inbound))
+                    except Exception as _dispatch_err:
+                        console.print(f"[yellow]dispatch error:[/yellow] {_dispatch_err}")
+            except KeyboardInterrupt:
+                raise
+            except Exception as _poll_err:
+                # Transient network errors (409 Conflict, DNS, etc.) must not kill the bot.
+                console.print(f"[yellow]poll error (retrying):[/yellow] {_poll_err}")
             time.sleep(poll_interval)
     except KeyboardInterrupt:
         console.print("\n[dim]Stopping Telegram bot...[/dim]")
@@ -2472,9 +2493,7 @@ def pack_list(
 
     if not packs:
         console.print("[dim]No community packs installed.[/dim]")
-        console.print(
-            "Install one with: [bold]tokoboros skill pack install user/repo[/bold]"
-        )
+        console.print("Install one with: [bold]tokoboros skill pack install user/repo[/bold]")
         return
 
     from rich.table import Table
@@ -2542,18 +2561,12 @@ def pack_install(
 
     console.print(
         f"[green]Installed[/green] pack [bold cyan]{info.name}[/bold cyan] "
-        f"({info.file_count} skill(s)"
-        + (f", v{info.version}" if info.version else "")
-        + ")"
+        f"({info.file_count} skill(s)" + (f", v{info.version}" if info.version else "") + ")"
     )
     if info.description:
         console.print(f"  {info.description}")
-    console.print(
-        f"  Skills loaded from: [dim]{info.installed_path}[/dim]"
-    )
-    console.print(
-        "Run [bold]tokoboros skill list[/bold] to see new skills."
-    )
+    console.print(f"  Skills loaded from: [dim]{info.installed_path}[/dim]")
+    console.print("Run [bold]tokoboros skill list[/bold] to see new skills.")
 
 
 @pack_app.command("remove")
@@ -3277,7 +3290,9 @@ app.add_typer(mcp_app, name="mcp")
 
 # Template for a user-created MCP server .og node.
 _MCP_ENV_OPTION = typer.Option(
-    None, "--env", "-e",
+    None,
+    "--env",
+    "-e",
     help="Environment variable as KEY=VALUE (repeatable). "
     "Stored in the .og node and injected when the server starts.",
 )
@@ -3341,8 +3356,7 @@ def mcp_list(
         env_keys = [k for k in node.config if k.startswith("env_")]
         env_note = f"  [dim]env: {', '.join(k[4:] for k in env_keys)}[/dim]" if env_keys else ""
         console.print(
-            f"  [bold cyan]{node.name}[/bold cyan]  "
-            f"[dim]{command} {args}[/dim]{env_note}"
+            f"  [bold cyan]{node.name}[/bold cyan]  [dim]{command} {args}[/dim]{env_note}"
         )
 
 
@@ -3540,9 +3554,7 @@ def memory_add(
 
     valid_collections = {"core", "user", "agent"}
     if to not in valid_collections:
-        console.print(
-            f"[red]Unknown collection:[/red] {to!r} — choose core, user, or agent."
-        )
+        console.print(f"[red]Unknown collection:[/red] {to!r} — choose core, user, or agent.")
         raise typer.Exit(1)
 
     vault = MemoryVault()
@@ -3591,9 +3603,7 @@ def memory_forget(
 
     valid_collections = {"core", "user", "agent"}
     if from_ not in valid_collections:
-        console.print(
-            f"[red]Unknown collection:[/red] {from_!r} — choose core, user, or agent."
-        )
+        console.print(f"[red]Unknown collection:[/red] {from_!r} — choose core, user, or agent.")
         raise typer.Exit(1)
 
     vault = MemoryVault()
@@ -3617,9 +3627,7 @@ def memory_forget(
 
 @memory_app.command("import")
 def memory_import(
-    file: str = typer.Argument(
-        ..., help="Path to the exported conversation file (JSON)."
-    ),
+    file: str = typer.Argument(..., help="Path to the exported conversation file (JSON)."),
     format: str = typer.Option(
         "auto",
         "--format",
@@ -3840,11 +3848,7 @@ def session_show(
 
     if title:
         console.print(f"[bold white]{title}[/bold white]")
-    cost_str = (
-        f"  ·  {total_tokens:,} tok  ~${total_cost_usd:.4f}"
-        if total_tokens
-        else ""
-    )
+    cost_str = f"  ·  {total_tokens:,} tok  ~${total_cost_usd:.4f}" if total_tokens else ""
     console.print(
         f"[bold]Session[/bold] [cyan]{session_id}[/cyan]  ({len(messages)} messages){cost_str}"
     )
@@ -3893,9 +3897,7 @@ def session_search(
         console.print(f"[dim]No sessions matched:[/dim] {query}")
         return
 
-    console.print(
-        f"[bold]{len(results)}[/bold] result(s) for [cyan]{query}[/cyan]:"
-    )
+    console.print(f"[bold]{len(results)}[/bold] result(s) for [cyan]{query}[/cyan]:")
     for r in results:
         sid = r.get("session_id", "")
         date = (r.get("session_date") or "")[:10]
@@ -3903,8 +3905,7 @@ def session_search(
         role = r.get("role", "?")
         snippet = r.get("snippet", "")
         console.print(
-            f"  [cyan]{sid}[/cyan] [dim]{date}  {model}[/dim]"
-            f"  [magenta]{role}[/magenta]  {snippet}"
+            f"  [cyan]{sid}[/cyan] [dim]{date}  {model}[/dim]  [magenta]{role}[/magenta]  {snippet}"
         )
 
 
@@ -4046,8 +4047,7 @@ def session_export(
         out_path = Path(output)
         out_path.write_text(text, encoding="utf-8")
         console.print(
-            f"[green]Exported[/green] {len(messages)} message(s)"
-            f" → [cyan]{out_path}[/cyan]"
+            f"[green]Exported[/green] {len(messages)} message(s) → [cyan]{out_path}[/cyan]"
         )
     else:
         print(text)
@@ -4173,8 +4173,12 @@ def session_clean(
         if as_json:
             print(
                 _json.dumps(
-                    {"deleted": 0, "would_delete": count, "cutoff": cutoff_iso[:10],
-                     "dry_run": True}
+                    {
+                        "deleted": 0,
+                        "would_delete": count,
+                        "cutoff": cutoff_iso[:10],
+                        "dry_run": True,
+                    }
                 )
             )
         else:
@@ -4274,9 +4278,7 @@ def session_retitle(
         }
         client = create_llm_client(provider_config, secret_store=create_default_secret_store())
     except Exception as exc:
-        console.print(
-            f"[yellow]No model client available ({exc}); using fallback titles.[/yellow]"
-        )
+        console.print(f"[yellow]No model client available ({exc}); using fallback titles.[/yellow]")
 
     results: list[dict[str, str]] = []
     try:

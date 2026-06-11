@@ -628,6 +628,12 @@ class AgentSession:
         """Recent normalized runtime events for operator diagnostics."""
         return self._read_models.runtime_events(limit=limit)
 
+    def snapshot_events_since(
+        self, after: int, limit: int = 100
+    ) -> tuple[RuntimeEventSnapshot, ...]:
+        """Sequenced events past ``after`` — the single source for gateway polling."""
+        return self._read_models.read_events_since(after, limit=limit)
+
     # ==========================================
     # Session Memory Snapshot
     # ==========================================

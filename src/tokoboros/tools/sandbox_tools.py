@@ -12,7 +12,9 @@ from tokoboros.core.sandbox import SandboxExecutor
 def register_sandbox_tools(registry: ToolRegistry, gate: PermissionGate = None) -> None:
     """Registers the python_sandbox tool."""
 
-    executor = SandboxExecutor()
+    # Executor is constructed lazily on first call so a missing `uv` binary does
+    # not raise during tool registration and block the rest of the registry from mounting.
+    _executor: list[SandboxExecutor] = []
 
     def run_python_sandbox(script_content: str, dependencies: list = None) -> str:
         """
@@ -31,7 +33,9 @@ def register_sandbox_tools(registry: ToolRegistry, gate: PermissionGate = None) 
                 )
 
         try:
-            result = executor.execute(script_content, dependencies)
+            if not _executor:
+                _executor.append(SandboxExecutor())
+            result = _executor[0].execute(script_content, dependencies)
             return result.formatted_output
         except OSError as e:
             return str(e)

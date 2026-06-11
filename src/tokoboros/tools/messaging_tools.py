@@ -190,16 +190,17 @@ def _make_send_telegram(sender: TelegramSender | None) -> Callable[[str, str], s
                 "TELEGRAM_CHAT_ID (or pass chat_id), then try again."
             )
         if not target:
-            return (
-                "No Telegram chat_id provided. Pass `chat_id` or set TELEGRAM_CHAT_ID."
-            )
+            return "No Telegram chat_id provided. Pass `chat_id` or set TELEGRAM_CHAT_ID."
         try:
             fn = sender or _telegram_send
-            fn(token, target, text)
+            result = fn(token, target, text)
         except urllib.error.HTTPError as exc:
             return f"Telegram send failed: HTTP {exc.code} — {exc.reason}"
         except Exception as exc:
             return f"Telegram send failed: {exc}"
+        if not result.get("ok"):
+            description = result.get("description", "unknown error")
+            return f"Telegram send failed: {description}"
         return f"Sent Telegram message to chat {target}." + guard_note
 
     return send_telegram_message

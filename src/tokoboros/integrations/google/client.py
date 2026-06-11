@@ -78,11 +78,31 @@ class GoogleHTTPClient:
                 continue
             if response.status_code == 403:
                 self._raise_forbidden(url, response)
-            response.raise_for_status()
+            if not response.is_success:
+                self._raise_api_error(url, response)
             return response
         # Reached only when all retries were exhausted on a retryable status.
-        response.raise_for_status()
-        return response
+        self._raise_api_error(url, response)
+        return response  # unreachable; satisfies type checker
+
+    @staticmethod
+    def _raise_api_error(url: str, response: httpx.Response) -> None:
+        """Raise a human-readable error for any non-success response.
+
+        Extracts the Google API ``error.message`` from the JSON body so the agent
+        sees the actionable reason (e.g. "Missing time zone definition…") rather
+        than the generic httpx "Client error 'NNN'… see MDN" message.
+        """
+        detail = ""
+        try:
+            body = response.json()
+            err = body.get("error", {})
+            detail = err.get("message", "") if isinstance(err, dict) else str(err)
+        except Exception:
+            detail = response.text.strip()
+        raise RuntimeError(
+            f"Google API error {response.status_code} for {url}" + (f": {detail}" if detail else "")
+        )
 
     @staticmethod
     def _raise_forbidden(url: str, response: httpx.Response) -> None:

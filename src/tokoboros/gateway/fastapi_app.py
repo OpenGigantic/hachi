@@ -225,6 +225,16 @@ def create_gateway_app(
             details={"errors": exc.errors()},
         )
 
+    @app.exception_handler(Exception)
+    async def _internal_error_handler(_request: Request, exc: Exception) -> JSONResponse:
+        # Catch-all: prevents the LLM raising (e.g. 401 from a bad API key) from
+        # returning a raw text/plain 500 that clients cannot parse.
+        return _error_response(
+            status_code=500,
+            code="internal_error",
+            message=str(exc) or "An unexpected error occurred.",
+        )
+
     protected_dependencies = [Depends(_require_auth)] if auth_token else []
 
     system = APIRouter(tags=["system"])

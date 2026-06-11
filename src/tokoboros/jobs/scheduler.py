@@ -253,7 +253,11 @@ class Scheduler:
         return list(self._schedules.values())
 
     def get(self, schedule_id: str) -> Schedule | None:
-        return self._schedules.get(schedule_id)
+        """Return a schedule by exact id, or by unique prefix."""
+        if schedule_id in self._schedules:
+            return self._schedules[schedule_id]
+        matches = [s for sid, s in self._schedules.items() if sid.startswith(schedule_id)]
+        return matches[0] if len(matches) == 1 else None
 
     def due(self, now: datetime | None = None) -> list[Schedule]:
         now = now or _now()
@@ -389,9 +393,7 @@ class ScheduleRunner:
         self._fire = fire
         self._interval = tick_interval_seconds
         self._stop = threading.Event()
-        self._thread = threading.Thread(
-            target=self._loop, daemon=True, name="schedule-runner"
-        )
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="schedule-runner")
 
     def start(self) -> None:
         self._thread.start()

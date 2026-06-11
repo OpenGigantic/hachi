@@ -352,9 +352,7 @@ class ExecutionLoop:
         turn_tokens = snap.total_tokens - self._turn_tokens_start
         turn_cost = snap.estimated_cost_usd - self._turn_cost_start
         if self.max_tokens_per_turn > 0 and turn_tokens >= self.max_tokens_per_turn:
-            return (
-                f"per-turn token limit reached ({turn_tokens:,} >= {self.max_tokens_per_turn:,})"
-            )
+            return f"per-turn token limit reached ({turn_tokens:,} >= {self.max_tokens_per_turn:,})"
         if self.max_cost_per_turn > 0 and turn_cost >= self.max_cost_per_turn:
             return (
                 f"per-turn cost limit reached (~${turn_cost:.4f} >= ${self.max_cost_per_turn:.2f})"
@@ -441,15 +439,6 @@ class ExecutionLoop:
                     if fixed:
                         self.on_event("history_repaired", {"orphaned_tool_uses": fixed})
 
-                # Repair any orphaned tool_use blocks before sending to the API.
-                # Edge cases (mid-loop errors, compaction races) can leave tool_use
-                # blocks without a matching tool_result, causing Anthropic 400s.
-                _repair = getattr(self.memory, "repair_tool_pairs", None)
-                if callable(_repair):
-                    fixed = _repair()
-                    if fixed:
-                        self.on_event("history_repaired", {"orphaned_tool_uses": fixed})
-
                 self.on_event("thinking", {"iteration": iterations})
 
                 # Build the system prompt split into a stable cacheable prefix and a
@@ -496,7 +485,12 @@ class ExecutionLoop:
                     )
 
                 if not assistant_content:
-                    break
+                    # Empty response with no tool calls means the LLM stopped
+                    # cleanly (e.g. max_tokens reached mid-token). Treat it as a
+                    # graceful finish rather than falling through to the misleading
+                    # "exceeded maximum iterations" error.
+                    self.memory.complete_task(user_input_for_turn, "")
+                    return response.content or ""
 
                 self.memory.add_message(Message(role="assistant", content=assistant_content))
 
