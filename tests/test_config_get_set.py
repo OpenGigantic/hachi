@@ -3,6 +3,7 @@
 All tests mock load_effective_config / write_global_config so no real
 settings file is touched.
 """
+
 from __future__ import annotations
 
 import json

@@ -89,8 +89,15 @@ def test_detect_env_none_set(tmp_path: Path, monkeypatch) -> None:
         monkeypatch.delenv(k, raising=False)
     with mock.patch("shutil.which", return_value=None):
         d = _service(tmp_path).detect_environment()
-    for key in ("anthropic_env", "openai_env", "groq_env", "together_env", "deepseek_env",
-                "openrouter_env", "ollama_cli"):
+    for key in (
+        "anthropic_env",
+        "openai_env",
+        "groq_env",
+        "together_env",
+        "deepseek_env",
+        "openrouter_env",
+        "ollama_cli",
+    ):
         assert d[key] is False, f"Expected {key} to be False"
 
 
@@ -146,8 +153,11 @@ def test_best_provider_deepseek(tmp_path: Path, monkeypatch) -> None:
 
 def test_best_provider_openrouter_last_resort_before_ollama(tmp_path: Path, monkeypatch) -> None:
     for k in (
-        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY",
-        "TOGETHER_API_KEY", "DEEPSEEK_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GROQ_API_KEY",
+        "TOGETHER_API_KEY",
+        "DEEPSEEK_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-test")
@@ -158,8 +168,12 @@ def test_best_provider_openrouter_last_resort_before_ollama(tmp_path: Path, monk
 
 def test_best_provider_ollama_when_no_keys(tmp_path: Path, monkeypatch) -> None:
     for k in (
-        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY",
-        "TOGETHER_API_KEY", "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GROQ_API_KEY",
+        "TOGETHER_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "OPENROUTER_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
     with mock.patch("shutil.which", return_value="/usr/bin/ollama"):
@@ -171,8 +185,12 @@ def test_best_provider_ollama_when_no_keys(tmp_path: Path, monkeypatch) -> None:
 
 def test_best_provider_returns_none_when_nothing_detected(tmp_path: Path, monkeypatch) -> None:
     for k in (
-        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY",
-        "TOGETHER_API_KEY", "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GROQ_API_KEY",
+        "TOGETHER_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "OPENROUTER_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
     with mock.patch("shutil.which", return_value=None):
@@ -291,7 +309,11 @@ def test_interactive_setup_switches_to_ollama() -> None:
     mock_svc = MagicMock(
         detect_environment=MagicMock(return_value={"ollama_cli": True}),
         best_provider_from_env=MagicMock(
-            return_value={"kind": "ollama", "model": "llama3", "base_url": "http://127.0.0.1:11434/v1"}
+            return_value={
+                "kind": "ollama",
+                "model": "llama3",
+                "base_url": "http://127.0.0.1:11434/v1",
+            }
         ),
         build_tier_plan=MagicMock(return_value=MagicMock(answers={})),
         apply_setup=MagicMock(),
@@ -353,9 +375,7 @@ def test_pre_flight_check_fails_non_interactive_no_prompt() -> None:
         with patch("tokoboros.cli.main.OnboardingService", return_value=mock_svc):
             with patch("sys.stdin") as mock_stdin:
                 mock_stdin.isatty.return_value = False
-                with patch(
-                    "tokoboros.cli.main._interactive_first_run_setup"
-                ) as mock_interactive:
+                with patch("tokoboros.cli.main._interactive_first_run_setup") as mock_interactive:
                     result = _pre_flight_check()
     assert result is False
     mock_interactive.assert_not_called()

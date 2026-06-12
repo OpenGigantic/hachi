@@ -117,9 +117,7 @@ def test_generate_returns_text_on_success() -> None:
     mock_resp.raise_for_status = MagicMock()
 
     with patch("httpx.post", return_value=mock_resp):
-        result = client.generate(
-            [MagicMock(role="user", content="What is the answer?")]
-        )
+        result = client.generate([MagicMock(role="user", content="What is the answer?")])
 
     assert result.content == "The answer is 42."
     assert result.tool_calls == []

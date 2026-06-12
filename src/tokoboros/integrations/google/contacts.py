@@ -95,26 +95,34 @@ class ContactsService(GoogleService):
 
         def google_list_contacts(max_results: int = 50) -> str:
             try:
-                response = self.client.get(
-                    f"https://people.googleapis.com/v1/people/me/connections?personFields=names,emailAddresses,phoneNumbers&pageSize={max_results}"
-                )
-
                 matches = []
-                for person in response.get("connections", []):
-                    person_names = person.get("names", [])
-                    emails = [e.get("value") for e in person.get("emailAddresses", [])]
-                    phones = [p.get("value") for p in person.get("phoneNumbers", [])]
-
-                    matches.append(
-                        {
-                            "resourceName": person.get("resourceName", ""),
-                            "name": person_names[0].get("displayName")
-                            if person_names
-                            else "Unknown",
-                            "emails": emails,
-                            "phones": phones,
-                        }
+                page_token: str | None = None
+                while len(matches) < max_results:
+                    batch_size = min(max_results - len(matches), 1000)
+                    url = (
+                        f"https://people.googleapis.com/v1/people/me/connections"
+                        f"?personFields=names,emailAddresses,phoneNumbers&pageSize={batch_size}"
                     )
+                    if page_token:
+                        url += f"&pageToken={page_token}"
+                    response = self.client.get(url)
+                    for person in response.get("connections", []):
+                        person_names = person.get("names", [])
+                        emails = [e.get("value") for e in person.get("emailAddresses", [])]
+                        phones = [p.get("value") for p in person.get("phoneNumbers", [])]
+                        matches.append(
+                            {
+                                "resourceName": person.get("resourceName", ""),
+                                "name": person_names[0].get("displayName")
+                                if person_names
+                                else "Unknown",
+                                "emails": emails,
+                                "phones": phones,
+                            }
+                        )
+                    page_token = response.get("nextPageToken")
+                    if not page_token:
+                        break
 
                 if not matches:
                     return "No contacts found."

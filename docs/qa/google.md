@@ -135,3 +135,60 @@ Tier: `unrestricted`; capability `google` configured=true; real `GoogleIntegrati
 - **Pagination/truncation:** `search_drive` reports `"Found {len(files)} files"` where `len(files)` is capped at `pageSize` (default 5) with no `nextPageToken` follow — the count is "returned", not "total". `list_contacts`/`search_contact` hard-cap at `pageSize` (1000 / arg) with no paging, so accounts with more contacts silently truncate. `plan_my_day` *does* handle the "+N more" case for email correctly.
 - **Meet daemon = fire-and-forget thread:** `meet.py:168` `threading.Thread(target=_poll_for_transcript, daemon=True).start()` polls Google for up to ~30 min and writes to `MemoryVault`. This violates the project guardrail "Prefer queued background work (`jobs/queue.py`) over fire-and-forget threads"; on process exit the daemon is killed mid-poll and prints to stdout (`You: `) assuming a REPL.
 - **Drive `parent_id: str = None`** (and Contacts `phone`/`email: str = None`) default `None` under a non-Optional type hint — mypy-unclean, harmless at runtime.
+
+---
+
+## Re-verification 2026-06-12
+
+Re-test after commit `8d6155b` (fixes to `integrations/google/calendar.py` + `client.py`) and after the user **enabled the Drive, Docs, Sheets, and People APIs** in Cloud project `art-gallery-404021`. Same account `opsingh861@gmail.com`; tier `unrestricted`; cached keyring token (`oauth.google`) refreshed silently (no browser) and authenticated every call. All live ops were minimal, clearly labelled **"Tokoboros QA"**, and create→verify→delete.
+
+### Per-service status — before → after
+
+| Service | Before | After | Evidence (live) |
+|---|---|---|---|
+| Auth / registration | ✅ PASS | ✅ PASS | Cached token refreshed silently (`[oauth] Refreshing Google token silently...`); authenticated Gmail profile. |
+| Gmail (read-only) | ✅ PASS | ✅ PASS | `GET /users/me/profile` → `opsingh861@gmail.com`, `messagesTotal` 111,944. **No send, no draft.** |
+| Tasks | ✅ PASS | ✅ PASS | create (`needsAction`) → complete (`completed`, ts set) → delete (`deleted:true`, gone from default list). |
+| Calendar — single/list/update/delete | ✅ PASS | ✅ PASS | Unchanged; events list/CRUD still work on `calendar.events`. |
+| Calendar — `create_recurring_event` (M-13) | ❌ 400 | ✅ PASS | Both `+00:00` and `Z` formats created (200), `timeZone:UTC` now set; series deleted. |
+| Calendar — `find_free_time` (M-12) | ❌ 403 | ⚠️ NEEDS RE-CONSENT | Code now requests `calendar.readonly`; cached token predates it → 403 `insufficient authentication scopes`. Not a code bug. |
+| **Drive** | ⛔ ENV-LIMITED (API disabled) | ✅ PASS | upload (`text/plain`, 37 B) → metadata read → trash (`trashed:true`). |
+| **Docs** | ⛔ ENV-LIMITED (API disabled) | ✅ PASS | create → append → read-back (both lines, correct order) → trash via Drive (`trashed:true`). |
+| **Sheets** | ⛔ ENV-LIMITED (API disabled) | ✅ PASS | create → append row (4 cells) → read range (CSV round-trips) → trash via Drive (`trashed:true`). |
+| **Contacts / People** | ⛔ ENV-LIMITED (API disabled) | ✅ PASS | `people:createContact` "Tokoboros QA" → found in connections (of 799) → direct read → `deleteContact` → 404 on re-fetch. |
+| Error surfacing (H-9) | ❌ generic MDN link | ✅ FIXED | 400/404 now surface Google's `error.message`; no `developer.mozilla.org` string. |
+
+The four previously **⛔ ENV-LIMITED** services (Drive, Docs, Sheets, Contacts) all **flip to ✅ PASS** now that their APIs are enabled. No code changes were needed for those — the 403 "API not enabled" was purely an environment gate, as the prior report predicted.
+
+### Fix verdicts
+
+**M-13 — `create_recurring_event` (`calendar.py` `_dt_field`): ✅ FIXED.**
+`_dt_field` now returns `{"dateTime": iso, "timeZone": "UTC"}` for all three input shapes (offset / trailing `Z` / naive). Live: a daily recurring event (`RRULE:FREQ=DAILY;COUNT=2`) was created **200** with both `...T09:00:00+00:00` and `...T11:00:00Z` start/end; the API echoed `timeZone:UTC` on start/end and `recurrence:['RRULE:FREQ=DAILY;COUNT=2']`. Both series were deleted and verified gone. The documented/expected input format no longer 400s.
+
+**M-12 — `find_free_time` (`calendar.py` scopes): ⚠️ NEEDS RE-CONSENT — code is correct, cached token is stale.**
+- The fix **added** `https://www.googleapis.com/auth/calendar.readonly` to `CalendarService.required_scopes` (now `[calendar.events, calendar.readonly]`). This is the correct scope for `POST /calendar/v3/freeBusy`.
+- The **cached token was granted before this change** — its 8 scopes include `calendar.events` but **not** `calendar.readonly` (verified by inspecting `oauth.google`). Adding a scope in code does not retroactively grant it.
+- Live `find_free_time(30, 2)` with the granted scope still returns `403 … Request had insufficient authentication scopes.` — a **scope** error, not API-disabled and not a code defect.
+- Confirmed the recovery path fires: with the new required-scope set, `OAuthManager.get_google_credentials` detects the missing scope, prints `Upgrading Google account permissions for new capabilities...`, and routes to the browser consent flow requesting `calendar.events + calendar.readonly`. So the **next interactive Google call will trigger a one-time re-consent**, after which `find_free_time` will work. **Action required: re-consent (browser OAuth); no further code change.**
+
+**H-9 — non-403 error bodies (`client.py`): ✅ FIXED.**
+`_request_with_retry` now calls a new `_raise_api_error(url, response)` for *any* non-success status that isn't 403 (lines 81-82), and that helper parses `body["error"]["message"]` (falling back to `response.text`). Verified live for multiple statuses:
+- `delete_event('NONEXISTENT404QA')` → `RuntimeError: Google API error 404 … : Not Found`
+- `create_recurring_event(..., 'RRULE:FREQ=NONSENSE')` → `RuntimeError: Google API error 400 … : Invalid recurrence rule.`
+- `read_doc(bad_id)` → `Failed to read document: Google API error 404 … : Requested entity was not found.`
+- `read_sheet(bad_id, ...)` → `Failed to read spreadsheet: Google API error 404 … : Requested entity was not found.`
+- Contacts `deleteContact` re-fetch → `Google API error 404 … : Requested entity was not found.`
+
+In every case the generic `developer.mozilla.org` string is **gone** and Google's real message surfaces. The fix correctly handles 400/404/etc., not only 403. (The 403 path keeps its dedicated "API not enabled" hint via `_raise_forbidden`.)
+
+### Cleanup confirmation
+
+All artifacts created during this re-test were removed and verified; account left as found.
+- Drive test file `tokoboros_qa_drive.txt` → trashed (`trashed:true`); local temp file deleted.
+- Docs `Tokoboros QA Doc` → trashed via Drive (`trashed:true`).
+- Sheets `Tokoboros QA Sheet` → trashed via Drive (`trashed:true`).
+- The three Drive items sit in **Trash** (the intended `trash_file` soft-delete; Google auto-purges in 30 days). Final sweep: **0 non-trashed** QA files remain.
+- Calendar: both `Tokoboros QA recur (+offset)` and `(Z)` series hard-deleted; sweep of next 7 days shows **0** QA events.
+- Contacts: `Tokoboros QA` (`people/c8407552388023875226`) deleted; sweep of all 799 connections shows **0** QA contacts.
+- Tasks: `Tokoboros QA task` deleted (`deleted:true`, absent from default list).
+- Gmail: **no email sent and no draft created** this session — profile read only.

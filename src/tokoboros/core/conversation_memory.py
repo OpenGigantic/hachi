@@ -1,4 +1,5 @@
 """ConversationMemory — narrow interface between ExecutionLoop and memory backends."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

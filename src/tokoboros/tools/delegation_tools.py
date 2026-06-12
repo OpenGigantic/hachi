@@ -809,7 +809,13 @@ def register_delegation_tools(
     registry.register(
         DELEGATE_TASK_SCHEMA,
         _make_delegate_task(
-            registry, gate, on_event, vault, job_queue, sub_agent_llm, cost_tracker,
+            registry,
+            gate,
+            on_event,
+            vault,
+            job_queue,
+            sub_agent_llm,
+            cost_tracker,
             skill_engine=skill_engine,
         ),
     )

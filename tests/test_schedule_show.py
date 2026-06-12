@@ -9,6 +9,7 @@ Covers:
   6. Disabled schedule → shows disabled state
   7. Webhook delivery → shows webhook_url
 """
+
 from __future__ import annotations
 
 import json

@@ -160,6 +160,10 @@ def test_desktop_windows_calls_powershell():
     n = DesktopNotifier(runner=runner)
     with mock.patch("tokoboros.core.notifier._platform", return_value="windows"):
         msg = n.send("Win Alert", "body text")
+    # Notification is queued in a daemon thread; give it a moment to execute.
+    deadline = time.monotonic() + 2.0
+    while not runner.calls and time.monotonic() < deadline:
+        time.sleep(0.02)
     cmd, kwargs = runner.calls[0]
     assert "powershell.exe" in cmd[0]
     assert "-Command" in cmd
@@ -167,7 +171,7 @@ def test_desktop_windows_calls_powershell():
     # the executed script (see test_desktop_windows_no_powershell_injection).
     assert kwargs["env"][_WIN_NOTIFY_TITLE_ENV] == "Win Alert"
     assert kwargs["env"][_WIN_NOTIFY_BODY_ENV] == "body text"
-    assert "sent" in msg.lower()
+    assert "queued" in msg.lower()
     assert not runner.shell_used()
 
 
@@ -506,6 +510,7 @@ def test_digest_buffer_flush_sends_email() -> None:
 
     def _fake_sender(host, port, user, password, from_addr, to_addr, msg) -> None:
         from email.mime.multipart import MIMEMultipart as _MMP
+
         sent.append({"to": to_addr, "subject": msg["Subject"] if isinstance(msg, _MMP) else ""})
 
     email = EmailNotifier(sender=_fake_sender)

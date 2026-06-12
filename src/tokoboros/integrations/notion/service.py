@@ -38,9 +38,7 @@ class NotionService:
         except ValueError:
             pass
         if not self.api_key:
-            raise ValueError(
-                "Missing Notion API key. Add 'notion_api_key' to ~/.tokoboros/vault.json."
-            )
+            raise ValueError("Missing Notion API key. Run: tokoboros secrets --set notion_api_key")
 
     @property
     def headers(self) -> dict:

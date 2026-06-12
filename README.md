@@ -45,6 +45,13 @@ irm https://raw.githubusercontent.com/OpenGigantic/tokoboros/main/install.ps1 | 
 
 The installer bootstraps [`uv`](https://docs.astral.sh/uv/) (which manages Python for you), fetches Tokoboros, installs dependencies, and launches the guided setup. No prior Python setup required.
 
+**Already have Python tooling?** Install the published package directly:
+
+```bash
+pipx install tokoboros          # or: uv tool install tokoboros
+tokoboros quickstart            # pick a provider + safety level
+```
+
 Already have the source? Just run the conversational setup:
 
 ```bash
@@ -226,8 +233,9 @@ uv run tokoboros schedule add "daily-brief" "Summarize my unread email" --cron "
 uv run tokoboros schedule list
 uv run tokoboros schedule run-due
 
-# Talk to the agent from Telegram (needs TELEGRAM_BOT_TOKEN)
-uv run tokoboros channel telegram
+# Talk to the agent from Telegram — runs locally, no deploy (like OpenClaw)
+uv run tokoboros channel telegram --setup   # one-time: paste bot token + pick who can talk to it
+uv run tokoboros channel telegram           # subsequent runs use the stored token + allowlist
 ```
 
 #### Visualize the ObjectGraph

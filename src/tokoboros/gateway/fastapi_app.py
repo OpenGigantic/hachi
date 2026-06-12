@@ -193,16 +193,24 @@ def create_gateway_app(
         allow_credentials=False,
     )
 
+    class _AuthRequired(Exception):
+        pass
+
+    @app.exception_handler(_AuthRequired)
+    async def _auth_required_handler(_request: Request, _exc: _AuthRequired) -> JSONResponse:
+        return _error_response(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            code="unauthorized",
+            message="Missing or invalid bearer token",
+        )
+
     def _require_auth(request: Request) -> None:
         if not auth_token:
             return
         expected = f"Bearer {auth_token}"
         received = request.headers.get("Authorization", "")
         if not secrets.compare_digest(received.strip(), expected):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Missing or invalid bearer token",
-            )
+            raise _AuthRequired()
 
     @app.exception_handler(GatewayProtocolError)
     async def _protocol_error_handler(_request: Request, exc: GatewayProtocolError) -> JSONResponse:
@@ -242,6 +250,16 @@ def create_gateway_app(
     runtime_ops = APIRouter(tags=["runtime"], dependencies=protected_dependencies)
     config = APIRouter(prefix="/config", tags=["config"], dependencies=protected_dependencies)
     setup = APIRouter(prefix="/setup", tags=["setup"], dependencies=protected_dependencies)
+
+    @system.get("/")
+    async def get_root() -> Any:
+        return {
+            "service": "Tokoboros Gateway",
+            "version": "1.0.0",
+            "health": "/health",
+            "readiness": "/readiness",
+            "docs": "/docs",
+        }
 
     @system.get("/health", response_model=HealthResponse)
     async def get_health() -> Any:
@@ -488,4 +506,35 @@ def create_gateway_app(
     app.include_router(setup)
     app.include_router(openai_compat)
     app.include_router(channels_router)
+
+    if auth_token:
+        # Inject the bearer security scheme into the exported OpenAPI spec so
+        # frontend clients and tools like Swagger UI know auth is required.
+        def _custom_openapi() -> dict[str, Any]:
+            if app.openapi_schema:
+                return app.openapi_schema
+            from fastapi.openapi.utils import get_openapi
+
+            schema = get_openapi(
+                title=app.title,
+                version=app.version,
+                routes=app.routes,
+            )
+            schema.setdefault("components", {}).setdefault("securitySchemes", {})["BearerAuth"] = {
+                "type": "http",
+                "scheme": "bearer",
+            }
+            for path_item in schema.get("paths", {}).values():
+                for operation in path_item.values():
+                    if not isinstance(operation, dict):
+                        continue
+                    operation.setdefault("security", [{"BearerAuth": []}])
+                    operation.setdefault("responses", {}).setdefault(
+                        "401", {"description": "Missing or invalid bearer token"}
+                    )
+            app.openapi_schema = schema
+            return schema
+
+        app.openapi = _custom_openapi  # type: ignore[method-assign]
+
     return app

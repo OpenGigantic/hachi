@@ -60,9 +60,7 @@ def test_memory_add_core_rich() -> None:
 
 def test_memory_add_core_json() -> None:
     with patch("tokoboros.core.memory_vault.MemoryVault", return_value=_mock_vault()):
-        result = runner.invoke(
-            app, ["memory", "add", "Project uses PostgreSQL 15.", "--json"]
-        )
+        result = runner.invoke(app, ["memory", "add", "Project uses PostgreSQL 15.", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert data["id"] == _FAKE_ID
@@ -90,8 +88,14 @@ def test_memory_add_agent_collection_with_category() -> None:
         result = runner.invoke(
             app,
             [
-                "memory", "add", "Always cite sources.",
-                "--to", "agent", "--category", "directive", "--json",
+                "memory",
+                "add",
+                "Always cite sources.",
+                "--to",
+                "agent",
+                "--category",
+                "directive",
+                "--json",
             ],
         )
     assert result.exit_code == 0
@@ -158,9 +162,7 @@ def test_memory_forget_not_found_exits() -> None:
 def test_memory_forget_user_collection() -> None:
     vault = _mock_vault()
     with patch("tokoboros.core.memory_vault.MemoryVault", return_value=vault):
-        result = runner.invoke(
-            app, ["memory", "forget", _FAKE_ID, "--from", "user", "--json"]
-        )
+        result = runner.invoke(app, ["memory", "forget", _FAKE_ID, "--from", "user", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert data["collection"] == "user"

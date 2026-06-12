@@ -60,7 +60,10 @@ def _real_store(tmp_path: Path) -> SessionStore:
     from unittest.mock import patch as _patch
 
     db_path = tmp_path / "sessions.db"
-    with _patch("tokoboros.core.session_store.SessionStore._db_path", new_callable=lambda: property(lambda self: db_path)):  # noqa: E501
+    with _patch(
+        "tokoboros.core.session_store.SessionStore._db_path",
+        new_callable=lambda: property(lambda self: db_path),
+    ):  # noqa: E501
         store = SessionStore()
     return store
 
@@ -104,10 +107,7 @@ def test_delete_sessions_before_removes_old_and_messages(tmp_path: Path) -> None
     assert store._conn.execute("SELECT id FROM sessions WHERE id='new001'").fetchone() is not None
     # messages for old session deleted
     assert (
-        store._conn.execute(
-            "SELECT id FROM messages WHERE session_id='old001'"
-        ).fetchone()
-        is None
+        store._conn.execute("SELECT id FROM messages WHERE session_id='old001'").fetchone() is None
     )
     store.shutdown()
 
