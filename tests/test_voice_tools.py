@@ -295,7 +295,10 @@ def test_speak_tool_failure_is_friendly(tmp_path: Path) -> None:
 # probe_audio_info (backend, keyless)
 # --------------------------------------------------------------------------- #
 
-def _write_wav(path: Path, sample_rate: int = 16000, n_channels: int = 1, n_frames: int = 16000) -> Path:
+
+def _write_wav(
+    path: Path, sample_rate: int = 16000, n_channels: int = 1, n_frames: int = 16000
+) -> Path:
     """Write a minimal PCM WAV file suitable for testing.
 
     ``n_frames`` is the number of multi-channel frames.  Each frame contains
@@ -350,6 +353,7 @@ def test_probe_corrupt_wav_raises(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # get_audio_info tool
 # --------------------------------------------------------------------------- #
+
 
 def test_audio_info_tool_blocked_in_sandbox(tmp_path: Path) -> None:
     p = _write_wav(tmp_path / "clip.wav")

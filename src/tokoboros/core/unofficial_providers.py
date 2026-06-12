@@ -279,7 +279,5 @@ def _resolve_access_token_or_use_directly(session_token: str | None) -> str:
     data = response.json()
     token = data.get("accessToken")
     if not token:
-        raise RuntimeError(
-            "Could not obtain an access token. Session token may have expired."
-        )
+        raise RuntimeError("Could not obtain an access token. Session token may have expired.")
     return str(token)

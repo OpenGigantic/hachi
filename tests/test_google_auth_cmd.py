@@ -2,6 +2,7 @@
 
 All OAuth and hub calls are mocked — no browser windows or API calls.
 """
+
 from __future__ import annotations
 
 import json

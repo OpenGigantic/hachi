@@ -29,7 +29,7 @@ class SlackService:
         self.bot_token = self._vault.get_token("slack_bot_token", prompt_if_missing=False)
         if not self.bot_token:
             raise ValueError(
-                "Missing Slack Bot Token. Add 'slack_bot_token' to ~/.tokoboros/vault.json."
+                "Missing Slack Bot Token. Run: tokoboros secrets --set slack_bot_token"
             )
 
     @property
@@ -49,7 +49,10 @@ class SlackService:
         data = response.json()
         if not data.get("ok"):
             error_msg = data.get("error", "Unknown Slack API error")
-            raise Exception(f"Slack API returned error: {error_msg}")
+            needed = data.get("needed")
+            provided = data.get("provided")
+            detail = f" (needed={needed}, provided={provided})" if needed or provided else ""
+            raise Exception(f"Slack API returned error: {error_msg}{detail}")
 
         return data
 
@@ -69,7 +72,10 @@ class SlackService:
         resp_data = response.json()
         if not resp_data.get("ok"):
             error_msg = resp_data.get("error", "Unknown Slack API error")
-            raise Exception(f"Slack API returned error: {error_msg}")
+            needed = resp_data.get("needed")
+            provided = resp_data.get("provided")
+            detail = f" (needed={needed}, provided={provided})" if needed or provided else ""
+            raise Exception(f"Slack API returned error: {error_msg}{detail}")
 
         return resp_data
 
@@ -81,7 +87,10 @@ class SlackService:
         data = response.json()
         if not data.get("ok"):
             error_msg = data.get("error", "Unknown Slack API error")
-            raise Exception(f"Slack API returned error: {error_msg}")
+            needed = data.get("needed")
+            provided = data.get("provided")
+            detail = f" (needed={needed}, provided={provided})" if needed or provided else ""
+            raise Exception(f"Slack API returned error: {error_msg}{detail}")
 
         return data
 

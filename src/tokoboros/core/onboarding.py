@@ -319,9 +319,7 @@ class OnboardingService:
         # a crash.  Keyless providers (Ollama) skip this check.
         kind = str(config.provider.kind).strip().lower()
         if kind not in _KEYLESS_PROVIDERS:
-            env_name = (
-                config.provider.api_key_env or default_api_key_env_for(kind) or ""
-            ).strip()
+            env_name = (config.provider.api_key_env or default_api_key_env_for(kind) or "").strip()
             api_key_ref = (config.provider.api_key_ref or "").strip()
 
             resolved: str | None = os.environ.get(env_name) if env_name else None

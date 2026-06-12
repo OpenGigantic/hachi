@@ -7,6 +7,7 @@ Covers:
 - WhatsAppWebhookServer POST: Meta JSON, Twilio form-encoded, allowlist filtering
 - channel_whatsapp CLI command: starts server with correct args, allow flag
 """
+
 from __future__ import annotations
 
 import http.client

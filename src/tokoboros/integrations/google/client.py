@@ -120,7 +120,15 @@ class GoogleHTTPClient:
             detail = response.text.strip()
 
         # Detect "API not enabled" specifically — it has a consistent message pattern
-        api_name = url.split("/")[1] if "/" in url else url
+        from urllib.parse import urlparse as _urlparse
+
+        _parsed = _urlparse(url)
+        if _parsed.scheme:  # absolute URL (e.g. https://people.googleapis.com/...)
+            _host = _parsed.hostname or ""
+            api_name = _host.split(".")[0].title() if "." in _host else _host
+        else:  # relative URL (e.g. /drive/v3/files)
+            _parts = url.lstrip("/").split("/")
+            api_name = _parts[0] if _parts else url
         if "has not been used" in detail or "disabled" in detail or "enable" in detail.lower():
             hint = (
                 f" — the {api_name} API is not enabled for your Google Cloud project. "

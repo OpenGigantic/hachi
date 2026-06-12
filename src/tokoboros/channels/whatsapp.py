@@ -236,9 +236,7 @@ class WhatsAppSender:
         status, body = self._poster(url, payload, headers)
 
         if status not in (200, 201):
-            raise WhatsAppError(
-                f"WhatsApp send failed (HTTP {status}): {body[:200]}"
-            )
+            raise WhatsAppError(f"WhatsApp send failed (HTTP {status}): {body[:200]}")
 
         return {"provider": provider, "to": to}
 

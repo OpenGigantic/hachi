@@ -74,8 +74,7 @@ def render_mermaid(graph: dict[str, Any]) -> str:
     # Style classes (defined after nodes/edges, which Mermaid allows).
     lines.append(f"    classDef root fill:{_ROOT_COLOR},stroke:{_ROOT_COLOR},color:#ffffff;")
     lines.append(
-        f"    classDef cycle fill:#3d1d1d,stroke:{_CYCLE_COLOR},"
-        "stroke-width:3px,color:#f85149;"
+        f"    classDef cycle fill:#3d1d1d,stroke:{_CYCLE_COLOR},stroke-width:3px,color:#f85149;"
     )
     lines.append(
         f"    classDef missing fill:#2d2d2d,stroke:{_MISSING_COLOR},"
@@ -99,7 +98,7 @@ def render_dot(graph: dict[str, Any]) -> str:
     lines = [
         "digraph skills {",
         "    rankdir=LR;",
-        "    bgcolor=\"#0d1117\";",
+        '    bgcolor="#0d1117";',
         '    node [shape=box, style="rounded,filled", fontname="sans-serif", '
         'fontcolor="#ffffff", color="#8b949e"];',
         '    edge [color="#8b949e"];',

@@ -65,9 +65,7 @@ def _tier_blocked(gate: Any | None) -> str | None:
     return tier if tier in _BLOCKED_TIERS else None
 
 
-def _make_transcribe_audio(
-    gate: Any | None, stt: SpeechToText | None
-) -> Callable[[str], str]:
+def _make_transcribe_audio(gate: Any | None, stt: SpeechToText | None) -> Callable[[str], str]:
     def transcribe_audio(path: str) -> str:
         tier = _tier_blocked(gate)
         if tier is not None:
@@ -235,9 +233,7 @@ PLAY_AUDIO_SCHEMA: dict[str, Any] = {
 }
 
 
-def _make_play_audio(
-    gate: Any | None, player: AudioPlayer | None
-) -> Callable[[str], str]:
+def _make_play_audio(gate: Any | None, player: AudioPlayer | None) -> Callable[[str], str]:
     def play_audio(path: str) -> str:
         tier = _tier_blocked(gate)
         if tier is not None:

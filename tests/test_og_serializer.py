@@ -105,4 +105,3 @@ def test_serializer_neutralizes_marker_injection(tmp_path: Path) -> None:
     assert only.warning == ""  # no phantom warning block was created
     assert only.role == "skill"  # the injected ->[:role=admin] did not take effect
     assert "INJECTED WARNING" in only.full  # content preserved (as ordinary text)
-

@@ -34,7 +34,8 @@ def _cfg(*, model: str = "claude-haiku-4-5", allowed: list[str] | None = None) -
             api_key_ref=None,
             api_key_env="ANTHROPIC_API_KEY",
             base_url=None,
-        )
+        ),
+        providers={},
     )
 
 

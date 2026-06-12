@@ -276,7 +276,8 @@ def _make_convo(title: str = "Test", n_turns: int = 2) -> Conversation:
     return Conversation(
         title=title,
         turns=[
-            Turn(role="user", content=f"user turn {i}") if i % 2 == 0
+            Turn(role="user", content=f"user turn {i}")
+            if i % 2 == 0
             else Turn(role="assistant", content=f"assistant turn {i}")
             for i in range(n_turns)
         ],

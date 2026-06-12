@@ -249,6 +249,7 @@ class SkillEngine:
         self._keyword_index: dict[str, list[str]] = {}  # keyword -> [node_name, ...]
         self._files: dict[str, OGFile] = {}  # filepath -> OGFile (file-level metadata + index)
         self._skills_dir: Path | None = None  # root dir; where authored skills are written
+        self._skipped_files: list[dict[str, str]] = []  # files that failed to parse
 
         # Phase 4: Persistent usage tracking
         self._usage_path = Path.home() / ".tokoboros" / "brain" / "skill_usage.json"
@@ -339,8 +340,10 @@ class SkillEngine:
                     if entry.node_id not in self._keyword_index[kw_lower]:
                         self._keyword_index[kw_lower].append(entry.node_id)
         except Exception as e:
-            # Silently skip malformed files so one bad skill doesn't crash the agent
+            # Skip malformed files so one bad skill doesn't crash the agent, but
+            # record them so doctor/lint can surface them to the user.
             logger.warning("Failed to parse %s: %s", filepath, e)
+            self._skipped_files.append({"file": str(filepath), "error": str(e)})
 
     def search(self, query: str) -> list[dict[str, str]]:
         """

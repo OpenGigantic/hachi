@@ -44,9 +44,7 @@ class _RecordingLLM:
         self.tools_seen.append({t["name"] for t in (kwargs.get("tools") or [])})
         calls = self._script[self._i] if self._i < len(self._script) else []
         self._i += 1
-        return LLMResponse(
-            content="" if calls else "done", tool_calls=calls, usage=TokenUsage()
-        )
+        return LLMResponse(content="" if calls else "done", tool_calls=calls, usage=TokenUsage())
 
 
 # --- ToolRegistry unit tests ---------------------------------------------

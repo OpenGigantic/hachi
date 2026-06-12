@@ -18,6 +18,9 @@ from dataclasses import dataclass
 from tokoboros.core.prompt_composer import compose as _compose_prompt
 
 
+# CPython 3.14 note: frozen+slots dataclasses raise TypeError (not FrozenInstanceError)
+# for assignments to *undeclared* attributes; declared-field mutation still raises
+# FrozenInstanceError correctly.  This is a CPython quirk, not user-visible at runtime.
 @dataclass(frozen=True, slots=True)
 class TurnContext:
     """
