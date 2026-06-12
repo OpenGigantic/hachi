@@ -165,7 +165,23 @@ class MeetService(GoogleService):
                         flush=True,
                     )
 
-                threading.Thread(target=_poll_for_transcript, daemon=True).start()
+                import uuid as _uuid
+
+                from tokoboros.jobs.queue import InMemoryJobQueue, Job, JobWorker
+
+                _q = InMemoryJobQueue()
+                _q.enqueue(
+                    Job(
+                        job_id=_uuid.uuid4().hex,
+                        name=f"meet_transcript:{space_id}",
+                        func=_poll_for_transcript,
+                        job_type="background",
+                    )
+                )
+                _worker = JobWorker(_q)
+                threading.Thread(
+                    target=_worker.execute_one, daemon=True, name=f"meet:{space_id}"
+                ).start()
                 return (
                     f"SUCCESS: Native Workspace API detected. Monitoring {space_id} silently"
                     " in the background. CRITICAL REQUIREMENT: The user MUST physically click"

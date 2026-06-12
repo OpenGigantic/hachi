@@ -93,9 +93,10 @@ def test_derive_pack_name_github_with_ref() -> None:
 
 def test_derive_pack_name_archive_url() -> None:
 
-    assert _derive_pack_name(
-        "https://github.com/alice/skills/archive/refs/heads/main.tar.gz"
-    ) == "main"
+    assert (
+        _derive_pack_name("https://github.com/alice/skills/archive/refs/heads/main.tar.gz")
+        == "main"
+    )
 
 
 def test_derive_pack_name_og_url() -> None:
@@ -193,9 +194,7 @@ def test_install_from_tarball(tmp_path: Path) -> None:
 
 
 def test_install_github_shorthand(tmp_path: Path) -> None:
-    data = _make_tar_gz(
-        {"skill_a.og": _simple_og("skill_a")}, prefix="devops-skills-main"
-    )
+    data = _make_tar_gz({"skill_a.og": _simple_og("skill_a")}, prefix="devops-skills-main")
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
 

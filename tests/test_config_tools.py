@@ -239,9 +239,10 @@ env_API_URL: https://api.example.com
     og_file = tmp_path / "mcp-myserver.og"
     og_file.write_text(og_content, encoding="utf-8")
 
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=tmp_path), patch(
-        "tokoboros.og_engine.engine.SkillEngine"
-    ) as MockEngine:
+    with (
+        patch("tokoboros.gateway.workspace.get_skills_dir", return_value=tmp_path),
+        patch("tokoboros.og_engine.engine.SkillEngine") as MockEngine,
+    ):
         mock_engine = MagicMock()
         MockEngine.return_value = mock_engine
         node = MagicMock()

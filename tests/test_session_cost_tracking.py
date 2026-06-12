@@ -9,6 +9,7 @@ Covers:
   6. session stats --json sums cost across all sessions
   7. session show --json includes total_tokens and total_cost_usd
 """
+
 from __future__ import annotations
 
 import json
@@ -152,8 +153,9 @@ class TestSessionStatsWithCost:
         assert abs(data["total_cost_usd"] - 0.033) < 1e-6
 
     def test_json_zero_cost_when_columns_missing(self) -> None:
-        sessions = [{"id": "x", "started_at": "2026-06-01T00:00:00+00:00", "model": "m",
-                     "total_turns": 1}]
+        sessions = [
+            {"id": "x", "started_at": "2026-06-01T00:00:00+00:00", "model": "m", "total_turns": 1}
+        ]
         fake_store = MagicMock()
         fake_store.get_recent_sessions.return_value = sessions
         with patch("tokoboros.core.session_store.SessionStore", return_value=fake_store):
@@ -171,8 +173,7 @@ class TestSessionShowWithCost:
         fake_store.get_recent_sessions.return_value = sessions
         fake_store.get_session.return_value = sessions[0]
         fake_store.get_session_messages.return_value = [
-            {"role": "user", "content": "hi", "tool_name": None,
-             "timestamp": "2026-06-01T10:00:00"}
+            {"role": "user", "content": "hi", "tool_name": None, "timestamp": "2026-06-01T10:00:00"}
         ]
         with patch("tokoboros.core.session_store.SessionStore", return_value=fake_store):
             result = runner.invoke(app, ["session", "show", "aaa111", "--json"])
@@ -187,8 +188,12 @@ class TestSessionShowWithCost:
         fake_store.get_recent_sessions.return_value = sessions
         fake_store.get_session.return_value = sessions[0]
         fake_store.get_session_messages.return_value = [
-            {"role": "user", "content": "hello", "tool_name": None,
-             "timestamp": "2026-06-01T10:00:00"}
+            {
+                "role": "user",
+                "content": "hello",
+                "tool_name": None,
+                "timestamp": "2026-06-01T10:00:00",
+            }
         ]
         with patch("tokoboros.core.session_store.SessionStore", return_value=fake_store):
             result = runner.invoke(app, ["session", "show", "aaa111"])

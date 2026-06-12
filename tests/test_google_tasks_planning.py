@@ -120,8 +120,16 @@ def test_list_tasks_shows_due_date() -> None:
     client.add_response(
         "GET",
         "/tasks/v1/lists/@default/tasks",
-        {"items": [{"id": "t1", "title": "Review PR", "status": "needsAction",
-                     "due": "2026-06-10T00:00:00Z"}]},
+        {
+            "items": [
+                {
+                    "id": "t1",
+                    "title": "Review PR",
+                    "status": "needsAction",
+                    "due": "2026-06-10T00:00:00Z",
+                }
+            ]
+        },
     )
     result = _tasks(client).list_tasks()
     assert "2026-06-10" in result
@@ -208,8 +216,6 @@ def test_tasks_registers_expected_tools() -> None:
 # ---------------------------------------------------------------------------
 # CalendarService — new tools (imported here to keep tests alongside Tasks)
 # ---------------------------------------------------------------------------
-
-
 
 
 def _cal(client: FakeGoogleClient | None = None) -> CalendarService:
@@ -383,9 +389,10 @@ def test_hub_includes_tasks_and_planning_tools() -> None:
     fake_client.oauth = MagicMock()
     fake_client.scopes = []
 
-    with patch(
-        "tokoboros.integrations.google.client.GoogleHTTPClient", return_value=fake_client
-    ), patch("tokoboros.core.oauth.OAuthManager"):
+    with (
+        patch("tokoboros.integrations.google.client.GoogleHTTPClient", return_value=fake_client),
+        patch("tokoboros.core.oauth.OAuthManager"),
+    ):
         from tokoboros.integrations.google import GoogleIntegrationHub
 
         hub = GoogleIntegrationHub()

@@ -1,4 +1,5 @@
 """Test-support adapters for core protocols. Import only in tests."""
+
 from __future__ import annotations
 
 from tokoboros.core.conversation_memory import ConversationMemory, IterationState

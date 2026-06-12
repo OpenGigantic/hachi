@@ -61,7 +61,7 @@ _TTS_FORMATS = frozenset({"mp3", "opus", "aac", "flac", "wav", "pcm"})
 # Extensions the common Whisper endpoints accept; checked up front for a friendly
 # error instead of an opaque API rejection.
 _SUPPORTED_EXTENSIONS = frozenset(
-    {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".flac", ".ogg"}
+    {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".flac", ".ogg", ".opus", ".aac"}
 )
 
 # Hard ceiling on audio bytes (the OpenAI endpoint caps at ~25 MB); fail fast.
@@ -70,12 +70,64 @@ _MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
 _STOPWORDS: frozenset[str] = frozenset(
     {
-        "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-        "of", "with", "by", "from", "is", "was", "are", "were", "be", "been",
-        "i", "you", "we", "he", "she", "it", "they", "that", "this", "so",
-        "as", "if", "not", "do", "did", "have", "has", "had", "will", "would",
-        "can", "could", "my", "your", "our", "his", "her", "its", "their",
-        "what", "which", "who", "how", "when", "where", "then", "than",
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "is",
+        "was",
+        "are",
+        "were",
+        "be",
+        "been",
+        "i",
+        "you",
+        "we",
+        "he",
+        "she",
+        "it",
+        "they",
+        "that",
+        "this",
+        "so",
+        "as",
+        "if",
+        "not",
+        "do",
+        "did",
+        "have",
+        "has",
+        "had",
+        "will",
+        "would",
+        "can",
+        "could",
+        "my",
+        "your",
+        "our",
+        "his",
+        "her",
+        "its",
+        "their",
+        "what",
+        "which",
+        "who",
+        "how",
+        "when",
+        "where",
+        "then",
+        "than",
     }
 )
 
@@ -192,7 +244,15 @@ def probe_audio_info(path: str | Path) -> dict[str, Any]:
                 n_channels = wf.getnchannels()
                 sample_rate = wf.getframerate()
                 n_frames = wf.getnframes()
-                duration = n_frames / sample_rate if sample_rate > 0 else 0.0
+                sampwidth = wf.getsampwidth()
+            # OpenAI tts-1 (and other streaming encoders) write 0xFFFFFFFF as the
+            # RIFF/data-chunk length sentinel, which wave reads as 0x7FFFFFFF frames.
+            # Clamp to what the actual file size allows (44-byte header lower bound).
+            frame_size = n_channels * sampwidth
+            if frame_size > 0:
+                max_frames = max(0, (size - 44) // frame_size)
+                n_frames = min(n_frames, max_frames)
+            duration = n_frames / sample_rate if sample_rate > 0 else 0.0
             info["probeable"] = True
             info["duration_seconds"] = round(duration, 3)
             info["sample_rate"] = sample_rate
@@ -255,8 +315,7 @@ class SpeechToText:
         """Transcribe a local audio file to text. Raises VoiceError on any failure."""
         if not self._api_key:
             raise VoiceError(
-                "speech-to-text is not configured "
-                "(set OPENAI_API_KEY or TOKOBOROS_STT_API_KEY)"
+                "speech-to-text is not configured (set OPENAI_API_KEY or TOKOBOROS_STT_API_KEY)"
             )
         path = Path(audio_path)
         if not path.exists() or not path.is_file():

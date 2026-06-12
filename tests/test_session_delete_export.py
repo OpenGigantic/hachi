@@ -154,9 +154,7 @@ def test_session_export_markdown_stdout() -> None:
 def test_session_export_json_stdout() -> None:
     store = _mock_store()
     with patch("tokoboros.core.session_store.SessionStore", return_value=store):
-        result = runner.invoke(
-            app, ["session", "export", _FULL_SESSION_ID, "--format", "json"]
-        )
+        result = runner.invoke(app, ["session", "export", _FULL_SESSION_ID, "--format", "json"])
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["session_id"] == _FULL_SESSION_ID
@@ -166,9 +164,7 @@ def test_session_export_json_stdout() -> None:
 def test_session_export_invalid_format_exits_1() -> None:
     store = _mock_store()
     with patch("tokoboros.core.session_store.SessionStore", return_value=store):
-        result = runner.invoke(
-            app, ["session", "export", _FULL_SESSION_ID, "--format", "xml"]
-        )
+        result = runner.invoke(app, ["session", "export", _FULL_SESSION_ID, "--format", "xml"])
     assert result.exit_code == 1
     assert "xml" in result.output
 
@@ -177,9 +173,7 @@ def test_session_export_to_file(tmp_path) -> None:
     store = _mock_store()
     out = str(tmp_path / "transcript.md")
     with patch("tokoboros.core.session_store.SessionStore", return_value=store):
-        result = runner.invoke(
-            app, ["session", "export", _FULL_SESSION_ID, "-o", out]
-        )
+        result = runner.invoke(app, ["session", "export", _FULL_SESSION_ID, "-o", out])
     assert result.exit_code == 0
     assert "Exported" in result.output
     content = (tmp_path / "transcript.md").read_text(encoding="utf-8")

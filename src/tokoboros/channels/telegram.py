@@ -4,6 +4,14 @@ Implements the :class:`~tokoboros.channels.base.ChannelAdapter` contract over
 Telegram's Bot API using only the standard library (long-polling ``getUpdates``
 + ``sendMessage``). Running it live needs a bot token from @BotFather, but the
 update-parsing logic is a pure function so it is unit-tested without a network.
+
+Optional command registry
+-------------------------
+Pass a :class:`~tokoboros.channels.telegram_commands.TelegramCommandRegistry`
+as ``command_registry`` to enable auto-skill creation for Telegram ``/commands``.
+When present, ``poll_once`` runs every parsed message batch through the registry
+before returning it: new commands get a stub .og skill written to disk and are
+annotated for the agent.
 """
 
 from __future__ import annotations
@@ -11,9 +19,12 @@ from __future__ import annotations
 import json
 import logging
 import urllib.request
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tokoboros.channels.base import ChannelAdapter, InboundMessage, OutboundMessage
+
+if TYPE_CHECKING:
+    from tokoboros.channels.telegram_commands import TelegramCommandRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -58,12 +69,19 @@ class TelegramAdapter(ChannelAdapter):
 
     name = "telegram"
 
-    def __init__(self, token: str, *, timeout: int = 30):
+    def __init__(
+        self,
+        token: str,
+        *,
+        timeout: int = 30,
+        command_registry: TelegramCommandRegistry | None = None,
+    ):
         if not token:
             raise ValueError("Telegram bot token is required")
         self._token = token
         self._timeout = timeout
         self._offset = 0
+        self._command_registry = command_registry
 
     def _call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         url = _API.format(token=self._token, method=method)
@@ -77,9 +95,22 @@ class TelegramAdapter(ChannelAdapter):
 
     def poll_once(self) -> list[InboundMessage]:
         result = self._call("getUpdates", {"offset": self._offset, "timeout": self._timeout})
+        if not result.get("ok", True):
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Telegram getUpdates returned ok=false: %s", result.get("description", result)
+            )
+            return []
         updates = result.get("result", []) or []
         self._offset = latest_offset(updates, self._offset)
-        return parse_updates(updates)
+        messages = parse_updates(updates)
+        if self._command_registry is not None and messages:
+            messages = self._command_registry.intercept_messages(messages)
+        return messages
 
     def send(self, message: OutboundMessage) -> None:
-        self._call("sendMessage", {"chat_id": message.recipient_id, "text": message.text})
+        _MAX = 4096
+        text = message.text
+        for i in range(0, max(1, len(text)), _MAX):
+            self._call("sendMessage", {"chat_id": message.recipient_id, "text": text[i : i + _MAX]})

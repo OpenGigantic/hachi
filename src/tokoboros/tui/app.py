@@ -2514,47 +2514,100 @@ class TokoborosTextualApp(App[None]):
         if self._agent is not None:
             discovered = self._agent.list_provider_models()
 
+        named_providers: dict = getattr(config, "providers", {}) or {}
+
         if not arg:
-            # Prefer live discovery from the provider; fall back to a curated list.
+            # No args: show active model, any named providers, and available models.
             source = "provider" if discovered else "defaults"
             if not discovered:
                 discovered = _CURATED_MODELS.get(config.provider.kind, [current])
             options = resolve_available_models(discovered, allowed, current)
             label = "allowlist" if allowed else source
-            lines = [f"Active model: {current}  ({config.provider.kind})", f"Available ({label}):"]
+            lines = [f"Active: [{config.provider.kind}] {current}"]
+            if named_providers:
+                lines.append(
+                    "Other providers (switch with  /model <name>  or  /model <name> <model>):"
+                )
+                for pname, ps in named_providers.items():
+                    lines.append(f"  • {pname}  [{ps.kind}]  default: {ps.model}")
+            lines.append(f"Available models ({label}):")
             lines += [f"  • {name}{'  (current)' if name == current else ''}" for name in options]
             if allowed:
                 lines.append("Switching is restricted to the configured allowlist.")
-            lines.append("Switch with:  /model <name>")
+            lines.append("Switch with:  /model <model>  or  /model <provider> <model>")
             self._session_note("\n".join(lines))
             return
 
-        if not can_switch_model(arg, allowed):
+        parts = arg.split(None, 1)  # at most 2 tokens
+
+        if len(parts) == 2:
+            # /model PROVIDER MODEL — switch to a named provider with a specific model.
+            provider_name, new_model = parts
+            target_ps = named_providers.get(provider_name)
+            if target_ps is None:
+                known = ", ".join(sorted(named_providers.keys())) or "(none configured)"
+                self._session_note(
+                    f"Unknown provider '{provider_name}'. Configured providers: {known}.\n"
+                    "Add providers in ~/.tokoboros/settings.toml under [providers.NAME].",
+                    style=theme.WARNING,
+                )
+                return
+            try:
+                config.provider = target_ps.model_copy(update={"model": new_model})
+                write_global_config(config)
+            except Exception as exc:
+                self._session_note(f"Failed to set provider: {exc}", style=theme.ERROR)
+                return
             self._session_note(
-                f"'{arg}' is not in the allowed model list: {', '.join(allowed)}. "
+                f"Switched to [{provider_name}] {new_model}. Rebooting runtime…",
+                style=theme.SUCCESS,
+            )
+            self._reboot_runtime(resume_current=True)
+            return
+
+        single = parts[0]
+
+        if single in named_providers:
+            # /model PROVIDER — switch to a named provider using its default model.
+            target_ps = named_providers[single]
+            try:
+                config.provider = target_ps.model_copy()
+                write_global_config(config)
+            except Exception as exc:
+                self._session_note(f"Failed to set provider: {exc}", style=theme.ERROR)
+                return
+            self._session_note(
+                f"Switched to [{single}] {target_ps.model}. Rebooting runtime…",
+                style=theme.SUCCESS,
+            )
+            self._reboot_runtime(resume_current=True)
+            return
+
+        # /model MODEL — backward-compat: switch model within the current provider.
+        if not can_switch_model(single, allowed):
+            self._session_note(
+                f"'{single}' is not in the allowed model list: {', '.join(allowed)}. "
                 "Edit [provider].allowed_models to change this.",
                 style=theme.WARNING,
             )
             return
 
-        # When the provider exposes a live /models list, reject unknown names
-        # early so we fail locally instead of surfacing an upstream 404 later.
-        if discovered and arg != current and arg not in discovered:
+        if discovered and single != current and single not in discovered:
             self._session_note(
-                f"'{arg}' is not exposed by {config.provider.kind}. "
+                f"'{single}' is not exposed by {config.provider.kind}. "
                 "Run /model (no args) to pick from available models.",
                 style=theme.WARNING,
             )
             return
 
         try:
-            config.provider.model = arg
+            config.provider.model = single
             write_global_config(config)
         except Exception as exc:
             self._session_note(f"Failed to set model: {exc}", style=theme.ERROR)
             return
         self._session_note(
-            f"Model set to {arg}. Rebooting runtime (conversation preserved)…",
+            f"Model set to {single}. Rebooting runtime (conversation preserved)…",
             style=theme.SUCCESS,
         )
         self._reboot_runtime(resume_current=True)
@@ -2631,7 +2684,7 @@ class TokoborosTextualApp(App[None]):
             return
         self.set_toko_state_safe("thinking")
         self.submit_prompt(
-            f'Use the speak_text tool to synthesize the following text to audio and tell me '
+            f"Use the speak_text tool to synthesize the following text to audio and tell me "
             f'where the file was saved: "{arg}"',
             display_text=f"/speak {arg}",
         )
@@ -2653,7 +2706,7 @@ class TokoborosTextualApp(App[None]):
             return
         self.set_toko_state_safe("thinking")
         self.submit_prompt(
-            f'Use the notify_user tool to send a desktop notification with the title '
+            f"Use the notify_user tool to send a desktop notification with the title "
             f'"Tokoboros" and body: "{arg}"',
             display_text=f"/notify {arg}",
         )
@@ -2721,8 +2774,9 @@ class TokoborosTextualApp(App[None]):
             store.shutdown()
             title = (meta.get("title") or session_id) if meta else session_id
             out_path = (
-                Path(arg) if arg else
-                get_tokoboros_paths().state_dir / f"session-{session_id[:8]}.md"
+                Path(arg)
+                if arg
+                else get_tokoboros_paths().state_dir / f"session-{session_id[:8]}.md"
             )
             lines = [f"# {title}\n"]
             for msg in messages:

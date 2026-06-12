@@ -3,6 +3,7 @@
 All prompt ingredients flow through compose() / build_stable_base(); no other
 module should concatenate system-prompt strings directly.
 """
+
 from __future__ import annotations
 
 import datetime

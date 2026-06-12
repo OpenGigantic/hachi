@@ -3,6 +3,7 @@
 TOOL_SPECS is a topologically-ordered table of registrations. ToolRegistrar
 enforces ordering constraints (after, last) at install time.
 """
+
 from __future__ import annotations
 
 import logging

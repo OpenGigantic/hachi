@@ -36,6 +36,7 @@ def _engine(agent_role: str) -> SkillEngine:
 # search()                                                            #
 # ------------------------------------------------------------------ #
 
+
 def test_search_hides_orchestrator_node_from_worker() -> None:
     engine = _engine("worker")
     names = {r["name"] for r in engine.search("secret")}
@@ -65,6 +66,7 @@ def test_search_bypass_sees_all_nodes() -> None:
 # list_all_skills()                                                   #
 # ------------------------------------------------------------------ #
 
+
 def test_list_hides_orchestrator_node_from_worker() -> None:
     engine = _engine("all")
     names = {n["name"] for n in engine.list_all_skills()}
@@ -89,6 +91,7 @@ def test_list_bypass_shows_all() -> None:
 # peek()                                                              #
 # ------------------------------------------------------------------ #
 
+
 def test_peek_returns_error_for_hidden_node() -> None:
     engine = _engine("worker")
     result = engine.peek([_ORCH_NODE])
@@ -112,6 +115,7 @@ def test_peek_public_nodes_always_accessible() -> None:
 # resolve_node()                                                      #
 # ------------------------------------------------------------------ #
 
+
 def test_resolve_returns_not_found_for_hidden_node() -> None:
     engine = _engine("worker")
     out = engine.resolve_node(_ORCH_NODE)
@@ -134,6 +138,7 @@ def test_resolve_public_node_always_works() -> None:
 # ------------------------------------------------------------------ #
 # get_node() and get_all_nodes()                                      #
 # ------------------------------------------------------------------ #
+
 
 def test_get_node_returns_none_when_hidden() -> None:
     engine = _engine("worker")
@@ -160,6 +165,7 @@ def test_get_all_nodes_filters_by_role() -> None:
 # ------------------------------------------------------------------ #
 # node_count property respects role                                   #
 # ------------------------------------------------------------------ #
+
 
 def test_node_count_excludes_hidden_nodes() -> None:
     # fixture has 3 nodes total; worker only sees 2

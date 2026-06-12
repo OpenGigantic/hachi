@@ -271,6 +271,9 @@ def make_generate_presentation(gate: Any | None = None) -> Any:
         if not slides:
             return "Error: at least one slide is required."
 
+        if theme not in _THEMES:
+            return f"Unknown theme '{theme}'. Valid themes: {', '.join(sorted(_THEMES))}."
+
         try:
             _build_pptx(
                 title=title,

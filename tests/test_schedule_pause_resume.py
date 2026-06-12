@@ -10,6 +10,7 @@ Covers:
   7.  resume not found → exits 1
   8.  resume not found --json → {resumed: false}
 """
+
 from __future__ import annotations
 
 import json

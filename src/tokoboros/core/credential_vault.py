@@ -35,7 +35,7 @@ class CredentialVault:
             return token
 
         if not prompt_if_missing:
-            raise ValueError(f"Credential not found. Set it via tokoboros secrets set {token_key}")
+            raise ValueError(f"Credential not found. Run: tokoboros secrets --set {token_key}")
 
         if not sys.stdin.isatty():
             raise ValueError("Cannot prompt for credential in non-interactive context")

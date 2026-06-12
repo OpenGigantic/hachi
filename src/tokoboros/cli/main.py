@@ -1736,8 +1736,7 @@ def models(
         False, "--json", help="Output machine-readable JSON (for CI/automation)."
     ),
 ):
-    """List the models the configured provider exposes (queried live), narrowed by
-    the allowed_models guardrail when set. Marks the active model."""
+    """List models the active provider exposes; also shows all configured providers."""
     from tokoboros.core.llm import create_llm_client, resolve_available_models
 
     cfg = load_effective_config()
@@ -1762,13 +1761,19 @@ def models(
 
     options = resolve_available_models(discovered, allowed, current)
     source = "allowlist" if allowed else ("provider" if discovered else "configured")
-    result = {
+    result: dict[str, object] = {
         "provider": provider.kind,
         "current": current,
         "source": source,
         "restricted": bool(allowed),
         "models": options,
     }
+    named_providers: dict = getattr(cfg, "providers", {}) or {}
+    if named_providers:
+        result["other_providers"] = {
+            n: {"kind": ps.kind, "default_model": ps.model}
+            for n, ps in named_providers.items()
+        }
 
     if json_output:
         # Plain print: Rich's console soft-wraps long JSON to terminal width.
@@ -1776,14 +1781,15 @@ def models(
         return
 
     console.print(
-        f"[bold]Models[/bold] for [cyan]{provider.kind}[/cyan]  [dim](source: {source})[/dim]"
+        f"[bold]Models[/bold] for [cyan]{provider.kind}[/cyan]"
+        f"  [dim](active · source: {source})[/dim]"
     )
     if not options:
         console.print("  [dim]no models available[/dim]")
-        return
-    for name in options:
-        mark = "  [green](current)[/green]" if name == current else ""
-        console.print(f"  • {name}{mark}")
+    else:
+        for name in options:
+            mark = "  [green](current)[/green]" if name == current else ""
+            console.print(f"  • {name}{mark}")
     if allowed:
         console.print("  [dim]switching is restricted to the configured allowlist.[/dim]")
     elif not discovered:
@@ -1792,12 +1798,25 @@ def models(
             "showing the configured model.[/dim]"
         )
 
+    if named_providers:
+        console.print()
+        console.print("[bold]Other configured providers[/bold]")
+        for pname, ps in named_providers.items():
+            console.print(f"  • [cyan]{pname}[/cyan]  [{ps.kind}]  default: {ps.model}")
+        console.print(
+            "  [dim]Switch with:[/dim]  /model <provider>"
+            "  [dim]or[/dim]  /model <provider> <model>"
+        )
+
 
 @app.command()
 def secrets(
     list_only: bool = typer.Option(False, "--list", help="List stored secret metadata."),
     delete: str | None = typer.Option(None, "--delete", help="Delete a secret by logical name."),
     check: bool = typer.Option(False, "--check", help="Run secret backend health check."),
+    set_key: str | None = typer.Option(
+        None, "--set", metavar="KEY", help="Store a secret (prompts for the value)."
+    ),
 ):
     """Inspect or manage secure secrets."""
     store = create_default_secret_store()
@@ -1813,12 +1832,26 @@ def secrets(
         console.print(f"Deleted secret metadata and value for: [cyan]{delete}[/cyan]")
         return
 
+    if set_key:
+        import sys
+
+        if not sys.stdin.isatty():
+            console.print("[red]--set requires an interactive terminal (stdin is not a TTY).[/red]")
+            raise typer.Exit(1)
+        value = typer.prompt(f"Value for '{set_key}'", hide_input=True, confirmation_prompt=True)
+        if not value:
+            console.print("[red]No value provided — secret not saved.[/red]")
+            raise typer.Exit(1)
+        store.set(set_key, value, metadata={"name": set_key, "labels": {"source": "cli"}})
+        console.print(f"[green]Saved[/green] secret: [cyan]{set_key}[/cyan]")
+        return
+
     if list_only:
         rows = store.list_metadata()
         console.print(Panel(json.dumps(rows, indent=2), title="Secret Metadata"))
         return
 
-    console.print("Use --list, --delete <name>, or --check")
+    console.print("Use --list, --delete <name>, --set <key>, or --check")
 
 
 @app.command()
@@ -1845,6 +1878,7 @@ def doctor(
     skill_count = 0
     skills_health = "unknown"
     mcp_servers_declared = 0
+    engine = None
     try:
         from tokoboros.og_engine.engine import SkillEngine, lint_og_file
 
@@ -1858,8 +1892,10 @@ def doctor(
             reports = [lint_og_file(f) for f in og_files]
             errors = sum(r["summary"]["errors"] for r in reports)
             warnings = sum(r["summary"]["warnings"] for r in reports)
+            skipped = len(engine._skipped_files)
+            skipped_note = f", {skipped} unparseable" if skipped else ""
             skills_health = (
-                f"{len(og_files)} file(s), {errors} error(s), {warnings} warning(s) "
+                f"{len(og_files)} file(s){skipped_note}, {errors} error(s), {warnings} warning(s) "
                 "(run `tokoboros skill lint` for detail)"
             )
         else:
@@ -1900,6 +1936,9 @@ def doctor(
         "permissions_tier": cfg.permissions.tier,
         "skills_loaded": skill_count,
         "skills_health": skills_health,
+        "skills_parse_failures": (
+            [s["file"] for s in engine._skipped_files] if engine is not None else []
+        ),
         "mcp_servers_declared": mcp_servers_declared,
         "session_cost_cap_usd": safety_and_limits["session_cost_cap_usd"],
         "safety_and_limits": safety_and_limits,
@@ -2353,32 +2392,110 @@ def channel_telegram(
         None, "--allow", help="Comma-separated Telegram chat ids to restrict access to."
     ),
     poll_interval: float = typer.Option(2.0, "--interval", help="Seconds between polls."),
+    setup: bool = typer.Option(
+        False,
+        "--setup",
+        help="Guided one-time setup: paste your bot token + allowlist, stored securely.",
+    ),
 ):
-    """Run a Telegram bot that relays messages to Tokoboros (one session per chat)."""
+    """Run a Telegram bot that relays messages to Tokoboros (one session per chat).
+
+    Like OpenClaw, this runs entirely on your machine via Telegram long-polling —
+    no deployment and no public URL. Run ``--setup`` once to store your bot token
+    in the OS credential vault and pick who's allowed to talk to it.
+    """
     import time
 
     from tokoboros.channels import ChannelRouter
     from tokoboros.channels.runner import GatewaySessionRunner
     from tokoboros.channels.telegram import TelegramAdapter
+    from tokoboros.channels.telegram_setup import (
+        load_allowlist,
+        looks_like_token,
+        parse_allowlist,
+        resolve_token,
+        save_allowlist,
+        save_token,
+    )
 
+    if setup:
+        console.print(
+            "[bold]Telegram setup[/bold] — create a bot with [cyan]@BotFather[/cyan] "
+            "(/newbot) and copy the token it gives you."
+        )
+        entered = typer.prompt("Paste your bot token", default="", show_default=False).strip()
+        if not entered:
+            console.print("[red]No token entered. Aborting setup.[/red]")
+            raise typer.Exit(2)
+        if not looks_like_token(entered):
+            console.print(
+                "[yellow]Warning:[/yellow] that doesn't look like a bot token "
+                "(expected '<digits>:<letters>'). Saving it anyway."
+            )
+        save_token(entered)
+        token = entered
+
+        console.print(
+            "\nWho may talk to this bot? Enter your Telegram [cyan]chat id(s)[/cyan], "
+            "comma-separated.\nLeave blank to allow [bold]anyone[/bold] who messages it "
+            "(only safe for a private bot)."
+        )
+        console.print(
+            "[dim]Tip: message [cyan]@userinfobot[/cyan] to learn your chat id, or leave "
+            "blank now and read it from this console after your first message.[/dim]"
+        )
+        allow_raw = typer.prompt("Allowed chat ids", default="", show_default=False)
+        allowlist_setup = parse_allowlist(allow_raw)
+        save_allowlist(allowlist_setup)
+        console.print(
+            f"[green]Saved.[/green] Token stored in the credential vault; "
+            f"allowlist: {allowlist_setup or 'anyone'}.\n"
+        )
+
+    token = resolve_token(token)
     if not token:
         console.print(
-            "[red]No bot token.[/red] Pass --token or set TELEGRAM_BOT_TOKEN "
-            "(create a bot via @BotFather)."
+            "[red]No bot token.[/red] Run [cyan]tokoboros channel telegram --setup[/cyan], "
+            "or pass --token / set TELEGRAM_BOT_TOKEN (create a bot via @BotFather)."
         )
         raise typer.Exit(2)
 
-    allowlist = [a.strip() for a in allow.split(",") if a.strip()] if allow else None
+    # Resolve the allowlist: an explicit --allow wins, otherwise fall back to the
+    # one saved during setup. An empty allowlist means "anyone" — warn loudly.
+    if allow is not None:
+        allowlist = parse_allowlist(allow)
+    else:
+        allowlist = load_allowlist()
+    if not allowlist:
+        console.print(
+            "[yellow]Heads up:[/yellow] no allowlist set — anyone who finds this bot can "
+            "use your agent. Restrict it with --setup or --allow <chat-id>."
+        )
+
+    # Surface the most common first-message failure (no/invalid LLM key) up front,
+    # rather than letting every Telegram message come back as an error.
+    try:
+        from tokoboros.core.onboarding import OnboardingService
+
+        if OnboardingService().needs_setup():
+            console.print(
+                "[yellow]Note:[/yellow] no working LLM provider is configured yet. "
+                "Run [cyan]tokoboros quickstart[/cyan] first, or messages will error."
+            )
+    except Exception:
+        pass
+
     adapter = TelegramAdapter(token)
     runner = GatewaySessionRunner()
-    router = ChannelRouter(runner, allowlist=allowlist)
+    router = ChannelRouter(runner, allowlist=allowlist or None)
     console.print("[green]Telegram bot running.[/green] Press Ctrl+C to stop.")
     try:
         while True:
             try:
                 for inbound in adapter.poll_once():
                     console.print(
-                        f"[cyan]{inbound.sender_name or inbound.sender_id}[/cyan]: {inbound.text}"
+                        f"[cyan]{inbound.sender_name or inbound.sender_id}[/cyan] "
+                        f"[dim](id {inbound.sender_id})[/dim]: {inbound.text}"
                     )
                     try:
                         adapter.send(router.dispatch(inbound))
@@ -4347,11 +4464,37 @@ def _make_installer(host: str, port: int):  # type: ignore[return]
 def daemon_install(
     host: str = typer.Option("127.0.0.1", "--host", help="Gateway bind address."),
     port: int = typer.Option(8787, "--port", help="Gateway bind port."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the service unit that would be installed, then exit."
+    ),
 ) -> None:
     """Install the gateway as a persistent background service (auto-starts on login).
 
     Supports macOS (launchd), Linux (systemd --user), and Windows (Task Scheduler).
     """
+    if dry_run:
+        from tokoboros.daemon import (
+            DaemonConfig,
+            _build_argv,
+            _default_log_path,
+            _detect_platform,
+            build_launchd_plist,
+            build_systemd_unit,
+        )
+
+        cfg = DaemonConfig(host=host, port=port)
+        argv = _build_argv(cfg)
+        platform = _detect_platform()
+        if platform == "macos":
+            unit = build_launchd_plist(argv, _default_log_path())
+        elif platform == "linux":
+            unit = build_systemd_unit(argv)
+        else:
+            unit = "\n".join(argv)
+        console.print(f"[dim]# dry-run — platform: {platform}[/dim]")
+        console.print(unit)
+        return
+
     try:
         msg = _make_installer(host, port).install()
         console.print(f"[green]✓[/green] {msg}")
@@ -4402,6 +4545,49 @@ def daemon_status() -> None:
     except Exception as exc:
         console.print(f"[red]daemon status failed:[/red] {exc}")
         raise typer.Exit(1) from exc
+
+
+@daemon_app.command("logs")
+def daemon_logs(
+    lines: int = typer.Option(50, "--lines", "-n", help="Number of tail lines to show."),
+    follow: bool = typer.Option(
+        False, "--follow", "-f", help="Stream new log lines (Ctrl-C to stop)."
+    ),
+) -> None:
+    """Show (or stream) the gateway daemon log."""
+    from tokoboros.daemon import _default_log_path
+
+    log_path = _default_log_path()
+    if not log_path.exists():
+        console.print(f"[yellow]Log file not found:[/yellow] {log_path}")
+        console.print("The daemon may not have been started yet. Run: tokoboros daemon start")
+        raise typer.Exit(1)
+
+    if follow:
+        import time
+
+        console.print(f"[dim]Streaming {log_path} (Ctrl-C to stop)…[/dim]")
+        with log_path.open(encoding="utf-8", errors="replace") as fh:
+            # Seek to near the end so we don't replay the entire file.
+            fh.seek(0, 2)
+            try:
+                while True:
+                    chunk = fh.read(4096)
+                    if chunk:
+                        console.print(chunk, end="", markup=False, highlight=False)
+                    else:
+                        time.sleep(0.25)
+            except KeyboardInterrupt:
+                pass
+        return
+
+    # Static tail: read the last N lines.
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    all_lines = text.splitlines()
+    tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+    console.print(f"[dim]# {log_path}  (last {len(tail)} lines)[/dim]")
+    for line in tail:
+        console.print(line, markup=False, highlight=False)
 
 
 if __name__ == "__main__":
