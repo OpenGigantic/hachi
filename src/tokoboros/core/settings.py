@@ -66,15 +66,33 @@ class CapabilityState(BaseModel):
     secret_ref: str | None = None
 
 
+class TelegramChannelSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    # Telegram chat ids allowed to talk to the agent. Empty = no restriction
+    # (the bot answers anyone who messages it — only sensible for a private bot).
+    allowlist: list[str] = Field(default_factory=list)
+
+
+class ChannelSettings(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    telegram: TelegramChannelSettings = Field(default_factory=TelegramChannelSettings)
+
+
 class ResolvedConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     meta: ConfigMeta = Field(default_factory=ConfigMeta)
     provider: ProviderSettings = Field(default_factory=ProviderSettings)
+    # Named additional providers for multi-provider /model switching.
+    # Configure via [providers.NAME] sections in ~/.tokoboros/settings.toml.
+    providers: dict[str, ProviderSettings] = Field(default_factory=dict)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     permissions: PermissionsSettings = Field(default_factory=PermissionsSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     capabilities: dict[str, CapabilityState] = Field(default_factory=dict)
+    channels: ChannelSettings = Field(default_factory=ChannelSettings)
 
 
 def default_config() -> ResolvedConfig:

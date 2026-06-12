@@ -12,33 +12,47 @@ class DriveService(GoogleService):
         return ["https://www.googleapis.com/auth/drive.file"]
 
     def search_drive(self, query: str, max_results: int = 5) -> str:
-        """Searches Google Drive for files."""
-        response = self.client.get(
-            "/drive/v3/files",
-            params={
-                "q": query,
-                "pageSize": max_results,
-                "fields": "files(id, name, mimeType, webViewLink)",
-            },
-        )
-        files = response.get("files", [])
-        if not files:
-            return f"No files found matching query: {query}"
+        """Searches Google Drive for files, following pagination up to max_results."""
+        try:
+            files: list = []
+            page_token: str | None = None
+            while len(files) < max_results:
+                params: dict = {
+                    "q": query,
+                    "pageSize": min(max_results - len(files), 100),
+                    "fields": "nextPageToken, files(id, name, mimeType, webViewLink)",
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+                response = self.client.get("/drive/v3/files", params=params)
+                files.extend(response.get("files", []))
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    break
 
-        result = [f"Found {len(files)} files:"]
-        for f in files:
-            result.append(f"- {f.get('name')} (ID: {f.get('id')}) [Link: {f.get('webViewLink')}]")
-        return "\n".join(result)
+            if not files:
+                return f"No files found matching query: {query}"
+
+            result = [f"Found {len(files)} file(s):"]
+            for f in files:
+                result.append(
+                    f"- {f.get('name')} (ID: {f.get('id')}) [Link: {f.get('webViewLink')}]"
+                )
+            return "\n".join(result)
+        except Exception as e:
+            return f"Failed to search Drive: {str(e)}"
 
     def create_folder(self, folder_name: str, parent_id: str = None) -> str:
         """Creates a folder in Google Drive."""
-        metadata = {"name": folder_name, "mimeType": "application/vnd.google-apps.folder"}
-        if parent_id:
-            metadata["parents"] = [parent_id]
-
-        response = self.client.post("/drive/v3/files", json_data=metadata)
-        folder_id = response.get("id")
-        return f"Folder '{folder_name}' created successfully. ID: {folder_id}"
+        try:
+            metadata = {"name": folder_name, "mimeType": "application/vnd.google-apps.folder"}
+            if parent_id:
+                metadata["parents"] = [parent_id]
+            response = self.client.post("/drive/v3/files", json_data=metadata)
+            folder_id = response.get("id")
+            return f"Folder '{folder_name}' created successfully. ID: {folder_id}"
+        except Exception as e:
+            return f"Failed to create folder: {str(e)}"
 
     def upload_file(self, file_path: str, parent_id: str = None) -> str:
         """Uploads a local file to Google Drive."""
@@ -74,17 +88,17 @@ class DriveService(GoogleService):
 
     def move_file(self, file_id: str, new_parent_id: str) -> str:
         """Moves a file to a new folder."""
-        # Retrieve the existing parents to remove
-        file_meta = self.client.get(f"/drive/v3/files/{file_id}", params={"fields": "parents"})
-        previous_parents = ",".join(file_meta.get("parents", []))
-
-        # Move the file to the new folder
-        self.client.patch(
-            f"/drive/v3/files/{file_id}",
-            params={"addParents": new_parent_id, "removeParents": previous_parents},
-            json_data={},  # Empty body
-        )
-        return f"File {file_id} moved to folder {new_parent_id}."
+        try:
+            file_meta = self.client.get(f"/drive/v3/files/{file_id}", params={"fields": "parents"})
+            previous_parents = ",".join(file_meta.get("parents", []))
+            self.client.patch(
+                f"/drive/v3/files/{file_id}",
+                params={"addParents": new_parent_id, "removeParents": previous_parents},
+                json_data={},
+            )
+            return f"File {file_id} moved to folder {new_parent_id}."
+        except Exception as e:
+            return f"Failed to move file: {str(e)}"
 
     def share_file(self, file_id: str, email: str, role: str = "writer") -> str:
         """Shares a file with a specific user."""

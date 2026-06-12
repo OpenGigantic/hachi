@@ -81,6 +81,7 @@ def test_no_budget_does_not_stop_early() -> None:
         loop.run(max_iterations=4)
     assert llm.n == 4
 
+
 _EMPTY_SCHEMA = {"type": "object", "properties": {}}
 
 

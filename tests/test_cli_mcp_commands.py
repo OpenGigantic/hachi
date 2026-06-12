@@ -121,8 +121,14 @@ def test_mcp_add_with_env_vars(tmp_path: Path) -> None:
     with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(
             app,
-            ["mcp", "add", "github", "@modelcontextprotocol/server-github",
-             "--env", "GITHUB_TOKEN=ghp_test123"],
+            [
+                "mcp",
+                "add",
+                "github",
+                "@modelcontextprotocol/server-github",
+                "--env",
+                "GITHUB_TOKEN=ghp_test123",
+            ],
         )
     assert result.exit_code == 0, result.output
     content = (skills_dir / "mcp-github.og").read_text(encoding="utf-8")
@@ -151,9 +157,7 @@ def test_mcp_add_json_output(tmp_path: Path) -> None:
 
     skills_dir = _setup_skills_dir(tmp_path)
     with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
-        result = runner.invoke(
-            app, ["mcp", "add", "myserver", "@org/myserver", "--json"]
-        )
+        result = runner.invoke(app, ["mcp", "add", "myserver", "@org/myserver", "--json"])
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["name"] == "myserver"

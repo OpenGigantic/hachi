@@ -2,6 +2,7 @@
 
 Fully offline: urllib calls are mocked so no real HTTP connection is made.
 """
+
 from __future__ import annotations
 
 import json

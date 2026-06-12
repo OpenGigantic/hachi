@@ -103,9 +103,7 @@ class SessionStore:
             self._conn.execute("ALTER TABLE sessions ADD COLUMN total_tokens INTEGER DEFAULT 0")
             self._conn.commit()
         if "total_cost_usd" not in existing:
-            self._conn.execute(
-                "ALTER TABLE sessions ADD COLUMN total_cost_usd REAL DEFAULT 0.0"
-            )
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN total_cost_usd REAL DEFAULT 0.0")
             self._conn.commit()
 
     # ==========================================
@@ -384,9 +382,7 @@ class SessionStore:
             True if a session with that ID existed and was deleted; False otherwise.
         """
         with self._lock:
-            cur = self._conn.execute(
-                "SELECT id FROM sessions WHERE id = ?", (session_id,)
-            )
+            cur = self._conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,))
             if cur.fetchone() is None:
                 return False
             self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
@@ -418,10 +414,12 @@ class SessionStore:
             ids = [row[0] for row in rows]
             placeholders = ",".join("?" * len(ids))
             self._conn.execute(
-                f"DELETE FROM messages WHERE session_id IN ({placeholders})", ids  # noqa: S608
+                f"DELETE FROM messages WHERE session_id IN ({placeholders})",
+                ids,  # noqa: S608
             )
             self._conn.execute(
-                f"DELETE FROM sessions WHERE id IN ({placeholders})", ids  # noqa: S608
+                f"DELETE FROM sessions WHERE id IN ({placeholders})",
+                ids,  # noqa: S608
             )
             self._conn.commit()
         return len(ids)

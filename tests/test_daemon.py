@@ -352,9 +352,7 @@ def test_no_shell_true_on_any_platform(tmp_path: Path):
             except Exception:
                 pass  # File not found / ctl failure — we only care about shell usage
 
-        assert not runner.any_with_shell_true(), (
-            f"shell=True detected on platform={platform}"
-        )
+        assert not runner.any_with_shell_true(), f"shell=True detected on platform={platform}"
 
 
 # ---------------------------------------------------------------------------

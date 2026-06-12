@@ -295,10 +295,7 @@ def _make_summary_fact(convo: Conversation) -> str:
     """Build a short core_memory fact summarising the imported conversation."""
     first_user = next((t.content for t in convo.turns if t.role == "user"), "")
     snippet = first_user[:_SUMMARY_SNIPPET_CHARS]
-    return (
-        f"[imported:{convo.source}] Conversation titled '{convo.title}'. "
-        f"Opening: {snippet}"
-    )
+    return f"[imported:{convo.source}] Conversation titled '{convo.title}'. Opening: {snippet}"
 
 
 def ingest(

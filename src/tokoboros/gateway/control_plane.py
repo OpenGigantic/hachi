@@ -289,6 +289,10 @@ class GatewayControlPlane:
             if normalized_session_id not in self._connections:
                 raise GatewayProtocolError("Unknown session_id")
             self._connections.pop(normalized_session_id, None)
+            # Prune any api-facade session-key that pointed at this session_id.
+            stale_keys = [k for k, v in self._api_sessions.items() if v == normalized_session_id]
+            for k in stale_keys:
+                del self._api_sessions[k]
         if self._on_disconnect is not None:
             self._on_disconnect(normalized_session_id)
 

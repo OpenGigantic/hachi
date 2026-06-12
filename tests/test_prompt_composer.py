@@ -1,4 +1,5 @@
 """Tests for PromptComposer — pure unit tests, no filesystem or LLM."""
+
 from tokoboros.core.prompt_composer import build_stable_base, compose
 
 _BRAIN = "STABLE_BRAIN_CONTENT"

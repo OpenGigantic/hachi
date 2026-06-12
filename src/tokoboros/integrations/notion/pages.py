@@ -203,11 +203,17 @@ class NotionPages(NotionService):
     def read_page_blocks(self, page_id: str) -> str:
         """
         Reads the blocks (content) of a specific Notion page and converts it to readable text.
-        Also lists child pages and databases.
+        Also lists child pages and databases. Follows Notion pagination.
         """
         try:
-            res = self._get(f"/blocks/{page_id}/children")
-            blocks = res.get("results", [])
+            blocks: list = []
+            params: dict = {}
+            while True:
+                res = self._get(f"/blocks/{page_id}/children", params=params or None)
+                blocks.extend(res.get("results", []))
+                if not res.get("has_more"):
+                    break
+                params = {"start_cursor": res["next_cursor"]}
 
             text_content = []
             for block in blocks:

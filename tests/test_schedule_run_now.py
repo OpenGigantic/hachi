@@ -152,9 +152,7 @@ def test_run_now_result_at_limit_no_ellipsis() -> None:
     assert result.exit_code == 0
     # The Result: preview line must NOT have the ellipsis when reply fits in 200 chars
     # Extract just the "Result:" line for the check
-    result_lines = [
-        ln for ln in result.output.splitlines() if ln.startswith("Result:")
-    ]
+    result_lines = [ln for ln in result.output.splitlines() if ln.startswith("Result:")]
     assert result_lines, "Expected 'Result:' line in output"
     result_line = result_lines[0]
     assert "…" not in result_line

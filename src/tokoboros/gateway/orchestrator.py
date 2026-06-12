@@ -743,9 +743,7 @@ class AgentSession:
         """
         # Prefer the cheaper sub-agent client (a smaller model on Anthropic);
         # fall back to the main loop client when no sub-agent client is wired.
-        client = getattr(self, "_sub_agent_client", None) or getattr(
-            self.loop, "llm_client", None
-        )
+        client = getattr(self, "_sub_agent_client", None) or getattr(self.loop, "llm_client", None)
         title = generate_title(user_input, assistant_response, llm_client=client)
         if self._session_store:
             try:
@@ -1382,8 +1380,7 @@ def boot_agent(
             # Register Universal REST APIs parsed from .og files.
             name="rest_apis",
             register_fn=lambda d: [
-                rest_adapter.register_node_apis(node)
-                for node in d.skill_engine.get_all_nodes()
+                rest_adapter.register_node_apis(node) for node in d.skill_engine.get_all_nodes()
             ],
         ),
         ToolSpec(
@@ -1573,6 +1570,7 @@ def boot_agent(
             session.chat(s.task)
         except Exception:
             import logging as _logging
+
             _logging.getLogger(__name__).exception("Schedule fire error for '%s'", s.name)
 
     _schedule_runner = ScheduleRunner(scheduler, fire=_fire_schedule)

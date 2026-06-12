@@ -152,32 +152,33 @@ class DesktopNotifier:
         # PowerShell code. A fresh per-call env dict (no os.environ mutation) keeps
         # this thread-safe; it inherits the current environment so PowerShell and its
         # assemblies resolve normally.
+        #
+        # The PS script blocks for ~4.5 s (waiting for the balloon to expire), so we
+        # run it in a daemon thread to avoid stalling the caller.
+        import threading
+
         env = {
             **os.environ,
             _WIN_NOTIFY_TITLE_ENV: title,
             _WIN_NOTIFY_BODY_ENV: body,
         }
-        proc = self._runner(
-            [
-                "powershell.exe",
-                "-NonInteractive",
-                "-NoProfile",
-                "-Command",
-                _WINDOWS_NOTIFY_SCRIPT,
-            ],
-            capture_output=True,
-            timeout=15,
-            env=env,
-        )
-        if proc is not None and getattr(proc, "returncode", 0) != 0:
-            stderr = getattr(proc, "stderr", b"")
-            err_text = (
-                stderr.decode(errors="replace").strip()
-                if isinstance(stderr, bytes)
-                else str(stderr).strip()
+
+        def _run() -> None:
+            self._runner(
+                [
+                    "powershell.exe",
+                    "-NonInteractive",
+                    "-NoProfile",
+                    "-Command",
+                    _WINDOWS_NOTIFY_SCRIPT,
+                ],
+                capture_output=True,
+                timeout=15,
+                env=env,
             )
-            return f"Desktop notification failed (rc={proc.returncode}): {err_text}"
-        return f"Desktop notification sent: {title!r}"
+
+        threading.Thread(target=_run, daemon=True).start()
+        return f"Desktop notification queued: {title!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +257,13 @@ class EmailNotifier:
                 "Set TOKOBOROS_SMTP_USER and TOKOBOROS_SMTP_PASSWORD."
             )
         host = os.environ.get("TOKOBOROS_SMTP_HOST", "smtp.gmail.com")
-        port = int(os.environ.get("TOKOBOROS_SMTP_PORT", "587"))
+        _raw_port = os.environ.get("TOKOBOROS_SMTP_PORT", "587")
+        try:
+            port = int(_raw_port)
+        except ValueError:
+            raise RuntimeError(
+                f"TOKOBOROS_SMTP_PORT must be an integer, got: {_raw_port!r}"
+            ) from None
         user = os.environ.get("TOKOBOROS_SMTP_USER", "")
         password = os.environ.get("TOKOBOROS_SMTP_PASSWORD", "")
         from_addr = os.environ.get("TOKOBOROS_SMTP_FROM") or user

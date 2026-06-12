@@ -44,9 +44,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 #: Launchers the agent is allowed to specify as the ``command`` for an MCP server.
-ALLOWED_MCP_COMMANDS: frozenset[str] = frozenset(
-    {"npx", "uvx", "python", "python3", "node", "uv"}
-)
+ALLOWED_MCP_COMMANDS: frozenset[str] = frozenset({"npx", "uvx", "python", "python3", "node", "uv"})
 
 #: Substring patterns (case-insensitive) that make an env-var name look like a secret.
 #: Keys matching any of these are rejected to prevent secrets being written to disk.
@@ -115,8 +113,7 @@ def _validate_mcp_name(name: str) -> str | None:
         return "Name must not be empty."
     if not re.match(r"^[\w-]+$", name):
         return (
-            f"Name {name!r} is not slug-safe. "
-            "Use letters, digits, hyphens, and underscores only."
+            f"Name {name!r} is not slug-safe. Use letters, digits, hyphens, and underscores only."
         )
     return None
 
@@ -225,7 +222,7 @@ def _make_add_mcp_server(gate: Any = None) -> Any:
         if err:
             return f"Validation error: {err}"
 
-        for key in (env_vars or {}):
+        for key in env_vars or {}:
             err = _validate_env_var_key(key)
             if err:
                 return f"Validation error (env var {key!r}): {err}"
@@ -253,8 +250,7 @@ def _make_add_mcp_server(gate: Any = None) -> Any:
             return (
                 f"MCP server {name!r} registered at {dest}. "
                 f"Restart the agent session to activate it. "
-                f"Command: {command} {args}"
-                + (f" | env: {list(env_vars)}" if env_vars else "")
+                f"Command: {command} {args}" + (f" | env: {list(env_vars)}" if env_vars else "")
             )
         except OSError as exc:
             return f"Failed to write MCP server config: {exc}"
@@ -543,8 +539,7 @@ ADD_MCP_SERVER_SCHEMA: dict[str, Any] = {
             "name": {
                 "type": "string",
                 "description": (
-                    "Short slug identifier (letters, digits, hyphens, underscores). "
-                    "E.g. 'github'."
+                    "Short slug identifier (letters, digits, hyphens, underscores). E.g. 'github'."
                 ),
             },
             "command": {

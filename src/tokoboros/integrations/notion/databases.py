@@ -12,7 +12,8 @@ class NotionDatabases(NotionService):
         """
         Performs a global search across the entire connected Notion workspace.
         """
-        payload = {"query": query}
+        _MAX_RESULTS = 20
+        payload: dict = {"query": query, "page_size": _MAX_RESULTS}
 
         try:
             res = self._post("/search", json_data=payload)
@@ -22,9 +23,9 @@ class NotionDatabases(NotionService):
                 return f"No results found in Notion for query: '{query}'"
 
             formatted = []
-            for item in results[:5]:  # Limit to top 5 to prevent context bloat
+            for item in results[:_MAX_RESULTS]:
                 item_id = item.get("id")
-                item_type = item.get("object")
+                item_type = item.get("object") or "unknown"
                 url = item.get("url")
 
                 # Extract title based on whether it's a page or database
@@ -47,20 +48,24 @@ class NotionDatabases(NotionService):
 
     def query_database(self, database_id: str) -> str:
         """
-        Queries a database to list its pages.
+        Queries a database to list its pages (follows Notion pagination).
         """
         try:
-            res = self._post(f"/databases/{database_id}/query")
-            results = res.get("results", [])
+            all_results: list = []
+            payload: dict = {}
+            while True:
+                res = self._post(f"/databases/{database_id}/query", json_data=payload)
+                all_results.extend(res.get("results", []))
+                if not res.get("has_more"):
+                    break
+                payload = {"start_cursor": res["next_cursor"]}
 
-            if not results:
+            if not all_results:
                 return "Database is empty."
 
             formatted = []
-            for item in results[:20]:
+            for item in all_results:
                 item_id = item.get("id")
-                item.get("url")
-
                 title = "Untitled"
                 if "properties" in item:
                     props = item["properties"]
@@ -70,7 +75,6 @@ class NotionDatabases(NotionService):
                             if title_arr:
                                 title = "".join([t.get("plain_text", "") for t in title_arr])
                                 break
-
                 formatted.append(f"- {title} (ID: {item_id})")
 
             return "\n".join(formatted)

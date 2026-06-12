@@ -126,7 +126,8 @@ def test_slash_command_model_rejects_unknown_discovered_model(monkeypatch) -> No
             kind="openai-compatible",
             model="gpt-4.1-mini",
             allowed_models=[],
-        )
+        ),
+        providers={},
     )
     monkeypatch.setattr("tokoboros.core.config_loader.load_effective_config", lambda: cfg)
     monkeypatch.setattr(
@@ -157,7 +158,8 @@ def test_slash_command_model_accepts_discovered_model(monkeypatch) -> None:
             kind="openai-compatible",
             model="gpt-4.1-mini",
             allowed_models=[],
-        )
+        ),
+        providers={},
     )
     monkeypatch.setattr("tokoboros.core.config_loader.load_effective_config", lambda: cfg)
     monkeypatch.setattr(
@@ -285,12 +287,16 @@ def test_slash_command_schedules_shows_list(monkeypatch) -> None:
     fake_scheduler = MagicMock()
     fake_scheduler.list_schedules.return_value = [fake_sched]
 
-    with __import__("unittest.mock", fromlist=["patch"]).patch(
-        "tokoboros.jobs.scheduler.Scheduler", return_value=fake_scheduler
-    ), __import__("unittest.mock", fromlist=["patch"]).patch(
-        "tokoboros.jobs.scheduler.ScheduleStore"
-    ), __import__("unittest.mock", fromlist=["patch"]).patch(
-        "tokoboros.core.paths.get_tokoboros_paths"
+    with (
+        __import__("unittest.mock", fromlist=["patch"]).patch(
+            "tokoboros.jobs.scheduler.Scheduler", return_value=fake_scheduler
+        ),
+        __import__("unittest.mock", fromlist=["patch"]).patch(
+            "tokoboros.jobs.scheduler.ScheduleStore"
+        ),
+        __import__("unittest.mock", fromlist=["patch"]).patch(
+            "tokoboros.core.paths.get_tokoboros_paths"
+        ),
     ):
         app.handle_slash_command("/schedules")
 
@@ -321,13 +327,19 @@ def test_slash_command_export_writes_file(monkeypatch, tmp_path) -> None:
 
     fake_store = MagicMock()
     fake_store.get_session_messages.return_value = [
-        {"role": "user", "content": "hello", "tool_name": None,
-         "timestamp": "2026-06-07T10:00:00"},
-        {"role": "assistant", "content": "hi there", "tool_name": None,
-         "timestamp": "2026-06-07T10:00:01"},
+        {"role": "user", "content": "hello", "tool_name": None, "timestamp": "2026-06-07T10:00:00"},
+        {
+            "role": "assistant",
+            "content": "hi there",
+            "tool_name": None,
+            "timestamp": "2026-06-07T10:00:01",
+        },
     ]
-    fake_store.get_session.return_value = {"title": "Test Session", "total_tokens": 0,
-                                           "total_cost_usd": 0.0}
+    fake_store.get_session.return_value = {
+        "title": "Test Session",
+        "total_tokens": 0,
+        "total_cost_usd": 0.0,
+    }
 
     out_file = tmp_path / "out.md"
     with __import__("unittest.mock", fromlist=["patch"]).patch(
@@ -353,12 +365,16 @@ def test_slash_command_schedules_no_schedules(monkeypatch) -> None:
     fake_scheduler = MagicMock()
     fake_scheduler.list_schedules.return_value = []
 
-    with __import__("unittest.mock", fromlist=["patch"]).patch(
-        "tokoboros.jobs.scheduler.Scheduler", return_value=fake_scheduler
-    ), __import__("unittest.mock", fromlist=["patch"]).patch(
-        "tokoboros.jobs.scheduler.ScheduleStore"
-    ), __import__("unittest.mock", fromlist=["patch"]).patch(
-        "tokoboros.core.paths.get_tokoboros_paths"
+    with (
+        __import__("unittest.mock", fromlist=["patch"]).patch(
+            "tokoboros.jobs.scheduler.Scheduler", return_value=fake_scheduler
+        ),
+        __import__("unittest.mock", fromlist=["patch"]).patch(
+            "tokoboros.jobs.scheduler.ScheduleStore"
+        ),
+        __import__("unittest.mock", fromlist=["patch"]).patch(
+            "tokoboros.core.paths.get_tokoboros_paths"
+        ),
     ):
         app.handle_slash_command("/schedules")
 

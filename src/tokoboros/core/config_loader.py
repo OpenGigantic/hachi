@@ -192,8 +192,7 @@ def load_effective_config(
     # Detect whether the user has explicitly written a provider kind to their
     # config files.  When true, env-var auto-detection must not override it.
     has_explicit_provider = bool(
-        global_config.get("provider", {}).get("kind")
-        or project.get("provider", {}).get("kind")
+        global_config.get("provider", {}).get("kind") or project.get("provider", {}).get("kind")
     )
     env = _env_overrides(
         project_dir,
@@ -220,6 +219,14 @@ def write_global_config(config: ResolvedConfig, paths: TokoborosPaths | None = N
         doc.add(tomlkit.comment("Tokoboros user settings"))
 
     payload = config.model_dump(mode="python", exclude_none=True)
+    # Don't write an empty providers table — it's the default and would clutter the file.
+    if not payload.get("providers"):
+        payload.pop("providers", None)
+    # Same for channels: only persist once a channel actually has configuration
+    # (e.g. a Telegram allowlist), otherwise it just adds an empty table.
+    channels = payload.get("channels") or {}
+    if not channels.get("telegram", {}).get("allowlist"):
+        payload.pop("channels", None)
     for key, value in payload.items():
         doc[key] = value
 

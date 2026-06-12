@@ -81,8 +81,7 @@ class PlanningService(GoogleService):
                     params={"format": "metadata", "metadataHeaders": ["From", "Subject"]},
                 )
                 headers = {
-                    h["name"]: h["value"]
-                    for h in detail.get("payload", {}).get("headers", [])
+                    h["name"]: h["value"] for h in detail.get("payload", {}).get("headers", [])
                 }
                 subject = headers.get("Subject", "(no subject)")[:60]
                 sender = headers.get("From", "")
@@ -143,7 +142,9 @@ class PlanningService(GoogleService):
             date_iso = datetime.date.today().isoformat()
 
         try:
-            display_date = datetime.date.fromisoformat(date_iso).strftime("%A, %B %-d %Y")
+            _d = datetime.date.fromisoformat(date_iso)
+            # %-d (Linux) / %#d (Windows) strip leading zero — use a portable alternative.
+            display_date = _d.strftime("%A, %B ") + str(_d.day) + _d.strftime(" %Y")
         except (ValueError, AttributeError):
             display_date = date_iso
 

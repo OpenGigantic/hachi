@@ -13,6 +13,15 @@ license = { text = "MIT" }
 authors = [
     { name = "Tokoboros Project" }
 ]
+keywords = [
+    "ai",
+    "agent",
+    "llm",
+    "anthropic",
+    "objectgraph",
+    "autonomous-agent",
+    "telegram-bot",
+]
 classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -70,6 +79,11 @@ tracing = [
 presentations = [
     "python-pptx>=1.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/OpenGigantic/tokoboros"
+Repository = "https://github.com/OpenGigantic/tokoboros"
+Issues = "https://github.com/OpenGigantic/tokoboros/issues"
 
 [project.scripts]
 tokoboros = "tokoboros.cli.main:app"
