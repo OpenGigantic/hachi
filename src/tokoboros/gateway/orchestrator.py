@@ -1220,12 +1220,18 @@ def boot_agent(
     )
 
     # 2. Initialize the Skill Engine (the .og brain).
-    # The main session agent is the orchestrator — pass its role so that
-    # brain.og's orchestrator-scoped identity and rule nodes are visible,
-    # while hypothetical admin-only or worker-only nodes remain hidden.
-    skill_engine = SkillEngine(agent_role="orchestrator")
-    skills_dir = get_skills_dir()
-    skill_engine.load_directory(skills_dir)
+    # P4-02: reuse the process-level singleton (shared across sessions) if available,
+    # to avoid re-indexing all .og files on every session boot.
+    from tokoboros.gateway.shared_services import ProcessSharedServices
+
+    _shared = ProcessSharedServices.get_or_create(config, str(get_tokoboros_paths().data_dir))
+    if _shared.skill_engine is not None:
+        skill_engine = _shared.skill_engine
+    else:
+        # Fallback: create a fresh engine (should not happen after the first boot).
+        skill_engine = SkillEngine(agent_role="orchestrator")
+        skills_dir = get_skills_dir()
+        skill_engine.load_directory(skills_dir)
 
     skill_count = skill_engine.node_count
 
@@ -1362,11 +1368,16 @@ def boot_agent(
 
     _raw_memory = config.get("memory", {})
     _memory_settings = MemorySettings.model_validate(_raw_memory)
-    _provider = resolve_provider(_memory_settings)
-    _provider.initialize(brain_dir=str(get_tokoboros_paths().data_dir))
-    vault: MemoryVault | None = (
-        _provider.vault if isinstance(_provider, ChromaMemoryProvider) else None
-    )
+
+    # P4-02: reuse shared vault when already initialised (avoids opening a new Chroma
+    # PersistentClient per session — up to 100 clients per process before this fix).
+    if _shared.vault is not None:
+        vault: MemoryVault | None = _shared.vault
+        _provider = ChromaMemoryProvider(vault=vault)
+    else:
+        _provider = resolve_provider(_memory_settings)
+        _provider.initialize(brain_dir=str(get_tokoboros_paths().data_dir))
+        vault = _provider.vault if isinstance(_provider, ChromaMemoryProvider) else None
     memory.set_vault(vault)
 
     # P4-06: M4 — fts5_only backend forces graph=True (files are canonical; no Chroma needed)
@@ -1376,47 +1387,64 @@ def boot_agent(
     _use_graph = _memory_settings.graph or _is_fts5_only
 
     # P2-04: M0 — attach FTS5 graph index when memory.graph=true (or fts5_only backend)
+    # P4-02: reuse the shared graph_index when the process singleton already has one.
     _graph_index = None
     if _use_graph and (vault is not None or _is_fts5_only):
-        try:
-            from tokoboros.core.memory_index import MemoryIndex
-
-            _paths = get_tokoboros_paths()
-            _graph_index = MemoryIndex(
-                memory_dir=_paths.memory_dir,
-                db_path=_paths.memory_index_db,
-            )
-            _graph_index.refresh()
-            if vault is not None:
+        if _shared.graph_index is not None:
+            _graph_index = _shared.graph_index
+            # Attach to vault if not already attached (idempotent guard).
+            if vault is not None and getattr(vault, "_graph_index", None) is None:
                 vault.attach_graph_index(_graph_index)
             if _is_fts5_only:
                 _provider.attach_graph_index(_graph_index)
-            logger.info(
-                "MemoryIndex: %d nodes indexed from %s",
-                _graph_index.node_count,
-                _paths.memory_dir,
-            )
-        except Exception:
-            logger.debug("P2-04: MemoryIndex init failed; graph recall disabled", exc_info=True)
+        else:
+            try:
+                from tokoboros.core.memory_index import MemoryIndex
+
+                _paths = get_tokoboros_paths()
+                _graph_index = MemoryIndex(
+                    memory_dir=_paths.memory_dir,
+                    db_path=_paths.memory_index_db,
+                )
+                _graph_index.refresh()
+                if vault is not None:
+                    vault.attach_graph_index(_graph_index)
+                if _is_fts5_only:
+                    _provider.attach_graph_index(_graph_index)
+                logger.info(
+                    "MemoryIndex: %d nodes indexed from %s",
+                    _graph_index.node_count,
+                    _paths.memory_dir,
+                )
+            except Exception:
+                logger.debug("P2-04: MemoryIndex init failed; graph recall disabled", exc_info=True)
 
     # P2-05: M1 — MemoryWriter for typed-node write path (always on when graph flag set)
+    # P4-02: reuse the shared memory_writer when available.
     if _use_graph:
-        try:
-            from tokoboros.core.memory_writer import MemoryWriter
-
-            _paths = get_tokoboros_paths()
-            _memory_writer = MemoryWriter(
-                memory_dir=_paths.memory_dir,
-                graph_index=_graph_index,
-            )
-            memory.set_memory_writer(_memory_writer)
+        if _shared.memory_writer is not None:
+            memory.set_memory_writer(_shared.memory_writer)
             if _is_fts5_only:
-                _provider.attach_memory_writer(_memory_writer)
-            logger.info("MemoryWriter: M1 write path active (memory_dir=%s)", _paths.memory_dir)
-        except Exception:
-            logger.debug(
-                "P2-05: MemoryWriter init failed; falling back to Chroma-only", exc_info=True
-            )
+                _provider.attach_memory_writer(_shared.memory_writer)
+        else:
+            try:
+                from tokoboros.core.memory_writer import MemoryWriter
+
+                _paths = get_tokoboros_paths()
+                _memory_writer = MemoryWriter(
+                    memory_dir=_paths.memory_dir,
+                    graph_index=_graph_index,
+                )
+                memory.set_memory_writer(_memory_writer)
+                if _is_fts5_only:
+                    _provider.attach_memory_writer(_memory_writer)
+                logger.info(
+                    "MemoryWriter: M1 write path active (memory_dir=%s)", _paths.memory_dir
+                )
+            except Exception:
+                logger.debug(
+                    "P2-05: MemoryWriter init failed; falling back to Chroma-only", exc_info=True
+                )
 
     # Universal REST adapter for .og-defined APIs; built here so the rest_apis spec
     # can close over it without a circular BootDeps reference.
