@@ -12,6 +12,7 @@ Phase 1 Update:
     - Prevents mutable shared state issues across concurrent sessions/turns
 """
 
+import concurrent.futures
 import logging
 import threading
 import time
@@ -265,6 +266,30 @@ class ExecutionLoop:
         self._cancel_event: threading.Event = threading.Event()
         # Text accumulated across iterations (for partial output on cancel).
         self._partial_text: list[str] = []
+        # P4-03: thread pool for parallel tool execution within a batch.
+        # max_workers=4 is conservative for I/O-bound tools; does not starve other
+        # concurrent sessions since each session's loop uses its own pool.
+        self._tool_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="toko-tool"
+        )
+
+    def _execute_single_tool(
+        self, tool_call: ToolCall
+    ) -> tuple[Any, bool, "SuspendWorkflow | None"]:
+        """Execute one tool call and return (result, is_error, suspend_exc_or_None).
+
+        Designed to run inside the thread pool.  ``SuspendWorkflow`` is returned
+        as a value (not re-raised) so the caller can collect all futures before
+        deciding whether to suspend.
+        """
+        try:
+            with span("tool.call", tool=tool_call.name):
+                result = self.registry.execute(tool_call)
+            return (result, False, None)
+        except SuspendWorkflow as exc:
+            return (None, False, exc)
+        except Exception as exc:
+            return (f"Tool Execution Error: {str(exc)}", True, None)
 
     def add_user_message(self, text: str):
         """Add a user query to the active session history via the MemoryManager."""
@@ -339,6 +364,10 @@ class ExecutionLoop:
         matching tool_result blocks).
         """
         self._cancel_event.set()
+
+    def shutdown(self, wait: bool = True) -> None:
+        """Shut down the internal thread pool. Call on session close."""
+        self._tool_pool.shutdown(wait=wait)
 
     def _stream_generate(self, on_delta: Callable[[str], None], **kwargs: Any) -> LLMResponse:
         """Drive generate_stream(), emit per-chunk callbacks, return the LLMResponse.
@@ -576,6 +605,10 @@ class ExecutionLoop:
                     return response.content
 
                 # 3. Execute requested tools and detect skill switches
+                # P4-03: Pre-pass — apply control-flow side-effects for all calls before
+                # dispatching to the thread pool.  use_tools/load_skill mutate shared state
+                # (active_groups, active_skill) that downstream tools may rely on, so they
+                # must run before any tool is submitted.
                 tool_results: list[dict[str, Any]] = []
                 suspend_reason = None
 
@@ -604,28 +637,33 @@ class ExecutionLoop:
                             if new_skill != self.memory.active_skill:
                                 self.memory.signal_skill_switch(new_skill)
 
-                    tool_error = False
-                    try:
-                        with span("tool.call", tool=tool_call.name):
-                            result = self.registry.execute(tool_call)
-                    except SuspendWorkflow as e:
-                        suspend_reason = e.reason
+                # P4-03: Submit all tool calls to the thread pool concurrently.
+                # Results are collected in original order so the API receives a
+                # well-ordered tool_result block list (Anthropic requires it).
+                _futures: dict[str, concurrent.futures.Future] = {}
+                for tool_call in response.tool_calls:
+                    _futures[tool_call.id] = self._tool_pool.submit(
+                        self._execute_single_tool, tool_call
+                    )
+
+                for tool_call in response.tool_calls:
+                    if suspend_reason:
                         break
-                    except Exception as e:
-                        # FIX H6: capture error and mark the tool_result block accordingly
-                        result = f"Tool Execution Error: {str(e)}"
-                        tool_error = True
+                    raw_result, tool_error, _suspend = _futures[tool_call.id].result()
+                    if _suspend is not None:
+                        suspend_reason = _suspend.reason
+                        break
 
                     # Most tools return text (stringified here). A tool that needs
                     # the model to *see* richer content (e.g. an image) returns a
                     # ToolResultBlocks, whose blocks pass through to the tool_result
                     # content untouched. Only this exact type opts into pass-through,
                     # so tools that return plain dicts keep being stringified.
-                    if isinstance(result, ToolResultBlocks):
-                        result_content: Any = list(result.blocks)
-                        result_summary = result.summary or "[multimodal content]"
+                    if isinstance(raw_result, ToolResultBlocks):
+                        result_content: Any = list(raw_result.blocks)
+                        result_summary = raw_result.summary or "[multimodal content]"
                     else:
-                        result_content = str(result)
+                        result_content = str(raw_result)
                         result_summary = result_content
 
                     self.on_event(
