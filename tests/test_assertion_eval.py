@@ -86,7 +86,10 @@ def test_report_ok_only_when_no_fail_or_unknown() -> None:
 # --------------------------------------------------------------------------- #
 def _engine_with_assertions(assertions: list[str]) -> SkillEngine:
     eng = SkillEngine()
-    eng._nodes["demo"] = OGNode(name="demo", source_file="", assertions=assertions)
+    node = OGNode(name="demo", source_file="test_assertions.og", assertions=assertions)
+    qid = "test_assertions:demo"
+    eng._nodes[qid] = node
+    eng._bare_name_index["demo"] = [qid]
     return eng
 
 

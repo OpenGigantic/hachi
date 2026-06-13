@@ -157,6 +157,9 @@ class Schedule:
     deliver_to: str = "chat"  # "chat" | "webhook" | "log"
     webhook_url: str | None = None
 
+    # optional condition — name of a haiku-class skill that must return "true" before firing
+    condition_skill: str | None = None
+
     # bookkeeping
     enabled: bool = True
     created_at: str = field(default_factory=lambda: _now().isoformat())
@@ -196,6 +199,8 @@ class Schedule:
     def from_dict(cls, data: dict[str, Any]) -> Schedule:
         data = dict(data)
         data["kind"] = ScheduleKind(data["kind"])
+        # Tolerate persisted records from before condition_skill was added.
+        data.setdefault("condition_skill", None)
         return cls(**data)
 
 
@@ -276,6 +281,7 @@ class Scheduler:
         cron: str | None = None,
         deliver_to: str = "chat",
         webhook_url: str | None = None,
+        condition_skill: str | None = None,
         now: datetime | None = None,
     ) -> Schedule:
         now = now or _now()
@@ -291,6 +297,7 @@ class Scheduler:
             cron=cron,
             deliver_to=deliver_to,
             webhook_url=webhook_url,
+            condition_skill=condition_skill,
             created_at=now.isoformat(),
         )
         nxt = schedule.compute_next(after=now - timedelta(seconds=1))
@@ -330,15 +337,42 @@ class Scheduler:
         self,
         fire: Callable[[Schedule], None],
         now: datetime | None = None,
+        *,
+        condition_evaluator: Callable[[str], bool] | None = None,
     ) -> list[Schedule]:
         """Fire every due schedule via ``fire`` and advance each. Returns those fired.
 
         A ``fire`` callback that raises does not advance the schedule (so it stays
         due and is retried on the next tick); other schedules are unaffected.
+
+        Args:
+            fire:                Callback invoked for each due schedule.
+            now:                 Override the current time (for testing).
+            condition_evaluator: Optional callable that takes a skill name and returns
+                                 ``True`` if the condition passes.  If a schedule has
+                                 a ``condition_skill`` and the evaluator returns ``False``,
+                                 the schedule is skipped (not advanced) for this tick.
         """
         now = now or _now()
         fired: list[Schedule] = []
         for schedule in self.due(now):
+            # Evaluate optional condition before firing.
+            if schedule.condition_skill and condition_evaluator is not None:
+                try:
+                    if not condition_evaluator(schedule.condition_skill):
+                        logger.debug(
+                            "Schedule %s condition '%s' not met — skipping",
+                            schedule.schedule_id,
+                            schedule.condition_skill,
+                        )
+                        continue
+                except Exception as cond_err:
+                    logger.warning(
+                        "Schedule %s condition evaluation failed: %s",
+                        schedule.schedule_id,
+                        cond_err,
+                    )
+                    continue
             try:
                 fire(schedule)
             except Exception as e:

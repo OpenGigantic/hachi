@@ -94,6 +94,20 @@ class MemoryVault:
             metadata={"description": "Blocked memory writes with threat metadata for review"},
         )
 
+        # P2-04: optional FTS5 graph index; set via attach_graph_index()
+        self._graph_index: Any = None
+
+    # ==========================================
+    # P2-04: Graph index (M0)
+    # ==========================================
+
+    def attach_graph_index(self, index: Any) -> None:
+        """Bind a MemoryIndex so semantic_search uses RRF(Chroma, FTS5).
+
+        Called by boot_agent when ``memory.graph=true`` is configured.
+        """
+        self._graph_index = index
+
     # ==========================================
     # Internal Helpers
     # ==========================================
@@ -272,6 +286,9 @@ class MemoryVault:
     def semantic_search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """Semantic similarity search against the core_memory collection.
 
+        When a MemoryIndex is attached (``memory.graph=true``), results from the
+        Chroma collection and the FTS5 index are merged via Reciprocal Rank Fusion.
+
         Args:
             query: Natural language query to match against stored facts.
             top_k: Maximum number of results to return.
@@ -279,7 +296,18 @@ class MemoryVault:
         Returns:
             Ranked list of fact dicts with id, content, category, timestamp, raw_content.
         """
-        return self._query_collection(self.collection, query, top_k)
+        chroma_results = self._query_collection(self.collection, query, top_k)
+        if self._graph_index is None:
+            return chroma_results
+
+        try:
+            from tokoboros.core.memory_index import rrf_merge
+
+            graph_results = self._graph_index.search(query, top_k=top_k)
+            return rrf_merge(chroma_results, graph_results, top_k=top_k)
+        except Exception:
+            logger.debug("MemoryVault: graph index search failed; falling back to Chroma only")
+            return chroma_results
 
     # ==========================================
     # User Profile (Bounded Identity Store)

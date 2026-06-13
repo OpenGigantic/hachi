@@ -92,6 +92,12 @@ class _FinishingLLM:
     def generate(self, **_kwargs) -> LLMResponse:
         return LLMResponse(content=self.response_text, tool_calls=[], usage=TokenUsage())
 
+    def generate_stream(self, **kwargs):  # noqa: ANN201
+        response = self.generate(**kwargs)
+        if False:
+            yield ""
+        return response
+
 
 def test_loop_uses_in_memory_adaptor() -> None:
     """ExecutionLoop works with InMemoryConversationMemory and calls complete_task."""
@@ -170,6 +176,12 @@ def test_loop_calls_prepare_for_turn_each_iteration() -> None:
                     usage=TokenUsage(),
                 )
             return LLMResponse(content="done", tool_calls=[], usage=TokenUsage())
+
+        def generate_stream(self, **kwargs):  # noqa: ANN201
+            response = self.generate(**kwargs)
+            if False:
+                yield ""
+            return response
 
     _schema = {
         "name": "noop",

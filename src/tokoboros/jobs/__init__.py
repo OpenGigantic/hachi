@@ -4,9 +4,12 @@ from tokoboros.jobs.queue import (
     InMemoryJobQueue,
     Job,
     JobQueue,
+    JobRegistry,
     JobResult,
     JobStatus,
     JobWorker,
+    ResidentWorkerThread,
+    SQLiteJobQueue,
 )
 from tokoboros.jobs.scheduler import (
     Schedule,
@@ -20,10 +23,13 @@ from tokoboros.jobs.scheduler import (
 __all__ = [
     "Job",
     "JobQueue",
+    "JobRegistry",
     "JobResult",
     "JobStatus",
     "JobWorker",
     "InMemoryJobQueue",
+    "ResidentWorkerThread",
+    "SQLiteJobQueue",
     "Schedule",
     "ScheduleKind",
     "Scheduler",

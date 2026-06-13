@@ -22,6 +22,9 @@ SESSION_CHAT_COMPLETED = "session.chat.completed"
 SESSION_PERSISTED = "session.persisted"
 SESSION_RESUMED = "session.resumed"
 SESSION_SHUTDOWN = "session.shutdown"
+SESSION_ITERATION_LIMIT = "session.iteration.limit"
+SESSION_BUSY = "session.busy"
+SESSION_CANCELLED = "session.turn.cancelled"
 
 # Model output lifecycle
 THINKING = "thinking.step"
@@ -97,7 +100,7 @@ def adapt_event(event_type: str, data: dict[str, Any] | None = None) -> list[Run
             )
         ]
 
-    if event_type == "text_chunk":
+    if event_type in ("text_chunk", "text_delta"):
         return [
             RuntimeEventEnvelope(
                 _event(
@@ -106,7 +109,20 @@ def adapt_event(event_type: str, data: dict[str, Any] | None = None) -> list[Run
                         "text": payload.get("text", ""),
                     },
                 ),
-                legacy_aliases=("text_chunk",),
+                legacy_aliases=("text_chunk", "text_delta"),
+            )
+        ]
+
+    if event_type == "session_cancelled":
+        return [
+            RuntimeEventEnvelope(
+                _event(
+                    SESSION_CANCELLED,
+                    {
+                        "partial_text": payload.get("partial_text", ""),
+                    },
+                ),
+                legacy_aliases=("session_cancelled",),
             )
         ]
 

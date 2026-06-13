@@ -1,10 +1,18 @@
+::meta
+  title: Core QR Code Creator
+  version: 1.0.0
+  domain: utilities|image|encoding
+
+::index
+  # node-id       | type  | scope | conf | keywords
+  core_qr_creator  | skill | all   | 1.0  | qr code, generate qr, barcode, link to qr, qr, scan
+
 ::node[core_qr_creator]
 ->[:role=skill]
-->[:keywords=qr code, generate qr, barcode, link to qr]
+->[:keywords=qr code, generate qr, barcode, link to qr, qr, scan]
 
 ::dense
-Instantly generates high-quality QR codes and saves them directly to the user's local machine.
-Since the QR API returns raw binary image data, you must orchestrate the native OS `run_command` tool to download it via `curl`, rather than using a REST adapter.
+Generates QR code PNG to disk via qrserver.com + curl. Returns saved file path.
 
 ::steps
 1. Extract the target data (URL, Wi-Fi password, or text) from the user.

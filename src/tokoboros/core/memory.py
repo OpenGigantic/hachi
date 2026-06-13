@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 from typing import TYPE_CHECKING, Any
 
 from tokoboros.core.llm import Message
@@ -81,8 +80,11 @@ class MemoryManager:
                                  sliding-window compaction. Prevents unbounded growth
                                  even within a single skill execution.
             job_queue: Optional durable JobQueue for background work.
-                       If provided, sync_turn() enqueues jobs instead of spawning threads.
-                       Falls back to thread-based sync if not provided (backward compat).
+                       sync_turn() requires a job queue; without one, memory extraction
+                       is disabled and a WARNING is logged.
+            strict_errors: When True (default), memory write errors are surfaced loudly
+                           via the job queue failure pipeline instead of being swallowed.
+                           Set to False only in tests or debugging scenarios.
         """
         self._history: list[Message] = []
         self._task_ledger: list[TaskRecord] = []
@@ -92,11 +94,16 @@ class MemoryManager:
         self._last_user_query: str = ""
         self.vault = None
         self.job_queue = job_queue
-        self._sync_lock = threading.Lock()  # For thread-based fallback
+        self.strict_errors: bool = True
+        self._memory_writer: Any = None  # MemoryWriter; set by orchestrator for M1 write path
 
     def set_vault(self, vault):
         """Bind the Long-Term Memory Vault to the manager for auto-flushing."""
         self.vault = vault
+
+    def set_memory_writer(self, writer: Any) -> None:
+        """Bind a MemoryWriter for the M1 typed-node write path (P2-05)."""
+        self._memory_writer = writer
 
     # ==========================================
     # Automatic Post-Turn Sync
@@ -124,44 +131,38 @@ class MemoryManager:
             return
 
         if self.job_queue:
-            # Phase 1: Use durable queue
+            # Route through the durable queue so failures are visible in jobs/failed
+            # and surfaced as TUI badge warnings — never silently swallowed.
             from tokoboros.jobs.queue import Job, JobStatus
 
+            # M1 typed extraction (P2-05): preferred when MemoryWriter is attached
+            extraction_func = (
+                self._run_typed_extraction if self._memory_writer else self._run_fact_extraction
+            )
             job = Job(
-                job_id="",  # Will be assigned by queue
+                job_id="",  # Assigned by queue
                 name="fact_extraction",
                 status=JobStatus.PENDING,
-                func=self._run_fact_extraction,
+                func=extraction_func,
                 args=(combined,),
                 job_type="sync",
             )
             try:
                 job_id = self.job_queue.enqueue(job)
-                logger.debug(f"Enqueued fact extraction job {job_id}")
+                logger.debug("Enqueued fact extraction job %s", job_id)
             except Exception as e:
-                logger.warning(
-                    f"Failed to enqueue fact extraction job: {e}. Falling back to thread."
-                )
-                self._spawn_sync_thread(combined)
+                # Enqueue failure is itself a visible error — do NOT fall back to a
+                # thread that would swallow subsequent errors silently.
+                logger.error("Failed to enqueue fact extraction job: %s", e)
         else:
-            # Fallback: spawn daemon thread
-            self._spawn_sync_thread(combined)
-
-    def _spawn_sync_thread(self, combined: str) -> None:
-        """Spawn a background thread for fact extraction (fallback mechanism)."""
-        logger.warning("Memory sync falling back to daemon thread -- no job queue configured")
-
-        def _extract():
-            if not self._sync_lock.acquire(blocking=False):
-                return  # Another sync is already running, skip this one
-            try:
-                self._run_fact_extraction(combined)
-            except Exception:
-                pass  # Never interrupt the agent
-            finally:
-                self._sync_lock.release()
-
-        threading.Thread(target=_extract, name="sync-turn", daemon=True).start()
+            # No job queue configured: memory sync is disabled.
+            # This is a configuration gap — log at WARNING so operators notice.
+            logger.warning(
+                "Memory sync skipped: no job queue configured. "
+                "Without a job queue, background fact extraction is disabled and "
+                "memory write failures cannot be surfaced. Configure a job queue "
+                "to enable the full memory pipeline."
+            )
 
     def _run_fact_extraction(self, combined: str) -> None:
         """LLM-powered fact extraction from a user/assistant exchange.
@@ -233,6 +234,156 @@ class MemoryManager:
         )
         if extracted:
             logger.debug("sync_turn extracted %d facts", extracted)
+
+    def _run_typed_extraction(
+        self, combined: str, session_id: str = ""
+    ) -> None:
+        """M1 write-side: schema-constrained tool-call extraction → typed OG nodes.
+
+        Uses the Anthropic tool_use mechanism so the LLM is forced to emit a
+        validated structure instead of free-form JSON.  Falls back to flat
+        ``fact`` nodes when the model returns an empty or malformed tool call.
+
+        Runs in the background via the durable job queue (P2-02).
+        Also forwards facts to Chroma via the legacy upsert path so existing
+        semantic search continues to work during the M1 migration.
+        """
+        import os
+
+        if not self._memory_writer:
+            return
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            logger.debug("Skipping typed extraction: ANTHROPIC_API_KEY not set")
+            return
+
+        from tokoboros.core.llm import AnthropicClient
+        from tokoboros.core.llm import Message as LLMMessage
+        from tokoboros.core.memory_writer import MemoryNode, _slugify
+
+        _EXTRACT_TOOL: dict[str, Any] = {
+            "name": "extract_memory_nodes",
+            "description": (
+                "Extract durable memory nodes from a conversation exchange. "
+                "Only extract facts that should persist across sessions. "
+                "Omit transient commands, status, and single-use instructions."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "nodes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description": "Unique slug for this node (kebab-case)",
+                                },
+                                "role": {
+                                    "type": "string",
+                                    "enum": [
+                                        "fact",
+                                        "preference",
+                                        "event",
+                                        "rule",
+                                        "task",
+                                        "person",
+                                    ],
+                                    "description": (
+                                        "fact=technical/workspace; preference=user identity/style; "
+                                        "event=something that happened; "
+                                        "rule=agent behavior correction; "
+                                        "task=work item; person=info about a person"
+                                    ),
+                                },
+                                "dense": {
+                                    "type": "string",
+                                    "description": "One concise sentence (≤20 words) for the fact.",
+                                },
+                                "keywords": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "2-5 search keywords",
+                                },
+                                "project_slug": {
+                                    "type": "string",
+                                    "description": (
+                                        "For fact/task nodes: kebab-case project name. "
+                                        "Omit for personal facts."
+                                    ),
+                                },
+                            },
+                            "required": ["name", "role", "dense"],
+                        },
+                    }
+                },
+                "required": ["nodes"],
+            },
+        }
+
+        snippet = combined[:3000]
+        client = AnthropicClient()
+        response = client.generate(
+            messages=[LLMMessage(role="user", content=f"Extract memory from:\n\n{snippet}")],
+            system_prompt=(
+                "You are a precision memory extraction engine. "
+                "Extract ONLY durable facts worth keeping across sessions. "
+                "Use the extract_memory_nodes tool. "
+                "Return an empty nodes list if nothing is worth extracting."
+            ),
+            tools=[_EXTRACT_TOOL],
+        )
+
+        # Pull out the tool call result
+        raw_nodes: list[dict[str, Any]] = []
+        for tc in response.tool_calls or []:
+            if tc.name == "extract_memory_nodes":
+                raw_nodes = (tc.input or {}).get("nodes", [])
+                break
+
+        if not raw_nodes:
+            logger.debug("Typed extraction: no nodes extracted from exchange")
+            return
+
+        nodes: list[MemoryNode] = []
+        for raw in raw_nodes:
+            role = raw.get("role", "fact")
+            if role not in ("fact", "preference", "event", "rule", "task", "person"):
+                role = "fact"
+            name = _slugify(raw.get("name", "") or raw.get("dense", "node")[:40])
+            nodes.append(
+                MemoryNode(
+                    name=name,
+                    role=role,
+                    dense=str(raw.get("dense", ""))[:200],
+                    keywords=list(raw.get("keywords", [])),
+                    session_id=session_id,
+                    project_slug=_slugify(raw.get("project_slug", "")),
+                )
+            )
+
+        written = self._memory_writer.write_nodes(nodes, session_id=session_id)
+        logger.debug("Typed extraction: wrote %d nodes", written)
+
+        # Parallel write to Chroma so existing semantic search continues to work
+        if self.vault:
+            for node in nodes:
+                try:
+                    if node.role == "preference":
+                        self.vault.upsert_user_fact(node.dense)
+                    elif node.role == "rule":
+                        self.vault.upsert_agent_fact(node.dense)
+                    else:
+                        self.vault.upsert_fact(node.dense, category=node.role)
+                except Exception:
+                    logger.debug("Typed extraction: Chroma parallel-write failed", exc_info=True)
+
+    def write_episode(
+        self, session_id: str, summary: str, keywords: list[str] | None = None
+    ) -> None:
+        """Write a session-close episode node to journal/<session_id>.og (P2-05)."""
+        if self._memory_writer:
+            self._memory_writer.write_episode(session_id, summary, keywords or [])
 
     # ==========================================
     # Public API
@@ -654,27 +805,14 @@ class MemoryManager:
                 try:
                     self.job_queue.enqueue(job)
                 except Exception as enqueue_err:
-                    logger.warning(
-                        "Failed to enqueue flush_facts job: %s. "
-                        "Memory sync falling back to daemon thread -- no job queue configured",
-                        enqueue_err,
+                    logger.error(
+                        "Failed to enqueue flush_facts job: %s", enqueue_err
                     )
-                    threading.Thread(
-                        target=self._flush_facts_to_vault,
-                        args=(dropped_messages,),
-                        name="flush-facts",
-                        daemon=True,
-                    ).start()
             else:
                 logger.warning(
-                    "Memory sync falling back to daemon thread -- no job queue configured"
+                    "flush_facts skipped: no job queue configured. "
+                    "Dropped context will not be persisted to long-term memory."
                 )
-                threading.Thread(
-                    target=self._flush_facts_to_vault,
-                    args=(dropped_messages,),
-                    name="flush-facts",
-                    daemon=True,
-                ).start()
 
         # Generate structured summary (synchronous — we need the result now)
         summary = self._generate_structured_summary(dropped_messages)
@@ -753,50 +891,47 @@ class MemoryManager:
     def _flush_facts_to_vault(self, messages: list) -> None:
         """Extract permanent facts from dropped messages and save to vault.
 
-        Runs in a background thread. Errors are silently swallowed to never
-        interrupt the main agent loop.
+        Runs as a background job via the durable queue. Exceptions propagate to
+        the JobWorker so failures are routed to jobs/failed — never swallowed.
         """
-        try:
-            user_texts = [
-                m.content for m in messages if m.role == "user" and isinstance(m.content, str)
-            ]
-            if not user_texts:
-                return
+        user_texts = [
+            m.content for m in messages if m.role == "user" and isinstance(m.content, str)
+        ]
+        if not user_texts:
+            return
 
-            snippet = "\n".join(user_texts)
-            if len(snippet.strip()) < 10:
-                return
+        snippet = "\n".join(user_texts)
+        if len(snippet.strip()) < 10:
+            return
 
-            from tokoboros.core.llm import AnthropicClient
-            from tokoboros.core.llm import Message as LLMMessage
+        from tokoboros.core.llm import AnthropicClient
+        from tokoboros.core.llm import Message as LLMMessage
 
-            client = AnthropicClient()
-            prompt = (
-                "Extract any permanent, atomic facts from this conversation snippet into a "
-                "JSON list. "
-                "If the user states a preference, a relationship, an architecture decision, "
-                "or an environment detail, extract it. "
-                "Do NOT extract tasks, commands, or transient status "
-                "(e.g. 'I am coding', 'fix this bug'). "
-                'Return ONLY a valid JSON array of strings, e.g. ["User\'s boss is Premraj", '
-                '"User prefers Python"]. If none, return [].'
-            )
+        client = AnthropicClient()
+        prompt = (
+            "Extract any permanent, atomic facts from this conversation snippet into a "
+            "JSON list. "
+            "If the user states a preference, a relationship, an architecture decision, "
+            "or an environment detail, extract it. "
+            "Do NOT extract tasks, commands, or transient status "
+            "(e.g. 'I am coding', 'fix this bug'). "
+            'Return ONLY a valid JSON array of strings, e.g. ["User\'s boss is Premraj", '
+            '"User prefers Python"]. If none, return [].'
+        )
 
-            response = client.generate(
-                messages=[LLMMessage(role="user", content=f"{prompt}\n\nSnippet:\n{snippet}")],
-                system_prompt="You are an elite data extraction agent. Output pure JSON only.",
-            )
+        response = client.generate(
+            messages=[LLMMessage(role="user", content=f"{prompt}\n\nSnippet:\n{snippet}")],
+            system_prompt="You are an elite data extraction agent. Output pure JSON only.",
+        )
 
-            text = response.content.strip()
-            if text.startswith("```json"):
-                text = text.split("```json", 1)[1].split("```", 1)[0].strip()
+        text = response.content.strip()
+        if text.startswith("```json"):
+            text = text.split("```json", 1)[1].split("```", 1)[0].strip()
 
-            facts = json.loads(text)
-            for fact in facts:
-                if isinstance(fact, str) and len(fact) > 5:
-                    self.vault.upsert_fact(fact, category="auto_flushed_context")
-        except Exception:
-            pass
+        facts = json.loads(text)
+        for fact in facts:
+            if isinstance(fact, str) and len(fact) > 5:
+                self.vault.upsert_fact(fact, category="auto_flushed_context")
 
     def _generate_structured_summary(self, messages: list) -> str:
         """Produce a structured checkpoint from dropped conversation messages.

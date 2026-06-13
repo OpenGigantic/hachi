@@ -121,6 +121,11 @@ class _ScriptedLLM:
         self.calls += 1
         return resp
 
+    def generate_stream(self, **kwargs):
+        response = self.generate(**kwargs)
+        return response
+        yield  # makes this a generator function
+
 
 def test_loop_clears_when_over_threshold(monkeypatch) -> None:
     monkeypatch.setattr(memory_mod, "_TOOL_RESULT_CLEAR_TOKENS", 100)  # tiny → triggers

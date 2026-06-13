@@ -19,11 +19,13 @@ we provide surgical, O(1) keyword-based retrieval.
 
 import json
 import logging
+import math
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from tokoboros.core.paths import get_tokoboros_paths, migrate_legacy_skill_usage
 from tokoboros.og_engine.parser import (
     OGChangelogEntry,
     OGFile,
@@ -35,6 +37,41 @@ from tokoboros.og_engine.serializer import index_entry_for_node, serialize_og_fi
 from tokoboros.og_engine.skill_md import skill_md_to_og
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Retrieval helpers: stopword-guarded tokenization + BM25 ranking
+# ---------------------------------------------------------------------------
+
+_NONWORD_RE = re.compile(r"[^\w]")
+
+# Common English function words that add noise to skill queries.
+_STOPWORDS: frozenset[str] = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "i", "we", "you", "he", "she", "it", "they", "them", "their",
+    "this", "that", "these", "those",
+    "and", "or", "but", "not", "no", "nor", "so",
+    "for", "with", "from", "to", "at", "in", "on", "by", "of", "as",
+    "can", "could", "will", "would", "should", "may", "might", "must",
+    "do", "does", "did", "have", "has", "had",
+    "what", "how", "when", "where", "who", "why",
+    "please", "help", "me", "my", "your",
+})
+
+# Minimum token length to index/query (excludes single-char noise).
+_MIN_TOKEN_LEN = 2
+
+
+def _tokenize(text: str) -> list[str]:
+    """Lowercase, strip punctuation, split into words, remove stopwords.
+
+    Indexes node name + keywords as individual tokens for BM25 retrieval.
+    Omits stopwords so short function words don't pollute query matching.
+    """
+    tokens = _NONWORD_RE.sub(" ", text.lower()).split()
+    return [t for t in tokens if len(t) >= _MIN_TOKEN_LEN and t not in _STOPWORDS]
+
+
+# ---------------------------------------------------------------------------
 
 # Upper bound (in estimated tokens) on a node's ::dense block. The dense block is
 # the Pass-2 routing summary — if it grows into a paragraph it defeats the format.
@@ -147,10 +184,15 @@ def lint_og_file(filepath: str | Path) -> dict[str, Any]:
                 f"::index lists '{entry.node_id}' but no matching ::node exists.",
             )
 
+    _SKILL_ROLES = frozenset({"skill", "native_integration"})
+
     for node in nodes:
+        is_skill = node.role in _SKILL_ROLES
+        structural_level = "error" if is_skill else "warning"
+
         if node.name not in index_ids:
             add(
-                "warning",
+                structural_level,
                 node.name,
                 "missing-index",
                 "Node has no ::index entry - it won't be routable in Pass 1.",
@@ -164,7 +206,7 @@ def lint_og_file(filepath: str | Path) -> dict[str, Any]:
             )
         if not node.dense.strip():
             add(
-                "warning",
+                structural_level,
                 node.name,
                 "missing-dense",
                 "Node has no ::dense block - Pass 2 (cheap peek) falls back to heavier blocks.",
@@ -173,7 +215,7 @@ def lint_og_file(filepath: str | Path) -> dict[str, Any]:
             tokens = estimate_tokens(node.dense)
             if tokens > DENSE_TOKEN_BUDGET:
                 add(
-                    "warning",
+                    structural_level,
                     node.name,
                     "dense-over-budget",
                     f"::dense is ~{tokens} tokens; budget is {DENSE_TOKEN_BUDGET}. Compress it.",
@@ -245,15 +287,32 @@ class SkillEngine:
                   nodes from worker sub-agents.
         """
         self._agent_role = agent_role
-        self._nodes: dict[str, OGNode] = {}  # node_name -> OGNode
-        self._keyword_index: dict[str, list[str]] = {}  # keyword -> [node_name, ...]
+        # Nodes are keyed by qualified ID: "<file-stem>:<node-name>".
+        # Use _resolve_name() to look up by bare name (unambiguous) or qualified ID.
+        self._nodes: dict[str, OGNode] = {}  # qualified_id -> OGNode
+        self._keyword_index: dict[str, list[str]] = {}  # keyword -> [qualified_id, ...]
+        # Bare-name → qualified-ID mapping for unambiguous resolution (migration shim).
+        self._bare_name_index: dict[str, list[str]] = {}  # bare_name -> [qualified_id, ...]
         self._files: dict[str, OGFile] = {}  # filepath -> OGFile (file-level metadata + index)
         self._skills_dir: Path | None = None  # root dir; where authored skills are written
         self._skipped_files: list[dict[str, str]] = []  # files that failed to parse
 
-        # Phase 4: Persistent usage tracking
-        self._usage_path = Path.home() / ".tokoboros" / "brain" / "skill_usage.json"
+        # BM25 retrieval structures (populated by load_file)
+        self._token_index: dict[str, list[str]] = {}  # word token → [qualified_id, ...]
+        self._df: dict[str, int] = {}  # document frequency: token → number of docs containing it
+        self._doc_len: dict[str, int] = {}  # qualified_id → number of indexed tokens
+
+        # Phase 4: Persistent usage tracking (platformdirs state_dir; legacy shim migrates once)
+        _paths = get_tokoboros_paths()
+        migrate_legacy_skill_usage(_paths)
+        self._usage_path = _paths.skill_usage_json
         self._usage: dict[str, dict[str, Any]] = self._load_usage()
+
+        # M7: Pass-depth counters — incremented on each search/peek/resolve call.
+        # Thread-safe via GIL (int increment); reset between benchmark runs.
+        self._pass1_count: int = 0  # search() invocations
+        self._pass2_count: int = 0  # peek() invocations
+        self._pass3_count: int = 0  # resolve_node() invocations
 
     def _is_visible(self, node: OGNode) -> bool:
         """Return True when this node is accessible to the engine's agent role.
@@ -266,6 +325,41 @@ class SkillEngine:
         if self._agent_role == "*":
             return True
         return node.scope in ("all", "public", self._agent_role)
+
+    def _is_skill_node(self, node: OGNode) -> bool:
+        """Return True if this node should appear in skill *search* results.
+
+        brain.og nodes are identity/config, not capabilities — exclude them from
+        the skill search surface so ``peek_skill("identity")`` stops rouletting.
+        """
+        if node.source_file:
+            return Path(node.source_file).name.lower() != "brain.og"
+        return True
+
+    def _resolve_name(self, name: str) -> str | None:
+        """Resolve a node name (bare or qualified) to a qualified ID.
+
+        - ``"file-stem:node-name"`` → direct lookup (qualified).
+        - ``"node-name"`` → unambiguous bare-name lookup via ``_bare_name_index``.
+          Returns None if the bare name is absent or ambiguous (multiple files).
+
+        Args:
+            name: Bare node name or qualified ``stem:name`` identifier.
+
+        Returns:
+            The qualified ID string, or None if unresolvable.
+        """
+        if ":" in name:
+            return name if name in self._nodes else None
+        matches = self._bare_name_index.get(name, [])
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            logger.debug(
+                "Ambiguous bare name '%s' matches %d nodes (%s) — use qualified ID",
+                name, len(matches), ", ".join(matches[:3]),
+            )
+        return None
 
     def with_role(self, agent_role: str) -> "SkillEngine":
         """Return a lightweight read-only view of this engine with a different role.
@@ -319,26 +413,78 @@ class SkillEngine:
         try:
             og_file = parse_og_file(str(filepath))
             self._files[str(filepath)] = og_file
+            file_stem = filepath.stem
 
             for node in og_file.nodes:
-                self._nodes[node.name] = node
+                qualified_id = f"{file_stem}:{node.name}"
 
-                # Index every keyword for fast lookup
+                # Hard collision guard: same stem+name from two different files means
+                # the library has an unresolvable ambiguity — error loudly.
+                if qualified_id in self._nodes:
+                    existing = self._nodes[qualified_id]
+                    logger.error(
+                        "Node ID collision: '%s' already loaded from '%s'; "
+                        "ignoring duplicate from '%s'. Rename one of the nodes.",
+                        qualified_id,
+                        existing.source_file,
+                        filepath,
+                    )
+                    self._skipped_files.append({
+                        "file": str(filepath),
+                        "error": (
+                            f"collision: '{qualified_id}' already loaded"
+                            f" from '{existing.source_file}'"
+                        ),
+                    })
+                    continue
+
+                self._nodes[qualified_id] = node
+
+                # Bare-name index for unambiguous backward-compat resolution
+                if node.name not in self._bare_name_index:
+                    self._bare_name_index[node.name] = []
+                self._bare_name_index[node.name].append(qualified_id)
+
+                # Index every keyword → qualified ID for fast lookup
                 for kw in node.keywords:
                     kw_lower = kw.lower()
                     if kw_lower not in self._keyword_index:
                         self._keyword_index[kw_lower] = []
-                    if node.name not in self._keyword_index[kw_lower]:
-                        self._keyword_index[kw_lower].append(node.name)
+                    if qualified_id not in self._keyword_index[kw_lower]:
+                        self._keyword_index[kw_lower].append(qualified_id)
+
+                # BM25 token index: tokenize name + keywords, track DF and doc length
+                bm25_text = node.name.replace("_", " ") + " " + " ".join(node.keywords)
+                tokens = _tokenize(bm25_text)
+                self._doc_len[qualified_id] = len(tokens)
+                unique_tokens_this_doc: set[str] = set()
+                for tok in tokens:
+                    self._token_index.setdefault(tok, []).append(qualified_id)
+                    if tok not in unique_tokens_this_doc:
+                        self._df[tok] = self._df.get(tok, 0) + 1
+                        unique_tokens_this_doc.add(tok)
 
             # Also index keywords from ::index entries for file-level routing
             for entry in og_file.index:
+                # Index entries may reference bare names; qualify them if possible
+                entry_qid = f"{file_stem}:{entry.node_id}"
                 for kw in entry.keywords:
                     kw_lower = kw.lower()
                     if kw_lower not in self._keyword_index:
                         self._keyword_index[kw_lower] = []
-                    if entry.node_id not in self._keyword_index[kw_lower]:
-                        self._keyword_index[kw_lower].append(entry.node_id)
+                    if entry_qid not in self._keyword_index[kw_lower]:
+                        self._keyword_index[kw_lower].append(entry_qid)
+                    # Augment BM25 token index with ::index keywords so nodes that
+                    # declare keywords only in ::index (e.g. brain.og) are reachable.
+                    if entry_qid in self._nodes:
+                        for tok in _tokenize(kw_lower):
+                            existing = self._token_index.get(tok, [])
+                            if entry_qid not in existing:
+                                self._token_index.setdefault(tok, []).append(entry_qid)
+                                self._df[tok] = self._df.get(tok, 0) + 1
+                                self._doc_len[entry_qid] = (
+                                    self._doc_len.get(entry_qid, 0) + 1
+                                )
         except Exception as e:
             # Skip malformed files so one bad skill doesn't crash the agent, but
             # record them so doctor/lint can surface them to the user.
@@ -355,45 +501,90 @@ class SkillEngine:
             query: A natural language query or keyword string from the agent.
 
         Returns:
-            A list of dicts with 'name', 'role', 'keywords', and 'source_file' for each match.
+            A list of dicts with 'name', 'role', 'keywords', and 'source_file' for each match,
+            ranked by BM25 relevance score descending.
         """
-        query_terms = set(query.lower().split())
-        matched_names: set = set()
+        self._pass1_count += 1
+        query_tokens = _tokenize(query)
+        if not query_tokens:
+            return []
 
-        # Direct keyword match
-        for term in query_terms:
-            if term in self._keyword_index:
-                matched_names.update(self._keyword_index[term])
+        N = len(self._doc_len)
+        if N == 0:
+            return []
+        avg_dl = sum(self._doc_len.values()) / N
+        k1, b = 1.5, 0.75
 
-        # Fuzzy substring match across all keywords
-        for kw, names in self._keyword_index.items():
-            for term in query_terms:
-                if term in kw or kw in term:
-                    matched_names.update(names)
+        # Collect candidates via token index.  For each query token, also check
+        # prefix-match (e.g. "deployment" → "deploy") so stemming-style recall works.
+        candidate_qids: set[str] = set()
+        for qt in query_tokens:
+            for qid in self._token_index.get(qt, []):
+                candidate_qids.add(qid)
+            # Prefix match: index token is a prefix of the query token
+            for tok in self._token_index:
+                if len(tok) >= 3 and qt.startswith(tok) and tok != qt:
+                    candidate_qids.update(self._token_index[tok])
 
+        if not candidate_qids:
+            return []
+
+        # BM25 scoring — binary TF (presence) per token per doc
+        scores: dict[str, float] = {}
+        for qid in candidate_qids:
+            node = self._nodes.get(qid)
+            if node is None or not self._is_visible(node) or not self._is_skill_node(node):
+                continue
+
+            dl = self._doc_len.get(qid, 0)
+            score = 0.0
+            for qt in query_tokens:
+                # Determine whether this query token matches anything in this doc
+                tf = 1 if qt in self._token_index and qid in self._token_index[qt] else 0
+                if tf == 0:
+                    # Check prefix-matched tokens
+                    for tok in self._token_index:
+                        if len(tok) >= 3 and qt.startswith(tok) and qid in self._token_index[tok]:
+                            tf = 1
+                            break
+                if tf == 0:
+                    continue
+
+                # Use DF of the actual matched token (exact or closest prefix)
+                df = self._df.get(qt, len(self._token_index.get(qt, [])))
+                df = max(df, 1)
+                idf = math.log((N - df + 0.5) / (df + 0.5) + 1.0)
+                norm = k1 * (1 - b + b * dl / max(avg_dl, 1))
+                score += idf * tf * (k1 + 1) / (tf + norm)
+
+            if score > 0:
+                scores[qid] = score
+
+        # Sort by BM25 score descending; use priority as a tiebreaker so nodes
+        # with identical relevance respect their ::traverse priority annotation.
         _PRIORITY_ORDER = {"high": 0, "normal": 1, "low": 2}
 
+        def _sort_key(qid: str) -> tuple[float, int]:
+            bm25_score = -scores[qid]  # negate: lower = better (descending sort)
+            priority_rank = _PRIORITY_ORDER.get(
+                (self._nodes[qid].traverse or {}).get("priority", "normal"), 1
+            )
+            return (bm25_score, priority_rank)
+
+        sorted_qids = sorted(scores, key=_sort_key)
         results = []
-        for name in matched_names:
-            node = self._nodes.get(name)
-            if node is None or not self._is_visible(node):
-                continue
-            priority = (node.traverse or {}).get("priority", "normal")
-            sort_key = _PRIORITY_ORDER.get(priority, 1)
-            results.append(
-                (
-                    sort_key,
+        for qid in sorted_qids:
+            node = self._nodes.get(qid)
+            if node is not None:
+                results.append(
                     {
                         "name": node.name,
                         "role": node.role,
                         "keywords": ", ".join(node.keywords),
                         "source_file": node.source_file,
-                    },
+                    }
                 )
-            )
-
-        results.sort(key=lambda t: t[0])
-        return [r for _, r in results]
+        return results
 
     def list_all_skills(self) -> list[dict[str, str]]:
         """
@@ -433,7 +624,10 @@ class SkillEngine:
         Returns:
             The full OGNode or None if not found or not accessible.
         """
-        node = self._nodes.get(name)
+        qid = self._resolve_name(name)
+        if qid is None:
+            return None
+        node = self._nodes.get(qid)
         if node is None or not self._is_visible(node):
             return None
         return node
@@ -441,6 +635,24 @@ class SkillEngine:
     def get_all_nodes(self) -> list[OGNode]:
         """Return all indexed skill nodes visible to this engine's agent role."""
         return [n for n in self._nodes.values() if self._is_visible(n)]
+
+    # ------------------------------------------------------------------
+    # M7: Pass-depth counters
+    # ------------------------------------------------------------------
+
+    def get_usage_counters(self) -> dict[str, int]:
+        """Return M7 pass-depth counters accumulated since last reset."""
+        return {
+            "pass1_search": self._pass1_count,
+            "pass2_peek": self._pass2_count,
+            "pass3_resolve": self._pass3_count,
+        }
+
+    def reset_usage_counters(self) -> None:
+        """Reset M7 pass-depth counters to zero (call before a benchmark run)."""
+        self._pass1_count = 0
+        self._pass2_count = 0
+        self._pass3_count = 0
 
     def peek(self, names: list[str]) -> dict[str, Any]:
         """Pass 2: return the compressed view of one or more nodes.
@@ -460,9 +672,11 @@ class SkillEngine:
             A dict mapping each requested name to its compressed view, or to an
             ``{"error": ...}`` entry if the node is unknown.
         """
+        self._pass2_count += 1
         result: dict[str, Any] = {}
         for name in names:
-            node = self._nodes.get(name)
+            qid = self._resolve_name(name)
+            node = self._nodes.get(qid) if qid else None
             if not node or not self._is_visible(node):
                 result[name] = {"error": f"Skill '{name}' not found."}
                 continue
@@ -515,7 +729,9 @@ class SkillEngine:
         Returns:
             A formatted string containing only the requested content.
         """
-        node = self._nodes.get(name)
+        self._pass3_count += 1
+        qid = self._resolve_name(name)
+        node = self._nodes.get(qid) if qid else None
         if not node or not self._is_visible(node):
             return f"Error: Skill '{name}' not found in the loaded skills."
 
@@ -822,7 +1038,8 @@ class SkillEngine:
 
     def export_skill(self, name: str) -> str | None:
         """Serialize a single loaded skill node back to ``.og`` text (or None)."""
-        node = self._nodes.get(name)
+        qid = self._resolve_name(name)
+        node = self._nodes.get(qid) if qid else None
         if not node:
             return None
         og = OGFile(
@@ -896,7 +1113,8 @@ class SkillEngine:
             A dict with ``name``, ``version``, ``updated``, and ``changelog``
             (list of entry dicts), or ``None`` if the node is unknown.
         """
-        node = self._nodes.get(name)
+        qid = self._resolve_name(name)
+        node = self._nodes.get(qid) if qid else None
         if not node:
             return None
         filepath = node.source_file
@@ -928,7 +1146,8 @@ class SkillEngine:
             if the node is unknown.  Returns an empty ``traverse`` dict if the
             node exists but has no ``::traverse`` block.
         """
-        node = self._nodes.get(name)
+        qid = self._resolve_name(name)
+        node = self._nodes.get(qid) if qid else None
         if not node:
             return None
         return {
@@ -970,10 +1189,11 @@ class SkillEngine:
             (excluding the root), ``missing`` are referenced deps not currently
             loaded, and ``has_cycle`` flags a dependency loop. ``None`` if unknown.
         """
-        if name not in self._nodes:
+        root_qid = self._resolve_name(name)
+        if root_qid is None or root_qid not in self._nodes:
             return None
 
-        direct = self._direct_deps(self._nodes[name])
+        direct = self._direct_deps(self._nodes[root_qid])
         chain: list[str] = []
         missing: list[str] = []
         visited: set[str] = set()
@@ -981,7 +1201,8 @@ class SkillEngine:
 
         def walk(current: str, depth: int, path: frozenset[str]) -> None:
             nonlocal has_cycle
-            node = self._nodes.get(current)
+            cur_qid = self._resolve_name(current)
+            node = self._nodes.get(cur_qid) if cur_qid else None
             if node is None or depth > max_depth:
                 return
             for dep in self._direct_deps(node):
@@ -991,7 +1212,8 @@ class SkillEngine:
                 if dep in visited:  # already resolved on another branch (diamond)
                     continue
                 visited.add(dep)
-                if dep in self._nodes:
+                dep_qid = self._resolve_name(dep)
+                if dep_qid and dep_qid in self._nodes:
                     chain.append(dep)
                     walk(dep, depth + 1, path | {dep})
                 elif dep not in missing:
@@ -1140,14 +1362,15 @@ class SkillEngine:
         cutoff = datetime.now(UTC) - timedelta(days=stale_days)
         stale = []
 
-        for name, node in self._nodes.items():
+        for qid, node in self._nodes.items():
             if not self._is_visible(node):
                 continue
-            entry = self._usage.get(name)
+            # Usage tracking keyed by bare name for backward compat with persisted JSON
+            entry = self._usage.get(node.name) or self._usage.get(qid)
             if not entry:
                 stale.append(
                     {
-                        "name": name,
+                        "name": node.name,
                         "last_used": None,
                         "use_count": 0,
                         "days_inactive": None,
@@ -1162,7 +1385,7 @@ class SkillEngine:
                     days = (datetime.now(UTC) - last).days
                     stale.append(
                         {
-                            "name": name,
+                            "name": node.name,
                             "last_used": entry["last_used"],
                             "use_count": entry["use_count"],
                             "days_inactive": days,
@@ -1183,11 +1406,12 @@ class SkillEngine:
         """
         tracked = []
         for name, entry in self._usage.items():
-            node = self._nodes.get(name)
+            qid = self._resolve_name(name)
+            node = self._nodes.get(qid) if qid else None
             if node is not None and self._is_visible(node):
                 tracked.append(
                     {
-                        "name": name,
+                        "name": node.name,  # always bare name for display
                         "use_count": entry.get("use_count", 0),
                         "first_used": entry.get("first_used"),
                         "last_used": entry.get("last_used"),
@@ -1217,13 +1441,13 @@ class SkillEngine:
         skills.
         """
         inventory: list[dict[str, Any]] = []
-        for name, node in self._nodes.items():
+        for qid, node in self._nodes.items():
             if not self._is_visible(node):
                 continue
-            entry = self._usage.get(name) or {}
+            entry = (self._usage.get(node.name) or self._usage.get(qid)) or {}
             inventory.append(
                 {
-                    "name": name,
+                    "name": node.name,
                     "role": node.role,
                     "keyword_count": len(node.keywords),
                     "use_count": int(entry.get("use_count", 0) or 0),

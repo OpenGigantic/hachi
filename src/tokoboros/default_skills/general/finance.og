@@ -1,6 +1,16 @@
+::meta
+  title: Core Finance (Crypto)
+  version: 1.0.0
+  domain: finance|crypto|market-data
+
+::index
+  # node-id     | type  | scope | conf | keywords
+  core_finance   | skill | all   | 1.0  | crypto, bitcoin, price, finance, market, cryptocurrency, coin, btc, eth, market cap
+
 ::node[core_finance]
 ->[:role=skill]
-->[:keywords=crypto, bitcoin, price, finance, market]
+->[:requires=core_currency]
+->[:keywords=crypto, bitcoin, price, finance, market, cryptocurrency, coin, btc, eth, market cap]
 
 ::api[fetch_crypto_price]
 method=GET
@@ -9,8 +19,7 @@ schema={"coin_id": "string"}
 description=Fetches the current real-time USD price and 24h change for a cryptocurrency (use exact ID like 'bitcoin', 'ethereum').
 
 ::dense
-Provides live cryptocurrency market data using the CoinGecko public API.
-Always present financial data with professionalism and clarity, rounding prices to reasonable decimal places.
+Live crypto prices via CoinGecko. Shows USD price and 24h change. Use for BTC, ETH, altcoins.
 
 ::steps
 1. Identify the cryptocurrency requested (e.g., 'bitcoin' for BTC).

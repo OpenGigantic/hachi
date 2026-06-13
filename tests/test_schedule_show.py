@@ -78,7 +78,11 @@ def _fake_scheduler(schedule=None) -> MagicMock:
 class TestScheduleShow:
     def test_human_output_shows_key_fields(self) -> None:
         s = _fake_schedule()
-        with patch("tokoboros.cli.main._get_scheduler", return_value=_fake_scheduler(s)):
+        patcher = patch(
+            "tokoboros.cli.commands.schedule._get_scheduler",
+            return_value=_fake_scheduler(s),
+        )
+        with patcher:
             result = runner.invoke(app, ["schedule", "show", "sched-abc123"])
         assert result.exit_code == 0
         assert "weekly-report" in result.output
@@ -89,7 +93,11 @@ class TestScheduleShow:
 
     def test_json_output_round_trips(self) -> None:
         s = _fake_schedule(run_count=5)
-        with patch("tokoboros.cli.main._get_scheduler", return_value=_fake_scheduler(s)):
+        patcher = patch(
+            "tokoboros.cli.commands.schedule._get_scheduler",
+            return_value=_fake_scheduler(s),
+        )
+        with patcher:
             result = runner.invoke(app, ["schedule", "show", "sched-abc123", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -98,35 +106,55 @@ class TestScheduleShow:
         assert data["run_count"] == 5
 
     def test_not_found_exits_1(self) -> None:
-        with patch("tokoboros.cli.main._get_scheduler", return_value=_fake_scheduler(None)):
+        patcher = patch(
+            "tokoboros.cli.commands.schedule._get_scheduler",
+            return_value=_fake_scheduler(None),
+        )
+        with patcher:
             result = runner.invoke(app, ["schedule", "show", "nonexistent"])
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
 
     def test_cron_schedule_shows_cron_field(self) -> None:
         s = _fake_schedule(kind="cron", cron="*/5 * * * *")
-        with patch("tokoboros.cli.main._get_scheduler", return_value=_fake_scheduler(s)):
+        patcher = patch(
+            "tokoboros.cli.commands.schedule._get_scheduler",
+            return_value=_fake_scheduler(s),
+        )
+        with patcher:
             result = runner.invoke(app, ["schedule", "show", "sched-abc123"])
         assert result.exit_code == 0
         assert "*/5 * * * *" in result.output
 
     def test_interval_schedule_shows_interval_seconds(self) -> None:
         s = _fake_schedule(kind="interval", cron=None, interval_seconds=3600)
-        with patch("tokoboros.cli.main._get_scheduler", return_value=_fake_scheduler(s)):
+        patcher = patch(
+            "tokoboros.cli.commands.schedule._get_scheduler",
+            return_value=_fake_scheduler(s),
+        )
+        with patcher:
             result = runner.invoke(app, ["schedule", "show", "sched-abc123"])
         assert result.exit_code == 0
         assert "3600" in result.output
 
     def test_disabled_schedule_shown(self) -> None:
         s = _fake_schedule(enabled=False)
-        with patch("tokoboros.cli.main._get_scheduler", return_value=_fake_scheduler(s)):
+        patcher = patch(
+            "tokoboros.cli.commands.schedule._get_scheduler",
+            return_value=_fake_scheduler(s),
+        )
+        with patcher:
             result = runner.invoke(app, ["schedule", "show", "sched-abc123"])
         assert result.exit_code == 0
         assert "disabled" in result.output
 
     def test_webhook_delivery_shows_url(self) -> None:
         s = _fake_schedule(deliver_to="webhook", webhook_url="https://example.com/hook")
-        with patch("tokoboros.cli.main._get_scheduler", return_value=_fake_scheduler(s)):
+        patcher = patch(
+            "tokoboros.cli.commands.schedule._get_scheduler",
+            return_value=_fake_scheduler(s),
+        )
+        with patcher:
             result = runner.invoke(app, ["schedule", "show", "sched-abc123"])
         assert result.exit_code == 0
         assert "https://example.com/hook" in result.output

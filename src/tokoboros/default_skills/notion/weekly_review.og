@@ -1,10 +1,19 @@
+::meta
+  title: Weekly Review
+  version: 1.0.0
+  domain: notion|productivity|retrospective
+
+::index
+  # node-id       | type  | scope | conf | keywords
+  weekly_review    | skill | all   | 1.0  | weekly review, progress, productivity, accomplishments, notion, retrospective, weekly wins
+
 ::node[weekly_review]
 ->[:role=skill]
-->[:keywords=weekly review, progress, productivity, accomplishments, notion]
+->[:requires=notion_brain_dump]
+->[:keywords=weekly review, progress, productivity, accomplishments, notion, retrospective, weekly wins]
 
 ::dense
-Synthesizes a high-level "Weekly Wins" report from completed Notion tasks and optionally shares it via Slack.
-Assumes the presence of `notion_database_query`, `notion_page_create`, and `slack_send_message` native tools.
+Synthesizes completed Notion tasks into a weekly wins report; optionally posts to Slack.
 
 ::steps
 1. Request the ID of the user's main Tasks database in Notion.

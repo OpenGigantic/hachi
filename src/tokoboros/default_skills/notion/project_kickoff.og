@@ -1,10 +1,18 @@
+::meta
+  title: Project Kickoff
+  version: 1.0.0
+  domain: notion|slack|project-management
+
+::index
+  # node-id        | type  | scope | conf | keywords
+  project_kickoff   | skill | all   | 1.0  | new project, kickoff, setup, template, notion, slack channel, project setup
+
 ::node[project_kickoff]
 ->[:role=skill]
-->[:keywords=new project, kickoff, setup, template, notion, slack channel]
+->[:keywords=new project, kickoff, setup, template, notion, slack channel, project setup]
 
 ::dense
-Automates the administrative boilerplate of starting a new project by orchestrating Notion and Slack simultaneously.
-Assumes the presence of `notion_page_create`, `slack_create_channel`, and `slack_invite_users` native tools.
+Creates Notion wiki + Slack channel + team invites for a new project in one workflow.
 
 ::steps
 1. Ask the user for the Project Name, a brief description, and the emails/handles of the core team members.

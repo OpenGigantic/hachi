@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import urllib.request
 
-from tokoboros.cli.main import _deliver_schedule_result
+from tokoboros.cli.commands.schedule import _deliver_schedule_result
 from tokoboros.core.secret_scanner import redact_outbound
 
 _SECRET = "sk-ant-" + "a" * 40

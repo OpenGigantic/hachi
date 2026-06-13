@@ -1,6 +1,15 @@
+::meta
+  title: Core Flight Radar
+  version: 1.0.0
+  domain: aviation|tracking|real-time
+
+::index
+  # node-id          | type  | scope | conf | keywords
+  core_flight_radar   | skill | all   | 1.0  | flight, radar, planes, aviation, tracking, airspace, airplane, flight status, air traffic
+
 ::node[core_flight_radar]
 ->[:role=skill]
-->[:keywords=flight, radar, planes, aviation, tracking, airspace]
+->[:keywords=flight, radar, planes, aviation, tracking, airspace, airplane, flight status, air traffic]
 
 ::api[fetch_local_airspace]
 method=GET
@@ -9,7 +18,7 @@ schema={"lamin": "number", "lomin": "number", "lamax": "number", "lomax": "numbe
 description=Fetches real-time vector states of commercial flights within a specific bounding box (latitude/longitude min and max).
 
 ::dense
-Provides live, real-time tracking of global aviation traffic using the OpenSky Network.
+Live aviation tracking via OpenSky Network. Returns aircraft callsigns, positions, altitudes.
 
 ::steps
 1. Identify the city or region the user is asking about.

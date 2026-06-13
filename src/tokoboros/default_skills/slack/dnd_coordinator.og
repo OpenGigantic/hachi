@@ -1,10 +1,18 @@
+::meta
+  title: DND Coordinator
+  version: 1.0.0
+  domain: slack|calendar|focus
+
+::index
+  # node-id         | type  | scope | conf | keywords
+  dnd_coordinator    | skill | all   | 1.0  | do not disturb, dnd, focus, sync status, calendar, slack, meetings, focus mode
+
 ::node[dnd_coordinator]
 ->[:role=skill]
-->[:keywords=do not disturb, dnd, focus, sync status, calendar, slack]
+->[:keywords=do not disturb, dnd, focus, sync status, calendar, slack, meetings, focus mode]
 
 ::dense
-A background sentinel that synchronizes the user's Slack status with their Google Calendar events to protect focus time.
-Assumes the presence of `google_calendar_read` and `slack_set_status` native tools.
+Syncs Slack DND status with Google Calendar — auto on/off during meeting blocks.
 
 ::steps
 1. Enter a background loop checking the user's Google Calendar for the current day's events.

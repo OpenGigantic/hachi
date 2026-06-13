@@ -1,6 +1,15 @@
+::meta
+  title: Core Weather
+  version: 1.0.0
+  domain: weather|climate|forecasting
+
+::index
+  # node-id    | type  | scope | conf | keywords
+  core_weather  | skill | all   | 1.0  | weather, forecast, temperature, climate, real-time, rain, wttr, conditions
+
 ::node[core_weather]
 ->[:role=skill]
-->[:keywords=weather, forecast, temperature, climate, real-time]
+->[:keywords=weather, forecast, temperature, climate, real-time, rain, wttr, conditions]
 
 ::api[fetch_weather]
 method=GET
@@ -9,8 +18,7 @@ schema={"location": "string"}
 description=Fetches real-time global weather data for a specific location.
 
 ::dense
-Provides real-time weather information and forecasting using the wttr.in REST API.
-When the user asks for the weather, fetch the data and present a clean, conversational summary of the current conditions.
+Real-time weather + 3-day forecast via wttr.in. Supports cities, airports, coordinates.
 
 ::steps
 1. Extract the location from the user's request. If none is provided, politely ask for one.

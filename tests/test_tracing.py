@@ -97,6 +97,11 @@ def test_loop_emits_tool_and_llm_spans() -> None:
             self.calls += 1
             return resp
 
+        def generate_stream(self, **kwargs):
+            response = self.generate(**kwargs)
+            return response
+            yield  # makes this a generator function
+
     responses = [
         LLMResponse(content="", tool_calls=[ToolCall(id="t1", name="echo", input={})]),
         LLMResponse(content="done", tool_calls=[]),

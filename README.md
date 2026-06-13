@@ -1,15 +1,15 @@
 <div align="center">
 
-# 🐍 Tokoboros
+# Tokoboros
 
-**The Autonomous Agent Engine Powered by ObjectGraph (.og)**
+**The governed personal agent**
 
-_A multi-agent orchestration framework that cuts skill-loading token costs by loading only the skill nodes a task needs — via a structured, queryable, agent-native file format._
+_OpenClaw-class autonomy where safety, spend, and self-improvement are enforced by code, not by vibes._
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-purple.svg)](https://docs.astral.sh/ruff/)
-[![.og token savings: 97.2%](https://img.shields.io/badge/.og%20token%20savings-97.2%25-brightgreen)](docs/BENCHMARK.md)
+[![.og token savings: 97.6%](https://img.shields.io/badge/.og%20token%20savings-97.6%25-brightgreen)](docs/BENCHMARK.md)
 
 </div>
 
@@ -17,15 +17,26 @@ _A multi-agent orchestration framework that cuts skill-loading token costs by lo
 
 ## What is Tokoboros?
 
-Tokoboros is an autonomous AI agent framework built from the ground up to solve the three biggest problems in modern agentic AI:
+Every capability the agent has — or teaches itself — is a typed, versioned, lintable,
+permission-scoped `.og` file you can diff and audit.  Every token has a budget the loop
+enforces mid-turn.  Every shell command, path, URL, and memory write passes a guard that
+exists in source code, not in a system prompt.
 
-| Problem               | How Tokoboros Solves It                                                                                                       |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| **Token Waste**       | ObjectGraph (.og) files enable partial, query-aware loading — an agent reads a skill's compact index (~30 tokens) and pulls only the node it needs, instead of the whole file. [Measured: **97.2% fewer tokens** vs dump-all](docs/BENCHMARK.md) |
-| **Context Pollution** | A delegation architecture spawns isolated sub-agents, keeping the orchestrator's context window pristine                      |
-| **Cost Explosion**    | Native Anthropic prompt caching (cached input billed at a fraction of the base rate) plus query-aware skill loading keep per-turn token spend low |
+The category's two defining failures of 2026 — OpenClaw's marketplace poisoning crisis and
+Hermes' agent that rewrites its own brain unsupervised — are the two things this architecture
+was built to prevent.
 
-Unlike traditional agent frameworks that dump everything into the system prompt and pray, Tokoboros treats skill files as **queryable databases** and agents as **specialized workers** — each with their own clean context window, strict behavioral constraints, and deterministic validation.
+| Problem | How Tokoboros solves it |
+|---------|-----------------------|
+| **Runaway token spend** | Per-session _and_ per-turn cost/token caps enforced between LLM calls; lazy tool groups; prompt-cache-aware breakpoints. The $47-echo-loop story is structurally impossible under a turn cap. |
+| **Ungoverned self-learning** | `save_skill` bumps semver and appends changelog instead of overwriting; lint + dense-budget rejection bounds what the agent may write; `::assertions` make learned procedures machine-checkable before execution; your manual edits are never silently overwritten. |
+| **Exposed attack surface** | Gateway binds loopback with bearer-token support by default; a `security-audit` CLI runs with `--fail-on-medium` in CI; permission tiers gate filesystem/shell/MCP at call time — not as runtime prompts. |
+| **Skill library context bloat** | ObjectGraph `.og` files are queryable at sub-file granularity: agents load a 30-token index, pull only the node a task needs. [Measured: **97.6% fewer tokens** vs dump-all](docs/BENCHMARK.md) (53 nodes, P@5 = 0.97, reproducible). |
+
+> **Honest scope caveat:** below ~30 k tokens of total library content, a cached dump-all
+> approach is competitive on token cost. ObjectGraph is built for libraries that grow past
+> that threshold — sub-file node granularity matters when the library no longer fits in a
+> single context window.
 
 ---
 
@@ -43,7 +54,9 @@ curl -fsSL https://raw.githubusercontent.com/OpenGigantic/tokoboros/main/install
 irm https://raw.githubusercontent.com/OpenGigantic/tokoboros/main/install.ps1 | iex
 ```
 
-The installer bootstraps [`uv`](https://docs.astral.sh/uv/) (which manages Python for you), fetches Tokoboros, installs dependencies, and launches the guided setup. No prior Python setup required.
+The installer bootstraps [`uv`](https://docs.astral.sh/uv/) (which manages Python for you),
+fetches Tokoboros, installs dependencies, and launches the guided setup.  No prior Python
+setup required.
 
 **Already have Python tooling?** Install the published package directly:
 
@@ -55,48 +68,126 @@ tokoboros quickstart            # pick a provider + safety level
 Already have the source? Just run the conversational setup:
 
 ```bash
-uv run tokoboros quickstart   # pick a provider, we validate your API key up front, choose a safety level
+uv run tokoboros quickstart   # pick a provider, validate your API key up front, choose a safety level
 tokoboros                     # start chatting (no subcommand needed)
 ```
 
-`quickstart` checks your provider API key **before** the first message (instead of failing mid-conversation) — the most common first-run snag for new users.
+`quickstart` checks your provider API key **before** the first message (instead of failing
+mid-conversation) — the most common first-run snag for new users.
+
+---
+
+## Why switch from what you're already using?
+
+### From OpenClaw (their verified pains: bills, CVE-2026-25253, ClawHavoc marketplace poisoning)
+
+1. **Spend is governed in the loop**, not by a user-remembered env var: per-session and
+   per-turn cost/token caps enforced between LLM calls; live cost read-models in TUI/gateway.
+2. **Exposure is opt-in, not default**: gateway binds loopback; bearer-token support; `security-audit`
+   with `--fail-on-medium` in CI; permission tiers gate filesystem/shell/MCP at call time.
+   (93.4% of OpenClaw instances ran without auth at the time of the CVE.)
+3. **Skills are auditable artifacts**: typed blocks, lint with errors/warnings, semver+changelog,
+   structural-injection escaping, RBAC scopes — the shape of an answer to ClawHavoc without a
+   marketplace yet.
+
+_Honest deltas: OpenClaw has 20+ channels vs Tokoboros' 4; a massive community and tutorial base;
+markdown memory is simpler to hand-edit than `.og`. Concede simplicity, evaluate governance._
+
+### From Hermes (their verified pains: Curator overwrites manual edits, audit found 4 Critical + 9 High, learning loop off by default)
+
+Hermes proved demand for the learning agent — and shipped it ungoverned. Tokoboros has the same
+loop (`save_skill` after novel tasks, hot-load, refine) with the governance Hermes users ask for:
+versioned diffs instead of silent overwrites; lint advisories; machine-checkable `::assertions`
+before execution; shell access that is permission-gated, not raw `bash -c`.
+
+_Honest deltas: Hermes' FTS5 conversational recall + Honcho user modeling are ahead of Tokoboros'
+Chroma recall in maturity. Hermes ships an autonomous Curator; Tokoboros deliberately lacks one —
+position the absence as a choice._
+
+### From Claude Code (now crossing into personal-assistant territory)
+
+Don't fight the repo job — Claude Code wins it. The switch (or _addition_) argument is
+sovereignty: Tokoboros is self-hosted, **provider-free** (Anthropic / OpenAI-compat / OpenRouter /
+Groq / DeepSeek / Gemini / Ollama including fully local), channel-native, permission-tiered for
+non-developer trust, with hard cost caps instead of subscription throttles.  For an
+OpenAI-compatible client ecosystem it _is_ an endpoint.
+
+_Honest deltas: Claude Code's model quality, integration polish, and Anthropic's distribution are
+unmatched. A claude.ai subscriber happy inside that ecosystem has little reason to move — target
+the self-host/multi-provider/cost-sensitive segment._
+
+### From OpenCode
+
+Same terminal sensibility, different job. Pitch Tokoboros as the _second_ agent on the box:
+OpenCode writes the code, Tokoboros runs the life — and exposes an OpenAI-compatible API
+OpenCode users can point tools at.
 
 ---
 
 ## Features
 
-- 🧠 **ObjectGraph (.og) Engine** — A structured, agent-native file format with 20+ semantic tags for structured, deterministic skill execution
-- 🖥️ **Textual Operator Console** — Rich local UI with transcript, runtime timeline, setup flow, and operations views
-- 🌐 **Typed Gateway API** — FastAPI control plane for sessions, events, runtime read models, config, and setup
-- ⚛️ **Web Frontend Workspace** — TanStack Start frontend wired to gateway endpoints with generated OpenAPI client types
-- 🔀 **Multi-Agent Delegation** — Sub-agents with isolated context windows and searchable delegation reports
-- 💰 **Prompt Caching** — Native Anthropic cache breakpoints on system prompts and tool schemas (cached input is billed at a fraction of the base rate)
-- 🔐 **Permission Gating** — Declarative `device-permissions.og` manifest controlling filesystem, terminal, and MCP access
-- 🧱 **Immutable Turn Context** — Per-turn execution state is frozen via `TurnContext` to avoid shared prompt mutation
-- 🗂️ **Job Queue Foundations** — Runtime jobs are tracked with retry/backoff and surfaced in gateway read models
-- 🔌 **Native Integrations** — Google Workspace (Gmail, Drive, Calendar), Notion, Slack — all via OAuth
-- 🌐 **Universal REST Adapter** — Define any REST API in a `.og` file, and Tokoboros auto-generates the tool
-- 🕸️ **Browser Automation** — A real headless browser (`browse_web`, `browser_act`, `browser_screenshot`) for live web research and multi-step flows; SSRF-guarded and permission-gated (optional: `pip install 'tokoboros[browser]'` + `playwright install chromium`)
-- 👁️ **Vision Input** — `view_image` lets the agent look at a screenshot/photo/diagram/chart from a **local file or an http(s) URL** (PNG/JPEG/GIF/WebP) and reason about it; permission-gated and SSRF-guarded (Anthropic provider)
-- 🎙️ **Voice Input/Output** — `transcribe_audio` turns a local voice note/recording (mp3/m4a/wav/webm/…) into text via any OpenAI-compatible Whisper endpoint; `speak_text` synthesizes a spoken-audio file from text. Both permission-gated, SSRF-guarded, and degrade gracefully when no key is set
-- 🧯 **Built-in Guardrails** — Outbound Slack/Discord messages and REST requests are scrubbed of leaked credentials (API keys, tokens, private keys redacted before they leave the machine); untrusted **web, REST, and MCP** content is spotlighted so injected instructions are treated as data, not commands
-- 🧩 **MCP Support** — Model Context Protocol servers for filesystem and external tools
-- 📊 **Skill Lifecycle** — Usage tracking, stale detection, and analytics for all `.og` skills
-- 🧬 **Long-Term Memory** — Semantic search vault with async prefetch and frozen session snapshots
-- 🛡️ **Security Audit Command** — Built-in `security-audit` CLI checks for risky local runtime posture
-- 📡 **OpenTelemetry Tracing** — Opt-in spans for LLM calls and tool calls so you can see where a turn spends its time (`pip install 'tokoboros[tracing]'` + `TOKOBOROS_TRACING=true`); zero overhead and no-op when off
-- ⚡ **3-Pass Selective Loading** — Agents read a skill's index → dense summary → full content on demand, loading only what a task needs instead of dumping whole skill files (reproducible benchmark: `tests/test_og_benchmark.py`, CI-enforced ≥80% savings)
-- 🕸️ **Typed Skill Traversal** — Resolve a skill's prerequisite chain via its `requires` edges (`skill_dependencies`), verify its `::assertion` preconditions before acting (`check_skill_assertions`), and delta-check whether it changed since last load (`skill_changelog`) — all without loading heavy content
-- ✍️ **Autonomous Skill Authoring** — The agent writes & refines its own `.og` skills (`save_skill`); import the wider ecosystem with `tokoboros skill import` (SKILL.md → `.og`)
-- ⏰ **Proactive Scheduling** — `tokoboros schedule add` runs tasks on cron/interval/once with delivery to chat or a webhook
-- 💬 **Multi-Channel + OpenAI-Compatible API** — Reach the agent from Telegram or any platform via a generic inbound webhook, or point Open WebUI / LibreChat at the `/v1/chat/completions` endpoint
-- 📣 **Outbound Slack & Discord** — The agent posts proactively (`send_slack_message`, `send_discord_message`) via bot token or webhook; SSRF-guarded, credentials resolved lazily at call time
-- 🔄 **Model Freedom** — Anthropic, OpenAI-compatible, **OpenRouter** (200+ models), and local **Ollama** — no lock-in
-- 💵 **Cost Controls** — Live token/cost tracking plus per-session budget caps and per-sender rate limits
-- ↩️ **Edit Undo** — File writes are snapshotted; `rollback_changes` restores the previous version
-- 🚀 **Frictionless Setup** — One-liner install (`install.sh` / `install.ps1`) + conversational `tokoboros quickstart`, or self-host with Docker
+- **ObjectGraph (.og) Engine** — A structured, queryable, agent-native file format with 20+
+  semantic tags; typed blocks (`::meta`, `::index`, `::dense`, `::full`, `::assertion`,
+  `::edges`, `::steps`, `::changelog`) enable sub-file granular loading and deterministic skill
+  execution. [Benchmark: 97.6% token savings, P@5 = 0.97, reproducible.](docs/BENCHMARK.md)
+- **Permission Gating** — Declarative `device-permissions.og` manifest controlling filesystem,
+  terminal, MCP access, and outbound scopes; guards run at call time, not as runtime prompts;
+  permission tiers (lightning / guided / strict) for different trust levels.
+- **Governed Self-Learning** — `save_skill` persists novel task solutions as versioned `.og`
+  nodes with semver bumps and changelog entries; lint + dense-budget rejection bounds what the
+  agent may write; `::assertions` make learned procedures machine-checkable before execution.
+- **Turn Serialization** — Per-session `threading.Lock` prevents concurrent history corruption;
+  queued messages surface a `session.busy` event so UIs can show queued state.
+- **Textual Operator Console** — Rich local TUI with transcript, runtime timeline, setup flow,
+  and operations views; Esc-interrupt during active turns; incremental streaming render.
+- **Typed Gateway API** — FastAPI control plane for sessions, events, runtime read models,
+  config, and setup; gateway binds loopback with bearer-token support by default.
+- **Web Frontend Workspace** — TanStack Start frontend wired to gateway endpoints with generated
+  OpenAPI client types.
+- **Multi-Agent Delegation** — Sub-agents with isolated context windows, role-scoped
+  ToolRegistries, and searchable delegation reports; results via `delegation_log`.
+- **Prompt Caching** — Native Anthropic cache breakpoints on system prompts and tool schemas;
+  cache-aware prompt split keeps per-turn token spend low on repeated tool loads.
+- **Job Queue** — Runtime jobs tracked with retry/backoff, surfaced in gateway read models;
+  memory writes go through the queue (no inline drain latency in the turn path).
+- **Native Integrations** — Google Workspace (Gmail, Drive, Calendar), Notion, Slack — all via
+  OAuth; credentials resolved lazily at call time, never at boot.
+- **Universal REST Adapter** — Define any REST API in a `.og` file; Tokoboros auto-generates
+  the tool; outbound requests scrubbed of leaked credentials before they leave the machine.
+- **Browser Automation** — Real headless browser (`browse_web`, `browser_act`,
+  `browser_screenshot`) for live web research; SSRF-guarded and permission-gated
+  (`pip install 'tokoboros[browser]'` + `playwright install chromium`).
+- **Vision Input** — `view_image` lets the agent reason about a local file or `http(s)` URL
+  (PNG/JPEG/GIF/WebP); permission-gated and SSRF-guarded (Anthropic provider).
+- **Voice Input/Output** — `transcribe_audio` (Whisper) + `speak_text` (TTS); both
+  permission-gated, SSRF-guarded, degrade gracefully when no key is set.
+- **Injection Defenses** — Untrusted web, REST, and MCP content spotlighted so injected
+  instructions are treated as data, not commands; Slack/Discord sends scrubbed of credentials.
+- **MCP Support** — Model Context Protocol servers for filesystem and external tools.
+- **Skill Lifecycle** — Usage tracking, stale detection, lint CI gate, and analytics for all
+  `.og` skills; `::changelog` diff entries for delta loading.
+- **Long-Term Memory** — Semantic search vault (ChromaDB) with async prefetch and frozen session
+  snapshots; memory writes through the job queue with failure surfaced via `jobs/failed`.
+- **Security Audit Command** — Built-in `security-audit` CLI checks local runtime posture;
+  CI runs with `--fail-on-medium` on PRs.
+- **OpenTelemetry Tracing** — Opt-in spans for LLM and tool calls
+  (`pip install 'tokoboros[tracing]'` + `TOKOBOROS_TRACING=true`); zero overhead when off.
+- **Autonomous Skill Authoring** — The agent writes and refines its own `.og` skills
+  (`save_skill`); import the wider ecosystem with `tokoboros skill import` (SKILL.md → `.og`).
+- **Proactive Scheduling** — `tokoboros schedule add` runs tasks on cron/interval/once with
+  delivery to chat or a webhook.
+- **Multi-Channel + OpenAI-Compatible API** — Reach the agent from Telegram or any platform via
+  a generic inbound webhook; point Open WebUI / LibreChat at `/v1/chat/completions`.
+- **Outbound Slack & Discord** — The agent posts proactively via bot token or webhook;
+  SSRF-guarded, credentials resolved lazily at call time.
+- **Model Freedom** — Anthropic, OpenAI-compatible, OpenRouter (200+ models), and local Ollama
+  — no lock-in.
+- **Cost Controls** — Live token/cost tracking plus per-session budget caps and per-sender rate
+  limits; turn cap enforces hard stop mid-conversation when the budget is reached.
+- **Edit Undo** — File writes are snapshotted; `rollback_changes` restores the previous version.
 
-> See **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** for the full environment-variable and settings reference.
+> See **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** for the full environment-variable and
+> settings reference.
 
 ---
 
@@ -151,7 +242,7 @@ tokoboros -h              # list every command
 ```
 
 The Textual console boots the agent in-process, so interactive permission approvals
-and in-chat slash commands operate on the live session. (The HTTP gateway used by the
+and in-chat slash commands operate on the live session.  (The HTTP gateway used by the
 web frontend lives behind `tokoboros gateway`.)
 
 On first run, Tokoboros will:
@@ -213,39 +304,39 @@ uv run tokoboros gateway-openapi --output openapi/tokoboros-openapi.json
 # Fastest first-run setup (conversational; validates your API key up front)
 uv run tokoboros quickstart
 
-# Skills: import SKILL.md, list, export, lint, usage report
+# Skills: import SKILL.md, list, export, lint, benchmark, usage report
 uv run tokoboros skill import ./my-skill.md
 uv run tokoboros skill list
-uv run tokoboros skill search "deploy to prod" # Pass-1 routing: which skills match a query by keyword
-uv run tokoboros skill show deploy_to_prod     # Pass-2 view: metadata + dense + heavy-block token costs
-uv run tokoboros skill changelog deploy_to_prod # version + ::changelog entries (delta-load: what changed)
+uv run tokoboros skill search "deploy to prod"     # Pass-1 routing: which skills match a query
+uv run tokoboros skill show deploy_to_prod         # Pass-2 view: metadata + dense + token costs
+uv run tokoboros skill changelog deploy_to_prod    # version + ::changelog entries (delta-load)
 uv run tokoboros skill assert deploy_to_prod -p env=prod  # check ::assertion preconditions (CI gate)
-uv run tokoboros skill graph                   # whole-library dependency graph (roots, missing, cycles)
-uv run tokoboros skill viz -f mermaid          # render the graph as Mermaid (paste into Markdown/GitHub)
-uv run tokoboros skill viz -f dot -o skills.dot  # Graphviz source → `dot -Tsvg skills.dot -o skills.svg`
-uv run tokoboros skill viz -f html -o skills.html # self-contained interactive graph (drag/zoom/hover)
+uv run tokoboros skill graph                       # whole-library dependency graph
+uv run tokoboros skill viz -f mermaid              # render the graph as Mermaid
+uv run tokoboros skill viz -f dot -o skills.dot    # Graphviz source
+uv run tokoboros skill viz -f html -o skills.html  # self-contained interactive graph
 uv run tokoboros skill export deploy_to_prod -o deploy.og
-uv run tokoboros skill lint ./my-skills/      # structure + ::dense token-budget check (--strict for CI)
-uv run tokoboros skill report                 # which skills earn their keep vs. dead weight
+uv run tokoboros skill lint ./my-skills/           # structure + ::dense token-budget check
+uv run tokoboros skill report                      # which skills earn their keep vs. dead weight
+uv run tokoboros skill benchmark                   # token savings (CI-enforced ≥80%)
+uv run tokoboros skill benchmark --suite fast      # + retrieval quality M1
+uv run tokoboros skill benchmark --suite full      # + cost M2, latency M4, pass-depth M7
 
 # Proactive scheduling (cron / interval / one-shot)
 uv run tokoboros schedule add "daily-brief" "Summarize my unread email" --cron "0 9 * * 1-5"
 uv run tokoboros schedule list
 uv run tokoboros schedule run-due
 
-# Talk to the agent from Telegram — runs locally, no deploy (like OpenClaw)
+# Talk to the agent from Telegram — runs locally, no deploy
 uv run tokoboros channel telegram --setup   # one-time: paste bot token + pick who can talk to it
 uv run tokoboros channel telegram           # subsequent runs use the stored token + allowlist
 ```
 
 #### Visualize the ObjectGraph
 
-`.og` is an *object graph*, so you can see it. `skill viz` renders the typed
-`requires` graph across your skills — colored by role, with entry-point **roots**
-(blue), dependency **cycles** (red), and **missing** deps (dashed) highlighted.
-`mermaid` renders inline on GitHub/Markdown/Obsidian with no tooling; `dot`
-feeds Graphviz; `html` is a self-contained interactive graph you can drag, zoom,
-and hover (open it in a browser). For example, `tokoboros skill viz` produces:
+`.og` is an _object graph_, so you can see it. `skill viz` renders the typed `requires` graph
+across your skills — colored by role, with entry-point **roots** (blue), dependency **cycles**
+(red), and **missing** deps (dashed) highlighted.
 
 ```mermaid
 graph TD
@@ -260,8 +351,6 @@ graph TD
 ```
 
 ### Gateway and Web Frontend
-
-Tokoboros now ships a typed HTTP gateway and a separate frontend workspace.
 
 ```bash
 # Terminal 1: gateway
@@ -361,6 +450,9 @@ tokoboros/
 │   ├── notion/                           # Notion integration skills
 │   └── slack/                            # Slack integration skills
 │
+├── benchmarks/og_bench/                   # Reproducible benchmark suite
+│   ├── metrics.py                         # M1/M2/M4/M7 metric implementations
+│   └── data/s_real_results_v1.json        # Frozen S-real corpus results
 ├── frontend/                              # TanStack Start web frontend
 ├── openapi/
 │   └── tokoboros-openapi.json            # Generated gateway OpenAPI contract
@@ -377,7 +469,9 @@ tokoboros/
 
 ## The ObjectGraph (.og) Format
 
-ObjectGraph is the core innovation behind Tokoboros. It is a **structured, queryable, agent-native file format** for AI agent skill files. It uses a familiar, Markdown-like syntax with added `::` semantic blocks, so skills stay human-readable and are low-effort to author and port.
+ObjectGraph is a **structured, queryable, agent-native file format** for AI agent skill files.
+It uses a familiar, Markdown-like syntax with added `::` semantic blocks, so skills stay
+human-readable and are low-effort to author and port.
 
 ### Why Not Markdown?
 
@@ -392,9 +486,18 @@ ObjectGraph is the core innovation behind Tokoboros. It is a **structured, query
 | **Dependency Tracking**    | None                   | `::edges` with typed relationships |
 | **Delta Loading**          | Full re-read           | `::changelog` diff entries         |
 
-¹ On the bundled skill set, loading just the node a task needs costs substantially fewer skill-loading tokens than dumping every skill into context — reproducible via [`tests/test_og_benchmark.py`](tests/test_og_benchmark.py) (CI-enforced at ≥80% savings).
+¹ On the bundled 53-node skill set: 97.6% fewer skill-loading tokens vs dump-all (208 vs 8,726
+tokens); P@5 retrieval = 0.97; 77% of queries resolve at Pass 1. Reproducible via
+[`tests/test_og_benchmark.py`](tests/test_og_benchmark.py) — see [docs/BENCHMARK.md](docs/BENCHMARK.md)
+for methodology, honest crossover caveat, and full M1/M2/M4/M7 results.
 
-**How is this different from Anthropic Agent Skills or MCP?** Progressive disclosure on its own isn't unique — Anthropic Agent Skills load skill metadata first and the full `SKILL.md` only when it's relevant, and MCP can filter which tools are exposed. ObjectGraph goes _below the file level_: it routes and loads individual **nodes** within a skill, follows typed `::edges` (`->[:requires]`) to pull only the dependencies a task actually needs, and pairs this with agent-authored, self-improving skills and usage analytics. The bet is that context bloat is a **format** problem, not only a retrieval one.
+**How is this different from Anthropic Agent Skills or MCP?** Progressive disclosure on its own
+isn't unique — Anthropic Agent Skills load skill metadata first and the full `SKILL.md` only when
+it's relevant, and MCP can filter which tools are exposed. ObjectGraph goes _below the file level_:
+it routes and loads individual **nodes** within a skill, follows typed `::edges` (`->[:requires]`)
+to pull only the dependencies a task actually needs, and pairs this with agent-authored,
+self-improving skills and usage analytics. The bet is that context bloat is a **format** problem,
+not only a retrieval one.
 
 ### Example `.og` File
 
@@ -441,9 +544,8 @@ For the complete specification, see [ObjectGraph_Complete_Specification.md](Obje
 
 ### Workspace Structure
 
-Tokoboros now resolves paths with `platformdirs` (config/data/state), while still importing from legacy `~/.tokoboros/` when needed.
-
-Print your active paths at any time:
+Tokoboros resolves paths with `platformdirs` (config/data/state), while still importing from
+legacy `~/.tokoboros/` when needed.
 
 ```bash
 uv run tokoboros config --paths
@@ -489,8 +591,6 @@ enable_semantic_memory = true
 
 ### Device Permissions (`device-permissions.og`)
 
-Control what the agent can access on your device:
-
 ```
 ::node[terminal]
 ->[:role=permission]
@@ -505,16 +605,18 @@ timeout=120
 
 ## Roadmap
 
-- [x] **Textual-First Runtime** — `tokoboros run` now launches the Textual operator console by default
-- [x] **Gateway Control Plane** — Typed FastAPI surface for sessions, events, config, setup, and runtime observability
-- [x] **OpenAPI + Frontend Contract** — Exported schema and generated TypeScript client integration
-- [x] **Immutable TurnContext** — Per-turn prompt/context freezing to avoid shared mutable prompt state
-- [x] **Security Audit Command + CI Integration** — Built-in posture checks wired into CI workflows
-- [ ] **Queue Durability Upgrade** — Move from in-memory queue backend to persisted backend
-- [ ] **Container-Grade Sandbox** — Production isolation backend with stronger boundary guarantees
-- [ ] **Gateway Auth and Pairing** — Add auth tokens/device pairing for remote-safe multi-surface operation
-- [ ] **Expanded Scheduler and Automations** — First-class scheduled job orchestration and delivery
-- [ ] **Skill Compiler/Lint Pipeline** — Typed skill validation, diagnostics, and publish workflow
+- [x] **Governed Turn Execution** — per-session serialization lock; iteration-limit graceful exit
+- [x] **Streaming** — `generate_stream` provider seam; `text_delta` loop events; TUI incremental render; Esc-interrupt; SSE + OpenAI `stream:true`
+- [x] **ObjectGraph Engine v2** — qualified node IDs + collision error; retrieval v2 (BM25 + stopword-guarded tokenization); P@5 = 0.97 on the S-real corpus; pass-depth counters (M7)
+- [x] **Shipped-Skill Compliance** — all 53 default skills have `::meta` + `::index`; lint CI gate blocks on errors
+- [x] **Durable Job Queue** — SQLite persistence; resident worker thread; memory writes off the turn path
+- [x] **Reproducible Benchmark Suite** — `skill benchmark --suite {token|fast|full}`; M1/M2/M4/M7 metrics; CI gates token savings + retrieval quality per-PR; frozen S-real results in `benchmarks/og_bench/data/`
+- [x] **Security Posture** — `security-audit` CLI; gateway loopback-by-default + bearer-token support; `--fail-on-medium` in CI
+- [x] **Frontend Contract** — OpenAPI export; generated TypeScript client; CI enforces contract currency
+- [ ] **`.ogpack` Format + Consent Sheets** — install/update packs with scope-diff re-prompt (no install-time code execution)
+- [ ] **Workflow Composer** — speech → preview card → approve → scheduled artifact on disk
+- [ ] **TUI Governance Surfaces** — status strip, Spend screen, Ops timeline
+- [ ] **Memory Graph (M1)** — typed extractor; episode nodes; FTS5 index over `memory/*.og` files
 
 ---
 
@@ -536,5 +638,5 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 ---
 
 <div align="center">
-  <sub>Built with 🧬 by the Tokoboros Project</sub>
+  <sub>Built by the Tokoboros Project</sub>
 </div>

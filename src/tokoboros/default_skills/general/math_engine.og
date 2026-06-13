@@ -1,6 +1,15 @@
+::meta
+  title: Core Math Engine
+  version: 1.0.0
+  domain: mathematics|computation|engineering
+
+::index
+  # node-id         | type  | scope | conf | keywords
+  core_math_engine   | skill | all   | 1.0  | math, calculate, equation, algebra, matrix, compute, arithmetic, calculator, statistics, calculus
+
 ::node[core_math_engine]
 ->[:role=skill]
-->[:keywords=math, calculate, equation, algebra, matrix, compute]
+->[:keywords=math, calculate, equation, algebra, matrix, compute, arithmetic, calculator, statistics, calculus]
 
 ::api[evaluate_math]
 method=POST
@@ -10,8 +19,7 @@ schema={"expr": "string"}
 description=Evaluates complex mathematical expressions perfectly. Supports algebra, calculus, matrices, and unit conversions. Pass the expression as a string in the 'expr' field.
 
 ::dense
-Bypasses LLM mathematical hallucinations by routing all calculations to a deterministic remote computational engine (math.js).
-Use this for ANY math more complex than basic single-digit arithmetic.
+Exact arithmetic via math.js — no LLM hallucination. Handles algebra, matrices, unit conversion.
 
 ::steps
 1. Extract the mathematical equation or word problem from the user's prompt.

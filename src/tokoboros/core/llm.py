@@ -10,6 +10,7 @@ model-agnostic, allowing seamless swapping between Anthropic, OpenAI, or local e
 import abc
 import json
 import os
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
@@ -132,6 +133,44 @@ class BaseLLMClient(abc.ABC):
         """
         pass
 
+    def generate_stream(
+        self,
+        messages: list[Message],
+        system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        dynamic_system: str | None = None,
+    ) -> "Generator[str, None, LLMResponse]":
+        """Stream text deltas; return the full LLMResponse as the generator return value.
+
+        Providers that support native streaming (Anthropic, OpenAI-compat) override
+        this method to yield tokens as they arrive. The default fallback calls
+        ``generate()`` and yields the complete content as a single chunk — so all
+        callers work correctly without requiring streaming support from every client.
+
+        Usage (drive manually to capture the return value)::
+
+            gen = client.generate_stream(messages, ...)
+            try:
+                while True:
+                    chunk = next(gen)
+                    emit_delta(chunk)
+            except StopIteration as si:
+                response = si.value  # full LLMResponse with tool_calls + usage
+
+        Or use the helper::
+
+            chunks, response = drain_stream(client.generate_stream(messages, ...))
+        """
+        response = self.generate(
+            messages=messages,
+            system_prompt=system_prompt,
+            tools=tools,
+            dynamic_system=dynamic_system,
+        )
+        if response.content:
+            yield response.content
+        return response
+
     def list_models(self) -> list[str]:
         """Return the model ids the provider currently exposes.
 
@@ -140,6 +179,22 @@ class BaseLLMClient(abc.ABC):
         error) so callers can fall back to a curated/configured list.
         """
         return []
+
+
+def drain_stream(
+    stream: "Generator[str, None, LLMResponse]",
+) -> "tuple[list[str], LLMResponse]":
+    """Drain a ``generate_stream()`` generator and return ``(chunks, final_response)``.
+
+    Convenience helper for callers that need both the incremental text chunks and the
+    final ``LLMResponse`` (tool calls, usage) without driving ``next()`` manually.
+    """
+    chunks: list[str] = []
+    try:
+        while True:
+            chunks.append(next(stream))
+    except StopIteration as si:
+        return chunks, si.value
 
 
 class AnthropicClient(BaseLLMClient):
@@ -167,6 +222,58 @@ class AnthropicClient(BaseLLMClient):
         self.model = model
         self.max_tokens = max_tokens
 
+    def _build_kwargs(
+        self,
+        messages: list[Message],
+        system_prompt: str | None,
+        tools: list[dict[str, Any]] | None,
+        dynamic_system: str | None,
+    ) -> dict[str, Any]:
+        """Build the kwargs dict shared by messages.create() and messages.stream()."""
+        anthropic_messages = [
+            {"role": m.role, "content": m.content} for m in messages if m.role != "system"
+        ]
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "messages": anthropic_messages,
+            "extra_headers": {"anthropic-beta": "prompt-caching-2024-07-31"},
+        }
+        if system_prompt:
+            system_blocks: list[dict[str, Any]] = [
+                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+            ]
+            if dynamic_system:
+                system_blocks.append({"type": "text", "text": dynamic_system})
+            kwargs["system"] = system_blocks
+        if tools:
+            tools_copy = list(tools)
+            if tools_copy:
+                last_tool = dict(tools_copy[-1])
+                last_tool["cache_control"] = {"type": "ephemeral"}
+                tools_copy[-1] = last_tool
+            kwargs["tools"] = tools_copy
+        return kwargs
+
+    @staticmethod
+    def _parse_message(msg: Any) -> LLMResponse:
+        """Parse an Anthropic Message object into a standardised LLMResponse."""
+        text_content = ""
+        tool_calls: list[ToolCall] = []
+        for block in msg.content:
+            if block.type == "text":
+                text_content += block.text
+            elif block.type == "tool_use":
+                tool_calls.append(ToolCall(id=block.id, name=block.name, input=block.input))
+        raw_usage = getattr(msg, "usage", None)
+        usage = TokenUsage(
+            input_tokens=getattr(raw_usage, "input_tokens", 0) or 0,
+            output_tokens=getattr(raw_usage, "output_tokens", 0) or 0,
+            cache_read_tokens=getattr(raw_usage, "cache_read_input_tokens", 0) or 0,
+            cache_creation_tokens=getattr(raw_usage, "cache_creation_input_tokens", 0) or 0,
+        )
+        return LLMResponse(content=text_content.strip(), tool_calls=tool_calls, usage=usage)
+
     def generate(
         self,
         messages: list[Message],
@@ -174,67 +281,30 @@ class AnthropicClient(BaseLLMClient):
         tools: list[dict[str, Any]] | None = None,
         dynamic_system: str | None = None,
     ) -> LLMResponse:
-        """
-        Generate a response from the Anthropic Claude model using Prompt Caching.
-        Automatically applies ephemeral cache breakpoints to the system prompt and tools
-        to optimize token usage and minimize latency on subsequent turns.
-        """
-        # Convert our standardized Message objects into Anthropic's expected format
-        anthropic_messages = [
-            {"role": m.role, "content": m.content} for m in messages if m.role != "system"
-        ]
-
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "max_tokens": self.max_tokens,
-            "messages": anthropic_messages,
-            # Ensure prompt caching beta headers are applied (required for some SDK versions)
-            "extra_headers": {"anthropic-beta": "prompt-caching-2024-07-31"},
-        }
-
-        if system_prompt:
-            # Cache the STABLE prefix only (breakpoint here). Per-turn content goes
-            # in a second, uncached block AFTER the breakpoint so the cached prefix
-            # is reused (0.1x reads) instead of rewritten every turn.
-            system_blocks: list[dict[str, Any]] = [
-                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
-            ]
-            if dynamic_system:
-                system_blocks.append({"type": "text", "text": dynamic_system})
-            kwargs["system"] = system_blocks
-
-        if tools:
-            # Apply prompt caching breakpoint to the tools array.
-            # By marking the final tool as ephemeral, we cache the entire tools schema block.
-            tools_copy = list(tools)
-            if tools_copy:
-                last_tool = dict(tools_copy[-1])
-                last_tool["cache_control"] = {"type": "ephemeral"}
-                tools_copy[-1] = last_tool
-            kwargs["tools"] = tools_copy
-
-        # Execute the API call
+        """Generate a response from Anthropic Claude using prompt caching."""
+        kwargs = self._build_kwargs(messages, system_prompt, tools, dynamic_system)
         response = self.client.messages.create(**kwargs)
+        return self._parse_message(response)
 
-        # Parse the response into our standardized format
-        text_content = ""
-        tool_calls = []
+    def generate_stream(
+        self,
+        messages: list[Message],
+        system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        dynamic_system: str | None = None,
+    ) -> Generator[str, None, LLMResponse]:
+        """Stream text deltas from Claude; return the full LLMResponse on exhaustion.
 
-        for block in response.content:
-            if block.type == "text":
-                text_content += block.text
-            elif block.type == "tool_use":
-                tool_calls.append(ToolCall(id=block.id, name=block.name, input=block.input))
-
-        raw_usage = getattr(response, "usage", None)
-        usage = TokenUsage(
-            input_tokens=getattr(raw_usage, "input_tokens", 0) or 0,
-            output_tokens=getattr(raw_usage, "output_tokens", 0) or 0,
-            cache_read_tokens=getattr(raw_usage, "cache_read_input_tokens", 0) or 0,
-            cache_creation_tokens=getattr(raw_usage, "cache_creation_input_tokens", 0) or 0,
-        )
-
-        return LLMResponse(content=text_content.strip(), tool_calls=tool_calls, usage=usage)
+        Uses the Anthropic SDK's ``messages.stream()`` context manager. The HTTP
+        connection is held open across ``yield`` points; the caller drives iteration
+        with ``next()`` or by using ``drain_stream()``.
+        """
+        kwargs = self._build_kwargs(messages, system_prompt, tools, dynamic_system)
+        final_msg: Any = None
+        with self.client.messages.stream(**kwargs) as stream:
+            yield from stream.text_stream
+            final_msg = stream.get_final_message()
+        return self._parse_message(final_msg)
 
     def list_models(self) -> list[str]:
         """List Claude models via the Anthropic models API (sorted; [] on error)."""
@@ -295,24 +365,22 @@ class OpenAICompatibleClient(BaseLLMClient):
             )
         return adapted
 
-    def generate(
+    def _build_request(
         self,
         messages: list[Message],
-        system_prompt: str | None = None,
-        tools: list[dict[str, Any]] | None = None,
-        dynamic_system: str | None = None,
-    ) -> LLMResponse:
-        headers = {"Content-Type": "application/json"}
+        system_prompt: str | None,
+        tools: list[dict[str, Any]] | None,
+        dynamic_system: str | None,
+    ) -> tuple[dict[str, str], dict[str, Any]]:
+        """Return ``(headers, payload)`` for a /chat/completions request."""
+        headers: dict[str, str] = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         payload_messages: list[dict[str, Any]] = []
         if system_prompt:
-            # No provider-side prompt caching here, so just recombine the stable
-            # prefix and the per-turn tail into one system message.
             content = f"{system_prompt}\n\n{dynamic_system}" if dynamic_system else system_prompt
             payload_messages.append({"role": "system", "content": content})
-
         for msg in messages:
             if msg.role == "system":
                 continue
@@ -323,12 +391,41 @@ class OpenAICompatibleClient(BaseLLMClient):
             "messages": payload_messages,
             "max_tokens": self.max_tokens,
         }
-
         adapted_tools = self._adapt_tools(tools)
         if adapted_tools:
             payload["tools"] = adapted_tools
             payload["tool_choice"] = "auto"
+        return headers, payload
 
+    @staticmethod
+    def _parse_tool_calls(raw_calls: list[Any]) -> list[ToolCall]:
+        """Parse OpenAI-format tool_calls into ``ToolCall`` objects."""
+        tool_calls: list[ToolCall] = []
+        for raw_call in raw_calls or []:
+            fn = raw_call.get("function", {})
+            args_str = fn.get("arguments", "{}")
+            try:
+                args: dict[str, Any] = json.loads(args_str)
+            except Exception:
+                args = {}
+            tool_calls.append(
+                ToolCall(
+                    id=str(raw_call.get("id", "tool_call")),
+                    name=str(fn.get("name", "unknown_tool")),
+                    input=args,
+                )
+            )
+        return tool_calls
+
+    def generate(
+        self,
+        messages: list[Message],
+        system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        dynamic_system: str | None = None,
+    ) -> LLMResponse:
+        """Single-shot completion via the OpenAI-compatible /chat/completions endpoint."""
+        headers, payload = self._build_request(messages, system_prompt, tools, dynamic_system)
         response = self._http.post(
             f"{self.base_url}/chat/completions", headers=headers, json=payload
         )
@@ -341,31 +438,99 @@ class OpenAICompatibleClient(BaseLLMClient):
 
         message = choices[0].get("message", {})
         content = message.get("content") or ""
-
-        tool_calls: list[ToolCall] = []
-        for raw_call in message.get("tool_calls", []) or []:
-            fn = raw_call.get("function", {})
-            args_str = fn.get("arguments", "{}")
-            try:
-                args = json.loads(args_str)
-            except Exception:
-                args = {}
-
-            tool_calls.append(
-                ToolCall(
-                    id=str(raw_call.get("id", "tool_call")),
-                    name=str(fn.get("name", "unknown_tool")),
-                    input=args,
-                )
-            )
-
+        tool_calls = self._parse_tool_calls(message.get("tool_calls", []))
         raw_usage = data.get("usage", {}) or {}
         usage = TokenUsage(
             input_tokens=int(raw_usage.get("prompt_tokens", 0) or 0),
             output_tokens=int(raw_usage.get("completion_tokens", 0) or 0),
         )
-
         return LLMResponse(content=str(content).strip(), tool_calls=tool_calls, usage=usage)
+
+    def generate_stream(
+        self,
+        messages: list[Message],
+        system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        dynamic_system: str | None = None,
+    ) -> Generator[str, None, LLMResponse]:
+        """Stream text deltas via SSE from an OpenAI-compatible endpoint.
+
+        Accumulates tool-call argument fragments across chunks so that the returned
+        ``LLMResponse`` contains complete ``ToolCall`` objects even when arguments
+        span many SSE events. Usage metrics are included when the provider sends them
+        in the final ``[DONE]`` chunk.
+        """
+        headers, payload = self._build_request(messages, system_prompt, tools, dynamic_system)
+        payload["stream"] = True
+
+        text_parts: list[str] = []
+        # Accumulate streaming tool-call fragments: {index: {id, name, args_parts}}
+        tc_acc: dict[int, dict[str, Any]] = {}
+        final_usage: TokenUsage = TokenUsage()
+
+        with self._http.stream(
+            "POST", f"{self.base_url}/chat/completions", headers=headers, json=payload
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line or not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+                try:
+                    data: dict[str, Any] = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+
+                # Token usage sometimes arrives in the final chunk
+                if "usage" in data and data["usage"]:
+                    raw = data["usage"]
+                    final_usage = TokenUsage(
+                        input_tokens=int(raw.get("prompt_tokens", 0) or 0),
+                        output_tokens=int(raw.get("completion_tokens", 0) or 0),
+                    )
+
+                choices = data.get("choices", [])
+                if not choices:
+                    continue
+                delta = choices[0].get("delta", {})
+
+                # Text delta
+                text = delta.get("content")
+                if text:
+                    text_parts.append(text)
+                    yield text
+
+                # Tool-call fragments
+                for tc_delta in delta.get("tool_calls", []) or []:
+                    idx: int = tc_delta.get("index", 0)
+                    if idx not in tc_acc:
+                        tc_acc[idx] = {"id": "", "name": "", "args": []}
+                    if tc_delta.get("id"):
+                        tc_acc[idx]["id"] = tc_delta["id"]
+                    fn = tc_delta.get("function", {})
+                    if fn.get("name"):
+                        tc_acc[idx]["name"] = fn["name"]
+                    if fn.get("arguments"):
+                        tc_acc[idx]["args"].append(fn["arguments"])
+
+        # Reconstruct full tool calls
+        tool_calls: list[ToolCall] = []
+        for idx in sorted(tc_acc):
+            acc = tc_acc[idx]
+            args_str = "".join(acc["args"])
+            try:
+                args = json.loads(args_str)
+            except json.JSONDecodeError:
+                args = {}
+            tool_calls.append(ToolCall(id=acc["id"], name=acc["name"], input=args))
+
+        return LLMResponse(
+            content="".join(text_parts).strip(),
+            tool_calls=tool_calls,
+            usage=final_usage,
+        )
 
     def list_models(self) -> list[str]:
         """List models via the OpenAI-compatible /models endpoint (sorted; [] on error).
@@ -476,10 +641,19 @@ def create_llm_client(
         )
 
     if kind == "chatgpt-web":
-        # Unofficial ChatGPT web-session provider.
-        # ⚠ This uses the reverse-engineered ChatGPT web API and may violate
-        #   OpenAI's Terms of Service. Use only on accounts you own and accept
-        #   the risk of account suspension.
+        # Unofficial ChatGPT web-session provider — opt-in only.
+        # Requires TOKOBOROS_UNOFFICIAL=1 (see `pip install tokoboros[unofficial]`).
+        if os.environ.get("TOKOBOROS_UNOFFICIAL") not in ("1", "true", "yes"):
+            raise ValueError(
+                "The chatgpt-web provider uses a reverse-engineered ChatGPT web API "
+                "that may violate OpenAI's Terms of Service and risk account suspension.\n\n"
+                "To opt in, set the environment variable:\n"
+                "  TOKOBOROS_UNOFFICIAL=1\n\n"
+                "Or install the unofficial extra and set the flag:\n"
+                "  pip install tokoboros[unofficial]\n"
+                "  export TOKOBOROS_UNOFFICIAL=1\n\n"
+                "Only use this on accounts you own with full understanding of the risk."
+            )
         from tokoboros.core.unofficial_providers import ChatGPTWebClient
 
         session_token = (

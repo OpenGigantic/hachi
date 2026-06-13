@@ -16,18 +16,19 @@ runner = CliRunner()
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_skill.og"
 
-# A deliberately flawed skill file exercising every warning/info code.
+# A deliberately flawed file exercising every *warning/info* code using non-skill roles.
+# Non-skill roles (rule/persona) only emit warnings, not errors, so ok=True.
 BAD_OG = """::meta
   title: Lint Test
   version: 0.1.0
 
 ::index
   # node-id   | type  | scope | conf | keywords
-  good_node   | skill | all   | 0.9  | alpha, beta
-  ghost       | skill | all   | 0.9  | nothere
+  good_node   | rule  | all   | 0.9  | alpha, beta
+  ghost       | rule  | all   | 0.9  | nothere
 
 ::node[good_node]
-->[:role=skill]
+->[:role=rule]
 ->[:keywords=alpha, beta]
 ->[:requires=missing_dep]
 ::dense
@@ -37,8 +38,33 @@ must flag it as over budget because it rambles on well past thirty tokens of con
 Some real Pass-3 content lives here.
 
 ::node[bare_node]
-->[:role=skill]
+->[:role=rule]
 ::full
+"""
+
+# A flawed *skill-role* file: structural violations become errors for skill/native_integration.
+BAD_SKILL_OG = """::meta
+  title: Bad Skill
+  version: 0.1.0
+
+::index
+  # node-id      | type  | scope | conf | keywords
+  good_skill      | skill | all   | 0.9  | alpha, beta
+
+::node[good_skill]
+->[:role=skill]
+->[:keywords=alpha, beta]
+::dense
+this dense block is intentionally far too long to fit the token budget so the linter \
+must flag it as over budget because it rambles on well past thirty tokens of content
+::full
+Pass-3 content here.
+
+::node[unindexed_skill]
+->[:role=skill]
+->[:keywords=gamma]
+::full
+No dense block and not in the index.
 """
 
 EMPTY_OG = """::meta
@@ -82,7 +108,7 @@ def test_flawed_file_surfaces_all_codes(tmp_path):
     report = lint_og_file(path)
 
     codes = _codes(report)
-    # Warnings (advisory) — file still "ok" because none are errors.
+    # Warnings (advisory) for non-skill roles — file still "ok" because none are errors.
     assert "dangling-index" in codes  # ghost has no matching node
     assert "dense-over-budget" in codes  # good_node dense is too long
     assert "missing-index" in codes  # bare_node not in ::index
@@ -91,8 +117,24 @@ def test_flawed_file_surfaces_all_codes(tmp_path):
     assert "empty-node" in codes  # bare_node has no Pass-3 content
     assert "external-requires" in codes  # good_node requires missing_dep
 
-    assert report["ok"] is True  # warnings/info only, no errors
+    assert report["ok"] is True  # all advisory (non-skill role), no errors
+    assert report["summary"]["errors"] == 0
     assert report["summary"]["warnings"] > 0
+
+
+def test_skill_role_structural_violations_are_errors(tmp_path):
+    """missing-index, missing-dense, and dense-over-budget are errors for skill roles."""
+    path = tmp_path / "bad_skill.og"
+    path.write_text(BAD_SKILL_OG, encoding="utf-8")
+    report = lint_og_file(path)
+
+    codes = _codes(report)
+    assert "dense-over-budget" in codes  # good_skill dense too long → error
+    assert "missing-index" in codes  # unindexed_skill not in ::index → error
+    assert "missing-dense" in codes  # unindexed_skill has no dense → error
+
+    assert report["ok"] is False  # skill-role violations are blocking errors
+    assert report["summary"]["errors"] >= 3
 
 
 def test_cli_lint_clean_fixture_exits_zero():

@@ -199,7 +199,8 @@ def test_create_llm_client_gemini_default_model() -> None:
     assert client.model == "gemini-2.0-flash"
 
 
-def test_create_llm_client_chatgpt_web() -> None:
+def test_create_llm_client_chatgpt_web(monkeypatch) -> None:
+    monkeypatch.setenv("TOKOBOROS_UNOFFICIAL", "1")
     from tokoboros.core.llm import create_llm_client
 
     client = create_llm_client(
@@ -209,9 +210,19 @@ def test_create_llm_client_chatgpt_web() -> None:
     assert client.model == "gpt-4o"
 
 
-def test_create_llm_client_chatgpt_web_default_model() -> None:
+def test_create_llm_client_chatgpt_web_default_model(monkeypatch) -> None:
+    monkeypatch.setenv("TOKOBOROS_UNOFFICIAL", "1")
     from tokoboros.core.llm import create_llm_client
 
     client = create_llm_client({"kind": "chatgpt-web"})
     assert isinstance(client, ChatGPTWebClient)
     assert client.model == "gpt-4o"
+
+
+def test_chatgpt_web_unavailable_without_opt_in(monkeypatch) -> None:
+    """chatgpt-web raises a clear error when TOKOBOROS_UNOFFICIAL is not set."""
+    monkeypatch.delenv("TOKOBOROS_UNOFFICIAL", raising=False)
+    from tokoboros.core.llm import create_llm_client
+
+    with pytest.raises(ValueError, match="TOKOBOROS_UNOFFICIAL"):
+        create_llm_client({"kind": "chatgpt-web"})

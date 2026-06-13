@@ -13,11 +13,13 @@ Phase 1 Update:
 """
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
 
-from tokoboros.core.llm import BaseLLMClient, Message, ToolCall
+from tokoboros.core.llm import BaseLLMClient, LLMResponse, Message, ToolCall
+from tokoboros.core.runtime_events import SESSION_ITERATION_LIMIT
 from tokoboros.core.tool_results import ToolResultBlocks
 from tokoboros.core.tracing import span
 from tokoboros.core.turn_context import TurnContext
@@ -259,6 +261,10 @@ class ExecutionLoop:
         # Tool groups unlocked for the current turn (besides always-on "core").
         # Reset each run(); mutated when the model calls use_tools / load_skill.
         self._active_groups: set[str] = set()
+        # Cooperative cancel: set by cancel(); checked at the top of each iteration.
+        self._cancel_event: threading.Event = threading.Event()
+        # Text accumulated across iterations (for partial output on cancel).
+        self._partial_text: list[str] = []
 
     def add_user_message(self, text: str):
         """Add a user query to the active session history via the MemoryManager."""
@@ -324,6 +330,52 @@ class ExecutionLoop:
                 time.sleep(delay)
                 delay *= 2
 
+    def cancel(self) -> None:
+        """Signal the loop to stop at the start of the next iteration.
+
+        Thread-safe. The current LLM call and any in-progress tool execution
+        finish normally; the loop exits cleanly at the top of the following
+        iteration, preserving well-formed history (all tool_use blocks have
+        matching tool_result blocks).
+        """
+        self._cancel_event.set()
+
+    def _stream_generate(self, on_delta: Callable[[str], None], **kwargs: Any) -> LLMResponse:
+        """Drive generate_stream(), emit per-chunk callbacks, return the LLMResponse.
+
+        Retries on pre-stream transient errors using the same policy as
+        _generate_with_retry. Does NOT retry mid-stream failures to avoid
+        emitting duplicate output.
+        """
+        delay = _LLM_RETRY_BASE_DELAY
+        for attempt in range(1, _MAX_LLM_RETRIES + 1):
+            chunks_yielded = 0
+            try:
+                gen = self.llm_client.generate_stream(**kwargs)
+                while True:
+                    try:
+                        chunk = next(gen)
+                    except StopIteration as si:
+                        return si.value
+                    chunks_yielded += 1
+                    on_delta(chunk)
+            except Exception as exc:
+                if chunks_yielded > 0 or attempt >= _MAX_LLM_RETRIES or not _is_retryable_llm_error(
+                    exc
+                ):
+                    raise
+                logger.warning(
+                    "LLM stream failed pre-output (attempt %d/%d): %s — retrying in %.1fs",
+                    attempt,
+                    _MAX_LLM_RETRIES,
+                    exc,
+                    delay,
+                )
+                self.on_event("llm_retry", {"attempt": attempt, "error": str(exc)})
+                time.sleep(delay)
+                delay *= 2
+        return LLMResponse()  # unreachable; satisfies type checker
+
     def _budget_exceeded(self) -> str | None:
         """Return a reason string if a per-session budget cap is hit, else None."""
         if self.cost_tracker is None or (self.max_cost_usd <= 0 and self.max_tokens <= 0):
@@ -387,6 +439,9 @@ class ExecutionLoop:
 
         # Only "core" tools are sent until the model unlocks groups this turn.
         self._active_groups = set()
+        # Reset per-run state.
+        self._cancel_event.clear()
+        self._partial_text = []
 
         # Record the cost/token baseline at turn start so _turn_budget_exceeded()
         # can compute deltas rather than checking cumulative session totals.
@@ -406,6 +461,16 @@ class ExecutionLoop:
 
             while iterations < max_iterations:
                 iterations += 1
+
+                # Cooperative cancel: check before each LLM call so a cancel()
+                # call from another thread stops the loop at the iteration boundary
+                # without interrupting a running LLM call or leaving orphaned
+                # tool_use blocks in history.
+                if self._cancel_event.is_set():
+                    partial = "".join(self._partial_text)
+                    self.on_event("session_cancelled", {"partial_text": partial})
+                    self.memory.complete_task(user_input_for_turn, f"Cancelled: {partial[:80]}")
+                    return f"[CANCELLED] {partial}" if partial else "[CANCELLED]"
 
                 # Stop before spending more if a per-session budget cap was hit.
                 budget_reason = self._budget_exceeded()
@@ -455,9 +520,16 @@ class ExecutionLoop:
                 if dynamic_system is not None:
                     gen_kwargs["dynamic_system"] = dynamic_system
 
-                # 1. Ask the LLM to generate the next step (with transient-error retry)
+                # 1. Ask the LLM to generate the next step (streaming; emits text_delta
+                #    events per chunk so TUI / SSE surfaces can render incrementally).
+                delta_parts: list[str] = []
+
+                def _on_delta(chunk: str, _parts: list[str] = delta_parts) -> None:
+                    _parts.append(chunk)
+                    self.on_event("text_delta", {"text": chunk})
+
                 with span("llm.generate", model=getattr(self.llm_client, "model", "unknown")):
-                    response = self._generate_with_retry(**gen_kwargs)
+                    response = self._stream_generate(on_delta=_on_delta, **gen_kwargs)
 
                 # Account for token usage / estimated cost and surface it live.
                 if self.cost_tracker is not None:
@@ -477,7 +549,10 @@ class ExecutionLoop:
 
                 if response.content:
                     assistant_content.append({"type": "text", "text": response.content})
+                    # Emit a single text_chunk for backward-compat listeners (TUI/CLI).
+                    # Streaming deltas were already emitted above via text_delta.
                     self.on_event("text_chunk", {"text": response.content})
+                    self._partial_text.append(response.content)
 
                 for tc in response.tool_calls:
                     assistant_content.append(
@@ -588,8 +663,17 @@ class ExecutionLoop:
                     self.memory.complete_task(user_input_for_turn, f"Suspended: {suspend_reason}")
                     return f"[WORKFLOW SUSPENDED] {suspend_reason}"
 
-            raise AgentException(
-                f"Execution loop exceeded maximum iterations ({max_iterations}). Task incomplete."
+            self.on_event(
+                SESSION_ITERATION_LIMIT,
+                {"iterations": max_iterations, "status": "incomplete"},
+            )
+            self.memory.complete_task(
+                user_input_for_turn,
+                f"Partial: iteration limit reached ({max_iterations})",
+            )
+            return (
+                f"[INCOMPLETE] The task reached the {max_iterations}-iteration limit and "
+                "could not be fully completed. Reply 'continue' to pick up where it left off."
             )
 
         finally:
