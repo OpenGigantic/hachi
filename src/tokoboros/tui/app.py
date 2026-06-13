@@ -52,6 +52,7 @@ from tokoboros.tui.authoring import (
 from tokoboros.tui.formatters import (
     format_integrations,
     format_memory,
+    format_og_explorer,
     format_ops,
     format_search_results,
     format_settings,
@@ -1563,7 +1564,23 @@ class MemoryScreen(SnapshotScreen):
         recalls = [asdict(row) for row in agent.query_memory_recall("recent context", top_k=5)]
         tasks = [asdict(row) for row in agent.snapshot_task_ledger(limit=8)]
         skills = [asdict(row) for row in agent.snapshot_skills(limit=40)]
-        return format_memory(tasks, recalls, skills)
+        # P3-02: include pending gardener diff cards when available
+        diffs = (
+            agent.snapshot_gardener_diffs()
+            if hasattr(agent, "snapshot_gardener_diffs")
+            else None
+        )
+        return format_memory(tasks, recalls, skills, diffs=diffs)
+
+
+class OGExplorerScreen(SnapshotScreen):
+    """P3-05: OG Explorer — library tree + Pass-1/2/3 inspector with token-efficiency stats."""
+
+    title_text = "OG Explorer"
+
+    def _build_snapshot(self, agent: AgentSession) -> RenderableType:
+        data = agent.snapshot_og_explorer() if hasattr(agent, "snapshot_og_explorer") else {}
+        return format_og_explorer(data)
 
 
 class IntegrationsScreen(SnapshotScreen):
@@ -1758,6 +1775,7 @@ class TokoborosTextualApp(App[None]):
         "authoring": AuthoringScreen,
         "settings": SettingsScreen,
         "setup": SetupScreen,
+        "og_explorer": OGExplorerScreen,
     }
     DEFAULT_MODE = "session"
 
@@ -1786,6 +1804,9 @@ class TokoborosTextualApp(App[None]):
         Binding("ctrl+8", "mode_setup", "Setup"),
         Binding("f8", "mode_setup", show=False),
         Binding("alt+8", "mode_setup", show=False),
+        Binding("ctrl+9", "mode_og_explorer", "OG Explorer"),
+        Binding("f9", "mode_og_explorer", show=False),
+        Binding("alt+9", "mode_og_explorer", show=False),
         Binding("ctrl+p", "command_palette", "Palette"),
         Binding("ctrl+c", "interrupt", "Interrupt"),
         Binding("ctrl+r", "refresh_current", "Refresh"),
