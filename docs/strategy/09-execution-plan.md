@@ -75,12 +75,12 @@ P2-04 memory M0 ──────────────► P2-05 M1   ·   P2
 **Lane A** = session/gateway correctness · **Lane B** = OG-engine moat · **Lane C** = docs/CI/packaging.
 
 **Exit gate (verifier-run, all required):**
-- [ ] Retrieval probe suite ≥ 0.8 P@5 on keyword+paraphrase queries, reproducible via a committed test
-- [ ] Zero node-ID collisions booting the shipped library (today: `identity` ×6, `report-format` ×5, `execution-protocol` ×2)
-- [ ] Concurrent-chat hammer test green (2 threads, one session, no history corruption)
-- [ ] Memory-write failures visible: `jobs/failed` read-model + TUI badge; no silent-swallow paths left in the write pipeline
-- [ ] CI blocking on PRs: lint, frontend-contract, scoped mypy, `default_skills` lint job
-- [ ] All 14 tasks below merged to `main`
+- [x] Retrieval probe suite ≥ 0.8 P@5 on keyword+paraphrase queries, reproducible via a committed test *(P@5=0.9677 — 2026-06-13)*
+- [x] Zero node-ID collisions booting the shipped library *(P1-06 qualified IDs — 2026-06-13)*
+- [x] Concurrent-chat hammer test green (2 threads, one session, no history corruption) *(test_session_concurrency.py — 2026-06-13)*
+- [x] Memory-write failures visible: `jobs/failed` read-model + TUI badge; no silent-swallow paths *(P1-03 — 2026-06-13)*
+- [x] CI blocking on PRs: lint, frontend-contract, scoped mypy, `default_skills` lint job *(P1-12/14 — 2026-06-13)*
+- [x] All 14 tasks merged to `main` *(commit 2f08795 — 2026-06-13)*
 
 ### Lane A — Session & gateway correctness (files: `gateway/`, `core/loop.py`, `core/memory*.py`, `tui/` badge)
 
@@ -232,14 +232,14 @@ replication ([08 §2](08-roadmap.md)).
 | ★ | P2-12, P2-13, P2-14 | various | see tasks |
 
 **Exit gate:**
-- [ ] Streamed tokens visible in TUI + SSE + OpenAI facade; Esc interrupts a running turn
-- [ ] Jobs survive process restart; memory-sync runs in a resident worker, not next-turn drain
-- [ ] `tokoboros skill benchmark --suite fast` gates retrieval quality (M1 P@5 ≥ 0.8) per-PR in CI
-- [ ] Benchmark results post published (D-5 sign-off; arms A–F, honest crossover)
-- [ ] `memory.graph=true` users get FTS5-backed recall over `memory/*.og` files; Chroma auto-imported
-- [ ] `.ogpack` installs with a consent sheet; scope-widening update re-prompts with a diff
-- [ ] A spoken sentence in Telegram/TUI becomes a previewed, approved, scheduled workflow
-- [ ] PyPI release + repositioned README live
+- [x] Streamed tokens visible in TUI + SSE + OpenAI facade; Esc interrupts a running turn *(P2-01a/b/c/d — 2026-06-13)*
+- [x] Jobs survive process restart; memory-sync runs in a resident worker, not next-turn drain *(P2-02 — 2026-06-13)*
+- [x] `tokoboros skill benchmark --suite fast` gates retrieval quality (M1 P@5 ≥ 0.8) per-PR in CI *(P2-03b — 2026-06-13)*
+- [ ] Benchmark results post published (D-5 sign-off; arms A–F, honest crossover) *(⏸ gated D-5)*
+- [x] `memory.graph=true` users get FTS5-backed recall over `memory/*.og` files; Chroma auto-imported *(P2-04/05 — 2026-06-13)*
+- [x] `.ogpack` installs with a consent sheet; scope-widening update re-prompts with a diff *(P2-07a/b — 2026-06-13)*
+- [x] A spoken sentence in Telegram/TUI becomes a previewed, approved, scheduled workflow *(P2-08/14 — 2026-06-13)*
+- [ ] PyPI release + repositioned README live *(⏸ gated P1 gate ∧ P2-03e ∧ D-5)*
 
 ### WS-A — Streaming end-to-end + interrupt (6–10d + 1–2d)
 
@@ -426,6 +426,10 @@ only now.
 First two of seven; `.og` seeds ship already (`inbox_sentinel`, `meeting_copilot`). Email: triage
 memory as `person` nodes + draft-approval UX + send-scope consent. Meeting: pre-brief workflow +
 post-meeting episode write (needs P2-05 for episode nodes). Ship with consent sheets.
+**Done (2026-06-13):** `src/tokoboros/packs/inbox-sentinel/` and `src/tokoboros/packs/meeting-copilot/`
+— full multi-node `.og` files with `::traverse`, `::dense` ≤30 tok, `requires` edges, person-node
+memory writes (inbox triage), and episode node write (meeting debrief). Both pass the og linter.
+Installer + consent sheets from P2-07a; scopes declared in `pack.toml`.
 
 #### P2-13 ★ CLI decomposition + `RuntimeBuilder` + central Settings — ✅
 **Effort** 4–6d · **Source** [01/R11, R12, TD-9, TD-14](01-architecture-review.md)
