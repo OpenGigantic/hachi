@@ -1425,6 +1425,11 @@ def boot_agent(
 
     # 8b. Declarative tool registration — ordering constraints are explicit in the
     # table below, not buried in prose comments.
+    # P4-01: per-session write-target lease manager (prevents concurrent delegation conflicts).
+    from tokoboros.core.lease_manager import LeaseManager
+
+    _lease_manager = LeaseManager()
+
     def _make_deps() -> BootDeps:
         return BootDeps(
             gate=runtime_gate,
@@ -1442,6 +1447,7 @@ def boot_agent(
             provider_kind=str(provider_config.get("kind", "anthropic")),
             secret_store=secret_store,
             tool_registry=tool_registry,
+            lease_manager=_lease_manager,
         )
 
     TOOL_SPECS: list[ToolSpec] = [
@@ -1563,6 +1569,7 @@ def boot_agent(
                 sub_agent_llm=d.sub_agent_llm,
                 cost_tracker=d.cost_tracker,
                 skill_engine=d.skill_engine,
+                lease_manager=d.lease_manager,
             ),
         ),
     ]

@@ -137,10 +137,65 @@ class MemoryWriter:
         self._memory_dir = memory_dir
         self._graph_index = graph_index  # optional MemoryIndex; refreshed after writes
 
-    def write_nodes(self, nodes: list[MemoryNode], session_id: str = "") -> int:
-        """Write nodes to their respective .og files. Returns the count written."""
+    def write_fact(self, content: str, category: str = "workspace_state") -> str:
+        """Convenience: write a single unstructured fact as a ``fact`` node.
+
+        Used by ``FTS5MemoryProvider.upsert()`` to persist raw facts to .og files.
+
+        Args:
+            content:  The fact text to persist.
+            category: Organisational tag (written as a keyword).
+
+        Returns:
+            The node name (content-addressed slug).
+        """
+        import hashlib
+
+        node_name = "fact-" + hashlib.sha256(content.encode()).hexdigest()[:12]
+        node = MemoryNode(
+            name=node_name,
+            role="fact",
+            dense=content[:200],
+            keywords=[category],
+        )
+        self.write_nodes([node])
+        return node_name
+
+    def write_nodes(
+        self,
+        nodes: list[MemoryNode],
+        session_id: str = "",
+        by_agent: str = "",
+    ) -> int:
+        """Write nodes to their respective .og files. Returns the count written.
+
+        Args:
+            nodes:      Nodes to persist.
+            session_id: Session ID stamped on ``evidence=session:<id>`` edges.
+            by_agent:   P4-01 provenance — when non-empty, appends a
+                        ``->[:by=agent:<by_agent>]`` edge to every node so
+                        the memory gardener can trace which sub-agent wrote it.
+        """
         if not nodes:
             return 0
+
+        # P4-01: inject provenance edge into each node before routing.
+        if by_agent:
+            provenance_edge = f"->[:by=agent:{by_agent}]"
+            nodes = [
+                MemoryNode(
+                    name=n.name,
+                    role=n.role,
+                    dense=n.dense,
+                    keywords=n.keywords,
+                    session_id=n.session_id,
+                    project_slug=n.project_slug,
+                    person_slug=n.person_slug,
+                    edges=list(n.edges) + [provenance_edge],
+                    status=n.status,
+                )
+                for n in nodes
+            ]
 
         # Group by target file
         by_file: dict[Path, list[MemoryNode]] = {}
