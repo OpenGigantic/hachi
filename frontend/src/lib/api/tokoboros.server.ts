@@ -6,6 +6,8 @@ import {
   type HealthResponse,
   type ReadinessResponse,
   type RuntimeEventDto,
+  type ScheduleDto,
+  type ScheduleToggleResult,
   type SessionEventsResponse,
   type SessionStateDto,
   type RequestOptions,
@@ -341,6 +343,35 @@ export function createTokoborosApiClient(config: GatewayClientConfig): Tokoboros
         (signal, headers) =>
           client.POST("/setup/apply", {
             body: input,
+            signal,
+            headers,
+          }),
+        options,
+      );
+    },
+    listSchedules(options) {
+      return request<{ schedules: ScheduleDto[] }>(
+        (signal, headers) => client.GET("/schedules", { signal, headers }),
+        options,
+      );
+    },
+    cancelSchedule(scheduleId, options) {
+      return request<ScheduleToggleResult>(
+        (signal, headers) =>
+          client.DELETE("/schedules/{schedule_id}", {
+            params: { path: { schedule_id: scheduleId } },
+            signal,
+            headers,
+          }),
+        options,
+      );
+    },
+    toggleSchedule(scheduleId, enabled, options) {
+      return request<ScheduleToggleResult>(
+        (signal, headers) =>
+          client.PUT("/schedules/{schedule_id}/enabled", {
+            params: { path: { schedule_id: scheduleId } },
+            body: { enabled },
             signal,
             headers,
           }),

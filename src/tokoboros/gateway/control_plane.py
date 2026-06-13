@@ -88,6 +88,9 @@ class GatewayControlPlane:
         list_models: Callable[[], list[dict[str, Any]]] | None = None,
         get_setup_state: Callable[[], dict[str, Any]] | None = None,
         apply_setup: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        list_schedules: Callable[[], list[dict[str, Any]]] | None = None,
+        cancel_schedule: Callable[[str], dict[str, Any]] | None = None,
+        toggle_schedule: Callable[[str, bool], dict[str, Any]] | None = None,
         max_active_sessions: int = 100,
         max_prompt_chars: int = 100_000,
     ) -> None:
@@ -113,6 +116,9 @@ class GatewayControlPlane:
         self._list_models = list_models
         self._get_setup_state = get_setup_state
         self._apply_setup = apply_setup
+        self._list_schedules = list_schedules
+        self._cancel_schedule = cancel_schedule
+        self._toggle_schedule = toggle_schedule
         self._connections: dict[str, dict[str, Any]] = {}
         self._api_sessions: dict[str, str] = {}  # session_key -> session_id (facade sessions)
         self._connections_lock = threading.Lock()
@@ -415,6 +421,21 @@ class GatewayControlPlane:
     def apply_setup(self, payload: dict[str, Any]) -> Any:
         handler = self._require_handler(self._apply_setup, "setup apply")
         return handler(payload)
+
+    def list_schedules(self) -> Any:
+        if self._list_schedules is None:
+            return []
+        return self._list_schedules()
+
+    def cancel_schedule(self, schedule_id: str) -> Any:
+        if self._cancel_schedule is None:
+            return {"ok": False, "detail": "schedules not available"}
+        return self._cancel_schedule(schedule_id)
+
+    def toggle_schedule(self, schedule_id: str, enabled: bool) -> Any:
+        if self._toggle_schedule is None:
+            return {"ok": False, "detail": "schedules not available"}
+        return self._toggle_schedule(schedule_id, enabled)
 
     # Backward-compatible aliases for previous envelope methods.
     def connect(self, payload: dict[str, Any]) -> dict[str, Any]:

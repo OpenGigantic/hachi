@@ -287,6 +287,29 @@ class _InProcessGatewayRuntime:
         reports = agent.query_subagent_reports(query=query, top_k=top_k)
         return [asdict(item) for item in reports]
 
+    def list_schedules(self) -> list[dict]:
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return []
+        return agent.snapshot_schedules()
+
+    def cancel_schedule(self, schedule_id: str) -> dict:
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return {"ok": False, "detail": "no active session"}
+        ok = agent.cancel_schedule(schedule_id)
+        return {"ok": ok, "schedule_id": schedule_id}
+
+    def toggle_schedule(self, schedule_id: str, enabled: bool) -> dict:
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return {"ok": False, "detail": "no active session"}
+        ok = agent.toggle_schedule_enabled(schedule_id, enabled=enabled)
+        return {"ok": ok, "schedule_id": schedule_id, "enabled": enabled}
+
     def capabilities(self) -> list[dict]:
         config = load_effective_config()
         items: list[dict] = []
@@ -651,6 +674,9 @@ def _build_gateway_control_plane(
         list_models=support.list_models,
         get_setup_state=support.setup_state,
         apply_setup=support.apply_setup,
+        list_schedules=runtime.list_schedules if runtime else None,
+        cancel_schedule=runtime.cancel_schedule if runtime else None,
+        toggle_schedule=runtime.toggle_schedule if runtime else None,
         max_active_sessions=max_active_sessions,
         max_prompt_chars=max_prompt_chars,
     )

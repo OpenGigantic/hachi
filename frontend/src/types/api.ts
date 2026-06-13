@@ -117,6 +117,25 @@ export interface SubagentReportDto {
   [key: string]: JsonValue;
 }
 
+export interface ScheduleDto {
+  schedule_id: string;
+  name: string;
+  task: string;
+  recurrence: string;
+  enabled: boolean;
+  last_fired_at?: string | null;
+  next_fire_at?: string | null;
+  fire_count?: number;
+  [key: string]: JsonValue;
+}
+
+export interface ScheduleToggleResult {
+  ok: boolean;
+  schedule_id: string;
+  enabled?: boolean;
+  detail?: string;
+}
+
 export interface CapabilityStatusDto {
   id: string;
   kind: string;
@@ -254,4 +273,11 @@ export interface TokoborosApiClient {
   listModels(options?: RequestOptions): Promise<ModelOptionDto[]>;
   setupState(options?: RequestOptions): Promise<SetupStateDto>;
   applySetup(input: ApplySetupRequest, options?: RequestOptions): Promise<ApplySetupResponse>;
+  listSchedules(options?: RequestOptions): Promise<{ schedules: ScheduleDto[] }>;
+  cancelSchedule(scheduleId: string, options?: RequestOptions): Promise<ScheduleToggleResult>;
+  toggleSchedule(
+    scheduleId: string,
+    enabled: boolean,
+    options?: RequestOptions,
+  ): Promise<ScheduleToggleResult>;
 }

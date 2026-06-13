@@ -1,10 +1,13 @@
 import { createFileRoute, Link, notFound, redirect } from "@tanstack/react-router";
 
+import { ApprovalsInboxScreen } from "@/components/screens/approvals-inbox-screen";
 import { LogsScreen } from "@/components/screens/logs-screen";
+import { MemoryBrowserScreen } from "@/components/screens/memory-browser-screen";
 import { RuntimeConfigScreen } from "@/components/screens/runtime-config-screen";
 import { SessionWorkbench } from "@/components/screens/session-workbench";
 import { SettingsScreen } from "@/components/screens/settings-screen";
 import { SetupScreen } from "@/components/screens/setup-screen";
+import { WorkflowsGalleryScreen } from "@/components/screens/workflows-gallery-screen";
 import { getGatewayReadiness, getGatewaySetupState } from "@/lib/api/tokoboros.functions";
 
 const map: Record<string, { id: number; title: string; kind: "react" | "static" }> = {
@@ -22,6 +25,10 @@ const map: Record<string, { id: number; title: string; kind: "react" | "static" 
   "tool-output": { id: 6, title: "Tool Output Block", kind: "static" },
   "input-states": { id: 13, title: "Input Area States", kind: "static" },
   error: { id: 11, title: "Configuration Error", kind: "static" },
+  // P4-05 companion screens
+  workflows: { id: 16, title: "Workflows Gallery", kind: "react" },
+  approvals: { id: 17, title: "Approvals Inbox", kind: "react" },
+  memory: { id: 18, title: "Working Memory", kind: "react" },
 };
 
 export const Route = createFileRoute("/s/$slug")({
@@ -115,6 +122,30 @@ function ScreenView() {
       return (
         <div className="flex-1 overflow-auto px-4 py-4">
           <LogsScreen />
+        </div>
+      );
+    }
+
+    if (slug === "workflows") {
+      return (
+        <div className="flex-1 overflow-auto">
+          <WorkflowsGalleryScreen />
+        </div>
+      );
+    }
+
+    if (slug === "approvals") {
+      return (
+        <div className="flex-1 overflow-auto">
+          <ApprovalsInboxScreen />
+        </div>
+      );
+    }
+
+    if (slug === "memory") {
+      return (
+        <div className="flex-1 overflow-auto">
+          <MemoryBrowserScreen />
         </div>
       );
     }

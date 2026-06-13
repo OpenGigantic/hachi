@@ -437,6 +437,9 @@ class AgentSession:
         # (role, content) pairs, oldest first; empty unless booted with resume.
         self._resumed_transcript: list[tuple[str, str]] = []
 
+        # P4-05: scheduler reference — set by boot_agent after ScheduleRunner starts.
+        self._scheduler: Any = None
+
     @property
     def resumed_transcript(self) -> list[tuple[str, str]]:
         """User/assistant turns carried over from a resumed session (oldest first)."""
@@ -620,6 +623,24 @@ class AgentSession:
     def snapshot_permission_audit(self, limit: int = 50) -> tuple[PermissionAuditSnapshot, ...]:
         """Recent permission request/decision audit entries."""
         return self._read_models.permission_audit(limit=limit)
+
+    def snapshot_schedules(self) -> list[dict[str, Any]]:
+        """Current schedules serialized for the companion web UI."""
+        if self._scheduler is None:
+            return []
+        return [s.to_dict() for s in self._scheduler.list_schedules()]
+
+    def cancel_schedule(self, schedule_id: str) -> bool:
+        """Cancel a schedule by id. Returns True if cancelled."""
+        if self._scheduler is None:
+            return False
+        return self._scheduler.cancel(schedule_id)
+
+    def toggle_schedule_enabled(self, schedule_id: str, *, enabled: bool) -> bool:
+        """Enable or disable a schedule. Returns True if updated."""
+        if self._scheduler is None:
+            return False
+        return self._scheduler.set_enabled(schedule_id, enabled)
 
     def snapshot_mcp_inventory(self) -> MCPInventorySnapshot:
         """Current MCP server and tool inventory."""
@@ -1758,6 +1779,7 @@ def boot_agent(
     _schedule_runner = ScheduleRunner(scheduler, fire=_fire_schedule)
     _schedule_runner.start()
     session._schedule_runner = _schedule_runner  # stopped in shutdown()
+    session._scheduler = scheduler  # P4-05: exposed for companion web UI
 
     emit_runtime_event(
         BOOT_COMPLETE,
