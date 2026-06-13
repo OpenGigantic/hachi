@@ -22,6 +22,12 @@ class _FakeLLM:
     def generate(self, messages, system_prompt=None, tools=None):  # noqa: ANN001, ANN201
         return LLMResponse(content="sub-agent finished the task")
 
+    def generate_stream(self, **kwargs):  # noqa: ANN201
+        response = self.generate(**kwargs)
+        if False:
+            yield ""
+        return response
+
 
 def test_sub_agent_uses_injected_client(monkeypatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

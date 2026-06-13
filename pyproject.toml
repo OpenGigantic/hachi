@@ -79,6 +79,10 @@ tracing = [
 presentations = [
     "python-pptx>=1.0.0",
 ]
+# Opt-in for providers that use reverse-engineered web APIs (potential ToS risk).
+# Install with: pip install tokoboros[unofficial]
+# Then set TOKOBOROS_UNOFFICIAL=1 to actually enable the provider.
+unofficial = []
 
 [project.urls]
 Homepage = "https://github.com/OpenGigantic/tokoboros"
@@ -106,6 +110,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tokoboros"]

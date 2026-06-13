@@ -67,6 +67,7 @@ from tokoboros.tui.widgets import (
     SlashMenu,
     SlashPalette,
     StarterPrompt,
+    StatusStrip,
     TokoGlyph,
     TokoSplash,
     ToolCard,
@@ -167,6 +168,15 @@ Screen {
   height: 1;
   padding: 0 2;
   background: $surface;
+  color: $foreground;
+  content-align: left middle;
+}
+
+#status-strip {
+  dock: top;
+  height: 1;
+  padding: 0 2;
+  background: $background;
   color: $foreground;
   content-align: left middle;
 }
@@ -1194,6 +1204,8 @@ class SessionScreen(Screen):
         super().__init__()
         self._tool_cards: dict[str, list[ToolCard]] = {}
         self._welcome_widgets: list[Widget] = []
+        self._streaming_bubble: AgentMessage | None = None
+        self._streaming_text: str = ""
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="session-root"):
@@ -1361,14 +1373,40 @@ class SessionScreen(Screen):
     def append_error(self, message: str) -> None:
         self._append(ErrorCard(_sanitize_legacy_rich_markup(message)))
 
+    def finalize_streaming_bubble(self) -> None:
+        """Called when a turn ends — commit accumulated text and clear streaming state."""
+        if self._streaming_bubble is not None:
+            app = self.app
+            # Duck-type: update last_agent_text if the app tracks it.
+            if hasattr(app, "last_agent_text"):
+                app.last_agent_text = self._streaming_text
+        self._streaming_bubble = None
+        self._streaming_text = ""
+
+    def reset_streaming_state(self) -> None:
+        """Called at turn start — discard any leftover streaming state."""
+        self._streaming_bubble = None
+        self._streaming_text = ""
+
     def ingest_runtime_event(self, event_type: str, payload: dict[str, Any]) -> None:
         if event_type == "text.stream.delta":
-            text = str(payload.get("text", "")).strip()
-            if text:
-                app = self.app
-                if isinstance(app, TokoborosTextualApp):
-                    app.mark_turn_streamed()
-                self.render_assistant_text(text)
+            delta = str(payload.get("text", ""))
+            if not delta:
+                return
+            app = self.app
+            # Duck-type: notify the app that streaming text arrived this turn.
+            mark = getattr(app, "mark_turn_streamed", None)
+            if callable(mark):
+                mark()
+            if self._streaming_bubble is None:
+                # First delta — create the streaming widget and mount it
+                self._streaming_text = delta
+                self._streaming_bubble = AgentMessage(delta)
+                self._append(self._streaming_bubble)
+            else:
+                # Subsequent deltas — append and re-render in-place
+                self._streaming_text += delta
+                self._streaming_bubble.stream_delta(self._streaming_text)
             return
 
         if event_type == "tool.call.started":
@@ -1417,6 +1455,19 @@ class SessionScreen(Screen):
 
         # thinking / usage / session / job / permission events only drive the
         # sidebar status, which the app refreshes after each event.
+
+    def on_key(self, event: events.Key) -> None:
+        """Intercept Esc during an active turn to offer a graceful interrupt."""
+        if event.key != "escape":
+            return
+        app = self.app
+        # Duck-type: only act when the app tracks a chat thread + can interrupt.
+        thread = getattr(app, "_chat_thread", None)
+        if thread and thread.is_alive():
+            interrupt = getattr(app, "action_interrupt", None)
+            if callable(interrupt):
+                interrupt()
+                event.stop()
 
 
 class SnapshotScreen(Screen):
@@ -1489,6 +1540,20 @@ class OpsScreen(SnapshotScreen):
             tool_calls=tool_calls,
             model=model,
         )
+
+
+class SpendScreen(SnapshotScreen):
+    """Token cost + compaction events breakdown screen."""
+
+    title_text = "Spend"
+
+    def _build_snapshot(self, agent: AgentSession) -> RenderableType:
+        from tokoboros.tui.formatters import format_spend
+
+        usage = agent.snapshot_usage()
+        model = agent.snapshot_session_state().model_name
+        events = [asdict(evt) for evt in agent.snapshot_runtime_events(limit=50)]
+        return format_spend(usage, model, events)
 
 
 class MemoryScreen(SnapshotScreen):
@@ -1687,6 +1752,7 @@ class TokoborosTextualApp(App[None]):
     MODES = {
         "session": SessionScreen,
         "ops": OpsScreen,
+        "spend": SpendScreen,
         "memory": MemoryScreen,
         "integrations": IntegrationsScreen,
         "authoring": AuthoringScreen,
@@ -1702,21 +1768,24 @@ class TokoborosTextualApp(App[None]):
         Binding("ctrl+2", "mode_ops", "Ops"),
         Binding("f2", "mode_ops", show=False),
         Binding("alt+2", "mode_ops", show=False),
-        Binding("ctrl+3", "mode_memory", "Memory"),
-        Binding("f3", "mode_memory", show=False),
-        Binding("alt+3", "mode_memory", show=False),
-        Binding("ctrl+4", "mode_integrations", "Integrations"),
-        Binding("f4", "mode_integrations", show=False),
-        Binding("alt+4", "mode_integrations", show=False),
-        Binding("ctrl+5", "mode_authoring", "Authoring"),
-        Binding("f5", "mode_authoring", show=False),
-        Binding("alt+5", "mode_authoring", show=False),
-        Binding("ctrl+6", "mode_settings", "Settings"),
-        Binding("f6", "mode_settings", show=False),
-        Binding("alt+6", "mode_settings", show=False),
-        Binding("ctrl+7", "mode_setup", "Setup"),
-        Binding("f7", "mode_setup", show=False),
-        Binding("alt+7", "mode_setup", show=False),
+        Binding("ctrl+3", "mode_spend", "Spend"),
+        Binding("f3", "mode_spend", show=False),
+        Binding("alt+3", "mode_spend", show=False),
+        Binding("ctrl+4", "mode_memory", "Memory"),
+        Binding("f4", "mode_memory", show=False),
+        Binding("alt+4", "mode_memory", show=False),
+        Binding("ctrl+5", "mode_integrations", "Integrations"),
+        Binding("f5", "mode_integrations", show=False),
+        Binding("alt+5", "mode_integrations", show=False),
+        Binding("ctrl+6", "mode_authoring", "Authoring"),
+        Binding("f6", "mode_authoring", show=False),
+        Binding("alt+6", "mode_authoring", show=False),
+        Binding("ctrl+7", "mode_settings", "Settings"),
+        Binding("f7", "mode_settings", show=False),
+        Binding("alt+7", "mode_settings", show=False),
+        Binding("ctrl+8", "mode_setup", "Setup"),
+        Binding("f8", "mode_setup", show=False),
+        Binding("alt+8", "mode_setup", show=False),
         Binding("ctrl+p", "command_palette", "Palette"),
         Binding("ctrl+c", "interrupt", "Interrupt"),
         Binding("ctrl+r", "refresh_current", "Refresh"),
@@ -1942,6 +2011,11 @@ class TokoborosTextualApp(App[None]):
             self.query_one("#toko-header", TokoGlyph).set_status(header_info)
         except Exception:
             pass
+        # Update the always-visible governance strip regardless of screen/width.
+        try:
+            self.query_one("#status-strip", StatusStrip).update_info(info)
+        except Exception:
+            pass
         if not isinstance(screen, SessionScreen):
             return
         try:
@@ -1968,6 +2042,9 @@ class TokoborosTextualApp(App[None]):
         # encodes live runtime state. Replaces the stock Header so the two do
         # not collide at the docked top row.
         yield TokoGlyph(id="toko-header")
+        # Ambient governance strip: state, jobs, approvals, spend — always
+        # visible on every screen, even when the sidebar is collapsed narrow.
+        yield StatusStrip(id="status-strip")
         # The runtime/provider/tier summary lives only in the session sidebar
         # (format_session_info) — no bottom banner, to avoid duplicating it.
         yield Footer()
@@ -2324,6 +2401,7 @@ class TokoborosTextualApp(App[None]):
 
         screen = self._current_screen()
         if isinstance(screen, SessionScreen):
+            screen.reset_streaming_state()
             # display_text lets slash commands (e.g. /plan) show a friendly bubble
             # while sending an expanded instruction to the model.
             screen.append_user_prompt(display_text or prompt)
@@ -2371,6 +2449,8 @@ class TokoborosTextualApp(App[None]):
     def _on_chat_result(self, response: str, error_text: str | None) -> None:
         screen = self._current_screen()
         if isinstance(screen, SessionScreen):
+            # Commit any in-flight streaming bubble before rendering error/response.
+            screen.finalize_streaming_bubble()
             if error_text:
                 screen.append_error(error_text)
             elif not self._turn_streamed_any:
@@ -2909,6 +2989,9 @@ class TokoborosTextualApp(App[None]):
 
     def action_mode_ops(self) -> None:
         self._switch_mode("ops")
+
+    def action_mode_spend(self) -> None:
+        self._switch_mode("spend")
 
     def action_mode_memory(self) -> None:
         self._switch_mode("memory")

@@ -71,8 +71,14 @@ def test_benchmark_json_output_has_expected_keys() -> None:
     result = runner.invoke(app, ["skill", "benchmark", "--json"])
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
+    # Top-level keys (suite=token by default)
+    assert "nodes" in data
+    assert "suite" in data
+    assert "passed" in data
+    assert data["suite"] == "token"
+    # Token arm nested under "token"
+    token = data["token"]
     for key in (
-        "nodes",
         "baseline_tokens",
         "three_pass_tokens",
         "savings_pct",
@@ -83,13 +89,13 @@ def test_benchmark_json_output_has_expected_keys() -> None:
         "passed",
         "query",
     ):
-        assert key in data, f"Missing key '{key}' in JSON output"
+        assert key in token, f"Missing key '{key}' in token arm output"
     assert data["nodes"] >= 3
-    assert data["baseline_tokens"] > 0
-    assert data["three_pass_tokens"] > 0
-    assert 0.0 <= data["savings_pct"] <= 1.0
-    assert data["threshold"] == 0.80
-    assert isinstance(data["passed"], bool)
+    assert token["baseline_tokens"] > 0
+    assert token["three_pass_tokens"] > 0
+    assert 0.0 <= token["savings_pct"] <= 1.0
+    assert token["threshold"] == 0.80
+    assert isinstance(token["passed"], bool)
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +109,7 @@ def test_benchmark_threshold_zero_always_passes() -> None:
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["passed"] is True
-    assert data["threshold"] == 0.0
+    assert data["token"]["threshold"] == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +122,7 @@ def test_benchmark_threshold_999_fails_exit_1() -> None:
     result = runner.invoke(app, ["skill", "benchmark", "--json", "--threshold", "0.9999"])
     # savings will always be < 0.9999 (even at 97% we need > 99.99% to pass)
     data = json.loads(result.output)
-    if data["savings_pct"] < 0.9999:
+    if data["token"]["savings_pct"] < 0.9999:
         assert result.exit_code == 1
         assert data["passed"] is False
     else:

@@ -1,7 +1,16 @@
+::meta
+  title: Core GitHub
+  version: 1.0.0
+  domain: development|github|issue-tracking
+
+::index
+  # node-id    | type  | scope | conf | keywords
+  core_github   | skill | all   | 1.0  | github, issue, bug, repo, productivity, pull request, repository, issue tracker, bug report
+
 ::node[core_github]
 ->[:role=skill]
 ->[:requires_auth=github_personal_token]
-->[:keywords=github, issue, bug, repo, productivity]
+->[:keywords=github, issue, bug, repo, productivity, pull request, repository, issue tracker, bug report]
 
 ::api[create_github_issue]
 method=POST
@@ -11,8 +20,7 @@ schema={"owner": "string", "repo": "string", "title": "string", "body": "string"
 description=Creates a new issue in a GitHub repository.
 
 ::dense
-Seamlessly dispatches tasks and bug reports directly to GitHub. 
-Because this uses a personalized API token, the Omni-Orchestrator Vault will securely intercept and prompt the user if they haven't provided one yet.
+Creates GitHub issues via personal token. Operates on a single designated repository.
 
 ::steps
 1. Identify the target repository owner, repository name, issue title, and body.

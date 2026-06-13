@@ -20,6 +20,9 @@ FIXTURE = Path(__file__).parent / "fixtures" / "sample_skill.og"
 
 def _isolate(monkeypatch, tmp_path: Path) -> Path:
     """Point the CLI at a temp skills dir and isolate the usage store under tmp home."""
+    import tokoboros.og_engine.engine as engine_mod
+    from tokoboros.core.paths import TokoborosPaths
+
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     shutil.copy(FIXTURE, skills_dir / "sample_skill.og")
@@ -28,8 +31,20 @@ def _isolate(monkeypatch, tmp_path: Path) -> Path:
         "tokoboros.gateway.workspace.get_skills_dir",
         lambda: skills_dir,
     )
-    # SkillEngine.__init__ derives its usage path from Path.home(); redirect it.
+    # Redirect Path.home() so legacy shim reads from tmp_path.
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    # Also redirect get_tokoboros_paths so state_dir is under tmp_path (not a system dir).
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    mock_paths = TokoborosPaths(
+        config_dir=tmp_path / "config",
+        data_dir=tmp_path / "data",
+        cache_dir=tmp_path / "cache",
+        state_dir=state_dir,
+        legacy_dir=tmp_path / ".tokoboros",
+    )
+    monkeypatch.setattr(engine_mod, "get_tokoboros_paths", lambda: mock_paths)
     return skills_dir
 
 

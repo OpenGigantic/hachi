@@ -1,10 +1,18 @@
+::meta
+  title: Notion Brain Dump
+  version: 1.0.0
+  domain: notion|productivity|note-taking
+
+::index
+  # node-id            | type  | scope | conf | keywords
+  notion_brain_dump     | skill | all   | 1.0  | brain dump, notes, tasks, ideas, organize, notion, note-taking, ideation, capture
+
 ::node[notion_brain_dump]
 ->[:role=skill]
-->[:keywords=brain dump, notes, tasks, ideas, organize, notion]
+->[:keywords=brain dump, notes, tasks, ideas, organize, notion, note-taking, ideation, capture]
 
 ::dense
-Transforms raw, chaotic user thoughts into perfectly structured Notion database entries.
-Assumes the presence of the native `notion_database_create_page` tool.
+Structures raw thoughts into typed Notion database entries with auto-assigned tags and priorities.
 
 ::steps
 1. Ingest the user's unstructured text input.

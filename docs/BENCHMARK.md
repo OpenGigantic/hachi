@@ -1,15 +1,23 @@
 # ObjectGraph (.og) Token-Efficiency Benchmark
 
 **TL;DR:** Answering a query by routing through the 3-pass ObjectGraph model
-uses **97.2% fewer tokens** than naively concatenating all skill files into the
-prompt — measured against the 42-node bundled skill pack shipped with Tokoboros.
+uses **97.6% fewer tokens** than naively concatenating all skill files into the
+prompt — measured against the 53-node bundled skill pack shipped with Tokoboros
+(corpus S-real, 2026-06-13, git `a54d242`).
+
+> **Scope caveat:** below ~30 k tokens of total library content, a cached
+> dump-all approach is competitive on cost. ObjectGraph is built for libraries
+> that grow beyond that threshold — sub-file node granularity and `requires`
+> traversal matter most when the library no longer fits in a single context window.
 
 Reproducible at any time:
 
 ```bash
-uv run tokoboros skill benchmark           # human-readable panel
-uv run tokoboros skill benchmark --json    # machine-readable JSON (for CI / sharing)
-uv run pytest tests/test_og_benchmark.py -s  # unit-test form with raw numbers
+uv run tokoboros skill benchmark               # human-readable panel (token savings only)
+uv run tokoboros skill benchmark --suite fast  # token + M1 retrieval quality
+uv run tokoboros skill benchmark --suite full  # all metrics (M1/M2/M4/M7)
+uv run tokoboros skill benchmark --json        # machine-readable JSON (CI / sharing)
+uv run pytest tests/test_og_benchmark.py -s    # unit-test form with raw numbers
 ```
 
 ---
@@ -22,13 +30,15 @@ concatenate everything — is simple but catastrophically wasteful as the skill
 library grows.  Worse, irrelevant content adds noise that degrades answer
 quality and inflates per-turn costs.
 
-The [ObjectGraph format](https://arxiv.org/abs/2604.27820) (arXiv 2604.27820)
+The ObjectGraph format (arXiv [2604.27820](https://arxiv.org/abs/2604.27820),
+*"ObjectGraph: From Document Injection to Knowledge Traversal"*, Open Gigantic —
+**first-party**: Tokoboros is the reference implementation described in that paper)
 treats the context-loading problem as a **file-format problem**.  Rather than
 a flat document you load or skip, a `.og` file is a **queryable graph of typed
 nodes**, each carrying structured metadata that agents can index and traverse
 without reading full content.
 
-Independent research confirms the premise:
+Independent third-party research validates the same category of solution:
 
 | Paper | Finding |
 |-------|---------|
@@ -53,8 +63,8 @@ has what it needs:
 | **Pass 2 — dense** | `::dense` compressed summaries for the matching candidates | ~150–300 tok total |
 | **Pass 3 — full** | `::full` content for the single best node | exact skill size |
 
-The majority of queries complete at Pass 2.  Pass 3 is only reached when the
-agent needs to execute, not just route.
+Based on the S-real probe corpus (31 real queries), **77% of queries resolve at
+Pass 1**.  Pass 3 is only reached for ~3% of queries.
 
 Compare this to **competitor approaches**:
 
@@ -69,21 +79,84 @@ Compare this to **competitor approaches**:
 
 ## Current results (bundled default_skills)
 
-Measured against the 42 `.og` nodes shipped with Tokoboros:
+Measured against the 53 `.og` nodes shipped with Tokoboros, corpus S-real
+(36 probes: 16 keyword / 10 procedural / 5 instructional / 5 negative), 2026-06-13.
+
+### Token efficiency (M0)
 
 | Metric | Value |
 |--------|-------|
-| Skill nodes | 42 |
-| Baseline — dump all (tokens) | 9,016 |
-| 3-pass total (tokens) | 253 |
-| &nbsp;&nbsp;└ Pass 1 — index search | 39 |
-| &nbsp;&nbsp;└ Pass 2 — dense peek (top 5) | 86 |
-| &nbsp;&nbsp;└ Pass 3 — full resolve (1 node) | 128 |
-| **Token savings** | **97.2%** |
+| Skill nodes | 53 |
+| Baseline — dump all (tokens) | 8,726 |
+| 3-pass total (tokens) | 208 |
+| &nbsp;&nbsp;└ Pass 1 — index search | 182 |
+| &nbsp;&nbsp;└ Pass 2 — dense peek (top 5) | 13 |
+| &nbsp;&nbsp;└ Pass 3 — full resolve (1 node) | 13 |
+| **Token savings** | **97.6%** |
 | CI gate | ≥ 80% |
 
 The CI gate enforces that this savings ratio never regresses below 80% as the
 skill library grows.
+
+### Retrieval quality (M1)
+
+Measured against 31 positive probes (K/P/I types) + 5 negative probes:
+
+| Metric | Value | Gate |
+|--------|-------|------|
+| P@1 — rank-1 correct | 0.7742 | — |
+| P@5 — correct in top 5 | 0.9677 | ≥ 0.80 ✅ |
+| MRR — mean reciprocal rank | 0.8548 | — |
+| FPR — false positive rate (N-probes) | 0.0000 | ≤ 0.20 ✅ |
+
+One miss: `[k012] "financial data"` returned `identity` instead of `core_finance`
+(keyword overlap on "personal finance" node label).  No false positives on
+negative probes.
+
+### Pass-depth distribution (M7)
+
+How far into the 3-pass model each query goes:
+
+| Depth | Rate |
+|-------|------|
+| Pass 1 sufficient (rank-1 hit) | **77.4%** |
+| Pass 2 sufficient (top-5 hit) | 19.4% |
+| Pass 3 required (not in top 5) | 3.2% |
+
+96.8% of queries are resolved within 2 passes.  The 3.2% that reach Pass 3
+correspond exactly to the 1 retrieval miss identified in M1.
+
+### Token cost model (M2)
+
+Estimated cost per query, treating all tokens as uncached input (conservative
+upper bound — cache hits reduce cost substantially in production):
+
+| Metric | Value |
+|--------|-------|
+| Avg tokens / query (Pass 1) | 107 |
+| Avg tokens / query (Pass 2) | 160 |
+| Avg tokens / query (Pass 3) | 142 |
+| **Avg tokens / query (total)** | **408** |
+| Estimated cost / 1k queries | **$1.22** |
+
+Pricing model: Anthropic 2026-06 uncached input @ $3.00/Mtok.  With prompt
+caching (Pass 1 index is highly cache-friendly), effective cost is lower.
+
+### Engine latency (M4)
+
+Engine-only timing (search + peek + resolve, no LLM calls):
+
+| Metric | Value |
+|--------|-------|
+| Avg engine ops | **0.217 ms** |
+| RTT model (3 passes × 800 ms) | 2,400 ms |
+| Total estimated wall-clock | ~2.4 s |
+
+Engine overhead is negligible; end-to-end latency is dominated by LLM
+round-trip time.  The 800 ms/pass RTT is a conservative baseline; in practice
+Claude Haiku averages 400–600 ms TTFT on warm requests.
+
+_Numbers reproducible via `uv run tokoboros skill benchmark --suite full --json`._
 
 ---
 
@@ -112,12 +185,24 @@ The representative query is the first keyword from the engine's index (a
 repeatable, version-controlled selection that always resolves to at least one
 match).
 
+### Probe corpus (S-real)
+
+The S-real corpus (frozen at git `a54d242`) contains 36 probes authored against
+the default_skills pack:
+
+- **16 keyword (K)** — single-concept lookups (e.g. "currency", "weather")
+- **10 procedural (P)** — multi-step task queries (e.g. "how do I set up a standup")
+- **5 instructional (I)** — configuration / setup questions
+- **5 negative (N)** — out-of-scope queries that should return no results
+
+M1/M7/M2/M4 metrics are computed over the 31 positive probes (K+P+I).
+
 ### CI enforcement
 
 The benchmark runs as both a pytest test (`tests/test_og_benchmark.py`,
 threshold 80%) and a dedicated CI job (`benchmark` in `.github/workflows/ci.yml`)
-that runs `skill benchmark --json --threshold 0.80` and fails the build if
-savings drop below the gate.
+that runs `skill benchmark --suite fast --json --threshold 0.80` and fails the
+build if savings drop below the gate or P@5 drops below 0.80.
 
 ---
 
@@ -128,7 +213,15 @@ uv run tokoboros skill benchmark --dir /path/to/your/skills
 uv run tokoboros skill benchmark --dir /path/to/your/skills --json
 ```
 
-The `--threshold` flag lets you set a custom gate:
+The `--suite` flag selects which metrics to compute:
+
+```bash
+uv run tokoboros skill benchmark --suite token   # token savings only (fast, default)
+uv run tokoboros skill benchmark --suite fast    # token + M1 retrieval quality
+uv run tokoboros skill benchmark --suite full    # all metrics (M1/M2/M4/M7)
+```
+
+The `--threshold` flag lets you set a custom savings gate:
 
 ```bash
 uv run tokoboros skill benchmark --threshold 0.90  # fail unless savings ≥ 90%
@@ -138,20 +231,40 @@ uv run tokoboros skill benchmark --threshold 0.90  # fail unless savings ≥ 90%
 
 ## Sharing results
 
-Run `skill benchmark --json` and paste the output as a snippet in your README or
-submit it to the Tokoboros skill registry.  Example output:
+Run `skill benchmark --suite full --json` and paste the output as a snippet in
+your README or submit it to the Tokoboros skill registry.  Example (truncated):
 
 ```json
 {
-  "nodes": 42,
-  "baseline_tokens": 9016,
-  "three_pass_tokens": 253,
-  "savings_pct": 0.972,
-  "p1_tokens": 39,
-  "p2_tokens": 86,
-  "p3_tokens": 128,
-  "threshold": 0.8,
-  "passed": true,
-  "query": "schedule"
+  "suite": "full",
+  "nodes": 53,
+  "token": {
+    "baseline_tokens": 8726,
+    "three_pass_tokens": 208,
+    "savings_pct": 0.976163,
+    "passed": true
+  },
+  "m1": {
+    "p_at_1": 0.7742,
+    "p_at_5": 0.9677,
+    "mrr": 0.8548,
+    "fpr_negative": 0.0,
+    "passed": true
+  },
+  "m7": {
+    "p1_rate": 0.7742,
+    "p2_rate": 0.1935,
+    "p3_rate": 0.0323
+  },
+  "m2": {
+    "avg_tokens_total": 408.1,
+    "estimated_usd_per_1k_queries": 1.2242
+  },
+  "m4": {
+    "avg_engine_ms": 0.217,
+    "rtt_estimate_ms": 2400.0,
+    "total_estimate_ms": 2400.2
+  },
+  "passed": true
 }
 ```

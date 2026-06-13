@@ -44,11 +44,17 @@ def test_three_pass_beats_dump_baseline(capsys: pytest.CaptureFixture[str]) -> N
     baseline = estimate_tokens(baseline_text)
     assert baseline > 0
 
-    # Pick a keyword guaranteed to resolve to at least one node.
-    keywords = list(engine._keyword_index.keys())
-    if not keywords:
-        pytest.skip("no indexed keywords in bundled skills")
-    query = keywords[0]
+    # Pick a keyword from a visible (non-brain.og) skill node.
+    query = next(
+        (
+            node.keywords[0]
+            for node in nodes
+            if node.keywords and engine._is_skill_node(node)
+        ),
+        None,
+    )
+    if query is None:
+        pytest.skip("no searchable keyword found in bundled skill nodes")
 
     results = engine.search(query)
     assert results, f"expected at least one match for query {query!r}"

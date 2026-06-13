@@ -849,6 +849,70 @@ class InteractivePermissionGate:
 
 
 # ==========================================
+# Dry-Run Gate
+# ==========================================
+
+
+class DryRunGate:
+    """Read-only wrapper around :class:`PermissionGate` for workflow dry-runs.
+
+    All read operations are forwarded transparently.  Write, delete, and
+    outbound-send operations are **denied** with a ``"[dry-run]"`` prefix so
+    the LLM can report *what would happen* without touching any external state.
+
+    Usage::
+
+        dry = DryRunGate(base_gate)
+        result = dry.check_path("/home/user/doc.txt", "write")
+        # result.allowed == False
+        # result.reason == "[dry-run] Write blocked — dry-run mode is active."
+    """
+
+    _WRITE_OPS = frozenset({"write", "delete", "create", "update"})
+
+    def __init__(self, base_gate: PermissionGate | InteractivePermissionGate) -> None:
+        self._base = base_gate
+
+    @property
+    def summary(self) -> str:
+        return self._base.summary + "  [dry-run]"
+
+    def is_dry_run(self) -> bool:
+        return True
+
+    def check_path(self, path: str, operation: str) -> PermissionResult:
+        """Allow reads; block writes and deletes with a dry-run explanation."""
+        if operation in self._WRITE_OPS:
+            return PermissionResult(
+                False,
+                f"[dry-run] {operation.capitalize()} blocked — dry-run mode is active. "
+                "No files will be modified.",
+            )
+        return self._base.check_path(path, operation)
+
+    def check_command(self, command: str) -> PermissionResult:
+        """Allow read-only commands; block mutating shell commands."""
+        _safe_prefixes = ("ls ", "ls\n", "cat ", "head ", "tail ", "echo ", "grep ", "find ")
+        cmd_lower = command.lstrip().lower()
+        is_safe = any(cmd_lower.startswith(p) for p in _safe_prefixes) or cmd_lower in {
+            "ls",
+            "pwd",
+            "date",
+            "whoami",
+        }
+        if not is_safe:
+            return PermissionResult(
+                False,
+                "[dry-run] Shell command blocked — dry-run mode only allows read-only commands.",
+            )
+        return self._base.check_command(command)
+
+    def stub_outbound(self, tool: str, payload: dict) -> str:
+        """Return a human-readable stub for outbound tool calls during dry-run."""
+        return f"[dry-run] would call {tool!r} with: {payload}"
+
+
+# ==========================================
 # Template Generator
 # ==========================================
 

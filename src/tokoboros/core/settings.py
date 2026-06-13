@@ -56,6 +56,8 @@ class MemorySettings(BaseModel):
     enable_session_history: bool = True
     enable_semantic_memory: bool = True
     backend: MemoryBackend = "chroma"
+    # P2-04: M0 — FTS5 index over memory/*.og files, merged via RRF with Chroma.
+    graph: bool = False
 
 
 class CapabilityState(BaseModel):

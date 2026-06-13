@@ -175,6 +175,11 @@ class _ScriptedLLM:
         self.calls += 1
         return resp
 
+    def generate_stream(self, **kwargs):
+        response = self.generate(**kwargs)
+        return response
+        yield  # makes this a generator function
+
 
 def _run_with_tool_returning(value) -> SubAgentMemory:
     registry = ToolRegistry()

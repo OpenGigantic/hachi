@@ -15,6 +15,7 @@ Phase 1 Update (Runtime Correctness):
 """
 
 import importlib.util
+import logging
 import os
 import threading
 import uuid
@@ -48,6 +49,7 @@ from tokoboros.core.runtime_events import (
     MCP_SERVER_READY,
     MCP_SERVER_STARTING,
     MCP_SHUTDOWN,
+    SESSION_BUSY,
     SESSION_CHAT_COMPLETED,
     SESSION_CHAT_STARTED,
     SESSION_PERSISTED,
@@ -86,7 +88,14 @@ from tokoboros.gateway.workspace import (
     load_brain,
     load_config,
 )
-from tokoboros.jobs import InMemoryJobQueue, Job, JobQueue, JobStatus, JobWorker
+from tokoboros.jobs import (
+    Job,
+    JobQueue,
+    JobStatus,
+    JobWorker,
+    ResidentWorkerThread,
+    SQLiteJobQueue,
+)
 from tokoboros.jobs.scheduler import Schedule, Scheduler, ScheduleRunner, ScheduleStore
 from tokoboros.og_engine.engine import SkillEngine
 from tokoboros.tools.browser_tools import register_browser_tools
@@ -104,6 +113,8 @@ from tokoboros.tools.schedule_tools import register_schedule_tools
 from tokoboros.tools.vision_tools import register_vision_tools
 from tokoboros.tools.voice_tools import register_voice_tools
 from tokoboros.tools.workflow_tools import register_workflow_tools
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -400,6 +411,12 @@ class AgentSession:
         self._job_worker = (
             JobWorker(job_queue, on_job_event=self._emit_event) if job_queue else None
         )
+        # Set by boot_agent when a SQLiteJobQueue + ResidentWorkerThread are active.
+        self._resident_worker: ResidentWorkerThread | None = None
+
+        # Per-session turn serialization: prevents concurrent chat() calls from
+        # corrupting interleaved user/assistant/tool-pair message history.
+        self._chat_lock = threading.Lock()
 
         # Phase 2: Session snapshot (rebuilt each turn to keep profile updates visible)
         self._memory_snapshot: str | None = None
@@ -683,10 +700,16 @@ class AgentSession:
     # Async Prefetch Pipeline
     # ==========================================
 
+    def set_resident_worker(self, worker: ResidentWorkerThread) -> None:
+        """Bind a ResidentWorkerThread started by boot_agent."""
+        self._resident_worker = worker
+
     def _drain_job_queue(self) -> None:
+        """Fallback synchronous drain — no-op when the resident worker is running."""
+        if self._resident_worker and self._resident_worker.is_running:
+            return
         if not self._job_worker:
             return
-
         while self._job_worker.execute_one():
             continue
 
@@ -795,6 +818,8 @@ class AgentSession:
         """Send a message to the agent and trigger the autonomous loop.
 
         Architecture (Phase 1 update):
+            - Serializes concurrent callers via a per-session lock so history is
+              never corrupted by interleaved user/assistant/tool-pair messages.
             - Creates an immutable TurnContext per turn (no shared state mutation)
             - Passes the context to ExecutionLoop.run() for use during execution
             - Previous turns' prefetch results are consumed, not blocking
@@ -805,6 +830,19 @@ class AgentSession:
             3. Recalled context   — from async prefetch (turn-specific addendum)
             4. Original prompt    — brain.og + skills + permissions (stable)
         """
+        # Emit session.busy when another turn is already running so UIs can show
+        # queued state. The acquire() then blocks until the current turn finishes.
+        if not self._chat_lock.acquire(blocking=False):
+            self._emit_event(SESSION_BUSY, {"queued_input_preview": user_input[:80]})
+            self._chat_lock.acquire()  # blocks until the current turn is done
+
+        try:
+            return self._chat_impl(user_input)
+        finally:
+            self._chat_lock.release()
+
+    def _chat_impl(self, user_input: str) -> str:
+        """Internal single-turn implementation; must only be called while _chat_lock is held."""
         # 1. Refresh memory snapshot at turn start
         turn_id = str(uuid.uuid4())[:8]
         self._emit_event(
@@ -913,7 +951,21 @@ class AgentSession:
         if runner is not None:
             runner.stop()
 
-        self._drain_job_queue()
+        if self._resident_worker:
+            self._resident_worker.stop()
+        else:
+            self._drain_job_queue()
+
+        # P2-05: write episode node at session close
+        if self._session_id and self.memory:
+            try:
+                _last = self.memory.history[-3:] if self.memory.history else []
+                _summary = " ".join(
+                    m.content[:80] for m in _last if isinstance(m.content, str)
+                ) or "session closed"
+                self.memory.write_episode(self._session_id, _summary)
+            except Exception:
+                pass
 
         # End the persistent session
         if self._session_store and self._session_id:
@@ -1053,7 +1105,7 @@ def boot_agent(
     configure_from_env()
 
     read_models = RuntimeReadModelStore()
-    job_queue = InMemoryJobQueue()
+    job_queue: JobQueue = SQLiteJobQueue()
 
     def emit_runtime_event(name: str, payload: dict[str, Any] | None = None) -> None:
         event = RuntimeEvent(name=name, payload=payload or {}, timestamp=now_iso())
@@ -1277,6 +1329,44 @@ def boot_agent(
         _provider.vault if isinstance(_provider, ChromaMemoryProvider) else None
     )
     memory.set_vault(vault)
+
+    # P2-04: M0 — attach FTS5 graph index when memory.graph=true
+    _graph_index = None
+    if _memory_settings.graph and vault is not None:
+        try:
+            from tokoboros.core.memory_index import MemoryIndex
+
+            _paths = get_tokoboros_paths()
+            _graph_index = MemoryIndex(
+                memory_dir=_paths.memory_dir,
+                db_path=_paths.memory_index_db,
+            )
+            _graph_index.refresh()
+            vault.attach_graph_index(_graph_index)
+            logger.info(
+                "MemoryIndex: %d nodes indexed from %s",
+                _graph_index.node_count,
+                _paths.memory_dir,
+            )
+        except Exception:
+            logger.debug("P2-04: MemoryIndex init failed; graph recall disabled", exc_info=True)
+
+    # P2-05: M1 — MemoryWriter for typed-node write path (always on when graph flag set)
+    if _memory_settings.graph:
+        try:
+            from tokoboros.core.memory_writer import MemoryWriter
+
+            _paths = get_tokoboros_paths()
+            _memory_writer = MemoryWriter(
+                memory_dir=_paths.memory_dir,
+                graph_index=_graph_index,
+            )
+            memory.set_memory_writer(_memory_writer)
+            logger.info("MemoryWriter: M1 write path active (memory_dir=%s)", _paths.memory_dir)
+        except Exception:
+            logger.debug(
+                "P2-05: MemoryWriter init failed; falling back to Chroma-only", exc_info=True
+            )
 
     # Universal REST adapter for .og-defined APIs; built here so the rest_apis spec
     # can close over it without a circular BootDeps reference.
@@ -1561,6 +1651,13 @@ def boot_agent(
             pass
     session._sub_agent_client = sub_agent_client  # closed on shutdown alongside the main client
     session._browser_controller = browser_controller  # closed on shutdown (no-op if never used)
+
+    # Start the resident job worker so background jobs (fact extraction, prefetch,
+    # title generation) execute without blocking the turn path.
+    _job_worker_for_session = JobWorker(job_queue, on_job_event=emit_runtime_event)
+    _resident_worker = ResidentWorkerThread(_job_worker_for_session)
+    _resident_worker.start()
+    session.set_resident_worker(_resident_worker)
 
     # Start the background schedule runner now that session.chat() is available.
     # The fire callback calls session.chat() so the agent executes the task and

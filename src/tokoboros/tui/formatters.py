@@ -420,6 +420,146 @@ def format_session_info(info: dict[str, Any]) -> RenderableType:
     )
 
 
+def format_status_strip(info: dict[str, Any]) -> Text:
+    """Compact always-visible governance strip: state, jobs, approvals, spend.
+
+    Pure over a plain dict so it can be unit-tested without a Textual app.
+    Expected keys: status, status_kind, jobs, approvals, warnings, cost (opt).
+    """
+    from tokoboros.tui import theme as _theme
+
+    strip = Text()
+    status_kind = str(info.get("status_kind", "idle"))
+    state = str(info.get("status", "Idle"))
+    strip.append("● ", style=_theme.status_color(status_kind))
+    strip.append(state, style="bold")
+
+    jobs = int(info.get("jobs", 0) or 0)
+    strip.append("   jobs:", style=_theme.MUTED)
+    strip.append(str(jobs), style=_theme.ACCENT if jobs else _theme.MUTED)
+
+    appr = int(info.get("approvals", 0) or 0)
+    strip.append("   appr:", style=_theme.MUTED)
+    appr_style = _theme.WARNING if appr else _theme.MUTED
+    strip.append(f"{appr}{'!' if appr else ''}", style=appr_style)
+
+    warn = int(info.get("warnings", 0) or 0)
+    if warn:
+        strip.append("   warn:", style=_theme.MUTED)
+        strip.append(str(warn), style=_theme.ERROR)
+
+    if info.get("cost") is not None:
+        cost = float(info.get("cost", 0.0) or 0.0)
+        strip.append(f"   spend ~${cost:.4f}", style=_theme.ACCENT)
+
+    return strip
+
+
+def format_spend(
+    usage: dict[str, Any],
+    model: str = "",
+    events: list[dict[str, Any]] | None = None,
+) -> RenderableType:
+    """Full token/cost breakdown for the Spend screen.
+
+    ``usage`` is a CostSnapshot.to_dict() (input_tokens, output_tokens,
+    cache_read_tokens, cache_creation_tokens, total_tokens, estimated_cost_usd,
+    call_count). ``events`` is a list of RuntimeEventSnapshot dicts used to
+    surface compaction events.
+    """
+    from rich.rule import Rule as _Rule
+
+    if not usage or not usage.get("call_count"):
+        empty = Text("No LLM calls yet — start a conversation to see costs.", style=theme.MUTED)
+        return Group(empty)
+
+    def _n(key: str) -> int:
+        return int(usage.get(key, 0) or 0)
+
+    def _usd(tok: int, rate_per_mtok: float) -> float:
+        return (tok / 1_000_000) * rate_per_mtok
+
+    calls = int(usage.get("call_count", 0))
+    suffix = "s" if calls != 1 else ""
+    title = f"Token Cost — {model or 'unknown model'}   ({calls} LLM call{suffix})"
+
+    breakdown = Table(title=title, title_justify="left", expand=True, header_style="bold")
+    breakdown.add_column("Token type", overflow="fold")
+    breakdown.add_column("Tokens", justify="right")
+    breakdown.add_column("Rate", justify="right")
+    breakdown.add_column("Est. USD", justify="right", style=theme.ACCENT)
+
+    inp = _n("input_tokens")
+    out = _n("output_tokens")
+    cr = _n("cache_read_tokens")
+    cw = _n("cache_creation_tokens")
+    total = _n("total_tokens")
+    total_cost = float(usage.get("estimated_cost_usd", 0.0) or 0.0)
+
+    breakdown.add_row(
+        Text("input (fresh)", style=theme.FOREGROUND),
+        f"{inp:,}",
+        "$3.00/Mtok",
+        f"~${_usd(inp, 3.0):.4f}",
+    )
+    breakdown.add_row(
+        Text("cache-read", style="green"),
+        f"{cr:,}",
+        "$0.30/Mtok",
+        Text(f"~${_usd(cr, 0.30):.4f}", style="green"),
+    )
+    breakdown.add_row(
+        Text("cache-write", style=theme.MUTED),
+        f"{cw:,}",
+        "$3.75/Mtok",
+        f"~${_usd(cw, 3.75):.4f}",
+    )
+    breakdown.add_row(
+        Text("output", style=theme.FOREGROUND),
+        f"{out:,}",
+        "$15.00/Mtok",
+        f"~${_usd(out, 15.0):.4f}",
+    )
+    breakdown.add_section()
+    breakdown.add_row(
+        Text("total", style="bold"),
+        Text(f"{total:,}", style="bold"),
+        "",
+        Text(f"~${total_cost:.4f}", style=f"bold {theme.ACCENT}"),
+    )
+
+    cache_hit_pct = (cr / total * 100) if total else 0.0
+    cache_note = Text(
+        f"  cache-hit {cache_hit_pct:.1f}% of all tokens served from cache",
+        style=theme.MUTED,
+    )
+
+    sections: list[RenderableType] = [breakdown, cache_note]
+
+    compaction_events = [
+        e for e in (events or []) if "compact" in str(e.get("name", "")).lower()
+    ]
+    comp_table = Table(
+        title="Context Compaction Events",
+        title_justify="left",
+        expand=True,
+        header_style="bold",
+    )
+    comp_table.add_column("Time", overflow="fold")
+    comp_table.add_column("Detail")
+    if compaction_events:
+        for ev in compaction_events[-10:]:
+            comp_table.add_row(
+                _truncate(ev.get("timestamp"), 19),
+                _truncate(_event_detail(ev.get("payload")), 80),
+            )
+    else:
+        comp_table.add_row(Text("no compaction events", style="dim"), "")
+
+    sections.extend([Text(""), _Rule(style=theme.BORDER_MUTED, characters="·"), comp_table])
+    return Group(*sections)
+
+
 def format_settings(
     session_state: dict[str, Any],
     config: dict[str, Any],

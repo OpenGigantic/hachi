@@ -78,11 +78,13 @@ This cuts token usage vs. loading entire skill files. The spec is in `ObjectGrap
 
 ### Memory (3-layer split)
 
-- **Active context** — in-context message history managed by `MemoryManager`, compacted per turn
+- **Active context** — in-context message history managed by `MemoryManager`; compacted
+  asynchronously (deferred/conditional via the jobs queue, not inline per turn)
 - **SessionStore** — SQLite transcript per session (`core/session_store.py`)
 - **MemoryVault** — ChromaDB semantic store for long-lived facts (`core/memory_vault.py`), split into `core_memory`, `user_profile`, `agent_profile`, `delegation_log`
 
-Memory sync happens asynchronously via the jobs queue (`jobs/queue.py`), not inline during the turn.
+Memory writes go through the jobs queue (`jobs/queue.py`). The queue drains via a resident
+worker thread; drain-at-turn-start is a fallback only.
 
 ### Permission gating
 
@@ -98,7 +100,15 @@ All significant lifecycle events are typed in `runtime_events.py`. The TUI and g
 
 ### Frontend contract
 
-The `frontend/` SvelteKit app generates API types from `openapi/tokoboros-openapi.json`. Run `uv run tokoboros gateway-openapi --output openapi/tokoboros-openapi.json` after any gateway route change; CI enforces this via the `frontend-contract` job.
+The `frontend/` app (TanStack Start + React) generates TypeScript API types from
+`openapi/tokoboros-openapi.json`. After any gateway route change, run:
+
+```bash
+uv run tokoboros gateway-openapi --output openapi/tokoboros-openapi.json
+npm run --prefix frontend generate:api
+```
+
+CI enforces this is kept current via the `frontend-contract` job (`check:api` step).
 
 ## Coding conventions
 
@@ -116,4 +126,7 @@ The `frontend/` SvelteKit app generates API types from `openapi/tokoboros-openap
 
 ## CI pipeline
 
-Four jobs on every push/PR: `test`, `security`, `lint`, `frontend-contract`. Lint and type-check are `continue-on-error` on main but strict on PRs. The security job additionally runs `--fail-on-medium` on pull requests.
+Six jobs on every push/PR: `test`, `security`, `lint`, `skill-lint`, `benchmark`, `frontend-contract`.
+Lint and type-check are `continue-on-error` on main but strict on PRs.
+The security job additionally runs `--fail-on-medium` on pull requests.
+`skill-lint` runs `scripts/lint_skills.py` and blocks on any error in shipped `.og` files.

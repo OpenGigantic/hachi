@@ -12,13 +12,15 @@ from tokoboros.tools.og_tools import _make_skill_dependencies, register_og_tools
 
 
 def _node(name: str, requires=None, edges=None) -> OGNode:
-    return OGNode(name=name, source_file="", requires=requires or [], edges=edges or [])
+    return OGNode(name=name, source_file="test_deps.og", requires=requires or [], edges=edges or [])
 
 
 def _engine(nodes: list[OGNode]) -> SkillEngine:
     eng = SkillEngine()
     for n in nodes:
-        eng._nodes[n.name] = n
+        qid = f"test_deps:{n.name}"
+        eng._nodes[qid] = n
+        eng._bare_name_index.setdefault(n.name, []).append(qid)
     return eng
 
 

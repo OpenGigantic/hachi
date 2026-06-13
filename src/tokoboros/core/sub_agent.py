@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 from tokoboros.core.llm import AnthropicClient, BaseLLMClient, Message
 from tokoboros.core.loop import AgentException, ExecutionLoop, ToolRegistry
+from tokoboros.core.paths import get_tokoboros_paths
 from tokoboros.og_engine.parser import OGFile, parse_og_file
 
 if TYPE_CHECKING:
@@ -409,10 +410,17 @@ class RoleResolver:
         """Initialize the role resolver.
 
         Args:
-            workspace_dir: Path to ~/.tokoboros/. If None, resolved automatically.
+            workspace_dir: Path to the workspace data dir. If None, resolved via platformdirs.
         """
-        self._workspace_dir = workspace_dir or (Path.home() / ".tokoboros")
+        _using_default = workspace_dir is None
+        self._workspace_dir = workspace_dir or get_tokoboros_paths().data_dir
         self._roles_dir = self._workspace_dir / "skills" / ROLES_DIRECTORY_NAME
+        # Legacy shim: if caller didn't override, also check ~/.tokoboros/skills/roles/
+        self._legacy_roles_dir: Path | None = (
+            Path.home() / ".tokoboros" / "skills" / ROLES_DIRECTORY_NAME
+            if _using_default
+            else None
+        )
         self._builtin_dir = Path(__file__).parent.parent / "default_skills" / ROLES_DIRECTORY_NAME
 
     def resolve(self, role: str) -> Path:
@@ -430,6 +438,13 @@ class RoleResolver:
         candidates = [
             self._roles_dir / f"{role}.og",
             self._roles_dir / role / f"{role}.og",
+        ]
+        if self._legacy_roles_dir is not None:
+            candidates += [
+                self._legacy_roles_dir / f"{role}.og",
+                self._legacy_roles_dir / role / f"{role}.og",
+            ]
+        candidates += [
             self._builtin_dir / f"{role}.og",
             self._builtin_dir / role / f"{role}.og",
         ]
@@ -453,7 +468,12 @@ class RoleResolver:
         """
         roles: set[str] = set()
 
-        for directory in (self._roles_dir, self._builtin_dir):
+        dirs_to_check: list[Path] = [self._roles_dir]
+        if self._legacy_roles_dir is not None:
+            dirs_to_check.append(self._legacy_roles_dir)
+        dirs_to_check.append(self._builtin_dir)
+
+        for directory in dirs_to_check:
             if not directory.exists():
                 continue
             for og_file in directory.glob("**/*.og"):

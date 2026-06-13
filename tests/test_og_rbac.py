@@ -37,7 +37,7 @@ from tokoboros.tools.delegation_tools import (
 
 def _node(name: str, scope: str = "all") -> OGNode:
     """Return a minimal OGNode with the given name and scope."""
-    n = OGNode(name=name)
+    n = OGNode(name=name, source_file="test_rbac.og")
     n.scope = scope
     return n
 
@@ -46,9 +46,11 @@ def _engine_with_nodes(*nodes: OGNode) -> SkillEngine:
     """Return an engine pre-loaded with the given nodes (bypasses file I/O)."""
     engine = SkillEngine(agent_role="orchestrator")
     for node in nodes:
-        engine._nodes[node.name] = node
+        qid = f"test_rbac:{node.name}"
+        engine._nodes[qid] = node
+        engine._bare_name_index.setdefault(node.name, []).append(qid)
         for kw in getattr(node, "keywords", []):
-            engine._keyword_index.setdefault(kw, []).append(node.name)
+            engine._keyword_index.setdefault(kw, []).append(qid)
     return engine
 
 

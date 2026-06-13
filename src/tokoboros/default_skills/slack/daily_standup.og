@@ -1,10 +1,18 @@
+::meta
+  title: Daily Standup
+  version: 1.0.0
+  domain: slack|productivity|scrum
+
+::index
+  # node-id       | type  | scope | conf | keywords
+  daily_standup    | skill | all   | 1.0  | standup, daily update, status, github, notion, slack, scrum, daily standup
+
 ::node[daily_standup]
 ->[:role=skill]
-->[:keywords=standup, daily update, status, github, notion, slack]
+->[:keywords=standup, daily update, status, github, notion, slack, scrum, daily standup]
 
 ::dense
-Autonomously generates and dispatches a highly accurate daily standup update by synthesizing GitHub commits and Notion tasks.
-Assumes the presence of `github_fetch_commits`, `notion_database_query`, and `slack_send_message` tools.
+Generates standup from GitHub commits + Notion tasks; posts approved update to Slack.
 
 ::steps
 1. Call `notion_database_query` to fetch the tasks the user moved to "Done" yesterday, and the tasks planned for "Today".

@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -237,10 +238,23 @@ def create_gateway_app(
     async def _internal_error_handler(_request: Request, exc: Exception) -> JSONResponse:
         # Catch-all: prevents the LLM raising (e.g. 401 from a bad API key) from
         # returning a raw text/plain 500 that clients cannot parse.
+        # Exception details (type, message, traceback) are logged server-side only —
+        # never returned to the client to avoid leaking internal paths or secrets.
+        import logging as _logging
+        import traceback as _traceback
+
+        correlation_id = str(uuid.uuid4())
+        _logging.getLogger(__name__).error(
+            "Internal error [%s]: %s\n%s",
+            correlation_id,
+            exc,
+            _traceback.format_exc(),
+        )
         return _error_response(
             status_code=500,
             code="internal_error",
-            message=str(exc) or "An unexpected error occurred.",
+            message="An unexpected error occurred.",
+            details={"correlation_id": correlation_id},
         )
 
     protected_dependencies = [Depends(_require_auth)] if auth_token else []
@@ -281,11 +295,15 @@ def create_gateway_app(
 
     @sessions.post("", response_model=SessionCreateResponse)
     async def create_session(payload: SessionCreateRequest) -> Any:
-        return control_plane.create_session(
-            client_id=payload.client_id,
-            surface=payload.surface,
-            capabilities=payload.capabilities,
-            protocol_version=payload.protocol_version,
+        # boot_agent runs MCP subprocess spawns — move off the event loop so
+        # SSE keepalives and health checks stay responsive during boot.
+        return await anyio.to_thread.run_sync(
+            lambda: control_plane.create_session(
+                client_id=payload.client_id,
+                surface=payload.surface,
+                capabilities=payload.capabilities,
+                protocol_version=payload.protocol_version,
+            )
         )
 
     @sessions.get("")
@@ -362,7 +380,9 @@ def create_gateway_app(
                     if idle >= max_idle_cycles:
                         break
                     yield ": keepalive\n\n"
-                await asyncio.sleep(poll_interval)
+                # When events just arrived keep the loop tight for incremental text;
+                # fall back to poll_interval when the session is idle.
+                await asyncio.sleep(0.05 if events else poll_interval)
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -433,28 +453,125 @@ def create_gateway_app(
     openai_limiter = RateLimiter(_int_env("TOKOBOROS_OPENAI_RATE_LIMIT", 60), 60.0)
 
     @openai_compat.post("/v1/chat/completions")
-    async def openai_chat_completions(payload: OpenAIChatRequest) -> Any:
+    async def openai_chat_completions(payload: OpenAIChatRequest, request: Request) -> Any:
         prompt = _last_user_text(payload.messages)
         if not prompt:
             raise HTTPException(status_code=400, detail="no user message content")
         if not openai_limiter.allow("openai"):
             raise HTTPException(status_code=429, detail="rate limit exceeded; slow down")
-        result = control_plane.complete_chat(prompt)
-        reply = result.get("response", "")
-        return {
-            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": payload.model or "tokoboros",
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": reply},
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-        }
+
+        chat_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+        created_ts = int(time.time())
+        model_name = payload.model or "tokoboros"
+
+        if not payload.stream:
+            # Full agent turn is synchronous — run in a thread so the event loop stays free.
+            result = await anyio.to_thread.run_sync(lambda: control_plane.complete_chat(prompt))
+            reply = result.get("response", "")
+            return {
+                "id": chat_id,
+                "object": "chat.completion",
+                "created": created_ts,
+                "model": model_name,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": reply},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            }
+
+        # Streaming path: forward text.stream.delta events as OpenAI SSE chunks.
+        # Each chunk carries one text fragment so clients can render incrementally.
+        async def _openai_event_stream() -> AsyncIterator[str]:
+            # Create/get the session before starting the turn so we can read its events.
+            session_key = f"openai-{chat_id}"
+            session_id: str = await anyio.to_thread.run_sync(
+                lambda: control_plane.get_or_create_session(session_key)
+            )
+
+            # Snapshot the event cursor so only events from THIS turn are forwarded.
+            initial = control_plane.read_session_events(
+                session_id=session_id, after=0, limit=10000
+            )
+            cursor = max(
+                (e["sequence"] for e in initial.get("events", [])), default=0
+            )
+
+            # OpenAI streaming: role chunk first, then content deltas.
+            yield "data: " + json.dumps({
+                "id": chat_id, "object": "chat.completion.chunk",
+                "created": created_ts, "model": model_name,
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+            }) + "\n\n"
+
+            # Run the full agent turn in a background task.
+            turn_done: asyncio.Event = asyncio.Event()
+
+            async def _run_turn() -> None:
+                try:
+                    await anyio.to_thread.run_sync(
+                        lambda: control_plane.send_message(
+                            session_id=session_id, prompt=prompt
+                        )
+                    )
+                finally:
+                    turn_done.set()
+
+            turn_task: asyncio.Task[None] = asyncio.create_task(_run_turn())
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        turn_task.cancel()
+                        return
+
+                    batch = control_plane.read_session_events(
+                        session_id=session_id, after=cursor, limit=200
+                    )
+                    events = batch.get("events", [])
+
+                    for event in events:
+                        cursor = event["sequence"]
+                        if event.get("event_type") == "text.stream.delta":
+                            text = (event.get("payload") or {}).get("text", "")
+                            if text:
+                                yield "data: " + json.dumps({
+                                    "id": chat_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created_ts,
+                                    "model": model_name,
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {"content": text},
+                                            "finish_reason": None,
+                                        }
+                                    ],
+                                }) + "\n\n"
+
+                    if turn_done.is_set() and not events:
+                        break
+
+                    await asyncio.sleep(0.05)
+            finally:
+                if not turn_task.done():
+                    turn_task.cancel()
+                    try:
+                        await turn_task
+                    except asyncio.CancelledError:
+                        pass
+
+            # Finish chunk signals end of stream.
+            yield "data: " + json.dumps({
+                "id": chat_id, "object": "chat.completion.chunk",
+                "created": created_ts, "model": model_name,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }) + "\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(_openai_event_stream(), media_type="text/event-stream")
 
     @openai_compat.get("/v1/models")
     async def openai_models() -> Any:
@@ -492,7 +609,10 @@ def create_gateway_app(
         session_key = f"{channel}:{sender}"
         if not channel_limiter.allow(session_key):
             raise HTTPException(status_code=429, detail="rate limit exceeded; slow down")
-        result = control_plane.complete_chat(payload.text, session_key=session_key)
+        # Full agent turn is synchronous — run in a thread so the event loop stays free.
+        result = await anyio.to_thread.run_sync(
+            lambda: control_plane.complete_chat(payload.text, session_key=session_key)
+        )
         return {
             "channel": channel,
             "recipient_id": sender,

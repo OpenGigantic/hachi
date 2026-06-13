@@ -1,10 +1,19 @@
+::meta
+  title: Urgent Escalator
+  version: 1.0.0
+  domain: slack|monitoring|alerting
+
+::index
+  # node-id           | type  | scope | conf | keywords
+  urgent_escalator     | skill | all   | 1.0  | urgent, emergency, escalation, slack alert, monitor, alert, escalate, pager
+
 ::node[urgent_escalator]
 ->[:role=skill]
-->[:keywords=urgent, emergency, escalation, slack alert, monitor]
+->[:requires=dnd_coordinator]
+->[:keywords=urgent, emergency, escalation, slack alert, monitor, alert, escalate, pager]
 
 ::dense
-Acts as a mission-critical monitor for Slack, ensuring the user never misses an emergency ping while away from the keyboard.
-Assumes the presence of `slack_read_messages` and a local notification mechanism (like terminal beeps or OS notifications).
+Monitors Slack for urgent messages; escalates via alert/SMS when user is away from keyboard.
 
 ::steps
 1. Enter a continuous monitoring loop checking specific Slack channels or Direct Messages.

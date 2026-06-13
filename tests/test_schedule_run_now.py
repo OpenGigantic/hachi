@@ -57,8 +57,8 @@ def test_run_now_known_schedule_success() -> None:
     agent = _fake_agent(reply="Here is your daily summary.")
 
     with (
-        patch("tokoboros.cli.main._get_scheduler", return_value=scheduler),
-        patch("tokoboros.cli.main.boot_agent", return_value=agent),
+        patch("tokoboros.cli.commands.schedule._get_scheduler", return_value=scheduler),
+        patch("tokoboros.cli.commands.schedule.boot_agent", return_value=agent),
     ):
         result = runner.invoke(app, ["schedule", "run-now", "sched001"])
 
@@ -77,7 +77,7 @@ def test_run_now_known_schedule_success() -> None:
 def test_run_now_unknown_schedule_exits() -> None:
     scheduler = _fake_scheduler(schedule=None)
 
-    with patch("tokoboros.cli.main._get_scheduler", return_value=scheduler):
+    with patch("tokoboros.cli.commands.schedule._get_scheduler", return_value=scheduler):
         result = runner.invoke(app, ["schedule", "run-now", "does-not-exist"])
 
     assert result.exit_code == 1
@@ -97,8 +97,8 @@ def test_run_now_agent_error_exits() -> None:
     agent.shutdown.return_value = None
 
     with (
-        patch("tokoboros.cli.main._get_scheduler", return_value=scheduler),
-        patch("tokoboros.cli.main.boot_agent", return_value=agent),
+        patch("tokoboros.cli.commands.schedule._get_scheduler", return_value=scheduler),
+        patch("tokoboros.cli.commands.schedule.boot_agent", return_value=agent),
     ):
         result = runner.invoke(app, ["schedule", "run-now", "sched001"])
 
@@ -120,8 +120,8 @@ def test_run_now_result_truncated() -> None:
     agent = _fake_agent(reply=long_reply)
 
     with (
-        patch("tokoboros.cli.main._get_scheduler", return_value=scheduler),
-        patch("tokoboros.cli.main.boot_agent", return_value=agent),
+        patch("tokoboros.cli.commands.schedule._get_scheduler", return_value=scheduler),
+        patch("tokoboros.cli.commands.schedule.boot_agent", return_value=agent),
     ):
         result = runner.invoke(app, ["schedule", "run-now", "sched001"])
 
@@ -144,8 +144,8 @@ def test_run_now_result_at_limit_no_ellipsis() -> None:
     agent = _fake_agent(reply=exact_reply)
 
     with (
-        patch("tokoboros.cli.main._get_scheduler", return_value=scheduler),
-        patch("tokoboros.cli.main.boot_agent", return_value=agent),
+        patch("tokoboros.cli.commands.schedule._get_scheduler", return_value=scheduler),
+        patch("tokoboros.cli.commands.schedule.boot_agent", return_value=agent),
     ):
         result = runner.invoke(app, ["schedule", "run-now", "sched001"])
 

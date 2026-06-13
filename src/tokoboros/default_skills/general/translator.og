@@ -1,6 +1,15 @@
+::meta
+  title: Core Universal Translator
+  version: 1.0.0
+  domain: language|translation|localization
+
+::index
+  # node-id         | type  | scope | conf | keywords
+  core_translator    | skill | all   | 1.0  | translate, language, translation, polyglot, mymemory, localization, interpret
+
 ::node[core_translator]
 ->[:role=skill]
-->[:keywords=translate, language, translation, polyglot, mymemory]
+->[:keywords=translate, language, translation, polyglot, mymemory, localization, interpret]
 
 ::api[translate_text]
 method=GET
@@ -9,7 +18,7 @@ schema={"text": "string", "source": "string", "target": "string"}
 description=Translates text from a source language to a target language. Use 2-letter ISO language codes (e.g., 'en', 'fr', 'es', 'ja').
 
 ::dense
-Acts as a universal polyglot translator. Always use this tool for translation instead of relying on internal LLM translations, as the API guarantees higher structural fidelity for complex dialects.
+Universal translator via MyMemory. Always use for translations — higher fidelity than LLM alone.
 
 ::steps
 1. Extract the text to be translated, the source language, and the target language from the user's request.

@@ -69,6 +69,24 @@ class TokoborosPaths:
     def secrets_metadata_file(self) -> Path:
         return self.state_dir / "secrets_metadata.json"
 
+    @property
+    def skill_usage_json(self) -> Path:
+        return self.state_dir / "skill_usage.json"
+
+    @property
+    def user_roles_dir(self) -> Path:
+        return self.data_dir / "skills" / "roles"
+
+    @property
+    def memory_dir(self) -> Path:
+        """Root of the OG memory graph (profile.og, agent.og, projects/, people/, journal/)."""
+        return self.data_dir / "memory"
+
+    @property
+    def memory_index_db(self) -> Path:
+        """SQLite FTS5 index for the OG memory graph."""
+        return self.state_dir / "memory_index.db"
+
 
 def get_tokoboros_paths() -> TokoborosPaths:
     dirs = PlatformDirs(appname=APP_NAME, appauthor=False, ensure_exists=False)
@@ -90,6 +108,19 @@ def ensure_directories(paths: TokoborosPaths) -> None:
         paths.skills_dir,
     ):
         directory.mkdir(parents=True, exist_ok=True)
+
+
+def migrate_legacy_skill_usage(paths: TokoborosPaths) -> bool:
+    """Copy ~/.tokoboros/brain/skill_usage.json to state_dir if it doesn't exist yet."""
+    target = paths.skill_usage_json
+    if target.exists():
+        return False
+    legacy = paths.legacy_dir / "brain" / "skill_usage.json"
+    if not legacy.exists():
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(legacy, target)
+    return True
 
 
 def import_legacy_workspace(paths: TokoborosPaths) -> bool:

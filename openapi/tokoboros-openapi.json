@@ -5,6 +5,27 @@
     "version": "1.0.0"
   },
   "paths": {
+    "/": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Get Root",
+        "operationId": "get_root__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Root  Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "tags": [

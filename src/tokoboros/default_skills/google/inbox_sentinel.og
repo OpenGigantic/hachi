@@ -1,10 +1,18 @@
+::meta
+  title: Inbox Sentinel
+  version: 1.0.0
+  domain: email|productivity|focus
+
+::index
+  # node-id         | type  | scope | conf | keywords
+  inbox_sentinel     | skill | all   | 1.0  | deep work, focus mode, triage, monitor inbox, gmail triage, email filter
+
 ::node[inbox_sentinel]
 ->[:role=skill]
-->[:keywords=deep work, focus mode, triage, monitor inbox]
+->[:keywords=deep work, focus mode, triage, monitor inbox, gmail triage, email filter]
 
 ::dense
-An autonomous background loop that guards the user's focus by triaging incoming Gmail messages during "Deep Work" sessions.
-Assumes the presence of `gmail_read_inbox`, `gmail_modify_labels`, `gmail_send_draft`, and `slack_send_message`.
+Autonomous Gmail triage loop for focus sessions: classifies urgency, labels, drafts deferrals.
 
 ::steps
 1. Enter a monitoring loop. Check the Gmail inbox for new unread messages.

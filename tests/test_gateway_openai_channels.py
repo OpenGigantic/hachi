@@ -107,3 +107,104 @@ def test_complete_chat_reuses_session_per_key() -> None:
     assert first["session_id"] == second["session_id"]  # same key -> same session
     other = cp.complete_chat("c", session_key="k2")
     assert other["session_id"] != first["session_id"]  # different key -> different session
+
+
+def test_get_or_create_session_returns_stable_id() -> None:
+    """get_or_create_session returns the same id for a given key and a new one for a new key."""
+    cp = _control_plane()
+    id1 = cp.get_or_create_session("alpha")
+    id2 = cp.get_or_create_session("alpha")
+    assert id1 == id2
+    id3 = cp.get_or_create_session("beta")
+    assert id3 != id1
+
+
+# ---------------------------------------------------------------------------
+# OpenAI streaming (P2-01d)
+# ---------------------------------------------------------------------------
+
+
+def _streaming_control_plane() -> GatewayControlPlane:
+    """A control plane that echoes prompts and exposes an event store."""
+    from tokoboros.gateway.control_plane import GatewayEvent
+
+    store: list[GatewayEvent] = []
+
+    def on_chat(session_id: str, prompt: str) -> str:
+        # Simulate text_delta events being emitted by the loop
+        store.append(
+            GatewayEvent(
+                sequence=1, event_type="text.stream.delta",
+                payload={"text": f"echo:{prompt}"}, time="t",
+            )
+        )
+        return f"echo:{prompt}"
+
+    def read_events(session_id: str, after: int, limit: int) -> list[GatewayEvent]:
+        return [e for e in store if e.sequence > after][:limit]
+
+    return GatewayControlPlane(on_chat=on_chat, read_events=read_events)
+
+
+def test_openai_stream_returns_event_stream_content_type() -> None:
+    """stream=True must return media type text/event-stream."""
+    app = create_gateway_app(_streaming_control_plane())
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
+        ) as resp:
+            assert resp.status_code == 200
+            assert "text/event-stream" in resp.headers["content-type"]
+            body = "".join(resp.iter_text())
+
+    assert "data: [DONE]" in body
+    assert "chat.completion.chunk" in body
+    assert "finish_reason" in body
+
+
+def test_openai_stream_includes_role_chunk() -> None:
+    """The first SSE data chunk must carry ``role: assistant``."""
+    app = create_gateway_app(_streaming_control_plane())
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hello"}], "stream": True},
+        ) as resp:
+            lines = list(resp.iter_lines())
+
+    data_lines = [ln for ln in lines if ln.startswith("data: ") and ln != "data: [DONE]"]
+    assert data_lines, "no data lines in SSE stream"
+    import json as _json
+    first_chunk = _json.loads(data_lines[0][6:])
+    assert first_chunk["choices"][0]["delta"].get("role") == "assistant"
+
+
+def test_openai_stream_forwards_text_delta_events() -> None:
+    """text.stream.delta events in the session's event store appear as content deltas."""
+    app = create_gateway_app(_streaming_control_plane())
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "ping"}], "stream": True},
+        ) as resp:
+            body = "".join(resp.iter_text())
+
+    assert "echo:ping" in body
+
+
+def test_openai_non_stream_unchanged() -> None:
+    """When stream is False or absent, the response is the standard JSON shape."""
+    app = create_gateway_app(_streaming_control_plane())
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["object"] == "chat.completion"
+    assert body["choices"][0]["message"]["content"] == "echo:hi"

@@ -1,10 +1,19 @@
+::meta
+  title: Morning Briefing
+  version: 1.0.0
+  domain: productivity|scheduling|email|weather
+
+::index
+  # node-id          | type  | scope | conf | keywords
+  morning_briefing    | skill | all   | 1.0  | morning, briefing, start day, daily summary, schedule, daily digest, calendar
+
 ::node[morning_briefing]
 ->[:role=skill]
-->[:keywords=morning, briefing, start day, daily summary, schedule]
+->[:requires=core_weather]
+->[:keywords=morning, briefing, start day, daily summary, schedule, daily digest, calendar]
 
 ::dense
-Orchestrates the ultimate Executive Morning Briefing by synchronizing native Google integrations and public data.
-Assumes the presence of native `google_calendar_read` and `gmail_read_inbox` tools.
+Executive morning brief: Calendar agenda + Gmail VIPs + weather. Synthesized daily digest.
 
 ::steps
 1. Call the native Google Calendar tool to fetch the user's agenda for the current day.

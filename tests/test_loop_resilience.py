@@ -11,7 +11,7 @@ import pytest
 
 from tokoboros.core.cost import CostTracker
 from tokoboros.core.llm import LLMResponse, TokenUsage, ToolCall
-from tokoboros.core.loop import AgentException, ExecutionLoop, SuspendWorkflow, ToolRegistry
+from tokoboros.core.loop import ExecutionLoop, SuspendWorkflow, ToolRegistry
 from tokoboros.core.sub_agent import SubAgentMemory
 
 
@@ -30,6 +30,12 @@ class _SpendingLLM:
             tool_calls=[ToolCall(id=f"t{self.n}", name="noop", input={})],
             usage=TokenUsage(input_tokens=500, output_tokens=500),
         )
+
+    def generate_stream(self, **kwargs):  # noqa: ANN201
+        response = self.generate(**kwargs)
+        if False:
+            yield ""
+        return response
 
 
 def _noop_registry() -> ToolRegistry:
@@ -76,9 +82,9 @@ def test_no_budget_does_not_stop_early() -> None:
         llm, _noop_registry(), SubAgentMemory(), base_system_prompt="x", cost_tracker=tracker
     )
     loop.add_user_message("go")
-    # No cap → not stopped early; runs to the iteration limit (which then raises).
-    with pytest.raises(AgentException):
-        loop.run(max_iterations=4)
+    # No cap → not stopped early; runs to iteration limit and returns INCOMPLETE (not raises).
+    result = loop.run(max_iterations=4)
+    assert "[INCOMPLETE]" in result
     assert llm.n == 4
 
 
@@ -100,6 +106,12 @@ class _ScriptedLLM:
         resp = self._responses[min(self.calls, len(self._responses) - 1)]
         self.calls += 1
         return resp
+
+    def generate_stream(self, **kwargs):  # noqa: ANN201
+        response = self.generate(**kwargs)
+        if False:
+            yield ""
+        return response
 
 
 def test_suspend_pairs_every_tool_use() -> None:
@@ -155,6 +167,12 @@ def test_transient_llm_error_is_retried(monkeypatch) -> None:
                 raise err
             return LLMResponse(content="done")
 
+        def generate_stream(self, **kwargs):  # noqa: ANN201
+            response = self.generate(**kwargs)
+            if False:
+                yield ""
+            return response
+
     loop = ExecutionLoop(_Flaky(), ToolRegistry(), SubAgentMemory(), base_system_prompt="x")
     loop.add_user_message("hi")
     assert loop.run(max_iterations=2) == "done"
@@ -174,6 +192,12 @@ def test_non_transient_llm_error_is_not_retried(monkeypatch) -> None:
             err = Exception("invalid x-api-key")
             err.status_code = 401  # type: ignore[attr-defined]
             raise err
+
+        def generate_stream(self, **kwargs):  # noqa: ANN201
+            response = self.generate(**kwargs)
+            if False:
+                yield ""
+            return response
 
     loop = ExecutionLoop(_AuthError(), ToolRegistry(), SubAgentMemory(), base_system_prompt="x")
     loop.add_user_message("hi")

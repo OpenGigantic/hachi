@@ -46,6 +46,12 @@ class _SysRecordingLLM:
         self.dynamic_seen = kwargs.get("dynamic_system")
         return LLMResponse(content="done", tool_calls=[], usage=TokenUsage())
 
+    def generate_stream(self, **kwargs):  # noqa: ANN201
+        response = self.generate(**kwargs)
+        if False:
+            yield ""
+        return response
+
 
 def test_loop_sends_cacheable_prefix_and_dynamic_tail_separately() -> None:
     tc = TurnContext.build(

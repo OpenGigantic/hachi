@@ -258,17 +258,16 @@ class GatewayControlPlane:
             "response": response.response,
         }
 
-    def complete_chat(self, prompt: str, *, session_key: str = "__default__") -> dict[str, Any]:
-        """Run a prompt through an auto-managed session keyed by ``session_key``.
+    def get_or_create_session(self, session_key: str = "__default__") -> str:
+        """Return the session_id for ``session_key``, creating it if necessary.
 
-        Powers stateless-looking facades (OpenAI-compatible endpoint, channel
-        webhooks) that don't manage sessions themselves: the first call for a key
-        creates a session (booting an agent via on_connect), subsequent calls
-        reuse it so the conversation keeps continuity.
+        Extracted from ``complete_chat`` so the streaming path can obtain the
+        session_id before launching a background turn, enabling event polling
+        while the turn runs.
         """
         with self._connections_lock:
             session_id = self._api_sessions.get(session_key)
-            known = session_id in self._connections if session_id else False
+            known = bool(session_id and session_id in self._connections)
         if not known:
             created = self.create_session(
                 client_id=f"api:{session_key}",
@@ -279,6 +278,18 @@ class GatewayControlPlane:
             session_id = created["session_id"]
             with self._connections_lock:
                 self._api_sessions[session_key] = session_id
+        assert session_id is not None, "session_id must be set after get_or_create_session"
+        return session_id
+
+    def complete_chat(self, prompt: str, *, session_key: str = "__default__") -> dict[str, Any]:
+        """Run a prompt through an auto-managed session keyed by ``session_key``.
+
+        Powers stateless-looking facades (OpenAI-compatible endpoint, channel
+        webhooks) that don't manage sessions themselves: the first call for a key
+        creates a session (booting an agent via on_connect), subsequent calls
+        reuse it so the conversation keeps continuity.
+        """
+        session_id = self.get_or_create_session(session_key)
         return self.send_message(session_id=session_id, prompt=prompt)
 
     def close_session(self, session_id: str) -> dict[str, Any]:

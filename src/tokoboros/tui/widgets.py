@@ -22,7 +22,7 @@ from textual.widgets import Static
 
 from tokoboros.tui import theme
 from tokoboros.tui.art import ouroboros
-from tokoboros.tui.formatters import format_session_info, format_status_bar
+from tokoboros.tui.formatters import format_session_info, format_status_bar, format_status_strip
 
 
 class SlashPalette:
@@ -288,6 +288,8 @@ class AgentMessage(Static):
 
     def __init__(self, text: str) -> None:
         self.message_text = text
+        # _build_renderable not yet callable in __init__ (super not called),
+        # so build inline then delegate future updates through stream_delta().
         header = Text()
         header.append(f"{theme.GLYPH_AGENT} ", style=theme.ROLE_AGENT)
         header.append("Tokoboros", style=f"bold {theme.ROLE_AGENT}")
@@ -297,6 +299,19 @@ class AgentMessage(Static):
         else:
             renderable = Group(header, Text("(no response)", style=theme.MUTED))
         super().__init__(renderable, classes="msg msg-agent")
+
+    def _build_renderable(self, text: str) -> RenderableType:
+        header = Text()
+        header.append(f"{theme.GLYPH_AGENT} ", style=theme.ROLE_AGENT)
+        header.append("Tokoboros", style=f"bold {theme.ROLE_AGENT}")
+        if text.strip():
+            return Group(header, Markdown(text))
+        return Group(header, Text("▌", style=theme.MUTED))
+
+    def stream_delta(self, full_text: str) -> None:
+        """Update the widget with the full accumulated streaming text so far."""
+        self.message_text = full_text
+        self.update(self._build_renderable(full_text))
 
     def on_click(self) -> None:
         """Copy the response text to the system clipboard and refocus the composer."""
@@ -410,3 +425,14 @@ class SidebarPanel(Static):
 
     def update_info(self, info: dict[str, Any]) -> None:
         self.update(format_session_info(info))
+
+
+class StatusStrip(Static):
+    """Always-visible compact governance strip: state, jobs, approvals, spend.
+
+    Docked below the TokoGlyph header so governance info is one glance away on
+    every screen, even when the session sidebar is collapsed (narrow terminal).
+    """
+
+    def update_info(self, info: dict[str, Any]) -> None:
+        self.update(format_status_strip(info))

@@ -46,6 +46,11 @@ class _RecordingLLM:
         self._i += 1
         return LLMResponse(content="" if calls else "done", tool_calls=calls, usage=TokenUsage())
 
+    def generate_stream(self, **kwargs):
+        response = self.generate(**kwargs)
+        return response
+        yield  # makes this a generator function
+
 
 # --- ToolRegistry unit tests ---------------------------------------------
 
