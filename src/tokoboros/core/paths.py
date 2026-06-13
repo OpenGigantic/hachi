@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,6 +87,27 @@ class TokoborosPaths:
     def memory_index_db(self) -> Path:
         """SQLite FTS5 index for the OG memory graph."""
         return self.state_dir / "memory_index.db"
+
+    def journal_shard_path(self, device_id: str | None = None) -> Path:
+        """Per-device journal file path for conflict-free git sync.
+
+        Uses socket.gethostname() as the default device identifier.
+
+        Args:
+            device_id: Optional explicit device identifier. Defaults to the
+                system hostname. Any characters outside ``[a-zA-Z0-9_-]`` are
+                replaced with ``-`` and the result is capped at 32 characters
+                so the filename is safe on all filesystems.
+
+        Returns:
+            A :class:`~pathlib.Path` inside ``memory_dir`` of the form
+            ``journal-<safe-device-id>.og``.
+        """
+        import socket
+
+        _device = device_id or socket.gethostname()
+        safe = re.sub(r"[^a-zA-Z0-9_-]", "-", _device)[:32]
+        return self.memory_dir / f"journal-{safe}.og"
 
 
 def get_tokoboros_paths() -> TokoborosPaths:

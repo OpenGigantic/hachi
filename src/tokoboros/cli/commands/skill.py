@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import typer
@@ -145,6 +146,68 @@ def pack_remove(
     else:
         console.print(f"[yellow]Pack '{name}' not found.[/yellow]")
         raise typer.Exit(1)
+
+
+@skill_app.command("new")
+def skill_new(
+    name: str = typer.Argument(..., help="Skill name (e.g. my-skill or my_skill)."),
+    output: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output",
+        "-o",
+        help="Output path. Defaults to <name>.og in the current directory.",
+    ),
+    domain: str = typer.Option("", "--domain", help="Domain tag (e.g. productivity)."),
+    author: str = typer.Option("", "--author", help="Author identifier."),
+) -> None:
+    """Scaffold a new .og skill file with placeholder sections.
+
+    Creates a ready-to-edit .og file in the ObjectGraph format. The generated
+    file includes meta, index, and a single node with dense, full, steps, and
+    assertion blocks pre-populated with TODO placeholders.
+
+    Examples::
+
+        tokoboros skill new my-skill
+        tokoboros skill new my-skill --output skills/my-skill.og --domain productivity
+    """
+    # Derive a title-case name from the slug
+    title = " ".join(word.capitalize() for word in re.split(r"[-_]", name))
+
+    # Derive keywords from the name words
+    keywords = ", ".join(re.split(r"[-_]", name))
+
+    output_path = output if output is not None else Path(f"{name}.og")
+
+    scaffold = f"""\
+::meta
+  title: {title}
+  version: 0.1.0
+  author: {author}
+  domain: {domain}
+  scope: all
+
+::index
+  # node-id   | type  | scope | conf | keywords
+  {name:<10} | skill | all   | 0.90 | {keywords}
+
+::node[{name}]
+->[:role=skill]
+->[:scope=all]
+->[:keywords={keywords}]
+::dense
+{name}|TODO: add a brief keyword summary (10-15 tokens)
+::full
+TODO: describe what this skill does in 2-3 sentences.
+::steps
+1. TODO: first step.
+2. TODO: second step.
+::assertion
+success: TODO: define what success looks like
+"""
+
+    output_path.write_text(scaffold, encoding="utf-8")
+    console.print(f"[green]Created[/green] {output_path}")
 
 
 @skill_app.command("import")
