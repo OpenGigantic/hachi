@@ -102,8 +102,8 @@ class ProcessSharedServices:
     @classmethod
     def _init(cls, config: dict[str, Any], brain_dir: str) -> ProcessSharedServices:
         """One-time creation of all shared services."""
-        from tokoboros.core.memory_provider import ChromaMemoryProvider, resolve_provider
         from tokoboros.core.mcp_client import MCPManager
+        from tokoboros.core.memory_provider import ChromaMemoryProvider, resolve_provider
         from tokoboros.core.paths import get_tokoboros_paths
         from tokoboros.core.settings import MemorySettings
         from tokoboros.og_engine.engine import SkillEngine
@@ -112,7 +112,6 @@ class ProcessSharedServices:
 
         # --- SkillEngine (shared read-mostly index) ---
         skill_engine = SkillEngine(agent_role="orchestrator")
-        skills_dir = paths.workspace_dir / "skills"
         default_skills_dir = Path(__file__).parent.parent / "default_skills"
         try:
             skill_engine.index_directory(paths.workspace_dir, recursive=True)

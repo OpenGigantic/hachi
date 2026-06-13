@@ -127,6 +127,23 @@ export const getGatewayRuntimeEvents = createServerFn({ method: "POST" })
     return getClient().runtimeEvents(data.sessionId, data.limit ?? 100);
   });
 
+export const getGatewayPermissionAudit = createServerFn({ method: "POST" })
+  .inputValidator(limitInput)
+  .handler(async ({ data }) => {
+    return getClient().permissionAudit(data.limit ?? 50);
+  });
+
+const subagentReportsInput = z.object({
+  query: z.string().optional(),
+  topK: z.number().int().min(1).max(100).optional(),
+});
+
+export const getGatewaySubagentReports = createServerFn({ method: "POST" })
+  .inputValidator(subagentReportsInput)
+  .handler(async ({ data }) => {
+    return getClient().subagentReports(data.query ?? "recent", data.topK ?? 20);
+  });
+
 export const getGatewayConfig = createServerFn({ method: "GET" }).handler(async () => {
   return getClient().getConfig();
 });
@@ -183,6 +200,28 @@ export const getGatewaySetupState = createServerFn({ method: "GET" }).handler(as
 export const getGatewayModels = createServerFn({ method: "GET" }).handler(async () => {
   return getClient().listModels();
 });
+
+export const getGatewaySchedules = createServerFn({ method: "GET" }).handler(async () => {
+  return getClient().listSchedules();
+});
+
+const scheduleIdInput = z.object({ scheduleId: z.string().min(1) });
+const toggleScheduleInput = z.object({
+  scheduleId: z.string().min(1),
+  enabled: z.boolean(),
+});
+
+export const cancelGatewaySchedule = createServerFn({ method: "POST" })
+  .inputValidator(scheduleIdInput)
+  .handler(async ({ data }) => {
+    return getClient().cancelSchedule(data.scheduleId);
+  });
+
+export const toggleGatewaySchedule = createServerFn({ method: "POST" })
+  .inputValidator(toggleScheduleInput)
+  .handler(async ({ data }) => {
+    return getClient().toggleSchedule(data.scheduleId, data.enabled);
+  });
 
 export const applyGatewaySetup = createServerFn({ method: "POST" })
   .inputValidator(applySetupInput)

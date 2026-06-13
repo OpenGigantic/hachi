@@ -6,6 +6,9 @@ const screens = [
   { id: 2, slug: "main", title: "Main Console", desc: "Primary operator thread and tool calls" },
   { id: 15, slug: "operator", title: "Operator Console", desc: "Full operator workspace" },
   { id: 14, slug: "console", title: "Console", desc: "Tokoboros console view" },
+  { id: 16, slug: "workflows", title: "Workflows", desc: "Recurring tasks your agent runs automatically" },
+  { id: 17, slug: "approvals", title: "Approvals", desc: "Actions your agent has requested on your behalf" },
+  { id: 18, slug: "memory", title: "Working Memory", desc: "What your agent remembers from past tasks" },
   { id: 10, slug: "agents", title: "Agents Inventory", desc: "Registered agents and status" },
   { id: 12, slug: "logs", title: "System Logs and Telemetry", desc: "Realtime logs stream" },
   { id: 3, slug: "runtime", title: "Runtime Configuration", desc: "Tune runtime parameters" },
@@ -83,7 +86,7 @@ function Index() {
             Screens · {screens.length}
           </div>
           <h1 className="max-w-2xl text-3xl leading-tight tracking-tight text-[#d5e7ff] md:text-4xl">
-            Every surface of the Tokoboros operator workbench, wired and ready to inspect.
+            Every surface of the Tokoboros agent workbench, wired and ready to inspect.
           </h1>
         </div>
 

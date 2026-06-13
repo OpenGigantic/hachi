@@ -138,6 +138,10 @@ class ChannelInboundRequest(BaseModel):
     sender_name: str = ""
 
 
+class ScheduleToggleRequest(BaseModel):
+    enabled: bool
+
+
 def _last_user_text(messages: list[OpenAIMessage]) -> str:
     """Extract the latest user message text from an OpenAI-style message list."""
     for message in reversed(messages):
@@ -417,6 +421,18 @@ def create_gateway_app(
         top_k: int = Query(default=10, ge=1, le=100),
     ) -> Any:
         return control_plane.subagent_reports(query=query, top_k=top_k)
+
+    @runtime_ops.get("/schedules")
+    async def get_schedules() -> Any:
+        return {"schedules": control_plane.list_schedules()}
+
+    @runtime_ops.delete("/schedules/{schedule_id}")
+    async def delete_schedule(schedule_id: str) -> Any:
+        return control_plane.cancel_schedule(schedule_id)
+
+    @runtime_ops.put("/schedules/{schedule_id}/enabled")
+    async def put_schedule_enabled(schedule_id: str, payload: ScheduleToggleRequest) -> Any:
+        return control_plane.toggle_schedule(schedule_id, payload.enabled)
 
     @config.get("")
     async def get_config() -> Any:
