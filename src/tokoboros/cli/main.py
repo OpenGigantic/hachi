@@ -11,6 +11,7 @@ Commands:
 """
 
 import json
+import logging
 import os
 import sys
 import threading
@@ -521,6 +522,18 @@ def _resolve_gateway_auth_token(host: str) -> str | None:
 
 def _run_gateway_http_server(host: str, port: int, attach_runtime: bool) -> None:
     """Run typed gateway endpoints for web and TUI consumers."""
+    # P3-07: enable rotating log when running as daemon (log path from env or default).
+    import os as _os
+
+    from tokoboros.daemon import _default_log_path, setup_rotating_log
+
+    _daemon_log = _os.environ.get("TOKOBOROS_DAEMON_LOG")
+    if _daemon_log:
+        setup_rotating_log(Path(_daemon_log))
+    elif not any(True for h in logging.getLogger().handlers if hasattr(h, "baseFilename")):
+        # Only attach file logging if no file handler is already present (e.g. not in tests).
+        setup_rotating_log(_default_log_path())
+
     ensure_workspace()
     _apply_quick_setup_if_needed()
     if not _pre_flight_check():

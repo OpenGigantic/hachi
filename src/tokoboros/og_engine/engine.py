@@ -314,6 +314,10 @@ class SkillEngine:
         self._pass2_count: int = 0  # peek() invocations
         self._pass3_count: int = 0  # resolve_node() invocations
 
+        # P3-04: optional embedding-rank collection (ChromaDB cosine similarity).
+        # None unless enable_embedding_rank() is called or TOKOBOROS_EMBEDDING_RANK=1.
+        self._emb_collection: Any = None  # chromadb.Collection | None
+
     def _is_visible(self, node: OGNode) -> bool:
         """Return True when this node is accessible to the engine's agent role.
 
@@ -399,6 +403,12 @@ class SkillEngine:
 
         for og_file in skills_dir.glob("**/*.og"):
             self.load_file(og_file)
+
+        # P3-04: auto-enable embedding rank when env flag is set.
+        import os as _os
+
+        if _os.environ.get("TOKOBOROS_EMBEDDING_RANK", "").strip() == "1":
+            self.enable_embedding_rank()
 
     def load_file(self, filepath: Path):
         """
@@ -560,18 +570,36 @@ class SkillEngine:
             if score > 0:
                 scores[qid] = score
 
-        # Sort by BM25 score descending; use priority as a tiebreaker so nodes
+        # P3-04: Hybrid rank — merge BM25 and cosine (RRF) when embedding rank is on.
+        emb_scores = self._embedding_search(query) if self._emb_collection is not None else {}
+        if emb_scores and scores:
+            # Reciprocal Rank Fusion: rank both lists independently and merge.
+            k = 60  # standard RRF constant
+            bm25_ranked = sorted(scores, key=lambda q: -scores[q])
+            emb_ranked = sorted(emb_scores, key=lambda q: -emb_scores[q])
+            rrf: dict[str, float] = {}
+            for rank, qid in enumerate(bm25_ranked, 1):
+                rrf[qid] = rrf.get(qid, 0.0) + 1.0 / (k + rank)
+            for rank, qid in enumerate(emb_ranked, 1):
+                rrf[qid] = rrf.get(qid, 0.0) + 1.0 / (k + rank)
+            final_scores = rrf
+        elif emb_scores:
+            final_scores = emb_scores
+        else:
+            final_scores = scores
+
+        # Sort by final score descending; use priority as a tiebreaker so nodes
         # with identical relevance respect their ::traverse priority annotation.
         _PRIORITY_ORDER = {"high": 0, "normal": 1, "low": 2}
 
         def _sort_key(qid: str) -> tuple[float, int]:
-            bm25_score = -scores[qid]  # negate: lower = better (descending sort)
+            final_score = -final_scores[qid]  # negate: lower = better (descending sort)
             priority_rank = _PRIORITY_ORDER.get(
                 (self._nodes[qid].traverse or {}).get("priority", "normal"), 1
             )
-            return (bm25_score, priority_rank)
+            return (final_score, priority_rank)
 
-        sorted_qids = sorted(scores, key=_sort_key)
+        sorted_qids = sorted(final_scores, key=_sort_key)
         results = []
         for qid in sorted_qids:
             node = self._nodes.get(qid)
@@ -585,6 +613,76 @@ class SkillEngine:
                     }
                 )
         return results
+
+    # ==========================================
+    # P3-04: Embedding-rank (hybrid BM25 + cosine)
+    # ==========================================
+
+    def enable_embedding_rank(self, collection_name: str = "og_skill_index") -> None:
+        """Build (or refresh) a ChromaDB cosine-similarity collection over all loaded nodes.
+
+        Off by default — call explicitly or set ``TOKOBOROS_EMBEDDING_RANK=1``.
+        ChromaDB is already a transitive dependency (via memory_vault) so no
+        new packages are required.
+
+        Each node's document is ``"<name> <keywords> <dense_summary>"``.
+        """
+        try:
+            import chromadb  # type: ignore[import-untyped]
+            from chromadb.config import Settings  # type: ignore[import-untyped]
+        except ImportError:
+            logger.warning("P3-04: chromadb not installed; embedding rank unavailable")
+            return
+
+        from tokoboros.core.paths import get_tokoboros_paths
+
+        db_path = str(get_tokoboros_paths().state_dir / "og_skill_embeddings")
+        client = chromadb.PersistentClient(
+            path=db_path, settings=Settings(anonymized_telemetry=False)
+        )
+        col = client.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
+
+        # Upsert all visible skill nodes.
+        ids, docs = [], []
+        for qid, node in self._nodes.items():
+            if not self._is_skill_node(node):
+                continue
+            doc = f"{node.name} {' '.join(node.keywords)} {node.dense or ''}"
+            ids.append(qid)
+            docs.append(doc)
+
+        if ids:
+            col.upsert(ids=ids, documents=docs)
+        self._emb_collection = col
+        logger.debug("P3-04: embedding index built (%d nodes)", len(ids))
+
+    def _embedding_search(self, query: str, top_k: int = 10) -> dict[str, float]:
+        """Query the Chroma cosine collection; return {qid: score} in [0, 1].
+
+        Returns an empty dict if embedding rank is not enabled or query fails.
+        """
+        if self._emb_collection is None:
+            return {}
+        try:
+            results = self._emb_collection.query(
+                query_texts=[query],
+                n_results=min(top_k, max(1, len(self._nodes))),
+                include=["distances"],
+            )
+            ids = results.get("ids", [[]])[0]
+            dists = results.get("distances", [[]])[0]
+            # Chroma cosine distance ∈ [0, 2]; convert to similarity ∈ [0, 1].
+            return {
+                qid: max(0.0, 1.0 - (dist / 2.0))
+                for qid, dist in zip(ids, dists, strict=False)
+                if dist is not None and qid in self._nodes
+            }
+        except Exception:
+            logger.debug("P3-04: embedding search failed", exc_info=True)
+            return {}
 
     def list_all_skills(self) -> list[dict[str, str]]:
         """

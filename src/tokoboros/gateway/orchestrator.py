@@ -996,6 +996,13 @@ class AgentSession:
             except Exception:
                 pass
 
+        # P3-07: explicit Chroma close so WAL is flushed before process exits.
+        if self.memory and hasattr(self.memory, "vault") and self.memory.vault is not None:
+            try:
+                self.memory.vault.close()
+            except Exception:
+                pass
+
         self.integrations.shutdown()
         self._emit_event(MCP_SHUTDOWN, {"server_count": self.mcp_manager.server_count})
         self.mcp_manager.shutdown()
