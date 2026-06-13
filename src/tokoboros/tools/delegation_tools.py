@@ -92,6 +92,16 @@ DELEGATE_TASK_SCHEMA = {
                     "information the sub-agent needs but can't discover on its own."
                 ),
             },
+            "write_targets": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "P4-01: Declared write-target prefixes this sub-agent will modify "
+                    "(e.g. ['projects/billing', 'drive.write']). "
+                    "Prevents two concurrent delegations from writing to the same resource. "
+                    "Omit for read-only tasks."
+                ),
+            },
         },
         "required": ["role", "task"],
     },
@@ -344,6 +354,7 @@ def _make_delegate_task(
     sub_agent_llm=None,
     cost_tracker=None,
     skill_engine: Any = None,
+    lease_manager: Any = None,
 ) -> Callable[..., str]:
     """Factory: creates the delegate_task tool handler.
 
@@ -361,12 +372,18 @@ def _make_delegate_task(
                          the sub-agent registry are rebound to a
                          ``skill_engine.with_role(role)`` view, preventing the
                          sub-agent from reading ``scope=orchestrator`` nodes.
+        lease_manager:   P4-01 optional LeaseManager for write-target leases.
 
     Returns:
-        A callable that accepts (role, task, context) and returns a report string.
+        A callable that accepts (role, task, context, write_targets) and returns a report string.
     """
 
-    def delegate_task(role: str, task: str, context: str = "") -> str:
+    def delegate_task(
+        role: str,
+        task: str,
+        context: str = "",
+        write_targets: list[str] | None = None,
+    ) -> str:
         """Spawn an isolated sub-agent and return its execution report.
 
         This function:
@@ -384,6 +401,19 @@ def _make_delegate_task(
         Returns:
             A structured report string for the orchestrator's context.
         """
+        targets: list[str] = write_targets or []
+
+        # P4-01: acquire write-target leases before starting (prevents concurrent writes).
+        if lease_manager is not None and targets:
+            ok, conflict = lease_manager.acquire(role, targets)
+            if not ok:
+                return (
+                    f"[Sub-Agent Report: {role}]\n"
+                    f"Status: error\n"
+                    f"Result: Delegation blocked — {conflict}\n"
+                    "[Execution: 0 steps, 0.0s]"
+                )
+
         # Emit progress event for CLI display
         if on_event:
             on_event(
@@ -391,6 +421,7 @@ def _make_delegate_task(
                 {
                     "role": role,
                     "task": task[:100],
+                    "write_targets": targets,
                 },
             )
 
@@ -473,6 +504,11 @@ def _make_delegate_task(
             )
             _enqueue_delegation_persistence(job_queue, vault, error_report)
             return error_report.to_orchestrator_string()
+
+        finally:
+            # P4-01: always release leases on exit (success, error, or exception).
+            if lease_manager is not None and targets:
+                lease_manager.release(role, targets)
 
     return delegate_task
 
@@ -787,6 +823,7 @@ def register_delegation_tools(
     sub_agent_llm=None,
     cost_tracker=None,
     skill_engine: Any = None,
+    lease_manager: Any = None,
 ) -> None:
     """Mount delegation tools onto the provided ToolRegistry.
 
@@ -805,6 +842,7 @@ def register_delegation_tools(
                       ``skill_engine.with_role(role)`` view so each sub-agent
                       only sees skill nodes within its declared scope
                       (closes the scope=orchestrator information-leak).
+        lease_manager: P4-01 optional LeaseManager for write-target leases.
     """
     registry.register(
         DELEGATE_TASK_SCHEMA,
@@ -817,6 +855,7 @@ def register_delegation_tools(
             sub_agent_llm,
             cost_tracker,
             skill_engine=skill_engine,
+            lease_manager=lease_manager,
         ),
     )
     registry.register(

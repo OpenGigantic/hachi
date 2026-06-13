@@ -36,6 +36,8 @@ class BootDeps:
     provider_kind: str
     secret_store: Any
     tool_registry: Any  # ToolRegistry — passed so specs can access it
+    # P4-01: write-target lease manager (None when delegation is disabled)
+    lease_manager: Any = None
 
 
 @dataclass

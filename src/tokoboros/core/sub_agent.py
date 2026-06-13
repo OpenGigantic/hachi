@@ -91,6 +91,9 @@ class SubAgentReport:
         duration_seconds: Wall-clock execution time in seconds.
         token_estimate:   Rough estimate of total tokens consumed.
         metadata:         Optional structured data extracted from the sub-agent's output.
+        needs:            P4-01 continuation hint — if set, the sub-agent is requesting
+                          a follow-up delegation: ``{"role": "analyst", "task": "..."}``.
+                          The orchestrator decides whether to spawn it; it is never automatic.
     """
 
     status: SubAgentStatus
@@ -101,6 +104,8 @@ class SubAgentReport:
     duration_seconds: float = 0.0
     token_estimate: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
+    # P4-01: continuation request from the sub-agent (never auto-spawned).
+    needs: dict[str, Any] | None = None
 
     def to_orchestrator_string(self) -> str:
         """Format the report as a concise string for injection into the orchestrator's context.
@@ -109,7 +114,7 @@ class SubAgentReport:
         needed to understand the result without any of the intermediate noise.
 
         Returns:
-            A compact, structured string (typically 50-150 tokens).
+            A compact, structured string (typically 50-200 tokens).
         """
         lines = [
             f"[Sub-Agent Report: {self.role}]",
@@ -120,6 +125,15 @@ class SubAgentReport:
         if self.metadata:
             for key, value in self.metadata.items():
                 lines.append(f"{key}: {value}")
+        # P4-01: surface continuation request so the orchestrator can decide to spawn it.
+        if self.needs:
+            next_role = self.needs.get("role", "?")
+            next_task = str(self.needs.get("task", ""))[:200]
+            lines.append(f"[Continuation requested: role={next_role}, task={next_task}]")
+            lines.append(
+                "Note: The above continuation is a REQUEST, not automatic. "
+                "Decide whether to delegate_task with those parameters."
+            )
         lines.append(f"[Execution: {self.iterations} steps, {self.duration_seconds:.1f}s]")
         return "\n".join(lines)
 
