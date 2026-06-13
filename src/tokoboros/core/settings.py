@@ -47,7 +47,7 @@ class PermissionsSettings(BaseModel):
     tier: PermissionTier = "guided"
 
 
-MemoryBackend = Literal["chroma", "in_memory"]
+MemoryBackend = Literal["chroma", "in_memory", "fts5_only"]
 
 
 class MemorySettings(BaseModel):

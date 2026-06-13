@@ -200,6 +200,62 @@ class InMemoryProvider(MemoryProvider):
         self._facts.clear()
 
 
+class FTS5MemoryProvider(MemoryProvider):
+    """FTS5-only memory provider — no ChromaDB required.
+
+    Reads from ``.og`` memory files via a MemoryIndex (FTS5 + graph expansion).
+    Writes new facts as ``.og`` nodes via MemoryWriter.  Chroma is never
+    initialized, making this backend viable in offline / lightweight environments.
+
+    Wired automatically when ``memory.backend = "fts5_only"`` in config.
+    """
+
+    def __init__(self) -> None:
+        self._graph_index: Any = None
+        self._memory_writer: Any = None
+        self._brain_dir: str = ""
+
+    def initialize(self, brain_dir: str) -> None:
+        """Record brain_dir for lazy index/writer creation."""
+        self._brain_dir = brain_dir
+
+    def attach_graph_index(self, index: Any) -> None:
+        """Bind the FTS5 MemoryIndex so search() can delegate to it."""
+        self._graph_index = index
+
+    def attach_memory_writer(self, writer: Any) -> None:
+        """Bind the MemoryWriter so upsert() persists facts to .og files."""
+        self._memory_writer = writer
+
+    def upsert(self, content: str, category: str = "workspace_state") -> str:
+        """Write a fact as an .og node via MemoryWriter; returns node ID."""
+        if self._memory_writer is not None:
+            try:
+                result = self._memory_writer.write_fact(content, category=category)
+                return str(result)
+            except Exception:
+                pass
+        # Fallback: return a UUID so callers don't crash on None.
+        return str(uuid.uuid4())
+
+    def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+        """FTS5 similarity search via the attached MemoryIndex."""
+        if self._graph_index is None:
+            return []
+        try:
+            results: list[dict[str, Any]] = self._graph_index.search(query, top_k=top_k)
+            return results
+        except Exception:
+            return []
+
+    def delete(self, fact_id: str) -> bool:
+        """Not supported for file-based facts; always returns False."""
+        return False
+
+    def shutdown(self) -> None:
+        """No resources to release."""
+
+
 def resolve_provider(memory_settings: MemorySettings) -> MemoryProvider:
     """Factory: return the correct MemoryProvider for the configured backend.
 
@@ -216,5 +272,7 @@ def resolve_provider(memory_settings: MemorySettings) -> MemoryProvider:
     backend = (memory_settings.backend or "chroma").strip().lower()
     if backend == "in_memory":
         return InMemoryProvider()
+    if backend == "fts5_only":
+        return FTS5MemoryProvider()
     # Default: ChromaDB-backed vault.
     return ChromaMemoryProvider()

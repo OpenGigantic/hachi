@@ -1369,9 +1369,15 @@ def boot_agent(
     )
     memory.set_vault(vault)
 
-    # P2-04: M0 — attach FTS5 graph index when memory.graph=true
+    # P4-06: M4 — fts5_only backend forces graph=True (files are canonical; no Chroma needed)
+    from tokoboros.core.memory_provider import FTS5MemoryProvider
+
+    _is_fts5_only = isinstance(_provider, FTS5MemoryProvider)
+    _use_graph = _memory_settings.graph or _is_fts5_only
+
+    # P2-04: M0 — attach FTS5 graph index when memory.graph=true (or fts5_only backend)
     _graph_index = None
-    if _memory_settings.graph and vault is not None:
+    if _use_graph and (vault is not None or _is_fts5_only):
         try:
             from tokoboros.core.memory_index import MemoryIndex
 
@@ -1381,7 +1387,10 @@ def boot_agent(
                 db_path=_paths.memory_index_db,
             )
             _graph_index.refresh()
-            vault.attach_graph_index(_graph_index)
+            if vault is not None:
+                vault.attach_graph_index(_graph_index)
+            if _is_fts5_only:
+                _provider.attach_graph_index(_graph_index)
             logger.info(
                 "MemoryIndex: %d nodes indexed from %s",
                 _graph_index.node_count,
@@ -1391,7 +1400,7 @@ def boot_agent(
             logger.debug("P2-04: MemoryIndex init failed; graph recall disabled", exc_info=True)
 
     # P2-05: M1 — MemoryWriter for typed-node write path (always on when graph flag set)
-    if _memory_settings.graph:
+    if _use_graph:
         try:
             from tokoboros.core.memory_writer import MemoryWriter
 
@@ -1401,6 +1410,8 @@ def boot_agent(
                 graph_index=_graph_index,
             )
             memory.set_memory_writer(_memory_writer)
+            if _is_fts5_only:
+                _provider.attach_memory_writer(_memory_writer)
             logger.info("MemoryWriter: M1 write path active (memory_dir=%s)", _paths.memory_dir)
         except Exception:
             logger.debug(

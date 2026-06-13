@@ -453,13 +453,13 @@ into Composer preview). Success metric: a scheduled artifact visible in Ops with
 
 | ID | Task | Source | Deps | Effort |
 |---|---|---|---|---|
-| P3-01 ☐ | **M2 graph features**: edges in extractor, Stage-C ≤2-hop expansion (`supersedes` filtering, open-task join, causal attach), resume-pack composer (≈220–600 tok) **replacing** the frozen snapshot + flat recall (also kills the hot-path Chroma query = R20) | [04 §4–5, §7 M2](04-memory-redesign.md) | P2-05 | 4–6d |
-| P3-02 ☐ | **M3 gardener + memory-diff UI**: nightly dedupe/supersede/expire job — *appends, never overwrites*; auto-applies only whitelisted merges; rest = reviewable diff cards in TUI; `profile.og`/`agent.og` cutover (keep 25-entry curation) | [04 §6.4, §7 M3](04-memory-redesign.md), [06 §5.6](06-ux-redesign.md) | P3-01 | 3–5d |
-| P3-03 ☐ | Research + CRM + Finance agent packs (Finance: **read/categorize only — never move money**, gate-enforced) | [05 §3](05-agent-platform.md) | P2-07a | 6–12d |
-| P3-04 ☐ | Embedding-rank option: hybrid BM25 ⊕ cosine via existing Chroma dep; off by default (offline mode) | [02 §7 P1](02-object-graph-eval.md) | P1-07 | 2–4d |
-| P3-05 ☐ | OG Explorer TUI screen: library tree + literal Pass-1/2/3 inspector with real token prices, usage, lint + collision badges, diff vs git | [06 §6.2](06-ux-redesign.md) | P1-06/07/08 | 4–6d |
-| P3-06 ☐ | SDK v0: `tokoboros.sdk` namespace re-exporting stable surface (ToolRegistry/ToolSpec, pack manifest types, event names, BaseLLMClient), independently semver'd + contract tests + `doctor --plugin` | [07 §4.2](07-future-and-growth.md) | P2-07a | 3–5d |
-| P3-07 ☐ | Ops hygiene: daemon log rotation, Windows restart story, join threads on shutdown, explicit Chroma close | [01/R18, TD-12, TD-18](01-architecture-review.md) | — | 1–2d |
+| P3-01 ✅ | **M2 graph features**: edges in extractor, Stage-C ≤2-hop expansion (`supersedes` filtering, open-task join, causal attach), resume-pack composer (≈220–600 tok) **replacing** the frozen snapshot + flat recall (also kills the hot-path Chroma query = R20) | [04 §4–5, §7 M2](04-memory-redesign.md) | P2-05 | 4–6d |
+| P3-02 ✅ | **M3 gardener + memory-diff UI**: nightly dedupe/supersede/expire job — *appends, never overwrites*; auto-applies only whitelisted merges; rest = reviewable diff cards in TUI; `profile.og`/`agent.og` cutover (keep 25-entry curation) | [04 §6.4, §7 M3](04-memory-redesign.md), [06 §5.6](06-ux-redesign.md) | P3-01 | 3–5d |
+| P3-03 ✅ | Research + CRM + Finance agent packs (Finance: **read/categorize only — never move money**, gate-enforced) | [05 §3](05-agent-platform.md) | P2-07a | 6–12d |
+| P3-04 ✅ | Embedding-rank option: hybrid BM25 ⊕ cosine via existing Chroma dep; off by default (offline mode) | [02 §7 P1](02-object-graph-eval.md) | P1-07 | 2–4d |
+| P3-05 ✅ | OG Explorer TUI screen: library tree + literal Pass-1/2/3 inspector with real token prices, usage, lint + collision badges, diff vs git | [06 §6.2](06-ux-redesign.md) | P1-06/07/08 | 4–6d |
+| P3-06 ✅ | SDK v0: `tokoboros.sdk` namespace re-exporting stable surface (ToolRegistry/ToolSpec, pack manifest types, event names, BaseLLMClient), independently semver'd + contract tests + `doctor --plugin` | [07 §4.2](07-future-and-growth.md) | P2-07a | 3–5d |
+| P3-07 ✅ | Ops hygiene: daemon log rotation, Windows restart story, join threads on shutdown, explicit Chroma close | [01/R18, TD-12, TD-18](01-architecture-review.md) | — | 1–2d |
 
 **Sustained tracks from here on:** 2-week release trains · benchmark re-run per release · mypy
 burn-down toward full strict (R8a) · security audit before each marketing push · price-table
@@ -471,7 +471,7 @@ externalization (R19) as filler work.
 |---|---|---|---|---|
 | P4-01 ☐ | **Multi-agent v2** — plan-as-task-graph delegation, write-target **leases**, report `needs:` **continuations**, scoped memory views with append-only `->[:by=agent:…]` provenance; star control retained, no agent-to-agent chat | [07 §2](07-future-and-growth.md) | P2-02, P2-05 | 4–6d |
 | P4-02 ☐ | Shared-services gateway: one MCP manager/vault/skill index per process; per-session loop+memory only; lazy boot | [01/R13, TD-8](01-architecture-review.md) | P2-13 helps | 4–8d |
-| P4-03 ☐ | Parallel execution of independent tool calls (thread pool in loop, ordered results) | [01/R14](01-architecture-review.md) | P2-06 (harness) | 2–3d |
+| P4-03 ✅ | Parallel execution of independent tool calls (thread pool in loop, ordered results) *(2026-06-13)* | [01/R14](01-architecture-review.md) | P2-06 (harness) | 2–3d |
 | P4-04 ⏸ | Google device-flow onboarding (hosted OAuth client, incremental scopes) | [05 §4](05-agent-platform.md) | **D-1** | 2–4d + review lead time |
 | P4-05 ☐ | Web companion mode: chat+Today card, approvals inbox centerpiece, workflows gallery, memory browser, pack store, no-jargon language | [06 §9](06-ux-redesign.md) | P2-07a, P2-09 | 2–3wk |
 | P4-06 ☐ | M4 cutover: files canonical, Chroma demoted to optional derived index | [04 §7 M4](04-memory-redesign.md) | P3-01/02 | 1–2d |
