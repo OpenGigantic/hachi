@@ -294,8 +294,9 @@ def test_install_windows_calls_schtasks_create():
     cmd = create_cmds[0]
     assert "/tn" in cmd
     assert _TASK_NAME in cmd
-    assert "/sc" in cmd
-    assert "ONLOGON" in cmd
+    # New XML-based install uses /xml <tmpfile> /f instead of /sc ONLOGON
+    assert "/xml" in cmd
+    assert "/f" in cmd
     assert "Installed Task Scheduler task" in msg
     assert not runner.any_with_shell_true()
 

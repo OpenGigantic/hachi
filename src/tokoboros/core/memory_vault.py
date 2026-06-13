@@ -98,6 +98,35 @@ class MemoryVault:
         self._graph_index: Any = None
 
     # ==========================================
+    # Lifecycle
+    # ==========================================
+
+    def close(self) -> None:
+        """Release the ChromaDB client connection.
+
+        Call this during graceful shutdown so the embedded Chroma SQLite WAL is
+        flushed and the file handle released before the process exits.  Safe to
+        call multiple times.
+        """
+        try:
+            stop = getattr(self.client, "_server", None)
+            # PersistentClient exposes no explicit close(); stopping the internal
+            # sqlite/hnswlib layers is achieved by deleting the reference so the
+            # GC finalizer fires, but we can also call the undocumented _server
+            # stop if it exists (Chroma ≥ 0.5).
+            if stop is not None:
+                _stop_fn = getattr(stop, "stop", None)
+                if callable(_stop_fn):
+                    _stop_fn()
+            # Always release the collection references so GC can finalise.
+            for attr in ("collection", "user_collection", "agent_profile",
+                         "delegation_collection", "quarantine_collection"):
+                if hasattr(self, attr):
+                    setattr(self, attr, None)
+        except Exception:
+            pass
+
+    # ==========================================
     # P2-04: Graph index (M0)
     # ==========================================
 

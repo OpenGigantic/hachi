@@ -41,6 +41,10 @@ class MemoryNode:
     session_id: str = ""
     project_slug: str = ""
     person_slug: str = ""
+    # P3-01: typed edge declarations (written as ->[:key=value] lines in the .og block)
+    edges: list[str] = field(default_factory=list)
+    # Optional status field used by task nodes ("open" | "done" | "blocked")
+    status: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +75,16 @@ def _node_block(node: MemoryNode, session_id: str = "") -> str:
     ]
     if session_id or node.session_id:
         lines.append(f"->[:evidence=session:{node.session_id or session_id}]")
+    if node.status:
+        lines.append(f"->[:status={node.status}]")
+    # P3-01: write typed edge declarations
+    for edge in node.edges:
+        # Normalise: ensure ->[:key=value] format
+        e = edge.strip()
+        if e and not e.startswith("->"):
+            e = f"->[:about={e}]"
+        if e:
+            lines.append(e)
     lines += [
         f"->[:updated={_ts()}]",
         "::dense",

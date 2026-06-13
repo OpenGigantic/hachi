@@ -432,8 +432,10 @@ class ScheduleRunner:
     def start(self) -> None:
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 2.0) -> None:
+        """Signal the runner to exit and join its thread."""
         self._stop.set()
+        self._thread.join(timeout=timeout)
 
     def _loop(self) -> None:
         while not self._stop.wait(self._interval):

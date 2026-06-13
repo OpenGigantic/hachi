@@ -312,6 +312,22 @@ class MemoryManager:
                                         "Omit for personal facts."
                                     ),
                                 },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["open", "done", "blocked", ""],
+                                    "description": "For task nodes: current status.",
+                                },
+                                "edges": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": (
+                                        "Typed relationship edges in ->[:key=value] format. "
+                                        "Examples: ->[:about=billing-db-migration], "
+                                        "->[:involves=alice], ->[:blocks=deploy-task], "
+                                        "->[:supersedes=old-decision], ->[:caused_by=incident-x]. "
+                                        "Omit if no meaningful relationships apply."
+                                    ),
+                                },
                             },
                             "required": ["name", "role", "dense"],
                         },
@@ -359,6 +375,8 @@ class MemoryManager:
                     keywords=list(raw.get("keywords", [])),
                     session_id=session_id,
                     project_slug=_slugify(raw.get("project_slug", "")),
+                    status=str(raw.get("status", "")),
+                    edges=[str(e) for e in raw.get("edges", []) if e],
                 )
             )
 

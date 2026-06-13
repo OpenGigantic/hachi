@@ -14,6 +14,8 @@ fully offline — no actual launchctl/systemctl/schtasks calls are made.
 
 from __future__ import annotations
 
+import logging
+import logging.handlers
 import shutil
 import subprocess
 import sys
@@ -58,6 +60,43 @@ def _default_log_path() -> Path:
     from tokoboros.core.paths import get_tokoboros_paths
 
     return Path(get_tokoboros_paths().state_dir) / "gateway.log"
+
+
+def setup_rotating_log(
+    log_path: Path,
+    *,
+    max_bytes: int = 5 * 1024 * 1024,  # 5 MB per file
+    backup_count: int = 3,
+    level: int = logging.INFO,
+) -> None:
+    """Attach a RotatingFileHandler to the root logger for the daemon process.
+
+    Keeps up to ``backup_count`` rotated archives beside the live log file so
+    the gateway log never grows unbounded.  Call this once at daemon startup
+    (before any log output).
+
+    Args:
+        log_path: Destination log file (created if absent; parent must exist).
+        max_bytes: Maximum size of a single log file before rotation.
+        backup_count: Number of rotated archives to keep.
+        level: Minimum log level to capture.
+    """
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        str(log_path),
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding="utf-8",
+    )
+    handler.setLevel(level)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+    )
+    root = logging.getLogger()
+    if not any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root.handlers):
+        root.addHandler(handler)
+    if root.level == logging.NOTSET or root.level > level:
+        root.setLevel(level)
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +152,59 @@ def _build_argv(config: DaemonConfig) -> list[str]:
 # ---------------------------------------------------------------------------
 # Service-file builders (pure — no I/O, unit-testable)
 # ---------------------------------------------------------------------------
+
+
+def _build_windows_task_xml(argv: list[str], task_name: str, log_path: Path) -> str:
+    """Build a Windows Task Scheduler XML definition with restart-on-failure.
+
+    Uses an ONLOGON trigger and a ``RestartOnFailure`` element (30 s delay,
+    3 attempts) — equivalent to systemd's ``Restart=on-failure RestartSec=30``.
+    The XML format is consumed by ``schtasks /create /xml``.
+
+    Args:
+        argv: Full command list (program + arguments).
+        task_name: Display name shown in Task Scheduler.
+        log_path: Redirects stdout/stderr in the command via ``cmd /c``.
+
+    Returns:
+        UTF-8 XML string suitable for a temporary file.
+    """
+    import xml.sax.saxutils as saxutils
+
+    program = saxutils.escape(argv[0])
+    args_str = saxutils.escape(" ".join(argv[1:]))
+    log_escaped = saxutils.escape(str(log_path))
+    name_escaped = saxutils.escape(task_name)
+
+    return f"""\
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>{name_escaped} — Tokoboros always-on agent gateway</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT30S</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{program}</Command>
+      <Arguments>{args_str} &gt;&gt; "{log_escaped}" 2&gt;&amp;1</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
 
 
 def build_launchd_plist(argv: list[str], log_path: Path) -> str:
@@ -364,29 +456,24 @@ class DaemonInstaller:
 
     def _install_windows(self) -> str:
         argv = _build_argv(self._config)
-        # schtasks /tr expects a single string. Quote any token that contains a
-        # space (e.g. "C:\Program Files\Python313\python.exe") so Task Scheduler
-        # does not split the path at the space boundary.
-        quoted = [f'"{tok}"' if " " in tok else tok for tok in argv]
-        tr = " ".join(quoted)
-        self._run(
-            [
-                "schtasks",
-                "/create",
-                "/tn",
-                _TASK_NAME,
-                "/tr",
-                tr,
-                "/sc",
-                "ONLOGON",
-                "/it",  # Interactive (runs in current user session)
-                "/f",  # Force overwrite if already exists
-            ]
-        )
+        xml = _build_windows_task_xml(argv, _TASK_NAME, self._config.log_path)
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", delete=False, encoding="utf-8"
+        ) as tmp:
+            tmp.write(xml)
+            tmp_path = tmp.name
+        try:
+            self._run(
+                ["schtasks", "/create", "/tn", _TASK_NAME, "/xml", tmp_path, "/f"]
+            )
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
         return (
-            f"Installed Task Scheduler task '{_TASK_NAME}'.\n"
-            "Gateway will start at next logon. To start now: "
-            "tokoboros daemon start"
+            f"Installed Task Scheduler task '{_TASK_NAME}' (with restart-on-failure).\n"
+            "Gateway will start at next logon. To start now: tokoboros daemon start\n"
+            f"Logs: {self._config.log_path}"
         )
 
     def _uninstall_windows(self) -> str:
