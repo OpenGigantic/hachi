@@ -2207,5 +2207,119 @@ def security_audit(
         raise typer.Exit(exit_code)
 
 
+@app.command("memoir")
+def memoir(
+    year: int = typer.Option(
+        None, "--year", "-y", help="Year to summarise (default: current year)."
+    ),
+    output: Path = typer.Option(  # noqa: B008
+        None, "--output", "-o", help="Write output to file."
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """Generate a yearly memoir from your agent's memory journal."""
+    import datetime
+
+    from tokoboros.og_engine.parser import parse_og_file
+
+    _year = year or datetime.date.today().year
+    year_str = str(_year)
+
+    paths = get_tokoboros_paths()
+    memory_dir = paths.memory_dir
+
+    facts: list[str] = []
+    decisions: list[str] = []
+    events: list[str] = []
+
+    _role_buckets: dict[str, list[str]] = {
+        "fact": facts,
+        "decision": decisions,
+        "episode": events,
+        "event": events,
+    }
+
+    try:
+        og_files = sorted(set(memory_dir.glob("*.og")) | set(memory_dir.glob("journal*.og")))
+    except FileNotFoundError:
+        og_files = []
+
+    if not og_files:
+        console.print("[dim]No memory files found.[/dim]")
+        return
+
+    for og_file in og_files:
+        try:
+            parsed = parse_og_file(str(og_file))
+        except Exception:
+            continue
+
+        for node in parsed.nodes:
+            # Check if the year appears anywhere in the node's text content
+            node_text = " ".join([
+                node.dense,
+                node.full,
+                node.summary,
+                " ".join(node.steps),
+                " ".join(node.assertions),
+                node.note,
+            ])
+            if year_str not in node_text:
+                continue
+
+            role = (node.role or "").lower()
+            bucket = _role_buckets.get(role)
+            if bucket is not None:
+                entry = node.dense.strip() or node.full.strip()[:120] or node.name
+                bucket.append(entry)
+            else:
+                # Unknown role: add to events as a catch-all
+                entry = node.dense.strip() or node.full.strip()[:120] or node.name
+                events.append(entry)
+
+    result: dict = {
+        "year": _year,
+        "facts": facts,
+        "decisions": decisions,
+        "events": events,
+    }
+
+    if json_out:
+        output_text = json.dumps(result, indent=2)
+        if output:
+            output.write_text(output_text, encoding="utf-8")
+            console.print(f"[green]Memoir written to[/green] {output}")
+        else:
+            print(output_text)
+        return
+
+    lines = [f"# Memoir {_year}\n"]
+    if decisions:
+        lines.append("## Decisions")
+        for d in decisions:
+            lines.append(f"- {d}")
+        lines.append("")
+    if facts:
+        lines.append("## Facts")
+        for f in facts:
+            lines.append(f"- {f}")
+        lines.append("")
+    if events:
+        lines.append("## Events")
+        for e in events:
+            lines.append(f"- {e}")
+        lines.append("")
+
+    if not (decisions or facts or events):
+        lines.append(f"No memory entries found for {_year}.")
+
+    human_text = "\n".join(lines)
+    if output:
+        output.write_text(human_text, encoding="utf-8")
+        console.print(f"[green]Memoir written to[/green] {output}")
+    else:
+        console.print(Markdown(human_text))
+
+
 if __name__ == "__main__":
     app()

@@ -473,18 +473,18 @@ externalization (R19) as filler work.
 | P4-02 ✅ | Shared-services gateway: one MCP manager/vault/skill index per process; per-session loop+memory only; lazy boot *(2026-06-13)* | [01/R13, TD-8](01-architecture-review.md) | P2-13 helps | 4–8d |
 | P4-03 ✅ | Parallel execution of independent tool calls (thread pool in loop, ordered results) *(2026-06-13)* | [01/R14](01-architecture-review.md) | P2-06 (harness) | 2–3d |
 | P4-04 ⏸ | Google device-flow onboarding (hosted OAuth client, incremental scopes) | [05 §4](05-agent-platform.md) | **D-1** | 2–4d + review lead time |
-| P4-05 ☐ | Web companion mode: chat+Today card, approvals inbox centerpiece, workflows gallery, memory browser, pack store, no-jargon language | [06 §9](06-ux-redesign.md) | P2-07a, P2-09 | 2–3wk |
+| P4-05 ✅ | Web companion mode: chat+Today card, approvals inbox centerpiece, workflows gallery, memory browser, pack store, no-jargon language *(2026-06-13)* | [06 §9](06-ux-redesign.md) | P2-07a, P2-09 | 2–3wk |
 | P4-06 ✅ | M4 cutover: files canonical, Chroma demoted to optional derived index *(2026-06-13)* | [04 §7 M4](04-memory-redesign.md) | P3-01/02 | 1–2d |
 
 ## 6. Phase 5 — Q2 2027: Ecosystem (~35–50d)
 
 | ID | Task | Source | Deps | Effort |
 |---|---|---|---|---|
-| P5-01 ☐ | Spec repo + conformance suite (`.og` versioned standalone; conformance = parser tests extracted) — B1 first step | [07 §3 B1, §5](07-future-and-growth.md) | — | 2–4d |
-| P5-02 ☐ | Pack-author scaffold + guide (`tokoboros skill new`, lint-in-CI template repo) — the no-Python onramp | [07 §4.1](07-future-and-growth.md) | P2-07b | 2–3d |
-| P5-03 ☐ | Career + Learning agent packs | [05 §3](05-agent-platform.md) | P2-07a | 4–8d |
-| P5-04 ☐ | Git-synced workspace pattern: conflict-policy docs + per-device journal shard naming + tests — B4 first step | [07 §3 B4](07-future-and-growth.md) | P4-06 | 1–2d |
-| P5-05 ☐ | Yearly-memoir demo artifact from the journal layer — B3's self-marketing demo | [07 §3 B3](07-future-and-growth.md) | P3-01 | 2–3d |
+| P5-01 ✅ | Spec repo + conformance suite (`.og` versioned standalone; conformance = parser tests extracted) — B1 first step *(2026-06-13)* | [07 §3 B1, §5](07-future-and-growth.md) | — | 2–4d |
+| P5-02 ✅ | Pack-author scaffold + guide (`tokoboros skill new`, lint-in-CI template repo) — the no-Python onramp *(2026-06-13)* | [07 §4.1](07-future-and-growth.md) | P2-07b | 2–3d |
+| P5-03 ✅ | Career + Learning agent packs *(2026-06-13)* | [05 §3](05-agent-platform.md) | P2-07a | 4–8d |
+| P5-04 ✅ | Git-synced workspace pattern: conflict-policy docs + per-device journal shard naming + tests — B4 first step *(2026-06-13)* | [07 §3 B4](07-future-and-growth.md) | P4-06 | 1–2d |
+| P5-05 ✅ | Yearly-memoir demo artifact from the journal layer — B3's self-marketing demo *(2026-06-13)* | [07 §3 B3](07-future-and-growth.md) | P3-01 | 2–3d |
 | P5-06 ⏸ | Registry Stage-2: publish gates (lint-0-errors, static scan, scope manifest, namespace ownership, provenance signature), trust tiers, yank | [05 §7 Stage 2](05-agent-platform.md) | **D-2** | 3–6wk |
 
 ---
