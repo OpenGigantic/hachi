@@ -289,3 +289,61 @@ def memory_import(
         f"  Memory:  {result.memory_facts_added} fact(s) added\n"
         f"  Skipped: {result.skipped} empty conversation(s)"
     )
+
+
+@memory_app.command("migrate-files")
+def memory_migrate_files(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be written without writing."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit result as JSON."),
+) -> None:
+    """P4-06 M4: migrate Chroma collections → .og files (files become canonical).
+
+    Reads all five Chroma collections and writes them as ``::node`` blocks into
+    ``memory/`` .og files.  Existing nodes are skipped (additive only).
+
+    After running, set ``memory.backend = "fts5_only"`` in your config to
+    switch to the file-only path and stop using Chroma.
+    """
+    from tokoboros.core.memory_exporter import chroma_to_files
+    from tokoboros.core.memory_vault import MemoryVault
+    from tokoboros.core.paths import get_tokoboros_paths
+
+    paths = get_tokoboros_paths()
+    try:
+        vault = MemoryVault(brain_dir=str(paths.data_dir))
+    except Exception as exc:
+        console.print(f"[red]Could not open Chroma vault: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    result = chroma_to_files(vault, memory_dir=paths.memory_dir, dry_run=dry_run)
+    vault.close()
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "exported": result.exported,
+                    "skipped_existing": result.skipped_existing,
+                    "errors": result.errors,
+                    "output_files": result.output_files,
+                    "dry_run": dry_run,
+                }
+            )
+        )
+        return
+
+    prefix = "[dim](dry run)[/dim] " if dry_run else ""
+    console.print(
+        f"{prefix}[green]Migration complete[/green]\n"
+        f"  Exported:  {result.exported} fact(s)\n"
+        f"  Skipped:   {result.skipped_existing} already in files\n"
+        f"  Errors:    {result.errors}\n"
+        f"  Files:     {', '.join(result.output_files) or 'none'}"
+    )
+    if not dry_run and result.exported > 0:
+        console.print(
+            "\n[dim]Tip: set [bold]memory.backend = \"fts5_only\"[/bold] in your config "
+            "to activate the file-canonical path (no Chroma required).[/dim]"
+        )
