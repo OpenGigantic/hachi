@@ -283,11 +283,89 @@ def format_memory(
     tasks: list[dict[str, Any]],
     recalls: list[dict[str, Any]],
     skills: list[dict[str, Any]] | None = None,
+    diffs: list[dict[str, Any]] | None = None,
 ) -> RenderableType:
     parts: list[RenderableType] = [format_tasks(tasks), Text(""), format_recalls(recalls)]
     if skills is not None:
         parts.extend([Text(""), format_skills(skills)])
+    if diffs is not None:
+        parts.extend([Text(""), format_memory_diffs(diffs)])
     return Group(*parts)
+
+
+def format_memory_diffs(diffs: list[dict[str, Any]]) -> Table:
+    """Reviewable gardener diff cards: proposals the user needs to approve or reject."""
+    table = _titled(
+        "Memory Diffs — pending review", "Kind", "Node A", "Node B", "Confidence", "Reason"
+    )
+    if not diffs:
+        table.add_row(Text("none pending", style="dim"), "", "", "", "")
+        return table
+    _KIND_COLORS = {
+        "dedup_same_name": "cyan",
+        "merge_similar": "yellow",
+        "supersede_contradiction": "magenta",
+        "expire_stale": "red",
+    }
+    for diff in diffs:
+        kind = str(diff.get("kind", ""))
+        conf_raw = diff.get("confidence", 1.0)
+        conf = f"{float(conf_raw or 0):.0%}"
+        table.add_row(
+            Text(kind, style=_KIND_COLORS.get(kind, "white")),
+            _truncate(diff.get("name_a"), 24),
+            _truncate(diff.get("name_b") or _EMPTY, 24),
+            conf,
+            _truncate(diff.get("reason"), 50),
+        )
+    return table
+
+
+def format_og_explorer(data: dict[str, Any]) -> RenderableType:
+    """OG Explorer screen: library tree with pass-depth counters and usage stats."""
+    skills: list[dict[str, Any]] = data.get("skills", [])
+    counters: dict[str, Any] = data.get("counters", {})
+    node_count: int = int(data.get("node_count", 0))
+
+    # Header: pass-depth summary (the moat made visible)
+    p1 = int(counters.get("pass1_search", 0))
+    p2 = int(counters.get("pass2_peek", 0))
+    p3 = int(counters.get("pass3_resolve", 0))
+    total = max(1, p1)
+    p2_pct = f"{p2/total:.0%}" if total else "—"
+    p3_pct = f"{p3/total:.0%}" if total else "—"
+
+    header = Table.grid(expand=True)
+    header.add_column()
+    header.add_row(
+        Text(
+            f"OG Library · {node_count} nodes  |  "
+            f"Pass 1: {p1} searches · Pass 2: {p2} ({p2_pct}) · Pass 3: {p3} ({p3_pct})",
+            style="bold",
+        )
+    )
+
+    # Skills table with progressive-disclosure indicators
+    table = _titled(
+        "Skills (sorted by use count)", "Skill", "Role", "Keywords", "Pass depth", "Used"
+    )
+    if not skills:
+        table.add_row(Text("no skills loaded", style="dim"), "", "", "", "")
+    for skill in skills:
+        used = int(skill.get("use_count", 0) or 0)
+        kw_count = int(skill.get("keyword_count", 0) or 0)
+        pass_depth = "P1" if used == 0 else ("P2" if used < 5 else "P3")
+        _p2_style = "yellow" if pass_depth == "P2" else "green"
+        _depth_style = "dim" if pass_depth == "P1" else _p2_style
+        table.add_row(
+            _truncate(skill.get("name"), 30),
+            _truncate(skill.get("role"), 14),
+            str(kw_count),
+            Text(pass_depth, style=_depth_style),
+            Text(str(used), style="dim" if used == 0 else theme.ACCENT),
+        )
+
+    return Group(header, Text(""), table)
 
 
 def format_integrations(mcp: dict[str, Any]) -> RenderableType:

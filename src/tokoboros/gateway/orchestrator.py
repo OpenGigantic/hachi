@@ -549,6 +549,38 @@ class AgentSession:
             for row in rows
         )
 
+    def snapshot_gardener_diffs(self) -> list[dict]:
+        """Return pending memory-diff proposals from the last gardener run.
+
+        Reads the pending_diffs.json file written by MemoryGardener.run().
+        Returns an empty list if the file is missing or unreadable.
+        """
+        from tokoboros.core.memory_gardener import GardeningResult
+
+        memory_dir = getattr(self.memory, "memory_dir", None)
+        if memory_dir is None:
+            return []
+        diffs_path = memory_dir / GardeningResult._PENDING_DIFFS_FILE
+        result = GardeningResult.load(diffs_path)
+        from dataclasses import asdict
+
+        return [asdict(p) for p in result.pending_review]
+
+    def snapshot_og_explorer(self) -> dict:
+        """Return data for the OG Explorer TUI screen.
+
+        Includes the full skill inventory with usage stats plus pass-depth
+        counters so the explorer can show token-efficiency metrics.
+        """
+        inventory = self.skill_engine.get_skill_inventory()
+        counters = self.skill_engine.get_usage_counters()
+        node_count = len(self.skill_engine.get_all_nodes())
+        return {
+            "skills": inventory,
+            "counters": counters,
+            "node_count": node_count,
+        }
+
     def list_provider_models(self) -> list[str]:
         """Best-effort live model discovery from the active provider.
 
