@@ -201,7 +201,7 @@ class MemoryManager:
             f"Exchange:\n{snippet}"
         )
 
-        client = AnthropicClient()  # Uses cheap haiku model
+        client = AnthropicClient(timeout=30.0)  # Uses cheap haiku model; 30s cap prevents hangs
         response = client.generate(
             messages=[LLMMessage(role="user", content=prompt)],
             system_prompt="You are a fact extraction engine. Output pure JSON only.",
@@ -338,7 +338,7 @@ class MemoryManager:
         }
 
         snippet = combined[:3000]
-        client = AnthropicClient()
+        client = AnthropicClient(timeout=30.0)
         response = client.generate(
             messages=[LLMMessage(role="user", content=f"Extract memory from:\n\n{snippet}")],
             system_prompt=(

@@ -582,3 +582,57 @@ def test_authoring_screen_snapshot_refresh_is_noop_without_body() -> None:
             return len(screen.query("#snapshot-body"))
 
     assert asyncio.run(_run()) == 0
+
+
+def test_tool_card_starts_collapsed_with_running_title() -> None:
+    from tokoboros.tui.widgets import ToolCard
+
+    card = ToolCard("google_create_task", "title=P0", "title: P0 Review")
+    assert card.collapsed is True
+    assert "google_create_task" in card.title
+    assert "running" in card.title
+    assert "running" in card.classes
+
+
+def test_tool_card_composes_without_active_app() -> None:
+    """Regression: cards are mounted from a threadsafe runtime-event callback
+    where Textual's active-app ContextVar is unset. Collapsible's default
+    ``with self.Contents():`` compose raised NoActiveAppError there, so ToolCard
+    overrides compose to build Contents without the app lookup."""
+    from tokoboros.tui.widgets import ToolCard
+
+    card = ToolCard("google_list_emails", "q=in:inbox", "q: in:inbox")
+    # Fully consuming compose() must not raise (no app context here).
+    children = list(card.compose())
+    assert len(children) == 2
+
+
+def test_tool_card_completed_and_error_update_in_app() -> None:
+    """mark_completed/mark_error swap status classes and fold the outcome into
+    the collapsible title; the full result lands in the (expandable) body."""
+    from tokoboros.tui.widgets import ToolCard
+
+    class _Host(App[None]):
+        CSS = APP_CSS
+
+    async def _run() -> tuple[str, bool, str, bool]:
+        host = _Host()
+        async with host.run_test(size=(100, 30)) as pilot:
+            done = ToolCard("google_create_task", "title=P0", "title: P0 Review")
+            failed = ToolCard("google_read_email_thread", "thread_id=abc", "thread_id: abc")
+            await host.mount(done)
+            await host.mount(failed)
+            await pilot.pause()
+            done.mark_completed("Task created: 'P0: Review NTPC' (id=xyz).")
+            failed.mark_error("Failed to read thread: Google API error 404 …")
+            await pilot.pause()
+            return (
+                done.title,
+                "done" in done.classes,
+                failed.title,
+                "failed" in failed.classes,
+            )
+
+    done_title, done_ok, failed_title, failed_ok = asyncio.run(_run())
+    assert done_ok and "completed" in done_title and "Task created" in done_title
+    assert failed_ok and "error" in failed_title

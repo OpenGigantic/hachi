@@ -366,10 +366,34 @@ class JobWorker:
                 assert handler is not None  # guaranteed by the `in` check above
                 output = handler(**job.payload)
             else:
-                raise RuntimeError(
-                    f"Job {job.name!r}: no callable func and handler_name "
-                    f"{job.handler_name!r} is not in registry"
+                # No callable and no registered handler — structurally unexecutable.
+                # Fail immediately without retrying (retries would all hit the same wall).
+                duration = (datetime.now(UTC) - start_time).total_seconds()
+                result = JobResult(
+                    status=JobStatus.FAILED,
+                    error=f"Job {job.name!r}: no callable func and handler_name "
+                    f"{job.handler_name!r} is not in registry",
+                    duration_seconds=duration,
                 )
+                logger.warning(
+                    "Job %r is unexecutable (no func, no handler) — failing without retry",
+                    job.name,
+                )
+                self.on_job_event(
+                    "job.failed",
+                    {
+                        "job_id": job.job_id,
+                        "job_name": job.name,
+                        "kind": job.job_type,
+                        "status": JobStatus.FAILED.value,
+                        "label": job.name,
+                        "attempt": job.attempt,
+                        "error": result.error,
+                        "duration_seconds": duration,
+                    },
+                )
+                self.queue.update_status(job.job_id, JobStatus.FAILED, result=result)
+                return True
             duration = (datetime.now(UTC) - start_time).total_seconds()
             result = JobResult(
                 status=JobStatus.COMPLETED,
@@ -549,10 +573,26 @@ class SQLiteJobQueue(JobQueue):
 
     def _recover_running(self) -> int:
         with self._conn() as conn:
+            # Reset any jobs that were mid-execution when the process died.
             cur = conn.execute(
                 "UPDATE jobs SET status = 'pending', started_at = NULL WHERE status = 'running'"
             )
-            return int(cur.rowcount)
+            recovered = int(cur.rowcount)
+
+            # Discard func-only jobs that survived a restart — they have no handler_name
+            # so they can never execute in a new process (the callable was in-memory only).
+            # Retrying them wastes cycles and clutters the job header in the TUI.
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = 'failed',
+                    result_error = 'Discarded on recovery: func-only job cannot execute after restart',
+                    completed_at = datetime('now')
+                WHERE status = 'pending'
+                  AND (handler_name IS NULL OR handler_name = '')
+                """
+            )
+            return recovered
 
     def _row_to_job(self, row: sqlite3.Row) -> Job:
         payload_raw = row["payload"] or "{}"

@@ -2,12 +2,77 @@
 
 from __future__ import annotations
 
+import base64
+import html
 import logging
+import re
+from typing import Any
 
 from tokoboros.core.loop import ToolRegistry
 from tokoboros.integrations.google.service import GoogleService
 
 logger = logging.getLogger(__name__)
+
+# Drop <script>/<style> blocks wholesale, then strip remaining tags.
+_HTML_BLOCK_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RUNS_RE = re.compile(r"[ \t]{2,}")
+_BLANK_LINES_RE = re.compile(r"\n{3,}")
+
+
+def _html_to_text(raw: str) -> str:
+    """Reduce an HTML email body to readable plain text (no extra deps).
+
+    Tag soup in tool results overflows the TUI and is useless to the model, so
+    we strip markup, unescape entities, and collapse runaway whitespace.
+    """
+    text = _HTML_BLOCK_RE.sub(" ", raw)
+    # Keep line structure for common block-level breaks before nuking tags.
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</(p|div|tr|table|li|h[1-6])>", "\n", text)
+    text = _HTML_TAG_RE.sub("", text)
+    text = html.unescape(text)
+    text = _WS_RUNS_RE.sub(" ", text)
+    text = _BLANK_LINES_RE.sub("\n\n", text)
+    return text.strip()
+
+
+def _decode_b64(data: str) -> str:
+    """URL-safe base64-decode a Gmail body part, tolerating missing padding."""
+    padding = len(data) % 4
+    if padding:
+        data += "=" * (4 - padding)
+    return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+
+
+def _extract_message_text(payload: dict[str, Any]) -> str:
+    """Walk a Gmail message payload and return its best-effort plain text.
+
+    Prefers ``text/plain``; falls back to ``text/html`` (stripped to text) so
+    single-part HTML newsletters render cleanly instead of dumping raw markup.
+    Recurses through nested multipart parts.
+    """
+    plain: str | None = None
+    html_body: str | None = None
+
+    def _walk(part: dict[str, Any]) -> None:
+        nonlocal plain, html_body
+        mime = part.get("mimeType", "")
+        data = part.get("body", {}).get("data")
+        if data:
+            if mime == "text/plain" and plain is None:
+                plain = _decode_b64(data)
+            elif mime == "text/html" and html_body is None:
+                html_body = _decode_b64(data)
+        for sub in part.get("parts", []) or []:
+            _walk(sub)
+
+    _walk(payload)
+    if plain and plain.strip():
+        return plain.strip()
+    if html_body and html_body.strip():
+        return _html_to_text(html_body)
+    return "[No readable body found]"
 
 
 class GmailService(GoogleService):
@@ -255,54 +320,35 @@ class GmailService(GoogleService):
         except Exception as e:
             return f"Failed to batch categorize emails: {str(e)}"
 
+    def _render_message(self, msg: dict[str, Any]) -> str:
+        """Format one Gmail message as ``--- header ---`` + readable body."""
+        payload = msg.get("payload", {})
+        headers = payload.get("headers", [])
+        sender = next((h["value"] for h in headers if h["name"] == "From"), "Unknown")
+        date = next((h["value"] for h in headers if h["name"] == "Date"), "Unknown")
+        body = _extract_message_text(payload)
+        return f"--- Message from {sender} on {date} ---\n{body}\n"
+
     def read_email_thread(self, thread_id: str) -> str:
-        """Reads and extracts text content from an entire email thread."""
+        """Reads and extracts text content from an entire email thread.
+
+        Falls back to reading ``thread_id`` as a single message id when the
+        thread endpoint 404s — the model often passes a Message-ID where a
+        Thread-ID is expected, and both are interchangeable hex ids.
+        """
         try:
             thread_response = self.client.get(f"/gmail/v1/users/me/threads/{thread_id}")
             messages = thread_response.get("messages", [])
             if not messages:
                 return f"Thread {thread_id} not found."
-
-            thread_text = []
-            for msg in messages:
-                payload = msg.get("payload", {})
-                headers = payload.get("headers", [])
-                sender = next((h["value"] for h in headers if h["name"] == "From"), "Unknown")
-                date = next((h["value"] for h in headers if h["name"] == "Date"), "Unknown")
-
-                # Extract body
-                body_data = ""
-                if "parts" in payload:
-                    for part in payload.get("parts", []):
-                        if part.get("mimeType") == "text/plain":
-                            body_data = part.get("body", {}).get("data", "")
-                            break
-                        # Sometimes parts are nested
-                        elif "parts" in part:
-                            for subpart in part.get("parts", []):
-                                if subpart.get("mimeType") == "text/plain":
-                                    body_data = subpart.get("body", {}).get("data", "")
-                                    break
-                else:
-                    body_data = payload.get("body", {}).get("data", "")
-
-                if body_data:
-                    import base64
-
-                    try:
-                        padding = len(body_data) % 4
-                        if padding:
-                            body_data += "=" * (4 - padding)
-                        decoded = base64.urlsafe_b64decode(body_data).decode("utf-8")
-                    except Exception:
-                        decoded = "[Failed to decode message body]"
-                else:
-                    decoded = "[No plain text body found]"
-
-                thread_text.append(f"--- Message from {sender} on {date} ---\n{decoded}\n")
-
-            return "\n".join(thread_text)
+            return "\n".join(self._render_message(msg) for msg in messages)
         except Exception as e:
+            if "404" in str(e):
+                try:
+                    msg = self.client.get(f"/gmail/v1/users/me/messages/{thread_id}")
+                    return self._render_message(msg)
+                except Exception as inner:
+                    return f"Failed to read thread or message {thread_id}: {str(inner)}"
             return f"Failed to read thread: {str(e)}"
 
     def register_tools(self, registry: ToolRegistry) -> None:

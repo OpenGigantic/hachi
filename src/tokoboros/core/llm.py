@@ -203,7 +203,11 @@ class AnthropicClient(BaseLLMClient):
     """
 
     def __init__(
-        self, api_key: str | None = None, model: str = "claude-haiku-4-5", max_tokens: int = 4096
+        self,
+        api_key: str | None = None,
+        model: str = "claude-haiku-4-5",
+        max_tokens: int = 4096,
+        timeout: float | None = None,
     ):
         """
         Initialize the Anthropic client.
@@ -213,12 +217,13 @@ class AnthropicClient(BaseLLMClient):
                 environment variable.
             model: The target Claude model identifier.
             max_tokens: The maximum number of tokens to generate.
+            timeout: Per-request timeout in seconds. None uses the SDK default (600s).
         """
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not self.api_key:
             raise ValueError("ANTHROPIC_API_KEY must be provided or set in the environment.")
 
-        self.client = anthropic.Anthropic(api_key=self.api_key)
+        self.client = anthropic.Anthropic(api_key=self.api_key, timeout=timeout)
         self.model = model
         self.max_tokens = max_tokens
 
@@ -384,6 +389,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         for msg in messages:
             if msg.role == "system":
                 continue
+            # msg.content can be either a string OR a list of content blocks (text/image_url).
             payload_messages.append({"role": msg.role, "content": msg.content})
 
         payload: dict[str, Any] = {
@@ -661,7 +667,7 @@ def create_llm_client(
             or _resolve_api_key("CHATGPT_SESSION_TOKEN")
             or _resolve_api_key("CHATGPT_ACCESS_TOKEN")
         )
-        return ChatGPTWebClient(
+        return ChatGPTWebClient(  # type: ignore[no-any-return]
             session_token=session_token,
             model=model if model != "claude-haiku-4-5" else "gpt-4o",
             max_tokens=max_tokens,

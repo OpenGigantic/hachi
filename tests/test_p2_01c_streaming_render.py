@@ -39,6 +39,9 @@ class _ScreenProxy:
     finalize_streaming_bubble = SessionScreen.finalize_streaming_bubble
     reset_streaming_state = SessionScreen.reset_streaming_state
     on_key = SessionScreen.on_key
+    # Defensive helpers used by the streaming path; no-op without a Textual loop.
+    _at_bottom = SessionScreen._at_bottom
+    _scroll_to_tail = SessionScreen._scroll_to_tail
 
 
 def _make_screen(chat_alive: bool = False) -> _ScreenProxy:
@@ -168,6 +171,30 @@ def test_non_stream_event_does_not_create_bubble() -> None:
     screen.ingest_runtime_event("tool.call.started", {"name": "some_tool"})
     # The tool.call.started handler needs the _append method only, not streaming
     assert screen._streaming_bubble is None
+
+
+def test_tool_call_seals_bubble_so_text_and_cards_interleave() -> None:
+    """A tool call mid-turn seals the current text bubble; following narration
+    starts a fresh bubble below the card — keeping chronological order."""
+    from tokoboros.tui.widgets import AgentMessage, ToolCard
+
+    screen = _make_screen()
+    screen.ingest_runtime_event("text.stream.delta", {"text": "Let me check"})
+    assert screen._streaming_bubble is not None
+
+    screen.ingest_runtime_event(
+        "tool.call.started", {"name": "google_list_emails", "input": {"q": "in:inbox"}}
+    )
+    # Sealed: the card was appended below the text, not above it.
+    assert screen._streaming_bubble is None
+
+    screen.ingest_runtime_event("text.stream.delta", {"text": "Found 20 emails"})
+    assert screen._streaming_bubble is not None
+
+    kinds = [type(w).__name__ for w in screen._appended]
+    assert kinds == ["AgentMessage", "ToolCard", "AgentMessage"]
+    assert isinstance(screen._appended[0], AgentMessage)
+    assert isinstance(screen._appended[1], ToolCard)
 
 
 # ---------------------------------------------------------------------------

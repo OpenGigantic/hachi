@@ -44,7 +44,7 @@ def _resp(status: int, content: bytes = _PNG, ctype: str = "image/png", url: str
 def test_url_png_returns_image_block(monkeypatch) -> None:
     monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "true")  # skip DNS in net_guard
     _patch_response(monkeypatch, _resp(200))
-    out = _make_view_image(_Gate(), provider_supports_images=True)(_URL)
+    out = _make_view_image(_Gate(), provider_kind="anthropic")(_URL)
     assert isinstance(out, ToolResultBlocks)
     img = next(b for b in out.blocks if b["type"] == "image")
     assert img["source"]["media_type"] == "image/png"
@@ -55,7 +55,7 @@ def test_url_png_returns_image_block(monkeypatch) -> None:
 def test_url_media_type_from_content_type(monkeypatch) -> None:
     monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "true")
     _patch_response(monkeypatch, _resp(200, ctype="image/jpeg"))
-    out = _make_view_image(_Gate(), provider_supports_images=True)(_URL)
+    out = _make_view_image(_Gate(), provider_kind="anthropic")(_URL)
     assert isinstance(out, ToolResultBlocks)
     assert out.blocks[0]["source"]["media_type"] == "image/jpeg"
 
@@ -63,7 +63,7 @@ def test_url_media_type_from_content_type(monkeypatch) -> None:
 def test_url_falls_back_to_extension_when_content_type_generic(monkeypatch) -> None:
     monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "true")
     _patch_response(monkeypatch, _resp(200, ctype="application/octet-stream"))
-    out = _make_view_image(_Gate(), provider_supports_images=True)(_URL)  # url ends .png
+    out = _make_view_image(_Gate(), provider_kind="anthropic")(_URL)  # url ends .png
     assert isinstance(out, ToolResultBlocks)
     assert out.blocks[0]["source"]["media_type"] == "image/png"
 
@@ -72,7 +72,7 @@ def test_url_non_image_is_error(monkeypatch) -> None:
     monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "true")
     resp = _resp(200, ctype="text/html", url="https://example.com/page")
     _patch_response(monkeypatch, resp)
-    out = _make_view_image(_Gate(), provider_supports_images=True)("https://example.com/page")
+    out = _make_view_image(_Gate(), provider_kind="anthropic")("https://example.com/page")
     assert isinstance(out, str)
     assert "did not return a supported image" in out
 
@@ -81,7 +81,7 @@ def test_url_too_large(monkeypatch) -> None:
     monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "true")
     big = b"x" * (vt._MAX_IMAGE_BYTES + 10)
     _patch_response(monkeypatch, _resp(200, content=big))
-    out = _make_view_image(_Gate(), provider_supports_images=True)(_URL)
+    out = _make_view_image(_Gate(), provider_kind="anthropic")(_URL)
     assert isinstance(out, str)
     assert "exceeding" in out
 
@@ -89,7 +89,7 @@ def test_url_too_large(monkeypatch) -> None:
 def test_url_http_error(monkeypatch) -> None:
     monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "true")
     _patch_response(monkeypatch, _resp(404))
-    out = _make_view_image(_Gate(), provider_supports_images=True)(_URL)
+    out = _make_view_image(_Gate(), provider_kind="anthropic")(_URL)
     assert isinstance(out, str)
     assert "HTTP 404" in out
 
@@ -97,21 +97,21 @@ def test_url_http_error(monkeypatch) -> None:
 def test_url_blocked_by_ssrf_guard(monkeypatch) -> None:
     # Loopback host, private egress not allowed → blocked before any fetch.
     monkeypatch.delenv("TOKOBOROS_REST_ALLOW_PRIVATE", raising=False)
-    out = _make_view_image(_Gate(), provider_supports_images=True)("http://127.0.0.1/x.png")
+    out = _make_view_image(_Gate(), provider_kind="anthropic")("http://127.0.0.1/x.png")
     assert isinstance(out, str)
     assert "Blocked URL" in out
 
 
 def test_url_blocked_in_sandbox_tier(monkeypatch) -> None:
     monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "true")
-    out = _make_view_image(_Gate("sandbox"), provider_supports_images=True)(_URL)
+    out = _make_view_image(_Gate("sandbox"), provider_kind="anthropic")(_URL)
     assert isinstance(out, str)
     assert "Permission Denied" in out and "sandbox" in out
 
 
-def test_url_non_anthropic_returns_text(monkeypatch) -> None:
+def test_url_non_openai_compat_returns_text(monkeypatch) -> None:
     monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "true")
     _patch_response(monkeypatch, _resp(200))
-    out = _make_view_image(_Gate(), provider_supports_images=False)(_URL)
+    out = _make_view_image(_Gate(), provider_kind="ollama")(_URL)
     assert isinstance(out, str)
-    assert "requires the Anthropic provider" in out
+    assert "not supported by the ollama provider" in out
