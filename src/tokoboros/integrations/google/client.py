@@ -7,11 +7,14 @@ so that individual services (Gmail, Drive) can focus purely on business logic.
 """
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from tokoboros.core.oauth import OAuthManager
+
+if TYPE_CHECKING:
+    from tokoboros.core.approvals import ActionApprover
 
 
 class GoogleHTTPClient:
@@ -34,6 +37,9 @@ class GoogleHTTPClient:
         """
         self.oauth = OAuthManager()
         self.scopes = scopes
+        # Optional approver wired by the hub at session boot.  When set, destructive
+        # actions call require_approval() before proceeding.
+        self.approver: ActionApprover | None = None
 
     def _get_headers(self) -> dict[str, str]:
         """
@@ -225,3 +231,26 @@ class GoogleHTTPClient:
         """Executes an authenticated DELETE request."""
         with httpx.Client(base_url=self.BASE_URL, headers=self._get_headers()) as client:
             self._request_with_retry(client, "DELETE", endpoint, params=params)
+
+    def require_approval(self, action: str, summary: str, detail: str = "") -> tuple[bool, str]:
+        """Gate a destructive/outbound action behind the session approver.
+
+        When an :class:`~tokoboros.core.approvals.ActionApprover` is wired (by the
+        :class:`~tokoboros.integrations.google.GoogleIntegrationHub`), delegates to it.
+        Without an approver the call fails safe — the action is blocked — because the
+        tier policy is applied upstream when an approver exists and a bare client with
+        no approver should never silently allow destructive operations.
+
+        Args:
+            action:  Canonical action name (e.g. ``"send_email"``, ``"trash_file"``).
+            summary: Short human-readable description of what would happen.
+            detail:  Optional extended context for the approval UI.
+
+        Returns:
+            ``(True, reason)`` if approved; ``(False, reason)`` if denied.
+        """
+        if self.approver is not None:
+            return self.approver.require(action, summary, detail)
+        # No approver wired → fail safe (deny). Tier policy is applied upstream when an
+        # approver exists; a bare client with no approver denies destructive actions.
+        return (False, "No approver connected for this session; destructive action blocked.")

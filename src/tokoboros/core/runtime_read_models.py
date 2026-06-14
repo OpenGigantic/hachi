@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from tokoboros.core.runtime_events import RuntimeEvent
+from tokoboros.core.secret_scanner import redact_secrets
 
 
 def _looks_like_error(text: str) -> bool:
@@ -170,7 +171,9 @@ def advance_activity(
         return replace(prev, label=f"Running {name}…", state="running", recent_tools=started)
     if event_name == "tool.call.completed":
         name = str(payload.get("name", "tool"))
-        preview = str(payload.get("result_preview", ""))
+        # Defensive pass: events reaching advance_activity() come from adapt_event()
+        # and are already redacted, but guard here too for any direct callers.
+        preview, _ = redact_secrets(str(payload.get("result_preview", "")))
         status = "failed" if _looks_like_error(preview) else "completed"
         recent = _resolve_recent_tool(prev.recent_tools, name, status)
         return replace(prev, recent_tools=recent)
@@ -186,9 +189,14 @@ def advance_activity(
         )
     if event_name == "job.started":
         return replace(prev, label=f"Running job: {payload.get('label', 'job')}", state="running")
-    if event_name in ("session.chat.completed", "job.completed"):
+    if event_name in ("session.chat.completed", "job.completed", "job.failed"):
+        # A finished background job — success OR failure — returns activity to idle.
+        # A failed job is already surfaced via the warn counter and the jobs snapshot;
+        # it must NOT flip the main activity status to "Failed", or a successful chat
+        # turn would render the whole session as failed. Only a genuine boot failure
+        # (the runtime itself is broken) marks the activity "Failed".
         return replace(prev, label="Idle", state="idle")
-    if event_name in ("boot.failed", "job.failed"):
+    if event_name == "boot.failed":
         return replace(prev, label="Failed", state="failed")
     return prev
 
@@ -258,15 +266,19 @@ class RuntimeReadModelStore:
 
             if event.name == "tool.call.completed":
                 name = str(event.payload.get("name", "tool"))
-                preview = str(event.payload.get("result_preview", ""))
+                # ADV-022/UC-MOB-001: apply a defensive redaction pass here even though
+                # adapt_event() already scrubs result_preview upstream.  This ensures the
+                # ToolCallSnapshot.detail stored in the read model (and served to the web
+                # companion) is clean regardless of how the event was produced.
+                raw_preview, _ = redact_secrets(str(event.payload.get("result_preview", "")))
                 pending = self._pending_tool_calls.get(name)
                 if pending:
                     idx = pending.pop(0)
                     started = self._tool_calls[idx]
                     self._tool_calls[idx] = ToolCallSnapshot(
                         name=name,
-                        status="failed" if _looks_like_error(preview) else "completed",
-                        detail=preview,
+                        status="failed" if _looks_like_error(raw_preview) else "completed",
+                        detail=raw_preview,
                         duration_seconds=_duration_seconds(started.timestamp, event.timestamp),
                         timestamp=started.timestamp,
                     )
@@ -275,8 +287,8 @@ class RuntimeReadModelStore:
                     self._tool_calls.append(
                         ToolCallSnapshot(
                             name=name,
-                            status="failed" if _looks_like_error(preview) else "completed",
-                            detail=preview,
+                            status="failed" if _looks_like_error(raw_preview) else "completed",
+                            detail=raw_preview,
                             duration_seconds=0.0,
                             timestamp=event.timestamp,
                         )
@@ -327,13 +339,16 @@ class RuntimeReadModelStore:
                     label=label,
                     status=str(event.payload.get("status", "failed")),
                 )
+                # ADV-022: scrub the raw error string before it lands in the web-facing
+                # job-failure surface (gateway /sessions/{id}/events + memory browser).
+                raw_error, _ = redact_secrets(str(event.payload.get("error", "")))
                 self._job_failures.append(
                     JobFailureSnapshot(
                         job_id=job_id,
                         kind=kind,
                         label=label,
                         attempt=int(event.payload.get("attempt", 0)),
-                        error=str(event.payload.get("error", "")),
+                        error=raw_error,
                         duration_seconds=float(event.payload.get("duration_seconds") or 0.0),
                         timestamp=event.timestamp,
                     )
@@ -362,13 +377,16 @@ class RuntimeReadModelStore:
                 )
 
             if event.name == "subagent.completed":
+                # ADV-022/UC-MOB-001: scrub the sub-agent summary before it lands in
+                # the web companion's memory browser / subagent report surface.
+                raw_summary, _ = redact_secrets(str(event.payload.get("summary") or ""))
                 self._subagent_reports.append(
                     SubAgentReportSnapshot(
                         role=str(event.payload.get("role", "unknown")),
                         status=str(event.payload.get("status", "unknown")),
                         duration_seconds=float(event.payload.get("duration") or 0.0),
                         iterations=int(event.payload.get("iterations") or 0),
-                        summary=str(event.payload.get("summary") or ""),
+                        summary=raw_summary,
                     )
                 )
 

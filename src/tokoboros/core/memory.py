@@ -201,7 +201,7 @@ class MemoryManager:
             f"Exchange:\n{snippet}"
         )
 
-        client = AnthropicClient()  # Uses cheap haiku model
+        client = AnthropicClient(timeout=30.0)  # Uses cheap haiku model; 30s cap prevents hangs
         response = client.generate(
             messages=[LLMMessage(role="user", content=prompt)],
             system_prompt="You are a fact extraction engine. Output pure JSON only.",
@@ -235,9 +235,7 @@ class MemoryManager:
         if extracted:
             logger.debug("sync_turn extracted %d facts", extracted)
 
-    def _run_typed_extraction(
-        self, combined: str, session_id: str = ""
-    ) -> None:
+    def _run_typed_extraction(self, combined: str, session_id: str = "") -> None:
         """M1 write-side: schema-constrained tool-call extraction → typed OG nodes.
 
         Uses the Anthropic tool_use mechanism so the LLM is forced to emit a
@@ -338,7 +336,7 @@ class MemoryManager:
         }
 
         snippet = combined[:3000]
-        client = AnthropicClient()
+        client = AnthropicClient(timeout=30.0)
         response = client.generate(
             messages=[LLMMessage(role="user", content=f"Extract memory from:\n\n{snippet}")],
             system_prompt=(
@@ -823,9 +821,7 @@ class MemoryManager:
                 try:
                     self.job_queue.enqueue(job)
                 except Exception as enqueue_err:
-                    logger.error(
-                        "Failed to enqueue flush_facts job: %s", enqueue_err
-                    )
+                    logger.error("Failed to enqueue flush_facts job: %s", enqueue_err)
             else:
                 logger.warning(
                     "flush_facts skipped: no job queue configured. "

@@ -24,10 +24,13 @@ from __future__ import annotations
 
 import hashlib
 import tomllib
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from tokoboros.core.net_guard import validate_outbound_url
 
 DEFAULT_INDEX_URL = (
     "https://raw.githubusercontent.com/tokoboros-community/tokoboros-packs/main/index.toml"
@@ -149,9 +152,7 @@ def fetch_pack_index(
         return parse_index_toml(cache.read_bytes())
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "tokoboros/pack-index"})
-        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
-            raw = resp.read()
+        raw = _download(url)
     except Exception as exc:
         if cache.exists():
             return parse_index_toml(cache.read_bytes())
@@ -160,6 +161,41 @@ def fetch_pack_index(
     state_dir.mkdir(parents=True, exist_ok=True)
     cache.write_bytes(raw)
     return parse_index_toml(raw)
+
+
+def _download(url: str) -> bytes:
+    """Fetch raw bytes from a pack-index URL with SSRF protection (ADV-005).
+
+    Validates the host (blocks private/loopback/link-local addresses) and refuses
+    HTTP redirects so an attacker-controlled open redirect cannot pivot to an
+    internal endpoint. Extracted as a seam so ``fetch_pack_index``'s cache/fallback
+    logic can be exercised without real network I/O.
+    """
+    ok, reason = validate_outbound_url(url)
+    if not ok:
+        raise RuntimeError(f"Pack index URL blocked by security policy: {reason}")
+
+    class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+        """Refuse all HTTP redirects to prevent SSRF via open redirect."""
+
+        def redirect_request(  # type: ignore[override]
+            self,
+            req: urllib.request.Request,
+            fp: object,
+            code: int,
+            msg: str,
+            headers: object,
+            newurl: str,
+        ) -> None:
+            raise RuntimeError(
+                f"Pack index fetch refused HTTP redirect (code {code}) to {newurl!r}. "
+                "Supply a direct URL without redirects."
+            )
+
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    req = urllib.request.Request(url, headers={"User-Agent": "tokoboros/pack-index"})
+    with opener.open(req, timeout=10) as resp:  # noqa: S310
+        return resp.read()
 
 
 def load_cached_index(state_dir: Path) -> PackIndex | None:

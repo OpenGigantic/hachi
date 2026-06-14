@@ -53,6 +53,10 @@ class FakeGoogleClient:
     def delete(self, endpoint: str, params: dict | None = None) -> None:
         self._record("DELETE", endpoint, params=params)
 
+    def require_approval(self, action: str, summary: str, detail: str = "") -> tuple[bool, str]:
+        """Always approve in unit tests — approval gating is tested in hardening suite."""
+        return (True, "auto-approved in test")
+
 
 def _tasks(client: FakeGoogleClient | None = None) -> TasksService:
     return TasksService(client=client or FakeGoogleClient())  # type: ignore[arg-type]

@@ -13,19 +13,15 @@ class SlackWorkspace(SlackService):
     def search_messages(self, query: str, limit: int = 10) -> str:
         """
         Searches for messages across the entire Slack workspace.
-        Requires a user token (xoxp-) with the search:read scope — bot tokens
-        cannot call search.messages.
+
+        Requires a user OAuth token (``xoxp-``) with the ``search:read`` scope — bot tokens
+        (``xoxb-``) cannot call ``search.messages``.  Configure the user token via:
+        ``tokoboros secrets --set slack_user_token``
         """
-        if self.bot_token and not self.bot_token.startswith("xoxp-"):
-            return (
-                "slack_search_messages requires a user OAuth token (xoxp-) with the "
-                "search:read scope. Bot tokens cannot call the search.messages API. "
-                "Add a user token via: tokoboros secrets --set slack_user_token"
-            )
         params = {"query": query, "count": limit}
 
         try:
-            res = self._get("/search.messages", params=params)
+            res = self._get_as_user("/search.messages", params=params)
             messages = res.get("messages", {}).get("matches", [])
 
             if not messages:

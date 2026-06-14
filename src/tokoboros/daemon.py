@@ -10,13 +10,22 @@ Installs the gateway as a persistent background service that auto-starts on logi
 
 The ``runner`` parameter on :class:`DaemonInstaller` is injectable so tests run
 fully offline — no actual launchctl/systemctl/schtasks calls are made.
+
+Auth (UC-AUTH-002):
+    The daemon always authenticates its gateway surface.  :meth:`DaemonInstaller.install`
+    calls :func:`_ensure_daemon_token` before writing the service unit — this generates
+    and persists a bearer token to ``~/.tokoboros/gateway-token`` (0600) if one does
+    not already exist.  The spawned ``tokoboros gateway`` process resolves the same
+    file at startup via :func:`_resolve_gateway_auth_token`.
 """
 
 from __future__ import annotations
 
 import logging
 import logging.handlers
+import secrets
 import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -62,6 +71,38 @@ def _default_log_path() -> Path:
     return Path(get_tokoboros_paths().state_dir) / "gateway.log"
 
 
+def _default_token_path() -> Path:
+    """Return the canonical path of the persistent gateway bearer token."""
+    return Path.home() / ".tokoboros" / "gateway-token"
+
+
+def _ensure_daemon_token() -> str:
+    """Return the existing gateway token or generate and persist a new one.
+
+    This is called by :meth:`DaemonInstaller.install` so the spawned daemon
+    process always starts with an authenticated gateway.  The token file is
+    created with 0o600 permissions (owner-read-write only) on POSIX systems.
+
+    Returns:
+        The bearer token string the daemon gateway will require.
+    """
+    token_path = _default_token_path()
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if token_path.exists():
+        token = token_path.read_text(encoding="utf-8").strip()
+        if token:
+            return token
+
+    token = secrets.token_urlsafe(32)
+    token_path.write_text(token + "\n", encoding="utf-8")
+    try:
+        token_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except NotImplementedError:
+        pass  # Windows — chmod is a no-op; OS-level ACLs protect the home dir.
+    return token
+
+
 def setup_rotating_log(
     log_path: Path,
     *,
@@ -89,9 +130,7 @@ def setup_rotating_log(
         encoding="utf-8",
     )
     handler.setLevel(level)
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
-    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s"))
     root = logging.getLogger()
     if not any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root.handlers):
         root.addHandler(handler)
@@ -312,7 +351,15 @@ class DaemonInstaller:
     # ------------------------------------------------------------------
 
     def install(self) -> str:
-        """Install and start the gateway daemon.  Returns a human-readable summary."""
+        """Install and start the gateway daemon.  Returns a human-readable summary.
+
+        UC-AUTH-002: Ensures a bearer token exists (generating + persisting one if
+        absent) before writing the service unit.  The spawned ``tokoboros gateway``
+        process resolves the same ``~/.tokoboros/gateway-token`` file at startup,
+        so the daemon surface is always authenticated without encoding the token in
+        the service-unit definition (which would be world-readable on some platforms).
+        """
+        _ensure_daemon_token()
         platform = _detect_platform()
         if platform == "macos":
             return self._install_launchd()
@@ -465,9 +512,7 @@ class DaemonInstaller:
             tmp.write(xml)
             tmp_path = tmp.name
         try:
-            self._run(
-                ["schtasks", "/create", "/tn", _TASK_NAME, "/xml", tmp_path, "/f"]
-            )
+            self._run(["schtasks", "/create", "/tn", _TASK_NAME, "/xml", tmp_path, "/f"])
         finally:
             Path(tmp_path).unlink(missing_ok=True)
         return (

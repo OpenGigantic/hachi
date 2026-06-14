@@ -303,3 +303,53 @@ def test_worker_raises_on_missing_func_and_registry(tmp_path: Path) -> None:
     assert ran
     failed = q.get_failed_jobs(limit=5)
     assert any(j.name == "orphan" for j in failed)
+
+
+# ---------------------------------------------------------------------------
+# Callable (func) jobs on SQLiteJobQueue — in-process dispatch via side-table
+# ---------------------------------------------------------------------------
+
+
+def test_func_based_job_executes_in_process(tmp_path: Path) -> None:
+    """A func-based Job survives the SQLite enqueue→get_pending round-trip and runs.
+
+    Regression: previously the callable was dropped on the DB round-trip, leaving
+    handler_name='' and func=None, so the worker failed every such job with
+    "no callable func and handler_name '' is not in registry" (the source of the
+    fact_extraction / prefetch_recall / session_title job.failed warnings).
+    """
+    q = _queue(tmp_path)
+    ran: list[str] = []
+    jid = q.enqueue(
+        Job(job_id="", name="in_proc", func=lambda x: ran.append(x), args=("hello",))
+    )
+
+    worker = JobWorker(q)  # no registry — func dispatch must still work
+    assert worker.execute_one() is True
+
+    stored = q.get_job(jid)
+    assert stored is not None
+    assert stored.status == JobStatus.COMPLETED
+    assert ran == ["hello"]
+    # The side-table entry is released once the job reaches a terminal state.
+    assert jid not in q._func_table
+
+
+def test_func_based_job_failed_on_restart_recovery(tmp_path: Path) -> None:
+    """A func-only job cannot run after a restart (the callable is in-memory only).
+
+    A fresh SQLiteJobQueue over the same DB has an empty func-table, so
+    _recover_running() fails the orphaned pending job rather than leaving it stuck
+    or silently re-running it without its callable.
+    """
+    db = tmp_path / "jobs.db"
+    q1 = SQLiteJobQueue(db_path=db)
+    jid = q1.enqueue(Job(job_id="", name="ephemeral", func=lambda: None))
+    assert jid in q1._func_table
+
+    # Simulate a process restart: a new queue instance over the same DB file.
+    q2 = SQLiteJobQueue(db_path=db)
+    assert q2.get_pending() == []  # not left pending for a worker that can't run it
+    recovered = q2.get_job(jid)
+    assert recovered is not None
+    assert recovered.status == JobStatus.FAILED

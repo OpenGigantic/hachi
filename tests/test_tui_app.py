@@ -202,6 +202,31 @@ def test_persist_ui_state_tolerates_missing_screen() -> None:
     assert app._hydrated_state.last_mode == app.DEFAULT_MODE
 
 
+def test_collect_warnings_matches_counter_and_extracts_detail() -> None:
+    """The WarningsModal must show exactly what the ``warn N`` counter counts, so
+    the user can see what the warnings are instead of an opaque number."""
+    app = TokoborosTextualApp()
+    app._event_buffer = [
+        ("session.chat.started", {}),
+        ("job.failed", {"label": "persist_delegation", "error": "disk full"}),
+        ("tool.call.completed", {"name": "read_file"}),
+        ("mcp.server.failed", {"name": "filesystem", "error": "spawn ENOENT"}),
+    ]
+
+    warnings = app._collect_warnings()
+
+    assert [label for label, _ in warnings] == ["job.failed", "mcp.server.failed"]
+    assert len(warnings) == app._warning_count()
+    # Detail is pulled from the most useful payload key.
+    assert "disk full" in warnings[0][1]
+    assert "spawn ENOENT" in warnings[1][1]
+
+
+def test_warning_detail_handles_empty_payload() -> None:
+    detail = TokoborosTextualApp._warning_detail({})
+    assert detail == "(no detail)"
+
+
 def test_boot_runtime_uses_gateway_path_without_local_boot(monkeypatch) -> None:
     app = TokoborosTextualApp(gateway_base_url="http://127.0.0.1:8111")
 
@@ -582,3 +607,88 @@ def test_authoring_screen_snapshot_refresh_is_noop_without_body() -> None:
             return len(screen.query("#snapshot-body"))
 
     assert asyncio.run(_run()) == 0
+
+
+def test_snapshot_body_scrolls_when_content_overflows() -> None:
+    """Regression: #snapshot-body was height:1fr, so it filled the scroll viewport
+    exactly and never overflowed — the Ops dashboard / Permission Audit at the
+    bottom were clipped and unreachable. With height:auto the body grows past the
+    viewport and the enclosing VerticalScroll can scroll."""
+    from textual.containers import VerticalScroll
+
+    from tokoboros.tui.app import SnapshotScreen
+
+    class _TallScreen(SnapshotScreen):
+        title_text = "Tall"
+
+        def _build_snapshot(self, agent: object) -> str:  # type: ignore[override]
+            return "\n".join(f"row {i:03d}" for i in range(200))
+
+    class _Host(App[None]):
+        CSS = APP_CSS
+
+    async def _run() -> int:
+        host = _Host()
+        async with host.run_test(size=(100, 30)) as pilot:
+            screen = _TallScreen()
+            await host.push_screen(screen)
+            await pilot.pause()
+            screen.refresh_from_agent(object())  # truthy agent → renders tall body
+            await pilot.pause()
+            return screen.query_one(VerticalScroll).max_scroll_y
+
+    assert asyncio.run(_run()) > 0
+
+
+def test_tool_card_starts_collapsed_with_running_title() -> None:
+    from tokoboros.tui.widgets import ToolCard
+
+    card = ToolCard("google_create_task", "title=P0", "title: P0 Review")
+    assert card.collapsed is True
+    assert "google_create_task" in card.title
+    assert "running" in card.title
+    assert "running" in card.classes
+
+
+def test_tool_card_composes_without_active_app() -> None:
+    """Regression: cards are mounted from a threadsafe runtime-event callback
+    where Textual's active-app ContextVar is unset. Collapsible's default
+    ``with self.Contents():`` compose raised NoActiveAppError there, so ToolCard
+    overrides compose to build Contents without the app lookup."""
+    from tokoboros.tui.widgets import ToolCard
+
+    card = ToolCard("google_list_emails", "q=in:inbox", "q: in:inbox")
+    # Fully consuming compose() must not raise (no app context here).
+    children = list(card.compose())
+    assert len(children) == 2
+
+
+def test_tool_card_completed_and_error_update_in_app() -> None:
+    """mark_completed/mark_error swap status classes and fold the outcome into
+    the collapsible title; the full result lands in the (expandable) body."""
+    from tokoboros.tui.widgets import ToolCard
+
+    class _Host(App[None]):
+        CSS = APP_CSS
+
+    async def _run() -> tuple[str, bool, str, bool]:
+        host = _Host()
+        async with host.run_test(size=(100, 30)) as pilot:
+            done = ToolCard("google_create_task", "title=P0", "title: P0 Review")
+            failed = ToolCard("google_read_email_thread", "thread_id=abc", "thread_id: abc")
+            await host.mount(done)
+            await host.mount(failed)
+            await pilot.pause()
+            done.mark_completed("Task created: 'P0: Review NTPC' (id=xyz).")
+            failed.mark_error("Failed to read thread: Google API error 404 …")
+            await pilot.pause()
+            return (
+                done.title,
+                "done" in done.classes,
+                failed.title,
+                "failed" in failed.classes,
+            )
+
+    done_title, done_ok, failed_title, failed_ok = asyncio.run(_run())
+    assert done_ok and "completed" in done_title and "Task created" in done_title
+    assert failed_ok and "error" in failed_title

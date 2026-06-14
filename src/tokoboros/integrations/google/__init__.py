@@ -5,6 +5,10 @@ The main entry point for the Google Workspace module.
 It dynamically discovers required scopes and registers all tools from all active services.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from tokoboros.core.loop import ToolRegistry
 from tokoboros.integrations.google.calendar import CalendarService
 from tokoboros.integrations.google.client import GoogleHTTPClient
@@ -20,6 +24,9 @@ from tokoboros.integrations.google.service import GoogleService
 from tokoboros.integrations.google.sheets import SheetsService
 from tokoboros.integrations.google.tasks import TasksService
 
+if TYPE_CHECKING:
+    from tokoboros.core.approvals import ActionApprover
+
 
 class GoogleIntegrationHub:
     """
@@ -27,7 +34,7 @@ class GoogleIntegrationHub:
     Instantiates services, aggregates required scopes, and mounts tools.
     """
 
-    def __init__(self):
+    def __init__(self, approver: ActionApprover | None = None):
         # 1. Instantiate the services without a client first to aggregate scopes
         self._services: list[GoogleService] = []
 
@@ -56,6 +63,8 @@ class GoogleIntegrationHub:
 
         # 2. Instantiate the actual client with the aggregated scopes
         self.client = GoogleHTTPClient(scopes=list(all_scopes))
+        # Wire the session approver so all destructive leaf tools can gate actions.
+        self.client.approver = approver
 
         # 3. Fully initialize services with the working client
         self._services = [

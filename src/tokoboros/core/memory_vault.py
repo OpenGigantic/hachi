@@ -10,6 +10,13 @@ evicted by workspace noise. It is the source of truth for the frozen system prom
 snapshot injected at boot time (Phase 2).
 
 All writes pass through MemoryGuard to block prompt injection before storage.
+
+Account namespacing (ADV-023):
+  The vault accepts an ``account_id`` key.  When set, ChromaDB collection names are
+  prefixed with ``<account_id>_`` and the on-disk chroma directory gains a sub-folder
+  so that two accounts (e.g., two different Google sign-ins) never share memory.
+  The default account key ``"default"`` maps to the legacy unnamespaced paths so
+  existing data continues to resolve without migration.
 """
 
 import datetime
@@ -23,6 +30,11 @@ from tokoboros.core.memory_guard import scan as guard_scan
 from tokoboros.core.paths import get_tokoboros_paths
 
 logger = logging.getLogger(__name__)
+
+# Environment variable used to set the account key without changing config files.
+# Config-loader consumers should prefer passing account_id= explicitly.
+_ACCOUNT_ENV_VAR = "TOKOBOROS_ACCOUNT"
+_DEFAULT_ACCOUNT = "default"
 
 # --- User Profile Constraints ---
 USER_PROFILE_MAX_ENTRIES = 25
@@ -52,17 +64,56 @@ class MemoryVault:
                        Capped at USER_PROFILE_MAX_ENTRIES to force curation over dumping.
     """
 
-    def __init__(self, brain_dir: str | None = None):
+    def __init__(
+        self,
+        brain_dir: str | None = None,
+        account_id: str | None = None,
+    ):
         """Initialize the embedded ChromaDB client with dual collections.
 
         Args:
-            brain_dir: Physical location of the vault. Defaults to OS-native data directory.
+            brain_dir:  Physical location of the vault root.  Defaults to the
+                        OS-native data directory returned by ``get_tokoboros_paths()``.
+            account_id: Opaque key that namespaces this vault from others on the
+                        same machine (ADV-023 — cross-account contamination).
+                        Sourced (in priority order) from:
+                          1. The ``account_id`` argument.
+                          2. The ``TOKOBOROS_ACCOUNT`` environment variable.
+                          3. The literal string ``"default"``.
+                        The ``"default"`` account maps to the legacy unnamespaced
+                        collection names so existing data resolves without migration.
         """
         if not brain_dir:
             brain_dir = str(get_tokoboros_paths().data_dir)
 
-        self.db_path = os.path.join(brain_dir, "chroma_vault")
+        # Resolve the account key — env var is a convenience override for scripts.
+        resolved_account = (
+            account_id or os.environ.get(_ACCOUNT_ENV_VAR) or _DEFAULT_ACCOUNT
+        ).strip() or _DEFAULT_ACCOUNT
+        self._account_id: str = resolved_account
+
+        # For the "default" account keep the legacy chroma_vault path so existing
+        # data is found without migration.  All other accounts live in a sub-folder
+        # named after the account key to guarantee hard isolation.
+        if resolved_account == _DEFAULT_ACCOUNT:
+            self.db_path = os.path.join(brain_dir, "chroma_vault")
+        else:
+            # Sanitise: keep only alphanumerics, hyphens, underscores.
+            import re as _re
+
+            safe_account = _re.sub(r"[^a-zA-Z0-9_\-]", "_", resolved_account)[:64]
+            self.db_path = os.path.join(brain_dir, "chroma_vault", safe_account)
         os.makedirs(self.db_path, exist_ok=True)
+
+        # Collection-name prefix: "default" → no prefix (backward compat).
+        # Other accounts get "<safe_account>_" prepended.
+        if resolved_account == _DEFAULT_ACCOUNT:
+            _pfx = ""
+        else:
+            import re as _re2
+
+            _safe = _re2.sub(r"[^a-zA-Z0-9_\-]", "_", resolved_account)[:64]
+            _pfx = f"{_safe}_"
 
         import chromadb
         from chromadb.config import Settings
@@ -72,25 +123,27 @@ class MemoryVault:
         )
 
         self.collection = self.client.get_or_create_collection(
-            name="core_memory", metadata={"description": "Tokoboros Long-Term Semantic Memory"}
+            name=f"{_pfx}core_memory",
+            metadata={"description": "Tokoboros Long-Term Semantic Memory"},
         )
 
         self.user_collection = self.client.get_or_create_collection(
-            name="user_profile", metadata={"description": "Bounded user identity and preferences"}
+            name=f"{_pfx}user_profile",
+            metadata={"description": "Bounded user identity and preferences"},
         )
 
         self.agent_profile = self.client.get_or_create_collection(
-            name="agent_profile",
+            name=f"{_pfx}agent_profile",
             metadata={"description": "Bounded agent personality and instructions"},
         )
 
         self.delegation_collection = self.client.get_or_create_collection(
-            name="delegation_log",
+            name=f"{_pfx}delegation_log",
             metadata={"description": "Sub-agent delegation history for pattern learning"},
         )
 
         self.quarantine_collection = self.client.get_or_create_collection(
-            name="memory_quarantine",
+            name=f"{_pfx}memory_quarantine",
             metadata={"description": "Blocked memory writes with threat metadata for review"},
         )
 
@@ -119,8 +172,13 @@ class MemoryVault:
                 if callable(_stop_fn):
                     _stop_fn()
             # Always release the collection references so GC can finalise.
-            for attr in ("collection", "user_collection", "agent_profile",
-                         "delegation_collection", "quarantine_collection"):
+            for attr in (
+                "collection",
+                "user_collection",
+                "agent_profile",
+                "delegation_collection",
+                "quarantine_collection",
+            ):
                 if hasattr(self, attr):
                     setattr(self, attr, None)
         except Exception:
@@ -136,6 +194,33 @@ class MemoryVault:
         Called by boot_agent when ``memory.graph=true`` is configured.
         """
         self._graph_index = index
+
+    def _delete_from_fts5(self, fact_id: str) -> None:
+        """Remove a node from the FTS5 SQLite index by node_id (best-effort).
+
+        Accesses the MemoryIndex's internal ``_db_path`` directly so we do not
+        need to add a new public API to MemoryIndex (which is outside our edit scope).
+        Errors are logged at DEBUG level and never propagate — the Chroma deletion
+        is the authoritative step.
+
+        Args:
+            fact_id: The SHA-256 fact ID used as ``node_id`` in the FTS5 tables.
+        """
+        import sqlite3
+
+        db_path = getattr(self._graph_index, "_db_path", None)
+        if db_path is None:
+            return
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=5, check_same_thread=False)
+            try:
+                with conn:
+                    conn.execute("DELETE FROM mem_fts WHERE node_id = ?", (fact_id,))
+                    conn.execute("DELETE FROM mem_nodes WHERE node_id = ?", (fact_id,))
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.debug("_delete_from_fts5: could not remove %s: %s", fact_id, exc)
 
     # ==========================================
     # Internal Helpers
@@ -298,19 +383,34 @@ class MemoryVault:
         return self._guarded_write(self.collection, content, category)
 
     def delete_fact(self, fact_id: str) -> bool:
-        """Remove a fact from core_memory by ID.
+        """Remove a fact from ALL backends: Chroma core_memory + FTS5 index.
+
+        Deletion is idempotent — deleting an ID that does not exist returns True
+        so callers can safely retry.  A partial failure (e.g. FTS5 unreachable)
+        is logged but does not suppress the Chroma deletion result.
 
         Args:
             fact_id: The SHA-256 content hash returned by upsert_fact.
 
         Returns:
-            True if the deletion succeeded.
+            True if the Chroma deletion succeeded (or the ID was already absent).
         """
+        chroma_ok = True
         try:
             self.collection.delete(ids=[fact_id])
-            return True
-        except Exception:
-            return False
+        except Exception as exc:
+            logger.warning("delete_fact: Chroma deletion failed for %s: %s", fact_id, exc)
+            chroma_ok = False
+
+        # FTS5 graph index: remove matching nodes so "forgotten" facts do not
+        # resurface via BM25 keyword search (UC-MEM-004).
+        # We delete by node_id (which equals the Chroma SHA-256 fact_id for facts
+        # written through this vault) from both mem_fts and mem_nodes tables.
+        # If the graph index is not attached or the id is absent, this is a no-op.
+        if self._graph_index is not None:
+            self._delete_from_fts5(fact_id)
+
+        return chroma_ok
 
     def semantic_search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """Semantic similarity search against the core_memory collection.

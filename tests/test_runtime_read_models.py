@@ -47,8 +47,17 @@ def test_completion_returns_to_idle() -> None:
     assert (out.label, out.state) == ("Idle", "idle")
 
 
-def test_job_failed_is_failed() -> None:
-    out = advance_activity(ActivitySnapshot("Idle", "idle"), "job.failed", {})
+def test_job_failed_returns_to_idle_not_failed() -> None:
+    # A background job failing is surfaced via the warn counter, not by hijacking the
+    # main activity status — a successful chat turn must never render as "Failed".
+    busy = advance_activity(ActivitySnapshot("Idle", "idle"), "session.chat.started", {})
+    out = advance_activity(busy, "job.failed", {})
+    assert (out.label, out.state) == ("Idle", "idle")
+
+
+def test_boot_failed_is_failed() -> None:
+    # A genuine runtime boot failure is the one case that marks the activity failed.
+    out = advance_activity(ActivitySnapshot("Idle", "idle"), "boot.failed", {})
     assert (out.label, out.state) == ("Failed", "failed")
 
 

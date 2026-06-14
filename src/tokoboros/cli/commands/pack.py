@@ -52,15 +52,20 @@ def ogpack_install(
             import tarfile
             import tempfile
 
+            from tokoboros.core.archive_safety import ArchiveSecurityError, safe_extract
+
             with tempfile.TemporaryDirectory() as tmp:
                 tmp_path = Path(tmp)
                 with tarfile.open(source_path, "r:*") as tf:
-                    tf.extractall(tmp_path)  # noqa: S202
+                    safe_extract(tf, tmp_path)
                 candidates = list(tmp_path.rglob("pack.toml"))
                 if not candidates:
                     console.print("[red]No pack.toml found in archive.[/red]")
                     raise typer.Exit(1)
                 manifest_preview = parse_pack_toml(candidates[0].read_bytes())
+    except ArchiveSecurityError as exc:
+        console.print(f"[red]Archive rejected (security):[/red] {exc}")
+        raise typer.Exit(1) from exc
     except (FileNotFoundError, ValueError, KeyError) as exc:
         console.print(f"[red]Cannot read pack.toml:[/red] {exc}")
         raise typer.Exit(1) from exc
@@ -178,15 +183,20 @@ def ogpack_update(
             import tarfile
             import tempfile
 
+            from tokoboros.core.archive_safety import ArchiveSecurityError, safe_extract
+
             with tempfile.TemporaryDirectory() as tmp:
                 tmp_path = Path(tmp)
                 with tarfile.open(source_path, "r:*") as tf:
-                    tf.extractall(tmp_path)  # noqa: S202
+                    safe_extract(tf, tmp_path)
                 candidates = list(tmp_path.rglob("pack.toml"))
                 if not candidates:
                     console.print("[red]No pack.toml found in archive.[/red]")
                     raise typer.Exit(1)
                 manifest_preview = parse_pack_toml(candidates[0].read_bytes())
+    except ArchiveSecurityError as exc:
+        console.print(f"[red]Archive rejected (security):[/red] {exc}")
+        raise typer.Exit(1) from exc
     except (FileNotFoundError, ValueError, KeyError) as exc:
         console.print(f"[red]Cannot read pack.toml:[/red] {exc}")
         raise typer.Exit(1) from exc
@@ -301,6 +311,4 @@ def pack_index_show() -> None:
         return
 
     for entry in index.packs:
-        console.print(
-            f"[bold]{entry.id}[/bold] v{entry.semver}  {entry.description or '—'}"
-        )
+        console.print(f"[bold]{entry.id}[/bold] v{entry.semver}  {entry.description or '—'}")

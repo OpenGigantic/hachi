@@ -18,7 +18,8 @@ def _echo_runner(session_key: str, text: str) -> str:
 
 
 def test_dispatch_returns_reply_and_targets_sender() -> None:
-    router = ChannelRouter(_echo_runner)
+    # Explicit opt-in for open access (no allowlist needed in tests).
+    router = ChannelRouter(_echo_runner, allow_all_when_no_allowlist=True)
     out = router.dispatch(InboundMessage(channel="telegram", sender_id="42", text="hi"))
     assert out.channel == "telegram"
     assert out.recipient_id == "42"
@@ -26,7 +27,7 @@ def test_dispatch_returns_reply_and_targets_sender() -> None:
 
 
 def test_session_continuity_per_sender() -> None:
-    router = ChannelRouter(_echo_runner)
+    router = ChannelRouter(_echo_runner, allow_all_when_no_allowlist=True)
     k1 = router.session_key("telegram", "42")
     k2 = router.session_key("telegram", "42")
     k3 = router.session_key("telegram", "99")
@@ -46,7 +47,7 @@ def test_runner_error_becomes_friendly_reply() -> None:
     def boom(_session: str, _text: str) -> str:
         raise RuntimeError("model exploded")
 
-    router = ChannelRouter(boom)
+    router = ChannelRouter(boom, allow_all_when_no_allowlist=True)
     out = router.dispatch(InboundMessage(channel="telegram", sender_id="42", text="hi"))
     assert "something went wrong" in out.text
     assert "model exploded" in out.text
@@ -81,7 +82,7 @@ def test_latest_offset_advances_past_last_update() -> None:
 
 
 def test_end_to_end_parse_then_dispatch() -> None:
-    router = ChannelRouter(_echo_runner)
+    router = ChannelRouter(_echo_runner, allow_all_when_no_allowlist=True)
     updates = [
         {
             "update_id": 1,
