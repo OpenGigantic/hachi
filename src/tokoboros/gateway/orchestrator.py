@@ -23,6 +23,13 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from tokoboros.core.approvals import (
+    ActionApprover,
+    HandlerApprover,
+    PolicyApprover,
+    RegistryApprover,
+    get_approval_registry,
+)
 from tokoboros.core.checkpoints import CheckpointManager
 from tokoboros.core.cost import CostTracker
 from tokoboros.core.credential_vault import CredentialVault
@@ -96,7 +103,13 @@ from tokoboros.jobs import (
     ResidentWorkerThread,
     SQLiteJobQueue,
 )
-from tokoboros.jobs.scheduler import Schedule, Scheduler, ScheduleRunner, ScheduleStore
+from tokoboros.jobs.scheduler import (
+    Schedule,
+    Scheduler,
+    ScheduleRunner,
+    ScheduleStore,
+    deliver_result,
+)
 from tokoboros.og_engine.engine import SkillEngine
 from tokoboros.tools.browser_tools import register_browser_tools
 from tokoboros.tools.config_tools import register_config_tools
@@ -1013,9 +1026,10 @@ class AgentSession:
         if self._session_id and self.memory:
             try:
                 _last = self.memory.history[-3:] if self.memory.history else []
-                _summary = " ".join(
-                    m.content[:80] for m in _last if isinstance(m.content, str)
-                ) or "session closed"
+                _summary = (
+                    " ".join(m.content[:80] for m in _last if isinstance(m.content, str))
+                    or "session closed"
+                )
                 self.memory.write_episode(self._session_id, _summary)
             except Exception:
                 pass
@@ -1204,6 +1218,22 @@ def boot_agent(
             approval_handler=on_permission_request,
             event_emitter=emit_runtime_event,
         )
+
+    # Build the session-scoped ActionApprover for destructive tool actions.
+    # Selection priority:
+    #   1. TUI path  — on_permission_request is set → HandlerApprover (reuses TUI modal).
+    #   2. Gateway/API path — no handler but context exists → RegistryApprover (parks in
+    #      the PendingApprovalRegistry so Agent B's /approvals endpoint can resolve it).
+    #   3. No human context at all → PolicyApprover (tier-gated: allow unrestricted, deny
+    #      guided/sandbox with an actionable message).
+    action_approver: ActionApprover
+    if on_permission_request is not None:
+        action_approver = HandlerApprover(on_permission_request, emit_runtime_event)
+    elif isinstance(runtime_gate, InteractivePermissionGate):
+        # InteractivePermissionGate without a handler = gateway context.
+        action_approver = RegistryApprover(get_approval_registry(), emit_runtime_event)
+    else:
+        action_approver = PolicyApprover(gate.tier)
 
     emit_runtime_event(
         BOOT_PROGRESS,
@@ -1459,9 +1489,7 @@ def boot_agent(
                 memory.set_memory_writer(_memory_writer)
                 if _is_fts5_only:
                     _provider.attach_memory_writer(_memory_writer)
-                logger.info(
-                    "MemoryWriter: M1 write path active (memory_dir=%s)", _paths.memory_dir
-                )
+                logger.info("MemoryWriter: M1 write path active (memory_dir=%s)", _paths.memory_dir)
             except Exception:
                 logger.debug(
                     "P2-05: MemoryWriter init failed; falling back to Chroma-only", exc_info=True
@@ -1559,8 +1587,10 @@ def boot_agent(
         ToolSpec(
             # Google Workspace (Gmail, Calendar, Drive, Docs, Sheets, Contacts, Meet, Tasks).
             # Only mounted when GOOGLE_CLIENT_ID is set; degrades to a friendly stub otherwise.
+            # The session-scoped action_approver gates destructive leaf tools (send_email,
+            # trash_file, etc.) through the appropriate human-approval path.
             name="google",
-            register_fn=lambda d: register_google_tools(d.tool_registry),
+            register_fn=lambda d: register_google_tools(d.tool_registry, approver=action_approver),
         ),
         ToolSpec(
             # Presentation generation — build .pptx from natural language.
@@ -1770,7 +1800,11 @@ def boot_agent(
     # delivers the result via the session's normal event pipeline.
     def _fire_schedule(s: Schedule) -> None:
         try:
-            session.chat(s.task)
+            result_text = session.chat(s.task)
+            # UC-RSCH-002: the resident runner must honor deliver_to/webhook_url too
+            # (previously only `tokoboros schedule run-due` delivered). deliver_result
+            # redacts outbound secrets before any webhook POST.
+            deliver_result(s, result_text)
         except Exception:
             import logging as _logging
 

@@ -545,6 +545,15 @@ class SQLiteJobQueue(JobQueue):
     def __init__(self, db_path: Path | None = None) -> None:
         self._db_path = db_path or _default_db_path()
         self._lock = threading.RLock()
+        # In-process side-table for callable (``func``) jobs. SQLite cannot persist a
+        # live callable, so func-based jobs are dispatched in-process only — the same
+        # model InMemoryJobQueue already uses. The SQLite row still records the job for
+        # visibility/audit; the callable is re-attached from here when the worker reads
+        # the (func-less) row back. Keyed by job_id, cleared on terminal state, and not
+        # durable across a restart: ephemeral work (prefetch/title/fact-extraction) that
+        # closes over live runtime state (vault/session) is meaningless after a restart
+        # and is failed by ``_recover_running`` instead of silently re-run.
+        self._func_table: dict[str, tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]]] = {}
         self._init_db()
         recovered = self._recover_running()
         if recovered:
@@ -586,7 +595,7 @@ class SQLiteJobQueue(JobQueue):
                 """
                 UPDATE jobs
                 SET status = 'failed',
-                    result_error = 'Discarded on recovery: func-only job cannot execute after restart',
+                    result_error = 'Discarded on recovery: func-only job cannot run after restart',
                     completed_at = datetime('now')
                 WHERE status = 'pending'
                   AND (handler_name IS NULL OR handler_name = '')
@@ -610,7 +619,7 @@ class SQLiteJobQueue(JobQueue):
                 duration_seconds=float(row["result_duration"] or 0.0),
             )
 
-        return Job(
+        job = Job(
             job_id=row["job_id"],
             name=row["name"],
             handler_name=row["handler_name"] or "",
@@ -628,6 +637,13 @@ class SQLiteJobQueue(JobQueue):
             scheduled_for=row["scheduled_for"],
             result=result,
         )
+        # Re-attach an in-process callable recorded by enqueue() so the worker can
+        # dispatch via job.func, exactly as it would for an InMemoryJobQueue job.
+        with self._lock:
+            func_entry = self._func_table.get(job.job_id)
+        if func_entry is not None:
+            job.func, job.args, job.kwargs = func_entry
+        return job
 
     # ------------------------------------------------------------------
     # JobQueue interface
@@ -639,6 +655,10 @@ class SQLiteJobQueue(JobQueue):
                 job.job_id = str(uuid.uuid4())
             if not job.scheduled_for:
                 job.scheduled_for = datetime.now(UTC).isoformat()
+            # Retain a callable (func) job in the in-process side-table so the worker
+            # can dispatch it after reading the (func-less) row back from SQLite.
+            if job.func is not None:
+                self._func_table[job.job_id] = (job.func, job.args, job.kwargs)
             with self._conn() as conn:
                 conn.execute(
                     """
@@ -731,6 +751,9 @@ class SQLiteJobQueue(JobQueue):
                         "UPDATE jobs SET status = ? WHERE job_id = ?",
                         (status.value, job_id),
                     )
+                # A terminal job no longer needs its in-process callable retained.
+                if status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+                    self._func_table.pop(job_id, None)
                 return True
 
     def update_attempt(self, job_id: str, attempt: int, scheduled_for: str) -> None:
@@ -781,6 +804,8 @@ class SQLiteJobQueue(JobQueue):
         return count
 
     def shutdown(self) -> None:
+        with self._lock:
+            self._func_table.clear()
         logger.debug("SQLiteJobQueue shutdown (db=%s)", self._db_path)
 
 

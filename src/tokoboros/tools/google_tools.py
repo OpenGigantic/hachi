@@ -15,8 +15,12 @@ the browser consent flow if no cached token exists.
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
 
 from tokoboros.core.loop import ToolRegistry
+
+if TYPE_CHECKING:
+    from tokoboros.core.approvals import ActionApprover
 
 # The full set of tool names the hub registers — used to populate
 # _GROUP_BY_TOOL_NAME in the orchestrator without hard-coding them twice.
@@ -80,7 +84,7 @@ _NOT_CONFIGURED_SCHEMA: dict[str, object] = {
 }
 
 
-def register_google_tools(registry: ToolRegistry) -> bool:
+def register_google_tools(registry: ToolRegistry, approver: ActionApprover | None = None) -> bool:
     """Register all Google Workspace tools into *registry*.
 
     Returns ``True`` if the hub was fully mounted (``GOOGLE_CLIENT_ID`` set),
@@ -88,6 +92,13 @@ def register_google_tools(registry: ToolRegistry) -> bool:
 
     All tools are tagged with the ``google`` lazy group so the orchestrator
     only activates them for turns that need Google access.
+
+    Args:
+        registry: The agent's :class:`~tokoboros.core.loop.ToolRegistry`.
+        approver: Optional :class:`~tokoboros.core.approvals.ActionApprover` to wire
+                  into the hub so leaf tools can gate destructive actions.  ``None``
+                  keeps backward compatibility — the client will fail-safe (deny) when
+                  a destructive action is requested without an approver.
     """
     if not os.environ.get("GOOGLE_CLIENT_ID"):
         registry.register(
@@ -102,7 +113,7 @@ def register_google_tools(registry: ToolRegistry) -> bool:
 
     from tokoboros.integrations.google import GoogleIntegrationHub
 
-    hub = GoogleIntegrationHub()
+    hub = GoogleIntegrationHub(approver=approver)
     hub.register_tools(registry)
 
     # Re-tag every registered google_* tool with the lazy group so the

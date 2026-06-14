@@ -83,3 +83,28 @@ def redact_outbound(text: str) -> tuple[str, int]:
     if outbound_redaction_disabled():
         return text, 0
     return redact_secrets(text)
+
+
+def redact_structure(obj: object) -> object:
+    """Recursively walk *obj* and redact secrets from every string leaf.
+
+    Handles ``str``, ``dict``, ``list``, and ``tuple`` inputs. All other types
+    are returned unchanged. Dicts are rebuilt with both keys and values walked;
+    keys that are strings are also redacted (unusual but defensive).
+
+    Args:
+        obj: Any Python value — typically a tool-input dict or result preview.
+
+    Returns:
+        A new object of the same type with all string leaves scrubbed.
+    """
+    if isinstance(obj, str):
+        redacted, _ = redact_secrets(obj)
+        return redacted
+    if isinstance(obj, dict):
+        return {redact_structure(k): redact_structure(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact_structure(item) for item in obj]
+    if isinstance(obj, tuple):
+        return tuple(redact_structure(item) for item in obj)
+    return obj

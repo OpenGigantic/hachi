@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tokoboros.core.archive_safety import ArchiveSecurityError
 from tokoboros.core.net_guard import validate_outbound_url
 
 # ---------------------------------------------------------------------------
@@ -165,37 +166,76 @@ def _default_fetcher(url: str) -> bytes:
 
 
 def _extract_tar(data: bytes, dest: Path) -> list[Path]:
-    """Extract a .tar.gz archive into ``dest``, returning installed .og paths."""
-    written: list[Path] = []
+    """Extract a .tar.gz archive into ``dest``, returning installed .og paths.
+
+    Strips the common single top-level prefix that GitHub archives include
+    (e.g. ``{repo}-{ref}/``) and copies only ``.og`` and ``pack.json`` files.
+
+    Security: uses :func:`~tokoboros.core.archive_safety.safe_extract` for
+    all actual writes so path-traversal and tar-bomb attacks are blocked.
+    """
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
-        # The top-level dir in GitHub archives is ``{repo}-{ref}/``; strip it.
-        # Detect the common top-level prefix from ALL member paths (handles
-        # archives without an explicit directory entry).
         members = tf.getmembers()
         if not members:
             return []
+
+        # Detect the common single top-level prefix (GitHub archive layout).
         first_parts = {m.name.split("/")[0] for m in members if "/" in m.name}
         prefix = first_parts.pop() if len(first_parts) == 1 else ""
 
+        # Build the subset of members we actually want (og + pack.json),
+        # renaming them so the prefix is stripped, and validating that the
+        # stripped name does not itself escape *dest*.
+        dest_resolved = dest.resolve()
+        subset: list[tarfile.TarInfo] = []
         for member in members:
-            rel = member.name
-            if prefix and rel.startswith(prefix + "/"):
-                rel = rel[len(prefix) + 1 :]
-            if not rel or not rel.endswith(".og"):
-                # Also extract pack.json for metadata
-                if rel in ("pack.json",):
-                    pass
-                else:
-                    continue
             if member.isdir():
                 continue
 
-            target = dest / rel
+            rel = member.name
+            if prefix and rel.startswith(prefix + "/"):
+                rel = rel[len(prefix) + 1 :]
+
+            if not rel or (not rel.endswith(".og") and rel != "pack.json"):
+                continue
+
+            # Bounds-check the stripped path before creating a renamed copy.
+            candidate = (dest / rel).resolve()
+            try:
+                within_dest = candidate.is_relative_to(dest_resolved)
+            except AttributeError:  # pragma: no cover — only pre-3.9
+                import os as _os
+
+                within_dest = _os.path.commonpath([dest_resolved, candidate]) == str(dest_resolved)
+            if not within_dest:
+                raise ArchiveSecurityError(
+                    f"Archive member {member.name!r} (stripped: {rel!r}) would escape "
+                    f"destination directory {dest_resolved}. Extraction aborted."
+                )
+
+            # Clone the TarInfo with the renamed (prefix-stripped) path so
+            # we write to the correct location without the prefix.
+            copy = tarfile.TarInfo(name=rel)
+            copy.size = member.size
+            copy.mtime = member.mtime
+            copy.mode = member.mode & 0o777
+            copy.type = member.type
+            copy.uid = 0
+            copy.gid = 0
+            copy.uname = ""
+            copy.gname = ""
+            subset.append((copy, member))  # type: ignore[arg-type]
+
+        # Now extract each validated, renamed member individually.
+        dest.mkdir(parents=True, exist_ok=True)
+        written: list[Path] = []
+        for copy, original in subset:  # type: ignore[misc]
+            target = dest / copy.name
             target.parent.mkdir(parents=True, exist_ok=True)
-            src = tf.extractfile(member)
+            src = tf.extractfile(original)
             if src is not None:
                 target.write_bytes(src.read())
-                if rel.endswith(".og"):
+                if copy.name.endswith(".og"):
                     written.append(target)
     return written
 

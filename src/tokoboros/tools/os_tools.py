@@ -376,19 +376,25 @@ def _make_guarded_read_file(gate: Any):
         result = gate.check_path(str(normalized), "read")
         if not result.allowed:
             return f"Permission Denied: {result.reason}"
-        try:
-            target = normalized
-            if (
-                target.exists()
-                and target.is_file()
-                and target.stat().st_size > gate.max_file_size_bytes
-            ):
+
+        # UC-PERF-005: Fail CLOSED on the size check — if we cannot determine the
+        # file size (e.g. a broken stat), refuse the read rather than swallowing the
+        # error and proceeding with an unbounded read.
+        target = normalized
+        if target.exists() and target.is_file():
+            try:
+                file_size = target.stat().st_size
+            except Exception as exc:
+                return (
+                    f"Permission Denied: Cannot determine file size for '{target}': {exc}. "
+                    "Read refused to avoid loading an unverified file."
+                )
+            if file_size > gate.max_file_size_bytes:
                 return (
                     "Permission Denied: File exceeds configured max_file_size_mb. "
                     "Update device-permissions.og to raise the limit."
                 )
-        except Exception:
-            pass
+
         return _raw_read_file(str(normalized))
 
     return guarded_read_file
@@ -409,11 +415,18 @@ def _make_guarded_write_file(gate: Any, checkpoints: Any = None):
                 "Split the file or increase the limit in device-permissions.og."
             )
         # Snapshot the pre-write state so the user can rollback this change.
+        # ADV-026: A failed checkpoint must NOT be silently ignored — if we cannot
+        # take a snapshot, we refuse the destructive write so that rollback remains
+        # possible.  Only skip the snapshot when checkpoints is None (not registered).
         if checkpoints is not None:
             try:
                 checkpoints.snapshot(normalized, label="write_file")
-            except Exception:
-                pass
+            except Exception as exc:
+                return (
+                    f"Write aborted: Could not create a rollback checkpoint for '{normalized}': "
+                    f"{exc}. The file has NOT been modified. "
+                    "Resolve the checkpoint storage issue and retry."
+                )
         return _raw_write_file(str(normalized), content)
 
     return guarded_write_file
@@ -454,6 +467,9 @@ ROLLBACK_CHANGES_SCHEMA = {
 }
 
 
+_CAT_STEMS: frozenset[str] = frozenset({"cat", "type"})
+
+
 def _make_guarded_run_terminal(gate: Any):
     """Create a permission-gated run_terminal_command tool."""
 
@@ -467,6 +483,37 @@ def _make_guarded_run_terminal(gate: Any):
         cmd_result = gate.check_command(command)
         if not cmd_result.allowed:
             return f"Permission Denied: {cmd_result.reason}"
+
+        # UC-PERM-003: check_command's _check_path_args skips bare filename tokens
+        # (those without any path separator, ~, or .) so "cat id_rsa" from a blocked
+        # cwd passes the gate unchecked.  After the command-level check passes, we
+        # resolve every non-flag argument for cat/type builtins against the actual cwd
+        # and explicitly re-check each resolved path via check_path.
+        import shlex as _shlex
+
+        try:
+            argv = _shlex.split(command.strip(), posix=(os.name != "nt"))
+        except ValueError:
+            argv = command.strip().split()
+
+        if argv:
+            executable_stem = Path(argv[0].strip("\"'")).stem.lower().removesuffix(".exe")
+            if executable_stem in _CAT_STEMS:
+                effective_cwd = Path(cwd).resolve()
+                for token in argv[1:]:
+                    tok = token.strip("\"'")
+                    if not tok or tok.startswith("-"):
+                        continue
+                    # Resolve relative (including bare) filenames against the actual cwd.
+                    p = Path(tok)
+                    if not p.is_absolute():
+                        p = (effective_cwd / p).resolve()
+                    else:
+                        p = p.resolve()
+                    path_result = gate.check_path(str(p), "read")
+                    if not path_result.allowed:
+                        return f"Permission Denied: {path_result.reason}"
+
         return _raw_run_terminal_command(command, cwd, timeout=gate.terminal_timeout)
 
     return guarded_run_terminal
@@ -553,7 +600,12 @@ RUN_SHELL_SCRIPT_SCHEMA = {
         "Execute a shell script with full shell capabilities: piping (`|`), redirection (`>`), "
         "conditionals (`if`/`&&`/`||`), loops, and multi-line logic. "
         "On Windows runs via PowerShell; on Linux/Mac via bash. "
-        "Use this when run_terminal_command is too restrictive. "
+        "IMPORTANT: This tool is only available when the shell interpreter "
+        "('powershell' on Windows, 'bash' on Linux/Mac) is explicitly listed in the "
+        "terminal allowed_commands in device-permissions.og. At the 'sandbox' and 'guided' "
+        "permission tiers the shell interpreter is blocked, so this tool will be denied. "
+        "It is available at the 'unrestricted' tier or when the user has explicitly "
+        "allowlisted the shell in their configuration. "
         "For pure Python computation use python_sandbox instead."
     ),
     "input_schema": {
