@@ -19,7 +19,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-
 # ---------------------------------------------------------------------------
 # 1. MemoryBackend literal accepts "fts5_only"
 # ---------------------------------------------------------------------------

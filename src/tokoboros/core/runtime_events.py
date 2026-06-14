@@ -11,6 +11,8 @@ import datetime
 from dataclasses import dataclass
 from typing import Any
 
+from tokoboros.core.secret_scanner import redact_secrets, redact_structure
+
 # Boot lifecycle
 BOOT_PROGRESS = "boot.progress"
 BOOT_COMPLETE = "boot.complete"
@@ -52,6 +54,11 @@ MCP_SERVER_STARTING = "mcp.server.starting"
 MCP_SERVER_READY = "mcp.server.ready"
 MCP_SERVER_FAILED = "mcp.server.failed"
 MCP_SHUTDOWN = "mcp.shutdown"
+
+# Max chars of a tool result carried in a ``tool.call.completed`` preview.
+# Bounded so the event stream stays light, but large enough that expanding a
+# tool card in the TUI shows the substance of the result, not a stub.
+TOOL_RESULT_PREVIEW_MAX = 2000
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,14 +157,20 @@ def adapt_event(event_type: str, data: dict[str, Any] | None = None) -> list[Run
 
     if event_type == "tool_call":
         tool_name = payload.get("name", "unknown")
-        tool_input = payload.get("input", {})
+        raw_input = payload.get("input", {})
+        # ADV-009: always scrub secrets from tool inputs before they enter the event
+        # stream, TUI transcript, gateway SSE, or persisted SQLite.  This is NOT
+        # subject to TOKOBOROS_ALLOW_OUTBOUND_SECRETS — that env var governs only
+        # user-visible outbound messaging; internal event/transcript redaction is
+        # unconditional.
+        safe_input = redact_structure(raw_input)
         return [
             RuntimeEventEnvelope(
                 _event(
                     TOOL_CALL_STARTED,
                     {
                         "name": tool_name,
-                        "input": tool_input,
+                        "input": safe_input,
                     },
                 ),
                 legacy_aliases=("tool_call",),
@@ -167,13 +180,16 @@ def adapt_event(event_type: str, data: dict[str, Any] | None = None) -> list[Run
     if event_type == "tool_result":
         tool_name = payload.get("name", "unknown")
         raw_result = str(payload.get("result", ""))
+        # ADV-009: redact BEFORE truncating so a secret near the start of a long
+        # result is not preserved inside the preview window.
+        safe_result, _ = redact_secrets(raw_result)
         return [
             RuntimeEventEnvelope(
                 _event(
                     TOOL_CALL_COMPLETED,
                     {
                         "name": tool_name,
-                        "result_preview": raw_result[:500],
+                        "result_preview": safe_result[:TOOL_RESULT_PREVIEW_MAX],
                     },
                 ),
                 legacy_aliases=("tool_result",),
@@ -209,6 +225,7 @@ def adapt_event(event_type: str, data: dict[str, Any] | None = None) -> list[Run
     if event_type == "delegation_complete":
         role = payload.get("role", "unknown")
         status = payload.get("status", "unknown")
+        task = payload.get("task", "")
         return [
             RuntimeEventEnvelope(
                 _event(
@@ -226,7 +243,12 @@ def adapt_event(event_type: str, data: dict[str, Any] | None = None) -> list[Run
                 _event(
                     JOB_COMPLETED,
                     {
-                        "job_id": f"delegate:{role}",
+                        # Must reconstruct the exact JOB_STARTED job_id (which folds in
+                        # the task slug) so the read model clears the matching "running"
+                        # row instead of leaving an orphaned subagent job that never
+                        # leaves the Active Jobs table. Parallel same-role delegations
+                        # each get a distinct id via the task slug.
+                        "job_id": f"delegate:{role}:{str(task)[:24]}",
                         "kind": "subagent",
                         "status": status,
                     },

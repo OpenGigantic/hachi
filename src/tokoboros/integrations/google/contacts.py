@@ -1,6 +1,7 @@
 import json
 
 from tokoboros.core.loop import ToolRegistry
+from tokoboros.core.validators import validate_email, validate_phone
 from tokoboros.integrations.google.service import GoogleService
 
 
@@ -16,9 +17,16 @@ class ContactsService(GoogleService):
 
     def register_tools(self, registry: ToolRegistry) -> None:
         def google_search_contact(name: str) -> str:
+            """Search contacts by display name substring.
+
+            Note: matching is substring-based (case-insensitive) against the full
+            contact list; for large address books consider the People API
+            ``searchContacts`` endpoint instead.
+            """
             try:
                 response = self.client.get(
-                    "https://people.googleapis.com/v1/people/me/connections?personFields=names,emailAddresses,phoneNumbers&pageSize=1000"
+                    "https://people.googleapis.com/v1/people/me/connections"
+                    "?personFields=names,emailAddresses,phoneNumbers&pageSize=1000"
                 )
 
                 search_lower = name.lower()
@@ -50,20 +58,46 @@ class ContactsService(GoogleService):
                 return f"Failed to search Google Contacts: {str(e)}"
 
         def google_create_contact(name: str, email: str) -> str:
+            """Create a new Google Contact after validating the email address."""
+            # UC-CONTACT-001: validate email before touching the API
+            ok_email, email_result = validate_email(email)
+            if not ok_email:
+                return f"Invalid email address: {email_result}"
+
             try:
-                body = {"names": [{"givenName": name}], "emailAddresses": [{"value": email}]}
+                body = {
+                    "names": [{"givenName": name}],
+                    "emailAddresses": [{"value": email_result}],
+                }
                 self.client.post(
                     "https://people.googleapis.com/v1/people:createContact", json_data=body
                 )
-                return f"Successfully saved new contact: {name} ({email})."
+                return f"Successfully saved new contact: {name} ({email_result})."
             except Exception as e:
                 return f"Failed to create Google Contact: {str(e)}"
 
-        def google_update_contact(resourceName: str, phone: str = None, email: str = None) -> str:
+        def google_update_contact(
+            resourceName: str, phone: str | None = None, email: str | None = None
+        ) -> str:
+            """Update an existing Google Contact after validating any supplied values."""
+            # UC-CONTACT-001: validate before touching the API
+            if email is not None:
+                ok_email, email_result = validate_email(email)
+                if not ok_email:
+                    return f"Invalid email address: {email_result}"
+                email = email_result
+
+            if phone is not None:
+                ok_phone, phone_result = validate_phone(phone)
+                if not ok_phone:
+                    return f"Invalid phone number: {phone_result}"
+                phone = phone_result
+
             try:
                 # 1. Fetch existing contact to get the required etag
                 person = self.client.get(
-                    f"https://people.googleapis.com/v1/{resourceName}?personFields=names,emailAddresses,phoneNumbers"
+                    f"https://people.googleapis.com/v1/{resourceName}"
+                    "?personFields=names,emailAddresses,phoneNumbers"
                 )
 
                 update_fields = []
@@ -86,7 +120,8 @@ class ContactsService(GoogleService):
                 # 3. Send the PATCH request
                 fields_str = ",".join(update_fields)
                 self.client.patch(
-                    f"https://people.googleapis.com/v1/{resourceName}:updateContact?updatePersonFields={fields_str}",
+                    f"https://people.googleapis.com/v1/{resourceName}"
+                    f":updateContact?updatePersonFields={fields_str}",
                     json_data=person,
                 )
                 return "Successfully updated contact."
@@ -94,6 +129,7 @@ class ContactsService(GoogleService):
                 return f"Failed to update Google Contact: {str(e)}"
 
         def google_list_contacts(max_results: int = 50) -> str:
+            """List saved Google Contacts up to *max_results* entries."""
             try:
                 matches = []
                 page_token: str | None = None
@@ -132,6 +168,22 @@ class ContactsService(GoogleService):
                 return f"Failed to list Google Contacts: {str(e)}"
 
         def google_delete_contact(resourceName: str) -> str:
+            """Permanently delete a Google Contact — requires explicit approval.
+
+            UC-CONTACT-002: the action is gated behind ``require_approval`` so that
+            a single conversational instruction cannot silently destroy contact data.
+            """
+            ok, reason = self.require_approval(
+                action="delete_contact",
+                summary=f"Delete contact {resourceName}",
+                detail=(
+                    f"Permanently removes the Google Contact with resource name "
+                    f"'{resourceName}'. This cannot be undone."
+                ),
+            )
+            if not ok:
+                return f"⛔ Action not approved: {reason}"
+
             try:
                 self.client.delete(f"https://people.googleapis.com/v1/{resourceName}:deleteContact")
                 return f"Successfully deleted contact: {resourceName}"
@@ -220,9 +272,8 @@ class ContactsService(GoogleService):
         registry.register(
             {
                 "name": "google_delete_contact",
-                "description": "DANGER: Permanently delete a Google Contact. ALWAYS verbally ask "
-                "the user for confirmation before executing this tool, unless they explicitly "
-                "commanded you to delete the contact in their prompt.",
+                "description": "DANGER: Permanently delete a Google Contact. "
+                "This action requires explicit approval before it is executed.",
                 "input_schema": {
                     "type": "object",
                     "properties": {

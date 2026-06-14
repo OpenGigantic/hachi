@@ -18,8 +18,6 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
 
 # ---------------------------------------------------------------------------
 # 1. LeaseManager.acquire() succeeds for a free target

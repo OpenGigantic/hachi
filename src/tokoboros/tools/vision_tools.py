@@ -8,21 +8,22 @@ can describe / reason about them. This is the multimodal-input capability
 assistants that accept images.
 
 Design notes:
-    - **Provider-gated.** Only the Anthropic provider path passes image blocks
-      through natively. For any other provider the tool returns a plain-text
-      notice instead of an image block, so an OpenAI-compatible/Ollama endpoint is
-      never sent an Anthropic-shaped block it can't parse.
+    - **Provider-gated.** Anthropic and OpenAI-compatible providers receive native
+      image blocks (different wire formats). Providers without vision support (e.g.,
+      Ollama running a text-only model) receive a plain-text fallback notice so the
+      agent can still communicate the limitation without crashing the request.
     - **Permission-gated.** Local reads go through the same ``PermissionGate`` path
       check as ``read_file``; URL fetches are SSRF-validated via ``net_guard``. The
       whole tool is disabled in the ``sandbox`` tier.
-    - **Lean deps.** stdlib ``base64`` + the already-present ``httpx``; media type is
-      inferred from the extension or the response Content-Type (Anthropic natively
-      decodes PNG/JPEG/GIF/WebP).
+    - **Auto-resize.** Images exceeding 8000 px on any dimension (Anthropic API hard
+      limit) are transparently downscaled via Pillow before encoding, preserving
+      aspect ratio. Requires ``Pillow>=10`` (declared in project deps).
 """
 
 from __future__ import annotations
 
 import base64
+import io
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -48,6 +49,47 @@ _VALID_MEDIA: set[str] = set(_MEDIA_TYPES.values())
 # Hard ceiling on the raw image bytes we will encode. Anthropic rejects images
 # above ~5 MB; cap here so we fail fast with a friendly message instead of a 400.
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+# Anthropic rejects images where either dimension exceeds this pixel count.
+_MAX_IMAGE_DIM = 8000
+
+_MEDIA_TO_PIL_FORMAT: dict[str, str] = {
+    "image/png": "PNG",
+    "image/jpeg": "JPEG",
+    "image/gif": "GIF",
+    "image/webp": "WEBP",
+}
+
+
+def _resize_if_needed(raw: bytes, media_type: str) -> tuple[bytes, str]:
+    """Downscale *raw* so neither dimension exceeds ``_MAX_IMAGE_DIM``.
+
+    Returns the (possibly re-encoded) bytes and the (possibly updated) media_type.
+    GIF inputs are converted to PNG on resize because PIL cannot write animated GIF
+    with a simple thumbnail call and the Anthropic API doesn't benefit from animation.
+    """
+    from PIL import Image  # noqa: PLC0415 — imported here so the dep is optional at import time
+
+    with Image.open(io.BytesIO(raw)) as img:
+        w, h = img.size
+        if w <= _MAX_IMAGE_DIM and h <= _MAX_IMAGE_DIM:
+            return raw, media_type
+
+        # Scale down so the larger dimension equals _MAX_IMAGE_DIM.
+        scale = _MAX_IMAGE_DIM / max(w, h)
+        new_size = (int(w * scale), int(h * scale))
+        resized = img.resize(new_size, Image.LANCZOS)  # type: ignore[attr-defined]
+
+        out_media = media_type if media_type != "image/gif" else "image/png"
+        pil_fmt = _MEDIA_TO_PIL_FORMAT.get(out_media, "PNG")
+
+        # JPEG doesn't support alpha; convert RGBA→RGB.
+        if pil_fmt == "JPEG" and resized.mode in ("RGBA", "P"):
+            resized = resized.convert("RGB")
+
+        buf = io.BytesIO()
+        resized.save(buf, format=pil_fmt)
+        return buf.getvalue(), out_media
 
 # Browsing/vision is meaningless (and disabled) in the read-only sandbox tier.
 _BLOCKED_TIERS = {"sandbox"}
@@ -162,9 +204,9 @@ def _fetch_url_image(url: str) -> tuple[bytes, str, str] | str:
 
 
 def _make_view_image(
-    gate: Any | None, provider_supports_images: bool
+    gate: Any | None, provider_kind: str
 ) -> Callable[..., ToolResultBlocks | str]:
-    """Build the ``view_image`` callable bound to a permission gate and provider."""
+    """Build the ``view_image`` callable bound to a permission gate and provider kind."""
 
     def view_image(path: str, prompt: str = "") -> ToolResultBlocks | str:
         tier = _tier_blocked(gate)
@@ -177,29 +219,58 @@ def _make_view_image(
             return loaded  # error message
         raw, media_type, label = loaded
 
+        is_anthropic = str(provider_kind).lower() == "anthropic"
+        is_openai_compat = str(provider_kind).lower() in (
+            "openai-compatible",
+            "openrouter",
+            "groq",
+            "together",
+            "deepseek",
+            "gemini",
+        )
+
+        if not (is_anthropic or is_openai_compat):
+            # Provider doesn't support vision (e.g., local-models without vision capability).
+            size_kb = max(1, len(raw) // 1024)
+            return (
+                f"Image '{label}' ({size_kb} KB, {media_type}) was loaded, but inline "
+                f"image analysis is not supported by the {provider_kind} provider."
+            )
+
+        # Resize to meet dimension constraints.
+        raw, media_type = _resize_if_needed(raw, media_type)
+
         size_kb = max(1, len(raw) // 1024)
         focus = prompt.strip() or "Describe what you see and use it to answer the user's request."
 
-        if not provider_supports_images:
-            # Non-Anthropic providers don't take Anthropic image blocks; don't risk a
-            # malformed request — report the image instead of analyzing it.
-            return (
-                f"Image '{label}' ({size_kb} KB, {media_type}) was loaded, but inline "
-                "image analysis currently requires the Anthropic provider. Switch the "
-                "provider to Anthropic to view images."
-            )
-
         data = base64.b64encode(raw).decode("ascii")
-        blocks: list[dict[str, Any]] = [
-            {
-                "type": "image",
-                "source": {"type": "base64", "media_type": media_type, "data": data},
-            },
-            {
-                "type": "text",
-                "text": f"Loaded image '{label}' ({size_kb} KB, {media_type}). {focus}",
-            },
-        ]
+
+        if is_anthropic:
+            # Anthropic format
+            blocks: list[dict[str, Any]] = [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": data},
+                },
+                {
+                    "type": "text",
+                    "text": f"Loaded image '{label}' ({size_kb} KB, {media_type}). {focus}",
+                },
+            ]
+        else:
+            # OpenAI-compatible format: data URL
+            data_url = f"data:{media_type};base64,{data}"
+            blocks = [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": data_url},
+                },
+                {
+                    "type": "text",
+                    "text": f"Loaded image '{label}' ({size_kb} KB, {media_type}). {focus}",
+                },
+            ]
+
         return ToolResultBlocks(
             blocks=blocks, summary=f"Loaded image {label} ({media_type}, {size_kb} KB)"
         )
@@ -215,11 +286,12 @@ def register_vision_tools(
     Args:
         registry: The ToolRegistry to register into.
         gate: Optional PermissionGate (path checks + tier gating).
-        provider_kind: Active provider kind; image blocks only flow to Anthropic.
+        provider_kind: Active provider kind (e.g., 'anthropic', 'openai-compatible', 'ollama').
+            Anthropic and OpenAI-compatible providers support vision. Emits the correct
+            image block format per provider.
     """
-    provider_supports_images = str(provider_kind).lower() == "anthropic"
     registry.register(
         VIEW_IMAGE_SCHEMA,
-        _make_view_image(gate, provider_supports_images),
+        _make_view_image(gate, provider_kind),
         group="vision",
     )

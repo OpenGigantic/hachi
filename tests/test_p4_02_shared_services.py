@@ -72,7 +72,8 @@ def test_clear_destroys_singleton() -> None:
 
     _patched_shared()
     ProcessSharedServices.clear()
-    assert _mod._INSTANCE is None
+    # ADV-024: the singleton store is now a fingerprint-keyed dict; clear() empties it.
+    assert _mod._INSTANCES == {}
 
 
 # ---------------------------------------------------------------------------

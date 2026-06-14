@@ -9,23 +9,69 @@ The cron matcher is a dependency-free implementation of the common 5-field subse
 (``*``, ``*/n``, ``a,b``, ``a-b``, ``a-b/n``) for minute / hour / day-of-month /
 month / day-of-week. Day-of-week uses cron numbering (0 or 7 = Sunday).
 
+Timezone handling
+-----------------
+Cron schedules are evaluated in the timezone specified by a schedule's ``timezone``
+field (default ``"local"`` which means the system local timezone).  ``next_run`` and
+``last_run`` are always stored as UTC ISO-8601 strings; the timezone is only used
+when computing the next cron match.  Interval and once schedules remain UTC-only
+(they are duration-based, not "fire at 09:00 local time" semantics).
+
 The :class:`Scheduler` is pure logic over an injected ``now``, so it is fully
 testable without a clock, network, or running agent. Execution/delivery is wired
 in by passing a ``fire`` callback to :meth:`Scheduler.tick`.
+
+Delivery
+--------
+:func:`deliver_result` performs webhook POST / notification delivery for a fired
+schedule and redacts outbound secrets.  The resident runner in
+``gateway/orchestrator.py`` should call this immediately after firing::
+
+    def _fire_schedule(s: Schedule) -> None:
+        result_text = session.chat(s.task)
+        deliver_result(s, result_text)
+
+Missed-run semantics
+--------------------
+When the tick loop wakes up late (process slept, system suspended) and a schedule
+is overdue by N occurrences, **exactly one catch-up run fires**; missed occurrences
+are dropped.  This is the ``collapse-to-one`` strategy.  The choice is logged at
+INFO level so operators can tell that N-1 occurrences were silently skipped.
+
+Tick serialization
+------------------
+Each due schedule is run by the ``fire`` callback **synchronously** inside
+:meth:`Scheduler.tick`.  The tick method does not spawn background threads; the
+caller (:class:`ScheduleRunner`) runs inside a dedicated daemon thread.  A slow
+``fire`` callback will delay subsequent schedules within the *same* tick but will
+NOT delay the *next* tick (because :class:`ScheduleRunner` measures wall-clock
+time from the *end* of each tick).
+
+The serialization guarantee: schedules within one tick are executed sequentially,
+one-at-a-time, and each is ``mark_fired`` before the next is evaluated.  This
+prevents the same schedule from firing twice in concurrent ticks even if the
+previous tick ran long (``is_due`` checks the persisted ``next_run``).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+
+import httpx
+
+from tokoboros.core.file_lock import file_lock
+from tokoboros.core.secret_scanner import redact_outbound
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +133,12 @@ def _parse_cron(expr: str) -> list[set[int]]:
 
 
 def cron_matches(expr: str, dt: datetime) -> bool:
-    """Return True if ``dt`` (minute resolution) satisfies the cron expression."""
+    """Return True if ``dt`` (minute resolution) satisfies the cron expression.
+
+    ``dt`` may be in any timezone (including naive, which is treated as UTC).  The
+    match is performed on the *fields* of ``dt`` as-is; callers wanting local-time
+    semantics should convert before calling.
+    """
     minute, hour, dom, mon, dow = _parse_cron(expr)
     # cron day-of-week: 0/7 = Sunday; Python isoweekday() is Mon=1..Sun=7
     cron_dow = dt.isoweekday() % 7
@@ -110,15 +161,78 @@ def cron_matches(expr: str, dt: datetime) -> bool:
     return dom_ok or dow_ok
 
 
-def cron_next(expr: str, after: datetime) -> datetime:
-    """Return the next datetime strictly after ``after`` that matches ``expr``."""
+def _resolve_tz(tz_name: str) -> timezone | Any:
+    """Resolve a timezone name to a :class:`datetime.timezone` or
+    :mod:`zoneinfo.ZoneInfo` instance.
+
+    Accepts:
+    - ``"utc"`` / ``"UTC"`` → :data:`datetime.UTC`
+    - ``"local"`` → the system local timezone (via :meth:`datetime.astimezone`)
+    - Any IANA name understood by :mod:`zoneinfo` (Python 3.9+), e.g.
+      ``"America/New_York"``
+
+    Args:
+        tz_name: Timezone designator string.
+
+    Returns:
+        A :class:`tzinfo` subclass.
+
+    Raises:
+        ValueError: If the name is not recognised.
+    """
+    if tz_name.lower() in ("utc", "z"):
+        return UTC
+    if tz_name.lower() == "local":
+        # datetime.now().astimezone().tzinfo gives the local tzinfo on all platforms.
+        return datetime.now().astimezone().tzinfo
+    try:
+        from zoneinfo import ZoneInfo  # Python 3.9+
+
+        return ZoneInfo(tz_name)
+    except Exception as exc:
+        raise ValueError(f"Unknown timezone {tz_name!r}: {exc}") from exc
+
+
+def cron_next(expr: str, after: datetime, tz_name: str = "utc") -> datetime:
+    """Return the next datetime strictly after ``after`` that matches ``expr``.
+
+    The cron expression is evaluated in the timezone given by ``tz_name``
+    (default ``"utc"`` for backwards-compatibility).  The returned datetime is
+    always **timezone-aware UTC**.
+
+    When ``tz_name`` is ``"local"`` or a named IANA zone the search iterates in
+    local time so that DST transitions are handled correctly — e.g. a ``0 2 * * *``
+    schedule in ``"America/New_York"`` will fire at wall-clock 02:00 local time
+    (the ambiguous / missing 2 AM during DST transitions will be handled by
+    :meth:`datetime.fold` semantics).
+
+    Args:
+        expr:    5-field cron expression.
+        after:   Lower bound (exclusive).  Must be timezone-aware.
+        tz_name: Timezone in which to evaluate the cron fields.
+
+    Returns:
+        Next matching UTC datetime (timezone-aware).
+
+    Raises:
+        ValueError: On malformed expression or if no match found within 4 years.
+    """
     _parse_cron(expr)  # validate early
-    candidate = after.replace(second=0, microsecond=0) + timedelta(minutes=1)
+
+    tz = _resolve_tz(tz_name)
+
+    # Convert ``after`` to the target timezone for field matching.
+    if after.tzinfo is None:
+        after = after.replace(tzinfo=UTC)
+    after_local = after.astimezone(tz)
+
+    candidate_local = after_local.replace(second=0, microsecond=0) + timedelta(minutes=1)
     # Cap the search at ~4 years to bound pathological/invalid expressions.
     for _ in range(4 * 366 * 24 * 60):
-        if cron_matches(expr, candidate):
-            return candidate
-        candidate += timedelta(minutes=1)
+        if cron_matches(expr, candidate_local):
+            # Convert back to UTC before returning.
+            return candidate_local.astimezone(UTC)
+        candidate_local += timedelta(minutes=1)
     raise ValueError(f"no cron match found within 4 years for {expr!r}")
 
 
@@ -153,6 +267,10 @@ class Schedule:
     interval_seconds: int | None = None  # INTERVAL
     cron: str | None = None  # CRON: 5-field expression
 
+    # Timezone for cron evaluation (IANA name, "local", or "utc").
+    # "utc" preserves existing behaviour; "local" fires at the local wall clock.
+    timezone: str = "utc"
+
     # delivery of the result
     deliver_to: str = "chat"  # "chat" | "webhook" | "log"
     webhook_url: str | None = None
@@ -169,7 +287,11 @@ class Schedule:
     max_retries: int = 3
 
     def compute_next(self, after: datetime) -> datetime | None:
-        """Compute the next fire time strictly after ``after`` (None if finished)."""
+        """Compute the next fire time strictly after ``after`` (None if finished).
+
+        For CRON schedules the next time is computed in the schedule's ``timezone``
+        so that the cron fields are matched against local wall-clock time.
+        """
         if self.kind == ScheduleKind.ONCE:
             if self.run_count > 0 or not self.run_at:
                 return None
@@ -184,7 +306,7 @@ class Schedule:
                 nxt += timedelta(seconds=self.interval_seconds)
             return nxt
         if self.kind == ScheduleKind.CRON and self.cron:
-            return cron_next(self.cron, after)
+            return cron_next(self.cron, after, tz_name=self.timezone)
         return None
 
     def is_due(self, now: datetime) -> bool:
@@ -199,8 +321,9 @@ class Schedule:
     def from_dict(cls, data: dict[str, Any]) -> Schedule:
         data = dict(data)
         data["kind"] = ScheduleKind(data["kind"])
-        # Tolerate persisted records from before condition_skill was added.
+        # Tolerate persisted records from before condition_skill/timezone were added.
         data.setdefault("condition_skill", None)
+        data.setdefault("timezone", "utc")
         return cls(**data)
 
 
@@ -210,30 +333,166 @@ class Schedule:
 
 
 class ScheduleStore:
-    """JSON-backed persistence for schedules (survives restart)."""
+    """JSON-backed persistence for schedules (survives restart).
+
+    **Cross-process safety**: reads and writes are serialized with a cross-process
+    advisory file lock (:func:`tokoboros.core.file_lock.file_lock`) in addition to
+    the in-process :class:`threading.RLock`.  This prevents the TUI process and a
+    background daemon that share the same ``schedules.json`` from racing each other
+    (last-write-wins corruption, double-fires on stale ``next_run``).
+
+    **Atomic saves**: :meth:`save` writes to a sibling temp file and uses
+    :func:`os.replace` (atomic on Windows and POSIX when source/dest are on the
+    same filesystem) so a crash mid-write never leaves a partial/corrupt JSON file.
+    """
 
     def __init__(self, path: Path):
         self._path = path
         self._lock = threading.RLock()
 
     def load(self) -> list[Schedule]:
+        """Load schedules from disk, acquiring both the in-process and file locks."""
         with self._lock:
-            if not self._path.exists():
-                return []
-            try:
-                raw = json.loads(self._path.read_text(encoding="utf-8"))
-                return [Schedule.from_dict(d) for d in raw]
-            except Exception as e:
-                logger.warning("Failed to load schedules from %s: %s", self._path, e)
-                return []
+            with file_lock(self._path):
+                if not self._path.exists():
+                    return []
+                try:
+                    raw = json.loads(self._path.read_text(encoding="utf-8"))
+                    return [Schedule.from_dict(d) for d in raw]
+                except Exception as e:
+                    logger.warning("Failed to load schedules from %s: %s", self._path, e)
+                    return []
 
     def save(self, schedules: list[Schedule]) -> None:
+        """Persist schedules atomically via temp-file + os.replace."""
         with self._lock:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.write_text(
-                json.dumps([s.to_dict() for s in schedules], indent=2),
-                encoding="utf-8",
+            with file_lock(self._path):
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                payload = json.dumps([s.to_dict() for s in schedules], indent=2)
+                # Write to a sibling temp file first; os.replace is atomic when
+                # source and destination are on the same filesystem volume.
+                fd, tmp_name = tempfile.mkstemp(
+                    dir=self._path.parent,
+                    prefix=".schedules-",
+                    suffix=".tmp",
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        fh.write(payload)
+                    os.replace(tmp_name, self._path)
+                except Exception:
+                    # Best-effort cleanup of the temp file on failure.
+                    try:
+                        os.unlink(tmp_name)
+                    except OSError:
+                        pass
+                    raise
+
+
+# ==========================================
+# Delivery (UC-RSCH-002)
+# ==========================================
+
+
+def deliver_result(schedule: Schedule, result: str) -> None:
+    """Deliver the result of a fired schedule per its ``deliver_to`` / ``webhook_url``.
+
+    This function encapsulates the complete delivery logic so both the CLI path
+    (``tokoboros schedule run-due``) and the resident runner in
+    ``gateway/orchestrator.py`` produce identical delivery behaviour.
+
+    **Signature for the orchestrator owner to wire up:**
+
+    .. code-block:: python
+
+        from tokoboros.jobs.scheduler import deliver_result, Schedule
+
+        def _fire_schedule(s: Schedule) -> None:
+            result_text = session.chat(s.task)
+            deliver_result(s, result_text)   # <-- add this line
+
+    Delivery modes
+    ~~~~~~~~~~~~~~
+    - ``deliver_to == "chat"`` — no-op here; the result is already in the chat
+      history via ``session.chat()``.
+    - ``deliver_to == "webhook"`` — POST a JSON body to ``schedule.webhook_url``
+      with ``{"schedule_id": ..., "name": ..., "result": <redacted>}``.  Secrets
+      in the result are redacted via :func:`tokoboros.core.secret_scanner.redact_outbound`
+      before transmission.  Uses :mod:`httpx` (already a project dependency) with a
+      10 s timeout; errors are logged but not re-raised so one bad webhook does not
+      kill other schedules.
+    - ``deliver_to == "log"`` — emit ``result`` at INFO level (useful for headless
+      / CI deployments where chat is not available).
+    - Any other value — logged as a warning and dropped.
+
+    Outbound secret redaction is applied for ``webhook`` and ``log`` modes.
+
+    Args:
+        schedule: The :class:`Schedule` that just fired.
+        result:   The text result produced by the agent task.
+    """
+    mode = (schedule.deliver_to or "chat").lower()
+
+    if mode == "chat":
+        # Result already delivered through session.chat(); nothing to do.
+        return
+
+    if mode == "webhook":
+        url = schedule.webhook_url
+        if not url:
+            logger.warning(
+                "Schedule %s (%s) has deliver_to='webhook' but no webhook_url — dropping result.",
+                schedule.schedule_id,
+                schedule.name,
             )
+            return
+        safe_result, redacted_count = redact_outbound(result)
+        if redacted_count:
+            logger.info(
+                "deliver_result: redacted %d secret(s) from schedule %s payload before POST",
+                redacted_count,
+                schedule.schedule_id,
+            )
+        payload = {
+            "schedule_id": schedule.schedule_id,
+            "name": schedule.name,
+            "task": schedule.task,
+            "result": safe_result,
+        }
+        try:
+            resp = httpx.post(url, json=payload, timeout=10.0)
+            resp.raise_for_status()
+            logger.info(
+                "deliver_result: webhook POST to %s succeeded (status %d) for schedule %s",
+                url,
+                resp.status_code,
+                schedule.schedule_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "deliver_result: webhook POST to %s failed for schedule %s: %s",
+                url,
+                schedule.schedule_id,
+                exc,
+            )
+        return
+
+    if mode == "log":
+        safe_result, _ = redact_outbound(result)
+        logger.info(
+            "Schedule %s (%s) result: %s",
+            schedule.schedule_id,
+            schedule.name,
+            safe_result,
+        )
+        return
+
+    logger.warning(
+        "Schedule %s (%s) has unknown deliver_to=%r — result dropped.",
+        schedule.schedule_id,
+        schedule.name,
+        schedule.deliver_to,
+    )
 
 
 # ==========================================
@@ -246,6 +505,25 @@ class Scheduler:
 
     All time-dependent methods accept an explicit ``now`` (defaulting to the real
     UTC clock) so behaviour is deterministic and unit-testable.
+
+    Missed-run semantics
+    --------------------
+    When :meth:`tick` wakes and a schedule is overdue by N occurrences, **exactly
+    one catch-up run fires** (the ``collapse-to-one`` strategy).  The N-1 skipped
+    occurrences are logged at INFO level.  This is intentional: a burst of catch-up
+    work from a long-sleeping daemon would likely hammer downstream systems and confuse
+    users.  Callers that need different semantics (e.g. replay every missed occurrence)
+    should call :meth:`due` and :meth:`mark_fired` directly.
+
+    Tick serialization guarantee
+    ----------------------------
+    :meth:`tick` processes due schedules **sequentially** (one-at-a-time) inside the
+    caller's thread.  A slow ``fire`` callback delays subsequent schedules within the
+    *same* tick but the ``ScheduleRunner`` loop measures time from tick completion, so
+    the *next* tick is not shortened.  Each schedule's ``next_run`` is advanced via
+    :meth:`mark_fired` before the next schedule is evaluated — preventing double-fire
+    even when two ticks overlap (which cannot happen inside ``ScheduleRunner`` but can
+    occur if callers invoke :meth:`tick` from two threads).
     """
 
     def __init__(self, store: ScheduleStore):
@@ -279,6 +557,7 @@ class Scheduler:
         run_at: str | None = None,
         interval_seconds: int | None = None,
         cron: str | None = None,
+        timezone: str = "utc",
         deliver_to: str = "chat",
         webhook_url: str | None = None,
         condition_skill: str | None = None,
@@ -295,6 +574,7 @@ class Scheduler:
             run_at=run_at,
             interval_seconds=interval_seconds,
             cron=cron,
+            timezone=timezone,
             deliver_to=deliver_to,
             webhook_url=webhook_url,
             condition_skill=condition_skill,
@@ -322,7 +602,53 @@ class Scheduler:
         return True
 
     def mark_fired(self, schedule: Schedule, now: datetime) -> None:
-        """Record a fire and advance (or retire) the schedule."""
+        """Record a fire and advance (or retire) the schedule.
+
+        Missed-run logging: if the schedule's ``next_run`` was long in the past,
+        we log how many occurrences were implicitly skipped so operators can see
+        that the scheduler is collapsing missed runs rather than silently losing them.
+        """
+        # Calculate and log missed occurrences before advancing.
+        if schedule.next_run and schedule.kind in (ScheduleKind.INTERVAL, ScheduleKind.CRON):
+            scheduled_at = _parse_dt(schedule.next_run)
+            if schedule.kind == ScheduleKind.INTERVAL and schedule.interval_seconds:
+                elapsed = max(0.0, (now - scheduled_at).total_seconds())
+                missed = int(elapsed // schedule.interval_seconds)
+                if missed > 0:
+                    logger.info(
+                        "Schedule %s (%s): collapsed %d missed interval occurrence(s) into one "
+                        "catch-up run (interval=%ds, overdue by %.1fs).",
+                        schedule.schedule_id,
+                        schedule.name,
+                        missed,
+                        schedule.interval_seconds,
+                        elapsed,
+                    )
+            elif schedule.kind == ScheduleKind.CRON and schedule.cron:
+                # Count missed cron occurrences by walking forward from scheduled_at.
+                missed = 0
+                try:
+                    probe = scheduled_at
+                    while True:
+                        nxt_probe = cron_next(schedule.cron, probe, tz_name=schedule.timezone)
+                        if nxt_probe > now:
+                            break
+                        missed += 1
+                        probe = nxt_probe
+                        if missed >= 1440:  # safety: don't iterate forever
+                            break
+                except Exception:
+                    pass
+                if missed > 0:
+                    logger.info(
+                        "Schedule %s (%s): collapsed %d missed cron occurrence(s) into one "
+                        "catch-up run (expr=%r).",
+                        schedule.schedule_id,
+                        schedule.name,
+                        missed,
+                        schedule.cron,
+                    )
+
         schedule.last_run = now.isoformat()
         schedule.run_count += 1
         if schedule.kind == ScheduleKind.ONCE:
@@ -342,8 +668,16 @@ class Scheduler:
     ) -> list[Schedule]:
         """Fire every due schedule via ``fire`` and advance each. Returns those fired.
 
-        A ``fire`` callback that raises does not advance the schedule (so it stays
-        due and is retried on the next tick); other schedules are unaffected.
+        Semantics
+        ---------
+        - A ``fire`` callback that raises does **not** advance the schedule (so it
+          stays due and is retried on the next tick); other schedules are unaffected.
+        - Schedules are processed **one at a time** (no concurrent dispatch).  A slow
+          ``fire`` callback will delay others in the same tick but will not suppress
+          them — all due schedules within a single :meth:`tick` call are eventually
+          processed.
+        - If a schedule becomes overdue by multiple occurrences between ticks, only
+          **one** catch-up run fires (see class docstring for rationale).
 
         Args:
             fire:                Callback invoked for each due schedule.
@@ -352,6 +686,9 @@ class Scheduler:
                                  ``True`` if the condition passes.  If a schedule has
                                  a ``condition_skill`` and the evaluator returns ``False``,
                                  the schedule is skipped (not advanced) for this tick.
+
+        Returns:
+            List of schedules that were successfully fired and advanced.
         """
         now = now or _now()
         fired: list[Schedule] = []
@@ -415,6 +752,11 @@ class ScheduleRunner:
     Start it once at session boot; stop it on shutdown. The tick interval
     defaults to 30 s so sub-minute interval schedules fire on time without
     hammering the agent.
+
+    The runner measures wall-clock time from the **end** of each tick so a slow
+    ``fire`` callback never causes the *next* tick to run immediately after the
+    previous one finishes — the full ``tick_interval_seconds`` gap is always
+    honoured between tick completions.
     """
 
     def __init__(

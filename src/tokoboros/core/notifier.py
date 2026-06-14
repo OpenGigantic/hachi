@@ -84,13 +84,56 @@ class DesktopNotifier:
 
     No credentials or configuration required — uses built-in OS tools.
 
+    On Windows, PowerShell cold-start takes ~4–8 s on the first invocation.
+    To keep :meth:`send` non-blocking, the implementation already dispatches
+    the balloon tip in a daemon thread (UC-DESK-001).  When *prewarm* is True
+    (the default on Windows), the constructor fires a no-op PowerShell command
+    in a daemon thread so the CLR/PS runtime is already resident by the time the
+    first real notification arrives, eliminating the cold-start penalty from the
+    visible notification delay entirely.
+
     Args:
         runner: Callable with the same signature as :func:`subprocess.run`.
             Injected in tests so no actual notification is sent.
+        prewarm: When True (default) and the platform is Windows, spawn a
+            background thread at construction time that runs a minimal PowerShell
+            command to warm the interpreter cache.  Has no effect on other
+            platforms or when a custom *runner* is injected (test mode).
     """
 
-    def __init__(self, runner: _Runner | None = None) -> None:
+    def __init__(self, runner: _Runner | None = None, *, prewarm: bool = True) -> None:
         self._runner = runner or _default_runner
+        # UC-DESK-001: pre-warm PowerShell on Windows so the first real toast is
+        # dispatched to an already-warm interpreter.  Skip when a custom runner is
+        # injected (test isolation) or on non-Windows platforms.
+        if prewarm and runner is None and sys.platform == "win32":
+            self._prewarm()
+
+    def _prewarm(self) -> None:
+        """Fire a no-op PowerShell command in a daemon thread to warm the PS runtime.
+
+        This runs completely in the background; any error is silently ignored
+        because a failed pre-warm is non-fatal — the toast will still be sent,
+        just with the full cold-start latency on the first call.
+        """
+
+        def _run() -> None:
+            try:
+                self._runner(
+                    [
+                        "powershell.exe",
+                        "-NonInteractive",
+                        "-NoProfile",
+                        "-Command",
+                        "[void]0",  # Minimal no-op — loads the CLR/PS runtime.
+                    ],
+                    capture_output=True,
+                    timeout=30,
+                )
+            except Exception:
+                pass  # Pre-warm failure is non-fatal.
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def send(self, title: str, body: str, urgency: str = "normal") -> str:
         """Send a desktop notification.

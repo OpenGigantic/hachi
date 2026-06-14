@@ -16,6 +16,7 @@ Security Invariants:
     5. The gate is immutable after construction — no runtime modification.
 """
 
+import sys
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -184,11 +185,22 @@ _DANGEROUS_COMMANDS = (
     "powershell -e ",
 )
 
+# The OS-specific user application-data directory holds app configs, OAuth tokens,
+# and (on macOS) the Keychain — block the agent from reading it by default. The
+# directory differs per platform, so a single hardcoded ``~/AppData`` (Windows-only)
+# left ``~/Library`` (macOS) and ``~/.config`` (Linux) unguarded.
+if sys.platform == "darwin":
+    _APP_DATA_DIR = _HOME / "Library"
+elif sys.platform == "win32":
+    _APP_DATA_DIR = _HOME / "AppData"
+else:  # linux and other POSIX
+    _APP_DATA_DIR = _HOME / ".config"
+
 # Paths that should always be blocked by default
 _DEFAULT_BLOCKED = (
     _HOME / ".ssh",
     _HOME / ".tokoboros",
-    _HOME / "AppData",
+    _APP_DATA_DIR,
 )
 
 # ==========================================
@@ -265,6 +277,12 @@ _TIER_DEFAULTS: dict[str, dict[str, dict[str, str]]] = {
 # ==========================================
 # Helpers
 # ==========================================
+
+
+def _is_unc(raw: str) -> bool:
+    """Return True if *raw* is a Windows UNC path (``\\\\server\\share`` or ``//server/share``)."""
+    stripped = raw.strip()
+    return stripped.startswith("\\\\") or stripped.startswith("//")
 
 
 def _resolve_path(raw: str) -> Path:
@@ -452,6 +470,13 @@ class PermissionGate:
         Returns:
             PermissionResult with .allowed and .reason.
         """
+        # UC-PERM-002: reject Windows UNC paths before any resolution attempt.
+        # UNC paths (\\server\share or //server/share) bypass blocked-path checks
+        # because they resolve to network locations that cannot be matched against
+        # the local allowed_paths list.
+        if _is_unc(path):
+            return PermissionResult(False, "UNC network paths are not permitted.")
+
         try:
             resolved = _resolve_path(path)
         except Exception:
@@ -629,6 +654,31 @@ class PermissionGate:
             False,
             f"'{command.split()[0]}' is not in your allowed commands. "
             f"Add it to allowed_commands in {_PERMISSIONS_HINT}.",
+        )
+
+    def require_action(self, action: str, summary: str, detail: str = "") -> PermissionResult:
+        """Tier-gated approval for a destructive/outbound action.
+
+        When no human approver is connected the tier determines the outcome:
+        - ``unrestricted`` → allowed.
+        - ``guided`` / ``sandbox`` → denied with an actionable message (UC-PERM-005
+          timeout-driven denials carry "timed out" in their rationale to distinguish
+          them from explicit user denials that flow through this method).
+
+        Args:
+            action:  Canonical action name, e.g. ``"send_email"`` or ``"trash_file"``.
+            summary: Short human-readable description shown to the user.
+            detail:  Optional extended context.
+
+        Returns:
+            :class:`PermissionResult` with ``allowed`` and ``reason`` set.
+        """
+        if self._tier == "unrestricted":
+            return PermissionResult(True, "auto-approved (unrestricted tier)")
+        return PermissionResult(
+            False,
+            "This action needs human approval. Connect the TUI or web companion to approve, "
+            "or set tier=unrestricted in ~/.tokoboros/device-permissions.og.",
         )
 
     def is_mcp_filesystem_enabled(self) -> bool:
@@ -846,6 +896,34 @@ class InteractivePermissionGate:
         if decision.action == "allow_once":
             return PermissionResult(True, "Allowed once by operator.")
         return PermissionResult(False, decision.rationale or base_result.reason)
+
+    def require_action(self, action: str, summary: str, detail: str = "") -> PermissionResult:
+        """Gate a destructive/outbound action through the TUI approval handler.
+
+        Reuses the existing ``_request_decision`` modal path so the TUI's
+        approval UI handles action approvals the same way it handles path/command
+        escalations.  ``approve`` and ``allow_once`` both map to ``allowed=True``;
+        ``deny`` maps to ``allowed=False`` with the operator's rationale preserved
+        (UC-PERM-005: explicit user denials contain the operator rationale, while
+        timeout-driven denials contain "timed out" set by the registry wait).
+
+        Args:
+            action:  Canonical action name, e.g. ``"send_email"``.
+            summary: Short human-readable description of the action.
+            detail:  Optional extended context for the approval UI.
+
+        Returns:
+            :class:`PermissionResult` with ``allowed`` and ``reason`` set.
+        """
+        decision = self._request_decision(
+            operation="action",
+            tool=action,
+            target=summary,
+            reason=detail or summary,
+        )
+        if decision.action in ("approve", "allow_once"):
+            return PermissionResult(True, decision.rationale or "approved by operator")
+        return PermissionResult(False, decision.rationale or "denied by operator")
 
 
 # ==========================================

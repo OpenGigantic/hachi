@@ -55,8 +55,23 @@ _DEFAULT_MODEL = "whisper-1"
 _DEFAULT_TTS_MODEL = "tts-1"
 _DEFAULT_TTS_VOICE = "alloy"
 # Output formats an OpenAI-compatible /audio/speech endpoint produces, keyed by
-# the file extension we map them from.
-_TTS_FORMATS = frozenset({"mp3", "opus", "aac", "flac", "wav", "pcm"})
+# the file extension we map them from.  ``pcm`` is intentionally excluded:
+# raw PCM has no container, no duration metadata, and no agreed sample-rate
+# encoding — writing it to disk silently produces an unplayable file.  Callers
+# who need raw PCM should request ``wav`` (same codec, playable container) or
+# post-process the WAV output themselves.
+_TTS_FORMATS = frozenset({"mp3", "opus", "aac", "flac", "wav"})
+
+# Extension that would previously have been accepted by _TTS_FORMATS but is
+# explicitly blocked for the reasons above.  Used to produce an actionable
+# rejection message instead of a silent dead-end.
+_PCM_REJECTION_MESSAGE = (
+    "'.pcm' output is not supported: raw PCM has no container format and no "
+    "embedded sample-rate, making the resulting file unplayable by most tools. "
+    "Use '.wav' instead — it encodes the same PCM audio in a standard container "
+    "that includes all required metadata. If you specifically need headerless PCM, "
+    "request '.wav' and strip the 44-byte RIFF header yourself."
+)
 
 # Extensions the common Whisper endpoints accept; checked up front for a friendly
 # error instead of an opaque API rejection.
@@ -418,6 +433,8 @@ class TextToSpeech:
 
         path = Path(out_path)
         fmt = path.suffix.lstrip(".").lower() or "mp3"
+        if fmt == "pcm":
+            raise VoiceError(_PCM_REJECTION_MESSAGE)
         if fmt not in _TTS_FORMATS:
             raise VoiceError(
                 f"unsupported audio format '{path.suffix or '(none)'}'. "

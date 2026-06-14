@@ -70,7 +70,7 @@ def test_register_vision_tools_registers_view_image_in_vision_group() -> None:
 # --------------------------------------------------------------------------- #
 def test_view_image_blocked_in_sandbox_tier(tmp_path: Path) -> None:
     img = _write_png(tmp_path)
-    view = _make_view_image(_Gate("sandbox"), provider_supports_images=True)
+    view = _make_view_image(_Gate("sandbox"), provider_kind="anthropic")
     out = view(str(img))
     assert isinstance(out, str)
     assert "Permission Denied" in out and "sandbox" in out
@@ -78,7 +78,7 @@ def test_view_image_blocked_in_sandbox_tier(tmp_path: Path) -> None:
 
 def test_view_image_permission_denied_path(tmp_path: Path) -> None:
     img = _write_png(tmp_path)
-    view = _make_view_image(_Gate("guided", allowed=False), provider_supports_images=True)
+    view = _make_view_image(_Gate("guided", allowed=False), provider_kind="anthropic")
     out = view(str(img))
     assert isinstance(out, str)
     assert "Permission Denied" in out
@@ -88,7 +88,7 @@ def test_view_image_permission_denied_path(tmp_path: Path) -> None:
 # Error handling
 # --------------------------------------------------------------------------- #
 def test_view_image_missing_file(tmp_path: Path) -> None:
-    view = _make_view_image(_Gate("guided"), provider_supports_images=True)
+    view = _make_view_image(_Gate("guided"), provider_kind="anthropic")
     out = view(str(tmp_path / "nope.png"))
     assert isinstance(out, str)
     assert "not found" in out
@@ -97,7 +97,7 @@ def test_view_image_missing_file(tmp_path: Path) -> None:
 def test_view_image_unsupported_type(tmp_path: Path) -> None:
     txt = tmp_path / "notes.txt"
     txt.write_text("hello")
-    view = _make_view_image(_Gate("guided"), provider_supports_images=True)
+    view = _make_view_image(_Gate("guided"), provider_kind="anthropic")
     out = view(str(txt))
     assert isinstance(out, str)
     assert "unsupported image type" in out
@@ -106,18 +106,18 @@ def test_view_image_unsupported_type(tmp_path: Path) -> None:
 def test_view_image_too_large_for_gate_cap(tmp_path: Path) -> None:
     img = _write_png(tmp_path)
     # Gate caps files at 10 bytes; the 68-byte PNG exceeds it.
-    view = _make_view_image(_Gate("guided", max_file_size_bytes=10), provider_supports_images=True)
+    view = _make_view_image(_Gate("guided", max_file_size_bytes=10), provider_kind="anthropic")
     out = view(str(img))
     assert isinstance(out, str)
     assert "exceeding" in out
 
 
 # --------------------------------------------------------------------------- #
-# Happy path (Anthropic) and non-Anthropic fallback
+# Happy path (Anthropic) and OpenAI-compatible formats
 # --------------------------------------------------------------------------- #
-def test_view_image_returns_image_block(tmp_path: Path) -> None:
+def test_view_image_returns_anthropic_image_block(tmp_path: Path) -> None:
     img = _write_png(tmp_path)
-    view = _make_view_image(_Gate("guided"), provider_supports_images=True)
+    view = _make_view_image(_Gate("guided"), provider_kind="anthropic")
     out = view(str(img), prompt="read the screen")
 
     assert isinstance(out, ToolResultBlocks)
@@ -135,19 +135,35 @@ def test_view_image_returns_image_block(tmp_path: Path) -> None:
     assert "read the screen" in text_blocks[0]["text"]
 
 
-def test_view_image_non_anthropic_returns_text_not_blocks(tmp_path: Path) -> None:
+def test_view_image_returns_openai_image_url_block(tmp_path: Path) -> None:
     img = _write_png(tmp_path)
-    view = _make_view_image(_Gate("guided"), provider_supports_images=False)
+    view = _make_view_image(_Gate("guided"), provider_kind="openai-compatible")
+    out = view(str(img), prompt="analyze")
+
+    assert isinstance(out, ToolResultBlocks)
+    assert out.summary
+    image_url_blocks = [b for b in out.blocks if b.get("type") == "image_url"]
+    text_blocks = [b for b in out.blocks if b.get("type") == "text"]
+    assert len(image_url_blocks) == 1 and len(text_blocks) == 1
+
+    image_url = image_url_blocks[0]["image_url"]
+    assert image_url["url"].startswith("data:image/png;base64,")
+    assert "analyze" in text_blocks[0]["text"]
+
+
+def test_view_image_unsupported_provider_returns_text(tmp_path: Path) -> None:
+    img = _write_png(tmp_path)
+    view = _make_view_image(_Gate("guided"), provider_kind="ollama")
     out = view(str(img))
     assert isinstance(out, str)
-    assert "requires the Anthropic provider" in out
+    assert "not supported by the ollama provider" in out
 
 
 def test_view_image_jpeg_media_type(tmp_path: Path) -> None:
     # Extension drives media-type detection (bytes are not validated/decoded here).
     img = tmp_path / "photo.jpeg"
     img.write_bytes(_PNG_1X1)
-    view = _make_view_image(_Gate("guided"), provider_supports_images=True)
+    view = _make_view_image(_Gate("guided"), provider_kind="anthropic")
     out = view(str(img))
     assert isinstance(out, ToolResultBlocks)
     assert out.blocks[0]["source"]["media_type"] == "image/jpeg"

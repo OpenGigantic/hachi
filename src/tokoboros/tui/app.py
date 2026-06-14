@@ -12,7 +12,7 @@ import json
 import os
 import re
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal
@@ -39,6 +39,7 @@ from tokoboros.core.runtime_read_models import (
     _looks_like_error,
     advance_activity,
 )
+from tokoboros.core.secret_scanner import redact_secrets
 from tokoboros.core.secret_store import create_default_secret_store
 from tokoboros.gateway.orchestrator import AgentSession, boot_agent
 from tokoboros.gateway.workspace import get_skills_dir, get_workspace_dir, load_config
@@ -107,6 +108,13 @@ _STARTER_PROMPTS: tuple[str, ...] = (
 _GATEWAY_TOKEN: str = os.environ.get("TOKOBOROS_GATEWAY_API_TOKEN", "")
 _URLOPEN_TIMEOUT_S: int = 10
 
+# Runtime event types folded into the "warn N" governance counter. Surfaced in
+# the WarningsModal so the indicator is explainable instead of opaque — the user
+# can see exactly which boot/job/MCP/gateway failures it is counting.
+_WARNING_EVENT_TYPES: frozenset[str] = frozenset(
+    {"boot.failed", "job.failed", "mcp.server.failed", "gateway.events.error"}
+)
+
 _LEGACY_RICH_TAG_RE = re.compile(
     r"\[/?(?:"
     r"dim|green|cyan|yellow|red|magenta|bold|italic|underline|"
@@ -137,6 +145,16 @@ def _event_input_summary(tool_input: Any) -> str:
             text = text[:39] + "…"
         parts.append(f"{key}={text}")
     return "  ".join(parts)
+
+
+def _event_input_detail(tool_input: Any) -> str:
+    """Build the full ``key: value`` request block shown when a tool card expands."""
+    if not isinstance(tool_input, dict) or not tool_input:
+        return ""
+    lines = []
+    for key, value in tool_input.items():
+        lines.append(f"{key}: {_sanitize_legacy_rich_markup(str(value))}")
+    return "\n".join(lines)
 
 
 def _strip_metrics(info: dict[str, Any]) -> dict[str, Any]:
@@ -251,7 +269,7 @@ Screen {
 .tool-card {
   height: auto;
   margin: 0 0 1 0;
-  padding: 0 1;
+  padding: 0;
   border-left: thick $accent;
   background: $surface;
 }
@@ -264,13 +282,27 @@ Screen {
   border-left: thick $error;
 }
 
-.tool-header {
-  height: auto;
+.tool-card CollapsibleTitle {
+  background: $surface;
+  color: $foreground;
+  padding: 0 1;
 }
 
-.tool-body {
+.tool-card CollapsibleTitle:hover {
+  background: $surface-lighten-1;
+}
+
+.tool-card Contents {
+  padding: 0 1 1 2;
+}
+
+.tool-detail {
   height: auto;
   color: $text-muted;
+}
+
+.tool-response {
+  margin: 1 0 0 0;
 }
 
 .system-line {
@@ -428,8 +460,12 @@ Screen {
 }
 
 /* --- Snapshot screens -------------------------------------------------- */
+/* height:auto (not 1fr) so the body grows to its content size and the
+   enclosing VerticalScroll can actually scroll when the Ops dashboard /
+   Permission Audit overflow the viewport. With 1fr the body was clamped to
+   the visible height and the lower tables were clipped, never reachable. */
 #snapshot-body {
-  height: 1fr;
+  height: auto;
   padding: 1 2;
 }
 """
@@ -481,9 +517,10 @@ class PermissionApprovalModal(ModalScreen[PermissionDecision]):
 
 _HELP_ROWS: tuple[tuple[str, str], ...] = (
     ("Enter", "Send the prompt in the composer"),
-    ("Ctrl+1 … Ctrl+7", "Switch mode (Session / Ops / Memory / …)"),
+    ("Ctrl+1 … Ctrl+9", "Switch mode (Session / Ops / … / OG Explorer)"),
     ("Ctrl+P", "Command palette"),
     ("Ctrl+R", "Refresh the current screen"),
+    ("Ctrl+W", "Show recent runtime warnings"),
     ("Ctrl+C", "Interrupt: stop polling, dismiss approvals"),
     ("Ctrl+Y", "Copy last response to clipboard"),
     ("Ctrl+Q", "Quit Tokoboros"),
@@ -512,6 +549,7 @@ _SLASH_HELP: tuple[tuple[str, str], ...] = (
     ("/deep-research <q>", "Thorough, multi-source research answer"),
     ("/settings", "Open the Settings screen"),
     ("/setup", "Open the Setup wizard"),
+    ("/warnings", "List recent runtime warnings"),
     ("/quit", "Quit Tokoboros (alias /exit)"),
 )
 
@@ -541,6 +579,48 @@ class HelpModal(ModalScreen[None]):
             yield Static(Text("Slash commands", style=f"bold {theme.ACCENT}"))
             yield Static(slash)
             yield Button("Close", id="help-close", variant="primary")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, _event: Button.Pressed) -> None:
+        self.dismiss(None)
+
+
+class WarningsModal(ModalScreen[None]):
+    """Lists the runtime warnings behind the header's ``warn N`` counter.
+
+    Answers "what are those warnings?" — the counter alone is opaque. Each row is
+    a boot / job / MCP / gateway failure, newest last, with secrets scrubbed.
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+    ]
+
+    def __init__(self, warnings: list[tuple[str, str]]) -> None:
+        super().__init__()
+        self._warnings = warnings
+
+    def compose(self) -> ComposeResult:
+        body = Text()
+        if not self._warnings:
+            body.append("No warnings — all clear.", style=theme.SUCCESS)
+        else:
+            for index, (label, detail) in enumerate(self._warnings, start=1):
+                body.append(f"  {index}. ", style=theme.MUTED)
+                body.append(f"{label}\n", style=f"bold {theme.ERROR}")
+                body.append(f"     {detail}\n", style=theme.FOREGROUND)
+
+        with Vertical(id="help-card"):
+            yield Static(
+                Text(
+                    f"Warnings ({len(self._warnings)})",
+                    style=f"bold {theme.ACCENT}",
+                )
+            )
+            yield Static(body)
+            yield Button("Close", id="warnings-close", variant="primary")
 
     def action_close(self) -> None:
         self.dismiss(None)
@@ -1246,6 +1326,25 @@ class SessionScreen(Screen):
     def _transcript(self) -> VerticalScroll:
         return self.query_one("#transcript", VerticalScroll)
 
+    def _at_bottom(self) -> bool:
+        """True when the transcript is scrolled to (or near) the bottom.
+
+        Defensive: returns False off a real Textual loop (e.g. unit-test proxy)
+        so callers simply skip auto-follow rather than raising.
+        """
+        try:
+            transcript = self._transcript()
+            return transcript.scroll_offset.y >= transcript.max_scroll_y - 1
+        except Exception:
+            return False
+
+    def _scroll_to_tail(self) -> None:
+        """Jump the transcript to the latest content (no-op off a real loop)."""
+        try:
+            self._transcript().scroll_end(animate=False)
+        except Exception:
+            pass
+
     def _append(self, widget: Widget, *, scroll: bool = True) -> None:
         transcript = self._transcript()
         transcript.mount(widget)
@@ -1401,18 +1500,32 @@ class SessionScreen(Screen):
                 mark()
             if self._streaming_bubble is None:
                 # First delta — create the streaming widget and mount it
+                # (_append scrolls it into view).
                 self._streaming_text = delta
                 self._streaming_bubble = AgentMessage(delta)
                 self._append(self._streaming_bubble)
             else:
-                # Subsequent deltas — append and re-render in-place
+                # Subsequent deltas — re-render in-place, then follow the tail
+                # so the growing reply stays visible (unless the user scrolled
+                # up to read history, in which case we leave them be).
+                follow = self._at_bottom()
                 self._streaming_text += delta
                 self._streaming_bubble.stream_delta(self._streaming_text)
+                if follow:
+                    self._scroll_to_tail()
             return
 
         if event_type == "tool.call.started":
             name = str(payload.get("name", "tool"))
-            card = ToolCard(name, _event_input_summary(payload.get("input")))
+            # Seal the in-flight text bubble so this tool card mounts *below* it
+            # and any following narration starts a fresh bubble — keeps text and
+            # tool calls in chronological order instead of batching cards at the end.
+            self.finalize_streaming_bubble()
+            card = ToolCard(
+                name,
+                _event_input_summary(payload.get("input")),
+                _event_input_detail(payload.get("input")),
+            )
             self._tool_cards.setdefault(name, []).append(card)
             self._append(card)
             return
@@ -1566,9 +1679,7 @@ class MemoryScreen(SnapshotScreen):
         skills = [asdict(row) for row in agent.snapshot_skills(limit=40)]
         # P3-02: include pending gardener diff cards when available
         diffs = (
-            agent.snapshot_gardener_diffs()
-            if hasattr(agent, "snapshot_gardener_diffs")
-            else None
+            agent.snapshot_gardener_diffs() if hasattr(agent, "snapshot_gardener_diffs") else None
         )
         return format_memory(tasks, recalls, skills, diffs=diffs)
 
@@ -1811,6 +1922,7 @@ class TokoborosTextualApp(App[None]):
         Binding("ctrl+c", "interrupt", "Interrupt"),
         Binding("ctrl+r", "refresh_current", "Refresh"),
         Binding("ctrl+y", "copy_last_response", "Copy response", show=False),
+        Binding("ctrl+w", "show_warnings", "Warnings"),
         Binding("ctrl+q", "quit", "Quit"),
         Binding("question_mark", "help", "Help"),
     ]
@@ -1932,7 +2044,7 @@ class TokoborosTextualApp(App[None]):
             return {}
         return config if isinstance(config, dict) else {}
 
-    def _event_count(self, event_names: set[str]) -> int:
+    def _event_count(self, event_names: Collection[str]) -> int:
         return sum(1 for event_type, _payload in self._event_buffer if event_type in event_names)
 
     def _active_job_count(self) -> int:
@@ -1961,9 +2073,33 @@ class TokoborosTextualApp(App[None]):
         return max(waiter_count, requested - decided)
 
     def _warning_count(self) -> int:
-        return self._event_count(
-            {"boot.failed", "job.failed", "mcp.server.failed", "gateway.events.error"}
-        )
+        return self._event_count(_WARNING_EVENT_TYPES)
+
+    @staticmethod
+    def _warning_detail(payload: dict[str, Any]) -> str:
+        """Human-readable, secret-scrubbed one-liner for a warning event payload."""
+        text = ""
+        for key in ("error", "message", "reason", "label", "job_name", "name"):
+            value = payload.get(key)
+            if value:
+                text = str(value)
+                break
+        if not text:
+            text = ", ".join(f"{k}={v}" for k, v in payload.items()) or "(no detail)"
+        safe, _ = redact_secrets(text)
+        return safe[:300]
+
+    def _collect_warnings(self) -> list[tuple[str, str]]:
+        """(event_type, detail) for every buffered warning event, oldest → newest.
+
+        Same source and filter as :meth:`_warning_count`, so the modal always shows
+        exactly as many rows as the ``warn N`` counter reports.
+        """
+        return [
+            (event_type, self._warning_detail(payload))
+            for event_type, payload in self._event_buffer
+            if event_type in _WARNING_EVENT_TYPES
+        ]
 
     def _permission_tier(self) -> str:
         config = self._runtime_config()
@@ -2526,6 +2662,7 @@ class TokoborosTextualApp(App[None]):
             "export": self._cmd_export,
             "settings": lambda _a: self._switch_mode("settings"),
             "setup": lambda _a: self.action_mode_setup(),
+            "warnings": lambda _a: self.action_show_warnings(),
             "quit": lambda _a: self.exit(),
             "exit": lambda _a: self.exit(),
         }
@@ -2950,6 +3087,15 @@ class TokoborosTextualApp(App[None]):
     def action_interrupt(self) -> None:
         self._gateway_stop_event.set()
         self._resolve_all_pending_approvals("Interrupted by operator")
+        # UC-CORE-005: Cancel the in-flight ExecutionLoop so mid-stream generation
+        # stops at the next chunk boundary rather than waiting for the full turn to
+        # finish.  Cooperative — won't kill a running tool, but stops the LLM stream
+        # and the iteration loop promptly.
+        agent = self._agent
+        if agent is not None:
+            loop = getattr(agent, "loop", None)
+            if loop is not None and callable(getattr(loop, "cancel", None)):
+                loop.cancel()
         self.notify(
             "Interrupt requested. Event polling stopped and pending approvals were dismissed.",
             timeout=4,
@@ -2978,6 +3124,11 @@ class TokoborosTextualApp(App[None]):
         if isinstance(self._current_screen(), HelpModal):
             return
         self.push_screen(HelpModal())
+
+    def action_show_warnings(self) -> None:
+        if isinstance(self._current_screen(), WarningsModal):
+            return
+        self.push_screen(WarningsModal(self._collect_warnings()))
 
     def action_refresh_current(self) -> None:
         screen = self._current_screen()
@@ -3029,6 +3180,9 @@ class TokoborosTextualApp(App[None]):
     def action_mode_setup(self) -> None:
         self.ensure_setup_controller()
         self._switch_mode("setup")
+
+    def action_mode_og_explorer(self) -> None:
+        self._switch_mode("og_explorer")
 
     def persist_setup_resume(self) -> None:
         if not self._setup_controller:

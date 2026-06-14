@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.permissions import PermissionGate, generate_permissions_og
+from tokoboros.core.permissions import _DEFAULT_BLOCKED, PermissionGate, generate_permissions_og
 from tokoboros.tools.os_tools import register_os_tools
 
 
@@ -24,11 +24,7 @@ def _write_permissions_file(
 
     content = generate_permissions_og("guided", custom_paths=[str(allowed_dir)])
     content = content.replace(
-        "blocked_paths="
-        + ", ".join(
-            str(p)
-            for p in (Path.home() / ".ssh", Path.home() / ".tokoboros", Path.home() / "AppData")
-        ),
+        "blocked_paths=" + ", ".join(str(p) for p in _DEFAULT_BLOCKED),
         f"blocked_paths={blocked_dir}",
     )
     content = content.replace("max_file_size_mb=50", f"max_file_size_mb={max_file_size_mb}")
@@ -120,11 +116,7 @@ def test_blocked_subpath_overrides_allowed_root(tmp_path: Path) -> None:
 
     content = generate_permissions_og("guided", custom_paths=[str(allowed_dir)])
     content = content.replace(
-        "blocked_paths="
-        + ", ".join(
-            str(p)
-            for p in (Path.home() / ".ssh", Path.home() / ".tokoboros", Path.home() / "AppData")
-        ),
+        "blocked_paths=" + ", ".join(str(p) for p in _DEFAULT_BLOCKED),
         f"blocked_paths={blocked_dir}",
     )
     permissions_file = tmp_path / "device-permissions.og"
