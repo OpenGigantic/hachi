@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from tokoboros.core.loop import ToolRegistry
+from tokoboros.core.validators import validate_date
 from tokoboros.integrations.google.service import GoogleService
 
 
@@ -31,23 +32,47 @@ class TasksService(GoogleService):
         tasklist_id: str = "@default",
         show_completed: bool = False,
         max_results: int = 20,
+        page_token: str = "",
     ) -> str:
-        """Return tasks in a task list, optionally including completed ones."""
+        """Return tasks in a task list, optionally including completed ones.
+
+        UC-TASK-001: Pagination is supported via ``page_token``.  When the API
+        returns a ``nextPageToken`` it is appended to the response so the caller
+        can fetch the next page.
+
+        Args:
+            tasklist_id:    Task list ID (default: '@default').
+            show_completed: Include already-completed tasks.
+            max_results:    Maximum number of tasks to return per page (default 20).
+            page_token:     Token from a previous call to retrieve the next page.
+        """
         params: dict[str, str | int] = {
             "showCompleted": str(show_completed).lower(),
             "maxResults": max_results,
         }
+        if page_token:
+            params["pageToken"] = page_token
+
         response = self.client.get(f"/tasks/v1/lists/{tasklist_id}/tasks", params=params)
         items = response.get("items", [])
+        next_token: str = response.get("nextPageToken", "")
+
         if not items:
             return "No tasks found."
+
         lines = []
         for t in items:
             done = "✓" if t.get("status") == "completed" else "○"
             due = f" (due {t['due'][:10]})" if t.get("due") else ""
             notes = f" — {t['notes'][:60]}" if t.get("notes") else ""
             lines.append(f"{done} [{t.get('id', '')}] {t.get('title', '(no title)')}{due}{notes}")
-        return "\n".join(lines)
+
+        result = "\n".join(lines)
+        if next_token:
+            result += (
+                f"\n\n[More tasks available — use page_token={next_token!r} to fetch next page]"
+            )
+        return result
 
     def create_task(
         self,
@@ -56,13 +81,23 @@ class TasksService(GoogleService):
         notes: str = "",
         due_date_iso: str = "",
     ) -> str:
-        """Create a new task in a task list."""
+        """Create a new task in a task list.
+
+        Args:
+            title:        Task title.
+            tasklist_id:  Task list ID (default: '@default').
+            notes:        Optional task description.
+            due_date_iso: Optional due date (ISO 8601, e.g. 2026-06-15).
+        """
         body: dict[str, str] = {"title": title}
         if notes:
             body["notes"] = notes
         if due_date_iso:
-            # Google Tasks expects RFC 3339; append Z if plain date provided.
-            body["due"] = due_date_iso if "T" in due_date_iso else f"{due_date_iso}T00:00:00Z"
+            # UC-TASK-002: validate the date before constructing RFC-3339 due value.
+            ok, date_or_err = validate_date(due_date_iso)
+            if not ok:
+                return f"❌ Invalid due_date_iso: {date_or_err}"
+            body["due"] = f"{date_or_err}T00:00:00Z"
         response = self.client.post(f"/tasks/v1/lists/{tasklist_id}/tasks", json_data=body)
         task_id = response.get("id", "")
         return f"Task created: '{title}' (id={task_id})."
@@ -76,7 +111,23 @@ class TasksService(GoogleService):
         return f"Task {task_id} marked as completed."
 
     def delete_task(self, task_id: str, tasklist_id: str = "@default") -> str:
-        """Permanently delete a task."""
+        """Permanently delete a task (requires approval).
+
+        Args:
+            task_id:     ID of the task to delete.
+            tasklist_id: Task list ID (default: '@default').
+        """
+        # UC-TASK-003: gate behind approval before deleting.
+        ok, reason = self.require_approval(
+            action="delete_task",
+            summary=f"Delete task {task_id}",
+            detail=(
+                f"This will permanently remove task id={task_id} from task list '{tasklist_id}'."
+            ),
+        )
+        if not ok:
+            return f"⛔ Action not approved: {reason}"
+
         self.client.delete(f"/tasks/v1/lists/{tasklist_id}/tasks/{task_id}")
         return f"Task {task_id} deleted."
 
@@ -88,14 +139,26 @@ class TasksService(GoogleService):
         notes: str = "",
         due_date_iso: str = "",
     ) -> str:
-        """Update the title, notes, or due date of an existing task."""
+        """Update the title, notes, or due date of an existing task.
+
+        Args:
+            task_id:      ID of the task to update.
+            tasklist_id:  Task list ID (default: '@default').
+            title:        New title (optional).
+            notes:        New notes (optional).
+            due_date_iso: New due date in ISO 8601 format (optional).
+        """
         body: dict[str, str] = {}
         if title:
             body["title"] = title
         if notes:
             body["notes"] = notes
         if due_date_iso:
-            body["due"] = due_date_iso if "T" in due_date_iso else f"{due_date_iso}T00:00:00Z"
+            # UC-TASK-002: validate before constructing due value.
+            ok, date_or_err = validate_date(due_date_iso)
+            if not ok:
+                return f"❌ Invalid due_date_iso: {date_or_err}"
+            body["due"] = f"{date_or_err}T00:00:00Z"
         if not body:
             return (
                 "Nothing to update — please supply at least one of title, notes, or due_date_iso."
@@ -121,7 +184,7 @@ class TasksService(GoogleService):
             {
                 "name": "google_list_tasks",
                 "description": "List tasks in a Google Task list. "
-                "Defaults to the primary list (@default).",
+                "Defaults to the primary list (@default). Supports pagination via page_token.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -136,6 +199,11 @@ class TasksService(GoogleService):
                         "max_results": {
                             "type": "integer",
                             "description": "Maximum number of tasks to return (default 20).",
+                        },
+                        "page_token": {
+                            "type": "string",
+                            "description": "Pagination token returned from a previous call "
+                            "to fetch the next page of results.",
                         },
                     },
                 },
@@ -214,7 +282,7 @@ class TasksService(GoogleService):
         registry.register(
             {
                 "name": "google_delete_task",
-                "description": "Permanently delete a Google Task.",
+                "description": "Permanently delete a Google Task. Requires user approval.",
                 "input_schema": {
                     "type": "object",
                     "properties": {

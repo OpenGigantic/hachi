@@ -22,8 +22,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/health": {
@@ -43,8 +51,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/readiness": {
@@ -64,8 +80,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/capabilities": {
@@ -85,8 +109,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/models": {
@@ -106,8 +138,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/sessions": {
@@ -147,8 +187,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       },
       "get": {
         "tags": [
@@ -190,8 +238,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/sessions/{session_id}": {
@@ -232,8 +288,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       },
       "delete": {
         "tags": [
@@ -272,8 +336,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/sessions/{session_id}/messages": {
@@ -324,8 +396,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/sessions/{session_id}/events": {
@@ -389,8 +469,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/sessions/{session_id}/stream": {
@@ -465,8 +553,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/runtime/events": {
@@ -526,8 +622,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/runtime/mcp/inventory": {
@@ -547,8 +651,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/jobs/active": {
@@ -568,8 +680,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/jobs/failed": {
@@ -613,8 +733,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/permissions/audit": {
@@ -658,8 +786,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/subagents/reports": {
@@ -713,8 +849,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/schedules": {
@@ -734,8 +878,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/schedules/{schedule_id}": {
@@ -776,8 +928,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/schedules/{schedule_id}/enabled": {
@@ -828,8 +988,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/config": {
@@ -849,8 +1017,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/config/provider": {
@@ -890,8 +1066,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/config/provider/validate": {
@@ -931,8 +1115,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/config/permissions": {
@@ -972,8 +1164,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/config/memory": {
@@ -1013,8 +1213,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/setup": {
@@ -1034,8 +1242,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/setup/apply": {
@@ -1075,8 +1291,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/v1/chat/completions": {
@@ -1116,8 +1340,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/v1/models": {
@@ -1137,8 +1369,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/channels/{channel}/inbound": {
@@ -1189,13 +1429,131 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
           }
-        }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/approvals": {
+      "get": {
+        "tags": [
+          "approvals"
+        ],
+        "summary": "Get Approvals",
+        "description": "List all pending permission requests.\n\nReturns:\n    A JSON object ``{\"pending\": [...]}`` with every unresolved request\n    from the approval registry.",
+        "operationId": "get_approvals_approvals_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Approvals Approvals Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/approvals/{request_id}": {
+      "post": {
+        "tags": [
+          "approvals"
+        ],
+        "summary": "Post Approval Decision",
+        "description": "Resolve a pending permission request.\n\nArgs:\n    request_id: The opaque ID from the pending-request list.\n    payload: ``{\"action\": \"approve\"|\"deny\"|\"allow_once\", \"rationale\": \"...\"}``\n\nReturns:\n    ``{\"resolved\": true}`` on success.\n\nRaises:\n    404: When ``request_id`` is not found in the registry.\n    422: When ``action`` is not a valid :class:`PermissionDecision` action.",
+        "operationId": "post_approval_decision_approvals__request_id__post",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Request Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalActionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Approval Decision Approvals  Request Id  Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     }
   },
   "components": {
     "schemas": {
+      "ApprovalActionRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "rationale": {
+            "type": "string",
+            "title": "Rationale",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "ApprovalActionRequest",
+        "description": "Body for POST /approvals/{request_id} (UC-PERM-006)."
+      },
       "ChannelInboundRequest": {
         "properties": {
           "sender_id": {
@@ -1619,6 +1977,12 @@
           "type"
         ],
         "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
       }
     }
   }

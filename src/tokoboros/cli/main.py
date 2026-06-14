@@ -522,7 +522,64 @@ def _is_loopback_host(host: str) -> bool:
     return normalized in {"127.0.0.1", "localhost", "::1"}
 
 
-def _resolve_gateway_auth_token(host: str) -> str | None:
+def _default_gateway_token_path() -> Path:
+    """Return the path of the persisted gateway bearer token file.
+
+    The token is stored in ``~/.tokoboros/gateway-token`` and created with
+    0o600 permissions (owner-read-write only) on POSIX systems.
+    Windows does not support Unix permissions, but the file is placed in the
+    user home directory which is access-controlled by the OS.
+    """
+    return Path.home() / ".tokoboros" / "gateway-token"
+
+
+def _load_or_generate_gateway_token() -> tuple[str, bool]:
+    """Load the persisted gateway bearer token or generate and persist a new one.
+
+    Returns:
+        A ``(token, generated)`` pair where ``generated`` is *True* when a new
+        token was created (so the caller can print it to the console).
+    """
+    import secrets as _secrets
+    import stat
+
+    token_path = _default_gateway_token_path()
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if token_path.exists():
+        token = token_path.read_text(encoding="utf-8").strip()
+        if token:
+            return token, False
+
+    # Generate a new token, write it, and chmod 0600 on POSIX.
+    token = _secrets.token_urlsafe(32)
+    token_path.write_text(token + "\n", encoding="utf-8")
+    try:
+        token_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except NotImplementedError:
+        pass  # Windows — chmod is a no-op here; OS-level ACLs protect the file.
+    return token, True
+
+
+def _resolve_gateway_auth_token(host: str) -> str:
+    """Resolve (or generate) the bearer token for the gateway HTTP server.
+
+    Resolution order (UC-AUTH-001):
+    1. ``TOKOBOROS_GATEWAY_API_TOKEN`` env var (explicit, takes precedence).
+    2. ``TOKOBOROS_GATEWAY_API_TOKEN_FILE`` env var → read the file.
+    3. Persisted token file (``~/.tokoboros/gateway-token``).
+    4. Generate a new ``secrets.token_urlsafe(32)``, persist it, print once.
+
+    Loopback binding no longer exempts authentication (MR-2 / ADV-014).
+    Non-loopback binding still REQUIRES an explicit token (options 1 or 2 above)
+    because the auto-generated token path is only safe for a single machine.
+
+    Returns:
+        The resolved bearer token string.
+
+    Raises:
+        OSError: When binding to a non-loopback host and no explicit token is set.
+    """
     token = (os.environ.get("TOKOBOROS_GATEWAY_API_TOKEN") or "").strip()
     if not token:
         token_file = (os.environ.get("TOKOBOROS_GATEWAY_API_TOKEN_FILE") or "").strip()
@@ -535,12 +592,25 @@ def _resolve_gateway_auth_token(host: str) -> str | None:
                 ) from exc
     if token:
         return token
-    if _is_loopback_host(host):
-        return None
-    raise OSError(
-        "TOKOBOROS_GATEWAY_API_TOKEN (or TOKOBOROS_GATEWAY_API_TOKEN_FILE) is required "
-        "when binding the gateway to a non-loopback host."
-    )
+
+    # No explicit token configured.
+    if not _is_loopback_host(host):
+        raise OSError(
+            "TOKOBOROS_GATEWAY_API_TOKEN (or TOKOBOROS_GATEWAY_API_TOKEN_FILE) is required "
+            "when binding the gateway to a non-loopback host."
+        )
+
+    # Loopback: load or generate a persistent token.
+    token, generated = _load_or_generate_gateway_token()
+    if generated:
+        token_path = _default_gateway_token_path()
+        console.print(
+            f"\n[bold yellow]Gateway token generated and saved to:[/bold yellow] {token_path}\n"
+            f"[bold]Token:[/bold] [cyan]{token}[/cyan]\n"
+            f"[dim]Set Authorization: Bearer {token} in your client.\n"
+            f"Re-run to reuse the same token, or delete the file to rotate.[/dim]\n"
+        )
+    return token
 
 
 def _run_gateway_http_server(host: str, port: int, attach_runtime: bool) -> None:
@@ -581,9 +651,15 @@ def _run_gateway_http_server(host: str, port: int, attach_runtime: bool) -> None
             f"Session State: [cyan]{base_url}/sessions/{{session_id}}[/cyan]\n"
         )
 
-    auth_lines = ""
-    if os.environ.get("TOKOBOROS_GATEWAY_API_TOKEN"):
-        auth_lines = "Auth: [cyan]Authorization: Bearer <TOKOBOROS_GATEWAY_API_TOKEN>[/cyan]\n"
+    # Auth is always enabled; show guidance regardless of env var origin.
+    no_auth = os.environ.get("TOKOBOROS_GATEWAY_NO_AUTH", "").strip() == "1"
+    if no_auth:
+        auth_lines = "[bold red]WARNING: Auth disabled (TOKOBOROS_GATEWAY_NO_AUTH=1).[/bold red]\n"
+    else:
+        auth_lines = "Auth: [cyan]Authorization: Bearer <token>[/cyan]\n"
+        token_path = _default_gateway_token_path()
+        if not os.environ.get("TOKOBOROS_GATEWAY_API_TOKEN") and token_path.exists():
+            auth_lines += f"Token file: [cyan]{token_path}[/cyan]\n"
 
     console.print(
         Panel(
@@ -837,12 +913,27 @@ def _pre_flight_check() -> bool:
     link = provider_links.get(cfg.provider.kind, "")
     link_line = f"Get a key: [link]{link}[/link]\n" if link else ""
 
+    # UC-CORE-001: The onboarding panel must work in non-interactive/piped
+    # contexts (CI, Docker, subprocess).  Use ``tokoboros secrets --set``
+    # (cross-platform) instead of Unix-only ``export VAR=...`` so the guidance
+    # is actionable on Windows where ``export`` does not exist.
+    if sys.stdin.isatty():
+        # TTY: show export as a convenient shell shorthand alongside the CLI.
+        fix_cmd = (
+            f"  tokoboros secrets --set {env_name}=<your-key>\n"
+            f"  [dim]or set the env var:[/dim] [green]{env_name}=<your-key>[/green]"
+        )
+    else:
+        # Non-TTY/piped: skip the shell env-var hint — it may not be applicable
+        # and we must not hang waiting for input.  Give the CLI command only.
+        fix_cmd = f"  tokoboros secrets --set {env_name}=<your-key>"
+
     console.print(
         Panel(
             f"[bold red]API key missing — cannot start.[/bold red]\n\n"
             f"{msg}\n\n"
             f"[bold]Fix (one command):[/bold]\n"
-            f"  [green]export {env_name}=<your-key>[/green]\n\n"
+            f"{fix_cmd}\n\n"
             f"{link_line}"
             f"Then run [bold]tokoboros run[/bold] again.\n"
             f"Or run [bold]tokoboros quickstart[/bold] to choose a different provider.",
@@ -852,6 +943,7 @@ def _pre_flight_check() -> bool:
     )
 
     # Interactive recovery: offer to collect the key right now when in a TTY.
+    # In non-TTY contexts we return False immediately — never hang on input.
     if sys.stdin.isatty():
         fixed = _interactive_first_run_setup(env_name, cfg.provider.kind)
         if fixed:
@@ -1536,9 +1628,7 @@ def setup(
         header = "Start here — paste any prompt into the agent:"
         chips_text = render_chips_text(chips, header=header)
         console.print(f"\n[dim]{chips_text}[/dim]")
-        console.print(
-            "\n[dim]Run [bold]tokoboros run[/bold] to open the agent.[/dim]"
-        )
+        console.print("\n[dim]Run [bold]tokoboros run[/bold] to open the agent.[/dim]")
     except Exception:
         pass  # Chips are cosmetic; never block setup completion.
 
@@ -1839,8 +1929,7 @@ def models(
     named_providers: dict = getattr(cfg, "providers", {}) or {}
     if named_providers:
         result["other_providers"] = {
-            n: {"kind": ps.kind, "default_model": ps.model}
-            for n, ps in named_providers.items()
+            n: {"kind": ps.kind, "default_model": ps.model} for n, ps in named_providers.items()
         }
 
     if json_output:
@@ -1872,8 +1961,7 @@ def models(
         for pname, ps in named_providers.items():
             console.print(f"  • [cyan]{pname}[/cyan]  [{ps.kind}]  default: {ps.model}")
         console.print(
-            "  [dim]Switch with:[/dim]  /model <provider>"
-            "  [dim]or[/dim]  /model <provider> <model>"
+            "  [dim]Switch with:[/dim]  /model <provider>  [dim]or[/dim]  /model <provider> <model>"
         )
 
 
@@ -2256,14 +2344,16 @@ def memoir(
 
         for node in parsed.nodes:
             # Check if the year appears anywhere in the node's text content
-            node_text = " ".join([
-                node.dense,
-                node.full,
-                node.summary,
-                " ".join(node.steps),
-                " ".join(node.assertions),
-                node.note,
-            ])
+            node_text = " ".join(
+                [
+                    node.dense,
+                    node.full,
+                    node.summary,
+                    " ".join(node.steps),
+                    " ".join(node.assertions),
+                    node.note,
+                ]
+            )
             if year_str not in node_text:
                 continue
 

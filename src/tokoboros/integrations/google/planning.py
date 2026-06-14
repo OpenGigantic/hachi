@@ -14,6 +14,37 @@ from tokoboros.core.loop import ToolRegistry
 from tokoboros.integrations.google.service import GoogleService
 
 
+def _classify_google_error(exc: BaseException) -> str:
+    """Return a human-readable reason string for a Google API failure.
+
+    Inspects the exception type and message to distinguish common failure modes:
+    auth errors, insufficient scope, API not enabled, and network/unknown.
+    This prevents callers from swallowing exceptions and emitting opaque
+    "(unavailable)" strings that give the user no actionable information.
+
+    Args:
+        exc: The exception raised by a Google API call.
+
+    Returns:
+        A short reason string suitable for embedding in a status message,
+        e.g. "insufficient Calendar scope" or "API not enabled in Google Cloud".
+    """
+    msg = str(exc).lower()
+    # 401 / 403 usually surface via httpx.HTTPStatusError or the client wrapper
+    if "401" in msg or "unauthorized" in msg or "unauthenticated" in msg:
+        return "authentication error — re-run `tokoboros setup` to refresh OAuth token"
+    if "403" in msg or "forbidden" in msg or "insufficient" in msg or "scope" in msg:
+        return "insufficient scope — re-authorise with the required Google API scope"
+    if "api not enabled" in msg or "accessnotconfigured" in msg or "disabled" in msg:
+        return "API not enabled in Google Cloud project"
+    if "quota" in msg or "rate limit" in msg or "resourceexhausted" in msg:
+        return "quota exceeded — try again later"
+    if "network" in msg or "connection" in msg or "timeout" in msg:
+        return f"network error — {exc}"
+    # Fallback: include the raw error so the user can diagnose
+    return str(exc) or "unknown error"
+
+
 class PlanningService(GoogleService):
     """Synthesis service: fuses calendar, mail, and tasks into a daily plan."""
 
@@ -43,8 +74,9 @@ class PlanningService(GoogleService):
                 },
             )
             events = response.get("items", [])
-        except Exception:
-            return ["(calendar unavailable)"]
+        except Exception as exc:
+            reason = _classify_google_error(exc)
+            return [f"(calendar unavailable: {reason})"]
 
         lines = []
         for e in events:
@@ -66,8 +98,9 @@ class PlanningService(GoogleService):
                 params={"q": "is:unread in:inbox", "maxResults": max_snippets},
             )
             messages = response.get("messages", [])
-        except Exception:
-            return ["(gmail unavailable)"]
+        except Exception as exc:
+            reason = _classify_google_error(exc)
+            return [f"(gmail unavailable: {reason})"]
 
         if not messages:
             return ["  (inbox clear)"]
@@ -103,8 +136,9 @@ class PlanningService(GoogleService):
                 params={"showCompleted": "false", "maxResults": max_tasks},
             )
             items = response.get("items", [])
-        except Exception:
-            return ["(tasks unavailable)"]
+        except Exception as exc:
+            reason = _classify_google_error(exc)
+            return [f"(tasks unavailable: {reason})"]
 
         if not items:
             return ["  (no pending tasks)"]

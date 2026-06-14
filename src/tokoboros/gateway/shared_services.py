@@ -21,10 +21,16 @@ Usage::
     # re-call with same config → returns the same instance (no re-init)
     same  = ProcessSharedServices.get_or_create(config, brain_dir)
     assert shared is same
+
+    # A caller requesting a *different* memory backend gets its own instance,
+    # keyed by a (brain_dir, memory_backend, memory_graph) fingerprint.
+    other = ProcessSharedServices.get_or_create(alt_config, brain_dir)
+    assert other is not shared
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -35,7 +41,22 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
-_INSTANCE: ProcessSharedServices | None = None
+# ADV-024: keyed by config fingerprint so distinct configs get distinct instances.
+_INSTANCES: dict[str, ProcessSharedServices] = {}
+
+
+def _config_fingerprint(config: dict[str, Any], brain_dir: str) -> str:
+    """Return a stable cache key for a (config, brain_dir) pair.
+
+    Only the fields that affect *shared* service construction are included:
+    ``memory.backend``, ``memory.graph``, and ``brain_dir``.  All other
+    per-session config keys are irrelevant to the singleton.
+    """
+    memory = config.get("memory", {}) if isinstance(config.get("memory"), dict) else {}
+    backend = str(memory.get("backend", "chroma"))
+    graph = str(bool(memory.get("graph", False)))
+    raw = f"{brain_dir}|{backend}|{graph}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 @dataclass
@@ -44,14 +65,20 @@ class ProcessSharedServices:
 
     Obtain via ``ProcessSharedServices.get_or_create()`` — never construct
     directly, to avoid bypassing the singleton guard.
+
+    Instances are keyed by a fingerprint derived from ``brain_dir`` and the
+    memory-backend fields of ``config``.  A caller that requests a different
+    memory backend always gets a distinct instance — it is never silently
+    handed the wrong backend (ADV-024).
     """
 
-    skill_engine: Any   # SkillEngine
-    mcp_manager: Any    # MCPManager
-    vault: Any          # MemoryVault | None
-    graph_index: Any    # MemoryIndex | None
+    skill_engine: Any  # SkillEngine
+    mcp_manager: Any  # MCPManager
+    vault: Any  # MemoryVault | None
+    graph_index: Any  # MemoryIndex | None
     memory_writer: Any  # MemoryWriter | None
     brain_dir: str
+    _fingerprint: str = field(default="", repr=False)
     initialized_at: float = field(default_factory=time.monotonic)
 
     # ------------------------------------------------------------------
@@ -66,30 +93,96 @@ class ProcessSharedServices:
         *,
         force_reinit: bool = False,
     ) -> ProcessSharedServices:
-        """Return the process-level singleton, initialising it on the first call.
+        """Return the singleton for this (config, brain_dir) combination.
 
-        Subsequent calls with the same ``brain_dir`` return the cached instance
-        immediately.  Pass ``force_reinit=True`` in tests that need a clean state.
+        FIX ADV-024 — config fingerprint check:
+          Instances are keyed by a fingerprint of ``(brain_dir, memory.backend,
+          memory.graph)``.  A caller requesting a different memory backend gets a
+          distinct instance; it never silently inherits the first session's client.
+
+        FIX UC-INT-004 — MCP health check:
+          Before returning a cached instance the MCP manager is health-checked.
+          If any server in the pool is dead the entire instance is torn down and
+          re-initialised so sessions never inherit a broken pool.
 
         Args:
             config:       Full agent config dict (used for memory-backend selection).
             brain_dir:    Base data directory (platformdirs).
-            force_reinit: If True, destroy the existing singleton and create a new one.
+            force_reinit: If True, destroy the cached instance for this fingerprint
+                          and create a fresh one.  Pass this in tests that need a
+                          clean slate.
         """
-        global _INSTANCE
-        if not force_reinit and _INSTANCE is not None:
-            return _INSTANCE
+        global _INSTANCES
+        fp = _config_fingerprint(config, brain_dir)
+
+        # Fast-path: check without the lock first (double-checked locking).
+        if not force_reinit:
+            existing = _INSTANCES.get(fp)
+            if existing is not None:
+                # UC-INT-004: health-check before handing back a cached instance.
+                if cls._mcp_pool_healthy(existing.mcp_manager):
+                    return existing
+                else:
+                    logger.warning(
+                        "ProcessSharedServices[%s]: MCP pool is unhealthy — "
+                        "tearing down and re-initialising (UC-INT-004).",
+                        fp,
+                    )
+                    force_reinit = True
+
         with _LOCK:
-            if force_reinit or _INSTANCE is None:
-                _INSTANCE = cls._init(config, brain_dir)
-        return _INSTANCE
+            # Re-check under the lock to avoid double-init races.
+            if not force_reinit:
+                existing = _INSTANCES.get(fp)
+                if existing is not None:
+                    if cls._mcp_pool_healthy(existing.mcp_manager):
+                        return existing
+                    logger.warning(
+                        "ProcessSharedServices[%s]: MCP pool unhealthy under lock — "
+                        "re-initialising.",
+                        fp,
+                    )
+
+            new_instance = cls._init(config, brain_dir, fingerprint=fp)
+            _INSTANCES[fp] = new_instance
+
+        return new_instance
+
+    @classmethod
+    def _mcp_pool_healthy(cls, mcp_manager: Any) -> bool:
+        """Return True if the MCP manager has no dead server connections.
+
+        A dead pool is detected when at least one previously-started server is
+        no longer alive.  An empty pool (no servers configured) is considered
+        healthy because there is nothing to revive.
+        """
+        try:
+            servers: dict[str, Any] = mcp_manager._servers  # type: ignore[attr-defined]
+        except AttributeError:
+            return True  # unknown manager type — assume healthy
+
+        for server in servers.values():
+            try:
+                if not server.is_alive:
+                    return False
+            except Exception:
+                return False  # unexpected error → treat as dead
+        return True
 
     @classmethod
     def clear(cls) -> None:
-        """Destroy the singleton (for testing only)."""
-        global _INSTANCE
+        """Destroy all cached singletons (for testing only)."""
+        global _INSTANCES
         with _LOCK:
-            _INSTANCE = None
+            _INSTANCES.clear()
+
+    @classmethod
+    def clear_fingerprint(cls, config: dict[str, Any], brain_dir: str) -> None:
+        """Destroy the singleton for a specific (config, brain_dir) pair (for testing only)."""
+        global _INSTANCES
+        fp = _config_fingerprint(config, brain_dir)
+        with _LOCK:
+            _INSTANCES.pop(fp, None)
 
     def uptime_seconds(self) -> float:
         """How long (seconds) since this singleton was first created."""
@@ -100,7 +193,9 @@ class ProcessSharedServices:
     # ------------------------------------------------------------------
 
     @classmethod
-    def _init(cls, config: dict[str, Any], brain_dir: str) -> ProcessSharedServices:
+    def _init(
+        cls, config: dict[str, Any], brain_dir: str, *, fingerprint: str = ""
+    ) -> ProcessSharedServices:
         """One-time creation of all shared services."""
         from tokoboros.core.mcp_client import MCPManager
         from tokoboros.core.memory_provider import ChromaMemoryProvider, resolve_provider
@@ -154,12 +249,11 @@ class ProcessSharedServices:
                     graph_index.node_count,
                 )
             except Exception:
-                logger.debug(
-                    "ProcessSharedServices: graph index init failed", exc_info=True
-                )
+                logger.debug("ProcessSharedServices: graph index init failed", exc_info=True)
 
         logger.info(
-            "ProcessSharedServices: initialised (skills=%d, mcp=%s, vault=%s, graph=%s)",
+            "ProcessSharedServices[%s]: initialised (skills=%d, mcp=%s, vault=%s, graph=%s)",
+            fingerprint or "default",
             len(skill_engine.get_all_nodes()),
             "ok",
             "ok" if vault else "none",
@@ -173,4 +267,5 @@ class ProcessSharedServices:
             graph_index=graph_index,
             memory_writer=memory_writer,
             brain_dir=brain_dir,
+            _fingerprint=fingerprint,
         )

@@ -235,9 +235,7 @@ class MemoryManager:
         if extracted:
             logger.debug("sync_turn extracted %d facts", extracted)
 
-    def _run_typed_extraction(
-        self, combined: str, session_id: str = ""
-    ) -> None:
+    def _run_typed_extraction(self, combined: str, session_id: str = "") -> None:
         """M1 write-side: schema-constrained tool-call extraction → typed OG nodes.
 
         Uses the Anthropic tool_use mechanism so the LLM is forced to emit a
@@ -823,9 +821,7 @@ class MemoryManager:
                 try:
                     self.job_queue.enqueue(job)
                 except Exception as enqueue_err:
-                    logger.error(
-                        "Failed to enqueue flush_facts job: %s", enqueue_err
-                    )
+                    logger.error("Failed to enqueue flush_facts job: %s", enqueue_err)
             else:
                 logger.warning(
                     "flush_facts skipped: no job queue configured. "

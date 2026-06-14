@@ -19,6 +19,7 @@ Reference: https://modelcontextprotocol.io/
 """
 
 import json
+import logging
 import os
 import shlex
 import subprocess
@@ -29,12 +30,19 @@ from typing import Any
 from tokoboros.core.loop import ToolRegistry
 from tokoboros.core.untrusted_content import guard_untrusted
 
+logger = logging.getLogger(__name__)
+
 
 class MCPServerConnection:
     """
     Manages a persistent connection to a single MCP server subprocess.
     Handles JSON-RPC communication over stdin/stdout.
     """
+
+    # Default timeout for the entire boot sequence (subprocess spawn → initialize → tools/list).
+    # A hanging MCP server (e.g. slow npx download on first run or a dead npm registry) must
+    # not block the agent boot indefinitely.  UC-DEV-001.
+    DEFAULT_BOOT_TIMEOUT_SECONDS: float = 60.0
 
     def __init__(
         self,
@@ -43,6 +51,7 @@ class MCPServerConnection:
         args: list[str] = None,
         env: dict[str, str] = None,
         request_timeout_seconds: float = 30.0,
+        boot_timeout_seconds: float | None = None,
     ):
         """
         Initialize an MCP server connection.
@@ -52,6 +61,10 @@ class MCPServerConnection:
             command: The executable command (e.g., 'npx', 'python').
             args: Arguments to pass to the command (e.g., ['-y', '@anthropic/mcp-gmail']).
             env: Environment variables to set for the subprocess.
+            request_timeout_seconds: Per-request JSON-RPC timeout.
+            boot_timeout_seconds: Maximum wall-clock seconds allowed for the full
+                boot sequence (spawn → initialize → tools/list).  Defaults to
+                ``DEFAULT_BOOT_TIMEOUT_SECONDS``.  UC-DEV-001.
         """
         self.name = name
         self.command = command
@@ -64,6 +77,11 @@ class MCPServerConnection:
         self._responses: dict[Any, dict[str, Any]] = {}
         self._reader_thread: threading.Thread | None = None
         self._request_timeout_seconds = max(1.0, float(request_timeout_seconds))
+        self._boot_timeout_seconds = (
+            float(boot_timeout_seconds)
+            if boot_timeout_seconds is not None
+            else self.DEFAULT_BOOT_TIMEOUT_SECONDS
+        )
         self._tools: list[dict[str, Any]] = []
 
     @staticmethod
@@ -121,12 +139,20 @@ class MCPServerConnection:
         """Build a minimal environment to avoid leaking host secrets to MCP servers."""
         base_keys = [
             "PATH",
+            "HOME",
+            # POSIX (macOS/Linux): temp dir, runtime dir, identity, and login shell.
+            # Many MCP servers create temp files via TMPDIR; on macOS TMP/TEMP are
+            # usually unset, so omitting TMPDIR left them writing to the wrong place.
+            "TMPDIR",
+            "XDG_RUNTIME_DIR",
+            "USER",
+            "SHELL",
+            # Windows runtime and data directories.
             "SYSTEMROOT",
             "WINDIR",
             "COMSPEC",
             "TMP",
             "TEMP",
-            "HOME",
             "APPDATA",
             "LOCALAPPDATA",
             "ProgramData",
@@ -144,18 +170,67 @@ class MCPServerConnection:
         return env
 
     def start(self) -> bool:
-        """
-        Spawn the MCP server subprocess and initialize the connection.
+        """Spawn the MCP server subprocess and initialize the connection.
+
+        The entire boot sequence (spawn → initialize → tools/list) is bounded by
+        ``boot_timeout_seconds`` (UC-DEV-001).  If a server hangs past that
+        deadline the method returns ``False`` and logs a warning so the agent can
+        continue without that MCP server rather than hanging indefinitely.
 
         Returns:
             True if the server started and initialized successfully.
         """
+        result_holder: list[bool] = []
+        exc_holder: list[BaseException] = []
+
+        def _do_start() -> None:
+            try:
+                ok = self._start_inner()
+                result_holder.append(ok)
+            except BaseException as exc:  # noqa: BLE001
+                exc_holder.append(exc)
+                result_holder.append(False)
+
+        t = threading.Thread(target=_do_start, name=f"mcp-boot-{self.name}", daemon=True)
+        t.start()
+        t.join(timeout=self._boot_timeout_seconds)
+
+        if t.is_alive():
+            # Boot timed out.  The thread is a daemon so it won't block shutdown,
+            # but we must still kill the subprocess to avoid resource leaks.
+            logger.warning(
+                "[mcp] %s: boot timed out after %.1fs — killing subprocess and continuing "
+                "without this MCP server (UC-DEV-001).",
+                self.name,
+                self._boot_timeout_seconds,
+            )
+            try:
+                proc = self._process
+                if proc:
+                    proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+            self._process = None
+            return False
+
+        if exc_holder:
+            logger.warning(
+                "[mcp] %s: unexpected error during boot: %s",
+                self.name,
+                exc_holder[0],
+            )
+            return False
+
+        return result_holder[0] if result_holder else False
+
+    def _start_inner(self) -> bool:
+        """Perform the actual MCP server boot (run inside a timed daemon thread)."""
         try:
             import shutil
 
             merged_env = self._build_subprocess_env()
 
-            # Resolve the full path to the command so it works even inside a Python venv
+            # Resolve the full path to the command so it works even inside a Python venv.
             resolved_command = shutil.which(self.command, path=os.environ.get("PATH", ""))
             if not resolved_command:
                 resolved_command = self.command
@@ -400,7 +475,22 @@ class MCPManager:
                 env_key = key[4:]  # Strip the "env_" prefix
                 env[env_key] = value
 
-        server = MCPServerConnection(name=node.name, command=command, args=args, env=env)
+        # Optional per-server timeouts configurable from the .og node.
+        boot_timeout = node.config.get("boot_timeout_seconds")
+        request_timeout = node.config.get("request_timeout_seconds")
+        kwargs: dict[str, Any] = {}
+        if boot_timeout is not None:
+            try:
+                kwargs["boot_timeout_seconds"] = float(boot_timeout)
+            except (ValueError, TypeError):
+                pass
+        if request_timeout is not None:
+            try:
+                kwargs["request_timeout_seconds"] = float(request_timeout)
+            except (ValueError, TypeError):
+                pass
+
+        server = MCPServerConnection(name=node.name, command=command, args=args, env=env, **kwargs)
 
         if server.start():
             self._servers[node.name] = server
