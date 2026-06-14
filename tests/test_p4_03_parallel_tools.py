@@ -15,7 +15,6 @@ from __future__ import annotations
 import time
 from unittest.mock import MagicMock
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -57,7 +56,6 @@ def _make_tool_call(name: str, call_id: str = "tc1", input_data: dict | None = N
 def test_execution_loop_has_tool_pool() -> None:
     import concurrent.futures
 
-    from tokoboros.core.loop import ExecutionLoop
 
     loop = _make_loop()
     assert isinstance(loop._tool_pool, concurrent.futures.ThreadPoolExecutor)
@@ -124,7 +122,6 @@ def test_execute_single_tool_error() -> None:
 
 def test_parallel_execution_is_faster_than_sequential() -> None:
     """Submit 3 tools each sleeping 0.1s — concurrent = ~0.1s, sequential = ~0.3s."""
-    import concurrent.futures
 
     loop = _make_loop()
     DELAY = 0.10  # seconds per tool
@@ -154,7 +151,6 @@ def test_parallel_execution_is_faster_than_sequential() -> None:
 
 def test_results_maintain_original_order() -> None:
     """Results should come back indexed by original call order, not completion order."""
-    import concurrent.futures
 
     loop = _make_loop()
     delays = [0.05, 0.01, 0.03]  # second tool finishes first

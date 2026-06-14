@@ -41,3 +41,24 @@ class GoogleService(ABC):
             registry: The central ToolRegistry of the agent.
         """
         pass
+
+    def require_approval(self, action: str, summary: str, detail: str = "") -> tuple[bool, str]:
+        """Gate a destructive/outbound action behind the session approver.
+
+        This is the single call-site all destructive Google leaf tools should use.
+        Leaf tools call this and, when ``ok is False``, return a user-facing
+        cancellation string without touching the Google API.
+
+        Canonical *action* names:
+            ``send_email``, ``delete_event``, ``delete_task``,
+            ``delete_contact``, ``trash_file``, ``share_file``.
+
+        Args:
+            action:  Canonical action name.
+            summary: Short human-readable description of what would happen.
+            detail:  Optional extended context for the approval UI.
+
+        Returns:
+            ``(True, reason)`` if approved; ``(False, reason)`` if denied.
+        """
+        return self.client.require_approval(action, summary, detail)

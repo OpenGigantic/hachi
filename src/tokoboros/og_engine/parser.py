@@ -48,6 +48,17 @@ import re
 
 from pydantic import BaseModel, Field
 
+# ADV-025: Maximum nesting depth allowed when parsing JSON structures inside .og files
+# (::api schema/headers blocks).  Deeply-nested payloads can exhaust the call stack via
+# recursive descent in json.loads; we pre-check before calling it.
+_JSON_MAX_DEPTH: int = 20
+
+# ADV-025: Maximum number of ::node blocks allowed in a single .og file when parsed
+# standalone (the engine enforces its own configurable cap in load_file; this parser-level
+# guard is a defence-in-depth fallback that prevents runaway memory even if the engine
+# cap is bypassed by a direct parse_og_file() call).
+_PARSER_NODE_CAP: int = 10_000
+
 # ==========================================
 # Data Models
 # ==========================================
@@ -354,6 +365,16 @@ def parse_og_file(filepath: str) -> OGFile:
     og_file.og_schema = _parse_schema(preamble)
     og_file.changelog = _parse_changelog(preamble)
 
+    # ADV-025: Pre-check the node count using the split result to fail fast
+    # without allocating node objects for millions of entries.
+    raw_node_count = (len(node_splits) - 1) // 2
+    if raw_node_count > _PARSER_NODE_CAP:
+        raise ValueError(
+            f"File contains {raw_node_count} ::node blocks which exceeds the parser "
+            f"hard cap of {_PARSER_NODE_CAP}. "
+            "This is likely a malformed or malicious file (ADV-025)."
+        )
+
     # Parse all node blocks
     i = 1  # Start after preamble
     while i < len(node_splits) - 1:
@@ -602,6 +623,8 @@ def _parse_node_body(name: str, body: str, source_file: str) -> OGNode:
                 # Strict JSON validation for LLM Tool Generation
                 if "schema" in api_def:
                     try:
+                        # ADV-025: guard against deeply-nested JSON before parsing.
+                        _check_json_depth(api_def["schema"])
                         json.loads(api_def["schema"])
                     except json.JSONDecodeError as e:
                         raise ValueError(
@@ -609,6 +632,8 @@ def _parse_node_body(name: str, body: str, source_file: str) -> OGNode:
                         ) from e
                 if "headers" in api_def:
                     try:
+                        # ADV-025: guard against deeply-nested JSON before parsing.
+                        _check_json_depth(api_def["headers"])
                         json.loads(api_def["headers"])
                     except json.JSONDecodeError as e:
                         raise ValueError(
@@ -653,6 +678,53 @@ def _clean_block_content(raw: str) -> str:
                 continue
         lines.append(line)
     return "\n".join(lines).strip()
+
+
+# ==========================================
+# ADV-025: JSON depth guard
+# ==========================================
+
+
+def _check_json_depth(text: str, max_depth: int = _JSON_MAX_DEPTH) -> None:
+    """Raise ValueError if the JSON string nests deeper than ``max_depth``.
+
+    We scan the raw text character-by-character rather than doing a full parse
+    so that we can reject the input before recursion starts.  This is a
+    defence-in-depth guard against payloads crafted to exhaust the call stack
+    via Python's recursive-descent json parser.
+
+    Args:
+        text: The raw JSON string to inspect.
+        max_depth: Maximum allowed nesting depth (objects + arrays combined).
+
+    Raises:
+        ValueError: If the nesting depth exceeds ``max_depth``.
+    """
+    depth = 0
+    in_string = False
+    escape_next = False
+    for ch in text:
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\":
+            if in_string:
+                escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in ("{", "["):
+            depth += 1
+            if depth > max_depth:
+                raise ValueError(
+                    f"JSON nesting depth exceeds limit of {max_depth}; "
+                    "file rejected to prevent stack exhaustion (ADV-025)"
+                )
+        elif ch in ("}", "]"):
+            depth -= 1
 
 
 # ==========================================

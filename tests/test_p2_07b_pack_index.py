@@ -222,10 +222,10 @@ def test_fetch_pack_index_uses_cache_when_fresh(tmp_path):
     cache = state_dir / INDEX_CACHE_FILENAME
     cache.write_text(SAMPLE_INDEX_TOML, encoding="utf-8")
 
-    # The mock below should NOT be called when cache is fresh.
-    with patch("urllib.request.urlopen") as mock_open:
+    # _download must NOT be called when the cache is fresh.
+    with patch("tokoboros.core.pack_index._download") as mock_dl:
         index = fetch_pack_index(state_dir, url="http://fake.example/index.toml")
-        mock_open.assert_not_called()
+        mock_dl.assert_not_called()
 
     assert len(index.packs) == 2
 
@@ -238,14 +238,10 @@ def test_fetch_pack_index_force_bypasses_cache(tmp_path):
     cache = state_dir / INDEX_CACHE_FILENAME
     cache.write_text(SAMPLE_INDEX_TOML, encoding="utf-8")
 
-    from unittest.mock import MagicMock
-
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = SAMPLE_INDEX_TOML.encode("utf-8")
-    mock_resp.__enter__ = lambda s: s
-    mock_resp.__exit__ = MagicMock(return_value=False)
-
-    with patch("urllib.request.urlopen", return_value=mock_resp):
+    with patch(
+        "tokoboros.core.pack_index._download",
+        return_value=SAMPLE_INDEX_TOML.encode("utf-8"),
+    ):
         index = fetch_pack_index(state_dir, url="http://fake/index.toml", force=True)
 
     assert len(index.packs) == 2
@@ -265,7 +261,7 @@ def test_fetch_pack_index_falls_back_to_cache_on_error(tmp_path):
 
     os.utime(cache, (old_time, old_time))
 
-    with patch("urllib.request.urlopen", side_effect=OSError("network down")):
+    with patch("tokoboros.core.pack_index._download", side_effect=OSError("network down")):
         index = fetch_pack_index(state_dir, url="http://fake/index.toml")
 
     assert len(index.packs) == 2
@@ -277,7 +273,7 @@ def test_fetch_pack_index_raises_when_no_cache_and_network_fails(tmp_path):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
 
-    with patch("urllib.request.urlopen", side_effect=OSError("network down")):
+    with patch("tokoboros.core.pack_index._download", side_effect=OSError("network down")):
         with pytest.raises(RuntimeError, match="Cannot fetch"):
             fetch_pack_index(state_dir, url="http://fake/index.toml", force=True)
 
