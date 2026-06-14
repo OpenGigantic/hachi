@@ -11,19 +11,31 @@ class NotionDatabases(NotionService):
     def search_workspace(self, query: str) -> str:
         """
         Performs a global search across the entire connected Notion workspace.
+
+        Follows Notion's ``next_cursor``/``has_more`` pagination so all matching results are
+        returned rather than being silently capped at the first page of 20.
         """
-        _MAX_RESULTS = 20
-        payload: dict = {"query": query, "page_size": _MAX_RESULTS}
+        _PAGE_SIZE = 20
+        payload: dict = {"query": query, "page_size": _PAGE_SIZE}
+        all_results: list = []
 
         try:
-            res = self._post("/search", json_data=payload)
-            results = res.get("results", [])
+            while True:
+                res = self._post("/search", json_data=payload)
+                all_results.extend(res.get("results", []))
+                if not res.get("has_more"):
+                    break
+                payload = {
+                    "query": query,
+                    "page_size": _PAGE_SIZE,
+                    "start_cursor": res["next_cursor"],
+                }
 
-            if not results:
+            if not all_results:
                 return f"No results found in Notion for query: '{query}'"
 
             formatted = []
-            for item in results[:_MAX_RESULTS]:
+            for item in all_results:
                 item_id = item.get("id")
                 item_type = item.get("object") or "unknown"
                 url = item.get("url")

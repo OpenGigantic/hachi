@@ -10,7 +10,7 @@ Scenarios covered here:
   - Tool error → is_error=True in history; loop continues
   - Malformed/empty LLM response exits gracefully
   - Compaction event fires after skill switch
-  - on_event fires in correct order (thinking, tool_call, tool_result, text_chunk)
+  - on_event fires in correct order (thinking, tool_call, tool_result, text_delta)
   - Iteration limit returns [INCOMPLETE], not raises (P1-04)
   - Session budget stop (session-level cap)
 
@@ -348,12 +348,14 @@ def test_event_order_thinking_tool_result_text() -> None:
     assert "thinking" in event_names
     assert "tool_call" in event_names
     assert "tool_result" in event_names
-    # text_delta fires per streaming chunk; text_chunk fires once with the full text.
+    # Streaming emits text_delta per chunk. text_chunk is the non-streaming
+    # fallback only, and is suppressed when deltas streamed so delta listeners
+    # (TUI transcript, gateway SSE) don't render the reply twice.
     assert "text_delta" in event_names
-    assert "text_chunk" in event_names
+    assert "text_chunk" not in event_names
     assert event_names.index("thinking") < event_names.index("tool_call")
     assert event_names.index("tool_call") < event_names.index("tool_result")
-    assert event_names.index("text_delta") < event_names.index("text_chunk")
+    assert event_names.index("tool_result") < event_names.index("text_delta")
 
 
 # ---------------------------------------------------------------------------
@@ -571,4 +573,67 @@ def test_text_delta_events_emitted_per_chunk() -> None:
 
     assert delta_events == ["hello", " ", "world"], (
         f"Expected one text_delta per chunk; got: {delta_events}"
+    )
+
+
+def test_text_chunk_suppressed_when_streaming() -> None:
+    """When deltas stream, the full-content text_chunk must NOT also fire.
+
+    Regression: the loop used to emit both the per-chunk text_delta events AND a
+    final full text_chunk. Both canonicalize to text.stream.delta, so the TUI and
+    gateway SSE accumulators rendered the reply twice (the full chunk appended on
+    top of the already-streamed deltas).
+    """
+    loop, llm = _make_loop([LLMResponse(content="hello world")])
+
+    def _multi_chunk_stream(**_kwargs: Any):  # type: ignore[return]
+        def _gen():
+            yield from ["hello", " ", "world"]
+            return LLMResponse(content="hello world")
+
+        return _gen()
+
+    llm.generate_stream = _multi_chunk_stream  # type: ignore[method-assign]
+
+    names: list[str] = []
+    loop.on_event = lambda name, _data: names.append(name)  # type: ignore[assignment]
+
+    loop.add_user_message("hi")
+    loop.run(max_iterations=3)
+
+    assert "text_delta" in names
+    assert "text_chunk" not in names, (
+        "text_chunk must be suppressed when streaming produced deltas, "
+        f"else the reply renders twice; got events: {names}"
+    )
+
+
+def test_text_chunk_emitted_as_non_streaming_fallback() -> None:
+    """A client whose stream yields no chunks still surfaces text via text_chunk.
+
+    This is the fallback path the suppression above must preserve: non-delta
+    listeners (and the CLI) still receive the model's text exactly once.
+    """
+    loop, llm = _make_loop([LLMResponse(content="final answer")])
+
+    def _empty_stream(**_kwargs: Any):  # type: ignore[return]
+        def _gen():
+            if False:  # never yields — non-streaming client shape
+                yield ""
+            return LLMResponse(content="final answer")
+
+        return _gen()
+
+    llm.generate_stream = _empty_stream  # type: ignore[method-assign]
+
+    chunks: list[str] = []
+    loop.on_event = lambda name, data: (  # type: ignore[assignment]
+        chunks.append(data["text"]) if name == "text_chunk" else None
+    )
+
+    loop.add_user_message("hi")
+    loop.run(max_iterations=3)
+
+    assert chunks == ["final answer"], (
+        f"Expected exactly one text_chunk in the no-delta fallback; got: {chunks}"
     )

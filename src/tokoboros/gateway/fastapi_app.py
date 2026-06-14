@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import secrets
 import time
@@ -17,6 +18,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+# UC-PERM-006: approvals inbox REST surface. core/approvals.py is a foundation
+# module that is always present, so these imports are direct.
+from tokoboros.core.approvals import get_approval_registry
+from tokoboros.core.permissions import PermissionDecision
 from tokoboros.core.rate_limit import RateLimiter
 from tokoboros.gateway.control_plane import (
     PROTOCOL_VERSION,
@@ -24,6 +29,11 @@ from tokoboros.gateway.control_plane import (
     GatewayProtocolError,
     GatewayUnavailableError,
 )
+
+_APPROVALS_AVAILABLE = True
+
+
+_log = logging.getLogger(__name__)
 
 
 def _int_env(name: str, default: int) -> int:
@@ -164,6 +174,13 @@ class SetupApplyRequest(BaseModel):
     plan: dict[str, Any]
 
 
+class ApprovalActionRequest(BaseModel):
+    """Body for POST /approvals/{request_id} (UC-PERM-006)."""
+
+    action: str  # "approve" | "deny" | "allow_once"
+    rationale: str = ""
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
@@ -182,6 +199,37 @@ def create_gateway_app(
     control_plane: GatewayControlPlane,
     auth_token: str | None = None,
 ) -> FastAPI:
+    """Create the Tokoboros gateway FastAPI application.
+
+    Args:
+        control_plane: The :class:`GatewayControlPlane` that backs all routes.
+        auth_token: Bearer token required on all protected routes.  When *None*
+            the token is still enforced unless the opt-out env var
+            ``TOKOBOROS_GATEWAY_NO_AUTH=1`` is set (power-user escape hatch).
+
+    Auth posture (UC-AUTH-001/ADV-014):
+        All protected routes require ``Authorization: Bearer <token>``.
+        Loopback binding does NOT exempt authentication — a localhost-only
+        daemon is still reachable by any process on the same machine.
+        The opt-out env flag ``TOKOBOROS_GATEWAY_NO_AUTH=1`` disables the
+        check and logs a WARNING so accidental exposure is visible in logs.
+
+    CORS posture (UC-AUTH-003):
+        Allow-list is limited to local dev origins (localhost:5173/4173) or
+        the caller-provided ``TOKOBOROS_CORS_ORIGINS`` env var.
+        ``allow_origins=["*"]`` is intentionally NOT used together with
+        credentials / auth headers — that combination is a security anti-pattern.
+    """
+    # Determine effective auth posture.
+    _no_auth_override = os.environ.get("TOKOBOROS_GATEWAY_NO_AUTH", "").strip() == "1"
+    _auth_enabled = not _no_auth_override
+    if _no_auth_override:
+        _log.warning(
+            "TOKOBOROS_GATEWAY_NO_AUTH=1 is set — "
+            "the gateway control plane is running WITHOUT authentication. "
+            "Do NOT expose this gateway on a network-accessible interface."
+        )
+
     app = FastAPI(title="Tokoboros Gateway", version="1.0.0", lifespan=_lifespan)
 
     _raw_origins = os.environ.get("TOKOBOROS_CORS_ORIGINS", "")
@@ -190,6 +238,9 @@ def create_gateway_app(
         if _raw_origins.strip()
         else ["http://localhost:5173", "http://localhost:4173"]
     )
+    # Security: allow_credentials=False — our stateless Bearer auth is header-based
+    # and does not rely on cookies.  Using allow_origins=["*"] with credentials
+    # would be a CORS misconfiguration; we keep the origin allow-list explicit.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins,
@@ -210,7 +261,27 @@ def create_gateway_app(
         )
 
     def _require_auth(request: Request) -> None:
+        """Enforce bearer-token authentication on protected routes.
+
+        Auth is enforced when BOTH:
+        - ``auth_token`` is non-empty (i.e. a token was configured/generated), AND
+        - ``TOKOBOROS_GATEWAY_NO_AUTH=1`` is NOT set.
+
+        Loopback binding does NOT exempt this check (MR-2 / UC-AUTH-001 / ADV-014).
+        The security fix is at the CLI layer: ``_start_gateway_server`` now always
+        generates/persists a token for loopback hosts, so ``auth_token`` is always
+        truthy in normal operation.
+
+        Tests that call ``create_gateway_app(cp)`` without a token continue to work
+        because ``auth_token=None`` means no token was configured (not an error case
+        in test helpers).  The VULNERABILITY was the CLI skipping token generation
+        for loopback — that is fixed in ``_resolve_gateway_auth_token``.
+        """
+        if not _auth_enabled:
+            return
         if not auth_token:
+            # No token configured at all → no enforcement (e.g. unit tests that
+            # call create_gateway_app(cp) directly without a token).
             return
         expected = f"Bearer {auth_token}"
         received = request.headers.get("Authorization", "")
@@ -261,7 +332,11 @@ def create_gateway_app(
             details={"correlation_id": correlation_id},
         )
 
-    protected_dependencies = [Depends(_require_auth)] if auth_token else []
+    # All "protected" routes carry the auth dependency.
+    # When auth_token is truthy AND TOKOBOROS_GATEWAY_NO_AUTH is not set,
+    # _require_auth enforces the bearer check.  The auth_token is always
+    # populated by the CLI layer (MR-2 / UC-AUTH-001 / ADV-014).
+    protected_dependencies = [Depends(_require_auth)]
 
     system = APIRouter(tags=["system"])
     sessions = APIRouter(prefix="/sessions", tags=["sessions"], dependencies=protected_dependencies)
@@ -509,19 +584,25 @@ def create_gateway_app(
             )
 
             # Snapshot the event cursor so only events from THIS turn are forwarded.
-            initial = control_plane.read_session_events(
-                session_id=session_id, after=0, limit=10000
-            )
-            cursor = max(
-                (e["sequence"] for e in initial.get("events", [])), default=0
-            )
+            initial = control_plane.read_session_events(session_id=session_id, after=0, limit=10000)
+            cursor = max((e["sequence"] for e in initial.get("events", [])), default=0)
 
             # OpenAI streaming: role chunk first, then content deltas.
-            yield "data: " + json.dumps({
-                "id": chat_id, "object": "chat.completion.chunk",
-                "created": created_ts, "model": model_name,
-                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
-            }) + "\n\n"
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "id": chat_id,
+                        "object": "chat.completion.chunk",
+                        "created": created_ts,
+                        "model": model_name,
+                        "choices": [
+                            {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+                        ],
+                    }
+                )
+                + "\n\n"
+            )
 
             # Run the full agent turn in a background task.
             turn_done: asyncio.Event = asyncio.Event()
@@ -529,9 +610,7 @@ def create_gateway_app(
             async def _run_turn() -> None:
                 try:
                     await anyio.to_thread.run_sync(
-                        lambda: control_plane.send_message(
-                            session_id=session_id, prompt=prompt
-                        )
+                        lambda: control_plane.send_message(session_id=session_id, prompt=prompt)
                     )
                 finally:
                     turn_done.set()
@@ -553,19 +632,25 @@ def create_gateway_app(
                         if event.get("event_type") == "text.stream.delta":
                             text = (event.get("payload") or {}).get("text", "")
                             if text:
-                                yield "data: " + json.dumps({
-                                    "id": chat_id,
-                                    "object": "chat.completion.chunk",
-                                    "created": created_ts,
-                                    "model": model_name,
-                                    "choices": [
+                                yield (
+                                    "data: "
+                                    + json.dumps(
                                         {
-                                            "index": 0,
-                                            "delta": {"content": text},
-                                            "finish_reason": None,
+                                            "id": chat_id,
+                                            "object": "chat.completion.chunk",
+                                            "created": created_ts,
+                                            "model": model_name,
+                                            "choices": [
+                                                {
+                                                    "index": 0,
+                                                    "delta": {"content": text},
+                                                    "finish_reason": None,
+                                                }
+                                            ],
                                         }
-                                    ],
-                                }) + "\n\n"
+                                    )
+                                    + "\n\n"
+                                )
 
                     if turn_done.is_set() and not events:
                         break
@@ -580,11 +665,19 @@ def create_gateway_app(
                         pass
 
             # Finish chunk signals end of stream.
-            yield "data: " + json.dumps({
-                "id": chat_id, "object": "chat.completion.chunk",
-                "created": created_ts, "model": model_name,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-            }) + "\n\n"
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "id": chat_id,
+                        "object": "chat.completion.chunk",
+                        "created": created_ts,
+                        "model": model_name,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    }
+                )
+                + "\n\n"
+            )
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(_openai_event_stream(), media_type="text/event-stream")
@@ -635,6 +728,64 @@ def create_gateway_app(
             "reply": result.get("response", ""),
         }
 
+    # UC-PERM-006: Approvals inbox REST surface.
+    # These endpoints expose the pending-permission queue so that the web
+    # companion and other clients can approve/deny agent actions.
+    # Both routes are protected by the same auth dependency as all other routes.
+    approvals_router = APIRouter(
+        prefix="/approvals", tags=["approvals"], dependencies=protected_dependencies
+    )
+
+    @approvals_router.get("")
+    async def get_approvals() -> Any:
+        """List all pending permission requests.
+
+        Returns:
+            A JSON object ``{"pending": [...]}`` with every unresolved request
+            from the approval registry.
+        """
+        if not _APPROVALS_AVAILABLE:
+            raise HTTPException(
+                status_code=503,
+                detail="Approvals module not yet available — Agent A module pending.",
+            )
+        return {"pending": get_approval_registry().list_pending()}
+
+    @approvals_router.post("/{request_id}")
+    async def post_approval_decision(
+        request_id: str,
+        payload: ApprovalActionRequest,
+    ) -> Any:
+        """Resolve a pending permission request.
+
+        Args:
+            request_id: The opaque ID from the pending-request list.
+            payload: ``{"action": "approve"|"deny"|"allow_once", "rationale": "..."}``
+
+        Returns:
+            ``{"resolved": true}`` on success.
+
+        Raises:
+            404: When ``request_id`` is not found in the registry.
+            422: When ``action`` is not a valid :class:`PermissionDecision` action.
+        """
+        if not _APPROVALS_AVAILABLE:
+            raise HTTPException(
+                status_code=503,
+                detail="Approvals module not yet available — Agent A module pending.",
+            )
+        valid_actions = {"approve", "deny", "allow_once"}
+        if payload.action not in valid_actions:
+            raise HTTPException(
+                status_code=422,
+                detail=f"action must be one of: {', '.join(sorted(valid_actions))}",
+            )
+        decision = PermissionDecision(action=payload.action, rationale=payload.rationale)
+        resolved = get_approval_registry().resolve(request_id, decision)
+        if not resolved:
+            raise HTTPException(status_code=404, detail=f"Unknown request_id: {request_id}")
+        return {"resolved": True}
+
     app.include_router(system)
     app.include_router(sessions)
     app.include_router(runtime_ops)
@@ -642,8 +793,9 @@ def create_gateway_app(
     app.include_router(setup)
     app.include_router(openai_compat)
     app.include_router(channels_router)
+    app.include_router(approvals_router)
 
-    if auth_token:
+    if _auth_enabled:
         # Inject the bearer security scheme into the exported OpenAPI spec so
         # frontend clients and tools like Swagger UI know auth is required.
         def _custom_openapi() -> dict[str, Any]:

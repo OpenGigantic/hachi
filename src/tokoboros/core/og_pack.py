@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tokoboros.core.archive_safety import safe_extract
+
 # ---------------------------------------------------------------------------
 # Scope vocabulary
 # ---------------------------------------------------------------------------
@@ -276,7 +278,7 @@ def _write_installed_meta(pack_dir: Path, manifest: OgPackManifest, source: str)
         f'source = "{source}"',
         f'description = "{manifest.description}"',
         f'author = "{manifest.author}"',
-        f'scopes = [{", ".join(repr(s.id) for s in manifest.scopes)}]',
+        f"scopes = [{', '.join(repr(s.id) for s in manifest.scopes)}]",
     ]
     (pack_dir / _INSTALLED_META_FILE).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -400,7 +402,7 @@ def install_ogpack_from_archive(
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         with tarfile.open(archive_path, "r:*") as tf:
-            tf.extractall(tmp_path)  # noqa: S202
+            safe_extract(tf, tmp_path)
         # Look for pack.toml in the extracted tree
         pack_toml_candidates = list(tmp_path.rglob("pack.toml"))
         if not pack_toml_candidates:

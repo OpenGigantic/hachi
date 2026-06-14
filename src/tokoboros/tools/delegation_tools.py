@@ -39,6 +39,7 @@ from tokoboros.core.sub_agent import (
     SubAgentStatus,
 )
 from tokoboros.jobs import Job, JobStatus
+from tokoboros.og_engine.parser import parse_og_file
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +346,17 @@ def _rebind_og_tools_for_role(
 # ==========================================
 
 
+_DELEGATION_MAX_DEPTH = 3
+"""Maximum allowed delegation nesting depth (inclusive).
+
+At depth 0 the orchestrator calls delegate_task; depth 1 is a child sub-agent.
+The ``delegate_task`` tool is already absent from sub-agent registries via
+``BLOCKED_TOOL_NAMES``, so in normal operation depth never exceeds 1.  This
+cap is a defence-in-depth backstop against bugs that bypass that block (e.g. a
+future refactor that forgets to strip the tool).
+"""
+
+
 def _make_delegate_task(
     parent_registry: ToolRegistry,
     gate: PermissionGate | None = None,
@@ -355,6 +367,9 @@ def _make_delegate_task(
     cost_tracker=None,
     skill_engine: Any = None,
     lease_manager: Any = None,
+    # --- ADV-012: depth / cycle tracking (internal, not exposed in schema) ---
+    _depth: int = 0,
+    _ancestry: tuple[str, ...] = (),
 ) -> Callable[..., str]:
     """Factory: creates the delegate_task tool handler.
 
@@ -373,6 +388,9 @@ def _make_delegate_task(
                          ``skill_engine.with_role(role)`` view, preventing the
                          sub-agent from reading ``scope=orchestrator`` nodes.
         lease_manager:   P4-01 optional LeaseManager for write-target leases.
+        _depth:          ADV-012 internal — current nesting depth (0 = orchestrator).
+        _ancestry:       ADV-012 internal — tuple of role names already in the call
+                         chain, used to detect cycles.
 
     Returns:
         A callable that accepts (role, task, context, write_targets) and returns a report string.
@@ -387,11 +405,13 @@ def _make_delegate_task(
         """Spawn an isolated sub-agent and return its execution report.
 
         This function:
-            1. Builds a scoped ToolRegistry (no delegate_task, no memory tools)
-            2. Creates a SubAgentRuntime with the role's .og file
-            3. Runs the sub-agent to completion (fire-and-forget)
-            4. Enqueues persistence work for the delegation log
-            5. Returns a compact report for the orchestrator
+            1. Guards against depth / cycle violations (ADV-012).
+            2. Resolves the role .og file and ABORTS if it cannot be loaded (ADV-006).
+            3. Builds a scoped ToolRegistry (no delegate_task, no memory tools).
+            4. Creates a SubAgentRuntime with the role's .og file.
+            5. Runs the sub-agent to completion.
+            6. Enqueues persistence work for the delegation log.
+            7. Returns a compact report for the orchestrator.
 
         Args:
             role:    Sub-agent role name (e.g., 'coder', 'researcher').
@@ -403,7 +423,50 @@ def _make_delegate_task(
         """
         targets: list[str] = write_targets or []
 
-        # P4-01: acquire write-target leases before starting (prevents concurrent writes).
+        # ------------------------------------------------------------------
+        # ADV-012: depth / cycle backstop
+        # ------------------------------------------------------------------
+        if _depth >= _DELEGATION_MAX_DEPTH:
+            abort_msg = (
+                f"⛔ Delegation aborted: maximum delegation depth ({_DELEGATION_MAX_DEPTH}) "
+                f"reached (current depth={_depth}). "
+                f"Ancestry chain: {' → '.join(_ancestry) or '(orchestrator)'}. "
+                "Sub-agent not started."
+            )
+            logger.warning(
+                "delegate_task depth limit reached: depth=%d ancestry=%s role=%s",
+                _depth,
+                _ancestry,
+                role,
+            )
+            if on_event:
+                on_event(
+                    "delegation_complete",
+                    {"role": role, "status": "aborted", "task": task[:100]},
+                )
+            return abort_msg
+
+        if role in _ancestry:
+            abort_msg = (
+                f"⛔ Delegation aborted: cyclic role detected — '{role}' already "
+                f"appears in ancestry chain: {' → '.join(_ancestry)}. "
+                "Sub-agent not started."
+            )
+            logger.warning(
+                "delegate_task cycle detected: role=%s ancestry=%s",
+                role,
+                _ancestry,
+            )
+            if on_event:
+                on_event(
+                    "delegation_complete",
+                    {"role": role, "status": "aborted", "task": task[:100]},
+                )
+            return abort_msg
+
+        # ------------------------------------------------------------------
+        # P4-01: acquire write-target leases before starting
+        # ------------------------------------------------------------------
         if lease_manager is not None and targets:
             ok, conflict = lease_manager.acquire(role, targets)
             if not ok:
@@ -426,17 +489,34 @@ def _make_delegate_task(
             )
 
         try:
-            # Resolve role .og file to extract tool scope patterns
-            tool_patterns = ""
+            # ------------------------------------------------------------------
+            # ADV-006: resolve role .og file — FAIL CLOSED on any parse/resolve error.
+            # An empty tool_patterns would cause _build_scoped_registry to grant the
+            # UNFILTERED tool set, so we must never proceed without a valid .og file.
+            # ------------------------------------------------------------------
             try:
                 resolver = RoleResolver()
                 role_path = resolver.resolve(role)
-                from tokoboros.og_engine.parser import parse_og_file
-
                 role_og = parse_og_file(str(role_path))
-                tool_patterns = role_og.meta.tools
-            except Exception:
-                pass  # Fall back to unfiltered tools if .og parsing fails
+                tool_patterns: str = role_og.meta.tools
+            except Exception as og_exc:
+                abort_msg = (
+                    f"⛔ Delegation aborted: could not load role '{role}' "
+                    f"('{og_exc}'). "
+                    "Sub-agent not started (failing closed for safety)."
+                )
+                logger.error(
+                    "delegate_task: role .og load failed for '%s', failing closed: %s",
+                    role,
+                    og_exc,
+                )
+                if on_event:
+                    on_event(
+                        "delegation_complete",
+                        {"role": role, "status": "aborted", "task": task[:100]},
+                    )
+                # Leases are released by the outer `finally` block — do not release here.
+                return abort_msg
 
             # Build the scoped tool registry (filtered by role + security).
             # Pass skill_engine so OG tools are rebound to the sub-agent's
@@ -473,6 +553,9 @@ def _make_delegate_task(
                         "status": report.status.value,
                         "duration": report.duration_seconds,
                         "iterations": report.iterations,
+                        # Carry the task so adapt_event() can rebuild the JOB_STARTED
+                        # job_id and clear this sub-agent from the Active Jobs table.
+                        "task": task[:100],
                     },
                 )
 

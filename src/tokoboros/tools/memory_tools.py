@@ -6,16 +6,24 @@ Provides the LLM-facing tool bindings for all memory subsystems:
   - core_save_user_profile / core_search_user_profile            → bounded user identity
   - core_search_sessions                                        → cross-session history search
 
-The save_memory tool performs intelligent consolidation in a background thread:
+The save_memory tool performs intelligent consolidation via the durable job queue:
 it finds conflicting facts, atomizes compound statements, and deletes superseded
 entries — all without blocking the main agent loop.
+
+MR-7 / UC-MEM-001 / UC-MEM-006 — loud failure contract:
+    ``core_save_memory`` MUST NOT claim success unless the write was durably
+    enqueued.  If the job queue is absent or the enqueue call raises, the tool
+    returns a clear FAILURE string so the agent cannot falsely claim it remembered.
+    Daemon-thread fallbacks are prohibited here.
 """
 
 import json
-import threading
+import logging
 
 from tokoboros.core.loop import ToolRegistry
 from tokoboros.core.memory_vault import MemoryVault
+
+logger = logging.getLogger(__name__)
 
 
 def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=None) -> None:
@@ -38,9 +46,16 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=
     # Core Memory (Workspace Facts)
     # ==========================================
 
-    def _enqueue_memory_job(name: str, func, args: tuple) -> bool:
+    def _enqueue_memory_job(name: str, func, args: tuple) -> str | None:
+        """Attempt to enqueue a memory job via the durable queue.
+
+        Returns:
+            The job ID string on success, or ``None`` if the queue is absent
+            or the enqueue call raised.  Callers MUST treat ``None`` as a
+            durable failure — no silent thread fallback is permitted.
+        """
         if not job_queue:
-            return False
+            return None
 
         try:
             from tokoboros.jobs.queue import Job, JobStatus
@@ -53,10 +68,15 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=
                 args=args,
                 job_type="persist",
             )
-            job_queue.enqueue(job)
-            return True
-        except Exception:
-            return False
+            job_id = job_queue.enqueue(job)
+            return job_id
+        except Exception as exc:
+            logger.error(
+                "core_save_memory: failed to enqueue job %r — write NOT persisted: %s",
+                name,
+                exc,
+            )
+            return None
 
     def save_memory(facts: list) -> str:
         """Save one or more workspace facts with intelligent dedup and contradiction resolution."""
@@ -116,9 +136,26 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=
                 except Exception:
                     vault.upsert_fact(content, category)
 
-        if not _enqueue_memory_job("memory_smart_upsert", _smart_upsert, (facts,)):
-            threading.Thread(target=_smart_upsert, args=(facts,), daemon=True).start()
-        return f"{len(facts)} fact(s) successfully queued for intelligent long-term consolidation."
+        job_id = _enqueue_memory_job("memory_smart_upsert", _smart_upsert, (facts,))
+        if job_id is None:
+            # Queue absent or enqueue failed — do NOT fall back to a daemon thread
+            # that would silently lose the write.  Report failure loudly so the
+            # agent cannot falsely claim it remembered.
+            if not job_queue:
+                return (
+                    "MEMORY WRITE FAILED: no job queue is configured. "
+                    f"{len(facts)} fact(s) were NOT saved. "
+                    "The agent cannot claim these were remembered."
+                )
+            return (
+                "MEMORY WRITE FAILED: could not enqueue the write job. "
+                f"{len(facts)} fact(s) were NOT saved. "
+                "Check logs for the enqueue error. "
+                "The agent cannot claim these were remembered."
+            )
+        return (
+            f"{len(facts)} fact(s) queued for intelligent long-term consolidation (job {job_id})."
+        )
 
     def search_memory(query: str, top_k: int = 5) -> str:
         """Semantic search against the workspace memory vault."""
@@ -137,12 +174,28 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=
             return f"Failed to search memory: {str(e)}"
 
     def delete_memory(fact_id: str) -> str:
-        """Delete a workspace fact by ID."""
+        """Delete a workspace fact by ID from ALL storage backends.
+
+        Removes the fact from:
+          - Chroma core_memory collection (primary semantic store)
+          - FTS5 graph index (if attached) so forgotten facts cannot resurface
+            via keyword search (UC-MEM-004)
+
+        The operation is idempotent — deleting an absent ID returns a success
+        confirmation rather than an error, so callers may safely retry.
+        """
         if not vault:
             return "Long-term memory is not available (backend=in_memory has no semantic store)."
-        if vault.delete_fact(fact_id):
-            return f"Successfully deleted memory fact: {fact_id}"
-        return f"Failed to delete memory fact: {fact_id}. It may not exist."
+        ok = vault.delete_fact(fact_id)
+        if ok:
+            return (
+                f"Memory fact {fact_id} has been removed from all backends "
+                "(Chroma + FTS5 index). It will not appear in future searches."
+            )
+        return (
+            f"MEMORY DELETE FAILED: could not remove fact {fact_id} from Chroma. "
+            "The fact may still be retrievable. Check logs for details."
+        )
 
     # ==========================================
     # User Profile (Bounded Identity Store)

@@ -34,6 +34,20 @@ def test_og_explorer_in_modes() -> None:
     assert TokoborosTextualApp.MODES["og_explorer"] is OGExplorerScreen
 
 
+def test_og_explorer_binding_has_action_handler() -> None:
+    """Regression: the ctrl+9 / f9 binding referenced ``mode_og_explorer`` but the
+    matching ``action_mode_og_explorer`` method was missing, so the key (and the
+    footer click) silently did nothing. Every bound mode action must resolve."""
+    from tokoboros.tui.app import TokoborosTextualApp
+
+    actions = {b.action for b in TokoborosTextualApp.BINDINGS if b.action.startswith("mode_")}
+    for action in actions:
+        assert hasattr(TokoborosTextualApp, f"action_{action}"), (
+            f"binding action {action!r} has no action_{action} handler"
+        )
+    assert hasattr(TokoborosTextualApp, "action_mode_og_explorer")
+
+
 # ---------------------------------------------------------------------------
 # 3. format_og_explorer handles empty data
 # ---------------------------------------------------------------------------

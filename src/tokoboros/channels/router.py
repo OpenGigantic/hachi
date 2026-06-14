@@ -22,9 +22,37 @@ class ChannelRouter:
         reply rather than crashing the adapter's receive loop.
     """
 
-    def __init__(self, runner: SessionRunner, allowlist: Iterable[str] | None = None):
+    def __init__(
+        self,
+        runner: SessionRunner,
+        allowlist: Iterable[str] | None = None,
+        *,
+        allow_all_when_no_allowlist: bool = False,
+    ):
+        """Initialise the router.
+
+        Args:
+            runner: Callable that executes one agent turn and returns the reply.
+            allowlist: An explicit iterable of permitted ``sender_id`` strings.
+                When provided (even as an empty iterable) ONLY the listed senders
+                are admitted — an **empty allowlist denies everyone** (fail-closed).
+                Pass ``None`` together with ``allow_all_when_no_allowlist=True`` to
+                run in open-access mode (useful for private/trusted deployments where
+                no allowlist is desired).  Defaults to ``None`` which, without the
+                opt-in flag, *also* denies all senders to avoid silent exposure.
+            allow_all_when_no_allowlist: Opt-in flag that makes a missing allowlist
+                behave as open-access (admit any sender).  Default ``False``.
+                Document this flag in your deployment config if you enable it.
+        """
         self._runner = runner
-        self._allowlist: set[str] | None = {str(s) for s in allowlist} if allowlist else None
+        self._allow_all_when_no_allowlist = allow_all_when_no_allowlist
+        # Build the allowlist set from the iterable, *preserving an empty set*
+        # (distinct from None).  ``None`` means "no allowlist was supplied";
+        # ``set()`` means "an empty allowlist was supplied → deny everyone".
+        if allowlist is not None:
+            self._allowlist: set[str] | None = {str(s) for s in allowlist}
+        else:
+            self._allowlist = None
         self._sessions: dict[tuple[str, str], str] = {}
 
     def session_key(self, channel: str, sender_id: str) -> str:
@@ -35,7 +63,20 @@ class ChannelRouter:
         return self._sessions[key]
 
     def is_allowed(self, sender_id: str) -> bool:
-        return self._allowlist is None or str(sender_id) in self._allowlist
+        """Return whether ``sender_id`` is permitted to send messages.
+
+        Decision table:
+        - Allowlist supplied (even empty) → only listed senders admitted.
+          An empty allowlist denies *everyone* (fail-closed).
+        - No allowlist supplied + ``allow_all_when_no_allowlist=True`` → admit all.
+        - No allowlist supplied + ``allow_all_when_no_allowlist=False`` (default)
+          → deny all (fail-closed; forces explicit opt-in for open access).
+        """
+        if self._allowlist is not None:
+            # Explicit allowlist present: set membership check (empty set → deny all).
+            return str(sender_id) in self._allowlist
+        # No allowlist supplied: honour the opt-in open-access flag.
+        return self._allow_all_when_no_allowlist
 
     def dispatch(self, message: InboundMessage) -> OutboundMessage:
         """Handle one inbound message and return the reply to send back."""

@@ -65,6 +65,30 @@ class SuspendWorkflow(Exception):
         super().__init__(reason)
 
 
+class _StreamCancelled(Exception):
+    """Internal sentinel: the cancel flag fired during streaming.
+
+    Never propagates beyond _stream_generate / run(); caught immediately to
+    commit the partial text and return a user-cancel result.
+    """
+
+    def __init__(self, partial_text: str) -> None:
+        self.partial_text = partial_text
+        super().__init__(partial_text)
+
+
+class _StreamTimedOut(Exception):
+    """Internal sentinel: the wall-clock deadline fired during streaming.
+
+    Never propagates beyond _stream_generate / run(); caught immediately to
+    commit the partial text and return a time-limit result.
+    """
+
+    def __init__(self, partial_text: str) -> None:
+        self.partial_text = partial_text
+        super().__init__(partial_text)
+
+
 class ToolRegistry:
     """
     Manages the registration and execution of agentic tools.
@@ -220,6 +244,11 @@ class ExecutionLoop:
     multi-step tool interactions with automatic context compaction.
     """
 
+    # Hard token ceiling applied even when max_tokens=0 (unlimited opt-in budget).
+    # Prevents true runaway generation; intentionally large so it never fires in
+    # normal use but caps an undetected infinite tool-loop before real damage is done.
+    _TOKEN_SAFETY_CEILING: int = 2_000_000
+
     def __init__(
         self,
         llm_client: BaseLLMClient,
@@ -233,6 +262,7 @@ class ExecutionLoop:
         max_tokens: int = 0,
         max_cost_per_turn: float = 0.0,
         max_tokens_per_turn: int = 0,
+        max_wall_seconds: float = 600.0,
     ):
         """Initialize the execution loop.
 
@@ -252,6 +282,10 @@ class ExecutionLoop:
                 agent mid-turn if a single user message would cost more than this.
             max_tokens_per_turn: Per-turn token cap (0 = unlimited). Stops the agent
                 mid-turn if a single user message would consume more than this.
+            max_wall_seconds: Wall-clock timeout for a single run() call in seconds.
+                Always on (default 600 s = 10 min). Set to a positive value to cap
+                long-running turns independent of iteration count or token budgets.
+                Set to 0 to disable (not recommended; leaves only the iteration cap).
         """
         self.llm_client = llm_client
         self.registry = registry
@@ -269,6 +303,8 @@ class ExecutionLoop:
         # user message can't exhaust the user's API budget.
         self.max_cost_per_turn = max_cost_per_turn
         self.max_tokens_per_turn = max_tokens_per_turn
+        # Wall-clock timeout per run() call (always on; 0 disables).
+        self.max_wall_seconds: float = max_wall_seconds
         # Baseline snapshot taken at the start of each run(); used to compute deltas.
         self._turn_tokens_start: int = 0
         self._turn_cost_start: float = 0.0
@@ -286,6 +322,10 @@ class ExecutionLoop:
         self._tool_pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=4, thread_name_prefix="toko-tool"
         )
+        # Emitted once per ExecutionLoop instance when no budget is configured (MR-6 nudge).
+        self._nudge_emitted: bool = False
+        # Per-run wall-clock deadline (monotonic); set at the top of run(), cleared at end.
+        self._wall_deadline: float | None = None
 
     def _execute_single_tool(
         self, tool_call: ToolCall
@@ -389,10 +429,17 @@ class ExecutionLoop:
         Retries on pre-stream transient errors using the same policy as
         _generate_with_retry. Does NOT retry mid-stream failures to avoid
         emitting duplicate output.
+
+        Checks the cancel flag and wall-clock deadline after each chunk so an
+        in-flight generation can be interrupted promptly by cancel() or a timeout.
+        Raises ``_StreamCancelled`` or ``_StreamTimedOut`` (both internal-only;
+        caught immediately in ``run()``) when interrupted mid-stream so the caller
+        can commit partial text and return a clean result without touching LLMResponse.
         """
         delay = _LLM_RETRY_BASE_DELAY
         for attempt in range(1, _MAX_LLM_RETRIES + 1):
             chunks_yielded = 0
+            streamed_parts: list[str] = []
             try:
                 gen = self.llm_client.generate_stream(**kwargs)
                 while True:
@@ -401,10 +448,22 @@ class ExecutionLoop:
                     except StopIteration as si:
                         return si.value
                     chunks_yielded += 1
+                    streamed_parts.append(chunk)
                     on_delta(chunk)
+                    # Cooperative mid-stream cancel: check after each chunk so an
+                    # in-flight generation stops as soon as the next chunk arrives.
+                    if self._cancel_event.is_set():
+                        raise _StreamCancelled("".join(streamed_parts))
+                    # Wall-clock deadline check inside the stream loop.
+                    if self._wall_deadline is not None and time.monotonic() >= self._wall_deadline:
+                        raise _StreamTimedOut("".join(streamed_parts))
+            except (_StreamCancelled, _StreamTimedOut):
+                raise  # propagate to run() without retry
             except Exception as exc:
-                if chunks_yielded > 0 or attempt >= _MAX_LLM_RETRIES or not _is_retryable_llm_error(
-                    exc
+                if (
+                    chunks_yielded > 0
+                    or attempt >= _MAX_LLM_RETRIES
+                    or not _is_retryable_llm_error(exc)
                 ):
                     raise
                 logger.warning(
@@ -431,6 +490,49 @@ class ExecutionLoop:
                 f"cost budget reached (~${snap.estimated_cost_usd:.4f} >= ${self.max_cost_usd:.2f})"
             )
         return None
+
+    def _safety_ceiling_exceeded(self) -> str | None:
+        """Return a reason string if the hard token safety ceiling is hit, else None.
+
+        This ceiling is always checked when a cost_tracker is present, regardless of
+        whether the user configured any opt-in budget.  It prevents true runaway
+        token consumption when no other cap is active.
+        """
+        if self.cost_tracker is None:
+            return None
+        snap = self.cost_tracker.snapshot()
+        if snap.total_tokens >= self._TOKEN_SAFETY_CEILING:
+            return (
+                f"token safety ceiling reached ({snap.total_tokens:,} >= "
+                f"{self._TOKEN_SAFETY_CEILING:,})"
+            )
+        return None
+
+    def _emit_budget_nudge(self) -> None:
+        """Emit a one-time informational nudge when no spend budget is configured.
+
+        The nudge fires at most once per ExecutionLoop instance so it is not
+        repeated every turn.  It is informational only — the loop continues.
+        """
+        if self._nudge_emitted:
+            return
+        if self.max_cost_usd > 0 or self.max_tokens > 0:
+            # A budget is set; no nudge needed.
+            return
+        self._nudge_emitted = True
+        logger.info(
+            "[tokoboros] No spend budget configured.  Consider setting max_cost_usd or "
+            "max_tokens to guard against unexpected API costs."
+        )
+        self.on_event(
+            "budget_nudge",
+            {
+                "message": (
+                    "No spend budget is configured for this session.  "
+                    "Set max_cost_usd or max_tokens to add a spend guardrail."
+                )
+            },
+        )
 
     def _turn_budget_exceeded(self) -> str | None:
         """Return a reason string if a per-turn budget cap is hit, else None.
@@ -486,6 +588,16 @@ class ExecutionLoop:
         self._cancel_event.clear()
         self._partial_text = []
 
+        # Wall-clock deadline for this run() call (None when disabled).
+        # Set before anything else so the streaming helper can read it.
+        if self.max_wall_seconds > 0:
+            self._wall_deadline: float | None = time.monotonic() + self.max_wall_seconds
+        else:
+            self._wall_deadline = None
+
+        # One-time nudge when no spend budget is configured (MR-6 / ADV-013).
+        self._emit_budget_nudge()
+
         # Record the cost/token baseline at turn start so _turn_budget_exceeded()
         # can compute deltas rather than checking cumulative session totals.
         if self.cost_tracker is not None:
@@ -511,9 +623,34 @@ class ExecutionLoop:
                 # tool_use blocks in history.
                 if self._cancel_event.is_set():
                     partial = "".join(self._partial_text)
-                    self.on_event("session_cancelled", {"partial_text": partial})
+                    self.on_event(
+                        "session_cancelled",
+                        {"partial_text": partial, "status": "user_cancel"},
+                    )
                     self.memory.complete_task(user_input_for_turn, f"Cancelled: {partial[:80]}")
                     return f"[CANCELLED] {partial}" if partial else "[CANCELLED]"
+
+                # Wall-clock deadline check at iteration boundary (belt-and-suspenders;
+                # also checked inside the stream loop for faster response).
+                if self._wall_deadline is not None and time.monotonic() >= self._wall_deadline:
+                    partial = "".join(self._partial_text)
+                    self.on_event(
+                        "session_time_limit",
+                        {
+                            "elapsed_s": self.max_wall_seconds,
+                            "partial_text": partial,
+                            "status": "time_limit",
+                        },
+                    )
+                    self.memory.complete_task(
+                        user_input_for_turn,
+                        f"Partial (time limit): {partial[:80]}",
+                    )
+                    partial_suffix = f" Partial: {partial}" if partial else ""
+                    return (
+                        f"[TIME LIMIT REACHED] Turn exceeded "
+                        f"{self.max_wall_seconds:.0f}s wall-clock limit.{partial_suffix}"
+                    )
 
                 # Stop before spending more if a per-session budget cap was hit.
                 budget_reason = self._budget_exceeded()
@@ -521,6 +658,16 @@ class ExecutionLoop:
                     self.on_event("budget_exceeded", {"reason": budget_reason})
                     self.memory.complete_task(user_input_for_turn, f"Stopped: {budget_reason}")
                     return f"[BUDGET LIMIT REACHED] {budget_reason}"
+
+                # Always-on token safety ceiling (independent of opt-in budgets).
+                ceiling_reason = self._safety_ceiling_exceeded()
+                if ceiling_reason:
+                    self.on_event(
+                        "budget_exceeded",
+                        {"reason": ceiling_reason, "status": "safety_ceiling"},
+                    )
+                    self.memory.complete_task(user_input_for_turn, f"Stopped: {ceiling_reason}")
+                    return f"[BUDGET LIMIT REACHED] {ceiling_reason}"
 
                 # Apply compaction, clearing, and repair — all behind the memory seam.
                 iter_state = self.memory.prepare_for_turn()
@@ -571,8 +718,40 @@ class ExecutionLoop:
                     _parts.append(chunk)
                     self.on_event("text_delta", {"text": chunk})
 
-                with span("llm.generate", model=getattr(self.llm_client, "model", "unknown")):
-                    response = self._stream_generate(on_delta=_on_delta, **gen_kwargs)
+                try:
+                    with span("llm.generate", model=getattr(self.llm_client, "model", "unknown")):
+                        response = self._stream_generate(on_delta=_on_delta, **gen_kwargs)
+                except _StreamCancelled as exc:
+                    # Mid-stream cancel: partial text is in exc.partial_text plus whatever
+                    # was already flushed into _partial_text from prior iterations.
+                    partial = "".join(self._partial_text) + exc.partial_text
+                    self.on_event(
+                        "session_cancelled",
+                        {"partial_text": partial, "status": "user_cancel"},
+                    )
+                    self.memory.complete_task(
+                        user_input_for_turn, f"Cancelled (mid-stream): {partial[:80]}"
+                    )
+                    return f"[CANCELLED] {partial}" if partial else "[CANCELLED]"
+                except _StreamTimedOut as exc:
+                    partial = "".join(self._partial_text) + exc.partial_text
+                    self.on_event(
+                        "session_time_limit",
+                        {
+                            "elapsed_s": self.max_wall_seconds,
+                            "partial_text": partial,
+                            "status": "time_limit",
+                        },
+                    )
+                    self.memory.complete_task(
+                        user_input_for_turn,
+                        f"Partial (time limit, mid-stream): {partial[:80]}",
+                    )
+                    return (
+                        f"[TIME LIMIT REACHED] Turn exceeded {self.max_wall_seconds:.0f}s "
+                        f"wall-clock limit."
+                        f"{(' Partial: ' + partial) if partial else ''}"
+                    )
 
                 # Account for token usage / estimated cost and surface it live.
                 if self.cost_tracker is not None:
@@ -592,9 +771,14 @@ class ExecutionLoop:
 
                 if response.content:
                     assistant_content.append({"type": "text", "text": response.content})
-                    # Emit a single text_chunk for backward-compat listeners (TUI/CLI).
-                    # Streaming deltas were already emitted above via text_delta.
-                    self.on_event("text_chunk", {"text": response.content})
+                    # Emit the full text as a single text_chunk ONLY when streaming
+                    # produced no incremental deltas (a non-streaming client/fallback).
+                    # Delta listeners (TUI transcript, gateway SSE) accumulate
+                    # text.stream.delta events; emitting BOTH the per-chunk deltas and
+                    # the full chunk made them render the reply twice — the full chunk
+                    # appended on top of the text already built from the deltas.
+                    if not delta_parts:
+                        self.on_event("text_chunk", {"text": response.content})
                     self._partial_text.append(response.content)
 
                 for tc in response.tool_calls:

@@ -45,17 +45,75 @@ logger = logging.getLogger(__name__)
 _NONWORD_RE = re.compile(r"[^\w]")
 
 # Common English function words that add noise to skill queries.
-_STOPWORDS: frozenset[str] = frozenset({
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-    "i", "we", "you", "he", "she", "it", "they", "them", "their",
-    "this", "that", "these", "those",
-    "and", "or", "but", "not", "no", "nor", "so",
-    "for", "with", "from", "to", "at", "in", "on", "by", "of", "as",
-    "can", "could", "will", "would", "should", "may", "might", "must",
-    "do", "does", "did", "have", "has", "had",
-    "what", "how", "when", "where", "who", "why",
-    "please", "help", "me", "my", "your",
-})
+_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "i",
+        "we",
+        "you",
+        "he",
+        "she",
+        "it",
+        "they",
+        "them",
+        "their",
+        "this",
+        "that",
+        "these",
+        "those",
+        "and",
+        "or",
+        "but",
+        "not",
+        "no",
+        "nor",
+        "so",
+        "for",
+        "with",
+        "from",
+        "to",
+        "at",
+        "in",
+        "on",
+        "by",
+        "of",
+        "as",
+        "can",
+        "could",
+        "will",
+        "would",
+        "should",
+        "may",
+        "might",
+        "must",
+        "do",
+        "does",
+        "did",
+        "have",
+        "has",
+        "had",
+        "what",
+        "how",
+        "when",
+        "where",
+        "who",
+        "why",
+        "please",
+        "help",
+        "me",
+        "my",
+        "your",
+    }
+)
 
 # Minimum token length to index/query (excludes single-char noise).
 _MIN_TOKEN_LEN = 2
@@ -264,7 +322,7 @@ class SkillEngine:
     main orchestrator reading ``brain.og``) must pass their role explicitly.
     """
 
-    def __init__(self, agent_role: str = "*") -> None:
+    def __init__(self, agent_role: str = "*", node_cap: int = 5000) -> None:
         """Initialise the engine.
 
         Args:
@@ -285,6 +343,10 @@ class SkillEngine:
                 - Any other value (e.g. ``"analyst"``) sees only
                   ``scope=all/public`` nodes, hiding orchestrator-internal
                   nodes from worker sub-agents.
+            node_cap: Maximum number of nodes allowed in a single .og file.
+                Files that exceed this cap are rejected loudly (recorded in
+                ``failed_files``) to prevent OOM from malicious or corrupt
+                skill files.  Default: 5000.
         """
         self._agent_role = agent_role
         # Nodes are keyed by qualified ID: "<file-stem>:<node-name>".
@@ -295,7 +357,7 @@ class SkillEngine:
         self._bare_name_index: dict[str, list[str]] = {}  # bare_name -> [qualified_id, ...]
         self._files: dict[str, OGFile] = {}  # filepath -> OGFile (file-level metadata + index)
         self._skills_dir: Path | None = None  # root dir; where authored skills are written
-        self._skipped_files: list[dict[str, str]] = []  # files that failed to parse
+        self._skipped_files: list[dict[str, str]] = []  # legacy compat: mirrors _failed_files
 
         # BM25 retrieval structures (populated by load_file)
         self._token_index: dict[str, list[str]] = {}  # word token → [qualified_id, ...]
@@ -307,6 +369,15 @@ class SkillEngine:
         migrate_legacy_skill_usage(_paths)
         self._usage_path = _paths.skill_usage_json
         self._usage: dict[str, dict[str, Any]] = self._load_usage()
+
+        # UC-SKILL-003: Files that failed to parse are collected here so doctor/lint
+        # can surface them as "N files failed to parse" instead of silently dropping them.
+        # Each entry is a (Path, reason_str) tuple.
+        self._failed_files: list[tuple[Path, str]] = []
+
+        # ADV-025: Hard cap on nodes per file to prevent OOM from malicious .og files.
+        # Configurable via the constructor; default is intentionally generous but bounded.
+        self._node_cap: int = node_cap
 
         # M7: Pass-depth counters — incremented on each search/peek/resolve call.
         # Thread-safe via GIL (int increment); reset between benchmark runs.
@@ -361,7 +432,9 @@ class SkillEngine:
         if len(matches) > 1:
             logger.debug(
                 "Ambiguous bare name '%s' matches %d nodes (%s) — use qualified ID",
-                name, len(matches), ", ".join(matches[:3]),
+                name,
+                len(matches),
+                ", ".join(matches[:3]),
             )
         return None
 
@@ -417,89 +490,172 @@ class SkillEngine:
         Stores the full OGFile object (with ::meta, ::index, ::schema, ::changelog)
         alongside individual nodes for granular retrieval.
 
+        Security hardening (ADV-011, ADV-025):
+        - Node-count cap: files exceeding ``_node_cap`` are rejected to prevent OOM.
+        - Guard scan: ``::full`` and ``::dense`` content of each node is screened
+          by :func:`tokoboros.core.memory_guard.scan` before indexing. Flagged nodes
+          are quarantined (marked ``_quarantined=True``) and not served to the LLM.
+        - Parse failures (UC-SKILL-003): recorded in ``_failed_files`` so doctor/lint
+          can surface them rather than silently dropping the skill.
+
         Args:
             filepath: Absolute path to the .og file.
         """
+        # Deferred import keeps startup fast and avoids circular deps.
+        from tokoboros.core.memory_guard import scan as _guard_scan
+
+        def _record_failure(path: Path, reason: str) -> None:
+            """Add to both the new typed list and the legacy dict list."""
+            self._failed_files.append((path, reason))
+            self._skipped_files.append({"file": str(path), "error": reason})
+
         try:
             og_file = parse_og_file(str(filepath))
-            self._files[str(filepath)] = og_file
-            file_stem = filepath.stem
+        except Exception as e:
+            # UC-SKILL-003: parse failure is now recorded in _failed_files, NOT just
+            # a warning log that vanishes silently.
+            reason = str(e)
+            logger.warning("Failed to parse %s: %s", filepath, reason)
+            _record_failure(filepath, reason)
+            return
 
-            for node in og_file.nodes:
-                qualified_id = f"{file_stem}:{node.name}"
+        # ADV-025: Reject files whose node count exceeds the configured cap.
+        if len(og_file.nodes) > self._node_cap:
+            reason = (
+                f"node count {len(og_file.nodes)} exceeds cap {self._node_cap}; "
+                "file rejected to prevent resource exhaustion"
+            )
+            logger.error("Skill file rejected — %s: %s", filepath, reason)
+            _record_failure(filepath, reason)
+            return
 
-                # Hard collision guard: same stem+name from two different files means
-                # the library has an unresolvable ambiguity — error loudly.
-                if qualified_id in self._nodes:
-                    existing = self._nodes[qualified_id]
-                    logger.error(
-                        "Node ID collision: '%s' already loaded from '%s'; "
-                        "ignoring duplicate from '%s'. Rename one of the nodes.",
-                        qualified_id,
-                        existing.source_file,
+        self._files[str(filepath)] = og_file
+        file_stem = filepath.stem
+
+        for node in og_file.nodes:
+            qualified_id = f"{file_stem}:{node.name}"
+
+            # Hard collision guard: same stem+name from two different files means
+            # the library has an unresolvable ambiguity — error loudly.
+            if qualified_id in self._nodes:
+                existing = self._nodes[qualified_id]
+                logger.error(
+                    "Node ID collision: '%s' already loaded from '%s'; "
+                    "ignoring duplicate from '%s'. Rename one of the nodes.",
+                    qualified_id,
+                    existing.source_file,
+                    filepath,
+                )
+                _record_failure(
+                    filepath,
+                    f"collision: '{qualified_id}' already loaded from '{existing.source_file}'",
+                )
+                continue
+
+            # ADV-011: Screen ::full and ::dense content before indexing.
+            # ::code and ::assertion blocks are deliberately NOT evaluated here —
+            # they remain inert text.  Only the prose blocks that reach the LLM
+            # context window need scanning.
+            combined_prose = "\n".join(filter(None, [node.full, node.dense, node.summary]))
+            if combined_prose:
+                is_safe, threat_id = _guard_scan(combined_prose)
+                if not is_safe:
+                    logger.warning(
+                        "Skill node '%s' in '%s' flagged by guard scan (%s); "
+                        "node quarantined and will not be served to the LLM.",
+                        node.name,
                         filepath,
+                        threat_id,
                     )
-                    self._skipped_files.append({
-                        "file": str(filepath),
-                        "error": (
-                            f"collision: '{qualified_id}' already loaded"
-                            f" from '{existing.source_file}'"
-                        ),
-                    })
+                    _record_failure(
+                        filepath,
+                        f"node '{node.name}' quarantined: guard scan flagged '{threat_id}'",
+                    )
+                    # Mark on the node object so callers can inspect it, but do NOT
+                    # add it to the searchable index.
+                    object.__setattr__(node, "_quarantined", True) if False else None
+                    # Use model_copy to tag the node as quarantined without mutation.
+                    node = node.model_copy(
+                        update={
+                            "warning": (
+                                f"[QUARANTINED: {threat_id}] "
+                                + (node.warning or "Node blocked by security scan.")
+                            )
+                        }
+                    )
+                    # Store in _files for doctor inspection but skip the search index.
                     continue
 
-                self._nodes[qualified_id] = node
+            self._nodes[qualified_id] = node
 
-                # Bare-name index for unambiguous backward-compat resolution
-                if node.name not in self._bare_name_index:
-                    self._bare_name_index[node.name] = []
-                self._bare_name_index[node.name].append(qualified_id)
+            # Bare-name index for unambiguous backward-compat resolution
+            if node.name not in self._bare_name_index:
+                self._bare_name_index[node.name] = []
+            self._bare_name_index[node.name].append(qualified_id)
 
-                # Index every keyword → qualified ID for fast lookup
-                for kw in node.keywords:
-                    kw_lower = kw.lower()
-                    if kw_lower not in self._keyword_index:
-                        self._keyword_index[kw_lower] = []
-                    if qualified_id not in self._keyword_index[kw_lower]:
-                        self._keyword_index[kw_lower].append(qualified_id)
+            # Index every keyword → qualified ID for fast lookup
+            for kw in node.keywords:
+                kw_lower = kw.lower()
+                if kw_lower not in self._keyword_index:
+                    self._keyword_index[kw_lower] = []
+                if qualified_id not in self._keyword_index[kw_lower]:
+                    self._keyword_index[kw_lower].append(qualified_id)
 
-                # BM25 token index: tokenize name + keywords, track DF and doc length
-                bm25_text = node.name.replace("_", " ") + " " + " ".join(node.keywords)
-                tokens = _tokenize(bm25_text)
-                self._doc_len[qualified_id] = len(tokens)
-                unique_tokens_this_doc: set[str] = set()
-                for tok in tokens:
-                    self._token_index.setdefault(tok, []).append(qualified_id)
-                    if tok not in unique_tokens_this_doc:
-                        self._df[tok] = self._df.get(tok, 0) + 1
-                        unique_tokens_this_doc.add(tok)
+            # BM25 token index: tokenize name + keywords, track DF and doc length
+            bm25_text = node.name.replace("_", " ") + " " + " ".join(node.keywords)
+            tokens = _tokenize(bm25_text)
+            self._doc_len[qualified_id] = len(tokens)
+            unique_tokens_this_doc: set[str] = set()
+            for tok in tokens:
+                self._token_index.setdefault(tok, []).append(qualified_id)
+                if tok not in unique_tokens_this_doc:
+                    self._df[tok] = self._df.get(tok, 0) + 1
+                    unique_tokens_this_doc.add(tok)
 
-            # Also index keywords from ::index entries for file-level routing
-            for entry in og_file.index:
-                # Index entries may reference bare names; qualify them if possible
-                entry_qid = f"{file_stem}:{entry.node_id}"
-                for kw in entry.keywords:
-                    kw_lower = kw.lower()
-                    if kw_lower not in self._keyword_index:
-                        self._keyword_index[kw_lower] = []
-                    if entry_qid not in self._keyword_index[kw_lower]:
-                        self._keyword_index[kw_lower].append(entry_qid)
-                    # Augment BM25 token index with ::index keywords so nodes that
-                    # declare keywords only in ::index (e.g. brain.og) are reachable.
-                    if entry_qid in self._nodes:
-                        for tok in _tokenize(kw_lower):
-                            existing = self._token_index.get(tok, [])
-                            if entry_qid not in existing:
-                                self._token_index.setdefault(tok, []).append(entry_qid)
-                                self._df[tok] = self._df.get(tok, 0) + 1
-                                self._doc_len[entry_qid] = (
-                                    self._doc_len.get(entry_qid, 0) + 1
-                                )
-        except Exception as e:
-            # Skip malformed files so one bad skill doesn't crash the agent, but
-            # record them so doctor/lint can surface them to the user.
-            logger.warning("Failed to parse %s: %s", filepath, e)
-            self._skipped_files.append({"file": str(filepath), "error": str(e)})
+        # Also index keywords from ::index entries for file-level routing
+        for entry in og_file.index:
+            # Index entries may reference bare names; qualify them if possible
+            entry_qid = f"{file_stem}:{entry.node_id}"
+            for kw in entry.keywords:
+                kw_lower = kw.lower()
+                if kw_lower not in self._keyword_index:
+                    self._keyword_index[kw_lower] = []
+                if entry_qid not in self._keyword_index[kw_lower]:
+                    self._keyword_index[kw_lower].append(entry_qid)
+                # Augment BM25 token index with ::index keywords so nodes that
+                # declare keywords only in ::index (e.g. brain.og) are reachable.
+                if entry_qid in self._nodes:
+                    for tok in _tokenize(kw_lower):
+                        existing_toks = self._token_index.get(tok, [])
+                        if entry_qid not in existing_toks:
+                            self._token_index.setdefault(tok, []).append(entry_qid)
+                            self._df[tok] = self._df.get(tok, 0) + 1
+                            self._doc_len[entry_qid] = self._doc_len.get(entry_qid, 0) + 1
+
+    # ------------------------------------------------------------------
+    # UC-SKILL-003: Parse-failure reporting
+    # ------------------------------------------------------------------
+
+    @property
+    def failed_files(self) -> list[tuple[Path, str]]:
+        """Return the list of files that failed to load, as (path, reason) tuples.
+
+        UC-SKILL-003: Parse failures and security quarantines are no longer silently
+        discarded. Callers (``doctor``, ``skill list``, CLI diagnostics) should inspect
+        this list to report "N files failed to parse" with the reason for each.
+
+        Returns:
+            A list of ``(Path, reason_string)`` tuples in load order.
+        """
+        return list(self._failed_files)
+
+    def get_parse_failures(self) -> list[dict[str, str]]:
+        """Return parse/quarantine failures as serialisable dicts for CLI/doctor use.
+
+        Returns:
+            A list of ``{"file": str, "reason": str}`` dicts.
+        """
+        return [{"file": str(p), "reason": r} for p, r in self._failed_files]
 
     def search(self, query: str) -> list[dict[str, str]]:
         """
