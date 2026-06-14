@@ -20,7 +20,7 @@ from collections.abc import Callable
 from typing import Any
 
 from tokoboros.core.llm import BaseLLMClient, LLMResponse, Message, ToolCall
-from tokoboros.core.runtime_events import SESSION_ITERATION_LIMIT
+from tokoboros.core.runtime_events import SESSION_ITERATION_LIMIT, TOOL_RESULT_PREVIEW_MAX
 from tokoboros.core.tool_results import ToolResultBlocks
 from tokoboros.core.tracing import span
 from tokoboros.core.turn_context import TurnContext
@@ -170,11 +170,25 @@ class ToolRegistry:
         ``active_groups=None`` returns every schema (backward-compatible default used
         by sub-agents and existing callers). Otherwise returns "core" plus the active
         groups, so the model only sees the lazily-loaded tools it has unlocked.
+
+        Duplicates by tool name are dropped (first registration wins) so the
+        Anthropic API never receives a ``tools: Tool names must be unique`` error.
         """
         if active_groups is None:
-            return self._schemas
-        allowed = {"core"} | active_groups
-        return [s for s in self._schemas if self._groups.get(s.get("name"), "core") in allowed]
+            candidates = self._schemas
+        else:
+            allowed = {"core"} | active_groups
+            candidates = [
+                s for s in self._schemas if self._groups.get(s.get("name"), "core") in allowed
+            ]
+        seen: set[str] = set()
+        result: list[dict[str, Any]] = []
+        for schema in candidates:
+            name = schema.get("name")
+            if name and name not in seen:
+                seen.add(name)
+                result.append(schema)
+        return result
 
     def execute(self, tool_call: ToolCall) -> Any:
         """
@@ -667,7 +681,11 @@ class ExecutionLoop:
                         result_summary = result_content
 
                     self.on_event(
-                        "tool_result", {"name": tool_call.name, "result": result_summary[:500]}
+                        "tool_result",
+                        {
+                            "name": tool_call.name,
+                            "result": result_summary[:TOOL_RESULT_PREVIEW_MAX],
+                        },
                     )
 
                     tr: dict[str, Any] = {

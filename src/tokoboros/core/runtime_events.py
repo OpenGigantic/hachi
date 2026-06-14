@@ -53,6 +53,11 @@ MCP_SERVER_READY = "mcp.server.ready"
 MCP_SERVER_FAILED = "mcp.server.failed"
 MCP_SHUTDOWN = "mcp.shutdown"
 
+# Max chars of a tool result carried in a ``tool.call.completed`` preview.
+# Bounded so the event stream stays light, but large enough that expanding a
+# tool card in the TUI shows the substance of the result, not a stub.
+TOOL_RESULT_PREVIEW_MAX = 2000
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimeEvent:
@@ -173,7 +178,7 @@ def adapt_event(event_type: str, data: dict[str, Any] | None = None) -> list[Run
                     TOOL_CALL_COMPLETED,
                     {
                         "name": tool_name,
-                        "result_preview": raw_result[:500],
+                        "result_preview": raw_result[:TOOL_RESULT_PREVIEW_MAX],
                     },
                 ),
                 legacy_aliases=("tool_result",),

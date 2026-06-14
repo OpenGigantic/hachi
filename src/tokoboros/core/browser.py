@@ -136,8 +136,28 @@ class BrowserController:
             from playwright.sync_api import sync_playwright
 
             pw = sync_playwright().start()
-            browser = pw.chromium.launch(headless=self._headless)
-            page = browser.new_page()
+            browser = pw.chromium.launch(
+                headless=self._headless,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+            )
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1920, "height": 1080},
+                extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+            )
+            # Remove the `navigator.webdriver` JS property that sites fingerprint.
+            context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+            page = context.new_page()
             page.set_default_timeout(self._nav_timeout)
         except ImportError:
             launch_error = BrowserUnavailable(INSTALL_HINT)

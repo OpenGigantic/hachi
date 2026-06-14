@@ -139,6 +139,16 @@ def _event_input_summary(tool_input: Any) -> str:
     return "  ".join(parts)
 
 
+def _event_input_detail(tool_input: Any) -> str:
+    """Build the full ``key: value`` request block shown when a tool card expands."""
+    if not isinstance(tool_input, dict) or not tool_input:
+        return ""
+    lines = []
+    for key, value in tool_input.items():
+        lines.append(f"{key}: {_sanitize_legacy_rich_markup(str(value))}")
+    return "\n".join(lines)
+
+
 def _strip_metrics(info: dict[str, Any]) -> dict[str, Any]:
     """Copy ``info`` without the live metrics (model/tokens/cost).
 
@@ -251,7 +261,7 @@ Screen {
 .tool-card {
   height: auto;
   margin: 0 0 1 0;
-  padding: 0 1;
+  padding: 0;
   border-left: thick $accent;
   background: $surface;
 }
@@ -264,13 +274,27 @@ Screen {
   border-left: thick $error;
 }
 
-.tool-header {
-  height: auto;
+.tool-card CollapsibleTitle {
+  background: $surface;
+  color: $foreground;
+  padding: 0 1;
 }
 
-.tool-body {
+.tool-card CollapsibleTitle:hover {
+  background: $surface-lighten-1;
+}
+
+.tool-card Contents {
+  padding: 0 1 1 2;
+}
+
+.tool-detail {
   height: auto;
   color: $text-muted;
+}
+
+.tool-response {
+  margin: 1 0 0 0;
 }
 
 .system-line {
@@ -1246,6 +1270,25 @@ class SessionScreen(Screen):
     def _transcript(self) -> VerticalScroll:
         return self.query_one("#transcript", VerticalScroll)
 
+    def _at_bottom(self) -> bool:
+        """True when the transcript is scrolled to (or near) the bottom.
+
+        Defensive: returns False off a real Textual loop (e.g. unit-test proxy)
+        so callers simply skip auto-follow rather than raising.
+        """
+        try:
+            transcript = self._transcript()
+            return transcript.scroll_offset.y >= transcript.max_scroll_y - 1
+        except Exception:
+            return False
+
+    def _scroll_to_tail(self) -> None:
+        """Jump the transcript to the latest content (no-op off a real loop)."""
+        try:
+            self._transcript().scroll_end(animate=False)
+        except Exception:
+            pass
+
     def _append(self, widget: Widget, *, scroll: bool = True) -> None:
         transcript = self._transcript()
         transcript.mount(widget)
@@ -1401,18 +1444,32 @@ class SessionScreen(Screen):
                 mark()
             if self._streaming_bubble is None:
                 # First delta — create the streaming widget and mount it
+                # (_append scrolls it into view).
                 self._streaming_text = delta
                 self._streaming_bubble = AgentMessage(delta)
                 self._append(self._streaming_bubble)
             else:
-                # Subsequent deltas — append and re-render in-place
+                # Subsequent deltas — re-render in-place, then follow the tail
+                # so the growing reply stays visible (unless the user scrolled
+                # up to read history, in which case we leave them be).
+                follow = self._at_bottom()
                 self._streaming_text += delta
                 self._streaming_bubble.stream_delta(self._streaming_text)
+                if follow:
+                    self._scroll_to_tail()
             return
 
         if event_type == "tool.call.started":
             name = str(payload.get("name", "tool"))
-            card = ToolCard(name, _event_input_summary(payload.get("input")))
+            # Seal the in-flight text bubble so this tool card mounts *below* it
+            # and any following narration starts a fresh bubble — keeps text and
+            # tool calls in chronological order instead of batching cards at the end.
+            self.finalize_streaming_bubble()
+            card = ToolCard(
+                name,
+                _event_input_summary(payload.get("input")),
+                _event_input_detail(payload.get("input")),
+            )
             self._tool_cards.setdefault(name, []).append(card)
             self._append(card)
             return

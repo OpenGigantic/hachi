@@ -16,9 +16,8 @@ from rich.console import Group, RenderableType
 from rich.markdown import Markdown
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Vertical
 from textual.reactive import reactive
-from textual.widgets import Static
+from textual.widgets import Collapsible, Static
 
 from tokoboros.tui import theme
 from tokoboros.tui.art import ouroboros
@@ -375,49 +374,72 @@ class ErrorCard(Static):
         super().__init__(body, classes="msg msg-error")
 
 
-class ToolCard(Vertical):
-    """Inline card for a tool call; updates in place running -> done/error."""
+class ToolCard(Collapsible):
+    """Collapsible inline card for a tool call; updates in place running -> done/error.
 
-    def __init__(self, name: str, input_summary: str = "") -> None:
-        super().__init__(classes="tool-card running")
+    Collapsed by default (Claude Code style): the title line carries the status
+    glyph, tool name and a short one-line outcome. Expanding reveals the full
+    request (input) and the response preview, each wrapped to the card width so
+    long output never overflows the transcript.
+    """
+
+    def __init__(self, name: str, input_summary: str = "", request_detail: str = "") -> None:
         self.tool_name = name
         self._input_summary = input_summary
         self._status = "running"
-        self._header = Static(self._render_header(), classes="tool-header")
-        self._body = Static(
-            Text(input_summary or "running…", style=theme.MUTED),
-            classes="tool-body",
+        self._request = Static(
+            Text(request_detail or input_summary or "(no input)", style=theme.MUTED),
+            classes="tool-detail tool-request",
+        )
+        self._response = Static(
+            Text("running…", style=theme.MUTED),
+            classes="tool-detail tool-response",
+        )
+        super().__init__(
+            self._request,
+            self._response,
+            title=self._title_text(),
+            collapsed=True,
+            classes="tool-card running",
         )
 
     def compose(self) -> ComposeResult:
-        yield self._header
-        yield self._body
+        # Build Contents with its children directly instead of Collapsible's
+        # ``with self.Contents():`` context manager. The context manager touches
+        # ``self.app`` on an unparented container, which raises NoActiveAppError
+        # when a card is mounted from a threadsafe runtime-event callback (where
+        # the active-app ContextVar isn't set). Yielding a pre-built Contents
+        # produces the same tree without that lookup.
+        yield self._title
+        yield self.Contents(self._request, self._response)
 
-    def _render_header(self) -> Text:
-        header = Text()
-        color = theme.status_color(self._status)
-        header.append(f"{theme.status_glyph(self._status)} ", style=color)
-        header.append(f"{theme.GLYPH_TOOL} ", style=theme.MUTED)
-        header.append(self.tool_name, style=f"bold {theme.FOREGROUND}")
-        header.append(f"  {self._status}", style=color)
-        return header
+    def _title_text(self, summary: str = "") -> str:
+        title = f"{theme.status_glyph(self._status)} {theme.GLYPH_TOOL} {self.tool_name}"
+        title += f"  {self._status}"
+        if summary:
+            title += f"  ·  {summary}"
+        return title
 
-    def _refresh(self, body: RenderableType) -> None:
-        self._header.update(self._render_header())
-        self._body.update(body)
+    @staticmethod
+    def _one_line(text: str, limit: int = 64) -> str:
+        line = " ".join(text.split())
+        return line if len(line) <= limit else line[: limit - 1] + "…"
 
     def mark_completed(self, result_preview: str = "") -> None:
         self._status = "completed"
         self.remove_class("running")
         self.add_class("done")
         text = (result_preview or "done").strip() or "done"
-        self._refresh(Text(text, style=theme.MUTED))
+        self._response.update(Text(text, style=theme.MUTED))
+        self.title = self._title_text(self._one_line(text))
 
     def mark_error(self, message: str = "") -> None:
         self._status = "error"
         self.remove_class("running")
         self.add_class("failed")
-        self._refresh(Text((message or "failed").strip(), style=theme.ERROR))
+        text = (message or "failed").strip() or "failed"
+        self._response.update(Text(text, style=theme.ERROR))
+        self.title = self._title_text(self._one_line(text))
 
 
 class SidebarPanel(Static):

@@ -218,6 +218,98 @@ def test_gmail_register_tools_names():
     assert "google_batch_categorize_emails" in names
 
 
+def _b64(text: str) -> str:
+    import base64
+
+    return base64.urlsafe_b64encode(text.encode("utf-8")).decode("utf-8")
+
+
+def test_read_email_thread_strips_html_body():
+    html = (
+        '<table style="width:600px"><tr><td>Hello <b>World</b></td></tr></table>'
+        "<p>Sale ends soon</p>"
+    )
+    client = FakeGoogleClient()
+    client.add_response(
+        "GET",
+        "/gmail/v1/users/me/threads/t1",
+        {
+            "messages": [
+                {
+                    "payload": {
+                        "headers": [
+                            {"name": "From", "value": "shop@example.com"},
+                            {"name": "Date", "value": "Mon, 1 Jun 2026"},
+                        ],
+                        "mimeType": "text/html",
+                        "body": {"data": _b64(html)},
+                    }
+                }
+            ]
+        },
+    )
+    result = _gmail(client).read_email_thread("t1")
+    assert "Hello World" in result
+    assert "Sale ends soon" in result
+    assert "<table" not in result and "<b>" not in result
+
+
+def test_read_email_thread_prefers_plain_text():
+    client = FakeGoogleClient()
+    client.add_response(
+        "GET",
+        "/gmail/v1/users/me/threads/t2",
+        {
+            "messages": [
+                {
+                    "payload": {
+                        "headers": [{"name": "From", "value": "a@b.com"}],
+                        "mimeType": "multipart/alternative",
+                        "parts": [
+                            {"mimeType": "text/plain", "body": {"data": _b64("Plain wins")}},
+                            {"mimeType": "text/html", "body": {"data": _b64("<p>HTML</p>")}},
+                        ],
+                    }
+                }
+            ]
+        },
+    )
+    result = _gmail(client).read_email_thread("t2")
+    assert "Plain wins" in result
+    assert "HTML" not in result
+
+
+def test_read_email_thread_falls_back_to_message_on_404():
+    """When the id is actually a message id, the thread endpoint 404s; recover."""
+
+    class Fake404Client(FakeGoogleClient):
+        def get(self, endpoint: str, params: dict | None = None) -> dict:
+            self.calls.append(("GET", endpoint, {"params": params}))
+            if "/threads/" in endpoint:
+                raise RuntimeError(
+                    f"Google API error 404 for {endpoint}: Requested entity was not found."
+                )
+            return self._responses.get(f"GET:{endpoint}", {})
+
+    client = Fake404Client()
+    client.add_response(
+        "GET",
+        "/gmail/v1/users/me/messages/19ebcacbaba8a3d2",
+        {
+            "payload": {
+                "headers": [{"name": "From", "value": "news@taaft.com"}],
+                "mimeType": "text/plain",
+                "body": {"data": _b64("Single message body")},
+            }
+        },
+    )
+    result = _gmail(client).read_email_thread("19ebcacbaba8a3d2")
+    assert "Single message body" in result
+    assert "news@taaft.com" in result
+    # It tried the thread endpoint first, then fell back to the message endpoint.
+    assert any("/messages/19ebcacbaba8a3d2" in c[1] for c in client.calls)
+
+
 # ---------------------------------------------------------------------------
 # Calendar tests
 # ---------------------------------------------------------------------------
