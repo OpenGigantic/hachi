@@ -66,3 +66,9 @@ htmlcov/
 *.key
 credentials.json
 token.json
+
+# Claude Design handoff bundle (reference only)
+.design-bundle/
+
+
+node_modules/
