@@ -15,10 +15,10 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (  # noqa: E4
     InMemorySpanExporter,
 )
 
-from tokoboros.core import tracing  # noqa: E402
-from tokoboros.core.llm import LLMResponse, ToolCall  # noqa: E402
-from tokoboros.core.loop import ExecutionLoop, ToolRegistry  # noqa: E402
-from tokoboros.core.sub_agent import SubAgentMemory  # noqa: E402
+from hachi.core import tracing  # noqa: E402
+from hachi.core.llm import LLMResponse, ToolCall  # noqa: E402
+from hachi.core.loop import ExecutionLoop, ToolRegistry  # noqa: E402
+from hachi.core.sub_agent import SubAgentMemory  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -50,13 +50,13 @@ def test_span_records_to_exporter() -> None:
 
 
 def test_configure_from_env_off_by_default(monkeypatch) -> None:
-    monkeypatch.delenv("TOKOBOROS_TRACING", raising=False)
+    monkeypatch.delenv("HACHI_TRACING", raising=False)
     assert tracing.configure_from_env() is False
     assert tracing.is_active() is False
 
 
 def test_configure_from_env_enables(monkeypatch) -> None:
-    monkeypatch.setenv("TOKOBOROS_TRACING", "true")
+    monkeypatch.setenv("HACHI_TRACING", "true")
     assert tracing.configure_from_env() is True
     assert tracing.is_active() is True
 
@@ -71,7 +71,7 @@ def test_graceful_when_sdk_unavailable(monkeypatch) -> None:
     assert tracing.is_active() is False
     with tracing.span("x", a=1):  # no-op, no error
         pass
-    monkeypatch.setenv("TOKOBOROS_TRACING", "true")
+    monkeypatch.setenv("HACHI_TRACING", "true")
     assert tracing.configure_from_env() is False
 
 

@@ -1,4 +1,4 @@
-"""Tests for `tokoboros schedule show`.
+"""Tests for `hachi schedule show`.
 
 Covers:
   1. Human-readable output — shows name, id, kind, task, next_run, run_count
@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -79,7 +79,7 @@ class TestScheduleShow:
     def test_human_output_shows_key_fields(self) -> None:
         s = _fake_schedule()
         patcher = patch(
-            "tokoboros.cli.commands.schedule._get_scheduler",
+            "hachi.cli.commands.schedule._get_scheduler",
             return_value=_fake_scheduler(s),
         )
         with patcher:
@@ -94,7 +94,7 @@ class TestScheduleShow:
     def test_json_output_round_trips(self) -> None:
         s = _fake_schedule(run_count=5)
         patcher = patch(
-            "tokoboros.cli.commands.schedule._get_scheduler",
+            "hachi.cli.commands.schedule._get_scheduler",
             return_value=_fake_scheduler(s),
         )
         with patcher:
@@ -107,7 +107,7 @@ class TestScheduleShow:
 
     def test_not_found_exits_1(self) -> None:
         patcher = patch(
-            "tokoboros.cli.commands.schedule._get_scheduler",
+            "hachi.cli.commands.schedule._get_scheduler",
             return_value=_fake_scheduler(None),
         )
         with patcher:
@@ -118,7 +118,7 @@ class TestScheduleShow:
     def test_cron_schedule_shows_cron_field(self) -> None:
         s = _fake_schedule(kind="cron", cron="*/5 * * * *")
         patcher = patch(
-            "tokoboros.cli.commands.schedule._get_scheduler",
+            "hachi.cli.commands.schedule._get_scheduler",
             return_value=_fake_scheduler(s),
         )
         with patcher:
@@ -129,7 +129,7 @@ class TestScheduleShow:
     def test_interval_schedule_shows_interval_seconds(self) -> None:
         s = _fake_schedule(kind="interval", cron=None, interval_seconds=3600)
         patcher = patch(
-            "tokoboros.cli.commands.schedule._get_scheduler",
+            "hachi.cli.commands.schedule._get_scheduler",
             return_value=_fake_scheduler(s),
         )
         with patcher:
@@ -140,7 +140,7 @@ class TestScheduleShow:
     def test_disabled_schedule_shown(self) -> None:
         s = _fake_schedule(enabled=False)
         patcher = patch(
-            "tokoboros.cli.commands.schedule._get_scheduler",
+            "hachi.cli.commands.schedule._get_scheduler",
             return_value=_fake_scheduler(s),
         )
         with patcher:
@@ -151,7 +151,7 @@ class TestScheduleShow:
     def test_webhook_delivery_shows_url(self) -> None:
         s = _fake_schedule(deliver_to="webhook", webhook_url="https://example.com/hook")
         patcher = patch(
-            "tokoboros.cli.commands.schedule._get_scheduler",
+            "hachi.cli.commands.schedule._get_scheduler",
             return_value=_fake_scheduler(s),
         )
         with patcher:

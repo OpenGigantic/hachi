@@ -21,9 +21,9 @@ from unittest.mock import patch
 
 import pytest
 
-from tokoboros.integrations.google.docs import DocsService
-from tokoboros.integrations.google.drive import _MAX_UPLOAD_BYTES, DriveService
-from tokoboros.integrations.google.sheets import _READ_SHEET_MAX_ROWS, SheetsService
+from hachi.integrations.google.docs import DocsService
+from hachi.integrations.google.drive import _MAX_UPLOAD_BYTES, DriveService
+from hachi.integrations.google.sheets import _READ_SHEET_MAX_ROWS, SheetsService
 
 # ---------------------------------------------------------------------------
 # Shared fake infrastructure
@@ -413,7 +413,7 @@ def test_read_doc_injection_content_is_framed():
 
     # Patch guard_untrusted to always flag (isolates this test from memory_guard impl)
     with patch(
-        "tokoboros.integrations.google.docs.guard_untrusted",
+        "hachi.integrations.google.docs.guard_untrusted",
         return_value=("<<<UNTRUSTED_CONTENT_BEGIN>>>\n" + injection_text + "\n<<<END>>>", True),
     ):
         result = svc.read_doc("injDoc")
@@ -424,7 +424,7 @@ def test_read_doc_injection_content_is_framed():
 
 def test_read_doc_truncation_note_on_large_doc():
     """A very large document should be truncated with a note."""
-    from tokoboros.integrations.google.docs import _READ_DOC_CHAR_LIMIT
+    from hachi.integrations.google.docs import _READ_DOC_CHAR_LIMIT
 
     large_text = "A" * (_READ_DOC_CHAR_LIMIT + 500)
     client = FakeGoogleClient()
@@ -437,7 +437,7 @@ def test_read_doc_truncation_note_on_large_doc():
 
     # guard_untrusted passes through non-injection content unchanged
     with patch(
-        "tokoboros.integrations.google.docs.guard_untrusted",
+        "hachi.integrations.google.docs.guard_untrusted",
         side_effect=lambda content, source="": (content, False),
     ):
         result = svc.read_doc("bigDoc")

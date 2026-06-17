@@ -5,10 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from tokoboros.cli.main import _InProcessGatewayRuntime
-from tokoboros.core.runtime_events import RuntimeEvent
-from tokoboros.core.runtime_read_models import RuntimeReadModelStore
-from tokoboros.gateway.control_plane import GatewayProtocolError
+from hachi.cli.main import _InProcessGatewayRuntime
+from hachi.core.runtime_events import RuntimeEvent
+from hachi.core.runtime_read_models import RuntimeReadModelStore
+from hachi.gateway.control_plane import GatewayProtocolError
 
 
 class _FakeConfig:
@@ -31,8 +31,8 @@ def test_update_memory_rejects_non_boolean_values(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
 
-    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("tokoboros.cli.main.write_global_config", lambda _config: None)
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
 
     with pytest.raises(GatewayProtocolError, match="must be a boolean"):
         runtime.update_memory({"memory": {"enable_session_history": "false"}})
@@ -42,8 +42,8 @@ def test_update_memory_accepts_boolean_values(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
 
-    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("tokoboros.cli.main.write_global_config", lambda _config: None)
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
 
     result = runtime.update_memory(
         {"memory": {"enable_session_history": False, "enable_semantic_memory": False}}
@@ -81,7 +81,7 @@ def _fake_boot_agent(on_event=None, on_permission_request=None):
 
 
 def test_runtime_events_are_scoped_per_session(monkeypatch) -> None:
-    monkeypatch.setattr("tokoboros.cli.main.boot_agent", _fake_boot_agent)
+    monkeypatch.setattr("hachi.cli.main.boot_agent", _fake_boot_agent)
 
     runtime = _InProcessGatewayRuntime()
     runtime.register_connection("session-a", None)  # type: ignore[arg-type]
@@ -98,7 +98,7 @@ def test_runtime_events_are_scoped_per_session(monkeypatch) -> None:
 
 
 def test_runtime_events_remain_isolated_under_parallel_sessions(monkeypatch) -> None:
-    monkeypatch.setattr("tokoboros.cli.main.boot_agent", _fake_boot_agent)
+    monkeypatch.setattr("hachi.cli.main.boot_agent", _fake_boot_agent)
 
     runtime = _InProcessGatewayRuntime()
     runtime.register_connection("session-a", None)  # type: ignore[arg-type]
@@ -131,7 +131,7 @@ def test_runtime_events_remain_isolated_under_parallel_sessions(monkeypatch) -> 
 
 
 def test_runtime_event_buffer_caps_at_2000_and_handles_sparse_cursors(monkeypatch) -> None:
-    monkeypatch.setattr("tokoboros.cli.main.boot_agent", _fake_boot_agent)
+    monkeypatch.setattr("hachi.cli.main.boot_agent", _fake_boot_agent)
 
     runtime = _InProcessGatewayRuntime()
     runtime.register_connection("session-a", None)  # type: ignore[arg-type]

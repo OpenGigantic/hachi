@@ -1,4 +1,9 @@
-# Tokoboros — UAT Remediation Record
+# Hachi — UAT Remediation Record
+
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
 
 > **Supersedes the open findings in `UAT_RESULTS.md`.** This is the authoritative
 > "what was fixed" record for the remediation campaign run against `UAT_RESULTS.md`.
@@ -24,7 +29,7 @@ Wave 1 and *consumed* by Wave 2:
 
 | # | Risk | Status | Fix |
 |---|---|---|---|
-| **MR-2** | Unauthenticated gateway/daemon | ✅ Fixed | `fastapi_app.py`: bearer token required on all protected routes; loopback no longer exempts auth; token auto-generated + persisted (`~/.tokoboros/gateway-token`, 0600) + printed once; `daemon.py` passes the same token. Opt-out `TOKOBOROS_GATEWAY_NO_AUTH=1` logs a warning. |
+| **MR-2** | Unauthenticated gateway/daemon | ✅ Fixed | `fastapi_app.py`: bearer token required on all protected routes; loopback no longer exempts auth; token auto-generated + persisted (`~/.hachi/gateway-token`, 0600) + printed once; `daemon.py` passes the same token. Opt-out `HACHI_GATEWAY_NO_AUTH=1` logs a warning. |
 | **MR-3** | Secrets leak into events/SSE/transcript | ✅ Fixed (display surfaces) | `runtime_events.adapt_event()` now redacts tool-call input (recursively) and tool-result preview via `secret_scanner.redact_structure`; `runtime_read_models` scrubs web-facing snapshots. *Caveat:* the SQLite **message transcript** still stores real tool outputs (the agent needs them) — its protection is at-rest encryption (MR-10), not redaction. |
 | **MR-4** | `.ogpack` tarball path traversal / tar-bomb | ✅ Fixed | New `core/archive_safety.safe_extract()` rejects `..`/absolute/symlink members and caps file count + total bytes; wired into all 3 `extractall` sites and the manual `community_packs._extract_tar`. Version-independent (verified on Py 3.14). |
 | **MR-5** | No approval gate on destructive actions | ✅ Fixed | New `core/approvals.py` (`ActionApprover`, `PendingApprovalRegistry`) + `GoogleService.require_approval()`. All 6 destructive Google tools (send_email, delete event/task/contact, trash/share file) gate before the API call. **Tier-gated policy:** auto-approve at `unrestricted`, prompt/deny otherwise. TUI uses the modal; API/channel sessions use the registry + `GET/POST /approvals` REST. |

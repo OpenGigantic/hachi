@@ -10,9 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.voice import AudioPlayer
-from tokoboros.tools.voice_tools import (
+from hachi.core.loop import ToolRegistry
+from hachi.core.voice import AudioPlayer
+from hachi.tools.voice_tools import (
     PLAY_AUDIO_SCHEMA,
     _make_play_audio,
     register_voice_tools,
@@ -88,13 +88,13 @@ def test_audio_player_failure_propagates(tmp_path: Path) -> None:
 def test_audio_player_is_available_when_injected() -> None:
     """is_available() is based on detect_player_binary, not on the injected fn."""
     # Patch _detect_player_binary to return a fake binary name
-    with patch("tokoboros.core.voice._detect_player_binary", return_value="fake-player"):
+    with patch("hachi.core.voice._detect_player_binary", return_value="fake-player"):
         ap = AudioPlayer(player=lambda p: (0, ""))
         assert ap.is_available() is True
 
 
 def test_audio_player_not_available_when_no_binary() -> None:
-    with patch("tokoboros.core.voice._detect_player_binary", return_value=None):
+    with patch("hachi.core.voice._detect_player_binary", return_value=None):
         ap = AudioPlayer()
         assert ap.is_available() is False
 
@@ -139,7 +139,7 @@ def test_play_audio_missing_file(tmp_path: Path) -> None:
 
 def test_play_audio_no_player_available(tmp_path: Path) -> None:
     p = _wav(tmp_path)
-    with patch("tokoboros.core.voice._detect_player_binary", return_value=None):
+    with patch("hachi.core.voice._detect_player_binary", return_value=None):
         fn = _make_play_audio(None, None)  # no injected player → uses AudioPlayer()
         result = fn(str(p))
     assert "No audio player" in result or "not available" in result.lower()

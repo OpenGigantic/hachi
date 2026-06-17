@@ -17,14 +17,14 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from tokoboros.core.approvals import (
+from hachi.core.approvals import (
     HandlerApprover,
     PendingApprovalRegistry,
     PolicyApprover,
     RegistryApprover,
     get_approval_registry,
 )
-from tokoboros.core.permissions import (
+from hachi.core.permissions import (
     InteractivePermissionGate,
     PermissionDecision,
     PermissionGate,
@@ -318,7 +318,7 @@ class TestGoogleServiceRequireApproval:
 
     def _make_service(self, client_mock: MagicMock):
         """Build a minimal concrete GoogleService with a fake client."""
-        from tokoboros.integrations.google.service import GoogleService
+        from hachi.integrations.google.service import GoogleService
 
         class _ConcreteService(GoogleService):
             @property
@@ -355,7 +355,7 @@ class TestGoogleServiceRequireApproval:
 
     def test_no_approver_on_client_denies(self) -> None:
         """When no approver is wired to the client, destructive action is denied."""
-        from tokoboros.integrations.google.client import GoogleHTTPClient
+        from hachi.integrations.google.client import GoogleHTTPClient
 
         # Build a minimal real client (no OAuth call needed for this path).
         client = GoogleHTTPClient.__new__(GoogleHTTPClient)

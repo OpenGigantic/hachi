@@ -36,7 +36,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from tokoboros.tools.config_tools import (
+from hachi.tools.config_tools import (
     _apply_config_patch,
     _make_add_mcp_server,
     _make_get_agent_config,
@@ -62,7 +62,7 @@ def _fake_gate(tier: str = "guided") -> MagicMock:
 
 def _skills_dir_patch(tmp_path: Path) -> patch:
     return patch(
-        "tokoboros.gateway.workspace.get_skills_dir",
+        "hachi.gateway.workspace.get_skills_dir",
         return_value=tmp_path,
     )
 
@@ -240,8 +240,8 @@ env_API_URL: https://api.example.com
     og_file.write_text(og_content, encoding="utf-8")
 
     with (
-        patch("tokoboros.gateway.workspace.get_skills_dir", return_value=tmp_path),
-        patch("tokoboros.og_engine.engine.SkillEngine") as MockEngine,
+        patch("hachi.gateway.workspace.get_skills_dir", return_value=tmp_path),
+        patch("hachi.og_engine.engine.SkillEngine") as MockEngine,
     ):
         mock_engine = MagicMock()
         MockEngine.return_value = mock_engine
@@ -301,7 +301,7 @@ def test_validate_mcp_args_passes_clean() -> None:
 
 
 def test_safe_config_snapshot_excludes_credentials() -> None:
-    from tokoboros.core.settings import ProviderSettings, ResolvedConfig
+    from hachi.core.settings import ProviderSettings, ResolvedConfig
 
     config = ResolvedConfig(
         provider=ProviderSettings(
@@ -321,7 +321,7 @@ def test_safe_config_snapshot_excludes_credentials() -> None:
 
 
 def test_apply_config_patch_valid_key() -> None:
-    from tokoboros.core.settings import AgentSettings, ResolvedConfig
+    from hachi.core.settings import AgentSettings, ResolvedConfig
 
     config = ResolvedConfig(agent=AgentSettings(name="old-name"))
     updated, err = _apply_config_patch(config, "agent.name", "new-name")
@@ -335,7 +335,7 @@ def test_apply_config_patch_valid_key() -> None:
 
 
 def test_apply_config_patch_blocked_tier() -> None:
-    from tokoboros.core.settings import ResolvedConfig
+    from hachi.core.settings import ResolvedConfig
 
     config = ResolvedConfig()
     _, err = _apply_config_patch(config, "permissions.tier", "autonomous")
@@ -349,7 +349,7 @@ def test_apply_config_patch_blocked_tier() -> None:
 
 
 def test_apply_config_patch_unknown_key() -> None:
-    from tokoboros.core.settings import ResolvedConfig
+    from hachi.core.settings import ResolvedConfig
 
     config = ResolvedConfig()
     _, err = _apply_config_patch(config, "provider.unknown_field", "value")
@@ -363,7 +363,7 @@ def test_apply_config_patch_unknown_key() -> None:
 
 
 def test_apply_config_patch_bool_coercion() -> None:
-    from tokoboros.core.settings import MemorySettings, ResolvedConfig
+    from hachi.core.settings import MemorySettings, ResolvedConfig
 
     config = ResolvedConfig(memory=MemorySettings(enable_session_history=True))
     updated, err = _apply_config_patch(config, "memory.enable_session_history", "false")
@@ -377,7 +377,7 @@ def test_apply_config_patch_bool_coercion() -> None:
 
 
 def test_apply_config_patch_list_coercion() -> None:
-    from tokoboros.core.settings import ProviderSettings, ResolvedConfig
+    from hachi.core.settings import ProviderSettings, ResolvedConfig
 
     config = ResolvedConfig(provider=ProviderSettings(allowed_models=[]))
     updated, err = _apply_config_patch(
@@ -394,7 +394,7 @@ def test_apply_config_patch_list_coercion() -> None:
 
 
 def test_get_agent_config_returns_json() -> None:
-    from tokoboros.core.settings import ResolvedConfig
+    from hachi.core.settings import ResolvedConfig
 
     config = ResolvedConfig()
 
@@ -414,7 +414,7 @@ def test_get_agent_config_returns_json() -> None:
 
 
 def test_set_agent_config_persists() -> None:
-    from tokoboros.core.settings import AgentSettings, ResolvedConfig
+    from hachi.core.settings import AgentSettings, ResolvedConfig
 
     config = ResolvedConfig(agent=AgentSettings(name="old"))
     written: list = []
@@ -438,7 +438,7 @@ def test_set_agent_config_persists() -> None:
 
 
 def test_set_agent_config_blocked_no_write() -> None:
-    from tokoboros.core.settings import ResolvedConfig
+    from hachi.core.settings import ResolvedConfig
 
     written: list = []
 

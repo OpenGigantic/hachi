@@ -1,10 +1,16 @@
 # UAT Report: Scheduling, Recurring Tasks, Cross-Process State
+
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 **Agent:** UAT verification agent · **Commit:** `036dfd9` · **Date:** 2026-06-14
 **Test runner:** `uv run pytest tests/test_scheduler.py` — 14/14 PASSED
 
 > **Headline finding:** UC-RSCH-002 is the highest-severity confirmed bug — the resident runner
 > (`ScheduleRunner` / `boot_agent`) unconditionally calls `session.chat(s.task)` and never reads
-> `deliver_to` or `webhook_url`.  Webhook delivery is **only reachable via `tokoboros schedule
+> `deliver_to` or `webhook_url`.  Webhook delivery is **only reachable via `hachi schedule
 > run-due`**.  This silently voids the delivery contract for every TUI and daemon session.
 > ADV-021 / UC-PERF-003 are also confirmed: no OS-level file lock exists — two processes share a
 > `threading.RLock` that is **process-local** only, guaranteeing last-write-wins corruption.
@@ -15,7 +21,7 @@
 **Claim:** All schedule math is UTC so a user asking for "8am daily" fires at the wrong local hour.
 
 **Evidence:**
-- `src/tokoboros/jobs/scheduler.py:130-131`
+- `src/hachi/jobs/scheduler.py:130-131`
   ```python
   def _now() -> datetime:
       return datetime.now(UTC)
@@ -49,7 +55,7 @@ once a `--tz` parameter is added.
 
 ## UC-RSCH-002 — CONFIRMED
 **Claim:** The resident runner ignores `deliver_to`/`webhook_url` — webhook fires only via
-`tokoboros schedule run-due`.
+`hachi schedule run-due`.
 
 **Evidence:**
 
@@ -253,7 +259,7 @@ full-file overwrite loses a cancel.
 **Evidence:** Same as UC-PERF-003 above.  Specific adversarial scenario:
 
 1. Process A boots, loads `schedules.json`, holds in-memory dict with schedules `[s1, s2]`.
-2. User calls `tokoboros schedule remove s1` — this boots a **new** `Scheduler` instance
+2. User calls `hachi schedule remove s1` — this boots a **new** `Scheduler` instance
    (via `_get_scheduler()` in `schedule.py:21-22`), loads the file fresh, deletes `s1`, saves.
 3. Process A's `ScheduleRunner` fires at the 30 s mark — `mark_fired(s1, now)` is called on
    the in-memory copy which still contains `s1` — writes the full dict back to disk, **restoring
@@ -267,7 +273,7 @@ self._schedules: dict[str, Schedule] = {s.schedule_id: s for s in store.load()}
 No re-read before each `_persist()`.  A cross-process cancel is invisible to the running
 instance's in-memory state.
 
-**Finding:** CONFIRMED.  A cancel (or add) from `tokoboros schedule remove/add` in a separate
+**Finding:** CONFIRMED.  A cancel (or add) from `hachi schedule remove/add` in a separate
 process is silently overwritten by the next tick of the running `ScheduleRunner`.  This is a
 direct consequence of the last-write-wins full-file overwrite design with no OS-level locking
 and no re-read-before-write.

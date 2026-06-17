@@ -1,6 +1,11 @@
 # Phase 2 — Object Graph Deep Evaluation + Benchmark Spec
 
-**Engagement:** Tokoboros Principal Engineering & Product Strategy · **Date:** 2026-06-12
+> **Historical document.** Written before the Hachi rename. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
+**Engagement:** Hachi Principal Engineering & Product Strategy · **Date:** 2026-06-12
 **Builds on:** [00-recon.md](00-recon.md) §6 (pipeline mechanics), [01-architecture-review.md](01-architecture-review.md) TD-7.
 **Markers:** ✅ direct read · ▶ executed this session · Ⓐ subagent-verified · 🌐 web-verified this session · ⚠️ UNVERIFIED.
 Voices kept separate: §1–§6 **What I found**, §7–§8 **What I propose** (incl. the benchmark spec).
@@ -69,7 +74,7 @@ docs/BENCHMARK.md cites three papers (BENCHMARK.md:25–38):
 | Citation | Verdict |
 |---|---|
 | `arXiv 2604.27820` — "The ObjectGraph format" | **Exists** 🌐: *"ObjectGraph: From Document Injection to Knowledge Traversal — A Native File Format for the Agentic Era"*, authors **Mohit Dubey and Open Gigantic**, submitted 2026-04-30. It is **first-party** (Open Gigantic owns this repo) but BENCHMARK.md presents it as if independent. Its headline "up to 95.3%" reduction is a figure a prior verification pass (recorded in project memory) found unreliable — the agreed stance was to rely on the reproducible in-repo benchmark instead. ⚠️ The *refutation detail* comes from that earlier pass, not re-verified today; the self-authorship and the 95.3% claim on the abstract page are verified 🌐. |
-| `arXiv 2604.05333` Graph-of-Skills | **Verified** 🌐: title, −56.72% tokens vs full skill-loading, GPT-5.2 Codex all appear as quoted. Genuine third-party support for *category* (dependency-aware structural retrieval), not for `.og` specifically — BENCHMARK.md says this honestly (line 38–41). Note: that paper's retriever is **hybrid semantic-lexical** — precisely the component Tokoboros lacks (§2.3). |
+| `arXiv 2604.05333` Graph-of-Skills | **Verified** 🌐: title, −56.72% tokens vs full skill-loading, GPT-5.2 Codex all appear as quoted. Genuine third-party support for *category* (dependency-aware structural retrieval), not for `.og` specifically — BENCHMARK.md says this honestly (line 38–41). Note: that paper's retriever is **hybrid semantic-lexical** — precisely the component Hachi lacks (§2.3). |
 | `arXiv 2603.29919` SkillReducer | **Verified** 🌐: 48% description / 39% body compression, ">60% of body content non-actionable" — matches BENCHMARK.md's paraphrase. |
 
 ## 3. Does it actually beat markdown memory? (the honest answer)
@@ -164,7 +169,7 @@ short (§7).
 
 ## 6. Risks if unaddressed (observation)
 
-R-a. A competitor (or a blog post) runs exactly the probe in §2.3 and publishes "Tokoboros' flagship
+R-a. A competitor (or a blog post) runs exactly the probe in §2.3 and publishes "Hachi's flagship
 benchmark can't find the weather skill from 'what's the weather in Paris'." The 97.2% headline then
 reads as marketing, damaging the one number the project leads with.
 R-b. Community packs (Phase 5 ambition) at today's namespace + lint-advisory-only rules produce
@@ -189,7 +194,7 @@ the two genuinely independent papers are *stronger* support and are diluted by i
 ## 8. Benchmark specification — "OG vs the field" (proposal; runnable design)
 
 **Goal:** replace a single token-ratio with a defensible, multi-axis, reproducible comparison that
-Tokoboros can publish. Location: `benchmarks/og_bench/` + `tokoboros skill benchmark --suite {fast|retrieval|full}`.
+Hachi can publish. Location: `benchmarks/og_bench/` + `hachi skill benchmark --suite {fast|retrieval|full}`.
 
 ### 8.1 Corpora (3 sizes × 2 sources)
 

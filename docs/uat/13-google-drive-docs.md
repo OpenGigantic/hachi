@@ -1,5 +1,11 @@
 # UAT Verification: Google Drive, Docs, Sheets, Meet
-## Tokoboros commit 036dfd9
+
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
+## Hachi commit 036dfd9
 
 **Verification Date:** 2026-06-14  
 **Verifier:** Claude Code UAT Agent (read-only code inspection)  
@@ -28,7 +34,7 @@
 **Claim:** No size limit, no path/symlink validation; memory blowup on large multipart upload.
 
 **Evidence (file:line):**  
-`src/tokoboros/integrations/google/drive.py:57-87` (`upload_file` method)
+`src/hachi/integrations/google/drive.py:57-87` (`upload_file` method)
 
 **Code quote:**
 ```python
@@ -85,7 +91,7 @@ def upload_file(self, file_path: str, parent_id: str = None) -> str:
 **Claim:** No approval gate + no email validation → accidental external share.
 
 **Evidence (file:line):**  
-`src/tokoboros/integrations/google/drive.py:103-110` (`share_file` method)
+`src/hachi/integrations/google/drive.py:103-110` (`share_file` method)
 
 **Code quote:**
 ```python
@@ -119,7 +125,7 @@ def share_file(self, file_id: str, email: str, role: str = "writer") -> str:
 **Claim:** Inconsistent error contract (some raise, some return strings).
 
 **Evidence (file:line):**  
-`src/tokoboros/integrations/google/drive.py:89-121` (`move_file` and `trash_file` methods)
+`src/hachi/integrations/google/drive.py:89-121` (`move_file` and `trash_file` methods)
 
 **Code quote:**
 ```python
@@ -169,7 +175,7 @@ Both return error strings; neither raises an exception. The error contract is **
 **Claim:** Fragile end-index calc on empty/complex docs → text inserted in wrong place.
 
 **Evidence (file:line):**  
-`src/tokoboros/integrations/google/docs.py:47-66` (`append_doc_text` method)
+`src/hachi/integrations/google/docs.py:47-66` (`append_doc_text` method)
 
 **Code quote:**
 ```python
@@ -220,7 +226,7 @@ def append_doc_text(self, doc_id: str, text: str) -> str:
 **Claim:** No pagination; silent truncation / memory pressure.
 
 **Evidence (file:line):**  
-`src/tokoboros/integrations/google/docs.py:30-45` (`read_doc` method)
+`src/hachi/integrations/google/docs.py:30-45` (`read_doc` method)
 
 **Code quote:**
 ```python
@@ -263,7 +269,7 @@ def read_doc(self, doc_id: str) -> str:
 **Claim:** No range-syntax validation, no pagination on large read.
 
 **Evidence (file:line):**  
-`src/tokoboros/integrations/google/sheets.py:37-53` (`read_sheet` method)
+`src/hachi/integrations/google/sheets.py:37-53` (`read_sheet` method)
 
 **Code quote:**
 ```python
@@ -311,7 +317,7 @@ def read_sheet(self, spreadsheet_id: str, range_name: str) -> str:
 **Claim:** Fire-and-forget daemon thread killed on exit; `print("You: ")` to stdout assuming a REPL; silent 30-min timeout; transcript absent if not enabled; errors swallowed.
 
 **Evidence (file:line):**  
-`src/tokoboros/integrations/google/meet.py:25-229` (full `google_monitor_meeting` function and daemon deployment)
+`src/hachi/integrations/google/meet.py:25-229` (full `google_monitor_meeting` function and daemon deployment)
 
 ---
 
@@ -343,7 +349,7 @@ Code quote (lines 163-165):
 ```python
 print("  [MeetBot Daemon] 🧠 Transcript securely saved to Memory Vault.")
 print(
-    "  [MeetBot Daemon] (You can now ask Tokoboros to summarize"
+    "  [MeetBot Daemon] (You can now ask Hachi to summarize"
     " or email the notes.)\nYou: ",
     end="",
     flush=True,

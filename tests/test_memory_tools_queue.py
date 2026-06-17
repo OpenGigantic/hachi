@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.memory import MemoryManager
-from tokoboros.gateway.orchestrator import AgentSession
-from tokoboros.jobs import InMemoryJobQueue, JobWorker
-from tokoboros.tools.memory_tools import register_memory_tools
+from hachi.core.loop import ToolRegistry
+from hachi.core.memory import MemoryManager
+from hachi.gateway.orchestrator import AgentSession
+from hachi.jobs import InMemoryJobQueue, JobWorker
+from hachi.tools.memory_tools import register_memory_tools
 
 
 class _FakeQueue:

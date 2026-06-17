@@ -19,10 +19,10 @@ Next steps (run in your shell):
   export XDG_DATA_HOME="${RUNTIME_DIR}/data"
   export XDG_STATE_HOME="${RUNTIME_DIR}/state"
   export XDG_CACHE_HOME="${RUNTIME_DIR}/cache"
-  export TOKOBOROS_GATEWAY_API_TOKEN_FILE="${TOKEN_FILE}"
-  export TOKOBOROS_GATEWAY_AUTH_HEADER_FILE="${TOKEN_FILE}"
+  export HACHI_GATEWAY_API_TOKEN_FILE="${TOKEN_FILE}"
+  export HACHI_GATEWAY_AUTH_HEADER_FILE="${TOKEN_FILE}"
   cd "${ROOT_DIR}"
-  uv run tokoboros gateway --host 127.0.0.1 --port 8787 --runtime
+  uv run hachi gateway --host 127.0.0.1 --port 8787 --runtime
 
 Cleanup:
   rm -rf "${RUNTIME_DIR}"

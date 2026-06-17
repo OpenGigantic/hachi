@@ -6,7 +6,7 @@ Tests:
   3. Search with embedding rank enabled returns results (non-empty).
   4. _embedding_search() returns {} when embedding rank is off.
   5. RRF merge path is exercised when both BM25 and embedding scores are present.
-  6. TOKOBOROS_EMBEDDING_RANK env flag triggers auto-enable at load_directory().
+  6. HACHI_EMBEDDING_RANK env flag triggers auto-enable at load_directory().
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from unittest.mock import patch
 
 
 def _make_engine(tmp_path: Path, og_content: str | None = None):
-    from tokoboros.og_engine.engine import SkillEngine
+    from hachi.og_engine.engine import SkillEngine
 
     engine = SkillEngine()
     if og_content is not None:
@@ -141,7 +141,7 @@ def test_rrf_merge_path(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6. TOKOBOROS_EMBEDDING_RANK env flag
+# 6. HACHI_EMBEDDING_RANK env flag
 # ---------------------------------------------------------------------------
 
 
@@ -150,10 +150,10 @@ def test_env_flag_enables_embedding_rank(tmp_path: Path) -> None:
     og_file.parent.mkdir(parents=True)
     og_file.write_text(textwrap.dedent(_SAMPLE_OG), encoding="utf-8")
 
-    from tokoboros.og_engine.engine import SkillEngine
+    from hachi.og_engine.engine import SkillEngine
 
     engine = SkillEngine()
-    with patch.dict(os.environ, {"TOKOBOROS_EMBEDDING_RANK": "1"}):
+    with patch.dict(os.environ, {"HACHI_EMBEDDING_RANK": "1"}):
         try:
             engine.load_directory(og_file.parent)
         except Exception:

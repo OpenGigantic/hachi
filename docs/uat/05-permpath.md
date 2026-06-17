@@ -1,9 +1,14 @@
 # UAT — 05: Permission Tiers, Path Containment, Shell Enforcement
 
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 **Build SHA:** `036dfd9`  
 **Date:** 2026-06-14  
 **Tester:** UAT Verification Agent (read-only; in-process repro only)  
-**Primary sources:** `src/tokoboros/core/permissions.py`, `src/tokoboros/tools/os_tools.py`
+**Primary sources:** `src/hachi/core/permissions.py`, `src/hachi/tools/os_tools.py`
 
 > **Top headline finding:** The `run_shell_script` tool at `guided` tier is **silently blocked** because `powershell`/`bash` are interpreter-blocked, yet the tool schema advertises full shell capabilities with no per-tier caveat. Any agent at `guided` tier that attempts to use `run_shell_script` receives a misleading `Permission Denied: 'powershell' is blocked in guided tier` error. The claim that `run_shell_script` allows operators "only if the shell is allowlisted" is technically true but the allowlist never includes the shell at `guided` — so this tool is effectively dead at the tier where users are most likely to want it.
 
@@ -123,7 +128,7 @@ UNC path allowed=False
 
 **Finding:** The UNC path is **denied**, but only because it is not in `allowed_paths` — the containment logic correctly falls through to the default-deny at step 5 (`permissions.py:477-482`). There is **no explicit UNC guard**. This is the critical distinction:
 
-- If `allow_all=True` (unrestricted tier), `path_allowed` is set to `True` at step 2 (`permissions.py:470`), and the UNC path would only be blocked if it happens to be a subpath of `blocked_paths`. On the live machine, `\\127.0.0.1\admin$\...` does not resolve as a subpath of `~/.ssh`, `~/.tokoboros`, or `~/AppData` (these are local paths). Therefore **a UNC path is NOT blocked by `blocked_paths` at unrestricted tier** — it passes straight through.
+- If `allow_all=True` (unrestricted tier), `path_allowed` is set to `True` at step 2 (`permissions.py:470`), and the UNC path would only be blocked if it happens to be a subpath of `blocked_paths`. On the live machine, `\\127.0.0.1\admin$\...` does not resolve as a subpath of `~/.ssh`, `~/.hachi`, or `~/AppData` (these are local paths). Therefore **a UNC path is NOT blocked by `blocked_paths` at unrestricted tier** — it passes straight through.
 
 **Repro at unrestricted tier (implicit from logic):** `unrestricted` sets `allow_all=True`; the only blocked path is `~/.ssh`. A UNC share like `\\127.0.0.1\admin$\...` would be `is_subpath_of_blocked=False`, so `check_path` returns `PermissionResult(True, ...)`. This is an unverified escape at `unrestricted` tier.
 

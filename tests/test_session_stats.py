@@ -1,4 +1,4 @@
-"""Tests for `tokoboros session stats` CLI command.
+"""Tests for `hachi session stats` CLI command.
 
 All tests use a patched SessionStore so no real SQLite I/O is needed.
 """
@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -47,7 +47,7 @@ def _mock_store(sessions=None) -> MagicMock:
 
 def test_session_stats_human_output() -> None:
     store = _mock_store()
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "stats"])
     assert result.exit_code == 0
     assert "3" in result.output  # total_sessions
@@ -56,7 +56,7 @@ def test_session_stats_human_output() -> None:
 
 def test_session_stats_json_output() -> None:
     store = _mock_store()
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "stats", "--json"])
     assert result.exit_code == 0
     payload = json.loads(result.output)
@@ -66,7 +66,7 @@ def test_session_stats_json_output() -> None:
 
 def test_session_stats_avg_turns() -> None:
     store = _mock_store()
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "stats", "--json"])
     payload = json.loads(result.output)
     # (4+6+10)/3 = 6.666... rounded to 6.7
@@ -75,7 +75,7 @@ def test_session_stats_avg_turns() -> None:
 
 def test_session_stats_date_range() -> None:
     store = _mock_store()
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "stats", "--json"])
     payload = json.loads(result.output)
     assert payload["first_session"] == "2026-06-01"
@@ -84,7 +84,7 @@ def test_session_stats_date_range() -> None:
 
 def test_session_stats_most_active_date() -> None:
     store = _mock_store()
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "stats", "--json"])
     payload = json.loads(result.output)
     assert payload["most_active_date"] == "2026-06-01"
@@ -93,7 +93,7 @@ def test_session_stats_most_active_date() -> None:
 
 def test_session_stats_most_used_model() -> None:
     store = _mock_store()
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "stats", "--json"])
     payload = json.loads(result.output)
     assert payload["most_used_model"] == "claude-opus-4-5"
@@ -101,7 +101,7 @@ def test_session_stats_most_used_model() -> None:
 
 def test_session_stats_empty_exits_0() -> None:
     store = _mock_store(sessions=[])
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "stats"])
     assert result.exit_code == 0
     assert "No sessions" in result.output
@@ -109,7 +109,7 @@ def test_session_stats_empty_exits_0() -> None:
 
 def test_session_stats_empty_json() -> None:
     store = _mock_store(sessions=[])
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "stats", "--json"])
     assert result.exit_code == 0
     payload = json.loads(result.output)
@@ -119,7 +119,7 @@ def test_session_stats_empty_json() -> None:
 def test_session_stats_single_session() -> None:
     single = [_SESSIONS[0]]
     store = _mock_store(sessions=single)
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "stats", "--json"])
     payload = json.loads(result.output)
     assert payload["total_sessions"] == 1
@@ -129,7 +129,7 @@ def test_session_stats_single_session() -> None:
 def test_session_stats_null_turns_treated_as_zero() -> None:
     sessions = [{**_SESSIONS[0], "total_turns": None}]
     store = _mock_store(sessions=sessions)
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "stats", "--json"])
     payload = json.loads(result.output)
     assert payload["total_turns"] == 0

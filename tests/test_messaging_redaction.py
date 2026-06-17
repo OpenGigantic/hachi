@@ -3,7 +3,7 @@ env opt-out for power users)."""
 
 from __future__ import annotations
 
-from tokoboros.tools.messaging_tools import _make_send_discord, _make_send_slack
+from hachi.tools.messaging_tools import _make_send_discord, _make_send_slack
 
 _KEY = "sk-ant-" + "a" * 40
 
@@ -33,7 +33,7 @@ class _FakeDiscord:
 
 
 def test_slack_redacts_secret_before_sending(monkeypatch) -> None:
-    monkeypatch.delenv("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", raising=False)
+    monkeypatch.delenv("HACHI_ALLOW_OUTBOUND_SECRETS", raising=False)
     fake = _FakeSlack()
     send = _make_send_slack(fake)
     out = send(f"the token is {_KEY}", "#ops")
@@ -43,7 +43,7 @@ def test_slack_redacts_secret_before_sending(monkeypatch) -> None:
 
 
 def test_discord_redacts_secret_before_sending(monkeypatch) -> None:
-    monkeypatch.delenv("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", raising=False)
+    monkeypatch.delenv("HACHI_ALLOW_OUTBOUND_SECRETS", raising=False)
     fake = _FakeDiscord()
     send = _make_send_discord(fake)
     out = send(f"creds: {_KEY}")
@@ -52,7 +52,7 @@ def test_discord_redacts_secret_before_sending(monkeypatch) -> None:
 
 
 def test_clean_message_has_no_redaction_note(monkeypatch) -> None:
-    monkeypatch.delenv("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", raising=False)
+    monkeypatch.delenv("HACHI_ALLOW_OUTBOUND_SECRETS", raising=False)
     fake = _FakeSlack()
     out = _make_send_slack(fake)("just a normal status update", "#ops")
     assert fake.sent_text == "just a normal status update"
@@ -60,7 +60,7 @@ def test_clean_message_has_no_redaction_note(monkeypatch) -> None:
 
 
 def test_env_opt_out_disables_redaction(monkeypatch) -> None:
-    monkeypatch.setenv("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", "true")
+    monkeypatch.setenv("HACHI_ALLOW_OUTBOUND_SECRETS", "true")
     fake = _FakeSlack()
     _make_send_slack(fake)(f"the token is {_KEY}", "#ops")
     assert _KEY in fake.sent_text  # passed through unredacted

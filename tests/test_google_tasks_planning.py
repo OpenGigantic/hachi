@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Any  # noqa: UP035
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.integrations.google.calendar import CalendarService
-from tokoboros.integrations.google.planning import PlanningService
-from tokoboros.integrations.google.tasks import TasksService
+from hachi.core.loop import ToolRegistry
+from hachi.integrations.google.calendar import CalendarService
+from hachi.integrations.google.planning import PlanningService
+from hachi.integrations.google.tasks import TasksService
 
 # ---------------------------------------------------------------------------
 # Shared fake client (mirrors test_google_integrations.FakeGoogleClient)
@@ -387,17 +387,17 @@ def test_hub_includes_tasks_and_planning_tools() -> None:
     """Verify the hub wires TasksService and PlanningService without importing OAuth."""
     from unittest.mock import MagicMock, patch
 
-    from tokoboros.core.loop import ToolRegistry
+    from hachi.core.loop import ToolRegistry
 
     fake_client = MagicMock()
     fake_client.oauth = MagicMock()
     fake_client.scopes = []
 
     with (
-        patch("tokoboros.integrations.google.client.GoogleHTTPClient", return_value=fake_client),
-        patch("tokoboros.core.oauth.OAuthManager"),
+        patch("hachi.integrations.google.client.GoogleHTTPClient", return_value=fake_client),
+        patch("hachi.core.oauth.OAuthManager"),
     ):
-        from tokoboros.integrations.google import GoogleIntegrationHub
+        from hachi.integrations.google import GoogleIntegrationHub
 
         hub = GoogleIntegrationHub()
         registry = ToolRegistry()

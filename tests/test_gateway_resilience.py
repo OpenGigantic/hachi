@@ -5,12 +5,12 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from tokoboros.gateway.control_plane import (
+from hachi.gateway.control_plane import (
     GatewayControlPlane,
     GatewayEvent,
     GatewayProtocolError,
 )
-from tokoboros.gateway.fastapi_app import create_gateway_app
+from hachi.gateway.fastapi_app import create_gateway_app
 
 _CONNECT = {"client_id": "c", "surface": "tui", "protocol_version": "1.0", "capabilities": []}
 

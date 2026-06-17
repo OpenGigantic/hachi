@@ -1,4 +1,4 @@
-"""Tests for `tokoboros memory add` and `tokoboros memory forget` commands.
+"""Tests for `hachi memory add` and `hachi memory forget` commands.
 
 Covers:
   1.  memory add  — stores to core_memory, prints ID prefix
@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -49,7 +49,7 @@ def _mock_vault(
 
 
 def test_memory_add_core_rich() -> None:
-    with patch("tokoboros.core.memory_vault.MemoryVault", return_value=_mock_vault()):
+    with patch("hachi.core.memory_vault.MemoryVault", return_value=_mock_vault()):
         result = runner.invoke(app, ["memory", "add", "Project uses PostgreSQL 15."])
     assert result.exit_code == 0
     assert "Stored" in result.output
@@ -59,7 +59,7 @@ def test_memory_add_core_rich() -> None:
 
 
 def test_memory_add_core_json() -> None:
-    with patch("tokoboros.core.memory_vault.MemoryVault", return_value=_mock_vault()):
+    with patch("hachi.core.memory_vault.MemoryVault", return_value=_mock_vault()):
         result = runner.invoke(app, ["memory", "add", "Project uses PostgreSQL 15.", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output)
@@ -70,7 +70,7 @@ def test_memory_add_core_json() -> None:
 
 def test_memory_add_user_collection() -> None:
     vault = _mock_vault()
-    with patch("tokoboros.core.memory_vault.MemoryVault", return_value=vault):
+    with patch("hachi.core.memory_vault.MemoryVault", return_value=vault):
         result = runner.invoke(
             app,
             ["memory", "add", "User prefers dark mode.", "--to", "user", "--json"],
@@ -84,7 +84,7 @@ def test_memory_add_user_collection() -> None:
 
 def test_memory_add_agent_collection_with_category() -> None:
     vault = _mock_vault()
-    with patch("tokoboros.core.memory_vault.MemoryVault", return_value=vault):
+    with patch("hachi.core.memory_vault.MemoryVault", return_value=vault):
         result = runner.invoke(
             app,
             [
@@ -106,7 +106,7 @@ def test_memory_add_agent_collection_with_category() -> None:
 
 
 def test_memory_add_unknown_collection_exits() -> None:
-    with patch("tokoboros.core.memory_vault.MemoryVault", return_value=_mock_vault()):
+    with patch("hachi.core.memory_vault.MemoryVault", return_value=_mock_vault()):
         result = runner.invoke(app, ["memory", "add", "some fact", "--to", "badcol"])
     assert result.exit_code == 1
     assert "Unknown collection" in result.output
@@ -114,7 +114,7 @@ def test_memory_add_unknown_collection_exits() -> None:
 
 def test_memory_add_blocked_by_guard_exits() -> None:
     vault = _mock_vault(upsert_return="BLOCKED:prompt_injection")
-    with patch("tokoboros.core.memory_vault.MemoryVault", return_value=vault):
+    with patch("hachi.core.memory_vault.MemoryVault", return_value=vault):
         result = runner.invoke(app, ["memory", "add", "malicious content"])
     assert result.exit_code == 1
     assert "Blocked" in result.output
@@ -122,7 +122,7 @@ def test_memory_add_blocked_by_guard_exits() -> None:
 
 def test_memory_add_limit_reached_exits() -> None:
     vault = _mock_vault(upsert_return="LIMIT_REACHED")
-    with patch("tokoboros.core.memory_vault.MemoryVault", return_value=vault):
+    with patch("hachi.core.memory_vault.MemoryVault", return_value=vault):
         result = runner.invoke(app, ["memory", "add", "too many facts", "--to", "user"])
     assert result.exit_code == 1
     assert "full" in result.output.lower() or "limit" in result.output.lower()
@@ -134,7 +134,7 @@ def test_memory_add_limit_reached_exits() -> None:
 
 
 def test_memory_forget_core_rich() -> None:
-    with patch("tokoboros.core.memory_vault.MemoryVault", return_value=_mock_vault()):
+    with patch("hachi.core.memory_vault.MemoryVault", return_value=_mock_vault()):
         result = runner.invoke(app, ["memory", "forget", _FAKE_ID])
     assert result.exit_code == 0
     assert "Deleted" in result.output
@@ -142,7 +142,7 @@ def test_memory_forget_core_rich() -> None:
 
 
 def test_memory_forget_json() -> None:
-    with patch("tokoboros.core.memory_vault.MemoryVault", return_value=_mock_vault()):
+    with patch("hachi.core.memory_vault.MemoryVault", return_value=_mock_vault()):
         result = runner.invoke(app, ["memory", "forget", _FAKE_ID, "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output)
@@ -153,7 +153,7 @@ def test_memory_forget_json() -> None:
 
 def test_memory_forget_not_found_exits() -> None:
     vault = _mock_vault(delete_return=False)
-    with patch("tokoboros.core.memory_vault.MemoryVault", return_value=vault):
+    with patch("hachi.core.memory_vault.MemoryVault", return_value=vault):
         result = runner.invoke(app, ["memory", "forget", "nonexistent-id-00000000"])
     assert result.exit_code == 1
     assert "Not found" in result.output or "not found" in result.output.lower()
@@ -161,7 +161,7 @@ def test_memory_forget_not_found_exits() -> None:
 
 def test_memory_forget_user_collection() -> None:
     vault = _mock_vault()
-    with patch("tokoboros.core.memory_vault.MemoryVault", return_value=vault):
+    with patch("hachi.core.memory_vault.MemoryVault", return_value=vault):
         result = runner.invoke(app, ["memory", "forget", _FAKE_ID, "--from", "user", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output)
@@ -170,7 +170,7 @@ def test_memory_forget_user_collection() -> None:
 
 
 def test_memory_forget_unknown_collection_exits() -> None:
-    with patch("tokoboros.core.memory_vault.MemoryVault", return_value=_mock_vault()):
+    with patch("hachi.core.memory_vault.MemoryVault", return_value=_mock_vault()):
         result = runner.invoke(app, ["memory", "forget", _FAKE_ID, "--from", "badcol"])
     assert result.exit_code == 1
     assert "Unknown collection" in result.output

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tokoboros.core.secret_store import (
+from hachi.core.secret_store import (
     CompositeSecretStore,
     EncryptedFileSecretStore,
     KeyringSecretStore,
@@ -36,7 +36,7 @@ def test_composite_get_falls_back_when_keyring_get_is_unavailable(
     tmp_path: Path, monkeypatch
 ) -> None:
     metadata = _MetadataStore(tmp_path / "secrets_metadata.json")
-    keyring_store = KeyringSecretStore(service_name="tokoboros-test", metadata_store=metadata)
+    keyring_store = KeyringSecretStore(service_name="hachi-test", metadata_store=metadata)
     fallback_store = EncryptedFileSecretStore(
         file_path=tmp_path / "secrets.enc",
         passphrase="test-passphrase",
@@ -46,7 +46,7 @@ def test_composite_get_falls_back_when_keyring_get_is_unavailable(
 
     fallback_store.set("provider.api_key", "fallback-secret")
     monkeypatch.setattr(
-        "tokoboros.core.secret_store.keyring.get_password",
+        "hachi.core.secret_store.keyring.get_password",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("keyring unavailable")),
     )
 
@@ -57,28 +57,28 @@ def test_missing_passphrase_blocks_fallback_set_when_keyring_unavailable(
     tmp_path: Path, monkeypatch
 ) -> None:
     metadata = _MetadataStore(tmp_path / "secrets_metadata.json")
-    keyring_store = KeyringSecretStore(service_name="tokoboros-test", metadata_store=metadata)
+    keyring_store = KeyringSecretStore(service_name="hachi-test", metadata_store=metadata)
     fallback_store = EncryptedFileSecretStore(
         file_path=tmp_path / "secrets.enc",
-        passphrase=os.environ.get("TOKOBOROS_SECRET_PASSPHRASE"),
+        passphrase=os.environ.get("HACHI_SECRET_PASSPHRASE"),
         metadata_store=metadata,
     )
     composite = CompositeSecretStore(primary=keyring_store, fallback=fallback_store)
 
     monkeypatch.setattr(
-        "tokoboros.core.secret_store.keyring.set_password",
+        "hachi.core.secret_store.keyring.set_password",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("keyring unavailable")),
     )
     monkeypatch.setattr(
-        "tokoboros.core.secret_store.keyring.get_password",
+        "hachi.core.secret_store.keyring.get_password",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("keyring unavailable")),
     )
     monkeypatch.setattr(
-        "tokoboros.core.secret_store.keyring.delete_password",
+        "hachi.core.secret_store.keyring.delete_password",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("keyring unavailable")),
     )
 
-    with pytest.raises(RuntimeError, match="TOKOBOROS_SECRET_PASSPHRASE"):
+    with pytest.raises(RuntimeError, match="HACHI_SECRET_PASSPHRASE"):
         composite.set("openai.api_key", "secret")
 
 
@@ -97,11 +97,11 @@ def test_corrupted_metadata_file_is_tolerated_and_recovers(tmp_path: Path) -> No
 
 def test_keyring_delete_metadata_desync_is_self_healed(tmp_path: Path, monkeypatch) -> None:
     metadata = _MetadataStore(tmp_path / "secrets_metadata.json")
-    store = KeyringSecretStore(service_name="tokoboros-test", metadata_store=metadata)
+    store = KeyringSecretStore(service_name="hachi-test", metadata_store=metadata)
 
     metadata.upsert("slack.bot_token", {"name": "slack.bot_token", "backend": "keyring"})
     monkeypatch.setattr(
-        "tokoboros.core.secret_store.keyring.delete_password",
+        "hachi.core.secret_store.keyring.delete_password",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("missing in keyring")),
     )
 

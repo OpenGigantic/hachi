@@ -6,8 +6,8 @@ network or bot credentials.
 
 from __future__ import annotations
 
-from tokoboros.channels import ChannelRouter, InboundMessage
-from tokoboros.channels.telegram import latest_offset, parse_updates
+from hachi.channels import ChannelRouter, InboundMessage
+from hachi.channels.telegram import latest_offset, parse_updates
 
 
 def _echo_runner(session_key: str, text: str) -> str:

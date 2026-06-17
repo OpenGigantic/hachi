@@ -15,14 +15,14 @@ import time
 from pathlib import Path
 from unittest import mock
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.notifier import (
+from hachi.core.loop import ToolRegistry
+from hachi.core.notifier import (
     _WIN_NOTIFY_BODY_ENV,
     _WIN_NOTIFY_TITLE_ENV,
     DesktopNotifier,
 )
-from tokoboros.core.permissions import _DEFAULT_BLOCKED, PermissionGate, generate_permissions_og
-from tokoboros.tools.os_tools import RUN_SHELL_SCRIPT_SCHEMA, register_os_tools
+from hachi.core.permissions import _DEFAULT_BLOCKED, PermissionGate, generate_permissions_og
+from hachi.tools.os_tools import RUN_SHELL_SCRIPT_SCHEMA, register_os_tools
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -316,7 +316,7 @@ def test_notifier_windows_dispatch_is_non_blocking() -> None:
 
     notifier = DesktopNotifier(runner=_slow_runner)
 
-    with mock.patch("tokoboros.core.notifier._platform", return_value="windows"):
+    with mock.patch("hachi.core.notifier._platform", return_value="windows"):
         t0 = time.monotonic()
         result = notifier.send("Test", "Body")
         elapsed = time.monotonic() - t0
@@ -334,7 +334,7 @@ def test_notifier_windows_user_content_via_env_vars_not_interpolated() -> None:
     evil_title = "Build `$(hostname)` done"
     evil_body = "Result: $(2+2) and $env:PATH; tick `n end"
 
-    with mock.patch("tokoboros.core.notifier._platform", return_value="windows"):
+    with mock.patch("hachi.core.notifier._platform", return_value="windows"):
         notifier.send(evil_title, evil_body)
 
     # Give the daemon thread a moment to record the call.

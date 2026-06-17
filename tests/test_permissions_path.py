@@ -6,7 +6,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from tokoboros.cli import main as cli_main
+from hachi.cli import main as cli_main
 
 
 def _write_perms(tmp_path: Path, value: str) -> Path:

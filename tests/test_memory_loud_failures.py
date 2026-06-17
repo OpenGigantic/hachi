@@ -13,10 +13,10 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-from tokoboros.core.memory import MemoryManager
-from tokoboros.core.runtime_events import RuntimeEvent
-from tokoboros.core.runtime_read_models import RuntimeReadModelStore
-from tokoboros.jobs.queue import InMemoryJobQueue, JobWorker
+from hachi.core.memory import MemoryManager
+from hachi.core.runtime_events import RuntimeEvent
+from hachi.core.runtime_read_models import RuntimeReadModelStore
+from hachi.jobs.queue import InMemoryJobQueue, JobWorker
 
 # Long enough to pass the len < 30 guard in sync_turn
 _USER = "The user prefers Python over Ruby and uses dark mode consistently"
@@ -96,7 +96,7 @@ def test_no_thread_spawned_when_no_queue(caplog) -> None:
 
     before = threading.active_count()
 
-    with caplog.at_level(logging.WARNING, logger="tokoboros.core.memory"):
+    with caplog.at_level(logging.WARNING, logger="hachi.core.memory"):
         mgr.sync_turn(_USER, _ASSISTANT)
 
     time.sleep(0.05)  # let any accidental thread start
@@ -120,7 +120,7 @@ def test_enqueue_failure_logs_error_not_thread(caplog) -> None:
 
     before = threading.active_count()
 
-    with caplog.at_level(logging.ERROR, logger="tokoboros.core.memory"):
+    with caplog.at_level(logging.ERROR, logger="hachi.core.memory"):
         mgr.sync_turn(_USER, _ASSISTANT)
 
     time.sleep(0.05)

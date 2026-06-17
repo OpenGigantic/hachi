@@ -996,6 +996,94 @@ wheels = [
 ]
 
 [[package]]
+name = "hachi-og"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "anthropic" },
+    { name = "chromadb" },
+    { name = "cryptography" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "keyring" },
+    { name = "pillow" },
+    { name = "platformdirs" },
+    { name = "pydantic" },
+    { name = "rich" },
+    { name = "textual" },
+    { name = "tomlkit" },
+    { name = "typer" },
+    { name = "tzdata" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+browser = [
+    { name = "playwright" },
+]
+dev = [
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+google = [
+    { name = "google-api-python-client" },
+    { name = "google-auth" },
+]
+local-models = [
+    { name = "httpx" },
+]
+memory = [
+    { name = "chromadb" },
+]
+notion = [
+    { name = "notion-client" },
+]
+presentations = [
+    { name = "python-pptx" },
+]
+slack = [
+    { name = "slack-sdk" },
+]
+tracing = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", specifier = ">=0.105.2" },
+    { name = "chromadb", specifier = ">=1.5.9" },
+    { name = "chromadb", marker = "extra == 'memory'", specifier = ">=1.5.9" },
+    { name = "cryptography", specifier = ">=48.0.0" },
+    { name = "fastapi", specifier = ">=0.136.3" },
+    { name = "google-api-python-client", marker = "extra == 'google'", specifier = ">=2.154.0" },
+    { name = "google-auth", marker = "extra == 'google'", specifier = ">=2.53.0" },
+    { name = "httpx", specifier = ">=0.28.0" },
+    { name = "httpx", marker = "extra == 'local-models'", specifier = ">=0.28.0" },
+    { name = "keyring", specifier = ">=25.5.0" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11.0" },
+    { name = "notion-client", marker = "extra == 'notion'", specifier = ">=2.2.1" },
+    { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.27.0" },
+    { name = "opentelemetry-sdk", marker = "extra == 'tracing'", specifier = ">=1.27.0" },
+    { name = "pillow", specifier = ">=10.3.0" },
+    { name = "platformdirs", specifier = ">=4.3.0" },
+    { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.48.0" },
+    { name = "pydantic", specifier = ">=2.9.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
+    { name = "python-pptx", marker = "extra == 'presentations'", specifier = ">=1.0.0" },
+    { name = "rich", specifier = ">=13.7.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.15" },
+    { name = "slack-sdk", marker = "extra == 'slack'", specifier = ">=3.33.3" },
+    { name = "textual", specifier = ">=0.75.0" },
+    { name = "tomlkit", specifier = ">=0.13.2" },
+    { name = "typer", specifier = ">=0.26.4" },
+    { name = "tzdata", specifier = ">=2024.1" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.48.0" },
+]
+provides-extras = ["dev", "google", "notion", "slack", "memory", "local-models", "browser", "tracing", "presentations", "unofficial"]
+
+[[package]]
 name = "hf-xet"
 version = "1.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3258,94 +3346,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/97/c9/2553f72aaf65a2797d4229e37fa7fbe38ffbf3e32912d31bdd78b3323e59/tokenizers-0.23.1-cp310-abi3-win_amd64.whl", hash = "sha256:e7bfaf995c1bdbbd21d13539decb6650967013759318627d85daeb7881af16b7", size = 2798223, upload-time = "2026-04-27T14:43:28.51Z" },
     { url = "https://files.pythonhosted.org/packages/cd/2b/2be299bab55fc595e3d38567edb1a87f86e594842968fa9515a07bdcf422/tokenizers-0.23.1-cp310-abi3-win_arm64.whl", hash = "sha256:a26197957d8e4425dfba746315f3c425ea00cfa8367c5fbc4ec73447893dcea9", size = 2664127, upload-time = "2026-04-27T14:43:26.949Z" },
 ]
-
-[[package]]
-name = "tokoboros"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "anthropic" },
-    { name = "chromadb" },
-    { name = "cryptography" },
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "keyring" },
-    { name = "pillow" },
-    { name = "platformdirs" },
-    { name = "pydantic" },
-    { name = "rich" },
-    { name = "textual" },
-    { name = "tomlkit" },
-    { name = "typer" },
-    { name = "tzdata" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.optional-dependencies]
-browser = [
-    { name = "playwright" },
-]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "ruff" },
-]
-google = [
-    { name = "google-api-python-client" },
-    { name = "google-auth" },
-]
-local-models = [
-    { name = "httpx" },
-]
-memory = [
-    { name = "chromadb" },
-]
-notion = [
-    { name = "notion-client" },
-]
-presentations = [
-    { name = "python-pptx" },
-]
-slack = [
-    { name = "slack-sdk" },
-]
-tracing = [
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-sdk" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anthropic", specifier = ">=0.105.2" },
-    { name = "chromadb", specifier = ">=1.5.9" },
-    { name = "chromadb", marker = "extra == 'memory'", specifier = ">=1.5.9" },
-    { name = "cryptography", specifier = ">=48.0.0" },
-    { name = "fastapi", specifier = ">=0.136.3" },
-    { name = "google-api-python-client", marker = "extra == 'google'", specifier = ">=2.154.0" },
-    { name = "google-auth", marker = "extra == 'google'", specifier = ">=2.53.0" },
-    { name = "httpx", specifier = ">=0.28.0" },
-    { name = "httpx", marker = "extra == 'local-models'", specifier = ">=0.28.0" },
-    { name = "keyring", specifier = ">=25.5.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11.0" },
-    { name = "notion-client", marker = "extra == 'notion'", specifier = ">=2.2.1" },
-    { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.27.0" },
-    { name = "opentelemetry-sdk", marker = "extra == 'tracing'", specifier = ">=1.27.0" },
-    { name = "pillow", specifier = ">=10.3.0" },
-    { name = "platformdirs", specifier = ">=4.3.0" },
-    { name = "playwright", marker = "extra == 'browser'", specifier = ">=1.48.0" },
-    { name = "pydantic", specifier = ">=2.9.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
-    { name = "python-pptx", marker = "extra == 'presentations'", specifier = ">=1.0.0" },
-    { name = "rich", specifier = ">=13.7.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.15" },
-    { name = "slack-sdk", marker = "extra == 'slack'", specifier = ">=3.33.3" },
-    { name = "textual", specifier = ">=0.75.0" },
-    { name = "tomlkit", specifier = ">=0.13.2" },
-    { name = "typer", specifier = ">=0.26.4" },
-    { name = "tzdata", specifier = ">=2024.1" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.48.0" },
-]
-provides-extras = ["dev", "google", "notion", "slack", "memory", "local-models", "browser", "tracing", "presentations", "unofficial"]
 
 [[package]]
 name = "tomlkit"

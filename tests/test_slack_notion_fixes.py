@@ -24,7 +24,7 @@ class _FakeVault:
     def get_token(self, key: str, prompt_if_missing: bool = False) -> str | None:
         value = self._tokens.get(key)
         if value is None:
-            raise ValueError(f"Credential not found. Run: tokoboros secrets --set {key}")
+            raise ValueError(f"Credential not found. Run: hachi secrets --set {key}")
         return value
 
 
@@ -44,11 +44,11 @@ def _make_slack_workspace(
     vault = _FakeVault(tokens)
 
     # Pre-import so monkeypatch can find the attribute
-    import tokoboros.core.credential_vault as _cv_mod
+    import hachi.core.credential_vault as _cv_mod
 
     monkeypatch.setattr(_cv_mod, "CredentialVault", lambda: vault)
 
-    from tokoboros.integrations.slack.workspace import SlackWorkspace
+    from hachi.integrations.slack.workspace import SlackWorkspace
 
     svc = SlackWorkspace()
     # Keep vault so _ensure_* helpers can retry via svc._vault
@@ -60,11 +60,11 @@ def _make_notion_databases(api_key: str = "secret-test-key", monkeypatch: Any = 
     """Construct a NotionDatabases with a mocked CredentialVault."""
     vault = _FakeVault({"notion_api_key": api_key})
 
-    import tokoboros.core.credential_vault as _cv_mod
+    import hachi.core.credential_vault as _cv_mod
 
     monkeypatch.setattr(_cv_mod, "CredentialVault", lambda: vault)
 
-    from tokoboros.integrations.notion.databases import NotionDatabases
+    from hachi.integrations.notion.databases import NotionDatabases
 
     svc = NotionDatabases()
     svc._vault = vault

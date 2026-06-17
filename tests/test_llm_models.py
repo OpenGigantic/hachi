@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tokoboros.core.llm import (
+from hachi.core.llm import (
     OpenAICompatibleClient,
     can_switch_model,
     resolve_available_models,

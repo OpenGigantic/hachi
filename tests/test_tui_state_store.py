@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tokoboros.tui.state_store import TUIStateSnapshot, TUIStateStore
+from hachi.tui.state_store import TUIStateSnapshot, TUIStateStore
 
 
 def test_state_store_roundtrip(tmp_path: Path) -> None:

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tokoboros.og_engine.engine import SkillEngine
+from hachi.og_engine.engine import SkillEngine
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_skill.og"
 

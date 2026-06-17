@@ -1,6 +1,11 @@
 # Phase 7 — Multi-Agent Architecture, Bold Bets, Open-Source Growth
 
-**Engagement:** Tokoboros Principal Engineering & Product Strategy · **Date:** 2026-06-12
+> **Historical document.** Written before the Hachi rename. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
+**Engagement:** Hachi Principal Engineering & Product Strategy · **Date:** 2026-06-12
 **Inputs:** Phases 0–6. **Voices:** §1 = What I found · §2–§5 = What I propose.
 
 ---
@@ -61,8 +66,8 @@ multimodal everywhere · robot embodiment · generic AGI-assistant visions · ID
 Your agent's entire competence and memory is a directory of typed, signed, diffable files — movable
 between machines, engines, and (eventually) competitors. The `skill_md_to_og` bridge ✅, serializer
 round-trip ✅, `min_agent_version` ✅, and (Phase 5) signed packs are the seed. 10-yr shape: `.og` is
-to agents what Markdown became to docs — the neutral substrate; Tokoboros is its reference engine
-(analogy: Obsidian's relationship to Markdown). **Leading indicator:** a second, non-Tokoboros tool
+to agents what Markdown became to docs — the neutral substrate; Hachi is its reference engine
+(analogy: Obsidian's relationship to Markdown). **Leading indicator:** a second, non-Hachi tool
 ships `.og` read support. **First 90-day step:** publish the spec as versioned standalone repo +
 conformance test suite (the spec doc ✅ exists; conformance = parser tests extracted). **Risk:**
 agentskills.io/SKILL.md gravity — mitigation: keep the lossless import bridge and *export* too.
@@ -82,7 +87,7 @@ cold start — seed with the 7 first-party agents' packs.
 Phase 4's decision/causal/temporal edges, compounded over *years*, become something no chat log can
 be: "what did I decide about X in 2027, why, what did it cause, who was involved" answered with
 evidence links. The moat is the data shape, not the model — and because it's user-owned files (G1),
-it is sovereignty-compatible lock-in: leaving Tokoboros means abandoning your own institutional
+it is sovereignty-compatible lock-in: leaving Hachi means abandoning your own institutional
 memory *only if* no other engine reads `.og` — which B1 deliberately gives away, making the
 retention story *quality of traversal*, not hostage-taking. **Indicator:** users with >1k memory
 nodes; "ask about last year" weekly actives. **First step:** Phase 4 M0–M2 + a yearly "memoir"
@@ -113,7 +118,7 @@ narrative window 🌐.
 ### 4.1 Two onramps, not one
 
 - **Pack authors (no Python).** `.og` authoring is the low-floor contribution path — skill authors
-  are domain people, not engine devs. Needs: `tokoboros skill new` scaffold (CLI has the verbs ✅),
+  are domain people, not engine devs. Needs: `hachi skill new` scaffold (CLI has the verbs ✅),
   authoring guide distilled from the spec, lint-in-CI template repo, and the Stage-1 index
   (Phase 5). This is the path ClawHub proved demand for (13.7k skills 🌐) — gated this time.
 - **Core contributors (Python).** Assets in place: fast suite (61 s ▶), uv, CONTRIBUTING.md ✅,
@@ -126,10 +131,10 @@ narrative window 🌐.
 ### 4.2 Plugin SDK (the extensibility contract)
 
 Today's extension points — tools (`register_*` ✅), packs (`.og`), MCP servers ✅, providers
-(`BaseLLMClient` ✅) — work but are *internal* APIs. Proposal: a `tokoboros.sdk` namespace re-exporting
+(`BaseLLMClient` ✅) — work but are *internal* APIs. Proposal: a `hachi.sdk` namespace re-exporting
 the stable surface (ToolRegistry/ToolSpec, pack manifest types, runtime-event names, BaseLLMClient),
 **semver'd independently of the app**, with contract tests third-party authors can run
-(`tokoboros doctor --plugin <pkg>`). Effort 3–5 d (medium). Without this, every internal refactor
+(`hachi doctor --plugin <pkg>`). Effort 3–5 d (medium). Without this, every internal refactor
 (Phase 1 R11) breaks the ecosystem we're trying to start.
 
 ### 4.3 Five growth loops (each with its existing artifact)
@@ -159,7 +164,7 @@ the stable surface (ToolRegistry/ToolSpec, pack manifest types, runtime-event na
 |---|---|
 | Leases + continuations + scoped memory views (multi-agent v2) | 4–6 d (medium-high), after R1/R5 + Phase 4 M1 |
 | SECURITY.md + disclosure policy + ARCHITECTURE.md + starter-issue curation | 1–2 d (high) — immediate |
-| `tokoboros.sdk` contract surface + plugin doctor | 3–5 d (medium) |
+| `hachi.sdk` contract surface + plugin doctor | 3–5 d (medium) |
 | Spec repo + conformance suite (B1 first step) | 2–4 d (medium-high) |
 | Pack-author scaffold + guide (`skill new`) | 2–3 d (high) |
 | Git-synced workspace pattern docs/tests (B4 first step) | 1–2 d (medium) |

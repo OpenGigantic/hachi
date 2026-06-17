@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tokoboros.tools.delegation_tools import (
+from hachi.tools.delegation_tools import (
     _DELEGATION_MAX_DEPTH,
     _make_delegate_task,
 )
@@ -71,15 +71,15 @@ def test_resolve_failure_returns_abort_message() -> None:
 
     with (
         patch(
-            "tokoboros.tools.delegation_tools.RoleResolver.resolve",
+            "hachi.tools.delegation_tools.RoleResolver.resolve",
             side_effect=FileNotFoundError("no role file"),
         ),
         patch(
-            "tokoboros.tools.delegation_tools._build_scoped_registry",
+            "hachi.tools.delegation_tools._build_scoped_registry",
             side_effect=fake_build,
         ),
         patch(
-            "tokoboros.tools.delegation_tools.SubAgentRuntime",
+            "hachi.tools.delegation_tools.SubAgentRuntime",
             side_effect=lambda **kw: runtime_calls.append(kw),
         ),
     ):
@@ -108,19 +108,19 @@ def test_parse_og_failure_returns_abort_message() -> None:
 
     with (
         patch(
-            "tokoboros.tools.delegation_tools.RoleResolver.resolve",
+            "hachi.tools.delegation_tools.RoleResolver.resolve",
             return_value=mock_path,
         ),
         patch(
-            "tokoboros.tools.delegation_tools.parse_og_file",
+            "hachi.tools.delegation_tools.parse_og_file",
             side_effect=ValueError("corrupt .og"),
         ),
         patch(
-            "tokoboros.tools.delegation_tools._build_scoped_registry",
+            "hachi.tools.delegation_tools._build_scoped_registry",
             side_effect=lambda *a, **kw: build_registry_calls.append(True) or _make_registry(),
         ),
         patch(
-            "tokoboros.tools.delegation_tools.SubAgentRuntime",
+            "hachi.tools.delegation_tools.SubAgentRuntime",
             side_effect=lambda **kw: runtime_calls.append(kw),
         ),
     ):
@@ -148,11 +148,11 @@ def test_og_failure_emits_aborted_event() -> None:
 
     with (
         patch(
-            "tokoboros.tools.delegation_tools.RoleResolver.resolve",
+            "hachi.tools.delegation_tools.RoleResolver.resolve",
             side_effect=FileNotFoundError("no og file"),
         ),
-        patch("tokoboros.tools.delegation_tools._build_scoped_registry"),
-        patch("tokoboros.tools.delegation_tools.SubAgentRuntime"),
+        patch("hachi.tools.delegation_tools._build_scoped_registry"),
+        patch("hachi.tools.delegation_tools.SubAgentRuntime"),
     ):
         fn = _make_fn(on_event=capture)
         fn(role="phantom", task="t")
@@ -172,7 +172,7 @@ def test_depth_limit_blocks_delegation() -> None:
     """ADV-012: when depth >= MAX_DEPTH, delegation is refused."""
     runtime_calls: list = []
 
-    with patch("tokoboros.tools.delegation_tools.SubAgentRuntime") as mock_runtime:
+    with patch("hachi.tools.delegation_tools.SubAgentRuntime") as mock_runtime:
         mock_runtime.side_effect = lambda **kw: runtime_calls.append(kw)
         fn = _make_fn(depth=_DELEGATION_MAX_DEPTH)
         result = fn(role="coder", task="write code")
@@ -202,7 +202,7 @@ def test_cycle_detection_blocks_delegation() -> None:
     """ADV-012: if the role is already in the ancestry chain, delegation is refused."""
     runtime_calls: list = []
 
-    with patch("tokoboros.tools.delegation_tools.SubAgentRuntime") as mock_runtime:
+    with patch("hachi.tools.delegation_tools.SubAgentRuntime") as mock_runtime:
         mock_runtime.side_effect = lambda **kw: runtime_calls.append(kw)
         fn = _make_fn(depth=1, ancestry=("orchestrator", "coder"))
         result = fn(role="coder", task="write more code")
@@ -241,7 +241,7 @@ def test_backstop_emits_aborted_event(depth: int, ancestry: tuple[str, ...], rol
     def capture(name: str, data: dict) -> None:
         events.append((name, data))
 
-    with patch("tokoboros.tools.delegation_tools.SubAgentRuntime"):
+    with patch("hachi.tools.delegation_tools.SubAgentRuntime"):
         fn = _make_fn(on_event=capture, depth=depth, ancestry=ancestry)
         fn(role=role, task="t")
 
@@ -274,19 +274,19 @@ def test_happy_path_constructs_sub_agent() -> None:
 
     with (
         patch(
-            "tokoboros.tools.delegation_tools.RoleResolver.resolve",
+            "hachi.tools.delegation_tools.RoleResolver.resolve",
             return_value=mock_path,
         ),
         patch(
-            "tokoboros.tools.delegation_tools.parse_og_file",
+            "hachi.tools.delegation_tools.parse_og_file",
             return_value=mock_og,
         ),
         patch(
-            "tokoboros.tools.delegation_tools._build_scoped_registry",
+            "hachi.tools.delegation_tools._build_scoped_registry",
             return_value=_make_registry(),
         ),
         patch(
-            "tokoboros.tools.delegation_tools.SubAgentRuntime",
+            "hachi.tools.delegation_tools.SubAgentRuntime",
             return_value=runtime_instance,
         ) as MockRuntime,
     ):
@@ -310,11 +310,11 @@ def test_lease_released_on_og_failure() -> None:
 
     with (
         patch(
-            "tokoboros.tools.delegation_tools.RoleResolver.resolve",
+            "hachi.tools.delegation_tools.RoleResolver.resolve",
             side_effect=FileNotFoundError("no og"),
         ),
-        patch("tokoboros.tools.delegation_tools._build_scoped_registry"),
-        patch("tokoboros.tools.delegation_tools.SubAgentRuntime"),
+        patch("hachi.tools.delegation_tools._build_scoped_registry"),
+        patch("hachi.tools.delegation_tools.SubAgentRuntime"),
     ):
         fn = _make_fn(lease_manager=mock_lease)
         fn(role="ghost", task="t", write_targets=["projects/billing"])

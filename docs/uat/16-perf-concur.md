@@ -1,5 +1,10 @@
 # UAT Report — Concurrency, Performance & Scale
 
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 **Assignment:** UC-PERF-001, UC-PERF-002, UC-PERF-004, UC-PERF-005, UC-PERF-006, ADV-024, ADV-025
 **Build SHA:** `036dfd9`
 **Tester:** UAT VERIFICATION agent (static + offline tests; no live load)
@@ -15,14 +20,14 @@
 
 **Evidence — file:line + quoted code:**
 
-`src/tokoboros/gateway/orchestrator.py:417-419`
+`src/hachi/gateway/orchestrator.py:417-419`
 ```python
 # Per-session turn serialization: prevents concurrent chat() calls from
 # corrupting interleaved user/assistant/tool-pair message history.
 self._chat_lock = threading.Lock()
 ```
 
-`src/tokoboros/gateway/orchestrator.py:886-895`
+`src/hachi/gateway/orchestrator.py:886-895`
 ```python
 # Emit session.busy when another turn is already running so UIs can show
 # queued state. The acquire() then blocks until the current turn finishes.
@@ -36,13 +41,13 @@ finally:
     self._chat_lock.release()
 ```
 
-`src/tokoboros/gateway/orchestrator.py:897-898`
+`src/hachi/gateway/orchestrator.py:897-898`
 ```python
 def _chat_impl(self, user_input: str) -> str:
     """Internal single-turn implementation; must only be called while _chat_lock is held."""
 ```
 
-`src/tokoboros/core/runtime_events.py:26`
+`src/hachi/core/runtime_events.py:26`
 ```python
 SESSION_BUSY = "session.busy"
 ```
@@ -67,7 +72,7 @@ No interleaved `tool_use`/`tool_result` pairs are possible under this design. Th
 
 **Evidence — file:line + quoted code:**
 
-`src/tokoboros/core/memory_vault.py:70-78`
+`src/hachi/core/memory_vault.py:70-78`
 ```python
 self.client = chromadb.PersistentClient(
     path=self.db_path, settings=Settings(anonymized_telemetry=False)
@@ -76,7 +81,7 @@ self.client = chromadb.PersistentClient(
 
 There is **no application-level write lock** anywhere in `memory_vault.py`. No `threading.Lock`, `threading.Semaphore`, or equivalent guards any of the `collection.upsert(...)` calls. The docstring in `shared_services.py:12-13` states "MemoryVault — Chroma PersistentClient; handles concurrent access natively." This is a single-writer assumption delegated entirely to ChromaDB's embedded sqlite/hnswlib layer.
 
-`src/tokoboros/core/memory_index.py:71-82` (`_conn` context manager):
+`src/hachi/core/memory_index.py:71-82` (`_conn` context manager):
 ```python
 @contextmanager
 def _conn(self) -> Generator[sqlite3.Connection, None, None]:
@@ -94,7 +99,7 @@ def _conn(self) -> Generator[sqlite3.Connection, None, None]:
 
 The FTS5 index uses `check_same_thread=False` and a 10-second timeout. A concurrent `refresh()` (lines 92-151) does a full `DELETE FROM mem_fts` + `DELETE FROM mem_nodes` + batch `INSERT` in a single connection. A simultaneous `search()` (lines 157-186) opens a separate connection. Under SQLite WAL mode (Chroma's default), readers do not block writers, but a `refresh()` mid-`search()` produces a TOCTOU window where the search sees a partially cleared index.
 
-`src/tokoboros/core/memory_index.py:134-148` — the refresh is not atomic relative to searches from other threads:
+`src/hachi/core/memory_index.py:134-148` — the refresh is not atomic relative to searches from other threads:
 ```python
 with self._conn() as conn:
     conn.execute("DELETE FROM mem_fts")
@@ -122,17 +127,17 @@ with self._conn() as conn:
 
 **Evidence — file:line + quoted code:**
 
-`src/tokoboros/gateway/control_plane.py:94-96` — cap is a constructor parameter with default:
+`src/hachi/gateway/control_plane.py:94-96` — cap is a constructor parameter with default:
 ```python
 max_prompt_chars: int = 100_000,
 ```
 
-`src/tokoboros/gateway/control_plane.py:125-126`
+`src/hachi/gateway/control_plane.py:125-126`
 ```python
 self._max_prompt_chars = max(1, max_prompt_chars)
 ```
 
-`src/tokoboros/gateway/control_plane.py:250-253`
+`src/hachi/gateway/control_plane.py:250-253`
 ```python
 if len(prompt) > self._max_prompt_chars:
     raise GatewayProtocolError(
@@ -166,7 +171,7 @@ Also `tests/test_gateway_control_plane.py::test_session_churn_respects_limits_an
 
 **Evidence — file:line + quoted code:**
 
-`src/tokoboros/tools/os_tools.py:379-392` — guarded read_file:
+`src/hachi/tools/os_tools.py:379-392` — guarded read_file:
 ```python
 try:
     target = normalized
@@ -186,7 +191,7 @@ return _raw_read_file(str(normalized))
 
 The `except Exception: pass` swallows **any** error from `target.exists()`, `target.is_file()`, or `target.stat().st_size`. If `stat()` raises (e.g., a special file, a symlink that breaks, or an unusual filesystem entry), the size check is silently skipped and `_raw_read_file` is called with no size guard. A crafted file path that triggers a `stat()` exception bypasses the cap.
 
-By contrast, `guarded_write_file` at `src/tokoboros/tools/os_tools.py:400-410` is NOT bypassable:
+By contrast, `guarded_write_file` at `src/hachi/tools/os_tools.py:400-410` is NOT bypassable:
 ```python
 content_bytes = len(content.encode("utf-8"))
 if content_bytes > gate.max_file_size_bytes:
@@ -194,7 +199,7 @@ if content_bytes > gate.max_file_size_bytes:
 ```
 The write-side check operates on the already-in-memory content string, so no `stat()` call is needed and there is no exception path.
 
-Additionally, `src/tokoboros/core/permissions.py:497-508` — the permission gate's own `check_path` also enforces size, but with an `except OSError: pass` that similarly skips the check on stat failure:
+Additionally, `src/hachi/core/permissions.py:497-508` — the permission gate's own `check_path` also enforces size, but with an `except OSError: pass` that similarly skips the check on stat failure:
 ```python
 if operation in {"read", "write"} and resolved.exists() and resolved.is_file():
     max_bytes = self._fs.max_file_size_mb * 1024 * 1024
@@ -217,7 +222,7 @@ if operation in {"read", "write"} and resolved.exists() and resolved.is_file():
 
 **Evidence — file:line + quoted code:**
 
-`src/tokoboros/core/loop.py:30-34`
+`src/hachi/core/loop.py:30-34`
 ```python
 _RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}
 _RETRYABLE_HINTS = ("overloaded", "rate limit", "timeout", "timed out", "temporarily", "connection")
@@ -225,7 +230,7 @@ _MAX_LLM_RETRIES = 3
 _LLM_RETRY_BASE_DELAY = 1.0
 ```
 
-`src/tokoboros/core/loop.py:347-370` — `_generate_with_retry`:
+`src/hachi/core/loop.py:347-370` — `_generate_with_retry`:
 ```python
 delay = _LLM_RETRY_BASE_DELAY
 for attempt in range(1, _MAX_LLM_RETRIES + 1):
@@ -240,7 +245,7 @@ for attempt in range(1, _MAX_LLM_RETRIES + 1):
         delay *= 2
 ```
 
-`src/tokoboros/core/loop.py:386-419` — `_stream_generate` no-duplicate guard:
+`src/hachi/core/loop.py:386-419` — `_stream_generate` no-duplicate guard:
 ```python
 for attempt in range(1, _MAX_LLM_RETRIES + 1):
     chunks_yielded = 0
@@ -279,7 +284,7 @@ for attempt in range(1, _MAX_LLM_RETRIES + 1):
 
 **Evidence — file:line + quoted code:**
 
-`src/tokoboros/gateway/shared_services.py:79-85`
+`src/hachi/gateway/shared_services.py:79-85`
 ```python
 global _INSTANCE
 if not force_reinit and _INSTANCE is not None:
@@ -294,7 +299,7 @@ The check `_INSTANCE is not None` at line 80 is a **fast-path outside the lock**
 
 Concretely: if session 1 starts with `memory.backend = "chroma"` and session 2 starts with `memory.backend = "fts5_only"`, session 2's `get_or_create` returns the `chroma`-backed singleton and the `fts5_only` config is silently dropped.
 
-`src/tokoboros/gateway/shared_services.py:102-176` — `_init` uses `brain_dir` and `config` exclusively once; the module docstring at line 20-23 documents this explicitly:
+`src/hachi/gateway/shared_services.py:102-176` — `_init` uses `brain_dir` and `config` exclusively once; the module docstring at line 20-23 documents this explicitly:
 ```python
 shared = ProcessSharedServices.get_or_create(config, brain_dir)
 # re-call with same config → returns the same instance (no re-init)
@@ -304,7 +309,7 @@ assert shared is same
 
 The docstring says "same config" but no equality check is performed.
 
-**Skill upsert collisions:** `src/tokoboros/og_engine/engine.py:1062`
+**Skill upsert collisions:** `src/hachi/og_engine/engine.py:1062`
 ```python
 path.write_text(serialize_og_file(og), encoding="utf-8")
 self.load_file(path)  # hot-load so the skill is usable immediately
@@ -326,7 +331,7 @@ self.load_file(path)  # hot-load so the skill is usable immediately
 **Evidence — file:line + quoted code:**
 
 **Tar bomb — CONFIRMED absent (MR-4):**
-`src/tokoboros/core/og_pack.py:402-403`
+`src/hachi/core/og_pack.py:402-403`
 ```python
 with tarfile.open(archive_path, "r:*") as tf:
     tf.extractall(tmp_path)  # noqa: S202
@@ -334,15 +339,15 @@ with tarfile.open(archive_path, "r:*") as tf:
 `tf.extractall(tmp_path)` has no `members` filtering, no `filter='data'`, and no member-count or total-size cap. A tar bomb (recursive nested archive, or simply a huge sparse file within the tarball) will extract without bound into the temporary directory. The `# noqa: S202` comment acknowledges the Bandit warning and explicitly suppresses it. This is the MR-4 finding reproduced at code level.
 
 **Large .og with many nodes — no explicit node count cap:**
-`src/tokoboros/og_engine/engine.py:423-441` — `load_file` iterates `og_file.nodes` with no limit. A `.og` with millions of nodes would load all into `self._nodes` dict. No count cap exists at the parser or engine level. This is an OOM risk for pathologically large skill files.
+`src/hachi/og_engine/engine.py:423-441` — `load_file` iterates `og_file.nodes` with no limit. A `.og` with millions of nodes would load all into `self._nodes` dict. No count cap exists at the parser or engine level. This is an OOM risk for pathologically large skill files.
 
 **Prompt-length cap — confirmed in UC-PERF-004:** 100k characters default; enforced at `control_plane.py:250`.
 
 **File-size cap for read/write — confirmed in UC-PERF-005:** Default 50 MB (sandbox/guided), 500 MB (unrestricted). Read bypass exists via `except Exception: pass`.
 
-**Large sheet (1M rows) — no cap:** The UAT plan confirms no pagination on Sheets reads. Static search for `max_row`, `_MAX_SHEET`, `1M`, `million` across `src/tokoboros` found zero matches. A 1M-row sheet read would attempt to load everything into memory.
+**Large sheet (1M rows) — no cap:** The UAT plan confirms no pagination on Sheets reads. Static search for `max_row`, `_MAX_SHEET`, `1M`, `million` across `src/hachi` found zero matches. A 1M-row sheet read would attempt to load everything into memory.
 
-**Deeply nested JSON in MCP args — no depth limit:** Search for `json.*depth`, `sys.setrecursion`, `recursion.*limit`, `deeply.*nested` across `src/tokoboros` found zero matches. Python's `json.loads` has no depth limit in standard library (no recursive depth guard). A deeply nested JSON MCP arg would only be bounded by CPython's default recursion limit (1000), which raises `RecursionError`, not a clean error.
+**Deeply nested JSON in MCP args — no depth limit:** Search for `json.*depth`, `sys.setrecursion`, `recursion.*limit`, `deeply.*nested` across `src/hachi` found zero matches. Python's `json.loads` has no depth limit in standard library (no recursive depth guard). A deeply nested JSON MCP arg would only be bounded by CPython's default recursion limit (1000), which raises `RecursionError`, not a clean error.
 
 **Finding:** Tar bomb extraction is confirmed unbounded (MR-4). No `.og` node count cap exists. Sheet/doc reads have no pagination or size limit (not in os_tools scope but relevant to the DoS surface). Deeply nested JSON MCP args hit CPython's recursion limit with an unhandled `RecursionError`. The prompt-length cap and file-size caps provide some protection for direct user inputs but do not cover the skill-pack / sheet / MCP-arg vectors.
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tokoboros.core.memory_guard import scan
+from hachi.core.memory_guard import scan
 
 
 def test_memory_guard_allows_normal_notes() -> None:

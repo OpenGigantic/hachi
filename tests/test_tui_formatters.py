@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from rich.console import Console, RenderableType
 
-from tokoboros.tui.formatters import (
+from hachi.tui.formatters import (
     format_events,
     format_integrations,
     format_jobs,
@@ -186,12 +186,12 @@ def test_search_results_render_hits() -> None:
         format_search_results(
             "gateway",
             [
-                {"index": 2, "role": "tokoboros", "snippet": "run the gateway server", "count": 2},
+                {"index": 2, "role": "hachi", "snippet": "run the gateway server", "count": 2},
             ],
         )
     )
     assert "gateway" in out
-    assert "tokoboros" in out
+    assert "hachi" in out
     assert "run the gateway server" in out
     assert "2 match" in out  # total occurrences summarized
 

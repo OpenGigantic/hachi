@@ -1,4 +1,4 @@
-"""Tests for `tokoboros schedule pause` and `tokoboros schedule resume`.
+"""Tests for `hachi schedule pause` and `hachi schedule resume`.
 
 Covers:
   1.  pause — known ID → set_enabled(False), prints "Paused"
@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -32,7 +32,7 @@ def _fake_scheduler(set_enabled_return: bool = True) -> MagicMock:
 class TestSchedulePause:
     def test_pause_known_id_prints_paused(self) -> None:
         sched = _fake_scheduler(True)
-        with patch("tokoboros.cli.commands.schedule._get_scheduler", return_value=sched):
+        with patch("hachi.cli.commands.schedule._get_scheduler", return_value=sched):
             result = runner.invoke(app, ["schedule", "pause", "sched-abc"])
         assert result.exit_code == 0
         assert "Paused" in result.output
@@ -40,7 +40,7 @@ class TestSchedulePause:
 
     def test_pause_json_output(self) -> None:
         sched = _fake_scheduler(True)
-        with patch("tokoboros.cli.commands.schedule._get_scheduler", return_value=sched):
+        with patch("hachi.cli.commands.schedule._get_scheduler", return_value=sched):
             result = runner.invoke(app, ["schedule", "pause", "sched-abc", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -48,14 +48,14 @@ class TestSchedulePause:
 
     def test_pause_not_found_exits_1(self) -> None:
         sched = _fake_scheduler(False)
-        with patch("tokoboros.cli.commands.schedule._get_scheduler", return_value=sched):
+        with patch("hachi.cli.commands.schedule._get_scheduler", return_value=sched):
             result = runner.invoke(app, ["schedule", "pause", "missing"])
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
 
     def test_pause_not_found_json_no_exit(self) -> None:
         sched = _fake_scheduler(False)
-        with patch("tokoboros.cli.commands.schedule._get_scheduler", return_value=sched):
+        with patch("hachi.cli.commands.schedule._get_scheduler", return_value=sched):
             result = runner.invoke(app, ["schedule", "pause", "missing", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -65,7 +65,7 @@ class TestSchedulePause:
 class TestScheduleResume:
     def test_resume_known_id_prints_resumed(self) -> None:
         sched = _fake_scheduler(True)
-        with patch("tokoboros.cli.commands.schedule._get_scheduler", return_value=sched):
+        with patch("hachi.cli.commands.schedule._get_scheduler", return_value=sched):
             result = runner.invoke(app, ["schedule", "resume", "sched-abc"])
         assert result.exit_code == 0
         assert "Resumed" in result.output
@@ -73,7 +73,7 @@ class TestScheduleResume:
 
     def test_resume_json_output(self) -> None:
         sched = _fake_scheduler(True)
-        with patch("tokoboros.cli.commands.schedule._get_scheduler", return_value=sched):
+        with patch("hachi.cli.commands.schedule._get_scheduler", return_value=sched):
             result = runner.invoke(app, ["schedule", "resume", "sched-abc", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -81,14 +81,14 @@ class TestScheduleResume:
 
     def test_resume_not_found_exits_1(self) -> None:
         sched = _fake_scheduler(False)
-        with patch("tokoboros.cli.commands.schedule._get_scheduler", return_value=sched):
+        with patch("hachi.cli.commands.schedule._get_scheduler", return_value=sched):
             result = runner.invoke(app, ["schedule", "resume", "missing"])
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
 
     def test_resume_not_found_json_no_exit(self) -> None:
         sched = _fake_scheduler(False)
-        with patch("tokoboros.cli.commands.schedule._get_scheduler", return_value=sched):
+        with patch("hachi.cli.commands.schedule._get_scheduler", return_value=sched):
             result = runner.invoke(app, ["schedule", "resume", "missing", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)

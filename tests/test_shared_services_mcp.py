@@ -34,7 +34,7 @@ class TestConfigFingerprint:
 
     def test_same_config_returns_cached_instance(self, tmp_path) -> None:
         """Two identical calls → same object, no re-init."""
-        from tokoboros.gateway.shared_services import ProcessSharedServices
+        from hachi.gateway.shared_services import ProcessSharedServices
 
         ProcessSharedServices.clear()
         config = _make_config("chroma")
@@ -53,7 +53,7 @@ class TestConfigFingerprint:
 
     def test_different_backend_returns_distinct_instance(self, tmp_path) -> None:
         """A caller with a different memory.backend must NOT get the chroma instance."""
-        from tokoboros.gateway.shared_services import ProcessSharedServices
+        from hachi.gateway.shared_services import ProcessSharedServices
 
         ProcessSharedServices.clear()
         brain_dir = str(tmp_path)
@@ -84,7 +84,7 @@ class TestConfigFingerprint:
 
     def test_different_graph_flag_returns_distinct_instance(self, tmp_path) -> None:
         """memory.graph=True vs False must also produce distinct instances."""
-        from tokoboros.gateway.shared_services import ProcessSharedServices
+        from hachi.gateway.shared_services import ProcessSharedServices
 
         ProcessSharedServices.clear()
         brain_dir = str(tmp_path)
@@ -108,7 +108,7 @@ class TestConfigFingerprint:
 
     def test_different_brain_dir_returns_distinct_instance(self, tmp_path) -> None:
         """Different brain_dir paths must produce distinct instances."""
-        from tokoboros.gateway.shared_services import ProcessSharedServices
+        from hachi.gateway.shared_services import ProcessSharedServices
 
         ProcessSharedServices.clear()
         config = _make_config("chroma")
@@ -130,7 +130,7 @@ class TestConfigFingerprint:
 
     def test_force_reinit_replaces_cached_instance(self, tmp_path) -> None:
         """force_reinit=True must tear down the existing fingerprint entry."""
-        from tokoboros.gateway.shared_services import ProcessSharedServices
+        from hachi.gateway.shared_services import ProcessSharedServices
 
         ProcessSharedServices.clear()
         config = _make_config("chroma")
@@ -184,7 +184,7 @@ class TestMCPHealthCheck:
 
     def test_dead_mcp_pool_triggers_reinit(self, tmp_path) -> None:
         """If a cached instance has a dead MCP server, get_or_create must re-init."""
-        from tokoboros.gateway.shared_services import ProcessSharedServices
+        from hachi.gateway.shared_services import ProcessSharedServices
 
         ProcessSharedServices.clear()
         config = _make_config("chroma")
@@ -214,7 +214,7 @@ class TestMCPHealthCheck:
 
     def test_healthy_mcp_pool_does_not_reinit(self, tmp_path) -> None:
         """A healthy pool must be returned directly without re-init."""
-        from tokoboros.gateway.shared_services import ProcessSharedServices
+        from hachi.gateway.shared_services import ProcessSharedServices
 
         ProcessSharedServices.clear()
         config = _make_config("chroma")
@@ -231,7 +231,7 @@ class TestMCPHealthCheck:
 
     def test_empty_mcp_pool_is_considered_healthy(self, tmp_path) -> None:
         """An MCPManager with no servers (not yet set up) must not cause re-init loops."""
-        from tokoboros.gateway.shared_services import ProcessSharedServices
+        from hachi.gateway.shared_services import ProcessSharedServices
 
         ProcessSharedServices.clear()
         config = _make_config("chroma")
@@ -250,7 +250,7 @@ class TestMCPHealthCheck:
 
     def test_mcp_pool_healthy_classmethod_behaviour(self) -> None:
         """Unit-test _mcp_pool_healthy directly for all edge cases."""
-        from tokoboros.gateway.shared_services import ProcessSharedServices
+        from hachi.gateway.shared_services import ProcessSharedServices
 
         # Empty servers → healthy
         m_empty = MagicMock()
@@ -295,7 +295,7 @@ class TestMCPBootTimeout:
 
     def test_hanging_start_fails_within_timeout(self) -> None:
         """A server that hangs in start() must return False and not block."""
-        from tokoboros.core.mcp_client import MCPServerConnection
+        from hachi.core.mcp_client import MCPServerConnection
 
         conn = MCPServerConnection("slow-server", "python", boot_timeout_seconds=0.3)
 
@@ -322,7 +322,7 @@ class TestMCPBootTimeout:
 
     def test_start_succeeds_when_inner_returns_quickly(self) -> None:
         """start() passes through the True result from a fast _start_inner."""
-        from tokoboros.core.mcp_client import MCPServerConnection
+        from hachi.core.mcp_client import MCPServerConnection
 
         conn = MCPServerConnection("fast-server", "python", boot_timeout_seconds=5.0)
         conn._start_inner = lambda: True  # type: ignore[method-assign]
@@ -332,7 +332,7 @@ class TestMCPBootTimeout:
 
     def test_start_propagates_false_from_inner(self) -> None:
         """A _start_inner that returns False (e.g. exe missing) propagates to caller."""
-        from tokoboros.core.mcp_client import MCPServerConnection
+        from hachi.core.mcp_client import MCPServerConnection
 
         conn = MCPServerConnection("failing-server", "nope", boot_timeout_seconds=5.0)
         conn._start_inner = lambda: False  # type: ignore[method-assign]
@@ -342,20 +342,20 @@ class TestMCPBootTimeout:
 
     def test_boot_timeout_default_is_positive(self) -> None:
         """Sanity: the class-level default must be a positive float."""
-        from tokoboros.core.mcp_client import MCPServerConnection
+        from hachi.core.mcp_client import MCPServerConnection
 
         assert MCPServerConnection.DEFAULT_BOOT_TIMEOUT_SECONDS > 0
 
     def test_boot_timeout_kwarg_is_stored(self) -> None:
         """Explicitly supplied boot_timeout_seconds is stored on the instance."""
-        from tokoboros.core.mcp_client import MCPServerConnection
+        from hachi.core.mcp_client import MCPServerConnection
 
         conn = MCPServerConnection("test", "python", boot_timeout_seconds=42.0)
         assert conn._boot_timeout_seconds == pytest.approx(42.0)
 
     def test_hanging_boot_kills_subprocess(self, monkeypatch) -> None:
         """When boot times out the subprocess (if spawned) must be killed."""
-        from tokoboros.core.mcp_client import MCPServerConnection
+        from hachi.core.mcp_client import MCPServerConnection
 
         conn = MCPServerConnection("slow-kill", "python", boot_timeout_seconds=0.2)
 

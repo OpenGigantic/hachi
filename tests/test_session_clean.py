@@ -1,4 +1,4 @@
-"""Tests for `tokoboros session clean` CLI command and SessionStore.delete_sessions_before.
+"""Tests for `hachi session clean` CLI command and SessionStore.delete_sessions_before.
 
 Uses patched SessionStore and a real in-memory SQLite store (via tmp_path) to test
 the backend independently.
@@ -13,8 +13,8 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
-from tokoboros.core.session_store import SessionStore
+from hachi.cli.main import app
+from hachi.core.session_store import SessionStore
 
 runner = CliRunner()
 
@@ -61,7 +61,7 @@ def _real_store(tmp_path: Path) -> SessionStore:
 
     db_path = tmp_path / "sessions.db"
     with _patch(
-        "tokoboros.core.session_store.SessionStore._db_path",
+        "hachi.core.session_store.SessionStore._db_path",
         new_callable=lambda: property(lambda self: db_path),
     ):  # noqa: E501
         store = SessionStore()
@@ -137,7 +137,7 @@ def test_delete_sessions_before_returns_zero_when_nothing_matches(tmp_path: Path
 
 def test_session_clean_yes_deletes_old_sessions() -> None:
     store = _mock_store(sessions=[_OLD_SESSION])
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "clean", "--yes"])
     assert result.exit_code == 0
     assert "Deleted" in result.output
@@ -146,7 +146,7 @@ def test_session_clean_yes_deletes_old_sessions() -> None:
 
 def test_session_clean_json_deletes_and_returns_count() -> None:
     store = _mock_store(sessions=[_OLD_SESSION], delete_before_result=1)
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "clean", "--json"])
     assert result.exit_code == 0
     payload = json.loads(result.output)
@@ -157,7 +157,7 @@ def test_session_clean_json_deletes_and_returns_count() -> None:
 
 def test_session_clean_nothing_to_clean() -> None:
     store = _mock_store(sessions=[_NEW_SESSION])
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "clean", "--yes"])
     assert result.exit_code == 0
     assert "Nothing to clean" in result.output
@@ -166,7 +166,7 @@ def test_session_clean_nothing_to_clean() -> None:
 
 def test_session_clean_nothing_json() -> None:
     store = _mock_store(sessions=[_NEW_SESSION])
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "clean", "--json"])
     assert result.exit_code == 0
     payload = json.loads(result.output)
@@ -175,7 +175,7 @@ def test_session_clean_nothing_json() -> None:
 
 def test_session_clean_dry_run_does_not_delete() -> None:
     store = _mock_store(sessions=[_OLD_SESSION])
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "clean", "--dry-run"])
     assert result.exit_code == 0
     assert "Dry run" in result.output or "would delete" in result.output.lower()
@@ -184,7 +184,7 @@ def test_session_clean_dry_run_does_not_delete() -> None:
 
 def test_session_clean_dry_run_json() -> None:
     store = _mock_store(sessions=[_OLD_SESSION])
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "clean", "--dry-run", "--json"])
     assert result.exit_code == 0
     payload = json.loads(result.output)
@@ -197,7 +197,7 @@ def test_session_clean_dry_run_json() -> None:
 def test_session_clean_custom_older_than() -> None:
     """--older-than 365 should still catch the year-2020 fixture session."""
     store = _mock_store(sessions=[_OLD_SESSION])
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "clean", "--older-than", "365", "--yes"])
     assert result.exit_code == 0
     assert "Deleted" in result.output
@@ -206,7 +206,7 @@ def test_session_clean_custom_older_than() -> None:
 def test_session_clean_multiple_sessions() -> None:
     old2 = {**_OLD_SESSION, "id": "old000-0000-0000-0000-000000000099"}
     store = _mock_store(sessions=[_OLD_SESSION, old2], delete_before_result=2)
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "clean", "--json"])
     payload = json.loads(result.output)
     assert payload["deleted"] == 2

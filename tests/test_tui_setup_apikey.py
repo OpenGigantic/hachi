@@ -7,20 +7,19 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
-import tokoboros.tui.app as app_mod
-from tokoboros.core.config_loader import load_effective_config
-from tokoboros.core.onboarding import OnboardingService
-from tokoboros.core.paths import TokoborosPaths
-from tokoboros.tui.app import SetupScreen, SetupWizardController
+import hachi.tui.app as app_mod
+from hachi.core.config_loader import load_effective_config
+from hachi.core.onboarding import OnboardingService
+from hachi.core.paths import HachiPaths
+from hachi.tui.app import SetupScreen, SetupWizardController
 
 
-def _paths(tmp_path: Path) -> TokoborosPaths:
-    return TokoborosPaths(
+def _paths(tmp_path: Path) -> HachiPaths:
+    return HachiPaths(
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
         cache_dir=tmp_path / "cache",
         state_dir=tmp_path / "state",
-        legacy_dir=tmp_path / "legacy",
     )
 
 
@@ -67,7 +66,7 @@ def test_provider_key_status_missing_without_key(tmp_path: Path, monkeypatch) ->
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     # Also ensure the secret store (keyring) returns nothing for this test.
     monkeypatch.setattr(
-        "tokoboros.core.secret_store.create_default_secret_store",
+        "hachi.core.secret_store.create_default_secret_store",
         lambda *_a, **_kw: SimpleNamespace(get=lambda _n: None),
     )
     ctrl = _controller(tmp_path)

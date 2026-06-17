@@ -19,8 +19,8 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
-from tokoboros.core.session_store import SessionStore
+from hachi.cli.main import app
+from hachi.core.session_store import SessionStore
 
 runner = CliRunner()
 
@@ -145,7 +145,7 @@ class TestSessionStatsWithCost:
         sessions = _fake_sessions_with_cost()
         fake_store = MagicMock()
         fake_store.get_recent_sessions.return_value = sessions
-        with patch("tokoboros.core.session_store.SessionStore", return_value=fake_store):
+        with patch("hachi.core.session_store.SessionStore", return_value=fake_store):
             result = runner.invoke(app, ["session", "stats", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -158,7 +158,7 @@ class TestSessionStatsWithCost:
         ]
         fake_store = MagicMock()
         fake_store.get_recent_sessions.return_value = sessions
-        with patch("tokoboros.core.session_store.SessionStore", return_value=fake_store):
+        with patch("hachi.core.session_store.SessionStore", return_value=fake_store):
             result = runner.invoke(app, ["session", "stats", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -175,7 +175,7 @@ class TestSessionShowWithCost:
         fake_store.get_session_messages.return_value = [
             {"role": "user", "content": "hi", "tool_name": None, "timestamp": "2026-06-01T10:00:00"}
         ]
-        with patch("tokoboros.core.session_store.SessionStore", return_value=fake_store):
+        with patch("hachi.core.session_store.SessionStore", return_value=fake_store):
             result = runner.invoke(app, ["session", "show", "aaa111", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -195,7 +195,7 @@ class TestSessionShowWithCost:
                 "timestamp": "2026-06-01T10:00:00",
             }
         ]
-        with patch("tokoboros.core.session_store.SessionStore", return_value=fake_store):
+        with patch("hachi.core.session_store.SessionStore", return_value=fake_store):
             result = runner.invoke(app, ["session", "show", "aaa111"])
         assert result.exit_code == 0
         assert "8,000" in result.output or "8000" in result.output

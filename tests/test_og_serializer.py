@@ -8,14 +8,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tokoboros.og_engine.parser import (
+from hachi.og_engine.parser import (
     OGChangelogEntry,
     OGFile,
     OGFileMeta,
     OGNode,
     parse_og_file,
 )
-from tokoboros.og_engine.serializer import index_entry_for_node, serialize_og_file
+from hachi.og_engine.serializer import index_entry_for_node, serialize_og_file
 
 
 def _sample_file() -> OGFile:
@@ -36,7 +36,7 @@ def _sample_file() -> OGFile:
         meta=OGFileMeta(
             title="Rotate API Keys",
             version="1.2.0",
-            author="tokoboros-agent",
+            author="hachi-agent",
             created="2026-06-01",
             updated="2026-06-05",
             domain="security|ops",

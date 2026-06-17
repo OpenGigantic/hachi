@@ -1,6 +1,11 @@
 # Phase 4 — Next-Gen Memory: the OG Memory Graph
 
-**Engagement:** Tokoboros Principal Engineering & Product Strategy · **Date:** 2026-06-12
+> **Historical document.** Written before the Hachi rename. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
+**Engagement:** Hachi Principal Engineering & Product Strategy · **Date:** 2026-06-12
 **Inputs:** Phase 0 §7 (memory as implemented, all direct reads), Phase 1 TD-3/TD-5/R4/R5, Phase 2
 (format affordances + retrieval v2), Phase 3 §8 (steal Hermes' recall maturity + OpenClaw's
 human-readable ergonomics, expressed as `.og`).

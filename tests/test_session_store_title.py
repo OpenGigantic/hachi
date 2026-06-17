@@ -13,7 +13,7 @@ import sqlite3
 
 import pytest
 
-from tokoboros.core.session_store import SessionStore
+from hachi.core.session_store import SessionStore
 
 
 @pytest.fixture()

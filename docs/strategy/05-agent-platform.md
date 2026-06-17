@@ -1,6 +1,11 @@
 # Phase 5 — The Personal AI OS: Agents, Google Workspace, NL Automation, Marketplace
 
-**Engagement:** Tokoboros Principal Engineering & Product Strategy · **Date:** 2026-06-12
+> **Historical document.** Written before the Hachi rename. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
+**Engagement:** Hachi Principal Engineering & Product Strategy · **Date:** 2026-06-12
 **Inputs:** Phases 0–4. New verified fact this phase: `PermissionGate` enforces filesystem/terminal/MCP
 rules only — **no integration-scope rules exist** despite CLAUDE.md's claim ▶ permissions.py (grep:
 no scope model) → logged as discrepancy **D9**.
@@ -14,7 +19,7 @@ The repo is unusually close to "platform" already — the design below is mostly
 
 | Primitive | Evidence |
 |---|---|
-| All 8 Workspace services implemented (Gmail, Calendar, Tasks, Docs, Drive, Sheets, Meet, Contacts + planning) | ✅ src/tokoboros/integrations/google/* (Phase 0 listing); real OAuth/PKCE + vault storage Ⓐ oauth.py |
+| All 8 Workspace services implemented (Gmail, Calendar, Tasks, Docs, Drive, Sheets, Meet, Contacts + planning) | ✅ src/hachi/integrations/google/* (Phase 0 listing); real OAuth/PKCE + vault storage Ⓐ oauth.py |
 | Lazy "google" tool group; graceful stubs when unconfigured | ✅ orchestrator.py:234, 1366–1369 |
 | Role sub-agents with scoped tools + skill views | ✅ sub_agent.py, delegation_tools rebinding (orchestrator.py:1411–1427) |
 | Parallel delegation | ✅ delegation_tools.py:622 `delegate_parallel_tasks` |
@@ -26,7 +31,7 @@ The repo is unusually close to "platform" already — the design below is mostly
 | Agent-persona packs already sketched | ✅ default_skills/google/{inbox_sentinel,meeting_copilot,morning_briefing,receipt_sweeper,travel_organizer}.og, notion/, slack/ |
 | Marketplace threat model documented from the field | 🌐 Phase 3 (ClawHavoc: 800+ malicious skills) |
 
-**The one-line consequence:** Tokoboros should ship agents as **packs over one kernel**, not as new
+**The one-line consequence:** Hachi should ship agents as **packs over one kernel**, not as new
 runtimes — the delegation/roles machinery already works exactly that way.
 
 ## 2. The OS framing (proposal)
@@ -157,7 +162,7 @@ should be the marketplace's headline.
 
 **Distribution in three stages:**
 - **Stage 1 (now):** git/URL installs via the existing community_packs fetcher Ⓐ + a curated
-  `tokoboros-packs` index repo (Homebrew-tap model). Signing optional but verified when present.
+  `hachi-packs` index repo (Homebrew-tap model). Signing optional but verified when present.
 - **Stage 2:** registry service with publish gates: `lint_og_file` must pass with 0 errors ✅
   engine.py:104–208 · static scan (reuse secret_scanner + memory_guard patterns ✅) · scope manifest
   required · namespace ownership · provenance signature (sigstore keyless or minisign).
@@ -166,7 +171,7 @@ should be the marketplace's headline.
 
 **ClawHavoc → control mapping** (each verified attack vector 🌐 answered):
 
-| ClawHub failure | Tokoboros control |
+| ClawHub failure | Hachi control |
 |---|---|
 | Malicious skills executed code on install | No execution path in pack format (§6) |
 | 20% of registry poisoned, discovered late | Publish-time lint+scan gate; yank; signed index |

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tokoboros.core.permissions import (
+from hachi.core.permissions import (
     InteractivePermissionGate,
     PermissionDecision,
     PermissionGate,

@@ -1,5 +1,10 @@
 # UAT Report: Autonomy, Spend Caps & Background Job Queue
 
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 **Verifier:** UAT agent (read-only) · **Commit:** 036dfd9 · **Date:** 2026-06-14  
 **Most important finding: ADV-013 / UC-SPEND-001 — spend caps default to 0.0 (= UNLIMITED); only the iteration cap (15) protects a runaway session from infinite cost. No wall-clock cap exists in the main loop.**
 
@@ -11,9 +16,9 @@
 **Claim:** Multi-step task hitting `max_iterations=15` stops cleanly with an `[INCOMPLETE]` message and a "continue" prompt.
 
 **Evidence:**
-- `src/tokoboros/core/loop.py:457` — `def run(self, max_iterations: int = 15, ...)`
-- `src/tokoboros/core/loop.py:505` — `while iterations < max_iterations:`
-- `src/tokoboros/core/loop.py:722–733`:
+- `src/hachi/core/loop.py:457` — `def run(self, max_iterations: int = 15, ...)`
+- `src/hachi/core/loop.py:505` — `while iterations < max_iterations:`
+- `src/hachi/core/loop.py:722–733`:
   ```python
   self.on_event(SESSION_ITERATION_LIMIT, {"iterations": max_iterations, "status": "incomplete"})
   self.memory.complete_task(user_input_for_turn, f"Partial: iteration limit reached ({max_iterations})")
@@ -22,7 +27,7 @@
       "could not be fully completed. Reply 'continue' to pick up where it left off."
   )
   ```
-- `src/tokoboros/core/runtime_events.py:25` — `SESSION_ITERATION_LIMIT = "session.iteration.limit"` (distinct event name, distinguishable from `[BUDGET LIMIT REACHED]`)
+- `src/hachi/core/runtime_events.py:25` — `SESSION_ITERATION_LIMIT = "session.iteration.limit"` (distinct event name, distinguishable from `[BUDGET LIMIT REACHED]`)
 
 **Finding:** Claim fully confirmed. The loop fires a named event, records a partial completion in the task ledger, and returns a user-readable `[INCOMPLETE]` message with continuation instructions. The message is textually distinguishable from budget stops (`[BUDGET LIMIT REACHED]`) and cancellations (`[CANCELLED]`). A `TurnContext.max_iterations` override is honoured at `loop.py:498–500`, allowing per-request tuning.
 
@@ -33,7 +38,7 @@
 
 **Claim:** Agent clarifies ambiguous goals rather than executing a confident wrong plan.
 
-**Evidence (structural):** Clarification behaviour is LLM-emergent; no static guard or `clarify()` primitive was found in the source tree. `src/tokoboros/core/loop.py` drives a pure ReAct loop with no forced planning or confirmation step before tool calls. The only structural check is `if not response.tool_calls` at line 616 (agent stopped reasoning) or a `SuspendWorkflow` exception from `core_suspend_workflow`.
+**Evidence (structural):** Clarification behaviour is LLM-emergent; no static guard or `clarify()` primitive was found in the source tree. `src/hachi/core/loop.py` drives a pure ReAct loop with no forced planning or confirmation step before tool calls. The only structural check is `if not response.tool_calls` at line 616 (agent stopped reasoning) or a `SuspendWorkflow` exception from `core_suspend_workflow`.
 
 **Finding:** Cannot be verified offline. The agent's tendency to clarify vs. act depends on the system prompt in the loaded `brain-*.og` file and LLM behaviour. Requires a live session. Flag for human tester: check whether a single ambiguous instruction ("help me get organised for the launch") triggers immediate calendar/email mutations or a clarification turn.
 
@@ -49,7 +54,7 @@
 
 **Evidence:**
 
-Sub-claim 1 & 2 — `src/tokoboros/jobs/queue.py:574–595` (`_recover_running`):
+Sub-claim 1 & 2 — `src/hachi/jobs/queue.py:574–595` (`_recover_running`):
 ```python
 cur = conn.execute(
     "UPDATE jobs SET status = 'pending', started_at = NULL WHERE status = 'running'"
@@ -69,7 +74,7 @@ return recovered
 ```
 RUNNING rows → PENDING; func-only PENDING rows (no `handler_name`) → FAILED immediately. Named/registry jobs (those with a populated `handler_name`) are left as PENDING and re-run by the resident worker after restart. `SQLiteJobQueue.__init__` calls `_recover_running()` unconditionally at line 549.
 
-Sub-claim 3 — `src/tokoboros/jobs/queue.py:368–395` (unexecutable job path):
+Sub-claim 3 — `src/hachi/jobs/queue.py:368–395` (unexecutable job path):
 ```python
 else:
     # No callable and no registered handler — structurally unexecutable.
@@ -80,9 +85,9 @@ else:
     self.queue.update_status(job.job_id, JobStatus.FAILED, result=result)
     return True
 ```
-`src/tokoboros/jobs/queue.py:414–459` (handler raises exception): increments `job.attempt`, schedules backoff (`job.scheduled_for = …`), emits `job.retry` then (after retries exhausted) `job.failed`. The exception path does **not** bubble up — `execute_one()` catches all `Exception` and updates status.
+`src/hachi/jobs/queue.py:414–459` (handler raises exception): increments `job.attempt`, schedules backoff (`job.scheduled_for = …`), emits `job.retry` then (after retries exhausted) `job.failed`. The exception path does **not** bubble up — `execute_one()` catches all `Exception` and updates status.
 
-`src/tokoboros/core/loop.py:829–831` (ResidentWorkerThread): uncaught errors inside `execute_one()` are caught by the thread loop with `logger.exception(…)`, preventing worker thread death.
+`src/hachi/core/loop.py:829–831` (ResidentWorkerThread): uncaught errors inside `execute_one()` are caught by the thread loop with `logger.exception(…)`, preventing worker thread death.
 
 **Finding:** All three sub-claims confirmed statically and via 8/8 passing unit tests (including `test_failed_job_reaches_read_model_projection` which confirms `job.failed` event lands in the `RuntimeReadModelStore`). One nuance: `SQLiteJobQueue._recover_running()` discards func-only **PENDING** (not RUNNING) jobs on restart — the comment in the test plan says "func-only jobs discarded on crash recovery", which is correct, though it applies to previously-pending func-only jobs left behind after a crash, not only those that were RUNNING.
 
@@ -95,7 +100,7 @@ else:
 
 **Evidence:**
 
-Default 0 = unlimited — `src/tokoboros/core/loop.py:232–235`:
+Default 0 = unlimited — `src/hachi/core/loop.py:232–235`:
 ```python
 max_cost_usd: float = 0.0,
 max_tokens: int = 0,
@@ -126,7 +131,7 @@ Both cap-trip return strings:
 
 **Claim:** Cost estimate is accurate vs. provider; cache pricing is sane.
 
-**Evidence — `src/tokoboros/core/cost.py:19–30`:**
+**Evidence — `src/hachi/core/cost.py:19–30`:**
 ```python
 MODEL_PRICING: dict[str, tuple[float, float]] = {
     "claude-opus-4": (15.0, 75.0),
@@ -157,7 +162,7 @@ _CACHE_WRITE_MULTIPLIER = 1.25  # 125% of base input price
 
 Iteration cap — confirmed at `loop.py:505,731`. The 15-iteration ceiling is the only always-on runaway guard.
 
-Wall-clock timeout — **does not exist** in the main `ExecutionLoop.run()`. A full-text search of `src/tokoboros/core/loop.py` finds no `time.time()`, `time.monotonic()`, or deadline comparison in the main loop body. Sub-agent loops have a 120-second wall-clock limit at `src/tokoboros/core/sub_agent.py` (per UAT plan reference `sub_agent.py:54,715–747`), but the primary session loop has none.
+Wall-clock timeout — **does not exist** in the main `ExecutionLoop.run()`. A full-text search of `src/hachi/core/loop.py` finds no `time.time()`, `time.monotonic()`, or deadline comparison in the main loop body. Sub-agent loops have a 120-second wall-clock limit at `src/hachi/core/sub_agent.py` (per UAT plan reference `sub_agent.py:54,715–747`), but the primary session loop has none.
 
 Spend caps — as confirmed in UC-SPEND-001, caps default to 0 (unlimited). Without explicit configuration, spend caps provide zero protection.
 

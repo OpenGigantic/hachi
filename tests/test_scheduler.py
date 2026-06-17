@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tokoboros.jobs.scheduler import (
+from hachi.jobs.scheduler import (
     Schedule,
     ScheduleKind,
     Scheduler,

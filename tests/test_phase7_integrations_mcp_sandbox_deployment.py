@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from tokoboros.core.mcp_client import MCPServerConnection
-from tokoboros.core.sandbox import SandboxExecutor
-from tokoboros.integrations.google.client import GoogleHTTPClient
-from tokoboros.integrations.notion.databases import NotionDatabases
-from tokoboros.integrations.notion.service import NotionService
-from tokoboros.integrations.slack.chat import SlackChat
-from tokoboros.integrations.slack.service import SlackService
-from tokoboros.tools.os_tools import _raw_run_terminal_command
+from hachi.core.mcp_client import MCPServerConnection
+from hachi.core.sandbox import SandboxExecutor
+from hachi.integrations.google.client import GoogleHTTPClient
+from hachi.integrations.notion.databases import NotionDatabases
+from hachi.integrations.notion.service import NotionService
+from hachi.integrations.slack.chat import SlackChat
+from hachi.integrations.slack.service import SlackService
+from hachi.tools.os_tools import _raw_run_terminal_command
 
 
 class _FakeVaultNoTokens:
@@ -23,7 +23,7 @@ class _FakeVaultNoTokens:
 
 def test_slack_service_missing_credentials_fails_closed(monkeypatch) -> None:
     monkeypatch.setattr(
-        "tokoboros.core.credential_vault.CredentialVault",
+        "hachi.core.credential_vault.CredentialVault",
         lambda: _FakeVaultNoTokens(),
     )
 
@@ -34,7 +34,7 @@ def test_slack_service_missing_credentials_fails_closed(monkeypatch) -> None:
 
 def test_notion_service_missing_credentials_fails_closed(monkeypatch) -> None:
     monkeypatch.setattr(
-        "tokoboros.core.credential_vault.CredentialVault",
+        "hachi.core.credential_vault.CredentialVault",
         lambda: _FakeVaultNoTokens(),
     )
 
@@ -57,7 +57,7 @@ def test_google_client_revoked_or_expired_scope_failure_propagates(monkeypatch) 
 
 def test_slack_chat_handles_rate_limit_failure(monkeypatch) -> None:
     monkeypatch.setattr(
-        "tokoboros.core.credential_vault.CredentialVault",
+        "hachi.core.credential_vault.CredentialVault",
         lambda: _FakeVaultNoTokens(),
     )
 
@@ -73,7 +73,7 @@ def test_slack_chat_handles_rate_limit_failure(monkeypatch) -> None:
 
 def test_notion_search_handles_partial_payload_and_5xx(monkeypatch) -> None:
     monkeypatch.setattr(
-        "tokoboros.core.credential_vault.CredentialVault",
+        "hachi.core.credential_vault.CredentialVault",
         lambda: _FakeVaultNoTokens(),
     )
 
@@ -139,7 +139,7 @@ class _StartupFailProcess:
 
 def test_mcp_start_fails_when_executable_missing(monkeypatch) -> None:
     monkeypatch.setattr(
-        "tokoboros.core.mcp_client.subprocess.Popen",
+        "hachi.core.mcp_client.subprocess.Popen",
         lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError()),
     )
 
@@ -149,10 +149,10 @@ def test_mcp_start_fails_when_executable_missing(monkeypatch) -> None:
 
 def test_mcp_start_fails_closed_on_stderr_only_startup_failure(monkeypatch) -> None:
     monkeypatch.setattr(
-        "tokoboros.core.mcp_client.subprocess.Popen",
+        "hachi.core.mcp_client.subprocess.Popen",
         lambda *_a, **_k: _StartupFailProcess(b"fatal startup error"),
     )
-    monkeypatch.setattr("tokoboros.core.mcp_client.time.sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr("hachi.core.mcp_client.time.sleep", lambda *_a, **_k: None)
 
     conn = MCPServerConnection("stderr-only", "fake")
     assert conn.start() is False
@@ -196,7 +196,7 @@ def test_mcp_tools_payload_normalization_deduplicates_and_skips_invalid_entries(
 
 
 def test_sandbox_reports_missing_uv(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("tokoboros.core.sandbox.shutil.which", lambda *_a, **_k: None)
+    monkeypatch.setattr("hachi.core.sandbox.shutil.which", lambda *_a, **_k: None)
     fake_python = tmp_path / "bin" / "python"
     fake_python.parent.mkdir(parents=True, exist_ok=True)
     fake_python.write_text("", encoding="utf-8")
@@ -231,7 +231,7 @@ def test_sandbox_timeout_maps_to_timeout_result(monkeypatch, tmp_path: Path) -> 
     def _raise_timeout(*_a, **_k):
         raise subprocess.TimeoutExpired(cmd=["uv", "run"], timeout=1, output=b"", stderr=b"")
 
-    monkeypatch.setattr("tokoboros.core.sandbox.subprocess.run", _raise_timeout)
+    monkeypatch.setattr("hachi.core.sandbox.subprocess.run", _raise_timeout)
 
     result = executor.execute("while True: pass", timeout=1)
 
@@ -252,7 +252,7 @@ def test_run_terminal_command_handles_quoted_argument_with_spaces(tmp_path: Path
 def test_dockerfile_exposes_gateway_runtime_command() -> None:
     text = Path("Dockerfile").read_text(encoding="utf-8")
 
-    assert 'tokoboros", "gateway"' in text
+    assert 'hachi", "gateway"' in text
     assert '--host", "0.0.0.0"' in text
     assert "--runtime" in text
 
@@ -260,8 +260,8 @@ def test_dockerfile_exposes_gateway_runtime_command() -> None:
 def test_compose_enforces_auth_persistence_and_restart_contract() -> None:
     text = Path("docker-compose.yml").read_text(encoding="utf-8")
 
-    assert "TOKOBOROS_GATEWAY_API_TOKEN_FILE" in text
-    assert "./.tokoboros/state:/root/.local/state/tokoboros" in text
-    assert "./.tokoboros/config:/root/.config/tokoboros" in text
-    assert "TOKOBOROS_GATEWAY_BASE_URL: http://tokoboros:8787" in text
+    assert "HACHI_GATEWAY_API_TOKEN_FILE" in text
+    assert "./.hachi/state:/root/.local/state/hachi" in text
+    assert "./.hachi/config:/root/.config/hachi" in text
+    assert "HACHI_GATEWAY_BASE_URL: http://hachi:8787" in text
     assert text.count("restart: unless-stopped") >= 2

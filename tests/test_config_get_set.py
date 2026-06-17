@@ -1,4 +1,4 @@
-"""Tests for `tokoboros config-get` and `tokoboros config-set`.
+"""Tests for `hachi config-get` and `hachi config-set`.
 
 All tests mock load_effective_config / write_global_config so no real
 settings file is touched.
@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -31,17 +31,17 @@ def _fake_cfg():
 def _patch_cfg(cfg=None):
     if cfg is None:
         cfg = _fake_cfg()
-    return patch("tokoboros.cli.main.load_effective_config", return_value=cfg)
+    return patch("hachi.cli.main.load_effective_config", return_value=cfg)
 
 
 def _patch_write():
-    return patch("tokoboros.cli.main.write_global_config")
+    return patch("hachi.cli.main.write_global_config")
 
 
 def _patch_paths():
     fake_paths = MagicMock()
-    fake_paths.workspace_dir = "/home/user/.tokoboros/workspace"
-    return patch("tokoboros.cli.main.get_tokoboros_paths", return_value=fake_paths)
+    fake_paths.workspace_dir = "/home/user/.hachi/workspace"
+    return patch("hachi.cli.main.get_hachi_paths", return_value=fake_paths)
 
 
 # ─── config-get ──────────────────────────────────────────────────────────────

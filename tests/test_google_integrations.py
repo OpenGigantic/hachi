@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.integrations.google.calendar import CalendarService
-from tokoboros.integrations.google.gmail import GmailService
+from hachi.core.loop import ToolRegistry
+from hachi.integrations.google.calendar import CalendarService
+from hachi.integrations.google.gmail import GmailService
 
 # ---------------------------------------------------------------------------
 # Fake HTTP client (no OAuth, no network)

@@ -1,5 +1,10 @@
 # UAT Report — Memory Reliability, Privacy, Poisoning, Exfiltration, Cross-Account Isolation
 
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 > **Commit under test:** `036dfd9` · **Date:** 2026-06-14 · **Agent:** UAT-VERIFY (read-only)
 > **Top finding:** UC-MEM-001 / UC-MEM-006: the `core_save_memory` tool has a **daemon-thread fallback** when no job queue is present (`memory_tools.py:119-120`) — the tool returns "queued" even though nothing was durably queued and any write failure inside that thread is completely silent. The `sync_turn` path in `memory.py` is correctly hardened (no thread spawned, loud log), but the LLM-callable tool path is **not**. This is the P0 trust-killer flagged in MR-7.
 
@@ -122,7 +127,7 @@ This is a High severity gap for the "privacy-conscious user who wants a fact era
 - `core/session_store.py:50` — `sqlite3.connect(db_path)`, no encryption.
 - `docs/strategy/09-execution-plan.md:498` — Decision D-3: "Memory-file at-rest encryption default … Off; opt-in flag." The opt-in is unimplemented (the Fernet path in `secret_store.py` is for credentials only, not the memory vault).
 - `docs/strategy/04-memory-redesign.md:239` — "Open question for the user: default off or on?" — explicitly unresolved.
-- The `secrets_fallback_file` (`state_dir/secrets.enc`) uses Fernet encryption (`secret_store.py:179-180`) but this only covers API keys/OAuth tokens stored via `tokoboros secrets`, **not** the Chroma vault or session transcripts.
+- The `secrets_fallback_file` (`state_dir/secrets.enc`) uses Fernet encryption (`secret_store.py:179-180`) but this only covers API keys/OAuth tokens stored via `hachi secrets`, **not** the Chroma vault or session transcripts.
 - No marketing/UI claim of encryption was found in the source tree (a positive finding). The product would be incorrect if it claimed this.
 
 **Finding:** Plaintext at rest is CONFIRMED as the current behavior. The product design docs acknowledge this as a decision (D-3). No UI/product claim of encryption was found. The at-rest exposure surface is: Chroma SQLite files, memory_index.db, sessions.db — all under the OS-native data/state directory (readable by any process running as the same OS user).
@@ -229,16 +234,16 @@ This is a High severity gap for the "privacy-conscious user who wants a fact era
 
 **Evidence:**
 
-- `memory_vault.py:55-95` — `MemoryVault.__init__` uses a single `brain_dir` defaulting to `get_tokoboros_paths().data_dir` (`paths.py:117`).
-- `paths.py:113-121` — `get_tokoboros_paths()` uses `PlatformDirs(appname="tokoboros", appauthor=False)` — this resolves to a **single OS-user-scoped directory** (e.g., `%LOCALAPPDATA%\tokoboros\tokoboros` on Windows).
+- `memory_vault.py:55-95` — `MemoryVault.__init__` uses a single `brain_dir` defaulting to `get_hachi_paths().data_dir` (`paths.py:117`).
+- `paths.py:113-121` — `get_hachi_paths()` uses `PlatformDirs(appname="hachi", appauthor=False)` — this resolves to a **single OS-user-scoped directory** (e.g., `%LOCALAPPDATA%\hachi\hachi` on Windows).
 - There is **no account-scoping at any level**: no `account_id`, no `google_id`, no workspace namespace in the Chroma collection names (`core_memory`, `user_profile`, `agent_profile`, `delegation_log`), no per-account subdirectory.
 - ChromaDB `PersistentClient` opens the same `chroma_vault/` path regardless of which Google account the OAuth token belongs to.
 - Similarly `session_store.py:44` — single SQLite at `state_dir/sessions.db` — no per-account table or row scoping.
 - If the user switches Google accounts via re-auth (account A → account B), all memory facts written as account A are immediately visible to account B's sessions. There is no migration, no isolation, no warning.
-- This is a **single-user product** — the design explicitly targets one human/one machine. The Tokoboros strategy docs do not describe a multi-account architecture. The cross-account bleed risk is real if the user legitimately manages multiple Google accounts through the same Tokoboros installation.
+- This is a **single-user product** — the design explicitly targets one human/one machine. The Hachi strategy docs do not describe a multi-account architecture. The cross-account bleed risk is real if the user legitimately manages multiple Google accounts through the same Hachi installation.
 - The test plan account B isolation scenario (`§2.2`) cannot pass because the namespace concept does not exist.
 
-**Finding:** Memory is scoped to the OS user account (single-user), not to the Google account. Any Google account connected to Tokoboros on the same OS user shares all memory. This is by design for a single-user product but is a security disclosure item: connecting a work Google account and a personal Google account through the same Tokoboros installation results in full memory cross-contamination. The product must document this explicitly.
+**Finding:** Memory is scoped to the OS user account (single-user), not to the Google account. Any Google account connected to Hachi on the same OS user shares all memory. This is by design for a single-user product but is a security disclosure item: connecting a work Google account and a personal Google account through the same Hachi installation results in full memory cross-contamination. The product must document this explicitly.
 
 **Severity:** High (disclosure required; mismatch with user mental model of account-specific memory)
 

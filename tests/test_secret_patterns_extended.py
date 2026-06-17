@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from tokoboros.core.secret_scanner import (
+from hachi.core.secret_scanner import (
     REDACTION_PLACEHOLDER,
     contains_secret,
     find_secret_kinds,
@@ -51,7 +51,7 @@ def test_redacted_inside_surrounding_text() -> None:
     "benign",
     [
         "Run npm install to add the dependency.",
-        "The GitHub repo is at github.com/OpenGigantic/tokoboros.",
+        "The GitHub repo is at github.com/OpenGigantic/hachi.",
         "Decode the base64 string before parsing.",
         "Use sk_test mode only after configuring the webhook.",  # 'sk_test' w/o full key
     ],

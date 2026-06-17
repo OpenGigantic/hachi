@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tokoboros.gateway.tool_registration import ToolRegistrar, ToolSpec
+from hachi.gateway.tool_registration import ToolRegistrar, ToolSpec
 
 
 def _noop(d) -> str:

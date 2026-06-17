@@ -1,4 +1,4 @@
-"""Tests for `tokoboros google-auth`.
+"""Tests for `hachi google-auth`.
 
 All OAuth and hub calls are mocked — no browser windows or API calls.
 """
@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -42,9 +42,9 @@ def _patches(*, oauth=None, hub=None):
     if hub is None:
         hub = _fake_hub()
     return (
-        patch("tokoboros.core.oauth.OAuthManager", return_value=oauth),
-        patch("tokoboros.integrations.google.GoogleIntegrationHub", return_value=hub),
-        patch("tokoboros.cli.main.create_default_secret_store", return_value=MagicMock()),
+        patch("hachi.core.oauth.OAuthManager", return_value=oauth),
+        patch("hachi.integrations.google.GoogleIntegrationHub", return_value=hub),
+        patch("hachi.cli.main.create_default_secret_store", return_value=MagicMock()),
     )
 
 

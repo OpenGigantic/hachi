@@ -9,7 +9,7 @@ Covers:
 
 from __future__ import annotations
 
-from tokoboros.core.session_titler import (
+from hachi.core.session_titler import (
     MAX_TITLE_CHARS,
     UNTITLED,
     _clean_title,

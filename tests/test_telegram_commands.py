@@ -1,4 +1,4 @@
-"""Tests for Telegram /command → Tokoboros skill auto-registration."""
+"""Tests for Telegram /command → Hachi skill auto-registration."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
-from tokoboros.channels.base import InboundMessage
-from tokoboros.channels.telegram import TelegramAdapter
-from tokoboros.channels.telegram_commands import (
+from hachi.channels.base import InboundMessage
+from hachi.channels.telegram import TelegramAdapter
+from hachi.channels.telegram_commands import (
     _BUILTIN_COMMANDS,
     TelegramCommandRegistry,
     _slugify,

@@ -11,21 +11,20 @@ from __future__ import annotations
 from pathlib import Path
 from unittest import mock
 
-from tokoboros.core.onboarding import OnboardingService
-from tokoboros.core.paths import TokoborosPaths
+from hachi.core.onboarding import OnboardingService
+from hachi.core.paths import HachiPaths
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
-def _paths(tmp_path: Path) -> TokoborosPaths:
-    return TokoborosPaths(
+def _paths(tmp_path: Path) -> HachiPaths:
+    return HachiPaths(
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
         cache_dir=tmp_path / "cache",
         state_dir=tmp_path / "state",
-        legacy_dir=tmp_path / "legacy",
     )
 
 
@@ -255,7 +254,7 @@ def test_interactive_setup_accepts_typed_key(tmp_path: Path) -> None:
     import os
     from unittest.mock import MagicMock, patch
 
-    from tokoboros.cli.main import _interactive_first_run_setup
+    from hachi.cli.main import _interactive_first_run_setup
 
     env_name = "ANTHROPIC_API_KEY"
     key_value = "sk-ant-test-key-abc"
@@ -270,9 +269,9 @@ def test_interactive_setup_accepts_typed_key(tmp_path: Path) -> None:
         apply_setup=MagicMock(),
     )
 
-    with patch("tokoboros.cli.main.OnboardingService", return_value=mock_svc):
-        with patch("tokoboros.cli.main.get_tokoboros_paths", return_value=mock_paths):
-            with patch("tokoboros.cli.main.Prompt.ask", side_effect=["1", key_value]):
+    with patch("hachi.cli.main.OnboardingService", return_value=mock_svc):
+        with patch("hachi.cli.main.get_hachi_paths", return_value=mock_paths):
+            with patch("hachi.cli.main.Prompt.ask", side_effect=["1", key_value]):
                 result = _interactive_first_run_setup(env_name, "anthropic")
 
     assert result is True
@@ -288,14 +287,14 @@ def test_interactive_setup_skip_returns_false() -> None:
     """User picks skip — returns False without setting anything."""
     from unittest.mock import MagicMock, patch
 
-    from tokoboros.cli.main import _interactive_first_run_setup
+    from hachi.cli.main import _interactive_first_run_setup
 
     mock_svc = MagicMock(
         detect_environment=MagicMock(return_value={"ollama_cli": False}),
     )
-    with patch("tokoboros.cli.main.OnboardingService", return_value=mock_svc):
+    with patch("hachi.cli.main.OnboardingService", return_value=mock_svc):
         # 1=type key, 2=gemini, 3=skip (no ollama)
-        with patch("tokoboros.cli.main.Prompt.ask", return_value="3"):
+        with patch("hachi.cli.main.Prompt.ask", return_value="3"):
             result = _interactive_first_run_setup("ANTHROPIC_API_KEY", "anthropic")
     assert result is False
 
@@ -304,7 +303,7 @@ def test_interactive_setup_switches_to_ollama() -> None:
     """User picks Ollama (detected), setup re-applied without a key."""
     from unittest.mock import MagicMock, patch
 
-    from tokoboros.cli.main import _interactive_first_run_setup
+    from hachi.cli.main import _interactive_first_run_setup
 
     mock_svc = MagicMock(
         detect_environment=MagicMock(return_value={"ollama_cli": True}),
@@ -318,9 +317,9 @@ def test_interactive_setup_switches_to_ollama() -> None:
         build_tier_plan=MagicMock(return_value=MagicMock(answers={})),
         apply_setup=MagicMock(),
     )
-    with patch("tokoboros.cli.main.OnboardingService", return_value=mock_svc):
+    with patch("hachi.cli.main.OnboardingService", return_value=mock_svc):
         # 1=type key, 2=ollama, 3=gemini, 4=skip
-        with patch("tokoboros.cli.main.Prompt.ask", return_value="2"):
+        with patch("hachi.cli.main.Prompt.ask", return_value="2"):
             result = _interactive_first_run_setup("ANTHROPIC_API_KEY", "anthropic")
     assert result is True
     mock_svc.apply_setup.assert_called_once()
@@ -330,11 +329,11 @@ def test_interactive_setup_returns_false_on_eof() -> None:
     """EOFError (non-interactive pipe, CI) is gracefully handled."""
     from unittest.mock import MagicMock, patch
 
-    from tokoboros.cli.main import _interactive_first_run_setup
+    from hachi.cli.main import _interactive_first_run_setup
 
     mock_svc = MagicMock(detect_environment=MagicMock(return_value={"ollama_cli": False}))
-    with patch("tokoboros.cli.main.OnboardingService", return_value=mock_svc):
-        with patch("tokoboros.cli.main.Prompt.ask", side_effect=EOFError):
+    with patch("hachi.cli.main.OnboardingService", return_value=mock_svc):
+        with patch("hachi.cli.main.Prompt.ask", side_effect=EOFError):
             result = _interactive_first_run_setup("ANTHROPIC_API_KEY", "anthropic")
     assert result is False
 
@@ -347,14 +346,14 @@ def test_interactive_setup_returns_false_on_eof() -> None:
 def test_pre_flight_check_passes_when_key_present() -> None:
     from unittest.mock import MagicMock, patch
 
-    from tokoboros.cli.main import _pre_flight_check
+    from hachi.cli.main import _pre_flight_check
 
     provider = MagicMock(kind="anthropic", api_key_env="ANTHROPIC_API_KEY")
     mock_svc = MagicMock(validate_provider=MagicMock(return_value=(True, "OK")))
 
     mock_cfg = MagicMock(provider=provider)
-    with patch("tokoboros.cli.main.load_effective_config", return_value=mock_cfg):
-        with patch("tokoboros.cli.main.OnboardingService", return_value=mock_svc):
+    with patch("hachi.cli.main.load_effective_config", return_value=mock_cfg):
+        with patch("hachi.cli.main.OnboardingService", return_value=mock_svc):
             with patch("sys.stdin") as mock_stdin:
                 mock_stdin.isatty.return_value = False
                 result = _pre_flight_check()
@@ -365,17 +364,17 @@ def test_pre_flight_check_fails_non_interactive_no_prompt() -> None:
     """Non-TTY: _pre_flight_check must not call _interactive_first_run_setup."""
     from unittest.mock import MagicMock, patch
 
-    from tokoboros.cli.main import _pre_flight_check
+    from hachi.cli.main import _pre_flight_check
 
     provider = MagicMock(kind="anthropic", api_key_env="ANTHROPIC_API_KEY")
     mock_svc = MagicMock(validate_provider=MagicMock(return_value=(False, "Key missing")))
     mock_cfg = MagicMock(provider=provider)
 
-    with patch("tokoboros.cli.main.load_effective_config", return_value=mock_cfg):
-        with patch("tokoboros.cli.main.OnboardingService", return_value=mock_svc):
+    with patch("hachi.cli.main.load_effective_config", return_value=mock_cfg):
+        with patch("hachi.cli.main.OnboardingService", return_value=mock_svc):
             with patch("sys.stdin") as mock_stdin:
                 mock_stdin.isatty.return_value = False
-                with patch("tokoboros.cli.main._interactive_first_run_setup") as mock_interactive:
+                with patch("hachi.cli.main._interactive_first_run_setup") as mock_interactive:
                     result = _pre_flight_check()
     assert result is False
     mock_interactive.assert_not_called()

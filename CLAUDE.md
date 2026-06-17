@@ -22,23 +22,23 @@ uv run ruff format src tests
 uv run mypy src --ignore-missing-imports
 
 # Run the app (Textual TUI)
-uv run tokoboros run
+uv run hachi run
 
 # Run legacy Rich REPL
-uv run tokoboros run --repl
+uv run hachi run --repl
 
 # Initial setup wizard
-uv run tokoboros setup --tier lightning
+uv run hachi setup --tier lightning
 
 # Diagnostics and security audit
-uv run tokoboros doctor
-uv run tokoboros security-audit --json --fail-on-high
+uv run hachi doctor
+uv run hachi security-audit --json --fail-on-high
 
 # Start standalone gateway server
-uv run tokoboros gateway --host 127.0.0.1 --port 8787 --runtime
+uv run hachi gateway --host 127.0.0.1 --port 8787 --runtime
 
 # Export OpenAPI schema (required to keep frontend contract current)
-uv run tokoboros gateway-openapi --output openapi/tokoboros-openapi.json
+uv run hachi gateway-openapi --output openapi/hachi-openapi.json
 ```
 
 **Windows**: If editable-install lock breaks pytest, use:
@@ -50,22 +50,22 @@ Before finishing any change, run lint + type-check + tests.
 
 ## Architecture
 
-Tokoboros is an autonomous agent engine. The core loop is:
+Hachi is an autonomous agent engine. The core loop is:
 **CLI → Orchestrator → ExecutionLoop → ToolRegistry → LLM (Anthropic)**
 
 ### Key entry points
 
 | Path | Role |
 |------|------|
-| `src/tokoboros/cli/main.py` | Typer CLI + in-process gateway runtime |
-| `src/tokoboros/gateway/orchestrator.py` | Session boot: wires workspace, tools, LLM, memory |
-| `src/tokoboros/core/loop.py` | ReAct execution loop — drives tool calling |
-| `src/tokoboros/core/turn_context.py` | Frozen per-turn snapshot (no shared mutable state) |
-| `src/tokoboros/og_engine/` | ObjectGraph (`.og`) parser and skill indexer |
-| `src/tokoboros/tools/` | All LLM-callable tool implementations |
-| `src/tokoboros/tui/app.py` | Textual UI |
-| `src/tokoboros/gateway/fastapi_app.py` | FastAPI control plane (REST + SSE) |
-| `src/tokoboros/core/runtime_events.py` | Typed event contract consumed by TUI and gateway |
+| `src/hachi/cli/main.py` | Typer CLI + in-process gateway runtime |
+| `src/hachi/gateway/orchestrator.py` | Session boot: wires workspace, tools, LLM, memory |
+| `src/hachi/core/loop.py` | ReAct execution loop — drives tool calling |
+| `src/hachi/core/turn_context.py` | Frozen per-turn snapshot (no shared mutable state) |
+| `src/hachi/og_engine/` | ObjectGraph (`.og`) parser and skill indexer |
+| `src/hachi/tools/` | All LLM-callable tool implementations |
+| `src/hachi/tui/app.py` | Textual UI |
+| `src/hachi/gateway/fastapi_app.py` | FastAPI control plane (REST + SSE) |
+| `src/hachi/core/runtime_events.py` | Typed event contract consumed by TUI and gateway |
 
 ### ObjectGraph (`.og`) format
 
@@ -101,10 +101,10 @@ All significant lifecycle events are typed in `runtime_events.py`. The TUI and g
 ### Frontend contract
 
 The `frontend/` app (TanStack Start + React) generates TypeScript API types from
-`openapi/tokoboros-openapi.json`. After any gateway route change, run:
+`openapi/hachi-openapi.json`. After any gateway route change, run:
 
 ```bash
-uv run tokoboros gateway-openapi --output openapi/tokoboros-openapi.json
+uv run hachi gateway-openapi --output openapi/hachi-openapi.json
 npm run --prefix frontend generate:api
 ```
 
