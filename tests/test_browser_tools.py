@@ -12,9 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from tokoboros.core.browser import BrowserController, BrowserUnavailable
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.tools.browser_tools import (
+from hachi.core.browser import BrowserController, BrowserUnavailable
+from hachi.core.loop import ToolRegistry
+from hachi.tools.browser_tools import (
     _make_browse_web,
     _make_browser_act,
     register_browser_tools,
@@ -74,7 +74,7 @@ def test_browsing_blocked_in_sandbox_tier():
 
 
 def test_browsing_allowed_in_guided_tier(monkeypatch):
-    monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "true")  # skip DNS in net_guard
+    monkeypatch.setenv("HACHI_REST_ALLOW_PRIVATE", "true")  # skip DNS in net_guard
     ctrl = FakeController()
     browse = _make_browse_web(ctrl, _gate("guided"))
     out = browse("https://example.com/page")
@@ -113,7 +113,7 @@ def test_browse_rejects_private_ip():
 
 
 def test_browse_formats_title_url_and_text(monkeypatch):
-    monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "true")
+    monkeypatch.setenv("HACHI_REST_ALLOW_PRIVATE", "true")
     ctrl = FakeController()
     browse = _make_browse_web(ctrl, _gate("guided"))
     out = browse("https://example.com")
@@ -133,7 +133,7 @@ def test_browser_act_reports_state(monkeypatch):
 
 
 def test_browse_surfaces_browser_unavailable(monkeypatch):
-    monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "true")
+    monkeypatch.setenv("HACHI_REST_ALLOW_PRIVATE", "true")
     ctrl = FakeController(raise_unavailable=True)
     browse = _make_browse_web(ctrl, _gate("guided"))
     out = browse("https://example.com")

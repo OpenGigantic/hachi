@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from tokoboros.gateway.control_plane import GatewayControlPlane
-from tokoboros.gateway.fastapi_app import create_gateway_app
+from hachi.gateway.control_plane import GatewayControlPlane
+from hachi.gateway.fastapi_app import create_gateway_app
 
 
 def _control_plane() -> GatewayControlPlane:
@@ -49,7 +49,7 @@ def test_openai_chat_requires_user_content() -> None:
 
 
 def test_openai_chat_is_rate_limited(monkeypatch) -> None:
-    monkeypatch.setenv("TOKOBOROS_OPENAI_RATE_LIMIT", "1")
+    monkeypatch.setenv("HACHI_OPENAI_RATE_LIMIT", "1")
     app = create_gateway_app(_control_plane())
     body = {"messages": [{"role": "user", "content": "hi"}]}
     with TestClient(app) as client:
@@ -81,7 +81,7 @@ def test_channel_inbound_routes_to_agent() -> None:
 
 
 def test_channel_inbound_is_rate_limited(monkeypatch) -> None:
-    monkeypatch.setenv("TOKOBOROS_CHANNEL_RATE_LIMIT", "2")
+    monkeypatch.setenv("HACHI_CHANNEL_RATE_LIMIT", "2")
     app = create_gateway_app(_control_plane())
     with TestClient(app) as client:
         body = {"sender_id": "U1", "text": "hi"}
@@ -91,7 +91,7 @@ def test_channel_inbound_is_rate_limited(monkeypatch) -> None:
 
 
 def test_channel_inbound_allowlist_blocks_unknown_sender(monkeypatch) -> None:
-    monkeypatch.setenv("TOKOBOROS_CHANNEL_ALLOWLIST", "slack:U1")
+    monkeypatch.setenv("HACHI_CHANNEL_ALLOWLIST", "slack:U1")
     app = create_gateway_app(_control_plane())
     with TestClient(app) as client:
         allowed = client.post("/channels/slack/inbound", json={"sender_id": "U1", "text": "hi"})
@@ -126,7 +126,7 @@ def test_get_or_create_session_returns_stable_id() -> None:
 
 def _streaming_control_plane() -> GatewayControlPlane:
     """A control plane that echoes prompts and exposes an event store."""
-    from tokoboros.gateway.control_plane import GatewayEvent
+    from hachi.gateway.control_plane import GatewayEvent
 
     store: list[GatewayEvent] = []
 

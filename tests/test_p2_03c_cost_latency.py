@@ -21,10 +21,10 @@ def _loaded_engine():
     """Return a SkillEngine loaded with the shipped default skills."""
     from pathlib import Path
 
-    from tokoboros.og_engine.engine import SkillEngine
+    from hachi.og_engine.engine import SkillEngine
 
     engine = SkillEngine()
-    skills_dir = Path(__file__).parent.parent / "src" / "tokoboros" / "default_skills"
+    skills_dir = Path(__file__).parent.parent / "src" / "hachi" / "default_skills"
     if skills_dir.exists():
         engine.load_directory(skills_dir)
     return engine

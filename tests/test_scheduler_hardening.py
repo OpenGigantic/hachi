@@ -17,8 +17,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tokoboros.core.file_lock import file_lock
-from tokoboros.jobs.scheduler import (
+from hachi.core.file_lock import file_lock
+from hachi.jobs.scheduler import (
     Schedule,
     ScheduleKind,
     Scheduler,
@@ -98,7 +98,7 @@ import time
 sys.path.insert(0, sys.argv[1])
 from pathlib import Path
 
-from tokoboros.core.file_lock import file_lock
+from hachi.core.file_lock import file_lock
 
 target = Path(sys.argv[2])
 for _ in range(int(sys.argv[3])):
@@ -209,7 +209,7 @@ class TestMissedRunLogging:
         # Tick 5 hours later — many occurrences missed.
         import logging
 
-        with caplog.at_level(logging.INFO, logger="tokoboros.jobs.scheduler"):
+        with caplog.at_level(logging.INFO, logger="hachi.jobs.scheduler"):
             fired = sched.tick(lambda _: None, now=t0 + timedelta(hours=5))
 
         assert len(fired) == 1, "Should fire exactly once (collapse-to-one)"
@@ -232,7 +232,7 @@ class TestMissedRunLogging:
         import logging
 
         # Tick 3 hours after first expected fire.
-        with caplog.at_level(logging.INFO, logger="tokoboros.jobs.scheduler"):
+        with caplog.at_level(logging.INFO, logger="hachi.jobs.scheduler"):
             fired = sched.tick(lambda _: None, now=created + timedelta(hours=4))
 
         assert len(fired) == 1
@@ -346,7 +346,7 @@ class TestDeliverResult:
             def raise_for_status(self) -> None:
                 pass
 
-        with patch("tokoboros.jobs.scheduler.httpx.post") as mock_post:
+        with patch("hachi.jobs.scheduler.httpx.post") as mock_post:
             mock_post.return_value = FakeResponse()
             deliver_result(schedule, "The agent did the thing.")
             mock_post.assert_called_once()
@@ -363,7 +363,7 @@ class TestDeliverResult:
 
         secret_result = "Here is your API key: sk-ant-api03-ThisIsAFakeSecretKey1234567890abcdef"
 
-        with patch("tokoboros.jobs.scheduler.httpx.post") as mock_post:
+        with patch("hachi.jobs.scheduler.httpx.post") as mock_post:
             mock_post.return_value = MagicMock(status_code=200, raise_for_status=lambda: None)
             deliver_result(schedule, secret_result)
             payload = mock_post.call_args.kwargs["json"]
@@ -376,14 +376,14 @@ class TestDeliverResult:
     def test_chat_mode_is_noop(self) -> None:
         """deliver_to='chat' does not make any HTTP call."""
         schedule = self._make_schedule(deliver_to="chat")
-        with patch("tokoboros.jobs.scheduler.httpx.post") as mock_post:
+        with patch("hachi.jobs.scheduler.httpx.post") as mock_post:
             deliver_result(schedule, "result text")
             mock_post.assert_not_called()
 
     def test_log_mode_does_not_post(self) -> None:
         """deliver_to='log' logs the result without an HTTP call."""
         schedule = self._make_schedule(deliver_to="log", webhook_url=None)
-        with patch("tokoboros.jobs.scheduler.httpx.post") as mock_post:
+        with patch("hachi.jobs.scheduler.httpx.post") as mock_post:
             deliver_result(schedule, "logged result")
             mock_post.assert_not_called()
 
@@ -392,7 +392,7 @@ class TestDeliverResult:
         import logging
 
         schedule = self._make_schedule(webhook_url=None)
-        with caplog.at_level(logging.WARNING, logger="tokoboros.jobs.scheduler"):
+        with caplog.at_level(logging.WARNING, logger="hachi.jobs.scheduler"):
             deliver_result(schedule, "some result")
         warnings = [r for r in caplog.records if "webhook_url" in r.message]
         assert warnings, "Expected a warning about missing webhook_url"
@@ -400,7 +400,7 @@ class TestDeliverResult:
     def test_webhook_http_error_logged_not_raised(self) -> None:
         """An HTTP error from the webhook does not propagate — it is logged."""
         schedule = self._make_schedule()
-        with patch("tokoboros.jobs.scheduler.httpx.post") as mock_post:
+        with patch("hachi.jobs.scheduler.httpx.post") as mock_post:
             mock_post.side_effect = Exception("Connection refused")
             # Must not raise.
             deliver_result(schedule, "result")
@@ -408,12 +408,12 @@ class TestDeliverResult:
     def test_allow_outbound_secrets_env_disables_redaction(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Setting TOKOBOROS_ALLOW_OUTBOUND_SECRETS=1 bypasses redaction."""
-        monkeypatch.setenv("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", "1")
+        """Setting HACHI_ALLOW_OUTBOUND_SECRETS=1 bypasses redaction."""
+        monkeypatch.setenv("HACHI_ALLOW_OUTBOUND_SECRETS", "1")
         schedule = self._make_schedule()
         secret_result = "key: sk-ant-api03-FakeSecret1234567890abcdefghij"
 
-        with patch("tokoboros.jobs.scheduler.httpx.post") as mock_post:
+        with patch("hachi.jobs.scheduler.httpx.post") as mock_post:
             mock_post.return_value = MagicMock(status_code=200, raise_for_status=lambda: None)
             deliver_result(schedule, secret_result)
             payload = mock_post.call_args.kwargs["json"]

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tokoboros.core.checkpoints import CheckpointManager
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.tools.os_tools import register_os_tools
+from hachi.core.checkpoints import CheckpointManager
+from hachi.core.loop import ToolRegistry
+from hachi.tools.os_tools import register_os_tools
 
 
 def _mgr(tmp_path: Path) -> CheckpointManager:

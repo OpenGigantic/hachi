@@ -1,5 +1,10 @@
 # UAT Verification: Calendar, Tasks, Contacts, Planning
 
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 **Test execution date:** 2026-06-14  
 **Build commit:** 036dfd9 (Enhance Gmail Integration and TUI Components)  
 **Tester mode:** Code-grounded static verification (no live API)  

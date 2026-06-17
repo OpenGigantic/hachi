@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from tokoboros.core import onboarding
-from tokoboros.core.llm import OpenAICompatibleClient, create_llm_client
+from hachi.core import onboarding
+from hachi.core.llm import OpenAICompatibleClient, create_llm_client
 
 
 @pytest.mark.parametrize(

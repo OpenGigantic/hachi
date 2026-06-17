@@ -8,13 +8,13 @@ Covers:
 
 from __future__ import annotations
 
-from tokoboros.core.memory_provider import (
+from hachi.core.memory_provider import (
     ChromaMemoryProvider,
     InMemoryProvider,
     MemoryProvider,
     resolve_provider,
 )
-from tokoboros.core.settings import MemorySettings
+from hachi.core.settings import MemorySettings
 
 # ---------------------------------------------------------------------------
 # InMemoryProvider — upsert / search / delete / shutdown
@@ -128,7 +128,7 @@ def test_memory_tools_save_degrades_gracefully_when_vault_is_none() -> None:
     """save_memory returns informational message, not AttributeError, when vault=None."""
     from unittest.mock import MagicMock
 
-    from tokoboros.tools.memory_tools import register_memory_tools
+    from hachi.tools.memory_tools import register_memory_tools
 
     registry = MagicMock()
     registered: dict[str, object] = {}
@@ -147,7 +147,7 @@ def test_memory_tools_save_degrades_gracefully_when_vault_is_none() -> None:
 def test_memory_tools_search_degrades_gracefully_when_vault_is_none() -> None:
     from unittest.mock import MagicMock
 
-    from tokoboros.tools.memory_tools import register_memory_tools
+    from hachi.tools.memory_tools import register_memory_tools
 
     registry = MagicMock()
     registered: dict[str, object] = {}
@@ -166,7 +166,7 @@ def test_memory_tools_search_degrades_gracefully_when_vault_is_none() -> None:
 def test_memory_tools_delete_degrades_gracefully_when_vault_is_none() -> None:
     from unittest.mock import MagicMock
 
-    from tokoboros.tools.memory_tools import register_memory_tools
+    from hachi.tools.memory_tools import register_memory_tools
 
     registry = MagicMock()
     registered: dict[str, object] = {}

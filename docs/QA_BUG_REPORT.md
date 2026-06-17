@@ -1,4 +1,9 @@
-# Tokoboros — Open Bugs
+# Hachi — Open Bugs
+
+> **Historical document.** Written before the rename to Hachi. References to
+> the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
 
 **As of:** 2026-06-12 · **Commit:** `8d6155b` (post-fix) · **Suite:** 1300 passed, 0 failed.
 
@@ -11,19 +16,19 @@ This is the remaining fix list. Bugs found in the QA pass that have since been *
 ## 🟠 MEDIUM
 
 ### M-7 — Audio duration mis-reported as ~24.8 h for OpenAI-TTS WAVs
-- **Where:** `src/tokoboros/core/voice.py:195` — `duration = wf.getnframes() / sample_rate`.
+- **Where:** `src/hachi/core/voice.py:195` — `duration = wf.getnframes() / sample_rate`.
 - **What:** OpenAI `tts-1` WAVs carry the `0xFFFFFFFF` streaming-length sentinel in the RIFF/`data` chunk, so `wave.getnframes()` returns `0x7FFFFFFF` → `get_audio_info`/`probe_audio_info` reports `89478.485 s` (24.86 h) for a ~1.3 s clip. (Tests miss it — they only build correct-header WAVs.)
 - **Fix:** clamp `nframes` to the actual file size, or derive duration from `byte_rate` and the data-chunk byte length.
 
 ### M-11 — Gateway OpenAPI omits the auth scheme entirely
-- **Where:** `src/tokoboros/gateway/fastapi_app.py` (`create_gateway_app`) + export at `src/tokoboros/cli/main.py:1408`.
+- **Where:** `src/hachi/gateway/fastapi_app.py` (`create_gateway_app`) + export at `src/hachi/cli/main.py:1408`.
 - **What:** `_require_auth` is a plain `Depends`, so the exported schema has no `securitySchemes` and no documented `401` on any of the 25 paths — the schema is identical whether auth is on or off. Frontend/clients can't see that auth exists.
 - **Fix:** install a custom `app.openapi()` that adds a bearer `securityScheme` + per-route `security` and documents 401s.
 
 ### GLOBAL-1 — Error messages point to a `secrets set` command / `vault.json` that don't exist
-- **Where:** `src/tokoboros/core/credential_vault.py:38` ("Set it via `tokoboros secrets set …`"); `integrations/notion/service.py:42` + `integrations/slack/service.py:32` ("Add '…' to `~/.tokoboros/vault.json`"); actual `secrets` command at `cli/main.py:1796` has only `--list/--delete/--check`.
+- **Where:** `src/hachi/core/credential_vault.py:38` ("Set it via `hachi secrets set …`"); `integrations/notion/service.py:42` + `integrations/slack/service.py:32` ("Add '…' to `~/.hachi/vault.json`"); actual `secrets` command at `cli/main.py:1796` has only `--list/--delete/--check`.
 - **What:** A user who hits a missing vault credential is told to run a non-existent command / edit a non-existent file. Onboarding dead-end for Notion/Slack.
-- **Fix:** add `tokoboros secrets set <key>` (prompt + `create_default_secret_store().set(...)`) and correct the message wording.
+- **Fix:** add `hachi secrets set <key>` (prompt + `create_default_secret_store().set(...)`) and correct the message wording.
 
 ---
 
@@ -38,7 +43,7 @@ This is the remaining fix list. Bugs found in the QA pass that have since been *
 | 5 | Notion | `integrations/notion/databases.py:25,60`; `pages.py` | No pagination — read/query/search silently truncate (`results[:5]`/`[:20]`, block reads not paged). | Follow `next_cursor`/`has_more`. |
 | 6 | Notion | `integrations/notion/databases.py:27,42` | `item.get("object").upper()` unguarded against `None` (mitigated by surrounding try/except). | Guard `None` before `.upper()`. |
 | 7 | Email | `core/notifier.py:77` | `notify_user` blocks ~8 s inline (`Start-Sleep -Milliseconds 4500` + PS cold start). | Make non-blocking / shorten. |
-| 8 | Email | `core/notifier.py:259` | `int(TOKOBOROS_SMTP_PORT)` unguarded → raw `invalid literal for int()` surfaced to user. | Validate with a friendly message. |
+| 8 | Email | `core/notifier.py:259` | `int(HACHI_SMTP_PORT)` unguarded → raw `invalid literal for int()` surfaced to user. | Validate with a friendly message. |
 | 9 | Voice | `tools/voice_tools.py:105` vs `core/voice.py:63` | `speak_text` advertises `.opus/.aac/.pcm`, but `_SUPPORTED_EXTENSIONS` lacks them → `transcribe_audio` rejects what TTS just wrote. | Align the advertised + supported sets. |
 | 10 | Infra | `daemon.py` (`DaemonInstaller`) | No dry-run/preview — `install()` writes the unit + runs commands immediately. | Add `--dry-run` that prints the unit. |
 | 11 | Gateway | `gateway/fastapi_app.py:202` | `_require_auth` raises `HTTPException(detail=…)` → `{"detail":…}`, inconsistent with the `ErrorResponse{code,message,details}` envelope used elsewhere. | Raise the `ErrorResponse` shape. |

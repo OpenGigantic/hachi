@@ -49,7 +49,7 @@ htmlcov/
 .ruff_cache/
 
 # ==========================================
-# Tokoboros Runtime (user-generated, not source)
+# Hachi Runtime (user-generated, not source)
 # ==========================================
 *.png
 *.jpg

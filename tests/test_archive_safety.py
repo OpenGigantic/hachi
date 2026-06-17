@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from tokoboros.core.archive_safety import ArchiveSecurityError, safe_extract
+from hachi.core.archive_safety import ArchiveSecurityError, safe_extract
 
 # ---------------------------------------------------------------------------
 # Helpers

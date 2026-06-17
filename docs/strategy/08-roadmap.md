@@ -1,6 +1,11 @@
 # Phase 8 — Roadmap Synthesis
 
-**Engagement:** Tokoboros Principal Engineering & Product Strategy · **Date:** 2026-06-12
+> **Historical document.** Written before the Hachi rename. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
+**Engagement:** Hachi Principal Engineering & Product Strategy · **Date:** 2026-06-12
 **Consolidates:** [01](01-architecture-review.md) (R1–R20) · [02](02-object-graph-eval.md) (P0s +
 benchmark spec) · [03](03-competitive-and-positioning.md) (positioning, C1–C3) ·
 [04](04-memory-redesign.md) (M0–M4) · [05](05-agent-platform.md) · [06](06-ux-redesign.md) ·
@@ -78,7 +83,7 @@ authors first, core second). At 1 dev, the year is Q4-theme only; cut from the b
 
 ## 4. 3-Year Vision (2029) — where the bets point
 
-- **B1:** `.og` spec is versioned, conformance-tested, and read by ≥1 non-Tokoboros tool; Tokoboros
+- **B1:** `.og` spec is versioned, conformance-tested, and read by ≥1 non-Hachi tool; Hachi
   is its reference engine — the "Markdown of agents" position.
 - **B2:** signed, reputation-weighted skill exchange; agents author and consume verified procedures;
   ClawHavoc-class attacks structurally answered (skills = data; consent diffs; provenance).

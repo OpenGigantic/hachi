@@ -14,7 +14,7 @@ from unittest import mock
 
 import pytest
 
-from tokoboros.daemon import (
+from hachi.daemon import (
     _LAUNCHD_LABEL,
     _SYSTEMD_UNIT,
     _TASK_NAME,
@@ -76,10 +76,10 @@ def _installer(
 
 def test_build_launchd_plist_contains_label_and_args(tmp_path: Path):
     log = tmp_path / "gw.log"
-    argv = ["/usr/local/bin/tokoboros", "gateway", "--host", "127.0.0.1", "--port", "8787"]
+    argv = ["/usr/local/bin/hachi", "gateway", "--host", "127.0.0.1", "--port", "8787"]
     plist = build_launchd_plist(argv, log)
     assert _LAUNCHD_LABEL in plist
-    assert "/usr/local/bin/tokoboros" in plist
+    assert "/usr/local/bin/hachi" in plist
     assert "<true/>" in plist  # KeepAlive + RunAtLoad
     assert "gw.log" in plist  # log file name present regardless of path separator
     assert "StandardOutPath" in plist
@@ -87,17 +87,17 @@ def test_build_launchd_plist_contains_label_and_args(tmp_path: Path):
 
 
 def test_build_launchd_plist_xml_structure():
-    plist = build_launchd_plist(["/bin/toko", "gateway"], Path("/log"))
+    plist = build_launchd_plist(["/bin/hachi", "gateway"], Path("/log"))
     assert plist.startswith("<?xml")
     assert "<plist" in plist
     assert "<dict>" in plist
 
 
 def test_build_systemd_unit_contains_exec_and_restart():
-    argv = ["/usr/bin/tokoboros", "gateway", "--host", "0.0.0.0", "--port", "9999", "--runtime"]
+    argv = ["/usr/bin/hachi", "gateway", "--host", "0.0.0.0", "--port", "9999", "--runtime"]
     unit = build_systemd_unit(argv)
     assert "ExecStart=" in unit
-    assert "/usr/bin/tokoboros gateway" in unit
+    assert "/usr/bin/hachi gateway" in unit
     assert "Restart=on-failure" in unit
     assert "WantedBy=default.target" in unit
     assert "[Service]" in unit
@@ -105,8 +105,8 @@ def test_build_systemd_unit_contains_exec_and_restart():
 
 
 def test_build_systemd_unit_custom_description():
-    unit = build_systemd_unit(["/bin/toko", "gateway"], description="My Toko")
-    assert "Description=My Toko" in unit
+    unit = build_systemd_unit(["/bin/hachi", "gateway"], description="My Hachi")
+    assert "Description=My Hachi" in unit
 
 
 # ---------------------------------------------------------------------------
@@ -115,9 +115,9 @@ def test_build_systemd_unit_custom_description():
 
 
 def test_locate_executable_uses_which_when_available():
-    with mock.patch("shutil.which", return_value="/usr/local/bin/tokoboros"):
+    with mock.patch("shutil.which", return_value="/usr/local/bin/hachi"):
         exe = locate_executable()
-    assert exe.name == "tokoboros"
+    assert exe.name == "hachi"
 
 
 def test_locate_executable_falls_back_to_sys_executable(monkeypatch):
@@ -134,7 +134,7 @@ def test_locate_executable_falls_back_to_sys_executable(monkeypatch):
 
 def test_build_argv_no_shell():
     cfg = DaemonConfig(host="127.0.0.1", port=8787, log_path=Path("/tmp/gw.log"))
-    with mock.patch("shutil.which", return_value="/usr/local/bin/tokoboros"):
+    with mock.patch("shutil.which", return_value="/usr/local/bin/hachi"):
         argv = _build_argv(cfg)
     # Must be a plain list (not a shell string)
     assert isinstance(argv, list)
@@ -145,14 +145,14 @@ def test_build_argv_no_shell():
 
 
 def test_build_argv_python_module_fallback():
-    """When locate_executable returns a python interpreter, use -m tokoboros."""
+    """When locate_executable returns a python interpreter, use -m hachi."""
     with mock.patch("shutil.which", return_value=None):
         with mock.patch("pathlib.Path.exists", return_value=True):
             cfg = DaemonConfig(log_path=Path(sys.executable).parent / "gw.log")
             argv = _build_argv(cfg)
-    # argv[0] should be sys.executable (or resolved), argv[1] == "-m", argv[2] == "tokoboros"
+    # argv[0] should be sys.executable (or resolved), argv[1] == "-m", argv[2] == "hachi"
     assert argv[1] == "-m"
-    assert argv[2] == "tokoboros"
+    assert argv[2] == "hachi"
     assert "gateway" in argv
 
 
@@ -168,9 +168,9 @@ def test_install_launchd_writes_plist_and_calls_load(tmp_path: Path):
 
     plist_path = tmp_path / f"{_LAUNCHD_LABEL}.plist"
     with (
-        mock.patch("tokoboros.daemon._launchd_plist_path", return_value=plist_path),
-        mock.patch("shutil.which", return_value="/usr/local/bin/tokoboros"),
-        mock.patch("tokoboros.daemon._detect_platform", return_value="macos"),
+        mock.patch("hachi.daemon._launchd_plist_path", return_value=plist_path),
+        mock.patch("shutil.which", return_value="/usr/local/bin/hachi"),
+        mock.patch("hachi.daemon._detect_platform", return_value="macos"),
     ):
         msg = installer.install()
 
@@ -192,8 +192,8 @@ def test_uninstall_launchd_removes_plist(tmp_path: Path):
     installer = _installer(runner, log_path=tmp_path / "gw.log")
 
     with (
-        mock.patch("tokoboros.daemon._launchd_plist_path", return_value=plist_path),
-        mock.patch("tokoboros.daemon._detect_platform", return_value="macos"),
+        mock.patch("hachi.daemon._launchd_plist_path", return_value=plist_path),
+        mock.patch("hachi.daemon._detect_platform", return_value="macos"),
     ):
         msg = installer.uninstall()
 
@@ -209,13 +209,13 @@ def test_uninstall_launchd_removes_plist(tmp_path: Path):
 
 def test_install_systemd_writes_unit_and_enables(tmp_path: Path):
     runner = RecordingRunner()
-    unit_path = tmp_path / "tokoboros.service"
+    unit_path = tmp_path / "hachi.service"
     installer = _installer(runner, log_path=tmp_path / "gw.log")
 
     with (
-        mock.patch("tokoboros.daemon._systemd_unit_path", return_value=unit_path),
-        mock.patch("shutil.which", return_value="/usr/local/bin/tokoboros"),
-        mock.patch("tokoboros.daemon._detect_platform", return_value="linux"),
+        mock.patch("hachi.daemon._systemd_unit_path", return_value=unit_path),
+        mock.patch("shutil.which", return_value="/usr/local/bin/hachi"),
+        mock.patch("hachi.daemon._detect_platform", return_value="linux"),
     ):
         msg = installer.install()
 
@@ -230,14 +230,14 @@ def test_install_systemd_writes_unit_and_enables(tmp_path: Path):
 
 
 def test_uninstall_systemd_removes_unit(tmp_path: Path):
-    unit_path = tmp_path / "tokoboros.service"
-    unit_path.write_text("[Service]\nExecStart=toko\n", encoding="utf-8")
+    unit_path = tmp_path / "hachi.service"
+    unit_path.write_text("[Service]\nExecStart=hachi\n", encoding="utf-8")
     runner = RecordingRunner()
     installer = _installer(runner, log_path=tmp_path / "gw.log")
 
     with (
-        mock.patch("tokoboros.daemon._systemd_unit_path", return_value=unit_path),
-        mock.patch("tokoboros.daemon._detect_platform", return_value="linux"),
+        mock.patch("hachi.daemon._systemd_unit_path", return_value=unit_path),
+        mock.patch("hachi.daemon._detect_platform", return_value="linux"),
     ):
         msg = installer.uninstall()
 
@@ -250,7 +250,7 @@ def test_systemd_start_stop_use_correct_commands():
     runner = RecordingRunner()
     installer = _installer(runner)
 
-    with mock.patch("tokoboros.daemon._detect_platform", return_value="linux"):
+    with mock.patch("hachi.daemon._detect_platform", return_value="linux"):
         start_msg = installer.start()
         stop_msg = installer.stop()
 
@@ -267,7 +267,7 @@ def test_systemd_status_returns_state():
     runner = RecordingRunner(stdout="active\n")
     installer = _installer(runner)
 
-    with mock.patch("tokoboros.daemon._detect_platform", return_value="linux"):
+    with mock.patch("hachi.daemon._detect_platform", return_value="linux"):
         msg = installer.status()
 
     assert "systemd" in msg
@@ -284,8 +284,8 @@ def test_install_windows_calls_schtasks_create():
     installer = _installer(runner)
 
     with (
-        mock.patch("shutil.which", return_value=r"C:\Python\Scripts\tokoboros.exe"),
-        mock.patch("tokoboros.daemon._detect_platform", return_value="windows"),
+        mock.patch("shutil.which", return_value=r"C:\Python\Scripts\hachi.exe"),
+        mock.patch("hachi.daemon._detect_platform", return_value="windows"),
     ):
         msg = installer.install()
 
@@ -305,7 +305,7 @@ def test_uninstall_windows_calls_schtasks_delete():
     runner = RecordingRunner()
     installer = _installer(runner)
 
-    with mock.patch("tokoboros.daemon._detect_platform", return_value="windows"):
+    with mock.patch("hachi.daemon._detect_platform", return_value="windows"):
         msg = installer.uninstall()
 
     delete_cmds = [c for c in runner.commands if "schtasks" in c[0] and "/delete" in c]
@@ -319,7 +319,7 @@ def test_windows_start_stop_commands():
     runner = RecordingRunner()
     installer = _installer(runner)
 
-    with mock.patch("tokoboros.daemon._detect_platform", return_value="windows"):
+    with mock.patch("hachi.daemon._detect_platform", return_value="windows"):
         installer.start()
         installer.stop()
 
@@ -343,10 +343,10 @@ def test_no_shell_true_on_any_platform(tmp_path: Path):
         installer = _installer(runner, log_path=tmp_path / "gw.log")
 
         with (
-            mock.patch("tokoboros.daemon._launchd_plist_path", return_value=plist),
-            mock.patch("tokoboros.daemon._systemd_unit_path", return_value=unit),
-            mock.patch("shutil.which", return_value="/usr/local/bin/tokoboros"),
-            mock.patch("tokoboros.daemon._detect_platform", return_value=platform),
+            mock.patch("hachi.daemon._launchd_plist_path", return_value=plist),
+            mock.patch("hachi.daemon._systemd_unit_path", return_value=unit),
+            mock.patch("shutil.which", return_value="/usr/local/bin/hachi"),
+            mock.patch("hachi.daemon._detect_platform", return_value=platform),
         ):
             try:
                 installer.install()

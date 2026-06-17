@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from tokoboros.og_engine.parser import OGFile, parse_og_file
+from hachi.og_engine.parser import OGFile, parse_og_file
 
 SPEC_DIR = Path(__file__).parent.parent / "spec"
 CONFORMANCE_JSON = SPEC_DIR / "conformance" / "conformance.json"

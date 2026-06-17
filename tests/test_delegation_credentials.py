@@ -8,10 +8,10 @@ tests pin the fix: the injected client is used and no env key is required.
 
 from __future__ import annotations
 
-from tokoboros.core.llm import LLMResponse
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.sub_agent import SubAgentRuntime, SubAgentStatus
-from tokoboros.tools.delegation_tools import _make_delegate_task
+from hachi.core.llm import LLMResponse
+from hachi.core.loop import ToolRegistry
+from hachi.core.sub_agent import SubAgentRuntime, SubAgentStatus
+from hachi.tools.delegation_tools import _make_delegate_task
 
 
 class _FakeLLM:

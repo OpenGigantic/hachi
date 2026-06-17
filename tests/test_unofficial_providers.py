@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from tokoboros.core.unofficial_providers import (
+from hachi.core.unofficial_providers import (
     ChatGPTWebClient,
     _parse_sse_content,
     _resolve_access_token_or_use_directly,
@@ -93,7 +93,7 @@ def test_no_session_token_returns_helpful_message() -> None:
     client = ChatGPTWebClient(session_token=None)
     # Patch _resolve to raise immediately (no network)
     with patch(
-        "tokoboros.core.unofficial_providers._resolve_access_token_or_use_directly",
+        "hachi.core.unofficial_providers._resolve_access_token_or_use_directly",
         side_effect=RuntimeError("No session token provided."),
     ):
         resp = client.generate([])
@@ -183,7 +183,7 @@ def test_list_models_returns_known_models() -> None:
 
 
 def test_create_llm_client_gemini() -> None:
-    from tokoboros.core.llm import OpenAICompatibleClient, create_llm_client
+    from hachi.core.llm import OpenAICompatibleClient, create_llm_client
 
     client = create_llm_client({"kind": "gemini", "model": "gemini-2.0-flash"})
     assert isinstance(client, OpenAICompatibleClient)
@@ -191,7 +191,7 @@ def test_create_llm_client_gemini() -> None:
 
 
 def test_create_llm_client_gemini_default_model() -> None:
-    from tokoboros.core.llm import OpenAICompatibleClient, create_llm_client
+    from hachi.core.llm import OpenAICompatibleClient, create_llm_client
 
     # When the generic default is left, should resolve to gemini-2.0-flash.
     client = create_llm_client({"kind": "gemini"})
@@ -200,8 +200,8 @@ def test_create_llm_client_gemini_default_model() -> None:
 
 
 def test_create_llm_client_chatgpt_web(monkeypatch) -> None:
-    monkeypatch.setenv("TOKOBOROS_UNOFFICIAL", "1")
-    from tokoboros.core.llm import create_llm_client
+    monkeypatch.setenv("HACHI_UNOFFICIAL", "1")
+    from hachi.core.llm import create_llm_client
 
     client = create_llm_client(
         {"kind": "chatgpt-web", "model": "gpt-4o"},
@@ -211,8 +211,8 @@ def test_create_llm_client_chatgpt_web(monkeypatch) -> None:
 
 
 def test_create_llm_client_chatgpt_web_default_model(monkeypatch) -> None:
-    monkeypatch.setenv("TOKOBOROS_UNOFFICIAL", "1")
-    from tokoboros.core.llm import create_llm_client
+    monkeypatch.setenv("HACHI_UNOFFICIAL", "1")
+    from hachi.core.llm import create_llm_client
 
     client = create_llm_client({"kind": "chatgpt-web"})
     assert isinstance(client, ChatGPTWebClient)
@@ -220,9 +220,9 @@ def test_create_llm_client_chatgpt_web_default_model(monkeypatch) -> None:
 
 
 def test_chatgpt_web_unavailable_without_opt_in(monkeypatch) -> None:
-    """chatgpt-web raises a clear error when TOKOBOROS_UNOFFICIAL is not set."""
-    monkeypatch.delenv("TOKOBOROS_UNOFFICIAL", raising=False)
-    from tokoboros.core.llm import create_llm_client
+    """chatgpt-web raises a clear error when HACHI_UNOFFICIAL is not set."""
+    monkeypatch.delenv("HACHI_UNOFFICIAL", raising=False)
+    from hachi.core.llm import create_llm_client
 
-    with pytest.raises(ValueError, match="TOKOBOROS_UNOFFICIAL"):
+    with pytest.raises(ValueError, match="HACHI_UNOFFICIAL"):
         create_llm_client({"kind": "chatgpt-web"})

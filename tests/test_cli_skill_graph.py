@@ -1,4 +1,4 @@
-"""Tests for the `tokoboros skill graph` CLI command — whole-library dependency
+"""Tests for the `hachi skill graph` CLI command — whole-library dependency
 graph (adjacency + roots + missing + cycles) built from typed `requires` edges."""
 
 import json
@@ -7,7 +7,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -18,7 +18,7 @@ def _isolate(monkeypatch, tmp_path: Path) -> Path:
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     shutil.copy(FIXTURE, skills_dir / "sample_skill.og")
-    monkeypatch.setattr("tokoboros.gateway.workspace.get_skills_dir", lambda: skills_dir)
+    monkeypatch.setattr("hachi.gateway.workspace.get_skills_dir", lambda: skills_dir)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)  # isolate usage store
     return skills_dir
 
@@ -63,7 +63,7 @@ def test_skill_graph_flags_missing_dependency(monkeypatch, tmp_path) -> None:
         "::dense\nlonely\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr("tokoboros.gateway.workspace.get_skills_dir", lambda: skills_dir)
+    monkeypatch.setattr("hachi.gateway.workspace.get_skills_dir", lambda: skills_dir)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     result = runner.invoke(app, ["skill", "graph", "--json"])
@@ -75,7 +75,7 @@ def test_skill_graph_flags_missing_dependency(monkeypatch, tmp_path) -> None:
 def test_skill_graph_empty_dir(monkeypatch, tmp_path) -> None:
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
-    monkeypatch.setattr("tokoboros.gateway.workspace.get_skills_dir", lambda: skills_dir)
+    monkeypatch.setattr("hachi.gateway.workspace.get_skills_dir", lambda: skills_dir)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     result = runner.invoke(app, ["skill", "graph"])
     assert result.exit_code == 0, result.output

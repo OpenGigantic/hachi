@@ -12,9 +12,9 @@ from pathlib import Path
 # Allow running from repo root without installing the package.
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tokoboros.og_engine.engine import lint_og_file  # noqa: E402
+from hachi.og_engine.engine import lint_og_file  # noqa: E402
 
-_SKILLS_ROOT = Path(__file__).parent.parent / "src" / "tokoboros" / "default_skills"
+_SKILLS_ROOT = Path(__file__).parent.parent / "src" / "hachi" / "default_skills"
 
 
 def main() -> int:

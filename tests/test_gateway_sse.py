@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from tokoboros.gateway.control_plane import GatewayControlPlane, GatewayEvent
-from tokoboros.gateway.fastapi_app import create_gateway_app
+from hachi.gateway.control_plane import GatewayControlPlane, GatewayEvent
+from hachi.gateway.fastapi_app import create_gateway_app
 
 _EVENTS = [
     GatewayEvent(

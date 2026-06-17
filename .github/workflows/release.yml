@@ -1,7 +1,7 @@
 name: Release
 
-# Publishes Tokoboros to PyPI so anyone can `pipx install tokoboros` /
-# `uv tool install tokoboros`. Triggered by pushing a version tag (e.g. v0.1.0)
+# Publishes Hachi to PyPI so anyone can `pipx install hachi-og` /
+# `uv tool install hachi-og`. Triggered by pushing a version tag (e.g. v0.1.0)
 # or by a published GitHub Release.
 on:
   push:

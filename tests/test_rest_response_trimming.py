@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import json
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.rest_adapter import (
+from hachi.core.loop import ToolRegistry
+from hachi.core.rest_adapter import (
     _MAX_REST_RESPONSE_CHARS,
     UniversalRestAdapter,
     _truncate_rest_response,
@@ -42,8 +42,8 @@ def _register(monkeypatch, payload: dict, api_def: dict) -> ToolRegistry:
         def request(self, **_kwargs):
             return _FakeResponse()
 
-    monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "true")
-    monkeypatch.setattr("tokoboros.core.rest_adapter.httpx.Client", _FakeClient)
+    monkeypatch.setenv("HACHI_REST_ALLOW_PRIVATE", "true")
+    monkeypatch.setattr("hachi.core.rest_adapter.httpx.Client", _FakeClient)
     adapter = UniversalRestAdapter(registry, allowed_hosts=[])
     base = {"method": "GET", "endpoint": "http://127.0.0.1:9000/x", "schema": "{}", "headers": "{}"}
     base.update(api_def)

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import json
 
-from tokoboros.core.assertion_eval import (
+from hachi.core.assertion_eval import (
     AssertionReport,
     evaluate_assertion,
     evaluate_assertions,
 )
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.og_engine.engine import SkillEngine
-from tokoboros.og_engine.parser import OGNode
-from tokoboros.tools.og_tools import _make_check_skill_assertions, register_og_tools
+from hachi.core.loop import ToolRegistry
+from hachi.og_engine.engine import SkillEngine
+from hachi.og_engine.parser import OGNode
+from hachi.tools.og_tools import _make_check_skill_assertions, register_og_tools
 
 
 # --------------------------------------------------------------------------- #

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tokoboros.integrations.google.calendar import CalendarService
-from tokoboros.integrations.google.tasks import TasksService
+from hachi.integrations.google.calendar import CalendarService
+from hachi.integrations.google.tasks import TasksService
 
 # ---------------------------------------------------------------------------
 # Fake HTTP client

@@ -1,6 +1,11 @@
 # Phase 6 — UX Redesign: TUI first, then Web
 
-**Engagement:** Tokoboros Principal Engineering & Product Strategy · **Date:** 2026-06-12
+> **Historical document.** Written before the Hachi rename. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
+**Engagement:** Hachi Principal Engineering & Product Strategy · **Date:** 2026-06-12
 **Inputs:** current TUI structure Ⓐ (Phase 0/1 recon: tui/app.py 3,063 LOC, tabs for
 Permissions/MCP/Jobs/Settings/Memory/Integrations, SlashMenu, ToolCard, modal approvals), the
 read-model layer that already feeds dashboards ✅ orchestrator.py:480–635, the project's own design
@@ -34,7 +39,7 @@ honored; §2 lists where this design goes beyond it.
 
 | Product | Steal | Avoid |
 |---|---|---|
-| Claude Code 🌐 | Streaming + Esc-interrupt as table stakes; inline permission prompt with allow-once/always; plan-then-execute mode; `/status`-style cost intro­spection | Usage-limit anxiety (top complaint Ⓢ) — Tokoboros shows *caps you set*, not limits imposed |
+| Claude Code 🌐 | Streaming + Esc-interrupt as table stakes; inline permission prompt with allow-once/always; plan-then-execute mode; `/status`-style cost intro­spection | Usage-limit anxiety (top complaint Ⓢ) — Hachi shows *caps you set*, not limits imposed |
 | OpenCode 🌐 | First-class agent/model switcher; session list + resume as a primary surface; theming | — |
 | Copilot CLI 🌐 | Explicit modes (ask/plan/autopilot) mapping cleanly to permission posture | GitHub-only context assumptions |
 | Warp 🌐 | Block model (every action = a discrete, addressable card) and a universal command palette | Hiding raw output by default from operators |
@@ -102,7 +107,7 @@ power path (SlashMenu exists Ⓐ).
 ### 6.1 Chat home (streaming, governance strip, inline approval)
 
 ```
-┌ tokoboros ▸ s:8f3a92 “billing migration”   claude-haiku-4-5 ▸ anthropic   tier:guided ──────┐
+┌ hachi ▸ s:8f3a92 “billing migration”   claude-haiku-4-5 ▸ anthropic   tier:guided ──────┐
 │ ● ready   jobs:2   approvals:1!   spend $0.41 ▸ cap $2.00/turn   ctx ▓▓▓▓▓░░░░░ 47%        │
 ├────────────────────────────────────────────────────────────────┬─────────────────────────────┤
 │ you ▸ continue the database migration from last month          │ TURN 41        ▸ expand     │
@@ -114,7 +119,7 @@ power path (SlashMenu exists Ⓐ).
 │ ⚙ run_terminal_command · psql -f pre_drop_fk.sql       ✓ 0.8s  │ 0.8s  ⚙ terminal  ✓         │
 │   └ 14 lines · [enter] expand · [j] related job                │ …     llm #2  streaming     │
 │                                                                ├─────────────────────────────┤
-│ toko ▸ Dropping the payments↔refunds FK per runbook §4,        │ MEMORY WRITES               │
+│ hachi ▸ Dropping the payments↔refunds FK per runbook §4,       │ MEMORY WRITES               │
 │ then re-running pgloader for the payments table…▌              │ +1 episode (queued #129)    │
 ├────────────────────────────────────────────────────────────────┴─────────────────────────────┤
 │ ⚠ approval · write_file → ~/work/billing/migrate/post_fk.sql (outside allowed paths)         │
@@ -170,7 +175,7 @@ findings instead of hiding them.)*
 
 ## 7. Onboarding (TUI) — time-to-first-magic < 5 min (Phase 3 C3)
 
-`pipx install tokoboros` → `tokoboros` →
+`pipx install hachi-og` → `hachi` →
 1. Splash (exists Ⓐ) → provider picker incl. **local Ollama** and free-tier options ✅ llm.py presets;
    key paste or Google device-flow (Phase 5 §4) — validated live before proceeding ✅ provider
    validation exists Ⓐ.
@@ -201,7 +206,7 @@ Audience shift: the operator console (current 4-route TanStack app Ⓐ) stays fo
 
 - **Home = chat + Today card** (next schedules, pending approvals, yesterday's agent activity in
   plain language).
-- **Approvals inbox** as the centerpiece (mobile-friendly): plain-language permission sheets — “Toko
+- **Approvals inbox** as the centerpiece (mobile-friendly): plain-language permission sheets — “Hachi
   wants to *send an email* to Priya. [Allow once] [Always for drafts I approve] [Deny]”.
 - **Workflows gallery**: Composer previews as cards; toggle/pause; run history with cost in ₹/$.
 - **Memory browser**: Phase 4 nodes rendered as editable cards grouped by project/person — *“what

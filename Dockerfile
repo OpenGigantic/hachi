@@ -12,4 +12,4 @@ RUN pip install --no-cache-dir .
 
 EXPOSE 8787
 
-CMD ["tokoboros", "gateway", "--host", "0.0.0.0", "--port", "8787", "--runtime"]
+CMD ["hachi", "gateway", "--host", "0.0.0.0", "--port", "8787", "--runtime"]

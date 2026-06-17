@@ -4,17 +4,16 @@ from __future__ import annotations
 import socket
 from pathlib import Path
 
-from tokoboros.core.paths import TokoborosPaths
+from hachi.core.paths import HachiPaths
 
 
-def _make_paths(tmp_path: Path) -> TokoborosPaths:
-    """Return a TokoborosPaths instance rooted in a temp directory."""
-    return TokoborosPaths(
+def _make_paths(tmp_path: Path) -> HachiPaths:
+    """Return a HachiPaths instance rooted in a temp directory."""
+    return HachiPaths(
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
         cache_dir=tmp_path / "cache",
         state_dir=tmp_path / "state",
-        legacy_dir=tmp_path / "legacy",
     )
 
 

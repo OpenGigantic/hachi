@@ -53,7 +53,7 @@ def _make_registry():
 
 class TestContactDeleteApproval:
     def _setup(self, approved: bool):
-        from tokoboros.integrations.google.contacts import ContactsService
+        from hachi.integrations.google.contacts import ContactsService
 
         reason = "approved" if approved else "denied by user"
         client = _make_mock_client(require_approval_return=(approved, reason))
@@ -95,7 +95,7 @@ class TestContactDeleteApproval:
 
 class TestContactValidation:
     def _setup(self):
-        from tokoboros.integrations.google.contacts import ContactsService
+        from hachi.integrations.google.contacts import ContactsService
 
         client = _make_mock_client()
         svc = ContactsService(client)
@@ -112,7 +112,7 @@ class TestContactValidation:
         tools = self._setup()
         tools["google_create_contact"].__self__ = None  # just call it
         client = _make_mock_client()
-        from tokoboros.integrations.google.contacts import ContactsService
+        from hachi.integrations.google.contacts import ContactsService
 
         svc = ContactsService(client)
         registry = _make_registry()
@@ -132,7 +132,7 @@ class TestContactValidation:
         assert "invalid phone" in result.lower()
 
     def test_update_accepts_valid_phone_and_email(self):
-        from tokoboros.integrations.google.contacts import ContactsService
+        from hachi.integrations.google.contacts import ContactsService
 
         client = _make_mock_client()
         # Return a fake existing person for the GET call
@@ -163,28 +163,28 @@ class TestPlanningErrorSurfacing:
     """_classify_google_error and the helper methods must produce informative strings."""
 
     def test_classify_401_returns_auth_hint(self):
-        from tokoboros.integrations.google.planning import _classify_google_error
+        from hachi.integrations.google.planning import _classify_google_error
 
         exc = Exception("401 Unauthorized")
         reason = _classify_google_error(exc)
         assert "auth" in reason.lower() or "oauth" in reason.lower() or "setup" in reason.lower()
 
     def test_classify_scope_returns_scope_hint(self):
-        from tokoboros.integrations.google.planning import _classify_google_error
+        from hachi.integrations.google.planning import _classify_google_error
 
         exc = Exception("403 insufficient scope for this API call")
         reason = _classify_google_error(exc)
         assert "scope" in reason.lower() or "authoris" in reason.lower()
 
     def test_classify_api_not_enabled(self):
-        from tokoboros.integrations.google.planning import _classify_google_error
+        from hachi.integrations.google.planning import _classify_google_error
 
         exc = Exception("accessNotConfigured: API not enabled for project")
         reason = _classify_google_error(exc)
         assert "api not enabled" in reason.lower() or "google cloud" in reason.lower()
 
     def test_fetch_events_surfaces_reason_on_error(self):
-        from tokoboros.integrations.google.planning import PlanningService
+        from hachi.integrations.google.planning import PlanningService
 
         client = _make_mock_client()
         client.get.side_effect = Exception("403 insufficient scope")
@@ -202,7 +202,7 @@ class TestPlanningErrorSurfacing:
         assert "scope" in line.lower() or "insufficient" in line.lower()
 
     def test_fetch_gmail_surfaces_reason_on_error(self):
-        from tokoboros.integrations.google.planning import PlanningService
+        from hachi.integrations.google.planning import PlanningService
 
         client = _make_mock_client()
         client.get.side_effect = Exception("Network timeout")
@@ -216,7 +216,7 @@ class TestPlanningErrorSurfacing:
         assert "unavailable" in line.lower()
 
     def test_fetch_tasks_surfaces_reason_on_error(self):
-        from tokoboros.integrations.google.planning import PlanningService
+        from hachi.integrations.google.planning import PlanningService
 
         client = _make_mock_client()
         client.get.side_effect = Exception("401 unauthenticated")
@@ -231,7 +231,7 @@ class TestPlanningErrorSurfacing:
 
     def test_plan_my_day_date_formatting_portable(self):
         """Verify the Windows-compatible day formatting still works (no %-d regression)."""
-        from tokoboros.integrations.google.planning import PlanningService
+        from hachi.integrations.google.planning import PlanningService
 
         client = _make_mock_client()
         # All sub-calls raise so we get the unavailable lines; we only care about the header
@@ -253,16 +253,16 @@ class TestMeetMonitorNoStdout:
 
     def test_poll_timeout_raises_runtimeerror_not_print(self):
         """When the meeting never starts, RuntimeError is raised (not printed)."""
-        from tokoboros.integrations.google.meet import _poll_for_transcript
+        from hachi.integrations.google.meet import _poll_for_transcript
 
         # Use a very short timeout so the test is fast
         with (
             patch(
-                "tokoboros.integrations.google.meet._START_TIMEOUT_SECONDS",
+                "hachi.integrations.google.meet._START_TIMEOUT_SECONDS",
                 2,
             ),
             patch(
-                "tokoboros.integrations.google.meet._POLL_INTERVAL_SECONDS",
+                "hachi.integrations.google.meet._POLL_INTERVAL_SECONDS",
                 1,
             ),
             patch("httpx.get") as mock_get,
@@ -294,15 +294,15 @@ class TestMeetMonitorNoStdout:
 
     def test_poll_http_error_raises_runtimeerror(self):
         """HTTP errors during meeting monitoring propagate as RuntimeError."""
-        from tokoboros.integrations.google.meet import _poll_for_transcript
+        from hachi.integrations.google.meet import _poll_for_transcript
 
         with (
             patch(
-                "tokoboros.integrations.google.meet._START_TIMEOUT_SECONDS",
+                "hachi.integrations.google.meet._START_TIMEOUT_SECONDS",
                 60,
             ),
             patch(
-                "tokoboros.integrations.google.meet._POLL_INTERVAL_SECONDS",
+                "hachi.integrations.google.meet._POLL_INTERVAL_SECONDS",
                 0,
             ),
             patch("httpx.get") as mock_get,
@@ -333,7 +333,7 @@ class TestMeetMonitorNoStdout:
 
     def test_google_monitor_meeting_does_not_write_stdout(self):
         """The registered tool function must not emit anything to stdout."""
-        from tokoboros.integrations.google.meet import MeetService
+        from hachi.integrations.google.meet import MeetService
 
         client = _make_mock_client()
         svc = MeetService(client)
@@ -370,7 +370,7 @@ class TestMeetMonitorNoStdout:
 
     def test_google_monitor_meeting_surfaces_auth_error(self):
         """A 403 probe response returns a clear error string — no exception leaks."""
-        from tokoboros.integrations.google.meet import MeetService
+        from hachi.integrations.google.meet import MeetService
 
         client = _make_mock_client()
         svc = MeetService(client)

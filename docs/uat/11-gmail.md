@@ -1,9 +1,14 @@
 # UAT Report — Gmail Send / Validate / Search / Attach / Reply / Read + Injection
 
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 > **HEADLINE:** ADV-002 (indirect injection) is a CONFIRMED Critical-severity P0 defect — email body content passes to the agent with ZERO untrusted-content framing, and no send/delete gate exists (MR-5). A successful injection is immediately destructive. `_html_to_text` also has a nested-script regex bug that leaks outer content when `<script>` tags are nested. All send, reply, and attachment paths lack address validation, size limits, symlink resolution, and permission gating.
 
 **Build SHA:** `036dfd9`  
-**Source:** `src/tokoboros/integrations/google/gmail.py`  
+**Source:** `src/hachi/integrations/google/gmail.py`  
 **Test executed:** 2026-06-14, offline (no live Gmail/OAuth); code-path tracing + Python interpreter calls on pure helpers.
 
 ---
@@ -217,7 +222,7 @@ Offline check confirms: the Gmail `batchModify` API is a single HTTP call. If it
 
 1. **No `guard_untrusted` call anywhere in the email read path.** Offline check (`inspect.getsource`) confirms zero occurrences of `guard_untrusted`, `UNTRUSTED`, `untrusted_content`, or `<<<` in `_render_message` (line 323), `_extract_message_text` (line 48), `list_recent_emails` (line 116), `search_emails` (line 146), or `read_email_thread` (line 332).
 
-2. The `guard_untrusted` function exists in `src/tokoboros/core/untrusted_content.py` and is wired to `browse_web` (confirmed by `test_untrusted_content.py` which passes). It is simply never called for email content.
+2. The `guard_untrusted` function exists in `src/hachi/core/untrusted_content.py` and is wired to `browse_web` (confirmed by `test_untrusted_content.py` which passes). It is simply never called for email content.
 
 3. **Natural-language injection survives `_html_to_text` unchanged.** Confirmed offline:
    ```

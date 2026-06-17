@@ -52,7 +52,7 @@ def _make_fake_hub(tool_names: list[str]) -> MagicMock:
 class TestRegisterGoogleToolsNoCredentials:
     def test_returns_false_when_no_client_id(self, monkeypatch) -> None:
         monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
-        from tokoboros.tools.google_tools import register_google_tools
+        from hachi.tools.google_tools import register_google_tools
 
         registry = _FakeRegistry()
         result = register_google_tools(registry)
@@ -60,7 +60,7 @@ class TestRegisterGoogleToolsNoCredentials:
 
     def test_registers_stub_when_no_client_id(self, monkeypatch) -> None:
         monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
-        from tokoboros.tools.google_tools import register_google_tools
+        from hachi.tools.google_tools import register_google_tools
 
         registry = _FakeRegistry()
         register_google_tools(registry)
@@ -68,7 +68,7 @@ class TestRegisterGoogleToolsNoCredentials:
 
     def test_stub_tagged_google_group(self, monkeypatch) -> None:
         monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
-        from tokoboros.tools.google_tools import register_google_tools
+        from hachi.tools.google_tools import register_google_tools
 
         registry = _FakeRegistry()
         register_google_tools(registry)
@@ -76,7 +76,7 @@ class TestRegisterGoogleToolsNoCredentials:
 
     def test_stub_returns_helpful_message(self, monkeypatch) -> None:
         monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
-        from tokoboros.tools.google_tools import register_google_tools
+        from hachi.tools.google_tools import register_google_tools
 
         registry = _FakeRegistry()
         register_google_tools(registry)
@@ -89,8 +89,8 @@ class TestRegisterGoogleToolsWithCredentials:
     def test_returns_true_when_client_id_set(self, monkeypatch) -> None:
         monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
         fake_hub = _make_fake_hub(["google_send_email", "google_list_emails"])
-        with patch("tokoboros.integrations.google.GoogleIntegrationHub", return_value=fake_hub):
-            from tokoboros.tools import google_tools
+        with patch("hachi.integrations.google.GoogleIntegrationHub", return_value=fake_hub):
+            from hachi.tools import google_tools
 
             registry = _FakeRegistry()
             result = google_tools.register_google_tools(registry)
@@ -100,8 +100,8 @@ class TestRegisterGoogleToolsWithCredentials:
         monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
         tool_names = ["google_send_email", "google_list_emails", "google_create_event"]
         fake_hub = _make_fake_hub(tool_names)
-        with patch("tokoboros.integrations.google.GoogleIntegrationHub", return_value=fake_hub):
-            from tokoboros.tools import google_tools
+        with patch("hachi.integrations.google.GoogleIntegrationHub", return_value=fake_hub):
+            from hachi.tools import google_tools
 
             registry = _FakeRegistry()
             google_tools.register_google_tools(registry)
@@ -112,8 +112,8 @@ class TestRegisterGoogleToolsWithCredentials:
         monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
         tool_names = ["google_send_email"]
         fake_hub = _make_fake_hub(tool_names)
-        with patch("tokoboros.integrations.google.GoogleIntegrationHub", return_value=fake_hub):
-            from tokoboros.tools import google_tools
+        with patch("hachi.integrations.google.GoogleIntegrationHub", return_value=fake_hub):
+            from hachi.tools import google_tools
 
             registry = _FakeRegistry()
             google_tools.register_google_tools(registry)
@@ -124,8 +124,8 @@ class TestRegisterGoogleToolsWithCredentials:
     def test_hub_register_tools_called_once(self, monkeypatch) -> None:
         monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")
         fake_hub = _make_fake_hub([])
-        with patch("tokoboros.integrations.google.GoogleIntegrationHub", return_value=fake_hub):
-            from tokoboros.tools import google_tools
+        with patch("hachi.integrations.google.GoogleIntegrationHub", return_value=fake_hub):
+            from hachi.tools import google_tools
 
             registry = _FakeRegistry()
             google_tools.register_google_tools(registry)
@@ -138,14 +138,14 @@ class TestRegisterGoogleToolsWithCredentials:
 
 
 def test_google_tool_names_are_all_strings() -> None:
-    from tokoboros.tools.google_tools import GOOGLE_TOOL_NAMES
+    from hachi.tools.google_tools import GOOGLE_TOOL_NAMES
 
     assert all(isinstance(n, str) for n in GOOGLE_TOOL_NAMES)
     assert len(GOOGLE_TOOL_NAMES) > 0
 
 
 def test_google_tool_names_all_prefixed_google() -> None:
-    from tokoboros.tools.google_tools import GOOGLE_TOOL_NAMES
+    from hachi.tools.google_tools import GOOGLE_TOOL_NAMES
 
     assert all(n.startswith("google_") for n in GOOGLE_TOOL_NAMES)
 
@@ -157,8 +157,8 @@ def test_google_tool_names_all_prefixed_google() -> None:
 
 def test_orchestrator_group_dict_includes_google_tools() -> None:
     """_GROUP_BY_TOOL_NAME must map every GOOGLE_TOOL_NAMES entry to 'google'."""
-    from tokoboros.gateway.orchestrator import _GROUP_BY_TOOL_NAME
-    from tokoboros.tools.google_tools import GOOGLE_TOOL_NAMES
+    from hachi.gateway.orchestrator import _GROUP_BY_TOOL_NAME
+    from hachi.tools.google_tools import GOOGLE_TOOL_NAMES
 
     for name in GOOGLE_TOOL_NAMES:
         assert name in _GROUP_BY_TOOL_NAME, f"{name!r} missing from _GROUP_BY_TOOL_NAME"

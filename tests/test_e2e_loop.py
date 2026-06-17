@@ -22,10 +22,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from tokoboros.core.llm import LLMResponse, TokenUsage, ToolCall
-from tokoboros.core.loop import ExecutionLoop, ToolRegistry
-from tokoboros.core.memory import MemoryManager
-from tokoboros.core.sub_agent import SubAgentMemory
+from hachi.core.llm import LLMResponse, TokenUsage, ToolCall
+from hachi.core.loop import ExecutionLoop, ToolRegistry
+from hachi.core.memory import MemoryManager
+from hachi.core.sub_agent import SubAgentMemory
 
 # ---------------------------------------------------------------------------
 # Harness primitives — reused by all scenarios
@@ -291,7 +291,7 @@ def test_compaction_event_fires_on_skill_switch() -> None:
     memory = MemoryManager(max_active_messages=200)
     # Seed a prior skill and its history so compaction has something to compact
     memory._active_skill = "prior_skill"  # simulate a skill already loaded
-    from tokoboros.core.llm import Message as Msg
+    from hachi.core.llm import Message as Msg
     memory._history = [
         Msg(role="user", content="previous user message"),
         Msg(role="assistant", content="previous assistant reply"),
@@ -388,7 +388,7 @@ def test_iteration_limit_returns_incomplete_string() -> None:
 
 def test_session_token_budget_stops_loop() -> None:
     """A session token cap stops the loop before hitting the iteration limit."""
-    from tokoboros.core.cost import CostTracker
+    from hachi.core.cost import CostTracker
 
     reg = ToolRegistry()
     reg.register(_tool("noop"), lambda: "ok")

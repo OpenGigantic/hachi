@@ -12,9 +12,9 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from tokoboros.core.skill_packs import _default_skills_root
-from tokoboros.og_engine.engine import SkillEngine
-from tokoboros.og_engine.parser import OGNode
+from hachi.core.skill_packs import _default_skills_root
+from hachi.og_engine.engine import SkillEngine
+from hachi.og_engine.parser import OGNode
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -68,7 +68,7 @@ def test_collision_detection_skips_second_file(tmp_path: Path, caplog) -> None:
     _make_og_file(dir_b, "file_alpha", "duplicate_node")  # same stem + same node name → collision
 
     eng = SkillEngine()
-    with caplog.at_level(logging.ERROR, logger="tokoboros.og_engine.engine"):
+    with caplog.at_level(logging.ERROR, logger="hachi.og_engine.engine"):
         eng.load_file(dir_a / "file_alpha.og")
         eng.load_file(dir_b / "file_alpha.og")
 
@@ -201,7 +201,7 @@ def test_brain_og_nodes_excluded_from_search(tmp_path: Path) -> None:
     brain_file = tmp_path / "brain.og"
     brain_file.write_text(
         "::node[identity]\n->[:role=config]\n->[:scope=orchestrator]\n"
-        "->[:keywords=identity, agent]\n\n::dense\nI am Tokoboros.\n",
+        "->[:keywords=identity, agent]\n\n::dense\nI am Hachi.\n",
         encoding="utf-8",
     )
 
@@ -221,7 +221,7 @@ def test_brain_og_node_accessible_via_get_node_for_orchestrator(tmp_path: Path) 
     brain_file = tmp_path / "brain.og"
     brain_file.write_text(
         "::node[identity]\n->[:role=config]\n->[:scope=orchestrator]\n->[:keywords=identity]\n\n"
-        "::dense\nI am Tokoboros.\n",
+        "::dense\nI am Hachi.\n",
         encoding="utf-8",
     )
     eng = SkillEngine(agent_role="orchestrator")

@@ -1,4 +1,4 @@
-"""Tests for `tokoboros skill benchmark` CLI command.
+"""Tests for `hachi skill benchmark` CLI command.
 
 Four cases:
 1. Happy path — runs against bundled skills, passes threshold, human output.
@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -27,7 +27,7 @@ runner = CliRunner()
 
 def _bundled_dir() -> Path:
     """Return the bundled default_skills path (same logic as test_og_benchmark)."""
-    import tokoboros.og_engine.engine as og_engine_mod
+    import hachi.og_engine.engine as og_engine_mod
 
     pkg_root = Path(og_engine_mod.__file__).resolve().parent.parent
     return pkg_root / "default_skills"
@@ -38,7 +38,7 @@ def _skip_if_no_bundled():
     d = _bundled_dir()
     if not d.exists():
         pytest.skip("bundled default_skills directory not found")
-    from tokoboros.og_engine.engine import SkillEngine
+    from hachi.og_engine.engine import SkillEngine
 
     engine = SkillEngine()
     engine.load_directory(d)

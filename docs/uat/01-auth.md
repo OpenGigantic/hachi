@@ -1,5 +1,10 @@
 # UAT Auth Report — Gateway & API Authentication/Authorization
 
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 > **Build:** `036dfd9` · **Date:** 2026-06-14 · **Verifier:** UAT agent (claude-sonnet-4-6)
 > **Scope:** UC-AUTH-001, UC-AUTH-002, UC-AUTH-003, ADV-014, ADV-015
 > **Notes for orchestrator:** **ALL FIVE scenarios are CONFIRMED defects**. The single most critical finding is that `auth_token` is `None` by default on loopback, so `protected_dependencies = []` — not `[Depends(_require_auth)]` — meaning every "protected" router is wide open with zero bearer-token enforcement (`fastapi_app.py:264`).
@@ -12,7 +17,7 @@
 - **Evidence:**
   - `fastapi_app.py:212-214`: `def _require_auth(request: Request) -> None:` / `if not auth_token: return` — the guard is a no-op when `auth_token is None`.
   - `fastapi_app.py:264`: `protected_dependencies = [Depends(_require_auth)] if auth_token else []` — when no token is set, this list is EMPTY, so all protected routers get no dependency injected.
-  - `cli/main.py:525-539` (`_resolve_gateway_auth_token`): when `TOKOBOROS_GATEWAY_API_TOKEN` is unset and host is loopback, returns `None`.
+  - `cli/main.py:525-539` (`_resolve_gateway_auth_token`): when `HACHI_GATEWAY_API_TOKEN` is unset and host is loopback, returns `None`.
   - Live inline repro (no real server needed, via `TestClient`):
     ```
     GET  /sessions       -> 503  (not 401)
@@ -32,9 +37,9 @@
 
 - **Claim:** The daemon launches the gateway with a bearer token, so the always-on surface requires auth.
 - **Evidence:**
-  - `daemon.py:133-149` (`_build_argv`): produces `['tokoboros.exe', 'gateway', '--host', '127.0.0.1', '--port', '8787', '--runtime']` — no token argument and no env-var injection.
-  - Live repro: `_build_argv(DaemonConfig('127.0.0.1', 8787))` = `['...tokoboros.exe', 'gateway', '--host', '127.0.0.1', '--port', '8787', '--runtime']`. Confirmed: `Has --token arg: False`.
-  - `cli/main.py:525-539`: `_resolve_gateway_auth_token('127.0.0.1')` returns `None` when `TOKOBOROS_GATEWAY_API_TOKEN` is unset.
+  - `daemon.py:133-149` (`_build_argv`): produces `['hachi.exe', 'gateway', '--host', '127.0.0.1', '--port', '8787', '--runtime']` — no token argument and no env-var injection.
+  - Live repro: `_build_argv(DaemonConfig('127.0.0.1', 8787))` = `['...hachi.exe', 'gateway', '--host', '127.0.0.1', '--port', '8787', '--runtime']`. Confirmed: `Has --token arg: False`.
+  - `cli/main.py:525-539`: `_resolve_gateway_auth_token('127.0.0.1')` returns `None` when `HACHI_GATEWAY_API_TOKEN` is unset.
   - Since the daemon sets `host=127.0.0.1` (loopback) and passes no token env, the spawned gateway process resolves `auth_token=None`, so all protected routes are open (same as UC-AUTH-001).
 - **Finding:** The daemon installs and runs a permanently-open control plane. There is no auto-generation of a token on daemon install, no token is written to a keyring or file that the spawned process reads, and no mechanism prompts the user to set one. Any process on the machine can control the always-on agent without credentials.
 - **Severity:** Critical · **Regression test:** yes (partial) — `tests/test_cli_gateway_command.py::test_gateway_command_requires_auth_token_for_non_loopback_host` only tests `0.0.0.0`, not the loopback daemon case.
@@ -47,7 +52,7 @@
 - **Evidence:**
   - `fastapi_app.py:187-199`:
     ```python
-    _raw_origins = os.environ.get("TOKOBOROS_CORS_ORIGINS", "")
+    _raw_origins = os.environ.get("HACHI_CORS_ORIGINS", "")
     _cors_origins: list[str] = (
         [o.strip() for o in _raw_origins.split(",") if o.strip()]
         if _raw_origins.strip()
@@ -72,7 +77,7 @@
       Access-Control-Allow-Origin: (none)
     ```
   - Combined with UC-AUTH-001 (no auth on loopback): a page served from `localhost:5173` (the Vite dev server for the bundled frontend) can issue credentialed cross-origin requests to `POST /sessions`, `PUT /config/permissions`, `POST /v1/chat/completions` and receive responses.
-- **Finding:** CORS is correctly scoped (only `localhost:5173/4173` allowed, not arbitrary origins). However, `allow_credentials=False` does NOT prevent unauthenticated cross-origin requests — it only prevents cookies from being forwarded. Since there is no auth token required (UC-AUTH-001), any JavaScript on `localhost:5173` can make authenticated-equivalent API calls. The threat is narrowed to localhost-served pages but not to the Tokoboros frontend only; any local dev server on those ports (React, Vite, etc.) can drive the agent. This is an open-source project with a well-known dev-server default port.
+- **Finding:** CORS is correctly scoped (only `localhost:5173/4173` allowed, not arbitrary origins). However, `allow_credentials=False` does NOT prevent unauthenticated cross-origin requests — it only prevents cookies from being forwarded. Since there is no auth token required (UC-AUTH-001), any JavaScript on `localhost:5173` can make authenticated-equivalent API calls. The threat is narrowed to localhost-served pages but not to the Hachi frontend only; any local dev server on those ports (React, Vite, etc.) can drive the agent. This is an open-source project with a well-known dev-server default port.
 - **Severity:** High · **Regression test:** no — there is no test verifying that cross-origin requests without an auth token are blocked (they currently are not).
 
 ---
@@ -85,7 +90,7 @@
   - Affected routes (all under protected routers): `POST /sessions`, `GET /sessions`, `GET /sessions/{id}`, `POST /sessions/{id}/messages`, `DELETE /sessions/{id}`, `GET /sessions/{id}/events`, `GET /sessions/{id}/stream`, `GET /runtime/events`, `GET /runtime/mcp/inventory`, `GET /jobs/active`, `GET /jobs/failed`, `GET /permissions/audit`, `GET /subagents/reports`, `GET /schedules`, `DELETE /schedules/{id}`, `PUT /schedules/{id}/enabled`, `GET /config`, `PUT /config/provider`, `POST /config/provider/validate`, `PUT /config/permissions`, `PUT /config/memory`, `GET /setup`, `POST /setup/apply`, `POST /v1/chat/completions`, `GET /v1/models`, `POST /channels/{channel}/inbound`.
   - Live repro: `GET /schedules` returns `200 {"schedules": []}` with no `Authorization` header when no token is set. `PUT /config/provider` returns 503 (not 401 — only fails because no real control plane callback is wired in test, not because auth blocked it).
   - Unprotected system routes (`/`, `/health`, `/readiness`) are intentionally public — these are correct.
-- **Finding:** Full takeover of the control plane is possible from any local process when the default is used. An attacker can: read all sessions and events, inject chat messages, modify provider config (change API key), escalate permission tier to `unrestricted`, cancel schedules, and use the agent to perform autonomous actions. No mitigation exists unless the user explicitly sets `TOKOBOROS_GATEWAY_API_TOKEN`.
+- **Finding:** Full takeover of the control plane is possible from any local process when the default is used. An attacker can: read all sessions and events, inject chat messages, modify provider config (change API key), escalate permission tier to `unrestricted`, cancel schedules, and use the agent to perform autonomous actions. No mitigation exists unless the user explicitly sets `HACHI_GATEWAY_API_TOKEN`.
 - **Severity:** Critical · **Regression test:** no — the exit criteria in §11 of the UAT plan specifically calls for a regression test for unauth gateway (ADV-014) that does not yet exist.
 
 ---
@@ -95,11 +100,11 @@
 - **Claim:** The channel inbound endpoint and OpenAI endpoint are vulnerable to abuse: empty channel allowlist accepts any sender, and the unauth posture removes attacker cost.
 - **Evidence:**
   - **Rate limits (functional):**
-    - `fastapi_app.py:469`: `openai_limiter = RateLimiter(_int_env("TOKOBOROS_OPENAI_RATE_LIMIT", 60), 60.0)` — default 60 req/60s per key (`"openai"` key, meaning all callers share one bucket).
-    - `fastapi_app.py:612-613`: `channel_limiter = RateLimiter(_int_env("TOKOBOROS_CHANNEL_RATE_LIMIT", 30), 60.0)` — default 30 req/60s per `{channel}:{sender}` key.
+    - `fastapi_app.py:469`: `openai_limiter = RateLimiter(_int_env("HACHI_OPENAI_RATE_LIMIT", 60), 60.0)` — default 60 req/60s per key (`"openai"` key, meaning all callers share one bucket).
+    - `fastapi_app.py:612-613`: `channel_limiter = RateLimiter(_int_env("HACHI_CHANNEL_RATE_LIMIT", 30), 60.0)` — default 30 req/60s per `{channel}:{sender}` key.
     - `tests/test_rate_limit.py` (4 tests): all pass. RateLimiter blocks at `max_requests+1` and recovers after the window. Confirmed working.
   - **Empty channel allowlist (defect present):**
-    - `fastapi_app.py:613`: `channel_allowlist = _parse_allowlist(os.environ.get("TOKOBOROS_CHANNEL_ALLOWLIST"))`.
+    - `fastapi_app.py:613`: `channel_allowlist = _parse_allowlist(os.environ.get("HACHI_CHANNEL_ALLOWLIST"))`.
     - `fastapi_app.py:620-624`: `if channel_allowlist and not (sender in channel_allowlist or ...): raise 403`. The guard is `if channel_allowlist` — when the env var is unset, `channel_allowlist = set()`, and the guard short-circuits to "allow all senders". Live repro: `_parse_allowlist(None) == set()` → any `sender_id` is accepted.
     - This means any external caller can post to `POST /channels/{channel}/inbound` with any `sender_id` and get a full agent turn, limited only by the rate limiter (30/60s).
   - **OpenAI rate-limit key collision (partial defect):**

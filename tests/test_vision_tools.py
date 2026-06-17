@@ -10,11 +10,11 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
-from tokoboros.core.llm import LLMResponse, ToolCall
-from tokoboros.core.loop import ExecutionLoop, ToolRegistry
-from tokoboros.core.sub_agent import SubAgentMemory
-from tokoboros.core.tool_results import ToolResultBlocks
-from tokoboros.tools.vision_tools import (
+from hachi.core.llm import LLMResponse, ToolCall
+from hachi.core.loop import ExecutionLoop, ToolRegistry
+from hachi.core.sub_agent import SubAgentMemory
+from hachi.core.tool_results import ToolResultBlocks
+from hachi.tools.vision_tools import (
     _make_view_image,
     register_vision_tools,
 )

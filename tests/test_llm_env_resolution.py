@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tokoboros.core.llm import AnthropicClient, create_llm_client
+from hachi.core.llm import AnthropicClient, create_llm_client
 
 
 def test_create_llm_client_reads_api_key_from_dotenv(monkeypatch, tmp_path: Path) -> None:

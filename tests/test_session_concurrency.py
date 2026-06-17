@@ -14,14 +14,14 @@ from __future__ import annotations
 import threading
 from unittest.mock import MagicMock
 
-from tokoboros.core.loop import ExecutionLoop
-from tokoboros.core.memory import MemoryManager
-from tokoboros.gateway.orchestrator import AgentSession
+from hachi.core.loop import ExecutionLoop
+from hachi.core.memory import MemoryManager
+from hachi.gateway.orchestrator import AgentSession
 
 
 def _make_session() -> AgentSession:
     """Return a minimal AgentSession backed by a fake synchronous LLM."""
-    from tokoboros.core.llm import LLMResponse
+    from hachi.core.llm import LLMResponse
 
     def _stream_once(**_kwargs):
         response = LLMResponse(
@@ -114,7 +114,7 @@ def test_concurrent_chat_serializes_turns() -> None:
 
 def test_session_busy_event_emitted_on_contention() -> None:
     """session.busy event is emitted when a second caller has to queue."""
-    from tokoboros.core.runtime_events import SESSION_BUSY
+    from hachi.core.runtime_events import SESSION_BUSY
 
     session = _make_session()
     events: list[tuple[str, dict]] = []

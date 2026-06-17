@@ -13,16 +13,16 @@ from pathlib import Path
 
 import pytest
 
-import tokoboros.og_engine.engine as og_engine_mod
-from tokoboros.og_engine.engine import SkillEngine, estimate_tokens
+import hachi.og_engine.engine as og_engine_mod
+from hachi.og_engine.engine import SkillEngine, estimate_tokens
 
 SAVINGS_THRESHOLD = 0.80
 
 
 def _bundled_skills_dir() -> Path:
     # Derive the package root from a module with a real __file__ (the top-level
-    # `tokoboros` package is a namespace package, so its __file__ is None).
-    pkg_root = Path(og_engine_mod.__file__).resolve().parent.parent  # .../tokoboros
+    # `hachi` package is a namespace package, so its __file__ is None).
+    pkg_root = Path(og_engine_mod.__file__).resolve().parent.parent  # .../hachi
     return pkg_root / "default_skills"
 
 

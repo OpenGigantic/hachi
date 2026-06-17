@@ -1,22 +1,27 @@
-## Plan: Tokoboros God-Tier Upgrade
+> **Historical document.** Written before the rename to Hachi. References to
+> the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
 
-Tokoboros should evolve from a strong local single-session agent runtime into a local-first, single-operator control plane. Preserve the strongest existing ideas — ObjectGraph, PermissionGate intent, ToolRegistry, runtime events/read models, and sub-agent isolation — and replace the weak points: ad hoc host execution, best-effort background threads, regex-only memory safety, mutable shared session state, and the absence of a real gateway, scheduler, deployment story, or self-improvement pipeline.
+## Plan: Hachi God-Tier Upgrade
+
+Hachi should evolve from a strong local single-session agent runtime into a local-first, single-operator control plane. Preserve the strongest existing ideas — ObjectGraph, PermissionGate intent, ToolRegistry, runtime events/read models, and sub-agent isolation — and replace the weak points: ad hoc host execution, best-effort background threads, regex-only memory safety, mutable shared session state, and the absence of a real gateway, scheduler, deployment story, or self-improvement pipeline.
 
 **Current review**
 
 - P0 security blockers:
-  1. `src/tokoboros/core/oauth.py` hardcodes a Google client secret fallback and uses it in both token exchange and refresh.
-  2. `src/tokoboros/tools/os_tools.py` executes raw terminal commands with `shell=True`.
-  3. `src/tokoboros/core/mcp_client.py` uses `shell=True` on Windows and inherits the host environment into MCP subprocesses.
-  4. `src/tokoboros/core/rest_adapter.py` issues arbitrary outbound HTTP requests with token interpolation and no SSRF/allowlist policy.
-  5. `src/tokoboros/core/sandbox.py` is process isolation only, not a secure sandbox boundary, and still passes host environment details such as `USERPROFILE`.
-  6. `src/tokoboros/core/memory_guard.py` uses a small regex list that is too weak for persistent-memory prompt injection defense.
+  1. `src/hachi/core/oauth.py` hardcodes a Google client secret fallback and uses it in both token exchange and refresh.
+  2. `src/hachi/tools/os_tools.py` executes raw terminal commands with `shell=True`.
+  3. `src/hachi/core/mcp_client.py` uses `shell=True` on Windows and inherits the host environment into MCP subprocesses.
+  4. `src/hachi/core/rest_adapter.py` issues arbitrary outbound HTTP requests with token interpolation and no SSRF/allowlist policy.
+  5. `src/hachi/core/sandbox.py` is process isolation only, not a secure sandbox boundary, and still passes host environment details such as `USERPROFILE`.
+  6. `src/hachi/core/memory_guard.py` uses a small regex list that is too weak for persistent-memory prompt injection defense.
 - P1 architectural issues:
-  1. `src/tokoboros/gateway/orchestrator.py` no longer mutates `loop.base_system_prompt` per chat, but it still shares `ExecutionLoop`/`MemoryManager` state with no per-session serialization or concurrency control.
-  2. `src/tokoboros/core/memory.py` still has daemon-thread fallback paths and silent exception swallowing outside the queued path, so memory updates can still be dropped invisibly.
-  3. `src/tokoboros/gateway/orchestrator.py` and `src/tokoboros/tools/delegation_tools.py` now have queue hooks, but background work is still not fully durable end-to-end and lacks a broader retry/health story beyond the in-memory queue.
-  4. `src/tokoboros/og_engine/engine.py` only prints malformed skill parse failures, so skill registry corruption is easy to miss.
-  5. `src/tokoboros/core/session_store.py` is append-only and simple, but not yet a full turn/event store with transactional turn boundaries, FTS, or recovery semantics.
+  1. `src/hachi/gateway/orchestrator.py` no longer mutates `loop.base_system_prompt` per chat, but it still shares `ExecutionLoop`/`MemoryManager` state with no per-session serialization or concurrency control.
+  2. `src/hachi/core/memory.py` still has daemon-thread fallback paths and silent exception swallowing outside the queued path, so memory updates can still be dropped invisibly.
+  3. `src/hachi/gateway/orchestrator.py` and `src/hachi/tools/delegation_tools.py` now have queue hooks, but background work is still not fully durable end-to-end and lacks a broader retry/health story beyond the in-memory queue.
+  4. `src/hachi/og_engine/engine.py` only prints malformed skill parse failures, so skill registry corruption is easy to miss.
+  5. `src/hachi/core/session_store.py` is append-only and simple, but not yet a full turn/event store with transactional turn boundaries, FTS, or recovery semantics.
 - P1 product/ops gaps:
   1. Gateway foundations exist (`connect`, `chat`, `events`, readiness), but there is still no long-lived daemon with auth, pairing, or remote-safe multi-surface control plane.
   2. No scheduler/cron subsystem; only `core_suspend_workflow` exists.
@@ -136,22 +141,22 @@ Tokoboros should evolve from a strong local single-session agent runtime into a 
 
 **Relevant files**
 
-- `d:/OpenGigantic/tokoboros/src/tokoboros/gateway/orchestrator.py` — Main refactor anchor. `AgentSession.chat()` currently mutates prompt state, owns persistence hooks, and should become the session-supervisor seam.
-- `d:/OpenGigantic/tokoboros/src/tokoboros/core/loop.py` — Preserve ReAct orchestration, but replace stringly tool errors with typed results and policy-aware execution.
-- `d:/OpenGigantic/tokoboros/src/tokoboros/core/memory.py` — Split active memory, compaction, and fact extraction into distinct services.
-- `d:/OpenGigantic/tokoboros/src/tokoboros/core/memory_vault.py` — Keep the dual-collection concept, add provenance/redaction/TTL/provider abstraction.
-- `d:/OpenGigantic/tokoboros/src/tokoboros/core/session_store.py` — Upgrade from message log to transactional turn/event store plus transcript search.
-- `d:/OpenGigantic/tokoboros/src/tokoboros/core/oauth.py` — Remove embedded secret, add safer OAuth configuration/state/PKCE handling.
-- `d:/OpenGigantic/tokoboros/src/tokoboros/tools/os_tools.py` — Replace shell execution and add auditable command policy.
-- `d:/OpenGigantic/tokoboros/src/tokoboros/core/mcp_client.py` — Remove shell-mode startup, isolate env, and add lifecycle health/circuit breaking.
-- `d:/OpenGigantic/tokoboros/src/tokoboros/core/rest_adapter.py` — Add URL allowlists, secret interpolation policy, and SSRF controls.
-- `d:/OpenGigantic/tokoboros/src/tokoboros/core/sandbox.py` — Recast as development backend beneath a new sandbox interface; container backend becomes the real security path.
-- `d:/OpenGigantic/tokoboros/src/tokoboros/core/memory_guard.py` — Replace regex-only persistence scanner with layered untrusted-content policy.
-- `d:/OpenGigantic/tokoboros/src/tokoboros/og_engine/engine.py` — Replace print-based diagnostics with structured validation/linting and compiled skill registry reporting.
-- `d:/OpenGigantic/tokoboros/src/tokoboros/cli/main.py` — Convert to client/ops entrypoint; `doctor()` should evolve into environment + security + runtime diagnostics.
-- `d:/OpenGigantic/tokoboros/src/tokoboros/tui/app.py` — Preserve event-driven UI/read-model design, but source data from gateway streams instead of in-process callbacks.
-- `d:/OpenGigantic/tokoboros/.github/workflows/ci.yml` — Expand into lint/type/test/security matrix and build pipeline.
-- `d:/OpenGigantic/tokoboros/README.md` — Align claims with delivered phases and add honest deployment/security guidance.
+- `d:/OpenGigantic/hachi/src/hachi/gateway/orchestrator.py` — Main refactor anchor. `AgentSession.chat()` currently mutates prompt state, owns persistence hooks, and should become the session-supervisor seam.
+- `d:/OpenGigantic/hachi/src/hachi/core/loop.py` — Preserve ReAct orchestration, but replace stringly tool errors with typed results and policy-aware execution.
+- `d:/OpenGigantic/hachi/src/hachi/core/memory.py` — Split active memory, compaction, and fact extraction into distinct services.
+- `d:/OpenGigantic/hachi/src/hachi/core/memory_vault.py` — Keep the dual-collection concept, add provenance/redaction/TTL/provider abstraction.
+- `d:/OpenGigantic/hachi/src/hachi/core/session_store.py` — Upgrade from message log to transactional turn/event store plus transcript search.
+- `d:/OpenGigantic/hachi/src/hachi/core/oauth.py` — Remove embedded secret, add safer OAuth configuration/state/PKCE handling.
+- `d:/OpenGigantic/hachi/src/hachi/tools/os_tools.py` — Replace shell execution and add auditable command policy.
+- `d:/OpenGigantic/hachi/src/hachi/core/mcp_client.py` — Remove shell-mode startup, isolate env, and add lifecycle health/circuit breaking.
+- `d:/OpenGigantic/hachi/src/hachi/core/rest_adapter.py` — Add URL allowlists, secret interpolation policy, and SSRF controls.
+- `d:/OpenGigantic/hachi/src/hachi/core/sandbox.py` — Recast as development backend beneath a new sandbox interface; container backend becomes the real security path.
+- `d:/OpenGigantic/hachi/src/hachi/core/memory_guard.py` — Replace regex-only persistence scanner with layered untrusted-content policy.
+- `d:/OpenGigantic/hachi/src/hachi/og_engine/engine.py` — Replace print-based diagnostics with structured validation/linting and compiled skill registry reporting.
+- `d:/OpenGigantic/hachi/src/hachi/cli/main.py` — Convert to client/ops entrypoint; `doctor()` should evolve into environment + security + runtime diagnostics.
+- `d:/OpenGigantic/hachi/src/hachi/tui/app.py` — Preserve event-driven UI/read-model design, but source data from gateway streams instead of in-process callbacks.
+- `d:/OpenGigantic/hachi/.github/workflows/ci.yml` — Expand into lint/type/test/security matrix and build pipeline.
+- `d:/OpenGigantic/hachi/README.md` — Align claims with delivered phases and add honest deployment/security guidance.
 
 **Verification**
 

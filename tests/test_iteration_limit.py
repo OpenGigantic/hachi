@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from tokoboros.core.llm import LLMResponse, ToolCall
-from tokoboros.core.loop import ExecutionLoop
-from tokoboros.core.memory import MemoryManager
-from tokoboros.core.runtime_events import SESSION_ITERATION_LIMIT
+from hachi.core.llm import LLMResponse, ToolCall
+from hachi.core.loop import ExecutionLoop
+from hachi.core.memory import MemoryManager
+from hachi.core.runtime_events import SESSION_ITERATION_LIMIT
 
 
 def _make_loop(max_iterations: int = 1) -> tuple[ExecutionLoop, list]:
@@ -47,7 +47,7 @@ def _make_loop(max_iterations: int = 1) -> tuple[ExecutionLoop, list]:
     loop._stream_generate = MagicMock(return_value=fake_response)
 
     # Prime the memory with a user message
-    from tokoboros.core.llm import Message
+    from hachi.core.llm import Message
     memory.add_message(Message(role="user", content="do something long"))
 
     return loop, events
@@ -110,7 +110,7 @@ def test_normal_completion_unaffected() -> None:
         )
     )
 
-    from tokoboros.core.llm import Message
+    from hachi.core.llm import Message
     memory.add_message(Message(role="user", content="hello"))
 
     result = loop.run(max_iterations=5)

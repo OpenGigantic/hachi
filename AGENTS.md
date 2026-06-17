@@ -15,24 +15,24 @@ This file helps coding agents become productive in this repository quickly.
 - Lint: `uv run ruff check src tests`
 - Format: `uv run ruff format src tests`
 - Type-check: `uv run mypy src --ignore-missing-imports`
-- Run app (TUI): `uv run tokoboros run`
-- Run app (REPL fallback): `uv run tokoboros run --repl`
-- Setup wizard: `uv run tokoboros setup --tier lightning`
-- Show config: `uv run tokoboros config --paths`
-- Manage secrets: `uv run tokoboros secrets --list|--check|--delete <name>`
-- Diagnostics: `uv run tokoboros doctor`
-- Security audit: `uv run tokoboros security-audit --json|--fail-on-high|--max-findings N`
+- Run app (TUI): `uv run hachi run`
+- Run app (REPL fallback): `uv run hachi run --repl`
+- Setup wizard: `uv run hachi setup --tier lightning`
+- Show config: `uv run hachi config --paths`
+- Manage secrets: `uv run hachi secrets --list|--check|--delete <name>`
+- Diagnostics: `uv run hachi doctor`
+- Security audit: `uv run hachi security-audit --json|--fail-on-high|--max-findings N`
 
 ## Architecture Map
 
-- Entry point: `src/tokoboros/cli/main.py`
-- Session orchestration and boot: `src/tokoboros/gateway/orchestrator.py`
-- Main loop/tool execution: `src/tokoboros/core/loop.py`
-- Immutable per-turn context: `src/tokoboros/core/turn_context.py`
-- Skill parsing/execution: `src/tokoboros/og_engine/parser.py` and `src/tokoboros/og_engine/engine.py`
-- Tool implementations: `src/tokoboros/tools/`
-- Textual UI: `src/tokoboros/tui/app.py`
-- Runtime event contract: `src/tokoboros/core/runtime_events.py` and `on_event(event_type: str, data: dict)`
+- Entry point: `src/hachi/cli/main.py`
+- Session orchestration and boot: `src/hachi/gateway/orchestrator.py`
+- Main loop/tool execution: `src/hachi/core/loop.py`
+- Immutable per-turn context: `src/hachi/core/turn_context.py`
+- Skill parsing/execution: `src/hachi/og_engine/parser.py` and `src/hachi/og_engine/engine.py`
+- Tool implementations: `src/hachi/tools/`
+- Textual UI: `src/hachi/tui/app.py`
+- Runtime event contract: `src/hachi/core/runtime_events.py` and `on_event(event_type: str, data: dict)`
 
 ## Coding Conventions
 
@@ -54,7 +54,7 @@ This file helps coding agents become productive in this repository quickly.
 - Do not introduce new `subprocess` calls with `shell=True`.
 - Avoid interactive credential prompts during Textual boot; resolve credentials lazily at call time.
 - Do not mutate shared loop prompt state per turn; use `TurnContext` patterns.
-- Prefer queued background work patterns over fire-and-forget threads; use `src/tokoboros/jobs/queue.py` for durable work when possible.
+- Prefer queued background work patterns over fire-and-forget threads; use `src/hachi/jobs/queue.py` for durable work when possible.
 
 ## Windows Notes
 

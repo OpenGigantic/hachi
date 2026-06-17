@@ -1,6 +1,6 @@
-# Contributing to Tokoboros
+# Contributing to Hachi
 
-Thank you for your interest in contributing to Tokoboros! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to Hachi! This document provides guidelines and instructions for contributing.
 
 ## Development Setup
 
@@ -14,8 +14,8 @@ Thank you for your interest in contributing to Tokoboros! This document provides
 
 ```bash
 # Clone the repository
-git clone https://github.com/OpenGigantic/tokoboros.git
-cd tokoboros
+git clone https://github.com/OpenGigantic/hachi.git
+cd hachi
 
 # Create/update local environment and include development dependencies
 uv sync --extra dev

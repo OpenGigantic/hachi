@@ -343,7 +343,7 @@ Executable or technical content with language tag. Always copied verbatim. Never
 ::code[lang=bash]
 uv sync
 uv run python --version
-uv run tokoboros --help
+uv run hachi --help
 ::end
 ```
 
@@ -356,7 +356,7 @@ Ordered sequential instructions. Order matters. Rendered as a numbered list. Eac
 ::steps
 1. Sync project dependencies: uv sync
 2. Validate Python runtime: uv run python --version
-3. Validate command wiring: uv run tokoboros --help
+3. Validate command wiring: uv run hachi --help
 ::end
 ```
 
@@ -617,7 +617,7 @@ Use uv to create/manage the project environment and install dependencies:
 
     uv sync
     uv run python --version
-    uv run tokoboros --help
+    uv run hachi --help
 
 Optional: use `uv sync --frozen` in CI to enforce lockfile reproducibility.
 ::end
@@ -1523,7 +1523,7 @@ Ensure Python 3.11 or higher is installed on the target system.
 ::steps
 1. Sync project dependencies: uv sync --extra dev
 2. Validate runtime: uv run python --version
-3. Validate package wiring: uv run tokoboros --help
+3. Validate package wiring: uv run hachi --help
 4. Run tests in managed env: uv run pytest
 5. For CI, enforce lockfile with: uv sync --frozen --extra dev
 ::end

@@ -21,7 +21,7 @@ from collections.abc import Callable
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from tokoboros.tools.delegation_tools import (
+from hachi.tools.delegation_tools import (
     BLOCKED_TOOL_NAMES,
     DELEGATE_PARALLEL_TASKS_SCHEMA,
     _make_delegate_parallel_tasks,
@@ -52,7 +52,7 @@ def _make_parallel_fn(
     )
     if single_fn is not None:
         # Replace the internal _single dispatcher via patching
-        import tokoboros.tools.delegation_tools as dt
+        import hachi.tools.delegation_tools as dt
 
         with patch.object(dt, "_make_delegate_task", return_value=single_fn):
             fn = _make_delegate_parallel_tasks(
@@ -157,7 +157,7 @@ def test_parallel_max_workers_respected() -> None:
 
     We can't reliably time threads, but we can confirm all tasks complete.
     """
-    from tokoboros.tools.delegation_tools import _PARALLEL_MAX_WORKERS
+    from hachi.tools.delegation_tools import _PARALLEL_MAX_WORKERS
 
     assert _PARALLEL_MAX_WORKERS == 3
 

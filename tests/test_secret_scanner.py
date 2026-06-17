@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tokoboros.core.secret_scanner import (
+from hachi.core.secret_scanner import (
     REDACTION_PLACEHOLDER,
     contains_secret,
     find_secret_kinds,

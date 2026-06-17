@@ -1,6 +1,6 @@
 """P2-03b: skill benchmark --suite flag tests.
 
-Verifies that the CLI `tokoboros skill benchmark --suite <X>` correctly:
+Verifies that the CLI `hachi skill benchmark --suite <X>` correctly:
 - Runs token arm for `--suite token` (default)
 - Runs M1 arm for `--suite retrieval`
 - Runs both arms for `--suite fast`
@@ -193,7 +193,7 @@ def cli_runner():
 
 @pytest.fixture()
 def cli_app():
-    from tokoboros.cli.main import app
+    from hachi.cli.main import app
 
     return app
 
@@ -203,9 +203,9 @@ def test_cli_suite_unknown_exits_2(cli_runner, cli_app):
     assert result.exit_code == 2
 
 
-@patch("tokoboros.og_engine.engine.estimate_tokens", return_value=1000)
-@patch("tokoboros.og_engine.engine.SkillEngine")
-@patch("tokoboros.gateway.workspace.get_skills_dir", return_value=Path("."))
+@patch("hachi.og_engine.engine.estimate_tokens", return_value=1000)
+@patch("hachi.og_engine.engine.SkillEngine")
+@patch("hachi.gateway.workspace.get_skills_dir", return_value=Path("."))
 def test_cli_suite_token_json_output(mock_dir, mock_engine_cls, mock_tokens, cli_runner, cli_app):
     mock_engine_cls.return_value = _make_skill_engine_mock()
     result = cli_runner.invoke(
@@ -220,9 +220,9 @@ def test_cli_suite_token_json_output(mock_dir, mock_engine_cls, mock_tokens, cli
     assert "m1" not in output_json
 
 
-@patch("tokoboros.og_engine.engine.estimate_tokens", return_value=1000)
-@patch("tokoboros.og_engine.engine.SkillEngine")
-@patch("tokoboros.gateway.workspace.get_skills_dir", return_value=Path("."))
+@patch("hachi.og_engine.engine.estimate_tokens", return_value=1000)
+@patch("hachi.og_engine.engine.SkillEngine")
+@patch("hachi.gateway.workspace.get_skills_dir", return_value=Path("."))
 def test_cli_suite_fast_json_has_both_arms(
     mock_dir, mock_engine_cls, mock_tokens, cli_runner, cli_app
 ):
@@ -259,9 +259,9 @@ def test_cli_suite_fast_json_has_both_arms(
     assert output_json["m1"]["passed"] is True
 
 
-@patch("tokoboros.og_engine.engine.estimate_tokens", return_value=1000)
-@patch("tokoboros.og_engine.engine.SkillEngine")
-@patch("tokoboros.gateway.workspace.get_skills_dir", return_value=Path("."))
+@patch("hachi.og_engine.engine.estimate_tokens", return_value=1000)
+@patch("hachi.og_engine.engine.SkillEngine")
+@patch("hachi.gateway.workspace.get_skills_dir", return_value=Path("."))
 def test_cli_m1_gate_fail_exits_1(mock_dir, mock_engine_cls, mock_tokens, cli_runner, cli_app):
     eng = _make_skill_engine_mock()
     mock_engine_cls.return_value = eng

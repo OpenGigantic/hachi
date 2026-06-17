@@ -5,7 +5,7 @@ Covers all validator functions with valid and invalid cases,
 including specific reject cases (e.g., invalid dates, end-before-start).
 """
 
-from tokoboros.core.validators import (
+from hachi.core.validators import (
     validate_a1_range,
     validate_date,
     validate_email,

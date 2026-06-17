@@ -240,7 +240,7 @@ class M2Result:
 def _tok(text: str) -> int:
     """Estimate token count — uses estimate_tokens if available, else len/4."""
     try:
-        from tokoboros.og_engine.engine import estimate_tokens
+        from hachi.og_engine.engine import estimate_tokens
 
         return estimate_tokens(text)
     except ImportError:

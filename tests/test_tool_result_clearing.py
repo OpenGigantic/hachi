@@ -8,10 +8,10 @@ small results, or non-tool_result content.
 
 from __future__ import annotations
 
-import tokoboros.core.memory as memory_mod
-from tokoboros.core.llm import LLMResponse, Message
-from tokoboros.core.loop import ExecutionLoop, ToolRegistry
-from tokoboros.core.memory import _CLEARED_TOOL_RESULT, MemoryManager
+import hachi.core.memory as memory_mod
+from hachi.core.llm import LLMResponse, Message
+from hachi.core.loop import ExecutionLoop, ToolRegistry
+from hachi.core.memory import _CLEARED_TOOL_RESULT, MemoryManager
 
 
 def _tool_result_msg(tool_use_id: str, content, is_error: bool = False) -> Message:

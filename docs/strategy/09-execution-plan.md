@@ -1,5 +1,10 @@
 # 09 — Execution Plan: Phases & Tasks for Multi-Agent Implementation
 
+> **Historical document.** Written before the Hachi rename. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 **Derived from:** the completed strategy engagement [00](00-recon.md)–[08](08-roadmap.md) (2026-06-12).
 **Baseline re-verified on `main@a54d242` (2026-06-12):** `frontend-contract` CI still commented out
 (ci.yml:100), node collision live (engine.py:324), no `generate_stream` anywhere, `InMemoryJobQueue`
@@ -31,7 +36,7 @@ what to build, and how to verify.
    - `uv run ruff check src tests` clean
    - `uv run --frozen python -m mypy src --ignore-missing-imports` no *new* errors (full-strict scope after P1-14)
    - `uv run --frozen python -m pytest -q` green
-   - Gateway route changed? → `uv run tokoboros gateway-openapi --output openapi/tokoboros-openapi.json`
+   - Gateway route changed? → `uv run hachi gateway-openapi --output openapi/hachi-openapi.json`
    - New behavior has a test; bug fixes write the failing test *first*
    - Conventional Commit message; tick this file's task checkbox in the same PR
    - **Windows note:** invoke pytest/mypy via `python -m …` (the `.exe` shims are blocked on this machine, os err 4551)
@@ -90,7 +95,7 @@ P2-04 memory M0 ──────────────► P2-05 M1   ·   P2
 surfaces (gateway REST, channels, in-process CLI/TUI bridge, schedule runner) with no per-session
 serialization — the only corruption-class bug.
 **Build.** Per-session `threading.Lock` (or single-consumer inbox queue) inside `AgentSession.chat()`
-(`src/tokoboros/gateway/orchestrator.py`); emit a `session.busy` runtime event so UIs can show
+(`src/hachi/gateway/orchestrator.py`); emit a `session.busy` runtime event so UIs can show
 queued state; scheduler (orchestrator.py:1568–1578) and channel runner then queue naturally.
 **Verify.** Write the 2-thread hammer test FIRST (today it corrupts alternating user/assistant +
 tool-pair structure); assert serialized execution + intact history. Changelog note: concurrent
@@ -102,7 +107,7 @@ messages now queue.
 agent turns; `create_session` runs the 11-step `boot_agent` (MCP subprocess spawns) on the event
 loop — SSE keepalives/health stall during any turn.
 **Build.** Convert those routes to sync `def` (threadpool) or wrap in `anyio.to_thread.run_sync`;
-move boot out of the async path (`src/tokoboros/gateway/fastapi_app.py` ~:282–289, 435–442, 482–495).
+move boot out of the async path (`src/hachi/gateway/fastapi_app.py` ~:282–289, 435–442, 482–495).
 **Verify.** Test: health endpoint + SSE keepalive stay responsive while a slow fake-LLM turn runs.
 
 #### P1-03 · Loud memory failures — ✅
@@ -166,8 +171,8 @@ Add a CI job running `lint_og_file` over `default_skills/` with **errors blockin
 
 #### P1-09 · Path unification — ✅
 **Effort** 0.5d · **Deps** P1-06/07 merged (touches engine.py) · **Source** [01/R7, TD-10](01-architecture-review.md) · roadmap 30d#9
-**Build.** Skill-usage DB (engine.py:255 `Path.home()/".tokoboros"`) and `RoleResolver`
-(sub_agent.py:414–416) → `get_tokoboros_paths()` platformdirs, with a legacy-dir read shim
+**Build.** Skill-usage DB (engine.py:255 `Path.home()/".hachi"`) and `RoleResolver`
+(sub_agent.py:414–416) → `get_hachi_paths()` platformdirs, with a legacy-dir read shim
 (mirror paths.py:95–120 pattern).
 **Verify.** Test: fresh env writes to platformdirs; legacy dir still read once.
 
@@ -234,7 +239,7 @@ replication ([08 §2](08-roadmap.md)).
 **Exit gate:**
 - [x] Streamed tokens visible in TUI + SSE + OpenAI facade; Esc interrupts a running turn *(P2-01a/b/c/d — 2026-06-13)*
 - [x] Jobs survive process restart; memory-sync runs in a resident worker, not next-turn drain *(P2-02 — 2026-06-13)*
-- [x] `tokoboros skill benchmark --suite fast` gates retrieval quality (M1 P@5 ≥ 0.8) per-PR in CI *(P2-03b — 2026-06-13)*
+- [x] `hachi skill benchmark --suite fast` gates retrieval quality (M1 P@5 ≥ 0.8) per-PR in CI *(P2-03b — 2026-06-13)*
 - [ ] Benchmark results post published (D-5 sign-off; arms A–F, honest crossover) *(⏸ gated D-5)*
 - [x] `memory.graph=true` users get FTS5-backed recall over `memory/*.og` files; Chroma auto-imported *(P2-04/05 — 2026-06-13)*
 - [x] `.ogpack` installs with a consent sheet; scope-widening update re-prompts with a diff *(P2-07a/b — 2026-06-13)*
@@ -285,7 +290,7 @@ turn path (assert chat() no longer executes queued extraction synchronously).
 
 ### WS-C — Benchmark suite v1 (8–12d total)
 
-> Location: `benchmarks/og_bench/` + `tokoboros skill benchmark --suite {fast|retrieval|full}`.
+> Location: `benchmarks/og_bench/` + `hachi skill benchmark --suite {fast|retrieval|full}`.
 > Full spec: [02 §8](02-object-graph-eval.md) — read it whole before starting.
 
 #### P2-03a · Corpora + query sets — ✅
@@ -302,7 +307,7 @@ P@1/P@5/R@5/MRR + false-positive rate on N-queries, engine-only, deterministic. 
 CI benchmark job (ci.yml:80–98) into `--suite fast` = current token gate **+ M1 P@5 ≥ 0.8 on K+P**
 — the [02 §2.3](02-object-graph-eval.md) failure can never regress silently again.
 **Done:** `benchmarks/og_bench/metrics.py` (M1Result, compute_m1, load_probes), `--suite
-{token|fast|retrieval|full}` added to `tokoboros skill benchmark`, CI updated to `--suite fast
+{token|fast|retrieval|full}` added to `hachi skill benchmark`, CI updated to `--suite fast
 --threshold 0.80`, 11 new tests in `test_p2_03b_benchmark_suite.py`. 1512 pass, lint clean.
 
 #### P2-03c · Cost/latency metrics M2 M3 M4 M7 — ✅
@@ -372,7 +377,7 @@ gate. Marketplace headline stays checkable: skills are data — **no install-tim
 
 #### P2-07b · Stage-1 curated index repo — ✅
 **Effort** 1–2d · **Deps** P2-07a
-Homebrew-tap-model `tokoboros-packs` index repo; existing community_packs fetcher; signing optional
+Homebrew-tap-model `hachi-packs` index repo; existing community_packs fetcher; signing optional
 but verified when present ([05 §7 Stage 1](05-agent-platform.md), [07 B2 first step](07-future-and-growth.md): sign from day one).
 
 ### WS-G — Workflow Composer
@@ -426,7 +431,7 @@ only now.
 First two of seven; `.og` seeds ship already (`inbox_sentinel`, `meeting_copilot`). Email: triage
 memory as `person` nodes + draft-approval UX + send-scope consent. Meeting: pre-brief workflow +
 post-meeting episode write (needs P2-05 for episode nodes). Ship with consent sheets.
-**Done (2026-06-13):** `src/tokoboros/packs/inbox-sentinel/` and `src/tokoboros/packs/meeting-copilot/`
+**Done (2026-06-13):** `src/hachi/packs/inbox-sentinel/` and `src/hachi/packs/meeting-copilot/`
 — full multi-node `.og` files with `::traverse`, `::dense` ≤30 tok, `requires` edges, person-node
 memory writes (inbox triage), and episode node write (meeting debrief). Both pass the og linter.
 Installer + consent sheets from P2-07a; scopes declared in `pack.toml`.
@@ -458,7 +463,7 @@ into Composer preview). Success metric: a scheduled artifact visible in Ops with
 | P3-03 ✅ | Research + CRM + Finance agent packs (Finance: **read/categorize only — never move money**, gate-enforced) | [05 §3](05-agent-platform.md) | P2-07a | 6–12d |
 | P3-04 ✅ | Embedding-rank option: hybrid BM25 ⊕ cosine via existing Chroma dep; off by default (offline mode) | [02 §7 P1](02-object-graph-eval.md) | P1-07 | 2–4d |
 | P3-05 ✅ | OG Explorer TUI screen: library tree + literal Pass-1/2/3 inspector with real token prices, usage, lint + collision badges, diff vs git | [06 §6.2](06-ux-redesign.md) | P1-06/07/08 | 4–6d |
-| P3-06 ✅ | SDK v0: `tokoboros.sdk` namespace re-exporting stable surface (ToolRegistry/ToolSpec, pack manifest types, event names, BaseLLMClient), independently semver'd + contract tests + `doctor --plugin` | [07 §4.2](07-future-and-growth.md) | P2-07a | 3–5d |
+| P3-06 ✅ | SDK v0: `hachi.sdk` namespace re-exporting stable surface (ToolRegistry/ToolSpec, pack manifest types, event names, BaseLLMClient), independently semver'd + contract tests + `doctor --plugin` | [07 §4.2](07-future-and-growth.md) | P2-07a | 3–5d |
 | P3-07 ✅ | Ops hygiene: daemon log rotation, Windows restart story, join threads on shutdown, explicit Chroma close | [01/R18, TD-12, TD-18](01-architecture-review.md) | — | 1–2d |
 
 **Sustained tracks from here on:** 2-week release trains · benchmark re-run per release · mypy
@@ -481,7 +486,7 @@ externalization (R19) as filler work.
 | ID | Task | Source | Deps | Effort |
 |---|---|---|---|---|
 | P5-01 ✅ | Spec repo + conformance suite (`.og` versioned standalone; conformance = parser tests extracted) — B1 first step *(2026-06-13)* | [07 §3 B1, §5](07-future-and-growth.md) | — | 2–4d |
-| P5-02 ✅ | Pack-author scaffold + guide (`tokoboros skill new`, lint-in-CI template repo) — the no-Python onramp *(2026-06-13)* | [07 §4.1](07-future-and-growth.md) | P2-07b | 2–3d |
+| P5-02 ✅ | Pack-author scaffold + guide (`hachi skill new`, lint-in-CI template repo) — the no-Python onramp *(2026-06-13)* | [07 §4.1](07-future-and-growth.md) | P2-07b | 2–3d |
 | P5-03 ✅ | Career + Learning agent packs *(2026-06-13)* | [05 §3](05-agent-platform.md) | P2-07a | 4–8d |
 | P5-04 ✅ | Git-synced workspace pattern: conflict-policy docs + per-device journal shard naming + tests — B4 first step *(2026-06-13)* | [07 §3 B4](07-future-and-growth.md) | P4-06 | 1–2d |
 | P5-05 ✅ | Yearly-memoir demo artifact from the journal layer — B3's self-marketing demo *(2026-06-13)* | [07 §3 B3](07-future-and-growth.md) | P3-01 | 2–3d |

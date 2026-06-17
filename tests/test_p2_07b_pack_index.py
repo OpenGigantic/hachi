@@ -28,17 +28,17 @@ SAMPLE_INDEX_TOML = textwrap.dedent("""\
     id = "google-workspace"
     name = "Google Workspace"
     description = "Gmail, Calendar, Drive skills"
-    source = "tokoboros-community/google-workspace@v1.0.0"
+    source = "hachi-community/google-workspace@v1.0.0"
     semver = "1.0.0"
     scopes = ["gmail.read", "calendar.read"]
-    author = "Tokoboros Team"
+    author = "Hachi Team"
     sha256 = "abc123"
 
     [[packs]]
     id = "slack-integration"
     name = "Slack"
     description = "Slack messaging skills"
-    source = "tokoboros-community/slack@v0.9.0"
+    source = "hachi-community/slack@v0.9.0"
     semver = "0.9.0"
     scopes = ["slack.read", "slack.send"]
     author = "Community"
@@ -51,21 +51,21 @@ SAMPLE_INDEX_TOML = textwrap.dedent("""\
 
 
 def test_parse_index_toml_empty():
-    from tokoboros.core.pack_index import parse_index_toml
+    from hachi.core.pack_index import parse_index_toml
 
     index = parse_index_toml("")
     assert index.packs == []
 
 
 def test_parse_index_toml_no_packs_key():
-    from tokoboros.core.pack_index import parse_index_toml
+    from hachi.core.pack_index import parse_index_toml
 
     index = parse_index_toml("title = 'index'")
     assert index.packs == []
 
 
 def test_parse_index_toml_single_pack():
-    from tokoboros.core.pack_index import parse_index_toml
+    from hachi.core.pack_index import parse_index_toml
 
     index = parse_index_toml(SAMPLE_INDEX_TOML)
     assert len(index.packs) == 2
@@ -78,7 +78,7 @@ def test_parse_index_toml_single_pack():
 
 
 def test_parse_index_toml_scopes():
-    from tokoboros.core.pack_index import parse_index_toml
+    from hachi.core.pack_index import parse_index_toml
 
     index = parse_index_toml(SAMPLE_INDEX_TOML)
     first = index.packs[0]
@@ -87,7 +87,7 @@ def test_parse_index_toml_scopes():
 
 
 def test_parse_index_toml_skips_entry_without_id():
-    from tokoboros.core.pack_index import parse_index_toml
+    from hachi.core.pack_index import parse_index_toml
 
     toml = textwrap.dedent("""\
         [[packs]]
@@ -104,14 +104,14 @@ def test_parse_index_toml_skips_entry_without_id():
 
 
 def test_parse_index_toml_accepts_bytes():
-    from tokoboros.core.pack_index import parse_index_toml
+    from hachi.core.pack_index import parse_index_toml
 
     index = parse_index_toml(SAMPLE_INDEX_TOML.encode("utf-8"))
     assert len(index.packs) == 2
 
 
 def test_parse_index_toml_unknown_keys_ignored():
-    from tokoboros.core.pack_index import parse_index_toml
+    from hachi.core.pack_index import parse_index_toml
 
     toml = '[[packs]]\nid = "x"\nfuture_field = "ignored"'
     index = parse_index_toml(toml)
@@ -124,7 +124,7 @@ def test_parse_index_toml_unknown_keys_ignored():
 
 
 def test_search_by_id():
-    from tokoboros.core.pack_index import parse_index_toml
+    from hachi.core.pack_index import parse_index_toml
 
     index = parse_index_toml(SAMPLE_INDEX_TOML)
     results = index.search("google")
@@ -133,7 +133,7 @@ def test_search_by_id():
 
 
 def test_search_by_name():
-    from tokoboros.core.pack_index import parse_index_toml
+    from hachi.core.pack_index import parse_index_toml
 
     index = parse_index_toml(SAMPLE_INDEX_TOML)
     results = index.search("Slack")
@@ -141,7 +141,7 @@ def test_search_by_name():
 
 
 def test_search_by_description():
-    from tokoboros.core.pack_index import parse_index_toml
+    from hachi.core.pack_index import parse_index_toml
 
     index = parse_index_toml(SAMPLE_INDEX_TOML)
     results = index.search("messaging")
@@ -149,21 +149,21 @@ def test_search_by_description():
 
 
 def test_search_case_insensitive():
-    from tokoboros.core.pack_index import parse_index_toml
+    from hachi.core.pack_index import parse_index_toml
 
     index = parse_index_toml(SAMPLE_INDEX_TOML)
     assert index.search("GOOGLE") == index.search("google")
 
 
 def test_search_no_match_returns_empty():
-    from tokoboros.core.pack_index import parse_index_toml
+    from hachi.core.pack_index import parse_index_toml
 
     index = parse_index_toml(SAMPLE_INDEX_TOML)
     assert index.search("nonexistent-xyz") == []
 
 
 def test_search_empty_query_returns_all():
-    from tokoboros.core.pack_index import parse_index_toml
+    from hachi.core.pack_index import parse_index_toml
 
     index = parse_index_toml(SAMPLE_INDEX_TOML)
     assert len(index.search("")) == 2
@@ -175,7 +175,7 @@ def test_search_empty_query_returns_all():
 
 
 def test_get_found():
-    from tokoboros.core.pack_index import parse_index_toml
+    from hachi.core.pack_index import parse_index_toml
 
     index = parse_index_toml(SAMPLE_INDEX_TOML)
     entry = index.get("slack-integration")
@@ -184,7 +184,7 @@ def test_get_found():
 
 
 def test_get_not_found():
-    from tokoboros.core.pack_index import parse_index_toml
+    from hachi.core.pack_index import parse_index_toml
 
     index = parse_index_toml(SAMPLE_INDEX_TOML)
     assert index.get("does-not-exist") is None
@@ -196,7 +196,7 @@ def test_get_not_found():
 
 
 def test_load_cached_index_returns_none_when_absent(tmp_path):
-    from tokoboros.core.pack_index import load_cached_index
+    from hachi.core.pack_index import load_cached_index
 
     state_dir = tmp_path / "state"
     state_dir.mkdir()
@@ -204,7 +204,7 @@ def test_load_cached_index_returns_none_when_absent(tmp_path):
 
 
 def test_load_cached_index_returns_parsed_index(tmp_path):
-    from tokoboros.core.pack_index import load_cached_index
+    from hachi.core.pack_index import load_cached_index
 
     state_dir = tmp_path / "state"
     state_dir.mkdir()
@@ -215,7 +215,7 @@ def test_load_cached_index_returns_parsed_index(tmp_path):
 
 
 def test_fetch_pack_index_uses_cache_when_fresh(tmp_path):
-    from tokoboros.core.pack_index import INDEX_CACHE_FILENAME, fetch_pack_index
+    from hachi.core.pack_index import INDEX_CACHE_FILENAME, fetch_pack_index
 
     state_dir = tmp_path / "state"
     state_dir.mkdir()
@@ -223,7 +223,7 @@ def test_fetch_pack_index_uses_cache_when_fresh(tmp_path):
     cache.write_text(SAMPLE_INDEX_TOML, encoding="utf-8")
 
     # _download must NOT be called when the cache is fresh.
-    with patch("tokoboros.core.pack_index._download") as mock_dl:
+    with patch("hachi.core.pack_index._download") as mock_dl:
         index = fetch_pack_index(state_dir, url="http://fake.example/index.toml")
         mock_dl.assert_not_called()
 
@@ -231,7 +231,7 @@ def test_fetch_pack_index_uses_cache_when_fresh(tmp_path):
 
 
 def test_fetch_pack_index_force_bypasses_cache(tmp_path):
-    from tokoboros.core.pack_index import INDEX_CACHE_FILENAME, fetch_pack_index
+    from hachi.core.pack_index import INDEX_CACHE_FILENAME, fetch_pack_index
 
     state_dir = tmp_path / "state"
     state_dir.mkdir()
@@ -239,7 +239,7 @@ def test_fetch_pack_index_force_bypasses_cache(tmp_path):
     cache.write_text(SAMPLE_INDEX_TOML, encoding="utf-8")
 
     with patch(
-        "tokoboros.core.pack_index._download",
+        "hachi.core.pack_index._download",
         return_value=SAMPLE_INDEX_TOML.encode("utf-8"),
     ):
         index = fetch_pack_index(state_dir, url="http://fake/index.toml", force=True)
@@ -248,7 +248,7 @@ def test_fetch_pack_index_force_bypasses_cache(tmp_path):
 
 
 def test_fetch_pack_index_falls_back_to_cache_on_error(tmp_path):
-    from tokoboros.core.pack_index import INDEX_CACHE_FILENAME, INDEX_TTL_SECONDS, fetch_pack_index
+    from hachi.core.pack_index import INDEX_CACHE_FILENAME, INDEX_TTL_SECONDS, fetch_pack_index
 
     state_dir = tmp_path / "state"
     state_dir.mkdir()
@@ -261,19 +261,19 @@ def test_fetch_pack_index_falls_back_to_cache_on_error(tmp_path):
 
     os.utime(cache, (old_time, old_time))
 
-    with patch("tokoboros.core.pack_index._download", side_effect=OSError("network down")):
+    with patch("hachi.core.pack_index._download", side_effect=OSError("network down")):
         index = fetch_pack_index(state_dir, url="http://fake/index.toml")
 
     assert len(index.packs) == 2
 
 
 def test_fetch_pack_index_raises_when_no_cache_and_network_fails(tmp_path):
-    from tokoboros.core.pack_index import fetch_pack_index
+    from hachi.core.pack_index import fetch_pack_index
 
     state_dir = tmp_path / "state"
     state_dir.mkdir()
 
-    with patch("tokoboros.core.pack_index._download", side_effect=OSError("network down")):
+    with patch("hachi.core.pack_index._download", side_effect=OSError("network down")):
         with pytest.raises(RuntimeError, match="Cannot fetch"):
             fetch_pack_index(state_dir, url="http://fake/index.toml", force=True)
 
@@ -284,7 +284,7 @@ def test_fetch_pack_index_raises_when_no_cache_and_network_fails(tmp_path):
 
 
 def test_verify_sha256_correct():
-    from tokoboros.core.pack_index import PackIndexEntry, verify_index_entry_sha256
+    from hachi.core.pack_index import PackIndexEntry, verify_index_entry_sha256
 
     content = b"skill content"
     digest = hashlib.sha256(content).hexdigest()
@@ -293,14 +293,14 @@ def test_verify_sha256_correct():
 
 
 def test_verify_sha256_mismatch():
-    from tokoboros.core.pack_index import PackIndexEntry, verify_index_entry_sha256
+    from hachi.core.pack_index import PackIndexEntry, verify_index_entry_sha256
 
     entry = PackIndexEntry(id="x", sha256="badhash")
     assert verify_index_entry_sha256(entry, b"anything") is False
 
 
 def test_verify_sha256_no_hash_always_passes():
-    from tokoboros.core.pack_index import PackIndexEntry, verify_index_entry_sha256
+    from hachi.core.pack_index import PackIndexEntry, verify_index_entry_sha256
 
     entry = PackIndexEntry(id="x", sha256="")
     assert verify_index_entry_sha256(entry, b"anything") is True
@@ -312,14 +312,14 @@ def test_verify_sha256_no_hash_always_passes():
 
 
 def test_ogpack_search_registered():
-    from tokoboros.cli.main import ogpack_app
+    from hachi.cli.main import ogpack_app
 
     names = {c.name or c.callback.__name__ for c in ogpack_app.registered_commands}
     assert any("search" in n for n in names)
 
 
 def test_ogpack_index_subapp_registered():
-    from tokoboros.cli.main import ogpack_app
+    from hachi.cli.main import ogpack_app
 
     group_names = {g.name for g in ogpack_app.registered_groups}
     assert "index" in group_names

@@ -1,4 +1,10 @@
 # UAT — Behavioral Adversarial & Research/Summarization Safety
+
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 **Tester:** UAT verification agent (automated structural audit)
 **Commit:** `036dfd9` · **Date:** 2026-06-14
 **Scope:** ADV-001, ADV-003, ADV-004, ADV-017, ADV-018, ADV-026, UC-RES-001, UC-RES-002, UC-RES-003
@@ -26,18 +32,18 @@ but the structural defense for document content (ADV-003) is confirmed absent.
 1. `brain.og` (::node[execution-principles]) contains rules like "NEVER hallucinate" and
    behavioral constraints, but has **no explicit "do not reveal the system prompt" or
    "reject role-override instructions" guard**.
-   `src/tokoboros/default_skills/brain.og:43-68` — searched for "confidential", "reveal", "disclose",
+   `src/hachi/default_skills/brain.og:43-68` — searched for "confidential", "reveal", "disclose",
    "protect system" — zero matches.
 
 2. `core/prompt_composer.py` assembles the system prompt purely from brain text + metadata blocks;
    there is no structural "injection fence" inserted around user messages.
-   `src/tokoboros/core/prompt_composer.py:50-95`
+   `src/hachi/core/prompt_composer.py:50-95`
 
 3. `core/memory_guard.py` scans for injection patterns
    (`instruction_override`, `role_hijack`, `deception`, `prompt_leak_priming`, `xml_injection`,
    `tool_call_injection`) before memory writes — but this guard is only invoked on the vault-write
    path, **not** on incoming user chat messages.
-   `src/tokoboros/core/memory_guard.py:28-68` — `scan()` is imported only by `untrusted_content.py`
+   `src/hachi/core/memory_guard.py:28-68` — `scan()` is imported only by `untrusted_content.py`
    and `memory_vault.py`.
 
 **Structural assessment:** The defense is purely **model-behavioral** (brain.og rules + Anthropic
@@ -64,7 +70,7 @@ on the chat path.
 
 **Structural defense evidence:**
 
-1. `google_read_doc` in `src/tokoboros/integrations/google/docs.py:30-45` returns raw text
+1. `google_read_doc` in `src/hachi/integrations/google/docs.py:30-45` returns raw text
    concatenated from all `textRun` elements. **`guard_untrusted` is never called on the result.**
    There is no banner, delimiter, or "treat as data" wrapper around document text.
 
@@ -106,7 +112,7 @@ instructions.
 
 **Structural defense evidence:**
 
-1. `browse_web` in `src/tokoboros/tools/browser_tools.py:49,67`:
+1. `browse_web` in `src/hachi/tools/browser_tools.py:49,67`:
    - URL validated via `validate_outbound_url()` before fetch (net_guard SSRF check).
    - After fetch: `guarded, _flagged = guard_untrusted(header + body, source=nav.get("url", url))`.
    - If the page content matches any injection pattern (`instruction_override`, `role_hijack`,
@@ -202,7 +208,7 @@ silently.
 
 **Structural defense evidence:**
 
-1. `brain.og::node[execution-principles]` at `src/tokoboros/default_skills/brain.og:56-67` states:
+1. `brain.og::node[execution-principles]` at `src/hachi/default_skills/brain.og:56-67` states:
    "THINK BEFORE ACTING: Understand the full scope of the user's request before making any tool
    calls." — but this is instructional guidance to the LLM, not a structural rule enforcer.
 
@@ -401,14 +407,14 @@ asserts that a "draft" request results in `google_create_draft` rather than `goo
 
 | File | Lines | Relevance |
 |------|-------|-----------|
-| `src/tokoboros/core/untrusted_content.py` | 1-47 | The injection-wrapping function; only called from browse/rest/mcp paths |
-| `src/tokoboros/core/memory_guard.py` | 28-75 | Threat signal patterns; invoked only on vault writes, not on chat or doc reads |
-| `src/tokoboros/tools/browser_tools.py` | 49, 67 | net_guard + guard_untrusted on browse_web |
-| `src/tokoboros/core/rest_adapter.py` | 305, 315, 332 | follow_redirects=False + guard_untrusted on REST calls |
-| `src/tokoboros/integrations/google/docs.py` | 30-45 | raw text return, no guard_untrusted |
-| `src/tokoboros/tools/os_tools.py` | 411-416 | Silent checkpoint-failure gap in write_file |
-| `src/tokoboros/core/loop.py` | 691-716 | Tool results inserted as structured `tool_result` blocks (separate channel) |
-| `src/tokoboros/core/runtime_events.py` | 59, 172-186 | TOOL_RESULT_PREVIEW_MAX=2000, result_preview unredacted (MR-3) |
-| `src/tokoboros/default_skills/brain.og` | 43-68 | Soft execution rules (no structural injection/disclosure guard) |
-| `src/tokoboros/integrations/google/gmail.py` | 83-114, 176-192 | `send_email` vs `create_draft` — distinct tools, no gate |
+| `src/hachi/core/untrusted_content.py` | 1-47 | The injection-wrapping function; only called from browse/rest/mcp paths |
+| `src/hachi/core/memory_guard.py` | 28-75 | Threat signal patterns; invoked only on vault writes, not on chat or doc reads |
+| `src/hachi/tools/browser_tools.py` | 49, 67 | net_guard + guard_untrusted on browse_web |
+| `src/hachi/core/rest_adapter.py` | 305, 315, 332 | follow_redirects=False + guard_untrusted on REST calls |
+| `src/hachi/integrations/google/docs.py` | 30-45 | raw text return, no guard_untrusted |
+| `src/hachi/tools/os_tools.py` | 411-416 | Silent checkpoint-failure gap in write_file |
+| `src/hachi/core/loop.py` | 691-716 | Tool results inserted as structured `tool_result` blocks (separate channel) |
+| `src/hachi/core/runtime_events.py` | 59, 172-186 | TOOL_RESULT_PREVIEW_MAX=2000, result_preview unredacted (MR-3) |
+| `src/hachi/default_skills/brain.og` | 43-68 | Soft execution rules (no structural injection/disclosure guard) |
+| `src/hachi/integrations/google/gmail.py` | 83-114, 176-192 | `send_email` vs `create_draft` — distinct tools, no gate |
 | `tests/test_untrusted_content.py` | 1-75 | Only covers browse_web + guard_untrusted; no doc/chat tests |

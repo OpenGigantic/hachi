@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from tokoboros.core.mcp_client import MCPServerConnection
+from hachi.core.mcp_client import MCPServerConnection
 
 
 class _FakeStdin:

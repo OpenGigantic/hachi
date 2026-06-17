@@ -9,9 +9,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.voice import SpeechToText, summarize_transcript
-from tokoboros.tools.voice_tools import (
+from hachi.core.loop import ToolRegistry
+from hachi.core.voice import SpeechToText, summarize_transcript
+from hachi.tools.voice_tools import (
     _make_transcribe_and_summarize,
     register_voice_tools,
 )
@@ -148,7 +148,7 @@ def test_tool_not_configured_returns_hint(tmp_path: Path) -> None:
     fn = _make_transcribe_and_summarize(None, stt)
     result = fn(str(audio))
     assert "not configured" in result
-    assert "OPENAI_API_KEY" in result or "TOKOBOROS_STT_API_KEY" in result
+    assert "OPENAI_API_KEY" in result or "HACHI_STT_API_KEY" in result
 
 
 def test_tool_happy_path_contains_summary_and_transcript(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tokoboros.og_engine.parser import parse_og_file
+from hachi.og_engine.parser import parse_og_file
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_skill.og"
 

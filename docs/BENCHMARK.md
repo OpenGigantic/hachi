@@ -2,7 +2,7 @@
 
 **TL;DR:** Answering a query by routing through the 3-pass ObjectGraph model
 uses **97.6% fewer tokens** than naively concatenating all skill files into the
-prompt — measured against the 53-node bundled skill pack shipped with Tokoboros
+prompt — measured against the 53-node bundled skill pack shipped with Hachi
 (corpus S-real, 2026-06-13, git `a54d242`).
 
 > **Scope caveat:** below ~30 k tokens of total library content, a cached
@@ -13,10 +13,10 @@ prompt — measured against the 53-node bundled skill pack shipped with Tokoboro
 Reproducible at any time:
 
 ```bash
-uv run tokoboros skill benchmark               # human-readable panel (token savings only)
-uv run tokoboros skill benchmark --suite fast  # token + M1 retrieval quality
-uv run tokoboros skill benchmark --suite full  # all metrics (M1/M2/M4/M7)
-uv run tokoboros skill benchmark --json        # machine-readable JSON (CI / sharing)
+uv run hachi skill benchmark               # human-readable panel (token savings only)
+uv run hachi skill benchmark --suite fast  # token + M1 retrieval quality
+uv run hachi skill benchmark --suite full  # all metrics (M1/M2/M4/M7)
+uv run hachi skill benchmark --json        # machine-readable JSON (CI / sharing)
 uv run pytest tests/test_og_benchmark.py -s    # unit-test form with raw numbers
 ```
 
@@ -32,7 +32,7 @@ quality and inflates per-turn costs.
 
 The ObjectGraph format (arXiv [2604.27820](https://arxiv.org/abs/2604.27820),
 *"ObjectGraph: From Document Injection to Knowledge Traversal"*, Open Gigantic —
-**first-party**: Tokoboros is the reference implementation described in that paper)
+**first-party**: Hachi is the reference implementation described in that paper)
 treats the context-loading problem as a **file-format problem**.  Rather than
 a flat document you load or skip, a `.og` file is a **queryable graph of typed
 nodes**, each carrying structured metadata that agents can index and traverse
@@ -46,7 +46,7 @@ Independent third-party research validates the same category of solution:
 | SkillReducer (arXiv 2603.29919) | ~60% of skill body is non-actionable; 39–48% compression with +2.8% quality |
 
 Neither paper used `.og` — they validate that **format-aware selective loading**
-is the right category of solution.  `.og` is Tokoboros's concrete implementation
+is the right category of solution.  `.og` is Hachi's concrete implementation
 of that insight, with sub-file node granularity and dependency-aware traversal
 that file-level lazy loading cannot provide.
 
@@ -79,7 +79,7 @@ Compare this to **competitor approaches**:
 
 ## Current results (bundled default_skills)
 
-Measured against the 53 `.og` nodes shipped with Tokoboros, corpus S-real
+Measured against the 53 `.og` nodes shipped with Hachi, corpus S-real
 (36 probes: 16 keyword / 10 procedural / 5 instructional / 5 negative), 2026-06-13.
 
 ### Token efficiency (M0)
@@ -156,7 +156,7 @@ Engine overhead is negligible; end-to-end latency is dominated by LLM
 round-trip time.  The 800 ms/pass RTT is a conservative baseline; in practice
 Claude Haiku averages 400–600 ms TTFT on warm requests.
 
-_Numbers reproducible via `uv run tokoboros skill benchmark --suite full --json`._
+_Numbers reproducible via `uv run hachi skill benchmark --suite full --json`._
 
 ---
 
@@ -209,22 +209,22 @@ build if savings drop below the gate or P@5 drops below 0.80.
 ## Running against your own skill pack
 
 ```bash
-uv run tokoboros skill benchmark --dir /path/to/your/skills
-uv run tokoboros skill benchmark --dir /path/to/your/skills --json
+uv run hachi skill benchmark --dir /path/to/your/skills
+uv run hachi skill benchmark --dir /path/to/your/skills --json
 ```
 
 The `--suite` flag selects which metrics to compute:
 
 ```bash
-uv run tokoboros skill benchmark --suite token   # token savings only (fast, default)
-uv run tokoboros skill benchmark --suite fast    # token + M1 retrieval quality
-uv run tokoboros skill benchmark --suite full    # all metrics (M1/M2/M4/M7)
+uv run hachi skill benchmark --suite token   # token savings only (fast, default)
+uv run hachi skill benchmark --suite fast    # token + M1 retrieval quality
+uv run hachi skill benchmark --suite full    # all metrics (M1/M2/M4/M7)
 ```
 
 The `--threshold` flag lets you set a custom savings gate:
 
 ```bash
-uv run tokoboros skill benchmark --threshold 0.90  # fail unless savings ≥ 90%
+uv run hachi skill benchmark --threshold 0.90  # fail unless savings ≥ 90%
 ```
 
 ---
@@ -232,7 +232,7 @@ uv run tokoboros skill benchmark --threshold 0.90  # fail unless savings ≥ 90%
 ## Sharing results
 
 Run `skill benchmark --suite full --json` and paste the output as a snippet in
-your README or submit it to the Tokoboros skill registry.  Example (truncated):
+your README or submit it to the Hachi skill registry.  Example (truncated):
 
 ```json
 {
