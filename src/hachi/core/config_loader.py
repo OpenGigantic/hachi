@@ -197,6 +197,9 @@ def write_global_config(config: ResolvedConfig, paths: HachiPaths | None = None)
     channels = payload.get("channels") or {}
     if not channels.get("telegram", {}).get("allowlist"):
         payload.pop("channels", None)
+    # Same for limits: only persist once a cap is actually set, else it's an empty table.
+    if not payload.get("limits"):
+        payload.pop("limits", None)
     for key, value in payload.items():
         doc[key] = value
 

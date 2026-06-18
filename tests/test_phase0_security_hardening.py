@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import sys
 from pathlib import Path
@@ -286,5 +285,5 @@ def test_rest_adapter_allows_private_egress_when_explicitly_enabled(monkeypatch)
     )
 
     result = registry._tools["private_allowed"]()
-    payload = json.loads(result)
-    assert payload["ok"] == "true"
+    # SEC-002: the response is framed as untrusted data; assert the payload survives.
+    assert '"ok"' in result and "true" in result

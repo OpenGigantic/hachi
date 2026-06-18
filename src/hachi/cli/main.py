@@ -35,7 +35,12 @@ from hachi.cli.commands.session import session_app
 from hachi.cli.commands.skill import skill_app
 from hachi.core.config_loader import load_effective_config, write_global_config
 from hachi.core.credential_vault import CredentialVault
-from hachi.core.onboarding import OnboardingService, default_api_key_env_for
+from hachi.core.onboarding import (
+    OnboardingService,
+    default_api_key_env_for,
+    looks_like_env_var_name,
+    persist_provider_api_key,
+)
 from hachi.core.paths import get_hachi_paths
 from hachi.core.permissions import PermissionGate
 from hachi.core.secret_store import create_default_secret_store
@@ -56,7 +61,6 @@ from hachi.gateway.workspace import (
     run_permissions_wizard,
     show_current_permissions,
 )
-from hachi.tui.app import run_tui
 
 app = typer.Typer(
     help="Hachi - The Autonomous Agent Engine powered by ObjectGraph",
@@ -211,6 +215,32 @@ class _InProcessGatewayRuntime:
             except Exception:
                 pass
 
+    def _reload_agents(self) -> None:
+        """Reboot cached session agents so provider/credential changes apply live.
+
+        Provider config (model, base URL) and the resolved API key are baked into
+        the LLM client at agent boot, so a running session keeps using whatever it
+        started with. After a config mutation we rebuild each cached agent in
+        place — re-reading the freshly written config + process env — and retire
+        the old one. No-op when no sessions are connected (e.g. the standalone
+        gateway started without ``--runtime``).
+        """
+        with self._agents_lock:
+            session_ids = list(self._agents.keys())
+        for session_id in session_ids:
+            try:
+                fresh = self._boot_session_agent(session_id)
+            except Exception:
+                continue  # keep the existing agent if a reboot fails
+            with self._agents_lock:
+                old = self._agents.get(session_id)
+                self._agents[session_id] = fresh
+            if old is not None and old is not fresh:
+                try:
+                    old.shutdown()
+                except Exception:
+                    pass
+
     def chat(self, session_id: str, prompt: str) -> str:
         agent = self._get_agent(session_id)
         return agent.chat(prompt)
@@ -339,6 +369,7 @@ class _InProcessGatewayRuntime:
         kind = provider.get("kind")
         model = provider.get("model")
         base_url = provider.get("base_url")
+        api_key = provider.get("api_key")
         api_key_ref = provider.get("api_key_ref")
         api_key_env = provider.get("api_key_env")
 
@@ -374,12 +405,36 @@ class _InProcessGatewayRuntime:
 
         if base_url is not None:
             config.provider.base_url = str(base_url).strip() or None
-        if api_key_ref is not None:
-            config.provider.api_key_ref = str(api_key_ref).strip() or None
+
+        # API key handling — persist raw secrets to the secret store + process
+        # env (never the config file); record only the env-var NAME. A raw key may
+        # arrive via `api_key` (preferred) or, for backward compatibility, as a
+        # non-env-name `api_key_ref`.
+        raw_api_key = api_key
+        if not raw_api_key and api_key_ref and not looks_like_env_var_name(str(api_key_ref)):
+            raw_api_key = api_key_ref
+            api_key_ref = None
+
         if api_key_env is not None:
             config.provider.api_key_env = str(api_key_env).strip() or None
 
+        if raw_api_key:
+            env_name = persist_provider_api_key(
+                str(config.provider.kind),
+                str(raw_api_key),
+                api_key_env=config.provider.api_key_env,
+                secret_store=create_default_secret_store(),
+            )
+            if env_name:
+                config.provider.api_key_ref = env_name
+                config.provider.api_key_env = env_name
+        elif api_key_ref is not None:
+            config.provider.api_key_ref = str(api_key_ref).strip() or None
+
         write_global_config(config)
+        # Provider/credential changes are baked into the LLM client at boot, so
+        # reboot any live session to apply them without a manual restart.
+        self._reload_agents()
         return config.model_dump(mode="python", exclude_none=True)
 
     def validate_provider(self, payload: dict) -> dict:
@@ -480,6 +535,8 @@ class _InProcessGatewayRuntime:
             plan = service.apply_setup(plan_payload)
         except ValueError as exc:
             raise GatewayProtocolError(str(exc)) from exc
+        # Apply provider/credential changes from the wizard to any live session.
+        self._reload_agents()
         return {
             "ok": True,
             "plan": plan.model_dump(mode="python", exclude_none=True),
@@ -495,6 +552,344 @@ class _InProcessGatewayRuntime:
                 agent.shutdown()
             except Exception:
                 pass
+
+    # ==========================================
+    # Web endpoint handlers — added for web UI (#1–#6)
+    # ==========================================
+
+    def get_skills(self) -> list[dict]:
+        """Return the .og skill inventory (route: GET /skills)."""
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return []
+        return [asdict(s) for s in agent.snapshot_skills()]
+
+    def get_memory(self) -> dict:
+        """Return grouped memory facts for the Memory screen (route: GET /memory)."""
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return {"groups": [], "blocked": [], "proposed": None}
+        return agent.snapshot_memory_facts()
+
+    def get_memory_recall(self, query: str, top_k: int = 8) -> list[dict]:
+        """Return semantic recall hits (route: GET /memory/recall).
+
+        Calls vault.semantic_search directly to preserve the similarity score,
+        which query_memory_recall (on AgentSession) drops when building its snapshot.
+        """
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None or agent.vault is None:
+            return []
+        try:
+            rows = agent.vault.semantic_search(query, top_k=top_k)
+        except Exception:
+            return []
+        results: list[dict] = []
+        for row in rows:
+            fact = row.get("raw_content") or row.get("content", "")
+            src = row.get("category", "")
+            # The row uses key "score" (from RRF merge) or "distance" (from Chroma).
+            # Tolerate absence of both keys.
+            raw_score = row.get("score") or row.get("distance")
+            score = str(round(float(raw_score), 2)) if raw_score is not None else ""
+            results.append({"fact": fact, "score": score, "src": src})
+        return results
+
+    def get_og_graph(self) -> dict:
+        """Return the ObjectGraph node graph (route: GET /og/graph)."""
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return {"nodes": []}
+        return agent.snapshot_og_graph()
+
+    def get_authoring_targets(self) -> list[dict]:
+        """List editable .og and config targets from the workspace (route: GET /authoring/targets).
+
+        Reads config-dir files independently of a live agent session.
+        """
+        paths = get_hachi_paths()
+        targets: list[dict] = []
+
+        # Collect .og skill files from the skills directory.
+        skills_dir = paths.skills_dir
+        if skills_dir.exists():
+            for og_file in sorted(skills_dir.glob("*.og")):
+                kind = "brain" if og_file.name.startswith("brain-") else "skill"
+                rel = og_file.relative_to(skills_dir).as_posix()
+                targets.append({"name": og_file.name, "path": rel, "kind": kind, "dirty": False})
+
+        # Include the permissions file (device-permissions.og).
+        perm_file = paths.permissions_file
+        if perm_file.exists():
+            targets.append(
+                {
+                    "name": perm_file.name,
+                    "path": perm_file.name,
+                    "kind": "config",
+                    "dirty": False,
+                }
+            )
+
+        # Include the global config toml.
+        config_toml = paths.global_config_toml
+        if config_toml.exists():
+            targets.append(
+                {
+                    "name": config_toml.name,
+                    "path": config_toml.name,
+                    "kind": "config",
+                    "dirty": False,
+                }
+            )
+
+        return targets
+
+    def _resolve_authoring_target_path(self, name: str) -> Path:
+        """Resolve a target name to a filesystem path, enforcing security constraints.
+
+        SECURITY: reject any name containing ``/``, ``\\``, or ``..`` to prevent
+        path-traversal attacks. Only names present in the allowed target list are
+        accepted.
+
+        Args:
+            name: The target name (e.g. ``"brain-core.og"``).
+
+        Returns:
+            Absolute :class:`~pathlib.Path` to the file.
+
+        Raises:
+            GatewayProtocolError: When the name is unsafe or not in the allowed set.
+        """
+        if "/" in name or "\\" in name or ".." in name:
+            raise GatewayProtocolError(f"Invalid target name '{name}'")
+
+        allowed_targets = self.get_authoring_targets()
+        allowed_names = {t["name"] for t in allowed_targets}
+        if name not in allowed_names:
+            raise GatewayProtocolError(f"Target '{name}' not found in allowed set")
+
+        # Re-derive the actual path from the known safe locations.
+        paths = get_hachi_paths()
+        skill_path = paths.skills_dir / name
+        if skill_path.exists():
+            return skill_path
+        perm_path = paths.permissions_file
+        if perm_path.name == name:
+            return perm_path
+        config_path = paths.global_config_toml
+        if config_path.name == name:
+            return config_path
+        raise GatewayProtocolError(f"Target '{name}' could not be resolved")
+
+    def get_authoring_target(self, name: str) -> dict:
+        """Return the source text for a single authoring target (GET /authoring/targets/{name})."""
+        file_path = self._resolve_authoring_target_path(name)
+        source = file_path.read_text(encoding="utf-8")
+        return {"name": name, "source": source}
+
+    def authoring_apply(self, name: str) -> dict:
+        """Apply a patch to an authoring target (POST /authoring/targets/{name}/apply).
+
+        STUB: There is no pending-patch store yet. Real patch-apply awaits a
+        proposed-patch pipeline. Validates the target name and returns a successful
+        no-op response so the UI flow works end-to-end.
+        """
+        self._resolve_authoring_target_path(name)
+        # TODO: when the proposed-patch pipeline exists, apply the pending diff here
+        # and trigger a skill-engine re-index, setting reindexed_ms to the elapsed ms.
+        return {"ok": True, "reindexed_ms": 0}
+
+    def authoring_revert(self, name: str) -> dict:
+        """Revert an authoring target (POST /authoring/targets/{name}/revert).
+
+        STUB: There is no pending-patch store yet. Real revert awaits a proposed-patch
+        pipeline. Validates the target name and returns a successful no-op response.
+        """
+        self._resolve_authoring_target_path(name)
+        # TODO: when the proposed-patch pipeline exists, drop the pending diff here.
+        return {"ok": True}
+
+    def get_spend(self, session_id: str | None = None) -> dict:
+        """Return per-turn token/cost rows, compaction events, and model totals.
+
+        Best-effort aggregation: scans the last 500 runtime events for
+        ``usage.updated`` events (cumulative counters) and builds per-turn deltas.
+        Compaction events (``memory.compaction``) are surfaced as ``tidies``.
+        ``models`` is a single entry from the current config + snapshot_usage().
+
+        NOTE: Per-turn input/output token split is not separately tracked in the
+        runtime event payload today. The ``inT`` field is always 0 and ``out``
+        carries the full token delta. Update when the event payload is enriched.
+        """
+        # Pick the agent: prefer explicit session_id, fall back to most-recent.
+        with self._agents_lock:
+            if session_id and session_id in self._agents:
+                agent = self._agents[session_id]
+            else:
+                agent = next(iter(self._agents.values()), None)
+
+        if agent is None:
+            return {"turns": [], "tidies": [], "models": []}
+
+        events = agent.snapshot_runtime_events(limit=500)
+
+        turns: list[dict] = []
+        tidies: list[dict] = []
+        prev_total_tokens: float = 0.0
+        prev_total_cost: float = 0.0
+        turn_idx = 0
+
+        for event in events:
+            event_name = event.name
+            payload = event.payload or {}
+
+            # Per-turn rows from usage.updated events (cumulative → delta).
+            if event_name == "usage.updated":
+                total_tokens = float(payload.get("total_tokens", 0) or 0)
+                total_cost = float(payload.get("estimated_cost_usd", 0) or 0)
+
+                delta_tokens = total_tokens - prev_total_tokens
+                delta_cost = total_cost - prev_total_cost
+
+                if delta_tokens > 0 or delta_cost > 0:
+                    turn_idx += 1
+                    # NOTE: Per-turn input/output split not available; out = delta.
+                    turns.append(
+                        {
+                            "n": turn_idx,
+                            "inT": 0,
+                            "out": int(delta_tokens),
+                            "cost": round(delta_cost, 4),
+                        }
+                    )
+
+                prev_total_tokens = total_tokens
+                prev_total_cost = total_cost
+
+            # Compaction events → tidy rows.
+            # Real event name from runtime_events.py: "memory.compaction" (COMPACTION).
+            if "memory" in event_name and ("compact" in event_name or "tidy" in event_name):
+                ts = event.timestamp or ""
+                # Use HH:MM portion of ISO timestamp if available.
+                if len(ts) >= 16:
+                    ts = ts[11:16]
+                tidies.append(
+                    {
+                        "ts": ts,
+                        "before": int(payload.get("before_tokens", 0) or 0),
+                        "after": int(payload.get("after_tokens", 0) or 0),
+                    }
+                )
+
+        # Model totals from snapshot_usage().
+        config = load_effective_config()
+        usage = agent.snapshot_usage()
+        models: list[dict] = []
+        if usage:
+            models.append(
+                {
+                    "name": config.provider.model,
+                    "tokens": int(usage.get("total_tokens", 0) or 0),
+                    "cost": float(usage.get("estimated_cost_usd", 0) or 0),
+                    "color": "",  # Client assigns color.
+                }
+            )
+
+        return {"turns": turns, "tidies": tidies, "models": models}
+
+    def set_capability_enabled(self, cap_id: str, enabled: bool) -> dict:
+        """Toggle a capability on/off and persist to global config (PUT /capabilities/{id}/enabled).
+
+        Mirrors update_permissions: load config, mutate, write, return result.
+        """
+        config = load_effective_config()
+        if cap_id not in config.capabilities:
+            raise GatewayProtocolError(f"unknown capability '{cap_id}'")
+        config.capabilities[cap_id].enabled = bool(enabled)
+        write_global_config(config)
+        return {
+            "id": cap_id,
+            "enabled": bool(enabled),
+            "configured": bool(config.capabilities[cap_id].configured),
+        }
+
+    # ------ Memory CRUD ------
+
+    _VAULT_GROUP_MAP: dict[str, str] = {
+        "core_memory": "upsert_fact",
+        "user_profile": "upsert_user_fact",
+        "agent_profile": "upsert_agent_fact",
+    }
+
+    def add_memory_fact(self, group: str, text: str) -> dict:
+        """Add a fact to the specified vault collection (POST /memory/facts).
+
+        Maps ``group`` to the appropriate upsert method on MemoryVault:
+          - ``core_memory``   → vault.upsert_fact
+          - ``user_profile``  → vault.upsert_user_fact
+          - ``agent_profile`` → vault.upsert_agent_fact
+
+        Args:
+            group: Collection name — one of core_memory, user_profile, agent_profile.
+            text:  Plain-text fact to persist.
+
+        Returns:
+            Dict with ``id`` (the content-hash fact id, possibly prefixed with
+            ``BLOCKED:`` or ``LIMIT_REACHED`` when the vault rejects the write).
+        """
+        if not text.strip():
+            raise GatewayProtocolError("text cannot be empty")
+        if group not in self._VAULT_GROUP_MAP:
+            raise GatewayProtocolError(
+                f"group must be one of: {', '.join(sorted(self._VAULT_GROUP_MAP))}"
+            )
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None or agent.vault is None:
+            return {"id": "", "error": "no active session or vault unavailable"}
+        method_name = self._VAULT_GROUP_MAP[group]
+        upsert_fn = getattr(agent.vault, method_name, None)
+        if not callable(upsert_fn):
+            return {"id": "", "error": "vault method unavailable"}
+        try:
+            fact_id: str = upsert_fn(text.strip())
+        except Exception as exc:
+            return {"id": "", "error": f"vault write failed: {exc}"}
+        return {"id": fact_id}
+
+    def delete_memory_fact(self, fact_id: str) -> dict:
+        """Delete a fact from the vault by its content-hash id (DELETE /memory/facts/{fact_id}).
+
+        Tries to delete from all three collections; Chroma deletes are idempotent
+        on missing IDs so multi-collection sweep is safe.
+
+        Args:
+            fact_id: SHA-256 content hash returned by any upsert method.
+
+        Returns:
+            Dict with ``ok`` boolean.
+        """
+        if not fact_id.strip():
+            raise GatewayProtocolError("fact_id cannot be empty")
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None or agent.vault is None:
+            return {"ok": False, "error": "no active session or vault unavailable"}
+        vault = agent.vault
+        # Try all three writable collections — each delete is idempotent on absent ids.
+        results: list[bool] = []
+        for fn_name in ("delete_fact", "delete_user_fact", "delete_agent_fact"):
+            delete_fn = getattr(vault, fn_name, None)
+            if callable(delete_fn):
+                try:
+                    results.append(bool(delete_fn(fact_id.strip())))
+                except Exception:
+                    results.append(False)
+        return {"ok": any(results)}
 
 
 def _gateway_readiness_probe() -> tuple[bool, list[str]]:
@@ -753,6 +1148,20 @@ def _build_gateway_control_plane(
         list_schedules=runtime.list_schedules if runtime else None,
         cancel_schedule=runtime.cancel_schedule if runtime else None,
         toggle_schedule=runtime.toggle_schedule if runtime else None,
+        # Web UI endpoints (#1–#6):
+        get_skills=runtime.get_skills if runtime else None,
+        get_memory=runtime.get_memory if runtime else None,
+        get_memory_recall=runtime.get_memory_recall if runtime else None,
+        get_og_graph=runtime.get_og_graph if runtime else None,
+        get_authoring_targets=support.get_authoring_targets,
+        get_authoring_target=support.get_authoring_target,
+        authoring_apply=support.authoring_apply,
+        authoring_revert=support.authoring_revert,
+        get_spend=runtime.get_spend if runtime else None,
+        set_capability_enabled=support.set_capability_enabled,
+        # Memory CRUD:
+        add_memory_fact=runtime.add_memory_fact if runtime else None,
+        delete_memory_fact=runtime.delete_memory_fact if runtime else None,
         max_active_sessions=max_active_sessions,
         max_prompt_chars=max_prompt_chars,
     )
@@ -1415,9 +1824,9 @@ def _resolve_resume_target(*, resume: bool, continue_latest: bool) -> str | None
 def _launch_assistant(*, repl: bool, resume: bool, continue_latest: bool) -> None:
     """Shared entry point for `hachi` and `hachi run`.
 
-    Boots the Textual TUI in-process (local mode) so chat, interactive permission
-    approvals, and slash commands all operate directly on the live AgentSession.
-    The standalone HTTP gateway lives behind `hachi gateway` for web clients.
+    REST-only: boots an in-process gateway HTTP server on loopback and launches
+    the Hachi Cockpit (Textual TUI) against it over the typed REST/SSE API — the
+    same gateway that serves the web UI. Pass ``--repl`` for the legacy Rich REPL.
     """
     ensure_workspace()
     _apply_quick_setup_if_needed()
@@ -1429,14 +1838,47 @@ def _launch_assistant(*, repl: bool, resume: bool, continue_latest: bool) -> Non
         _run_repl()
         return
 
-    resume_session_id = _resolve_resume_target(resume=resume, continue_latest=continue_latest)
+    if resume or continue_latest:
+        console.print(
+            "[yellow]Session resume is not yet wired into the cockpit; "
+            "starting a fresh session.[/yellow]"
+        )
+
+    _launch_cockpit()
+
+
+def _launch_cockpit() -> None:
+    """Boot an in-process gateway and run the Hachi Cockpit against it.
+
+    The cockpit is a REST-only surface: it talks to the gateway over HTTP/SSE on
+    loopback, never to the orchestrator in-process. The gateway (and its attached
+    runtime) is torn down cleanly when the cockpit exits.
+    """
+    from hachi.daemon import _default_log_path, setup_rotating_log
+    from hachi.tui.cockpit.app import CockpitApp
+
+    # Route gateway/uvicorn logs to a rotating file so they never spew over the
+    # Textual UI (or leave a stray traceback on exit). The cockpit owns the
+    # terminal; the gateway runs silently in a background thread.
+    if not any(hasattr(h, "baseFilename") for h in logging.getLogger().handlers):
+        setup_rotating_log(_default_log_path())
+
+    host = "127.0.0.1"
+    try:
+        token = _resolve_gateway_auth_token(host)
+        server, base_url, runtime = _start_gateway_server(
+            host=host, port=0, attach_runtime=True
+        )
+    except OSError as exc:
+        console.print(f"[bold red]Failed to start the gateway:[/] {exc}")
+        raise typer.Exit(1) from exc
 
     try:
-        run_tui(resume_session_id=resume_session_id)
-    except Exception as e:
-        console.print(f"[bold red]Failed to launch Textual UI:[/] {e}")
-        console.print("[yellow]Falling back to compatibility REPL...[/yellow]")
-        _run_repl()
+        CockpitApp(base_url=base_url, token=token).run()
+    finally:
+        if runtime is not None:
+            runtime.shutdown()
+        server.stop()
 
 
 @app.command()
@@ -1466,6 +1908,36 @@ def run(
     Fallback: pass --repl for the legacy terminal REPL.
     """
     _launch_assistant(repl=repl, resume=resume, continue_latest=continue_latest)
+
+
+@app.command("cockpit")
+def cockpit(
+    base_url: str | None = typer.Option(
+        None,
+        "--base-url",
+        envvar="HACHI_GATEWAY_URL",
+        help="Gateway base URL (e.g. http://127.0.0.1:8787). "
+        "Falls back to $HACHI_GATEWAY_URL; omit for offline placeholder mode.",
+    ),
+    token: str | None = typer.Option(
+        None,
+        "--token",
+        envvar="HACHI_GATEWAY_TOKEN",
+        help="Bearer token for the gateway. Falls back to $HACHI_GATEWAY_TOKEN.",
+    ),
+):
+    """Launch the Hachi Cockpit — the REST-only terminal cockpit UI.
+
+    Talks to a running ``hachi gateway`` over HTTP when ``--base-url`` (or
+    ``$HACHI_GATEWAY_URL``) is set; otherwise renders representative placeholder
+    data so the surface is always demonstrable. For an interactive agent chat
+    session, use ``hachi run`` (live chat streaming is not yet wired here).
+    """
+    # Lazy import: the cockpit is a self-contained REST-only surface and must not
+    # pull the in-process agent stack into CLI startup.
+    from hachi.tui.cockpit.app import CockpitApp
+
+    CockpitApp(base_url=base_url, token=token).run()
 
 
 @app.command("run-repl")
@@ -1719,6 +2191,16 @@ def config_validate(
     raise typer.Exit(0 if overall else 1)
 
 
+# Documented short config keys → their canonical nested path on ResolvedConfig.
+# Keeping the friendly names as aliases avoids breaking existing docs/scripts
+# while the canonical dotted keys remove the CLI/web/env tier-name drift.
+_CONFIG_KEY_ALIASES = {
+    "safety_tier": "permissions.tier",
+    "max_tokens": "agent.max_tokens",
+    "session_cost_cap_usd": "limits.max_session_cost_usd",
+}
+
+
 @app.command("config-get")
 def config_get(
     key: str | None = typer.Argument(None, help="Dot-separated key, e.g. provider.model."),
@@ -1733,19 +2215,21 @@ def config_get(
     flat: dict[str, object] = {
         "provider.kind": cfg.provider.kind,
         "provider.model": cfg.provider.model,
-        "provider.base_url": getattr(cfg.provider, "base_url", None),
-        "safety_tier": cfg.safety_tier,
-        "max_tokens": cfg.max_tokens,
-        "session_cost_cap_usd": cfg.session_cost_cap_usd,
-        "workspace_dir": str(get_hachi_paths().workspace_dir),
+        "provider.base_url": cfg.provider.base_url,
+        "permissions.tier": cfg.permissions.tier,
+        "agent.max_tokens": cfg.agent.max_tokens,
+        "limits.max_session_cost_usd": cfg.limits.max_session_cost_usd,
+        "workspace_dir": str(get_workspace_dir()),
     }
 
     if key is not None:
-        if key not in flat:
+        canonical = _CONFIG_KEY_ALIASES.get(key, key)
+        if canonical not in flat:
             console.print(f"[red]Unknown key:[/red] {key!r}")
-            console.print(f"  Known keys: {', '.join(sorted(flat))}")
+            known = sorted(flat) + sorted(_CONFIG_KEY_ALIASES)
+            console.print(f"  Known keys: {', '.join(known)}")
             raise typer.Exit(1)
-        value = flat[key]
+        value = flat[canonical]
         if as_json:
             print(json.dumps({key: value}))
         else:
@@ -1767,32 +2251,42 @@ def config_set(
 ) -> None:
     """Set a configuration value and persist it to settings.toml.
 
-    Supports provider.model, safety_tier, max_tokens, session_cost_cap_usd,
-    and provider.base_url. Changes take effect on the next ``hachi run``.
+    Writable keys (canonical, with documented aliases):
+      provider.model, provider.base_url,
+      permissions.tier             (alias: safety_tier),
+      agent.max_tokens             (alias: max_tokens),
+      limits.max_session_cost_usd  (alias: session_cost_cap_usd).
+    Changes take effect on the next ``hachi run``.
     """
     cfg = load_effective_config()
 
+    canonical = _CONFIG_KEY_ALIASES.get(key, key)
     try:
-        if key == "provider.model":
+        if canonical == "provider.model":
             cfg.provider.model = value
-        elif key == "provider.base_url":
+        elif canonical == "provider.base_url":
             cfg.provider.base_url = value
-        elif key == "safety_tier":
+        elif canonical == "permissions.tier":
             if value not in {"sandbox", "guided", "unrestricted"}:
                 console.print(
-                    "[red]safety_tier must be one of:[/red] sandbox, guided, unrestricted"
+                    "[red]permission tier must be one of:[/red] sandbox, guided, unrestricted"
                 )
                 raise typer.Exit(1)
-            cfg.safety_tier = value
-        elif key == "max_tokens":
-            cfg.max_tokens = int(value)
-        elif key == "session_cost_cap_usd":
-            cfg.session_cost_cap_usd = float(value)
+            cfg.permissions.tier = value
+        elif canonical == "agent.max_tokens":
+            cfg.agent.max_tokens = int(value)
+        elif canonical == "limits.max_session_cost_usd":
+            parsed = float(value)
+            if parsed < 0:
+                console.print("[red]session_cost_cap_usd must be >= 0[/red]")
+                raise typer.Exit(1)
+            cfg.limits.max_session_cost_usd = parsed
         else:
             console.print(f"[red]Cannot set:[/red] {key!r}  (not a writable key)")
             console.print(
-                "  Writable keys: provider.model, provider.base_url, safety_tier, "
-                "max_tokens, session_cost_cap_usd"
+                "  Writable keys: provider.model, provider.base_url, permissions.tier "
+                "(safety_tier), agent.max_tokens (max_tokens), limits.max_session_cost_usd "
+                "(session_cost_cap_usd)"
             )
             raise typer.Exit(1)
     except (ValueError, TypeError) as exc:

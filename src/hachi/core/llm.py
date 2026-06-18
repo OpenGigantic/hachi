@@ -227,6 +227,35 @@ class AnthropicClient(BaseLLMClient):
         self.model = model
         self.max_tokens = max_tokens
 
+    @staticmethod
+    def _cache_message_indices(count: int) -> list[int]:
+        """Trailing message indices to mark with an ephemeral cache breakpoint.
+
+        We cache the last up-to-two messages so the growing conversation prefix
+        (loaded .og skills + prior tool results) is a cache hit on subsequent
+        turns rather than being re-billed at full input price every turn
+        (PERF-001).
+        """
+        if count <= 0:
+            return []
+        if count == 1:
+            return [0]
+        return [count - 2, count - 1]
+
+    @staticmethod
+    def _with_message_cache_control(
+        content: str | list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Copy an Anthropic message ``content`` with a cache breakpoint on its
+        last block (a bare string becomes a single text block).  The original
+        content is never mutated."""
+        if isinstance(content, str):
+            return [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+        blocks = list(content)
+        if blocks and isinstance(blocks[-1], dict):
+            blocks[-1] = {**blocks[-1], "cache_control": {"type": "ephemeral"}}
+        return blocks
+
     def _build_kwargs(
         self,
         messages: list[Message],
@@ -238,6 +267,15 @@ class AnthropicClient(BaseLLMClient):
         anthropic_messages = [
             {"role": m.role, "content": m.content} for m in messages if m.role != "system"
         ]
+        # PERF-001: cache the conversation prefix too. Without a breakpoint on
+        # the messages, the whole history (loaded .og skills + prior tool
+        # results) is re-billed at full input price every turn — inflating spend
+        # and defeating the .og token-efficiency moat. Anthropic allows up to 4
+        # cache breakpoints; we use system (1) + tools (1) + the last <=2 messages.
+        for _idx in self._cache_message_indices(len(anthropic_messages)):
+            _msg = dict(anthropic_messages[_idx])
+            _msg["content"] = self._with_message_cache_control(_msg["content"])
+            anthropic_messages[_idx] = _msg
         kwargs: dict[str, Any] = {
             "model": self.model,
             "max_tokens": self.max_tokens,
