@@ -717,6 +717,137 @@ class AgentSession:
         """Sequenced events past ``after`` — the single source for gateway polling."""
         return self._read_models.read_events_since(after, limit=limit)
 
+    def snapshot_memory_facts(self) -> dict:
+        """Return grouped memory facts, blocked items, and proposed changes for the web UI.
+
+        Enumerates the three vault collections (user_profile, agent_profile, core_memory)
+        and the quarantine collection, building a structured payload for the Memory screen.
+
+        Returns:
+            Dict with keys ``groups`` (list of fact groups), ``blocked`` (list of quarantined
+            items), and ``proposed`` (always None — no moderation pipeline yet).
+        """
+        if self.vault is None:
+            return {"groups": [], "blocked": [], "proposed": None}
+
+        groups: list[dict] = []
+
+        collection_defs = [
+            (self.vault.user_collection, "user_profile", "About you"),
+            (self.vault.agent_profile, "agent_profile", "About Hachi"),
+            (self.vault.collection, "core_memory", "Workspace"),
+        ]
+
+        for coll, group_id, title in collection_defs:
+            facts: list[dict] = []
+            try:
+                rows = coll.get()
+                ids = rows.get("ids", [])
+                docs = rows.get("documents", [])
+                metas = rows.get("metadatas", []) or []
+                for i, fact_id in enumerate(ids):
+                    doc = docs[i] if i < len(docs) else ""
+                    meta = (metas[i] if i < len(metas) else None) or {}
+                    facts.append(
+                        {
+                            "id": fact_id,
+                            "text": doc,
+                            "source": meta.get("category", ""),
+                        }
+                    )
+            except Exception:
+                pass  # One bad collection must not kill the whole response.
+            groups.append({"id": group_id, "title": title, "facts": facts})
+
+        blocked: list[dict] = []
+        try:
+            quarantine_rows = self.vault.get_quarantine_entries()
+            for row in quarantine_rows:
+                blocked.append(
+                    {
+                        "id": row.get("id", ""),
+                        "text": row.get("content", ""),
+                        # Reason sourced from threat metadata fields; tolerate absence.
+                        "reason": row.get("threat_id") or row.get("status") or "quarantined",
+                    }
+                )
+        except Exception:
+            pass
+
+        # proposed: no moderation pipeline yet — always null.
+        return {"groups": groups, "blocked": blocked, "proposed": None}
+
+    def snapshot_og_graph(self) -> dict:
+        """Return ObjectGraph node graph for the OG Explorer web screen.
+
+        Iterates all parsed OGNode objects from the skill engine, computing
+        per-pass token estimates (index/dense/full) and classifying each node
+        as ``root``, ``skill``, or ``leaf``.
+
+        Returns:
+            Dict with key ``nodes`` containing a list of node dicts.
+        """
+        from hachi.og_engine.engine import estimate_tokens
+
+        all_nodes = self.skill_engine.get_all_nodes()
+
+        # Precompute the set of all node names that are referenced by other nodes'
+        # ``requires`` lists — used for leaf classification below.
+        referenced_names: set[str] = set()
+        for node in all_nodes:
+            for dep in node.requires:
+                referenced_names.add(dep)
+
+        result_nodes: list[dict] = []
+        for node in all_nodes:
+            # Pass-1 (index) token estimate: name + keywords.
+            index_tokens = estimate_tokens(node.name + " " + ", ".join(node.keywords))
+
+            # Pass-2 (dense) token estimate: dense summary block.
+            dense_tokens = estimate_tokens(node.dense or node.summary or "")
+
+            # Pass-3 (full) token estimate: sum all heavy content blocks.
+            heavy_parts: list[str] = []
+            if node.full:
+                heavy_parts.append(node.full)
+            if node.steps:
+                heavy_parts.append("\n".join(node.steps))
+            if node.code_blocks:
+                heavy_parts.append("\n".join(node.code_blocks.values()))
+            if node.table:
+                heavy_parts.append(node.table)
+            if node.list_items:
+                heavy_parts.append("\n".join(node.list_items))
+            if node.example:
+                heavy_parts.append(node.example)
+            if node.assertions:
+                heavy_parts.append("\n".join(node.assertions))
+            if node.note:
+                heavy_parts.append(node.note)
+            full_tokens = estimate_tokens("\n".join(heavy_parts))
+
+            # Node kind classification.
+            if node.role in {"root", "brain"} or node.name == "brain":
+                kind = "root"
+            elif not node.requires and node.name not in referenced_names:
+                kind = "leaf"
+            else:
+                kind = "skill"
+
+            result_nodes.append(
+                {
+                    "id": node.name,
+                    "name": node.name,
+                    "kind": kind,
+                    "index": index_tokens,
+                    "dense": dense_tokens,
+                    "full": full_tokens,
+                    "deps": list(node.requires),
+                }
+            )
+
+        return {"nodes": result_nodes}
+
     # ==========================================
     # Session Memory Snapshot
     # ==========================================
@@ -1087,6 +1218,23 @@ class AgentSession:
 # ==========================================
 
 
+def _node_is_community_pack(source_file: str, packs_root: str) -> bool:
+    """True if an .og node was loaded from an installed community-pack dir.
+
+    Community packs install under ``<skills_dir>/packs/``; bundled/built-in
+    skills live elsewhere (inside the package).  Used to tier-gate untrusted,
+    web-installable MCP servers (SEC-005).
+    """
+    if not source_file:
+        return False
+    try:
+        src = os.path.realpath(source_file)
+        root = os.path.realpath(packs_root)
+        return os.path.commonpath([src, root]) == root
+    except (ValueError, OSError):
+        return False
+
+
 def _configure_mcp_servers(
     skill_engine: SkillEngine,
     mcp_manager: MCPManager,
@@ -1105,6 +1253,7 @@ def _configure_mcp_servers(
         mcp_manager: The MCP manager to start servers on.
         gate: The PermissionGate loaded from device-permissions.og.
     """
+    packs_root = str(get_hachi_paths().skills_dir / "packs")
     for node in skill_engine.get_nodes_by_role("mcp"):
         emit(MCP_SERVER_STARTING, {"server": node.name})
         if node.name == "filesystem_mcp":
@@ -1124,6 +1273,18 @@ def _configure_mcp_servers(
             if allowed:
                 path_args = " ".join(str(p) for p in allowed)
                 node.config["args"] = f"-y @modelcontextprotocol/server-filesystem {path_args}"
+        else:
+            # SEC-005: a non-filesystem MCP server runs an arbitrary command at boot.
+            # Community-pack-sourced servers must be tier-gated / explicitly approved
+            # so a web-installed pack cannot silently execute code on next launch.
+            trusted = not _node_is_community_pack(node.source_file, packs_root)
+            decision = gate.is_mcp_server_allowed(node.name, trusted=trusted)
+            if not decision.allowed:
+                emit(
+                    MCP_SERVER_FAILED,
+                    {"server": node.name, "reason": decision.reason},
+                )
+                continue
 
         # Start the server (filesystem with dynamic paths, or other MCP servers unchanged)
         started = mcp_manager.setup_from_node(node)
