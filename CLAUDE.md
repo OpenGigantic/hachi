@@ -100,15 +100,19 @@ All significant lifecycle events are typed in `runtime_events.py`. The TUI and g
 
 ### Frontend contract
 
-The `frontend/` app (TanStack Start + React) generates TypeScript API types from
-`openapi/hachi-openapi.json`. After any gateway route change, run:
+The `frontend/` app (TanStack Router SPA + React + zustand) generates TypeScript API
+types into `frontend/src/lib/data/schema.d.ts` from `openapi/hachi-openapi.json` via
+`openapi-typescript`. After any gateway route change, run:
 
 ```bash
 uv run hachi gateway-openapi --output openapi/hachi-openapi.json
 npm run --prefix frontend generate:api
 ```
 
-CI enforces this is kept current via the `frontend-contract` job (`check:api` step).
+CI enforces this is kept current via the `frontend-contract` job: it re-exports the
+schema, runs `check:api` (regenerate + `git diff --exit-code` on `schema.d.ts`), and
+`typecheck`. The hand-authored UI types live in `src/lib/data/types.ts`; `schema.d.ts`
+is the generated transport contract (`paths` / `components["schemas"]`).
 
 ## Coding conventions
 

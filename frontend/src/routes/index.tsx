@@ -1,0 +1,913 @@
+// ============================================================
+// Route: / — Home ("Today")
+// Prototype markup: Hachi Web App.dc.html lines 87–211
+// Logic: lines 2189–2201 (renderVals home section)
+// ============================================================
+
+import React, { useState, FormEvent } from 'react';
+import { createFileRoute, useNavigate } from '@tanstack/react-router';
+import { useStore } from '../lib/store/store';
+import { Icon } from '../components/icons/Icon';
+import { HachiMark } from '../components/brand/HachiMark';
+import { useCountdown } from '../lib/hooks/useCountdown';
+
+// ---- Local helpers ----
+
+function fmtMoney(n: number): string {
+  return '$' + Number(n).toFixed(2);
+}
+
+type StatusKey = 'working' | 'on-watch' | 'done' | 'blocked';
+
+interface StatusMeta {
+  bg: string;
+  fg: string;
+  dot: string;
+  text: string;
+}
+
+function statusMeta(st: StatusKey | string): StatusMeta {
+  const map: Record<string, StatusMeta> = {
+    working: { bg: 'var(--hachi-working-tint)', fg: '#A8651A', dot: 'var(--hachi-working)', text: 'working' },
+    'on-watch': { bg: 'var(--hachi-trust-tint)', fg: 'var(--hachi-trust)', dot: 'var(--hachi-trust)', text: 'on watch' },
+    done: { bg: 'var(--hachi-success-tint)', fg: '#2C7A50', dot: 'var(--hachi-success)', text: 'done' },
+    blocked: { bg: 'var(--hachi-danger-tint)', fg: '#9E2D21', dot: 'var(--hachi-danger)', text: 'blocked' },
+  };
+  return map[st] || map['working'];
+}
+
+type RiskKey = 'low' | 'medium' | 'high';
+
+interface RiskMeta {
+  label: string;
+  fg: string;
+  bg: string;
+}
+
+function riskMeta(r: RiskKey | string): RiskMeta {
+  const map: Record<string, RiskMeta> = {
+    low: { label: 'low risk', fg: '#2C7A50', bg: 'var(--hachi-success-tint)' },
+    medium: { label: 'needs care', fg: '#A8651A', bg: 'var(--hachi-working-tint)' },
+    high: { label: 'high risk', fg: '#9E2D21', bg: 'var(--hachi-danger-tint)' },
+  };
+  return map[r] || map['medium'];
+}
+
+// ---- Approval card (needs live countdown per card) ----
+
+interface ApprovalCardProps {
+  approval: {
+    id: number;
+    icon: string;
+    request: string;
+    why: string;
+    risk: string;
+    expiresAt: number;
+  };
+  onAllow: () => void;
+  onDecline: () => void;
+}
+
+function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps) {
+  const { label: countdown } = useCountdown(approval.expiresAt);
+  const rm = riskMeta(approval.risk);
+  const [hoverAllow, setHoverAllow] = useState(false);
+  const [hoverDecline, setHoverDecline] = useState(false);
+
+  return (
+    <div
+      style={{
+        background: 'var(--hachi-surface)',
+        border: '0.5px solid var(--hachi-line)',
+        borderRadius: '16px',
+        padding: '16px 18px',
+        display: 'flex',
+        gap: '14px',
+        alignItems: 'flex-start',
+      }}
+    >
+      {/* icon badge */}
+      <div
+        style={{
+          flexShrink: 0,
+          width: '40px',
+          height: '40px',
+          borderRadius: '10px',
+          background: 'var(--hachi-cream)',
+          display: 'grid',
+          placeItems: 'center',
+          color: 'var(--hachi-ink)',
+        }}
+      >
+        <Icon name={approval.icon} size={19} />
+      </div>
+
+      {/* content */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 500, fontSize: '15px' }}>{approval.request}</span>
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              padding: '3px 9px',
+              borderRadius: '999px',
+              background: rm.bg,
+              color: rm.fg,
+              fontSize: '11px',
+              fontWeight: 500,
+            }}
+          >
+            {rm.label}
+          </span>
+        </div>
+        <div style={{ fontSize: '13px', color: 'var(--hachi-muted)', marginTop: '3px' }}>
+          why: {approval.why}
+        </div>
+        <div
+          style={{
+            marginTop: '10px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '7px',
+            fontSize: '12px',
+            color: 'var(--hachi-muted)',
+          }}
+        >
+          <Icon name="clock" size={13} />
+          auto-declines in {countdown}
+        </div>
+      </div>
+
+      {/* actions */}
+      <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+        <button
+          onClick={onDecline}
+          onMouseEnter={() => setHoverDecline(true)}
+          onMouseLeave={() => setHoverDecline(false)}
+          style={{
+            height: '36px',
+            padding: '0 14px',
+            borderRadius: '10px',
+            border: '1px solid var(--hachi-trust)',
+            background: hoverDecline ? 'var(--hachi-trust-tint)' : 'transparent',
+            color: 'var(--hachi-trust)',
+            font: '500 13px var(--font-body)',
+            cursor: 'pointer',
+            transition: 'background var(--dur-fast) var(--ease)',
+          }}
+        >
+          Decline
+        </button>
+        <button
+          onClick={onAllow}
+          onMouseEnter={() => setHoverAllow(true)}
+          onMouseLeave={() => setHoverAllow(false)}
+          style={{
+            height: '36px',
+            padding: '0 14px',
+            borderRadius: '10px',
+            border: '0.5px solid transparent',
+            background: hoverAllow ? 'var(--hachi-brand-hover)' : 'var(--hachi-brand)',
+            color: 'var(--hachi-canvas)',
+            font: '500 13px var(--font-body)',
+            cursor: 'pointer',
+            transition: 'background var(--dur-fast) var(--ease)',
+          }}
+        >
+          Allow once
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---- DoingNow run card ----
+
+interface RunCardHomeProps {
+  title: string;
+  status: string;
+  progress: number;
+  meta?: string;
+  spent: number;
+  budget: number;
+  onClick: () => void;
+}
+
+function RunCardHome({ title, status, progress, meta, spent, budget, onClick }: RunCardHomeProps) {
+  const sm = statusMeta(status);
+  const pct = Math.round(progress * 100);
+  const [hovered, setHovered] = useState(false);
+
+  return (
+    <div
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        background: 'var(--hachi-surface)',
+        border: `0.5px solid ${hovered ? '#d3c8b4' : 'var(--hachi-line)'}`,
+        borderRadius: '16px',
+        padding: '18px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '13px',
+        cursor: 'pointer',
+        transition: 'border-color var(--dur-fast) var(--ease)',
+      }}
+    >
+      {/* title + status pill */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+        <span style={{ fontWeight: 500, fontSize: '15px' }}>{title}</span>
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '7px',
+            padding: '5px 11px',
+            borderRadius: '999px',
+            background: sm.bg,
+            color: sm.fg,
+            fontSize: '12px',
+            fontWeight: 500,
+          }}
+        >
+          <span
+            style={{
+              width: '7px',
+              height: '7px',
+              borderRadius: '50%',
+              background: sm.dot,
+            }}
+          />
+          {sm.text}
+        </span>
+      </div>
+
+      {/* progress bar */}
+      <div
+        style={{
+          height: '4px',
+          borderRadius: '999px',
+          background: 'var(--hachi-line)',
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            width: `${pct}%`,
+            height: '100%',
+            background: 'var(--hachi-brand)',
+            borderRadius: '999px',
+            transition: 'width var(--dur-slow) var(--ease)',
+          }}
+        />
+      </div>
+
+      {/* meta + cost */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          fontSize: '13px',
+          color: 'var(--hachi-muted)',
+        }}
+      >
+        <span>{meta}</span>
+        <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+          spent {fmtMoney(spent)} of {fmtMoney(budget)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Home component
+// ============================================================
+
+function Home() {
+  const navigate = useNavigate();
+
+  // store slices
+  const homeInput = useStore((s) => s.homeInput);
+  const setHomeInput = useStore((s) => s.setHomeInput);
+  const startTask = useStore((s) => s.startTask);
+  const approvals = useStore((s) => s.approvals);
+  const allowApproval = useStore((s) => s.allowApproval);
+  const declineApproval = useStore((s) => s.declineApproval);
+  const runs = useStore((s) => s.runs);
+  const routines = useStore((s) => s.routines);
+  const finished = useStore((s) => s.finished);
+  const streaming = useStore((s) => s.streaming);
+  const spent = useStore((s) => s.spent);
+  const budget = useStore((s) => s.budget);
+  const openRun = useStore((s) => s.openRun);
+
+  // computed
+  const working = runs.some((r) => r.status === 'working') || streaming;
+  const hachiText = working ? 'Hachi is working' : 'Hachi is on watch';
+
+  const today = new Date().toLocaleDateString('en-GB', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  });
+
+  const pendingCount = approvals.length;
+  const hasPending = pendingCount > 0;
+  const pendingCountStr =
+    pendingCount === 1 ? '1 thing' : `${pendingCount} things`;
+
+  const hasDoing = runs.length > 0;
+  const noDoing = !hasDoing;
+
+  // home starters
+  const starters = [
+    {
+      label: 'Summarise my inbox',
+      icon: 'mail',
+      go: () => {
+        startTask('Summarise my inbox and flag anything urgent');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      navigate({ to: '/conversation' as any });
+      },
+    },
+    {
+      label: 'Set up a morning briefing',
+      icon: 'calendar',
+      go: () => {
+        startTask('Every weekday at 8, summarise my inbox and message me the urgent ones');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        navigate({ to: '/conversation' as any });
+      },
+    },
+    {
+      label: "Check this week's PRs",
+      icon: 'git-branch',
+      go: () => {
+        startTask("Summarise this week's pull requests");
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        navigate({ to: '/conversation' as any });
+      },
+    },
+  ];
+
+  // hover states for starters and manage button
+  const [starterHover, setStarterHover] = useState<number | null>(null);
+  const [manageHover, setManageHover] = useState(false);
+  const [submitHover, setSubmitHover] = useState(false);
+
+  function handleHomeSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!homeInput.trim()) return;
+    startTask(homeInput);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    navigate({ to: '/conversation' as any });
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* header */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '16px',
+          padding: '0 32px',
+          height: '68px',
+          flexShrink: 0,
+          borderBottom: '0.5px solid var(--hachi-line)',
+        }}
+      >
+        <div>
+          <h1
+            style={{
+              margin: 0,
+              fontFamily: 'var(--font-display)',
+              fontWeight: 500,
+              fontSize: '22px',
+              lineHeight: '26px',
+            }}
+          >
+            Today
+          </h1>
+        </div>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            fontSize: '13px',
+            color: 'var(--hachi-muted)',
+          }}
+        >
+          <span>{hachiText}</span>
+        </div>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: '13px', color: 'var(--hachi-muted)' }}>{today}</span>
+      </div>
+
+      {/* scrollable body */}
+      <div
+        className="hachi-scroll"
+        style={{ flex: 1, overflow: 'auto', padding: '28px 32px 64px' }}
+      >
+        <div
+          style={{
+            maxWidth: '940px',
+            margin: '0 auto',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '30px',
+          }}
+        >
+          {/* ---- Start something ---- */}
+          <div
+            style={{
+              background: 'var(--hachi-surface)',
+              border: '0.5px solid var(--hachi-line)',
+              borderRadius: '16px',
+              padding: '22px',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                marginBottom: '14px',
+              }}
+            >
+              <HachiMark size={26} />
+              <span
+                style={{
+                  fontFamily: 'var(--font-display)',
+                  fontWeight: 500,
+                  fontSize: '18px',
+                }}
+              >
+                Start something
+              </span>
+            </div>
+
+            <form
+              onSubmit={handleHomeSubmit}
+              style={{ display: 'flex', gap: '10px', alignItems: 'stretch' }}
+            >
+              <input
+                value={homeInput}
+                onChange={(e) => setHomeInput(e.target.value)}
+                placeholder="Ask Hachi to do something…"
+                style={{
+                  flex: 1,
+                  height: '46px',
+                  padding: '0 16px',
+                  borderRadius: '10px',
+                  border: '0.5px solid var(--hachi-line)',
+                  background: 'var(--hachi-canvas)',
+                  font: 'inherit',
+                  fontSize: '15px',
+                  color: 'var(--hachi-ink)',
+                  outline: 'none',
+                }}
+                onFocus={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--hachi-brand)';
+                  e.currentTarget.style.boxShadow = '0 0 0 2px var(--hachi-brand-tint)';
+                }}
+                onBlur={(e) => {
+                  e.currentTarget.style.borderColor = 'var(--hachi-line)';
+                  e.currentTarget.style.boxShadow = 'none';
+                }}
+              />
+              <button
+                type="submit"
+                onMouseEnter={() => setSubmitHover(true)}
+                onMouseLeave={() => setSubmitHover(false)}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  height: '46px',
+                  padding: '0 20px',
+                  borderRadius: '10px',
+                  border: '0.5px solid transparent',
+                  background: submitHover ? 'var(--hachi-brand-hover)' : 'var(--hachi-brand)',
+                  color: 'var(--hachi-canvas)',
+                  font: '500 14px var(--font-body)',
+                  cursor: 'pointer',
+                  transition: 'background var(--dur-fast) var(--ease)',
+                }}
+              >
+                <Icon name="arrow-up" size={16} />
+                Ask Hachi
+              </button>
+            </form>
+
+            {/* starter chips */}
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '8px',
+                marginTop: '14px',
+              }}
+            >
+              {starters.map((s, i) => (
+                <button
+                  key={s.label}
+                  onClick={s.go}
+                  onMouseEnter={() => setStarterHover(i)}
+                  onMouseLeave={() => setStarterHover(null)}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '7px',
+                    padding: '7px 13px',
+                    borderRadius: '999px',
+                    border: '0.5px solid var(--hachi-line)',
+                    background: starterHover === i ? 'var(--hachi-cream)' : 'var(--hachi-canvas)',
+                    color: 'var(--hachi-ink)',
+                    font: 'inherit',
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                    transition: 'background var(--dur-fast) var(--ease)',
+                  }}
+                >
+                  <span
+                    style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}
+                  >
+                    <Icon name={s.icon} size={14} />
+                  </span>
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* ---- What needs you ---- */}
+          {hasPending && (
+            <div>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '9px',
+                  marginBottom: '14px',
+                }}
+              >
+                <span
+                  style={{ color: 'var(--hachi-brand)', display: 'inline-flex' }}
+                >
+                  <Icon name="leash" size={17} />
+                </span>
+                <h2
+                  style={{
+                    margin: 0,
+                    fontFamily: 'var(--font-display)',
+                    fontWeight: 500,
+                    fontSize: '16px',
+                  }}
+                >
+                  What needs you
+                </h2>
+                <span style={{ fontSize: '13px', color: 'var(--hachi-muted)' }}>
+                  {pendingCountStr} waiting on the leash
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {approvals.slice(0, 3).map((a) => (
+                  <ApprovalCard
+                    key={a.id}
+                    approval={a}
+                    onAllow={() => allowApproval(a.id)}
+                    onDecline={() => declineApproval(a.id)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ---- Doing now ---- */}
+          <div>
+            <h2
+              style={{
+                margin: '0 0 14px',
+                fontFamily: 'var(--font-display)',
+                fontWeight: 500,
+                fontSize: '16px',
+              }}
+            >
+              What Hachi is doing now
+            </h2>
+
+            {hasDoing && (
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(420px, 1fr))',
+                  gap: '14px',
+                }}
+              >
+                {runs.map((r) => (
+                  <RunCardHome
+                    key={r.id}
+                    title={r.title}
+                    status={r.status}
+                    progress={r.progress}
+                    meta={r.meta}
+                    spent={r.spent}
+                    budget={r.budget}
+                    onClick={() => {
+                      openRun(r.id, 'home');
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                      navigate({ to: '/run' as any });
+                    }}
+                  />
+                ))}
+              </div>
+            )}
+
+            {noDoing && (
+              <div style={{ fontSize: '14px', color: 'var(--hachi-muted)' }}>
+                Nothing running right now.
+              </div>
+            )}
+          </div>
+
+          {/* ---- On watch + Finished recently : two columns ---- */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: '24px',
+            }}
+          >
+            {/* On watch */}
+            <div>
+              <h2
+                style={{
+                  margin: '0 0 14px',
+                  fontFamily: 'var(--font-display)',
+                  fontWeight: 500,
+                  fontSize: '16px',
+                }}
+              >
+                On watch
+              </h2>
+              <div
+                style={{
+                  background: 'var(--hachi-surface)',
+                  border: '0.5px solid var(--hachi-line)',
+                  borderRadius: '16px',
+                  overflow: 'hidden',
+                }}
+              >
+                {routines.length === 0 ? (
+                  <div
+                    style={{
+                      padding: '14px 16px',
+                      fontSize: '13px',
+                      color: 'var(--hachi-muted)',
+                    }}
+                  >
+                    No routines on watch yet.
+                  </div>
+                ) : (
+                  routines.map((w) => (
+                    <RoutineRow key={w.id} routine={w} />
+                  ))
+                )}
+                <button
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  onClick={() => navigate({ to: '/work' as any })}
+                  onMouseEnter={() => setManageHover(true)}
+                  onMouseLeave={() => setManageHover(false)}
+                  style={{
+                    width: '100%',
+                    padding: '13px',
+                    paddingLeft: '16px',
+                    border: 'none',
+                    background: manageHover ? 'var(--hachi-cream)' : 'transparent',
+                    color: 'var(--hachi-trust)',
+                    font: '500 13px var(--font-body)',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    transition: 'background var(--dur-fast) var(--ease)',
+                  }}
+                >
+                  Manage routines →
+                </button>
+              </div>
+            </div>
+
+            {/* Finished recently */}
+            <div>
+              <h2
+                style={{
+                  margin: '0 0 14px',
+                  fontFamily: 'var(--font-display)',
+                  fontWeight: 500,
+                  fontSize: '16px',
+                }}
+              >
+                Finished recently
+              </h2>
+              <div
+                style={{
+                  background: 'var(--hachi-surface)',
+                  border: '0.5px solid var(--hachi-line)',
+                  borderRadius: '16px',
+                  overflow: 'hidden',
+                }}
+              >
+                {finished.length === 0 ? (
+                  <div
+                    style={{
+                      padding: '14px 16px',
+                      fontSize: '13px',
+                      color: 'var(--hachi-muted)',
+                    }}
+                  >
+                    Nothing finished yet today.
+                  </div>
+                ) : (
+                  finished.map((f) => (
+                    <FinishedRow key={f.id} item={f} />
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* ---- Budget summary (always visible) ---- */}
+          <BudgetSummary spent={spent} budget={budget} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- Sub-components (no entrance animation per contract §2) ----
+
+interface RoutineRowProps {
+  routine: {
+    id: number;
+    title: string;
+    schedule: string;
+    next: string;
+    cost: number;
+  };
+}
+
+function RoutineRow({ routine: w }: RoutineRowProps) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '12px',
+        padding: '14px 16px',
+        borderBottom: '0.5px solid var(--hachi-line)',
+      }}
+    >
+      <span
+        style={{ color: 'var(--hachi-trust)', display: 'inline-flex' }}
+      >
+        <Icon name="repeat" size={17} />
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 500, fontSize: '14px' }}>{w.title}</div>
+        <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginTop: '2px' }}>
+          {w.schedule} · next {w.next}
+        </div>
+      </div>
+      <span
+        style={{
+          fontSize: '12px',
+          color: 'var(--hachi-muted)',
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
+        {fmtMoney(w.cost)}/run
+      </span>
+    </div>
+  );
+}
+
+interface FinishedRowProps {
+  item: {
+    id: number;
+    title: string;
+    note: string;
+    when: string;
+    cost: number;
+  };
+}
+
+function FinishedRow({ item: f }: FinishedRowProps) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '12px',
+        padding: '14px 16px',
+        borderBottom: '0.5px solid var(--hachi-line)',
+      }}
+    >
+      <span
+        style={{ color: 'var(--hachi-success)', display: 'inline-flex' }}
+      >
+        <Icon name="circle-check" size={17} />
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 500, fontSize: '14px' }}>{f.title}</div>
+        <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginTop: '2px' }}>
+          {f.note} · {f.when}
+        </div>
+      </div>
+      <span
+        style={{
+          fontSize: '12px',
+          color: 'var(--hachi-muted)',
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
+        {fmtMoney(f.cost)}
+      </span>
+    </div>
+  );
+}
+
+interface BudgetSummaryProps {
+  spent: number;
+  budget: number;
+}
+
+function BudgetSummary({ spent, budget }: BudgetSummaryProps) {
+  const pct = Math.min(100, Math.round((spent / budget) * 100));
+  const isHigh = pct >= 80;
+
+  return (
+    <div
+      style={{
+        background: 'var(--hachi-surface)',
+        border: '0.5px solid var(--hachi-line)',
+        borderRadius: '16px',
+        padding: '16px 18px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '14px',
+      }}
+    >
+      <span style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}>
+        <Icon name="dollar" size={16} />
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: '13px', color: 'var(--hachi-muted)' }}>
+          spent {fmtMoney(spent)} of {fmtMoney(budget)} today
+        </div>
+        <div
+          style={{
+            marginTop: '6px',
+            height: '3px',
+            borderRadius: '999px',
+            background: 'var(--hachi-line)',
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            style={{
+              width: `${pct}%`,
+              height: '100%',
+              background: isHigh ? 'var(--hachi-working)' : 'var(--hachi-trust)',
+              borderRadius: '999px',
+              transition: 'width var(--dur-slow) var(--ease)',
+            }}
+          />
+        </div>
+      </div>
+      <span
+        style={{
+          fontSize: '12px',
+          color: isHigh ? 'var(--hachi-working)' : 'var(--hachi-muted)',
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
+        {pct}%
+      </span>
+    </div>
+  );
+}
+
+// ============================================================
+// Route export (TanStack Router file-based routing)
+// ============================================================
+
+export const Route = createFileRoute('/')({
+  component: Home,
+});
