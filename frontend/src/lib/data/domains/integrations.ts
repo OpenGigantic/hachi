@@ -4,6 +4,11 @@
 //   GET /capabilities  → Integration[] (native integrations only)
 //   GET /runtime/mcp/inventory → McpServer[] + McpTool[]
 //   PUT /capabilities/{id}/enabled → connect/disconnect toggle
+//   POST /runtime/mcp/register → register new MCP server
+//     NOTE: /runtime/mcp/register does NOT yet exist in the gateway.
+//     The endpoint is wired optimistically; callers receive a clear error
+//     message so the UI can surface it without crashing. When the backend
+//     adds this route the frontend will work automatically.
 // ============================================================
 
 import { apiGet, apiSend, USE_MOCKS } from "../client";
@@ -243,6 +248,35 @@ interface GatewayCapabilityToggleResponse {
   configured: boolean;
 }
 
+/** Status tracked per-integration to prevent double-submission. */
+export type ActionStatus = "idle" | "loading" | "error";
+
+// Per-integration in-flight tracking. Keyed by integration id.
+// Using a Map (module-level) so state is shared across callers without store coupling.
+const _connectStatus = new Map<string, ActionStatus>();
+const _disconnectStatus = new Map<string, ActionStatus>();
+const _statusListeners = new Set<() => void>();
+
+/** Subscribe to status change notifications (used by the UI for re-render). */
+export function subscribeActionStatus(cb: () => void): () => void {
+  _statusListeners.add(cb);
+  return () => _statusListeners.delete(cb);
+}
+
+function _notifyListeners() {
+  _statusListeners.forEach((cb) => cb());
+}
+
+/** Get the current connect status for an integration id. */
+export function getConnectStatus(id: string): ActionStatus {
+  return _connectStatus.get(id) ?? "idle";
+}
+
+/** Get the current disconnect status for an integration id. */
+export function getDisconnectStatus(id: string): ActionStatus {
+  return _disconnectStatus.get(id) ?? "idle";
+}
+
 /**
  * "Connect" an integration — optimistic store update + gateway call.
  *
@@ -250,12 +284,20 @@ interface GatewayCapabilityToggleResponse {
  * PUT /capabilities/{id}/enabled with { enabled: true }. On error,
  * signals setReconnecting(true) and re-runs the loader to restore
  * the last known gateway truth.
+ *
+ * Returns false if already in-flight (prevents double-click duplicates).
  */
-export async function connectIntegration(id: string): Promise<void> {
+export async function connectIntegration(id: string): Promise<boolean> {
+  if (_connectStatus.get(id) === "loading") return false;
+
   useStore.getState().connectIntegration(id);
-  if (USE_MOCKS) return;
+  if (USE_MOCKS) return true;
 
   const { setReconnecting } = useStore.getState();
+
+  _connectStatus.set(id, "loading");
+  _notifyListeners();
+
   try {
     await apiSend<GatewayCapabilityToggleResponse>(
       "PUT",
@@ -264,8 +306,14 @@ export async function connectIntegration(id: string): Promise<void> {
     );
     // Re-run the loader so derived status reflects gateway truth.
     await loadIntegrations();
+    _connectStatus.set(id, "idle");
+    _notifyListeners();
+    return true;
   } catch {
     setReconnecting(true);
+    _connectStatus.set(id, "error");
+    _notifyListeners();
+    return false;
   }
 }
 
@@ -276,12 +324,20 @@ export async function connectIntegration(id: string): Promise<void> {
  * PUT /capabilities/{id}/enabled with { enabled: false }. On error,
  * signals setReconnecting(true) and re-runs the loader to restore
  * the last known gateway truth.
+ *
+ * Returns false if already in-flight (prevents double-click duplicates).
  */
-export async function disconnectIntegration(id: string): Promise<void> {
+export async function disconnectIntegration(id: string): Promise<boolean> {
+  if (_disconnectStatus.get(id) === "loading") return false;
+
   useStore.getState().disconnectIntegration(id);
-  if (USE_MOCKS) return;
+  if (USE_MOCKS) return true;
 
   const { setReconnecting } = useStore.getState();
+
+  _disconnectStatus.set(id, "loading");
+  _notifyListeners();
+
   try {
     await apiSend<GatewayCapabilityToggleResponse>(
       "PUT",
@@ -290,7 +346,125 @@ export async function disconnectIntegration(id: string): Promise<void> {
     );
     // Re-run the loader so derived status reflects gateway truth.
     await loadIntegrations();
+    _disconnectStatus.set(id, "idle");
+    _notifyListeners();
+    return true;
   } catch {
     setReconnecting(true);
+    _disconnectStatus.set(id, "error");
+    _notifyListeners();
+    return false;
   }
+}
+
+// ============================================================
+// 5. MCP server registration
+// ============================================================
+
+/** Allowed launcher commands (mirrors Python ALLOWED_MCP_COMMANDS). */
+export const ALLOWED_MCP_COMMANDS = ["npx", "uvx", "python", "python3", "node", "uv"] as const;
+export type McpCommand = (typeof ALLOWED_MCP_COMMANDS)[number];
+
+/** Input shape for adding a new MCP server. */
+export interface AddMcpServerInput {
+  /** Slug identifier, e.g. "github". Letters, digits, hyphens, underscores only. */
+  name: string;
+  /** Launcher command. Must be one of ALLOWED_MCP_COMMANDS. */
+  command: McpCommand;
+  /** Package / script arguments, e.g. "-y @modelcontextprotocol/server-github". */
+  args: string;
+  /** Optional plain (non-secret) env vars. Keys must not look like secrets. */
+  envVars?: Record<string, string>;
+}
+
+/** Validation result returned before hitting the network. */
+export type McpValidationResult =
+  | { ok: true }
+  | { ok: false; field: keyof AddMcpServerInput | "envVars"; message: string }
+
+/** Client-side validation mirroring Python backend constraints. */
+export function validateMcpServerInput(input: AddMcpServerInput): McpValidationResult {
+  if (!input.name.trim()) {
+    return { ok: false, field: "name", message: "Name is required." };
+  }
+  if (!/^[\w-]+$/.test(input.name)) {
+    return {
+      ok: false,
+      field: "name",
+      message: "Use letters, digits, hyphens, and underscores only.",
+    };
+  }
+  if (!ALLOWED_MCP_COMMANDS.includes(input.command)) {
+    return {
+      ok: false,
+      field: "command",
+      message: `Command must be one of: ${ALLOWED_MCP_COMMANDS.join(", ")}.`,
+    };
+  }
+  if (!input.args.trim()) {
+    return { ok: false, field: "args", message: "Args are required." };
+  }
+  // Reject shell metacharacters (mirrors _SHELL_META_RE in Python)
+  if (/[;&|><`]|\$[({]|&&|\|\|/.test(input.args)) {
+    return {
+      ok: false,
+      field: "args",
+      message: "Args must not contain shell metacharacters (; & | > < ` ${ $(  && ||).",
+    };
+  }
+  const secretPatterns = [
+    "key", "token", "secret", "password", "passwd", "credential",
+    "private", "auth", "bearer", "apikey", "api_key",
+  ];
+  for (const k of Object.keys(input.envVars ?? {})) {
+    const lower = k.toLowerCase();
+    const isSecret = secretPatterns.some((p) => lower.includes(p));
+    if (isSecret) {
+      return {
+        ok: false,
+        field: "envVars",
+        message: `Env var key "${k}" looks like a secret. Use SecretStore instead.`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/** Raw response from POST /runtime/mcp/register (endpoint not yet in gateway). */
+interface GatewayMcpRegisterResponse {
+  name: string;
+  message?: string;
+}
+
+/**
+ * Register a new MCP server via POST /runtime/mcp/register.
+ *
+ * NOTE: This endpoint does not yet exist in the Hachi gateway. The call is
+ * wired so that when the backend adds the route, it will work automatically.
+ * Until then, callers will receive an ApiError with status 404/405 which the
+ * UI surfaces as an error message rather than crashing.
+ *
+ * On success, reloads the MCP inventory so the new server appears in the list.
+ *
+ * @throws ApiError on network failure or backend error.
+ */
+export async function addMcpServer(input: AddMcpServerInput): Promise<void> {
+  if (USE_MOCKS) {
+    // In mock mode, simulate success without a network call.
+    return;
+  }
+
+  await apiSend<GatewayMcpRegisterResponse>(
+    "POST",
+    "/runtime/mcp/register",
+    {
+      name: input.name,
+      command: input.command,
+      args: input.args,
+      env_vars: input.envVars ?? {},
+    },
+  );
+
+  // Reload inventory so the newly registered server appears.
+  await loadIntegrations();
 }
