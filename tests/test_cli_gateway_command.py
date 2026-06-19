@@ -150,58 +150,40 @@ def test_gateway_command_passes_runtime_flag(monkeypatch) -> None:
 
 def test_run_command_launches_tui_in_local_mode(monkeypatch) -> None:
     state: dict[str, object] = {
-        "gateway_started": False,
-        "tui_launched": False,
-        "resume_session_id": "sentinel",
+        "cockpit_launched": False,
     }
 
-    def _fake_start_gateway_server(
-        host: str = "127.0.0.1",
-        port: int = 0,
-        attach_runtime: bool = False,
-    ):
-        state["gateway_started"] = True
-        raise AssertionError("run should not start the HTTP gateway in local mode")
-
-    def _fake_run_tui(
-        gateway_base_url: str | None = None, resume_session_id: str | None = None
-    ) -> None:
-        state["tui_launched"] = True
-        state["resume_session_id"] = resume_session_id
+    def _fake_launch_cockpit() -> None:
+        state["cockpit_launched"] = True
 
     monkeypatch.setattr("hachi.cli.main.ensure_workspace", lambda: None)
     monkeypatch.setattr("hachi.cli.main._apply_quick_setup_if_needed", lambda: None)
     monkeypatch.setattr("hachi.cli.main._pre_flight_check", lambda: True)
     monkeypatch.setattr("hachi.cli.main.ensure_device_permissions", lambda _console: None)
-    monkeypatch.setattr("hachi.cli.main._start_gateway_server", _fake_start_gateway_server)
-    monkeypatch.setattr("hachi.cli.main.run_tui", _fake_run_tui)
+    monkeypatch.setattr("hachi.cli.main._launch_cockpit", _fake_launch_cockpit)
 
     result = runner.invoke(app, ["run"])
 
     assert result.exit_code == 0
-    assert state["gateway_started"] is False
-    assert state["tui_launched"] is True
-    assert state["resume_session_id"] is None
+    assert state["cockpit_launched"] is True
 
 
 def test_bare_invocation_launches_tui(monkeypatch) -> None:
-    state: dict[str, object] = {"tui_launched": False}
+    state: dict[str, object] = {"cockpit_launched": False}
 
-    def _fake_run_tui(
-        gateway_base_url: str | None = None, resume_session_id: str | None = None
-    ) -> None:
-        state["tui_launched"] = True
+    def _fake_launch_cockpit() -> None:
+        state["cockpit_launched"] = True
 
     monkeypatch.setattr("hachi.cli.main.ensure_workspace", lambda: None)
     monkeypatch.setattr("hachi.cli.main._apply_quick_setup_if_needed", lambda: None)
     monkeypatch.setattr("hachi.cli.main._pre_flight_check", lambda: True)
     monkeypatch.setattr("hachi.cli.main.ensure_device_permissions", lambda _console: None)
-    monkeypatch.setattr("hachi.cli.main.run_tui", _fake_run_tui)
+    monkeypatch.setattr("hachi.cli.main._launch_cockpit", _fake_launch_cockpit)
 
     result = runner.invoke(app, [])
 
     assert result.exit_code == 0
-    assert state["tui_launched"] is True
+    assert state["cockpit_launched"] is True
 
 
 def test_run_repl_skips_gateway_bootstrap(monkeypatch) -> None:
@@ -234,32 +216,6 @@ def test_run_repl_skips_gateway_bootstrap(monkeypatch) -> None:
     assert state["run_repl_called"] is True
     assert state["gateway_started"] is False
 
-
-def test_run_command_falls_back_to_repl_when_tui_launch_fails(monkeypatch) -> None:
-    state: dict[str, bool] = {
-        "repl_called": False,
-    }
-
-    def _boom_run_tui(
-        gateway_base_url: str | None = None, resume_session_id: str | None = None
-    ) -> None:
-        raise RuntimeError("tui failed")
-
-    def _fake_repl() -> None:
-        state["repl_called"] = True
-
-    monkeypatch.setattr("hachi.cli.main.ensure_workspace", lambda: None)
-    monkeypatch.setattr("hachi.cli.main._apply_quick_setup_if_needed", lambda: None)
-    monkeypatch.setattr("hachi.cli.main._pre_flight_check", lambda: True)
-    monkeypatch.setattr("hachi.cli.main.ensure_device_permissions", lambda _console: None)
-    monkeypatch.setattr("hachi.cli.main.run_tui", _boom_run_tui)
-    monkeypatch.setattr("hachi.cli.main._run_repl", _fake_repl)
-
-    result = runner.invoke(app, ["run"])
-
-    assert result.exit_code == 0
-    assert state["repl_called"] is True
-    assert "Falling back to compatibility REPL" in result.stdout
 
 
 def test_apply_quick_setup_runs_only_when_needed(monkeypatch) -> None:

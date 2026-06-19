@@ -91,6 +91,18 @@ class GatewayControlPlane:
         list_schedules: Callable[[], list[dict[str, Any]]] | None = None,
         cancel_schedule: Callable[[str], dict[str, Any]] | None = None,
         toggle_schedule: Callable[[str, bool], dict[str, Any]] | None = None,
+        get_skills: Callable[[], list[dict[str, Any]]] | None = None,
+        get_memory: Callable[[], dict[str, Any]] | None = None,
+        get_memory_recall: Callable[[str, int], list[dict[str, Any]]] | None = None,
+        get_og_graph: Callable[[], dict[str, Any]] | None = None,
+        get_authoring_targets: Callable[[], list[dict[str, Any]]] | None = None,
+        get_authoring_target: Callable[[str], dict[str, Any]] | None = None,
+        authoring_apply: Callable[[str], dict[str, Any]] | None = None,
+        authoring_revert: Callable[[str], dict[str, Any]] | None = None,
+        get_spend: Callable[[str | None], dict[str, Any]] | None = None,
+        set_capability_enabled: Callable[[str, bool], dict[str, Any]] | None = None,
+        add_memory_fact: Callable[[str, str], dict[str, Any]] | None = None,
+        delete_memory_fact: Callable[[str], dict[str, Any]] | None = None,
         max_active_sessions: int = 100,
         max_prompt_chars: int = 100_000,
     ) -> None:
@@ -119,6 +131,18 @@ class GatewayControlPlane:
         self._list_schedules = list_schedules
         self._cancel_schedule = cancel_schedule
         self._toggle_schedule = toggle_schedule
+        self._get_skills = get_skills
+        self._get_memory = get_memory
+        self._get_memory_recall = get_memory_recall
+        self._get_og_graph = get_og_graph
+        self._get_authoring_targets = get_authoring_targets
+        self._get_authoring_target = get_authoring_target
+        self._authoring_apply = authoring_apply
+        self._authoring_revert = authoring_revert
+        self._get_spend = get_spend
+        self._set_capability_enabled = set_capability_enabled
+        self._add_memory_fact = add_memory_fact
+        self._delete_memory_fact = delete_memory_fact
         self._connections: dict[str, dict[str, Any]] = {}
         self._api_sessions: dict[str, str] = {}  # session_key -> session_id (facade sessions)
         self._connections_lock = threading.Lock()
@@ -436,6 +460,75 @@ class GatewayControlPlane:
         if self._toggle_schedule is None:
             return {"ok": False, "detail": "schedules not available"}
         return self._toggle_schedule(schedule_id, enabled)
+
+    # ==========================================
+    # Web endpoint handlers — added for web UI (#1–#6)
+    # ==========================================
+
+    def skills(self) -> Any:
+        """Return the .og skill inventory list (GET /skills)."""
+        if self._get_skills is None:
+            return []
+        return self._get_skills()
+
+    def memory(self) -> Any:
+        """Return grouped memory facts, blocked items, and proposed changes (GET /memory)."""
+        handler = self._require_handler(self._get_memory, "memory facts")
+        return handler()
+
+    def memory_recall(self, query: str, top_k: int = 8) -> Any:
+        """Return semantic memory recall results (GET /memory/recall)."""
+        handler = self._require_handler(self._get_memory_recall, "memory recall")
+        return handler(query, max(1, min(top_k, 50)))
+
+    def og_graph(self) -> Any:
+        """Return the ObjectGraph node graph (GET /og/graph)."""
+        if self._get_og_graph is None:
+            return {"nodes": []}
+        return self._get_og_graph()
+
+    def authoring_targets(self) -> Any:
+        """Return the list of editable authoring targets (GET /authoring/targets)."""
+        handler = self._require_handler(self._get_authoring_targets, "authoring targets")
+        return handler()
+
+    def authoring_target(self, name: str) -> Any:
+        """Return the source of a single authoring target (GET /authoring/targets/{name})."""
+        handler = self._require_handler(self._get_authoring_target, "authoring target")
+        return handler(name)
+
+    def authoring_apply(self, name: str) -> Any:
+        """Apply (no-op stub) to an authoring target (POST /authoring/targets/{name}/apply)."""
+        handler = self._require_handler(self._authoring_apply, "authoring apply")
+        return handler(name)
+
+    def authoring_revert(self, name: str) -> Any:
+        """Revert (no-op stub) an authoring target (POST /authoring/targets/{name}/revert)."""
+        handler = self._require_handler(self._authoring_revert, "authoring revert")
+        return handler(name)
+
+    def spend(self, session_id: str | None = None) -> Any:
+        """Return spend analytics for the current or specified session (GET /spend)."""
+        if self._get_spend is None:
+            return {"turns": [], "tidies": [], "models": []}
+        return self._get_spend(session_id)
+
+    def set_capability_enabled(self, cap_id: str, enabled: bool) -> Any:
+        """Toggle a capability on/off (PUT /capabilities/{id}/enabled)."""
+        handler = self._require_handler(self._set_capability_enabled, "capability toggle")
+        return handler(cap_id, bool(enabled))
+
+    def add_memory_fact(self, group: str, text: str) -> Any:
+        """Add a fact to a vault collection (POST /memory/facts)."""
+        if self._add_memory_fact is None:
+            return {"id": "", "error": "memory vault not available"}
+        return self._add_memory_fact(group, text)
+
+    def delete_memory_fact(self, fact_id: str) -> Any:
+        """Delete a fact from the vault (DELETE /memory/facts/{fact_id})."""
+        if self._delete_memory_fact is None:
+            return {"ok": False, "error": "memory vault not available"}
+        return self._delete_memory_fact(fact_id)
 
     # Backward-compatible aliases for previous envelope methods.
     def connect(self, payload: dict[str, Any]) -> dict[str, Any]:
