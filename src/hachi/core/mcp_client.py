@@ -32,6 +32,16 @@ from hachi.core.untrusted_content import guard_untrusted
 
 logger = logging.getLogger(__name__)
 
+# MED-004: Hard cap on MCP tool response size to prevent context flooding.
+# Responses larger than this are truncated with a visible marker so the LLM
+# knows the output was cut and can ask for a narrower query.
+_MCP_RESPONSE_MAX_CHARS: int = 64_000
+_MCP_TRUNCATION_MARKER: str = (
+    "\n\n[TRUNCATED: MCP response exceeded {limit} characters. "
+    "Only the first {limit} characters are shown. "
+    "Request a smaller result set or filter the output.]\n"
+)
+
 
 class MCPServerConnection:
     """
@@ -83,6 +93,10 @@ class MCPServerConnection:
             else self.DEFAULT_BOOT_TIMEOUT_SECONDS
         )
         self._tools: list[dict[str, Any]] = []
+        # LOW-014: sentinel set by _stdout_reader when the read loop exits
+        # unexpectedly.  Callers can inspect this to surface a useful error
+        # instead of silently timing out after request_timeout_seconds.
+        self._reader_dead: bool = False
 
     @staticmethod
     def _normalize_tools_payload(raw_tools: Any) -> list[dict[str, Any]]:
@@ -105,34 +119,64 @@ class MCPServerConnection:
         return normalized
 
     def _stdout_reader(self) -> None:
-        """Continuously read MCP stdout and route JSON-RPC responses by request ID."""
+        """Continuously read MCP stdout and route JSON-RPC responses by request ID.
+
+        LOW-014: If the read loop exits for any reason (EOF, subprocess death,
+        I/O error) we log a warning and set ``_reader_dead`` so that
+        :meth:`_send_request` can detect the condition and return a descriptive
+        error rather than silently timing out after ``request_timeout_seconds``.
+        We also wake any threads waiting on ``_response_cv`` so they unblock
+        immediately instead of hanging until the timeout fires.
+        """
         process = self._process
         if not process or not process.stdout:
+            logger.warning("[mcp] %s: _stdout_reader: no process/stdout on entry", self.name)
+            self._reader_dead = True
+            with self._response_cv:
+                self._response_cv.notify_all()
             return
 
-        while True:
-            try:
-                line = process.stdout.readline()
-            except Exception:
-                return
+        try:
+            while True:
+                try:
+                    line = process.stdout.readline()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[mcp] %s: _stdout_reader: read error — %s; thread exiting",
+                        self.name,
+                        exc,
+                    )
+                    break
 
-            if not line:
-                return
+                if not line:
+                    # EOF — subprocess closed its stdout (process likely exited).
+                    logger.warning(
+                        "[mcp] %s: _stdout_reader: EOF on stdout (subprocess exited?); "
+                        "thread exiting",
+                        self.name,
+                    )
+                    break
 
-            decoded = line.decode("utf-8", errors="replace").strip()
-            if not decoded:
-                continue
+                decoded = line.decode("utf-8", errors="replace").strip()
+                if not decoded:
+                    continue
 
-            try:
-                response = json.loads(decoded)
-            except json.JSONDecodeError:
-                continue
+                try:
+                    response = json.loads(decoded)
+                except json.JSONDecodeError:
+                    continue
 
-            if not isinstance(response, dict) or "id" not in response:
-                continue
+                if not isinstance(response, dict) or "id" not in response:
+                    continue
 
+                with self._response_cv:
+                    self._responses[response.get("id")] = response
+                    self._response_cv.notify_all()
+        finally:
+            # Mark the reader as dead and wake all waiters so they can detect
+            # the failure promptly rather than sitting out the full timeout.
+            self._reader_dead = True
             with self._response_cv:
-                self._responses[response.get("id")] = response
                 self._response_cv.notify_all()
 
     def _build_subprocess_env(self) -> dict[str, str]:
@@ -376,7 +420,14 @@ class MCPServerConnection:
             elif isinstance(block, str):
                 text_parts.append(block)
 
-        return "\n".join(text_parts) if text_parts else json.dumps(result)
+        raw = "\n".join(text_parts) if text_parts else json.dumps(result)
+
+        # MED-004: Cap response size to prevent context flooding.
+        if len(raw) > _MCP_RESPONSE_MAX_CHARS:
+            marker = _MCP_TRUNCATION_MARKER.format(limit=_MCP_RESPONSE_MAX_CHARS)
+            raw = raw[:_MCP_RESPONSE_MAX_CHARS] + marker
+
+        return raw
 
     def _send_request(self, method: str, params: dict[str, Any]) -> dict[str, Any] | None:
         """Send a JSON-RPC request and wait for the response.
@@ -409,14 +460,25 @@ class MCPServerConnection:
 
             # --- Step 2: wait for the reader thread to post the matching response.
             # cv.wait_for releases self._lock during the wait, so other threads can
-            # enter this same block and issue their own requests concurrently. ---
+            # enter this same block and issue their own requests concurrently.
+            # LOW-014: also wake up immediately if the reader thread has died so
+            # callers don't have to wait out the full timeout. ---
             arrived = self._response_cv.wait_for(
-                lambda: request_id in self._responses,
+                lambda: request_id in self._responses or self._reader_dead,
                 timeout=self._request_timeout_seconds,
             )
 
             if not arrived:
                 return None
+
+            if request_id not in self._responses:
+                # Reader died before our response arrived.
+                logger.warning(
+                    "[mcp] %s: _stdout_reader died before response for request %s arrived",
+                    self.name,
+                    request_id,
+                )
+                return {"error": {"message": f"MCP server '{self.name}' reader thread died"}}
 
             return self._responses.pop(request_id)
 
