@@ -499,21 +499,38 @@ class _InProcessGatewayRuntime:
         return config.model_dump(mode="python", exclude_none=True)
 
     def list_models(self) -> list[dict]:
-        provider_models = {
-            "anthropic": ["claude-haiku-4-5", "claude-sonnet-4-5"],
+        """Return provider-specific model lists.
+
+        Anthropic models are kept current (HIGH-008); other providers use their
+        known defaults.  The ``recommended`` flag marks the currently configured model.
+        """
+        provider_models: dict[str, list[str]] = {
+            # HIGH-008: include all current Anthropic release-track models.
+            "anthropic": [
+                "claude-haiku-4-5",
+                "claude-sonnet-4-5",
+                "claude-sonnet-4-6",
+                "claude-opus-4-8",
+            ],
             "openai-compatible": ["gpt-4.1-mini", "gpt-4.1"],
             "ollama": ["llama3.1:8b", "qwen2.5-coder:7b"],
         }
         config = load_effective_config()
         kind = config.provider.kind
+        current = config.provider.model
+        models = provider_models.get(kind, [current])
+        # Always include the currently configured model even if not in the list
+        # (e.g. user set a preview or custom model).
+        if current and current not in models:
+            models = [current, *models]
         return [
             {
                 "id": model,
                 "label": model,
                 "provider": kind,
-                "recommended": model == config.provider.model,
+                "recommended": model == current,
             }
-            for model in provider_models.get(kind, [config.provider.model])
+            for model in models
         ]
 
     def setup_state(self) -> dict:
@@ -1885,9 +1902,7 @@ def _launch_cockpit() -> None:
     host = "127.0.0.1"
     try:
         token = _resolve_gateway_auth_token(host)
-        server, base_url, runtime = _start_gateway_server(
-            host=host, port=0, attach_runtime=True
-        )
+        server, base_url, runtime = _start_gateway_server(host=host, port=0, attach_runtime=True)
     except OSError as exc:
         console.print(f"[bold red]Failed to start the gateway:[/] {exc}")
         raise typer.Exit(1) from exc
@@ -1977,6 +1992,96 @@ def gateway(
 ):
     """Run the typed gateway HTTP server for connect/readiness flow consumers."""
     _run_gateway_http_server(host=host, port=port, attach_runtime=runtime)
+
+
+@app.command("serve")
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host", help="Gateway bind address."),
+    port: int = typer.Option(8787, "--port", min=0, max=65535, help="Gateway bind port."),
+    no_frontend: bool = typer.Option(
+        False,
+        "--no-frontend",
+        help="Skip mounting the pre-built frontend (frontend/dist).",
+    ),
+):
+    """Start the Hachi gateway AND serve the pre-built web frontend in one command.
+
+    Binds the gateway HTTP server on *host:port*, auto-generates a bearer token
+    (or reuses the persisted one at ~/.hachi/gateway-token), mounts the pre-built
+    frontend at ``frontend/dist`` on the root path, and prints the URL.
+
+    This is the recommended single-terminal way to run Hachi:
+
+        hachi serve            # http://127.0.0.1:8787
+
+    Use ``hachi gateway`` if you want the backend API without the frontend.
+    """
+    # Locate the pre-built frontend distribution directory.
+    _frontend_dist: Path | None = None
+    if not no_frontend:
+        candidates = [
+            Path(__file__).resolve().parents[3] / "frontend" / "dist",
+            Path.cwd() / "frontend" / "dist",
+        ]
+        for candidate in candidates:
+            if candidate.is_dir():
+                _frontend_dist = candidate
+                break
+        if _frontend_dist is None:
+            console.print(
+                "[yellow]Warning: frontend/dist not found — "
+                "run [bold]npm run build --prefix frontend[/bold] first "
+                "to serve the web UI. Starting gateway-only.[/yellow]"
+            )
+
+    ensure_workspace()
+    _apply_quick_setup_if_needed()
+    if not _pre_flight_check():
+        raise typer.Exit(1)
+
+    runtime: _InProcessGatewayRuntime | None = None
+    server: GatewayHTTPServer | None = None
+    try:
+        auth_token = _resolve_gateway_auth_token(host)
+        runtime = _InProcessGatewayRuntime()
+
+        server = GatewayHTTPServer(
+            _build_gateway_control_plane(runtime=runtime, support=runtime),
+            host=host,
+            port=port,
+            auth_token=auth_token,
+            frontend_dist=_frontend_dist,
+        )
+        bound_port = server.start()
+        base_url = f"http://{host}:{bound_port}"
+    except OSError as exc:
+        console.print(f"[bold red]Failed to start gateway:[/] {exc}")
+        raise typer.Exit(1) from exc
+
+    frontend_line = f"Web UI:     [cyan]{base_url}[/cyan]\n" if _frontend_dist else ""
+    console.print(
+        Panel(
+            "[bold green]Hachi is running.[/bold green]\n\n"
+            f"{frontend_line}"
+            f"API:        [cyan]{base_url}/docs[/cyan]\n"
+            f"Readiness:  [cyan]{base_url}/readiness[/cyan]\n"
+            f"Auth:       [cyan]Authorization: Bearer <token>[/cyan]\n"
+            f"Token file: [cyan]{_default_gateway_token_path()}[/cyan]\n\n"
+            "Press [bold]Ctrl+C[/bold] to stop.",
+            title="Hachi Serve",
+            border_style="green",
+        )
+    )
+
+    try:
+        _wait_until_interrupted()
+    except KeyboardInterrupt:
+        console.print("[dim]Stopping...[/dim]")
+    finally:
+        if runtime is not None:
+            runtime.shutdown()
+        if server is not None:
+            server.stop()
 
 
 @app.command("gateway-status")
@@ -2618,9 +2723,7 @@ def doctor(
         # Plain print: Rich's console soft-wraps long JSON to terminal width.
         print(json.dumps(checks, indent=2))
         return
-    console.print(
-        Panel(json.dumps(checks, indent=2), title="Hachi Doctor", border_style="green")
-    )
+    console.print(Panel(json.dumps(checks, indent=2), title="Hachi Doctor", border_style="green"))
 
 
 @app.command("security-audit")

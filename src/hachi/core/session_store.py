@@ -16,6 +16,7 @@ import datetime
 import logging
 import sqlite3
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -31,7 +32,16 @@ class SessionStore:
     Designed for append-heavy workloads with minimal read contention.
     Uses WAL journal mode so background log_message calls never block
     the main agent loop's reads.
+
+    Write batching (MED-001): ``log_message`` accumulates rows in memory and
+    flushes to SQLite either when ``_BATCH_SIZE`` rows are pending or after
+    ``_BATCH_INTERVAL_S`` seconds, whichever comes first.  A background timer
+    thread fires the interval flush.  Call ``flush_sync()`` for an immediate
+    guaranteed flush (e.g. before ``end_session``).
     """
+
+    _BATCH_SIZE: int = 20
+    _BATCH_INTERVAL_S: float = 2.0
 
     def __init__(self, db_path: str | None = None):
         """Initialize the session store.
@@ -56,6 +66,12 @@ class SessionStore:
         # "database is locked" — multiple sessions open separate connections to
         # the same sessions.db.
         self._conn.execute("PRAGMA busy_timeout=5000")
+
+        # MED-001: write-batch buffer
+        self._pending: list[tuple[str, str, str, str | None, str]] = []
+        self._last_flush: float = time.monotonic()
+        self._flush_timer: threading.Timer | None = None
+
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -135,9 +151,12 @@ class SessionStore:
     def end_session(self, session_id: str) -> None:
         """Mark a session as ended and record the final turn count.
 
+        Flushes any pending message writes first so the turn count is accurate.
+
         Args:
             session_id: The session to close.
         """
+        self.flush_sync()
         now = datetime.datetime.now(datetime.UTC).isoformat()
 
         with self._lock:
@@ -228,10 +247,12 @@ class SessionStore:
     def log_message(
         self, session_id: str, role: str, content: str, tool_name: str | None = None
     ) -> None:
-        """Persist a single message to the session log.
+        """Buffer a message write and flush when the batch is full or the timer fires.
 
-        Called after every user input and assistant response. Runs in the
-        calling thread but the WAL journal ensures it doesn't block reads.
+        Called after every user input and assistant response.  Batching (MED-001)
+        amortises SQLite commit overhead on append-heavy workloads — rows are
+        written within ``_BATCH_INTERVAL_S`` seconds even without reaching
+        ``_BATCH_SIZE``.  Use :meth:`flush_sync` before a guaranteed read.
 
         Args:
             session_id: The active session ID.
@@ -240,16 +261,54 @@ class SessionStore:
             tool_name: Optional tool name if this is a tool call/result.
         """
         now = datetime.datetime.now(datetime.UTC).isoformat()
-        # Truncate very large tool outputs to prevent DB bloat
+        # Truncate very large tool outputs to prevent DB bloat.
         content = content[:50_000] if content else ""
 
         with self._lock:
-            self._conn.execute(
+            self._pending.append((session_id, role, content, tool_name, now))
+            self._schedule_flush()
+            if len(self._pending) >= self._BATCH_SIZE:
+                self._flush_locked()
+
+    def _schedule_flush(self) -> None:
+        """Arm the interval flush timer if it isn't already running (lock must be held)."""
+        if self._flush_timer is None or not self._flush_timer.is_alive():
+            self._flush_timer = threading.Timer(self._BATCH_INTERVAL_S, self._timer_flush)
+            self._flush_timer.daemon = True
+            self._flush_timer.start()
+
+    def _timer_flush(self) -> None:
+        """Periodic flush triggered by the background timer."""
+        with self._lock:
+            if self._pending:
+                self._flush_locked()
+
+    def _flush_locked(self) -> None:
+        """Write all pending rows to SQLite (lock must already be held)."""
+        if not self._pending:
+            return
+        try:
+            self._conn.executemany(
                 "INSERT INTO messages (session_id, role, content, tool_name, timestamp) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (session_id, role, content, tool_name, now),
+                self._pending,
             )
             self._conn.commit()
+        except Exception:
+            logger.exception("SessionStore: batch flush failed")
+        finally:
+            self._pending.clear()
+            self._last_flush = time.monotonic()
+
+    def flush_sync(self) -> None:
+        """Immediately flush all pending message writes to SQLite.
+
+        Call before reading message data that must include recently buffered writes
+        (e.g. before ``end_session`` or when performing cross-session search after
+        a very recent write).
+        """
+        with self._lock:
+            self._flush_locked()
 
     # ==========================================
     # Cross-Session Search
@@ -425,7 +484,14 @@ class SessionStore:
         return len(ids)
 
     def shutdown(self) -> None:
-        """Close the database connection."""
+        """Flush pending writes and close the database connection."""
+        # Cancel the periodic timer so it doesn't fire after close.
+        with self._lock:
+            if self._flush_timer is not None:
+                self._flush_timer.cancel()
+                self._flush_timer = None
+        # Flush any remaining buffered rows before closing.
+        self.flush_sync()
         try:
             self._conn.close()
         except Exception:

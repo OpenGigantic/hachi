@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -580,11 +581,13 @@ class GatewayHTTPServer:
         host: str = "127.0.0.1",
         port: int = 0,
         auth_token: str | None = None,
+        frontend_dist: Path | None = None,
     ) -> None:
         self._control_plane = control_plane
         self._host = host
         self._port = port
         self._auth_token = auth_token
+        self._frontend_dist = frontend_dist
         self._bound_port: int = 0
         self._server: uvicorn.Server | None = None
         self._thread: threading.Thread | None = None
@@ -612,7 +615,12 @@ class GatewayHTTPServer:
         from hachi.gateway.fastapi_app import create_gateway_app
 
         try:
-            app = create_gateway_app(self._control_plane, auth_token=self._auth_token)
+            app = create_gateway_app(
+                self._control_plane,
+                auth_token=self._auth_token,
+                bind_host=self._host,
+                frontend_dist=self._frontend_dist,
+            )
             config = uvicorn.Config(
                 app,
                 host=self._host,
