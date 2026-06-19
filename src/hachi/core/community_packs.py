@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import shutil
 import tarfile
@@ -164,6 +165,12 @@ def _default_fetcher(url: str) -> bytes:
 # Archive extraction helpers
 # ---------------------------------------------------------------------------
 
+# Archive resource caps (zip-bomb / tar-bomb guards) — shared intent with
+# archive_safety.safe_extract's defaults.
+_MAX_ARCHIVE_FILES = 10_000
+_MAX_ARCHIVE_TOTAL_BYTES = 500 * 1024 * 1024  # 500 MiB uncompressed
+_MAX_ARCHIVE_COMPRESSION_RATIO = 1000  # per-member bomb guard (files > 1 MB)
+
 
 def _extract_tar(data: bytes, dest: Path) -> list[Path]:
     """Extract a .tar.gz archive into ``dest``, returning installed .og paths.
@@ -241,13 +248,50 @@ def _extract_tar(data: bytes, dest: Path) -> list[Path]:
 
 
 def _extract_zip(data: bytes, dest: Path) -> list[Path]:
-    """Extract a .zip archive into ``dest``, returning installed .og paths."""
-    written: list[Path] = []
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        entries = zf.namelist()
-        prefix = entries[0].split("/")[0] + "/" if entries and "/" in entries[0] else ""
+    """Extract a .zip archive into ``dest``, returning installed .og paths.
 
-        for name in entries:
+    Security (SEC-001): every member is validated against path traversal
+    (absolute paths, ``..`` components, and resolved-destination escape) and
+    zip-bomb resource caps are enforced — mirroring the tar path's
+    :func:`~hachi.core.archive_safety.safe_extract`.
+    """
+    written: list[Path] = []
+    dest_resolved = dest.resolve()
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        infos = zf.infolist()
+        if len(infos) > _MAX_ARCHIVE_FILES:
+            raise ArchiveSecurityError(
+                f"Archive exceeds maximum member count ({_MAX_ARCHIVE_FILES}). "
+                "Extraction aborted to prevent zip-bomb."
+            )
+
+        names = [i.filename for i in infos]
+        prefix = names[0].split("/")[0] + "/" if names and "/" in names[0] else ""
+
+        total_bytes = 0
+        for info in infos:
+            name = info.filename
+
+            # --- zip-bomb: cumulative size + per-member compression ratio ---
+            total_bytes += info.file_size
+            if total_bytes > _MAX_ARCHIVE_TOTAL_BYTES:
+                raise ArchiveSecurityError(
+                    f"Archive cumulative size exceeds {_MAX_ARCHIVE_TOTAL_BYTES} bytes. "
+                    "Extraction aborted to prevent zip-bomb."
+                )
+            if (
+                info.file_size > 1_000_000
+                and info.compress_size > 0
+                and info.file_size / info.compress_size > _MAX_ARCHIVE_COMPRESSION_RATIO
+            ):
+                raise ArchiveSecurityError(
+                    f"Archive member {name!r} has a suspicious compression ratio. "
+                    "Extraction aborted to prevent zip-bomb."
+                )
+
+            if name.endswith("/"):  # directory entry
+                continue
+
             rel = name
             if prefix and rel.startswith(prefix):
                 rel = rel[len(prefix) :]
@@ -256,7 +300,25 @@ def _extract_zip(data: bytes, dest: Path) -> list[Path]:
             if not rel.endswith(".og") and rel != "pack.json":
                 continue
 
+            # --- path traversal: validate the (prefix-stripped) write target ---
+            if os.path.isabs(rel) or ".." in rel.replace("\\", "/").split("/"):
+                raise ArchiveSecurityError(
+                    f"Archive member {name!r} (stripped: {rel!r}) contains an illegal "
+                    "path component. Extraction aborted."
+                )
             target = dest / rel
+            try:
+                within_dest = target.resolve().is_relative_to(dest_resolved)
+            except AttributeError:  # pragma: no cover — only pre-3.9
+                within_dest = os.path.commonpath(
+                    [str(dest_resolved), str(target.resolve())]
+                ) == str(dest_resolved)
+            if not within_dest:
+                raise ArchiveSecurityError(
+                    f"Archive member {name!r} (stripped: {rel!r}) would escape "
+                    f"destination directory {dest_resolved}. Extraction aborted."
+                )
+
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(zf.read(name))
             if rel.endswith(".og"):

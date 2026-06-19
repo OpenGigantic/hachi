@@ -60,6 +60,23 @@ class MemorySettings(BaseModel):
     graph: bool = False
 
 
+class LimitsSettings(BaseModel):
+    """Per-session / per-turn safety caps (None = unlimited).
+
+    Mirrors the optional ``[limits]`` TOML section that the gateway orchestrator
+    reads and the execution loop enforces, so a cap set via
+    ``hachi config-set session_cost_cap_usd`` is actually honoured at runtime
+    (rather than written to a key nothing reads).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    max_session_cost_usd: float | None = None
+    max_session_tokens: int | None = None
+    max_turn_cost_usd: float | None = None
+    max_turn_tokens: int | None = None
+
+
 class CapabilityState(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -92,6 +109,7 @@ class ResolvedConfig(BaseModel):
     providers: dict[str, ProviderSettings] = Field(default_factory=dict)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     permissions: PermissionsSettings = Field(default_factory=PermissionsSettings)
+    limits: LimitsSettings = Field(default_factory=LimitsSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     capabilities: dict[str, CapabilityState] = Field(default_factory=dict)
     channels: ChannelSettings = Field(default_factory=ChannelSettings)
