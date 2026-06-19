@@ -129,6 +129,19 @@ class MemoryRequest(BaseModel):
     memory: dict[str, Any]
 
 
+class MemoryFactAddRequest(BaseModel):
+    """Body for POST /memory/facts."""
+
+    group: str  # "core_memory" | "user_profile" | "agent_profile"
+    text: str
+
+
+class MemoryFactDeleteResponse(BaseModel):
+    """Response for DELETE /memory/facts/{fact_id}."""
+
+    ok: bool
+
+
 class OpenAIMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
     role: str
@@ -149,6 +162,12 @@ class ChannelInboundRequest(BaseModel):
 
 
 class ScheduleToggleRequest(BaseModel):
+    enabled: bool
+
+
+class CapabilityToggleRequest(BaseModel):
+    """Body for PUT /capabilities/{id}/enabled."""
+
     enabled: bool
 
 
@@ -786,6 +805,94 @@ def create_gateway_app(
             raise HTTPException(status_code=404, detail=f"Unknown request_id: {request_id}")
         return {"resolved": True}
 
+    # ==========================================
+    # Web UI routes (#1–#6)
+    # ==========================================
+
+    skills_router = APIRouter(tags=["skills"], dependencies=protected_dependencies)
+    memory_router = APIRouter(
+        prefix="/memory", tags=["memory"], dependencies=protected_dependencies
+    )
+    og_router = APIRouter(prefix="/og", tags=["og"], dependencies=protected_dependencies)
+    authoring_router = APIRouter(
+        prefix="/authoring", tags=["authoring"], dependencies=protected_dependencies
+    )
+    spend_router = APIRouter(tags=["spend"], dependencies=protected_dependencies)
+
+    @skills_router.get("/skills")
+    async def get_skills() -> Any:
+        """Return the .og skill inventory list."""
+        return control_plane.skills()
+
+    @memory_router.get("")
+    async def get_memory() -> Any:
+        """Return grouped memory facts, blocked items, and proposed changes."""
+        return control_plane.memory()
+
+    @memory_router.get("/recall")
+    async def get_memory_recall(
+        query: str = Query(..., min_length=1),
+        top_k: int = Query(default=8, ge=1, le=50),
+    ) -> Any:
+        """Return semantic memory recall hits for the given query."""
+        return control_plane.memory_recall(query=query, top_k=top_k)
+
+    @memory_router.post("/facts")
+    async def post_memory_fact(payload: MemoryFactAddRequest) -> Any:
+        """Add a fact to a vault collection.
+
+        Body: ``{"group": "user_profile", "text": "..."}``
+        Returns: ``{"id": "<fact_id>"}``
+        """
+        return control_plane.add_memory_fact(group=payload.group, text=payload.text)
+
+    @memory_router.delete("/facts/{fact_id}")
+    async def delete_memory_fact(fact_id: str) -> Any:
+        """Delete a fact from the vault by its content-hash id.
+
+        Returns: ``{"ok": true}``
+        """
+        return control_plane.delete_memory_fact(fact_id=fact_id)
+
+    @og_router.get("/graph")
+    async def get_og_graph() -> Any:
+        """Return the ObjectGraph node graph with per-pass token estimates."""
+        return control_plane.og_graph()
+
+    @authoring_router.get("/targets")
+    async def get_authoring_targets() -> Any:
+        """List editable .og and config files in the workspace."""
+        return control_plane.authoring_targets()
+
+    @authoring_router.get("/targets/{name}")
+    async def get_authoring_target(name: str) -> Any:
+        """Return the source text for a single editable target."""
+        return control_plane.authoring_target(name)
+
+    @authoring_router.post("/targets/{name}/apply")
+    async def post_authoring_apply(name: str) -> Any:
+        """Apply a pending patch to the target (stub — no patch pipeline yet)."""
+        return control_plane.authoring_apply(name)
+
+    @authoring_router.post("/targets/{name}/revert")
+    async def post_authoring_revert(name: str) -> Any:
+        """Revert a pending patch on the target (stub — no patch pipeline yet)."""
+        return control_plane.authoring_revert(name)
+
+    @spend_router.get("/spend")
+    async def get_spend(session_id: str | None = Query(default=None)) -> Any:
+        """Return per-turn token/cost rows, compaction events, and model totals."""
+        return control_plane.spend(session_id=session_id)
+
+    @system.put("/capabilities/{cap_id}/enabled")
+    async def put_capability_enabled(
+        cap_id: str,
+        payload: CapabilityToggleRequest,
+        _auth: None = Depends(_require_auth),
+    ) -> Any:
+        """Toggle a capability on/off and persist to global config."""
+        return control_plane.set_capability_enabled(cap_id, payload.enabled)
+
     app.include_router(system)
     app.include_router(sessions)
     app.include_router(runtime_ops)
@@ -794,6 +901,11 @@ def create_gateway_app(
     app.include_router(openai_compat)
     app.include_router(channels_router)
     app.include_router(approvals_router)
+    app.include_router(skills_router)
+    app.include_router(memory_router)
+    app.include_router(og_router)
+    app.include_router(authoring_router)
+    app.include_router(spend_router)
 
     if _auth_enabled:
         # Inject the bearer security scheme into the exported OpenAPI spec so

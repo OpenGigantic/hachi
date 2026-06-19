@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Literal
@@ -91,6 +92,53 @@ def default_model_for(kind: str) -> str:
 def default_api_key_env_for(kind: str) -> str:
     """Return the conventional API-key env var name for a provider kind."""
     return _PROVIDER_DEFAULTS.get(kind.strip().lower(), {}).get("api_key_env", "")
+
+
+def looks_like_env_var_name(value: str) -> bool:
+    """True when ``value`` is shaped like an env-var NAME (UPPER_SNAKE), not a raw secret.
+
+    Used to tell apart an ``api_key_ref`` that legitimately *references* a secret
+    (e.g. ``"ANTHROPIC_API_KEY"``) from a raw key a client mistakenly placed in
+    that field (e.g. ``"sk-ant-..."``, which has lowercase + hyphens).
+    """
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9_]*", (value or "").strip()))
+
+
+def persist_provider_api_key(
+    kind: str,
+    raw_key: str,
+    *,
+    api_key_env: str | None = None,
+    secret_store: Any | None = None,
+) -> str | None:
+    """Persist a raw provider API key to the secret store + process env.
+
+    Mirrors the TUI's paste-key flow: the key is written to the OS secret store
+    (keyring) under the provider's conventional env-var name AND exported into
+    ``os.environ`` for the running process, so the next LLM client build resolves
+    it. The raw secret is never written to the config file — only the env-var
+    *name* is (returned here, to be stored as ``api_key_ref`` / ``api_key_env``).
+
+    Returns the env-var name, or ``None`` when there is nothing to persist
+    (blank key, or a provider with no conventional env var).
+    """
+    key = (raw_key or "").strip()
+    if not key:
+        return None
+    env_name = (api_key_env or default_api_key_env_for(kind) or "").strip()
+    if not env_name:
+        return None
+    os.environ[env_name] = key  # immediate effect for the running process
+    try:
+        store = secret_store
+        if store is None:
+            from hachi.core.secret_store import create_default_secret_store
+
+            store = create_default_secret_store()
+        store.set(env_name, key)
+    except Exception:
+        pass  # keyring/passphrase unavailable → env-only for this process
+    return env_name
 
 
 def resolve_provider_model(
@@ -361,6 +409,7 @@ class OnboardingService:
             kind = provider.get("kind")
             model = provider.get("model")
             base_url = provider.get("base_url")
+            api_key = provider.get("api_key")
             api_key_env = provider.get("api_key_env")
             api_key_ref = provider.get("api_key_ref")
 
@@ -393,9 +442,29 @@ class OnboardingService:
                 )
             if base_url is not None:
                 config.provider.base_url = str(base_url).strip() or None
+
+            # API key handling. The web wizard sends the raw key as `api_key`;
+            # older clients sent it as `api_key_ref`. A raw secret must never land
+            # in the config file — persist it to the secret store + process env
+            # and record only the env-var NAME.
+            raw_api_key = api_key
+            if not raw_api_key and api_key_ref and not looks_like_env_var_name(str(api_key_ref)):
+                raw_api_key = api_key_ref
+                api_key_ref = None
+
             if api_key_env is not None:
                 config.provider.api_key_env = str(api_key_env).strip() or None
-            if api_key_ref is not None:
+
+            if raw_api_key:
+                env_name = persist_provider_api_key(
+                    normalized_kind,
+                    str(raw_api_key),
+                    api_key_env=config.provider.api_key_env,
+                )
+                if env_name:
+                    config.provider.api_key_ref = env_name
+                    config.provider.api_key_env = env_name
+            elif api_key_ref is not None:
                 config.provider.api_key_ref = str(api_key_ref).strip() or None
 
         safety_tier = plan.answers.get("permission_tier")
