@@ -30,6 +30,13 @@ let _sseAbort: AbortController | null = null;
 // replay turn 1's text deltas into the fresh (empty) message.
 let _cursor = 0;
 
+// ── Run-slice text coalescing ─────────────────────────────────────────────────
+// We coalesce consecutive text.stream.delta events into a single trailing line
+// rather than pushing one line per token.  _textLineActive is true while the
+// last runLines entry is an in-progress text delta; when a non-text event
+// arrives we clear the flag so the next text event opens a fresh line.
+let _textLineActive = false;
+
 // ── Cost baseline tracking ────────────────────────────────────────────────────
 // The gateway's `usage.updated` payload carries a CUMULATIVE `estimated_cost_usd`
 // (running total since session boot — confirmed in orchestrator.py:720-756 and
@@ -197,11 +204,130 @@ function upsertCard(card: ActionCard): void {
 }
 
 // ============================================================
-// 6. SSE event handler
+// 6. SSE event handler — run-slice driver
+// ============================================================
+
+/**
+ * Update the run slice from a single SSE event.
+ * Only called in live mode (guarded by caller).
+ */
+function driveRunSlice(eventType: string, payload: Record<string, unknown>): void {
+  const store = useStore.getState();
+
+  switch (eventType) {
+    case "text.stream.delta": {
+      const text = typeof payload.text === "string" ? payload.text : "";
+      if (!text) break;
+      if (_textLineActive && store.runLines.length > 0) {
+        // Append to the last line in-place
+        const lines = [...store.runLines];
+        const last = lines[lines.length - 1];
+        lines[lines.length - 1] = { ...last, text: last.text + text };
+        store.hydrate({ runLines: lines });
+      } else {
+        _textLineActive = true;
+        store.hydrate({ runLines: [...store.runLines, { text }] });
+      }
+      break;
+    }
+
+    case "thinking.step": {
+      _textLineActive = false;
+      const prev = store.runLines;
+      if (prev.length > 0 && prev[prev.length - 1].text === "· thinking…") break;
+      store.hydrate({ runLines: [...prev, { text: "· thinking…", tone: "muted" }] });
+      break;
+    }
+
+    case "tool.call.started": {
+      _textLineActive = false;
+      const name = typeof payload.name === "string" ? payload.name : "tool";
+      store.hydrate({ runLines: [...store.runLines, { text: "▸ " + name, tone: "muted" }] });
+      break;
+    }
+
+    case "tool.call.completed": {
+      _textLineActive = false;
+      const name = typeof payload.name === "string" ? payload.name : "tool";
+      store.hydrate({ runLines: [...store.runLines, { text: "✓ " + name, tone: "success" }] });
+      break;
+    }
+
+    case "subagent.started": {
+      _textLineActive = false;
+      const role = typeof payload.role === "string" ? payload.role : "agent";
+      const task = typeof payload.task === "string" ? payload.task : "";
+      const memberId = role + ":" + task.slice(0, 24);
+      // Deduplicate by id
+      const existing = store.runPack.find((p) => p.id === memberId);
+      const newPack = existing
+        ? store.runPack
+        : [
+            ...store.runPack,
+            {
+              id: memberId,
+              name: role,
+              role,
+              task,
+              status: "working" as const,
+              tokens: 0,
+            },
+          ];
+      store.hydrate({
+        runPack: newPack,
+        runLines: [
+          ...store.runLines,
+          { text: "→ delegated to " + role + ": " + task, tone: "muted" },
+        ],
+      });
+      break;
+    }
+
+    case "subagent.completed": {
+      _textLineActive = false;
+      const role = typeof payload.role === "string" ? payload.role : "agent";
+      const status = typeof payload.status === "string" ? payload.status : "done";
+      const tone = status === "error" || status === "failed" ? "danger" : "success";
+      const updatedPack = store.runPack.map((p) =>
+        p.role === role || p.id.startsWith(role + ":")
+          ? { ...p, status: "done" as const }
+          : p
+      );
+      store.hydrate({
+        runPack: updatedPack,
+        runLines: [
+          ...store.runLines,
+          { text: "✓ " + role + " " + status, tone },
+        ],
+      });
+      break;
+    }
+
+    case "session.chat.completed": {
+      _textLineActive = false;
+      const doneLines = [...store.runLines, { text: "✓ done", tone: "success" }];
+      const donePack = store.runPack.map((p) => ({ ...p, status: "done" as const }));
+      store.hydrate({
+        runDone: true,
+        runStreaming: false,
+        runLines: doneLines,
+        runPack: donePack,
+      });
+      break;
+    }
+
+    default:
+      break;
+  }
+}
+
+// ============================================================
+// 7. SSE event handler — conversation + run slice
 // ============================================================
 
 function handleSseMessage(eventType: string, payload: Record<string, unknown>): void {
   const store = useStore.getState();
+  const isLive = store.dataMode === "live";
 
   switch (eventType) {
     case "text.stream.delta": {
@@ -252,6 +378,11 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
       store.hydrate({
         inContext: { msgId, request, action, why },
       });
+      if (isLive) {
+        // Also surface on the run view
+        store.hydrate({ runLeash: { request, action, why }, runStreaming: false });
+        _textLineActive = false;
+      }
       break;
     }
 
@@ -272,6 +403,7 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
         store.hydrate({
           taskSpent: Math.round(turnDelta * 1000) / 1000,
           spent:     Math.round((_spentAtTurnStart + turnDelta) * 1000) / 1000,
+          ...(isLive ? { runSpent: Math.round(turnDelta * 1000) / 1000 } : {}),
         });
       }
       // totalTokens surfaced but no dedicated UI field currently
@@ -289,6 +421,11 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
     default:
       // Unknown event types are silently ignored
       break;
+  }
+
+  // Drive the run slice from every event in live mode
+  if (isLive) {
+    driveRunSlice(eventType, payload);
   }
 }
 
@@ -312,6 +449,31 @@ export async function startTaskLive(text: string, hachiMsgId: number): Promise<v
   abortSse();
 
   _hachiMsgId = hachiMsgId;
+
+  // Initialize the run slice for this turn (live mode only)
+  {
+    const store = useStore.getState();
+    if (store.dataMode === "live") {
+      _textLineActive = false;
+      store.hydrate({
+        runView: {
+          id: Date.now(),
+          title: text.slice(0, 60) || "Live run",
+          status: "working",
+          progress: 0,
+          spent: 0,
+          budget: store.budget ?? 1,
+        },
+        runLines: [{ text: "hachi ▸ working on your task", tone: "muted" }],
+        runPack: [],
+        runSteps: [],
+        runDone: false,
+        runLeash: null,
+        runStreaming: true,
+        runSpent: 0,
+      });
+    }
+  }
 
   let sessionId: string;
   try {

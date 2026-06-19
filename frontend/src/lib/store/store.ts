@@ -1348,8 +1348,20 @@ export const useStore = create<State & Actions>()(
 
         // live run
         openRun: (runId, from = "home") => {
-          clearRunIv();
           _runFrom = from;
+
+          // Live mode: don't seed mock data or start the mock interval.
+          if (get().dataMode === "live") {
+            const rv = get().runView;
+            if (!rv) {
+              toast("Nothing live right now — start a task in the conversation", "success");
+            }
+            // If runView exists it was already seeded by startTaskLive — leave it.
+            return;
+          }
+
+          // ── Mock mode: existing simulation ──────────────────────────────────
+          clearRunIv();
           const s = get();
           const r =
             (runId != null && s.runs.find((x) => x.id === runId)) ||
@@ -1408,6 +1420,19 @@ export const useStore = create<State & Actions>()(
         },
 
         runAllowLeash: () => {
+          // Live mode: route approval through the gateway
+          if (get().dataMode === "live") {
+            set((s) => ({
+              runLeash: null,
+              runStreaming: true,
+              runLines: [...s.runLines, { text: "✓ allowed — continuing", tone: "success" }],
+            }));
+            void import("../data/domains/chat").then((m) => void m.allowLeashLive());
+            toast("On it — Hachi is working", "working");
+            return;
+          }
+
+          // ── Mock mode ─────────────────────────────────────────────────────
           set((s) => ({
             runLeash: null,
             runStreaming: true,
@@ -1421,18 +1446,30 @@ export const useStore = create<State & Actions>()(
         runAlwaysAllow: () => {
           const rl = get().runLeash;
           // Best-effort persist to always-allow endpoint; ignore 404
-          if (get().dataMode === "live" && rl) {
-            void (async () => {
-              try {
-                await apiSend("POST", `/sessions/current/permissions/always-allow`, {
-                  request: rl.request,
-                  action: rl.action,
-                });
-              } catch {
-                // 404 = endpoint not yet deployed
-              }
-            })();
+          if (get().dataMode === "live") {
+            if (rl) {
+              void (async () => {
+                try {
+                  await apiSend("POST", `/sessions/current/permissions/always-allow`, {
+                    request: rl.request,
+                    action: rl.action,
+                  });
+                } catch {
+                  // 404 = endpoint not yet deployed
+                }
+              })();
+            }
+            set((s) => ({
+              runLeash: null,
+              runStreaming: true,
+              runLines: [...s.runLines, { text: "✓ always allowed — continuing", tone: "success" }],
+            }));
+            void import("../data/domains/chat").then((m) => void m.allowLeashLive());
+            toast("Saved — Hachi won't ask again for this", "success");
+            return;
           }
+
+          // ── Mock mode ─────────────────────────────────────────────────────
           // Then proceed exactly like runAllowLeash
           set((s) => ({
             runLeash: null,
@@ -1445,6 +1482,28 @@ export const useStore = create<State & Actions>()(
         },
 
         runDenyLeash: () => {
+          // Live mode: abort the stream and mark done
+          if (get().dataMode === "live") {
+            const s = get();
+            set({
+              runLeash: null,
+              runStreaming: false,
+              runDone: true,
+              runLines: [
+                ...s.runLines,
+                { text: "✗ denied — Hachi is resting", tone: "danger" },
+              ],
+              runPack: s.runPack.map((p) => ({
+                ...p,
+                status: p.status === "working" ? "done" as const : p.status,
+              })),
+            });
+            void import("../data/domains/chat").then((m) => void m.denyLeashLive());
+            toast("Stayed put — Hachi is resting", "success");
+            return;
+          }
+
+          // ── Mock mode ─────────────────────────────────────────────────────
           clearRunIv();
           _runQueue = [];
           const s = get();
@@ -1466,6 +1525,28 @@ export const useStore = create<State & Actions>()(
         },
 
         stopRun: () => {
+          // Live mode: abort the SSE stream and mark done
+          if (get().dataMode === "live") {
+            const s = get();
+            set({
+              runStreaming: false,
+              runDone: true,
+              runLeash: null,
+              runLines: [
+                ...s.runLines,
+                { text: "■ stopped — Hachi is resting", tone: "muted" },
+              ],
+              runPack: s.runPack.map((p) => ({
+                ...p,
+                status: p.status === "working" ? "done" as const : p.status,
+              })),
+            });
+            void import("../data/domains/chat").then((m) => m.stopStreamingLive());
+            toast("Stopped — Hachi is resting", "success");
+            return;
+          }
+
+          // ── Mock mode ─────────────────────────────────────────────────────
           clearRunIv();
           _runQueue = [];
           const s = get();
