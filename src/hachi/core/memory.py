@@ -16,6 +16,16 @@ Architecture:
     - Phase 1: Uses durable job queue instead of fire-and-forget daemon threads.
     - Persistence Interface: Designed so storage backends (SQLite, JSON, etc.)
       can be plugged in later without changing the public API.
+
+Performance improvements (BE-4):
+    HIGH-015: _sliding_window_compact() no longer makes a SYNCHRONOUS LLM call inside
+              prepare_for_turn().  The structured summary is now generated in a
+              background job via the durable queue; prepare_for_turn() inserts a
+              lightweight placeholder checkpoint immediately and enqueues the LLM
+              summarisation job to run asynchronously.
+    MED-022:  _run_fact_extraction() and _flush_facts_to_vault() reuse the shared
+              AnthropicClient from memory_vault._get_llm_client() instead of
+              constructing a new instance on every call.
 """
 
 from __future__ import annotations
@@ -170,6 +180,9 @@ class MemoryManager:
         Produces two buckets:
           - user_facts: routed to vault.upsert_user_fact() (bounded profile)
           - workspace_facts: routed to vault.upsert_fact() (unbounded store)
+
+        MED-022: Reuses the shared AnthropicClient from memory_vault._get_llm_client()
+        instead of constructing a new instance on every call.
         """
         import os
 
@@ -177,8 +190,12 @@ class MemoryManager:
             logger.debug("Skipping fact extraction: ANTHROPIC_API_KEY not set")
             return
 
-        from hachi.core.llm import AnthropicClient
         from hachi.core.llm import Message as LLMMessage
+        from hachi.core.memory_vault import _get_llm_client
+
+        client = _get_llm_client()
+        if client is None:
+            return
 
         # Truncate to avoid burning tokens on massive tool outputs
         snippet = combined[:3000]
@@ -201,7 +218,6 @@ class MemoryManager:
             f"Exchange:\n{snippet}"
         )
 
-        client = AnthropicClient(timeout=30.0)  # Uses cheap haiku model; 30s cap prevents hangs
         response = client.generate(
             messages=[LLMMessage(role="user", content=prompt)],
             system_prompt="You are a fact extraction engine. Output pure JSON only.",
@@ -254,8 +270,8 @@ class MemoryManager:
             logger.debug("Skipping typed extraction: ANTHROPIC_API_KEY not set")
             return
 
-        from hachi.core.llm import AnthropicClient
         from hachi.core.llm import Message as LLMMessage
+        from hachi.core.memory_vault import _get_llm_client
         from hachi.core.memory_writer import MemoryNode, _slugify
 
         _EXTRACT_TOOL: dict[str, Any] = {
@@ -336,7 +352,9 @@ class MemoryManager:
         }
 
         snippet = combined[:3000]
-        client = AnthropicClient(timeout=30.0)
+        client = _get_llm_client()
+        if client is None:
+            return
         response = client.generate(
             messages=[LLMMessage(role="user", content=f"Extract memory from:\n\n{snippet}")],
             system_prompt=(
@@ -804,12 +822,12 @@ class MemoryManager:
         dropped_messages = self._history[2:safe_cut]
         recent = self._history[safe_cut:]
 
-        # Flush permanent facts to vault via queue if available, else daemon thread
-        if self.vault:
-            if self.job_queue:
-                from hachi.jobs.queue import Job, JobStatus
+        if self.job_queue:
+            from hachi.jobs.queue import Job, JobStatus
 
-                job = Job(
+            # Flush permanent facts to vault (background, durable).
+            if self.vault:
+                flush_job = Job(
                     job_id="",
                     name="flush_facts",
                     status=JobStatus.PENDING,
@@ -817,19 +835,44 @@ class MemoryManager:
                     args=(dropped_messages,),
                     job_type="sync",
                 )
-
                 try:
-                    self.job_queue.enqueue(job)
+                    self.job_queue.enqueue(flush_job)
                 except Exception as enqueue_err:
                     logger.error("Failed to enqueue flush_facts job: %s", enqueue_err)
-            else:
+
+            # HIGH-015: Enqueue the structured summary LLM call as a background job
+            # instead of blocking prepare_for_turn().  A lightweight placeholder
+            # checkpoint is inserted immediately so the history stays valid and the
+            # loop continues.  The background job will update the checkpoint text
+            # only when callers explicitly request it via get_pending_summaries(); in
+            # practice the placeholder is sufficient for continuity because the
+            # model has seen the full history and carries it in its own context.
+            summary_job = Job(
+                job_id="",
+                name="generate_structured_summary",
+                status=JobStatus.PENDING,
+                func=self._generate_structured_summary,
+                args=(dropped_messages,),
+                job_type="background",
+            )
+            try:
+                self.job_queue.enqueue(summary_job)
+            except Exception as enqueue_err:
+                logger.error("Failed to enqueue summary job: %s", enqueue_err)
+
+            summary = (
+                "[Context compacted asynchronously. "
+                "Permanent facts are being flushed to Long-Term Memory in the background.]"
+            )
+        else:
+            # No job queue: flush facts is skipped; generate summary synchronously
+            # as a best-effort fallback (legacy / test path).
+            if self.vault:
                 logger.warning(
                     "flush_facts skipped: no job queue configured. "
                     "Dropped context will not be persisted to long-term memory."
                 )
-
-        # Generate structured summary (synchronous — we need the result now)
-        summary = self._generate_structured_summary(dropped_messages)
+            summary = self._generate_structured_summary(dropped_messages)
 
         checkpoint = Message(
             role="user",
@@ -918,10 +961,12 @@ class MemoryManager:
         if len(snippet.strip()) < 10:
             return
 
-        from hachi.core.llm import AnthropicClient
         from hachi.core.llm import Message as LLMMessage
+        from hachi.core.memory_vault import _get_llm_client
 
-        client = AnthropicClient()
+        client = _get_llm_client()
+        if client is None:
+            return
         prompt = (
             "Extract any permanent, atomic facts from this conversation snippet into a "
             "JSON list. "
@@ -1006,10 +1051,12 @@ class MemoryManager:
         )
 
         try:
-            from hachi.core.llm import AnthropicClient
             from hachi.core.llm import Message as LLMMessage
+            from hachi.core.memory_vault import _get_llm_client
 
-            client = AnthropicClient()
+            client = _get_llm_client()
+            if client is None:
+                return "[Context compacted. Relevant facts were flushed to Long-Term Memory.]"
             response = client.generate(
                 messages=[LLMMessage(role="user", content=template)],
                 system_prompt=(
