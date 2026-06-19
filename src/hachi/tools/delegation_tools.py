@@ -103,6 +103,16 @@ DELEGATE_TASK_SCHEMA = {
                     "Omit for read-only tasks."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional model override for this specific sub-agent. "
+                    "When set, the sub-agent will be run with this model instead of the "
+                    "session default (e.g. 'claude-opus-4-5' for complex reasoning tasks "
+                    "or 'claude-haiku-4-5' for fast, cheap sub-tasks). "
+                    "Omit to use the session's configured sub-agent model."
+                ),
+            },
         },
         "required": ["role", "task"],
     },
@@ -401,6 +411,7 @@ def _make_delegate_task(
         task: str,
         context: str = "",
         write_targets: list[str] | None = None,
+        model: str | None = None,
     ) -> str:
         """Spawn an isolated sub-agent and return its execution report.
 
@@ -417,6 +428,8 @@ def _make_delegate_task(
             role:    Sub-agent role name (e.g., 'coder', 'researcher').
             task:    Self-contained task description.
             context: Optional additional context string.
+            write_targets: Optional list of write-target prefixes (P4-01).
+            model:   Optional model override for this sub-agent (HIGH-013).
 
         Returns:
             A structured report string for the orchestrator's context.
@@ -533,12 +546,19 @@ def _make_delegate_task(
             # down so the sub-agent uses the SAME working provider/key as the main
             # agent (otherwise it would build a bare client that only reads the env
             # var and fails with "ANTHROPIC_API_KEY must be provided").
+            # HIGH-013: when an explicit model is provided, SubAgentRuntime builds a
+            # fresh client with that model; otherwise the injected client is used.
+            if model:
+                logger.info(
+                    "delegate_task: explicit model override for role=%s → model=%s", role, model
+                )
             runtime = SubAgentRuntime(
                 role=role,
                 task=task,
                 context=context or None,
                 tool_registry=scoped_registry,
                 llm_client=sub_agent_llm,
+                model=model or None,
                 on_event=on_event,
                 cost_tracker=cost_tracker,
             )
@@ -880,8 +900,7 @@ def _make_list_roles() -> Callable[..., str]:
                     {
                         "roles": [],
                         "message": (
-                            "No role .og files found. Create one at "
-                            "~/.hachi/skills/roles/<name>.og"
+                            "No role .og files found. Create one at ~/.hachi/skills/roles/<name>.og"
                         ),
                     }
                 )

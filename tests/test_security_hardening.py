@@ -27,12 +27,23 @@ class _InteractiveGateLike:
 
 
 @pytest.mark.parametrize("tier", ["sandbox", "guided"])
-def test_python_sandbox_blocked_under_interactive_gate(tier: str) -> None:
+def test_python_sandbox_blocked_under_interactive_gate(tier: str, monkeypatch) -> None:
+    # CRIT-005a: opt the tool in so we can verify the tier-block layer still raises.
+    monkeypatch.setenv("HACHI_SANDBOX_PRODUCTION", "1")
     registry = ToolRegistry()
     register_sandbox_tools(registry, _InteractiveGateLike(tier))
     sandbox = registry._tools["python_sandbox"]
     with pytest.raises(PermissionError):
         sandbox("print('should not run')")
+
+
+def test_python_sandbox_not_registered_without_production_optin(monkeypatch) -> None:
+    # CRIT-005a: the sandbox tool must not be exposed at all unless the operator
+    # explicitly opts in via HACHI_SANDBOX_PRODUCTION=1.
+    monkeypatch.delenv("HACHI_SANDBOX_PRODUCTION", raising=False)
+    registry = ToolRegistry()
+    register_sandbox_tools(registry, _InteractiveGateLike("unrestricted"))
+    assert "python_sandbox" not in registry._tools
 
 
 def test_sub_agent_blocklist_covers_privileged_tools() -> None:
