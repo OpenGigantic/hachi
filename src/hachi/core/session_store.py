@@ -123,6 +123,10 @@ class SessionStore:
         if "total_cost_usd" not in existing:
             self._conn.execute("ALTER TABLE sessions ADD COLUMN total_cost_usd REAL DEFAULT 0.0")
             self._conn.commit()
+        # C1: session ownership — NULL for legacy rows (backward-compat = allow access).
+        if "owner_token_hash" not in existing:
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN owner_token_hash TEXT")
+            self._conn.commit()
 
     # ==========================================
     # Session Lifecycle
@@ -149,6 +153,46 @@ class SessionStore:
 
         logger.debug("Session started: %s (model=%s)", session_id, model)
         return session_id
+
+    def set_session_owner(self, session_id: str, owner_token_hash: str) -> None:
+        """Persist the sha256 hex-digest of the bearer token that created this session.
+
+        C1 — session ownership: called immediately after session creation so that
+        subsequent requests can verify ownership before granting access.
+
+        Args:
+            session_id: The session to tag.
+            owner_token_hash: sha256(bearer_token).hexdigest() for the creating caller.
+        """
+        with self._lock:
+            self._conn.execute(
+                "UPDATE sessions SET owner_token_hash = ? WHERE id = ?",
+                (owner_token_hash, session_id),
+            )
+            self._conn.commit()
+        logger.debug("Session owner set: %s", session_id)
+
+    def get_session_owner(self, session_id: str) -> str | None:
+        """Return the stored owner_token_hash for *session_id*, or None if not set.
+
+        C1 — NULL means the session was created before ownership tracking was
+        introduced; callers should allow access in that case (backward-compat).
+
+        Args:
+            session_id: The session to look up.
+
+        Returns:
+            The sha256 hex-digest string, or None for legacy / anonymous sessions.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT owner_token_hash FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        owner: str | None = row["owner_token_hash"]
+        return owner
 
     def end_session(self, session_id: str) -> None:
         """Mark a session as ended and record the final turn count.

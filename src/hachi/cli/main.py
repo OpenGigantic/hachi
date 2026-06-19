@@ -499,16 +499,19 @@ class _InProcessGatewayRuntime:
         return config.model_dump(mode="python", exclude_none=True)
 
     def list_models(self) -> list[dict]:
-        """Return provider-specific model lists.
+        """Return provider-specific model lists using live discovery when possible.
 
-        Anthropic models are kept current (HIGH-008); other providers use their
-        known defaults.  The ``recommended`` flag marks the currently configured model.
+        Attempts live discovery via the same path as the ``hachi models`` CLI command.
+        Falls back to a current static list when the provider API is unreachable or
+        no API key is configured.  The configured default model is always present.
+
+        HIGH-008: static fallback list is kept current (includes claude-opus-4-8,
+        claude-sonnet-4-6, claude-haiku-4-5).
         """
-        provider_models: dict[str, list[str]] = {
-            # HIGH-008: include all current Anthropic release-track models.
+        # Current static fallback lists per provider kind.
+        _STATIC_FALLBACK: dict[str, list[str]] = {
             "anthropic": [
                 "claude-haiku-4-5",
-                "claude-sonnet-4-5",
                 "claude-sonnet-4-6",
                 "claude-opus-4-8",
             ],
@@ -518,11 +521,44 @@ class _InProcessGatewayRuntime:
         config = load_effective_config()
         kind = config.provider.kind
         current = config.provider.model
-        models = provider_models.get(kind, [current])
-        # Always include the currently configured model even if not in the list
-        # (e.g. user set a preview or custom model).
-        if current and current not in models:
-            models = [current, *models]
+        allowed = list(getattr(config.provider, "allowed_models", []) or [])
+
+        # Attempt live discovery — same path as the ``hachi models`` CLI command.
+        discovered: list[str] = []
+        try:
+            from hachi.core.llm import create_llm_client, resolve_available_models
+
+            provider_config = {
+                "kind": kind,
+                "model": current,
+                "api_key_ref": getattr(config.provider, "api_key_ref", None),
+                "api_key_env": getattr(config.provider, "api_key_env", None),
+                "base_url": getattr(config.provider, "base_url", None),
+            }
+            client = create_llm_client(
+                provider_config, secret_store=create_default_secret_store()
+            )
+            try:
+                discovered = client.list_models()
+            finally:
+                close = getattr(client, "close", None)
+                if callable(close):
+                    close()
+        except Exception:
+            # Offline, missing API key, or import error — fall through to static list.
+            pass
+
+        if discovered:
+            from hachi.core.llm import resolve_available_models
+
+            model_ids = resolve_available_models(discovered, allowed, current)
+        else:
+            # Static fallback: use allowlist if configured, else provider defaults.
+            fallback = list(allowed) if allowed else _STATIC_FALLBACK.get(kind, [current])
+            model_ids = list(fallback)
+            if current and current not in model_ids:
+                model_ids.insert(0, current)
+
         return [
             {
                 "id": model,
@@ -530,7 +566,7 @@ class _InProcessGatewayRuntime:
                 "provider": kind,
                 "recommended": model == current,
             }
-            for model in models
+            for model in model_ids
         ]
 
     def setup_state(self) -> dict:

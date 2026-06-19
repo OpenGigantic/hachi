@@ -865,7 +865,7 @@ function Authoring() {
                       }}
                     >
                       <Icon name="check" size={14} />
-                      Written to ~/.hachi/skills/{authSel} &middot; re-indexed in 0.3s
+                      Written to ~/.hachi/skills/{authSel} &middot; skill re-indexed
                     </div>
                   )}
                 </div>
