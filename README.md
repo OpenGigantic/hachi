@@ -4,7 +4,7 @@
 
 **The governed personal agent**
 
-_OpenClaw-class autonomy where safety, spend, and self-improvement are enforced by code, not by vibes._
+_Governed personal agent: safety, spend, and self-improvement enforced by code, not by vibes._
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -74,6 +74,22 @@ hachi                     # start chatting (no subcommand needed)
 
 `quickstart` checks your provider API key **before** the first message (instead of failing
 mid-conversation) — the most common first-run snag for new users.
+
+### One-command gateway + web UI
+
+```bash
+hachi serve               # starts gateway on 127.0.0.1:8787 AND serves frontend/dist
+```
+
+`hachi serve` auto-generates a bearer token (saved to `~/.hachi/gateway-token`),
+starts the REST gateway with an in-process agent runtime, and mounts the pre-built
+web frontend at the root — one terminal, full stack.  Build the frontend first if
+you're working from source:
+
+```bash
+npm run build --prefix frontend   # produces frontend/dist
+hachi serve
+```
 
 ---
 
