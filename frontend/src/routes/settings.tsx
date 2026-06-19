@@ -2,13 +2,14 @@
 // Ported from prototype lines 1134–1236 (markup) + 2122–2347 (logic/renderVals).
 // All state mutations go through useStore; screen-local hover/expanded in useState.
 
-import { useState, useEffect } from 'react';
-import { createFileRoute } from '@tanstack/react-router';
+import { useState, useEffect, useRef } from 'react';
+import { createFileRoute, useLocation } from '@tanstack/react-router';
 import { useStore } from '../lib/store/store';
 import { Icon } from '../components/icons/Icon';
 import { Switch } from '../components/ui/Switch';
 import type { SafetyLevel } from '../lib/data/types';
 import { loadConfig, setSafetyLive, setProviderLive } from '../lib/data/domains/config';
+import { apiSend } from '../lib/data/client';
 
 // ---- Safety level definitions (mirror prototype renderVals lines 2337–2342) ----
 const SAFETY_LEVELS: { k: SafetyLevel; name: string; desc: string }[] = [
@@ -29,6 +30,201 @@ const SAFETY_LEVELS: { k: SafetyLevel; name: string; desc: string }[] = [
   },
 ];
 
+// LOW-012: settings that require a restart
+const RESTART_REQUIRED_SETTINGS = ['safety level', 'provider', 'model'];
+
+// ---- Inline input dialog for adding a folder/command ---------------
+
+interface InlineInputProps {
+  placeholder: string;
+  onConfirm: (value: string) => void;
+  onCancel: () => void;
+}
+
+function InlineInput({ placeholder, onConfirm, onCancel }: InlineInputProps) {
+  const [value, setValue] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (value.trim()) onConfirm(value.trim());
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      onCancel();
+    }
+  }
+
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <input
+        ref={inputRef}
+        type="text"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={handleKeyDown}
+        placeholder={placeholder}
+        style={{
+          height: 30,
+          padding: '0 10px',
+          borderRadius: 8,
+          border: '0.5px solid var(--hachi-trust)',
+          background: 'var(--hachi-canvas)',
+          fontFamily: 'var(--font-mono)',
+          fontSize: 12,
+          color: 'var(--hachi-ink)',
+          outline: 'none',
+          width: 160,
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => { if (value.trim()) onConfirm(value.trim()); }}
+        disabled={!value.trim()}
+        style={{
+          height: 30,
+          padding: '0 10px',
+          borderRadius: 8,
+          border: 'none',
+          background: 'var(--hachi-trust)',
+          color: '#fff',
+          font: '500 12px var(--font-body)',
+          cursor: value.trim() ? 'pointer' : 'default',
+          opacity: value.trim() ? 1 : 0.5,
+        }}
+      >
+        Add
+      </button>
+      <button
+        type="button"
+        onClick={onCancel}
+        style={{
+          height: 30,
+          padding: '0 8px',
+          borderRadius: 8,
+          border: '0.5px solid var(--hachi-line)',
+          background: 'transparent',
+          color: 'var(--hachi-muted)',
+          font: '500 12px var(--font-body)',
+          cursor: 'pointer',
+        }}
+      >
+        Cancel
+      </button>
+    </span>
+  );
+}
+
+// ---- Editable spend cap input ----------------------------------------
+
+interface SpendCapInputProps {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  onSave: (v: number) => void;
+}
+
+function SpendCapInput({ label, value, onChange, onSave }: SpendCapInputProps) {
+  const [editing, setEditing] = useState(false);
+  const [localVal, setLocalVal] = useState(String(value.toFixed(2)));
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) {
+      setLocalVal(String(value.toFixed(2)));
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing, value]);
+
+  function commit() {
+    const parsed = parseFloat(localVal);
+    if (!isNaN(parsed) && parsed > 0) {
+      onChange(parsed);
+      onSave(parsed);
+    }
+    setEditing(false);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { e.preventDefault(); setEditing(false); }
+  }
+
+  return (
+    <div style={{ flex: 1 }}>
+      <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '6px' }}>
+        {label}
+      </div>
+      {editing ? (
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 15, color: 'var(--hachi-muted)' }}>$</span>
+          <input
+            ref={inputRef}
+            type="number"
+            min="0.01"
+            step="0.01"
+            value={localVal}
+            onChange={(e) => setLocalVal(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onBlur={commit}
+            style={{
+              flex: 1,
+              height: '42px',
+              padding: '0 14px',
+              borderRadius: '10px',
+              border: '0.5px solid var(--hachi-trust)',
+              background: 'var(--hachi-canvas)',
+              fontFamily: 'var(--font-mono)',
+              fontSize: '15px',
+              color: 'var(--hachi-ink)',
+              outline: 'none',
+            }}
+          />
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          title="Click to edit"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            width: '100%',
+            height: '42px',
+            padding: '0 14px',
+            borderRadius: '10px',
+            border: '0.5px solid var(--hachi-line)',
+            background: 'var(--hachi-canvas)',
+            fontFamily: 'var(--font-mono)',
+            fontSize: '15px',
+            color: 'var(--hachi-ink)',
+            cursor: 'pointer',
+            textAlign: 'left',
+          }}
+          onMouseEnter={(e) => {
+            ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--hachi-trust)';
+          }}
+          onMouseLeave={(e) => {
+            ;(e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--hachi-line)';
+          }}
+        >
+          ${value.toFixed(2)}
+          <span style={{ color: 'var(--hachi-muted)', fontSize: 12 }}>
+            <Icon name="pencil" size={13} />
+          </span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 function Settings() {
   const {
     // state
@@ -42,16 +238,21 @@ function Settings() {
     provider,
     spent,
     budget,
+    taskCap,
+    dailyCap,
     // actions (setSafety is called indirectly via setSafetyLive)
     toggleAskRule,
     removeFolder,
     removeCommand,
-    addFolder,
-    addCommand,
+    addFolderWithPath,
+    addCommandWithText,
     toggleOpTool,
     toggleTheme,
+    toggleOperator,
     openSetup,
     showToast,
+    setTaskCap,
+    setDailyCap,
   } = useStore();
 
   // Load config from gateway on mount (idempotent — also runs on app boot via live.ts)
@@ -62,41 +263,92 @@ function Settings() {
   const [hoveredCommand, setHoveredCommand] = useState<string | null>(null);
   // Track whether any settings change has been made (unsaved indicator)
   const [unsaved, setUnsaved] = useState(false);
+  // MED-016: inline add-folder / add-command dialogs
+  const [addingFolder, setAddingFolder] = useState(false);
+  const [addingCommand, setAddingCommand] = useState(false);
+  // LOW-012: track which settings were changed to name them in the restart notice
+  const [restartSettings, setRestartSettings] = useState<string[]>([]);
+
+  // MED-017: clear unsaved indicator when navigating away
+  const location = useLocation();
+  const locationRef = useRef(location.pathname);
+  useEffect(() => {
+    if (location.pathname !== locationRef.current) {
+      locationRef.current = location.pathname;
+      setUnsaved(false);
+      setRestartSettings([]);
+    }
+  }, [location.pathname]);
+
+  function markUnsaved(requiresRestart?: string) {
+    setUnsaved(true);
+    if (requiresRestart) {
+      setRestartSettings((prev) =>
+        prev.includes(requiresRestart) ? prev : [...prev, requiresRestart]
+      );
+    }
+  }
+
+  async function handleSave() {
+    // MED-017: persist caps to gateway then clear unsaved indicator on success
+    try {
+      if (useStore.getState().dataMode === 'live') {
+        await apiSend('PUT', '/config/limits', {
+          per_task_cap_usd: taskCap,
+          daily_cap_usd: dailyCap,
+        });
+      }
+      setUnsaved(false);
+      setRestartSettings([]);
+      showToast('Settings saved', 'success');
+    } catch {
+      // Keep unsaved=true on failure so user knows save failed
+      showToast('Save failed — please try again', 'blocked');
+    }
+  }
 
   // Wrap actions to set unsaved flag
   function handleSetSafety(v: SafetyLevel) {
-    // setSafetyLive optimistically calls setSafety then persists to the gateway
     void setSafetyLive(v);
-    setUnsaved(true);
+    markUnsaved('safety level');
   }
   function handleToggleAskRule(id: string) {
     toggleAskRule(id);
-    setUnsaved(true);
+    markUnsaved();
   }
   function handleRemoveFolder(f: string) {
     removeFolder(f);
-    setUnsaved(true);
+    markUnsaved();
   }
-  function handleAddFolder() {
-    addFolder();
-    setUnsaved(true);
+  function handleAddFolder(path: string) {
+    addFolderWithPath(path);
+    setAddingFolder(false);
+    markUnsaved();
   }
   function handleRemoveCommand(c: string) {
     removeCommand(c);
-    setUnsaved(true);
+    markUnsaved();
   }
-  function handleAddCommand() {
-    addCommand();
-    setUnsaved(true);
+  function handleAddCommand(cmd: string) {
+    addCommandWithText(cmd);
+    setAddingCommand(false);
+    markUnsaved();
   }
   function handleToggleOpTool(id: string) {
     toggleOpTool(id);
-    setUnsaved(true);
+    markUnsaved();
+  }
+  function handleSetTaskCap(v: number) {
+    setTaskCap(v);
+    markUnsaved();
+  }
+  function handleSetDailyCap(v: number) {
+    setDailyCap(v);
+    markUnsaved();
   }
 
   // Budget display (prototype renderVals lines 2185)
   const spentStr = '$' + Number(spent).toFixed(2);
-  const budgetStr = '$' + Number(budget).toFixed(2);
   const pct = Math.min(100, Math.round((spent / budget) * 100));
 
   // Theme icon (sun = light → switching to dark; moon = dark → switching to light)
@@ -105,8 +357,7 @@ function Settings() {
 
   // Provider display — name/model come from live gateway config. The API key is
   // never surfaced to the browser, so show a neutral hidden state rather than a
-  // fabricated last-4 or an unverified "validated" claim. To change the key, the
-  // user re-runs the wizard via "Change provider".
+  // fabricated last-4 or an unverified "validated" claim.
   const providerLabel = [provider.name, provider.model].filter(Boolean).join(' · ');
   const keyDisplay = 'stored securely · hidden';
 
@@ -155,6 +406,32 @@ function Settings() {
             unsaved changes
           </span>
         )}
+        <div style={{ flex: 1 }} />
+        {/* MED-017: save button clears unsaved indicator on success */}
+        {unsaved && (
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            style={{
+              height: 36,
+              padding: '0 16px',
+              borderRadius: 10,
+              border: 'none',
+              background: 'var(--hachi-brand)',
+              color: 'var(--hachi-canvas)',
+              font: '500 13px var(--font-body)',
+              cursor: 'pointer',
+            }}
+            onMouseEnter={(e) => {
+              ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-brand-hover)';
+            }}
+            onMouseLeave={(e) => {
+              ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-brand)';
+            }}
+          >
+            Save
+          </button>
+        )}
       </div>
 
       {/* Scrollable body */}
@@ -171,6 +448,32 @@ function Settings() {
             gap: '24px',
           }}
         >
+
+          {/* MED-015: operator mode toggle — visible in Settings */}
+          <div style={cardStyle}>
+            <h2 style={{ ...sectionHeadingStyle, margin: '0 0 16px' }}>
+              Mode
+            </h2>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '14px',
+                padding: '11px 0',
+              }}
+            >
+              <span style={{ color: 'var(--hachi-trust)', display: 'inline-flex' }}>
+                <Icon name="cpu" size={17} />
+              </span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: '14px', fontWeight: 500 }}>Operator mode</div>
+                <div style={{ fontSize: '13px', color: 'var(--hachi-muted)', marginTop: 2 }}>
+                  Shows tool signatures, expanded cards, and advanced controls. For power users and integrators.
+                </div>
+              </div>
+              <Switch checked={operator} onChange={toggleOperator} />
+            </div>
+          </div>
 
           {/* ---- Leash / Safety ---- */}
           <div style={cardStyle}>
@@ -255,19 +558,38 @@ function Settings() {
               </div>
             )}
 
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                fontSize: '12px',
-                color: 'var(--hachi-muted)',
-                marginTop: '14px',
-              }}
-            >
-              <Icon name="clock" size={13} />
-              Some changes apply next time Hachi starts.
-            </div>
+            {/* LOW-012: specific restart notice */}
+            {restartSettings.length > 0 ? (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  fontSize: '12px',
+                  color: 'var(--hachi-working)',
+                  marginTop: '14px',
+                }}
+              >
+                <Icon name="clock" size={13} />
+                {restartSettings.length === 1
+                  ? `${restartSettings[0]} changes apply next time Hachi starts.`
+                  : `${restartSettings.slice(0, -1).join(', ')} and ${restartSettings[restartSettings.length - 1]} changes apply next time Hachi starts.`}
+              </div>
+            ) : (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  fontSize: '12px',
+                  color: 'var(--hachi-muted)',
+                  marginTop: '14px',
+                }}
+              >
+                <Icon name="clock" size={13} />
+                Some changes apply next time Hachi starts.
+              </div>
+            )}
           </div>
 
           {/* ---- Ask before… ---- */}
@@ -378,24 +700,33 @@ function Settings() {
                     </button>
                   </span>
                 ))}
-                <button
-                  onClick={handleAddFolder}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                    padding: '6px 10px',
-                    borderRadius: '8px',
-                    border: '0.5px dashed var(--hachi-line)',
-                    background: 'transparent',
-                    color: 'var(--hachi-trust)',
-                    font: `500 12px var(--font-body)`,
-                    cursor: 'pointer',
-                  }}
-                >
-                  <Icon name="plus" size={13} />
-                  folder
-                </button>
+                {/* MED-016: inline folder input dialog */}
+                {addingFolder ? (
+                  <InlineInput
+                    placeholder="~/path/to/folder"
+                    onConfirm={handleAddFolder}
+                    onCancel={() => setAddingFolder(false)}
+                  />
+                ) : (
+                  <button
+                    onClick={() => setAddingFolder(true)}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      padding: '6px 10px',
+                      borderRadius: '8px',
+                      border: '0.5px dashed var(--hachi-line)',
+                      background: 'transparent',
+                      color: 'var(--hachi-trust)',
+                      font: `500 12px var(--font-body)`,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <Icon name="plus" size={13} />
+                    folder
+                  </button>
+                )}
               </div>
 
               {/* Commands */}
@@ -445,24 +776,33 @@ function Settings() {
                     </button>
                   </span>
                 ))}
-                <button
-                  onClick={handleAddCommand}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                    padding: '6px 10px',
-                    borderRadius: '8px',
-                    border: '0.5px dashed var(--hachi-line)',
-                    background: 'transparent',
-                    color: 'var(--hachi-trust)',
-                    font: `500 12px var(--font-body)`,
-                    cursor: 'pointer',
-                  }}
-                >
-                  <Icon name="plus" size={13} />
-                  command
-                </button>
+                {/* MED-016: inline command input dialog */}
+                {addingCommand ? (
+                  <InlineInput
+                    placeholder="command name"
+                    onConfirm={handleAddCommand}
+                    onCancel={() => setAddingCommand(false)}
+                  />
+                ) : (
+                  <button
+                    onClick={() => setAddingCommand(true)}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      padding: '6px 10px',
+                      borderRadius: '8px',
+                      border: '0.5px dashed var(--hachi-line)',
+                      background: 'transparent',
+                      color: 'var(--hachi-trust)',
+                      font: `500 12px var(--font-body)`,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <Icon name="plus" size={13} />
+                    command
+                  </button>
+                )}
               </div>
 
               {/* Op tools */}
@@ -518,53 +858,25 @@ function Settings() {
               <h2 style={sectionHeadingStyle}>Spend &amp; limits</h2>
             </div>
 
-            {/* Cap display fields */}
+            {/* MED-018: editable spend cap inputs */}
             <div style={{ display: 'flex', gap: '14px', marginBottom: '18px' }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '6px' }}>
-                  Per-task cap
-                </div>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    height: '42px',
-                    padding: '0 14px',
-                    borderRadius: '10px',
-                    border: '0.5px solid var(--hachi-line)',
-                    background: 'var(--hachi-canvas)',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: '15px',
-                  }}
-                >
-                  $1.00
-                </div>
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '6px' }}>
-                  Daily cap
-                </div>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    height: '42px',
-                    padding: '0 14px',
-                    borderRadius: '10px',
-                    border: '0.5px solid var(--hachi-line)',
-                    background: 'var(--hachi-canvas)',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: '15px',
-                  }}
-                >
-                  {budgetStr}
-                </div>
-              </div>
+              <SpendCapInput
+                label="Per-task cap"
+                value={taskCap}
+                onChange={handleSetTaskCap}
+                onSave={handleSetTaskCap}
+              />
+              <SpendCapInput
+                label="Daily cap"
+                value={dailyCap}
+                onChange={handleSetDailyCap}
+                onSave={handleSetDailyCap}
+              />
             </div>
 
             {/* Spend bar */}
             <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '8px' }}>
-              Today, against {budgetStr}
+              Today, against ${dailyCap.toFixed(2)}
             </div>
             <div
               style={{
@@ -612,7 +924,7 @@ function Settings() {
                 </div>
               </div>
             </div>
-            <ProviderButton onClick={openSetup}>Change provider</ProviderButton>
+            <ProviderButton onClick={() => { openSetup(); markUnsaved('provider'); }}>Change provider</ProviderButton>
           </div>
 
           {/* ---- Appearance & account ---- */}
@@ -661,7 +973,7 @@ function Settings() {
   );
 }
 
-// ---- Small local button components (avoid importing Button which is Torii red primary) ----
+// ---- Small local button components ----
 
 function ProviderButton({
   onClick,
