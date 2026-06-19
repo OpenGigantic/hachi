@@ -10,6 +10,7 @@ import { useStore } from '../lib/store/store';
 import { Icon } from '../components/icons/Icon';
 import { HachiMark } from '../components/brand/HachiMark';
 import { useCountdown } from '../lib/hooks/useCountdown';
+import type { Integration } from '../lib/data/types';
 
 // ---- Local helpers ----
 
@@ -305,10 +306,23 @@ function Home() {
   const spent = useStore((s) => s.spent);
   const budget = useStore((s) => s.budget);
   const openRun = useStore((s) => s.openRun);
+  const sessions = useStore((s) => s.sessions);
+  const integrations = useStore((s) => s.integrations);
+  const openSetup = useStore((s) => s.openSetup);
 
   // computed
   const working = runs.some((r) => r.status === 'working') || streaming;
   const hachiText = working ? 'Hachi is working' : 'Hachi is on watch';
+
+  // first-run: no sessions yet
+  const isFirstRun = sessions.length === 0;
+
+  // connected integration ids for filtering starters (LOW-005)
+  const connectedIntegrationIds = new Set<string>(
+    integrations
+      .filter((i: Integration) => i.status === 'connected' || i.status === 'degraded')
+      .map((i: Integration) => i.id)
+  );
 
   const today = new Date().toLocaleDateString('en-GB', {
     weekday: 'short',
@@ -324,20 +338,22 @@ function Home() {
   const hasDoing = runs.length > 0;
   const noDoing = !hasDoing;
 
-  // home starters
-  const starters = [
+  // home starters — requiredIntegration: null means always show
+  const allStarters = [
     {
       label: 'Summarise my inbox',
       icon: 'mail',
+      requiredIntegration: 'i1', // Google (Gmail)
       go: () => {
         startTask('Summarise my inbox and flag anything urgent');
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      navigate({ to: '/conversation' as any });
+        navigate({ to: '/conversation' as any });
       },
     },
     {
       label: 'Set up a morning briefing',
       icon: 'calendar',
+      requiredIntegration: 'i1', // Google (Calendar)
       go: () => {
         startTask('Every weekday at 8, summarise my inbox and message me the urgent ones');
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -347,6 +363,7 @@ function Home() {
     {
       label: "Check this week's PRs",
       icon: 'git-branch',
+      requiredIntegration: null, // no specific integration required
       go: () => {
         startTask("Summarise this week's pull requests");
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -354,6 +371,11 @@ function Home() {
       },
     },
   ];
+
+  // LOW-005: only show starters whose integration is connected (or has no requirement)
+  const starters = allStarters.filter(
+    (s) => s.requiredIntegration === null || connectedIntegrationIds.has(s.requiredIntegration)
+  );
 
   // hover states for starters and manage button
   const [starterHover, setStarterHover] = useState<number | null>(null);
@@ -587,6 +609,19 @@ function Home() {
                     onDecline={() => declineApproval(a.id)}
                   />
                 ))}
+                {/* LOW-010: show overflow count when more than 3 approvals */}
+                {approvals.length > 3 && (
+                  <div
+                    style={{
+                      fontSize: '13px',
+                      color: 'var(--hachi-trust)',
+                      padding: '6px 4px',
+                      cursor: 'default',
+                    }}
+                  >
+                    + {approvals.length - 3} more waiting — scroll down in the Leash tab to see all
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -631,10 +666,19 @@ function Home() {
               </div>
             )}
 
-            {noDoing && (
+            {noDoing && !isFirstRun && (
               <div style={{ fontSize: '14px', color: 'var(--hachi-muted)' }}>
                 Nothing running right now.
               </div>
+            )}
+
+            {/* HIGH-019: first-run guidance panel */}
+            {noDoing && isFirstRun && (
+              <FirstRunPanel onSetup={openSetup} onStart={() => {
+                startTask('Give me a quick tour of what you can do');
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                navigate({ to: '/conversation' as any });
+              }} />
             )}
           </div>
 
@@ -843,14 +887,108 @@ function FinishedRow({ item: f }: FinishedRowProps) {
   );
 }
 
+// ---- FirstRunPanel — shown when sessions.length === 0 (HIGH-019) ----
+
+interface FirstRunPanelProps {
+  onStart: () => void;
+  onSetup: () => void;
+}
+
+function FirstRunPanel({ onStart, onSetup }: FirstRunPanelProps) {
+  const [startHover, setStartHover] = useState(false);
+  const [setupHover, setSetupHover] = useState(false);
+
+  return (
+    <div
+      style={{
+        background: 'var(--hachi-surface)',
+        border: '0.5px solid var(--hachi-line)',
+        borderRadius: '16px',
+        padding: '28px 24px',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '18px',
+        textAlign: 'center',
+      }}
+    >
+      <HachiMark size={40} />
+      <div>
+        <div
+          style={{
+            fontFamily: 'var(--font-display)',
+            fontWeight: 500,
+            fontSize: '18px',
+            marginBottom: '8px',
+          }}
+        >
+          Welcome — Hachi is ready
+        </div>
+        <div style={{ fontSize: '14px', color: 'var(--hachi-muted)', maxWidth: '380px' }}>
+          Give Hachi a task and watch it work. Connect integrations to unlock more capabilities.
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
+        <button
+          onClick={onStart}
+          onMouseEnter={() => setStartHover(true)}
+          onMouseLeave={() => setStartHover(false)}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '8px',
+            height: '42px',
+            padding: '0 20px',
+            borderRadius: '10px',
+            border: '0.5px solid transparent',
+            background: startHover ? 'var(--hachi-brand-hover)' : 'var(--hachi-brand)',
+            color: 'var(--hachi-canvas)',
+            font: '500 14px var(--font-body)',
+            cursor: 'pointer',
+            transition: 'background var(--dur-fast) var(--ease)',
+          }}
+        >
+          <Icon name="arrow-up" size={15} />
+          Start your first task
+        </button>
+        <button
+          onClick={onSetup}
+          onMouseEnter={() => setSetupHover(true)}
+          onMouseLeave={() => setSetupHover(false)}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '8px',
+            height: '42px',
+            padding: '0 20px',
+            borderRadius: '10px',
+            border: '0.5px solid var(--hachi-line)',
+            background: setupHover ? 'var(--hachi-cream)' : 'var(--hachi-canvas)',
+            color: 'var(--hachi-ink)',
+            font: '500 14px var(--font-body)',
+            cursor: 'pointer',
+            transition: 'background var(--dur-fast) var(--ease)',
+          }}
+        >
+          <Icon name="settings" size={15} />
+          Connect integrations
+        </button>
+      </div>
+    </div>
+  );
+}
+
 interface BudgetSummaryProps {
   spent: number;
   budget: number;
 }
 
 function BudgetSummary({ spent, budget }: BudgetSummaryProps) {
-  const pct = Math.min(100, Math.round((spent / budget) * 100));
-  const isHigh = pct >= 80;
+  // Guard against budget === 0 (division by zero → NaN/Infinity)
+  const unlimited = budget <= 0;
+  const pct = unlimited ? 0 : Math.min(100, Math.round((spent / budget) * 100));
+  const isHigh = !unlimited && pct >= 80;
 
   return (
     <div
@@ -869,7 +1007,9 @@ function BudgetSummary({ spent, budget }: BudgetSummaryProps) {
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: '13px', color: 'var(--hachi-muted)' }}>
-          spent {fmtMoney(spent)} of {fmtMoney(budget)} today
+          {unlimited
+            ? `spent ${fmtMoney(spent)} today — no budget set`
+            : `spent ${fmtMoney(spent)} of ${fmtMoney(budget)} today`}
         </div>
         <div
           style={{
@@ -898,7 +1038,7 @@ function BudgetSummary({ spent, budget }: BudgetSummaryProps) {
           fontVariantNumeric: 'tabular-nums',
         }}
       >
-        {pct}%
+        {unlimited ? 'unlimited' : `${pct}%`}
       </span>
     </div>
   );
