@@ -67,8 +67,10 @@ class SessionStore:
         # the same sessions.db.
         self._conn.execute("PRAGMA busy_timeout=5000")
 
-        # MED-001: write-batch buffer
-        self._pending: list[tuple[str, str, str, str | None, str]] = []
+        # MED-001: commit-batching. Rows are INSERTed synchronously (so foreign-key
+        # violations raise immediately and same-connection reads see the row and its
+        # truncation); only the COMMIT is deferred to amortise disk-sync overhead.
+        self._uncommitted: int = 0
         self._last_flush: float = time.monotonic()
         self._flush_timer: threading.Timer | None = None
 
@@ -247,12 +249,13 @@ class SessionStore:
     def log_message(
         self, session_id: str, role: str, content: str, tool_name: str | None = None
     ) -> None:
-        """Buffer a message write and flush when the batch is full or the timer fires.
+        """Insert a message row synchronously; batch only the COMMIT.
 
-        Called after every user input and assistant response.  Batching (MED-001)
-        amortises SQLite commit overhead on append-heavy workloads — rows are
-        written within ``_BATCH_INTERVAL_S`` seconds even without reaching
-        ``_BATCH_SIZE``.  Use :meth:`flush_sync` before a guaranteed read.
+        Called after every user input and assistant response.  The INSERT runs
+        immediately (so foreign-key violations raise here and same-connection reads
+        see the row + 50K truncation), while the COMMIT is deferred (MED-001) and
+        fired by ``_BATCH_SIZE`` rows, the ``_BATCH_INTERVAL_S`` timer, or an explicit
+        :meth:`flush_sync` — whichever comes first.
 
         Args:
             session_id: The active session ID.
@@ -265,9 +268,16 @@ class SessionStore:
         content = content[:50_000] if content else ""
 
         with self._lock:
-            self._pending.append((session_id, role, content, tool_name, now))
+            # Synchronous INSERT: a bad session_id raises immediately (foreign-key
+            # enforcement) and same-connection reads see the row without a flush.
+            self._conn.execute(
+                "INSERT INTO messages (session_id, role, content, tool_name, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, role, content, tool_name, now),
+            )
+            self._uncommitted += 1
             self._schedule_flush()
-            if len(self._pending) >= self._BATCH_SIZE:
+            if self._uncommitted >= self._BATCH_SIZE:
                 self._flush_locked()
 
     def _schedule_flush(self) -> None:
@@ -278,27 +288,20 @@ class SessionStore:
             self._flush_timer.start()
 
     def _timer_flush(self) -> None:
-        """Periodic flush triggered by the background timer."""
+        """Periodic commit triggered by the background timer."""
         with self._lock:
-            if self._pending:
+            try:
                 self._flush_locked()
+            except Exception:
+                logger.exception("SessionStore: timed commit failed")
 
     def _flush_locked(self) -> None:
-        """Write all pending rows to SQLite (lock must already be held)."""
-        if not self._pending:
+        """Commit any rows inserted since the last commit (lock must be held)."""
+        if getattr(self, "_uncommitted", 0) == 0:
             return
-        try:
-            self._conn.executemany(
-                "INSERT INTO messages (session_id, role, content, tool_name, timestamp) "
-                "VALUES (?, ?, ?, ?, ?)",
-                self._pending,
-            )
-            self._conn.commit()
-        except Exception:
-            logger.exception("SessionStore: batch flush failed")
-        finally:
-            self._pending.clear()
-            self._last_flush = time.monotonic()
+        self._conn.commit()
+        self._uncommitted = 0
+        self._last_flush = time.monotonic()
 
     def flush_sync(self) -> None:
         """Immediately flush all pending message writes to SQLite.
@@ -487,10 +490,11 @@ class SessionStore:
         """Flush pending writes and close the database connection."""
         # Cancel the periodic timer so it doesn't fire after close.
         with self._lock:
-            if self._flush_timer is not None:
-                self._flush_timer.cancel()
+            timer = getattr(self, "_flush_timer", None)
+            if timer is not None:
+                timer.cancel()
                 self._flush_timer = None
-        # Flush any remaining buffered rows before closing.
+        # Commit any rows inserted since the last commit before closing.
         self.flush_sync()
         try:
             self._conn.close()

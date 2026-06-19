@@ -1508,7 +1508,7 @@
           "approvals"
         ],
         "summary": "Get Approvals",
-        "description": "List all pending permission requests.\n\nReturns:\n    A JSON object ``{\"pending\": [...]}`` with every unresolved request\n    from the approval registry.",
+        "description": "List all pending permission requests.\n\nReturns:\n    A JSON object ``{\"pending\": [...]}`` with every unresolved request\n    from the approval registry.  Each entry includes ``expiresAt``\n    (MED-021) \u2014 an ISO-8601 timestamp so that the frontend countdown\n    timer can render.",
         "operationId": "get_approvals_approvals_get",
         "responses": {
           "200": {
