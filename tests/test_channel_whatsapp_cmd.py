@@ -18,12 +18,12 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from tokoboros.channels.whatsapp import (
+from hachi.channels.whatsapp import (
     WhatsAppWebhookServer,
     parse_meta_webhook,
     parse_twilio_webhook,
 )
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -372,10 +372,10 @@ class TestChannelWhatsappCmd:
             fake_server_cls = MagicMock(return_value=mock_srv)
 
         return (
-            patch("tokoboros.channels.whatsapp.WhatsAppWebhookServer", fake_server_cls),
-            patch("tokoboros.channels.runner.GatewaySessionRunner"),
-            patch("tokoboros.channels.whatsapp.WhatsAppAdapter"),
-            patch("tokoboros.channels.ChannelRouter"),
+            patch("hachi.channels.whatsapp.WhatsAppWebhookServer", fake_server_cls),
+            patch("hachi.channels.runner.GatewaySessionRunner"),
+            patch("hachi.channels.whatsapp.WhatsAppAdapter"),
+            patch("hachi.channels.ChannelRouter"),
         )
 
     def test_command_starts_server_and_exits_cleanly(self) -> None:
@@ -404,10 +404,10 @@ class TestChannelWhatsappCmd:
                 pass
 
         patches = (
-            patch("tokoboros.channels.whatsapp.WhatsAppWebhookServer", _FakeServer),
-            patch("tokoboros.channels.runner.GatewaySessionRunner"),
-            patch("tokoboros.channels.whatsapp.WhatsAppAdapter"),
-            patch("tokoboros.channels.ChannelRouter"),
+            patch("hachi.channels.whatsapp.WhatsAppWebhookServer", _FakeServer),
+            patch("hachi.channels.runner.GatewaySessionRunner"),
+            patch("hachi.channels.whatsapp.WhatsAppAdapter"),
+            patch("hachi.channels.ChannelRouter"),
         )
         with patches[0], patches[1], patches[2], patches[3]:
             runner.invoke(
@@ -431,10 +431,10 @@ class TestChannelWhatsappCmd:
                 pass
 
         patches = (
-            patch("tokoboros.channels.whatsapp.WhatsAppWebhookServer", _FakeServer),
-            patch("tokoboros.channels.runner.GatewaySessionRunner"),
-            patch("tokoboros.channels.whatsapp.WhatsAppAdapter"),
-            patch("tokoboros.channels.ChannelRouter"),
+            patch("hachi.channels.whatsapp.WhatsAppWebhookServer", _FakeServer),
+            patch("hachi.channels.runner.GatewaySessionRunner"),
+            patch("hachi.channels.whatsapp.WhatsAppAdapter"),
+            patch("hachi.channels.ChannelRouter"),
         )
         with patches[0], patches[1], patches[2], patches[3]:
             runner.invoke(

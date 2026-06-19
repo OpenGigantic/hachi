@@ -20,7 +20,7 @@ from pathlib import Path
 # Manifest parsing tests
 # ---------------------------------------------------------------------------
 
-PACK_ROOT = Path(__file__).parent.parent / "src" / "tokoboros" / "packs"
+PACK_ROOT = Path(__file__).parent.parent / "src" / "hachi" / "packs"
 
 
 def _pack_toml(pack_id: str) -> bytes:
@@ -28,7 +28,7 @@ def _pack_toml(pack_id: str) -> bytes:
 
 
 def test_inbox_sentinel_pack_toml_parses():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     m = parse_pack_toml(_pack_toml("inbox-sentinel"))
     assert m.id == "inbox-sentinel"
@@ -36,7 +36,7 @@ def test_inbox_sentinel_pack_toml_parses():
 
 
 def test_inbox_sentinel_declares_gmail_read():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     m = parse_pack_toml(_pack_toml("inbox-sentinel"))
     scope_ids = {s.id for s in m.scopes}
@@ -44,7 +44,7 @@ def test_inbox_sentinel_declares_gmail_read():
 
 
 def test_inbox_sentinel_declares_gmail_write():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     m = parse_pack_toml(_pack_toml("inbox-sentinel"))
     scope_ids = {s.id for s in m.scopes}
@@ -52,7 +52,7 @@ def test_inbox_sentinel_declares_gmail_write():
 
 
 def test_inbox_sentinel_declares_slack_send():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     m = parse_pack_toml(_pack_toml("inbox-sentinel"))
     scope_ids = {s.id for s in m.scopes}
@@ -60,14 +60,14 @@ def test_inbox_sentinel_declares_slack_send():
 
 
 def test_inbox_sentinel_has_schedule_budget():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     m = parse_pack_toml(_pack_toml("inbox-sentinel"))
     assert m.schedule_budget.max_runs_per_day > 0
 
 
 def test_meeting_copilot_pack_toml_parses():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     m = parse_pack_toml(_pack_toml("meeting-copilot"))
     assert m.id == "meeting-copilot"
@@ -75,7 +75,7 @@ def test_meeting_copilot_pack_toml_parses():
 
 
 def test_meeting_copilot_declares_calendar_read():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     m = parse_pack_toml(_pack_toml("meeting-copilot"))
     scope_ids = {s.id for s in m.scopes}
@@ -83,7 +83,7 @@ def test_meeting_copilot_declares_calendar_read():
 
 
 def test_meeting_copilot_declares_gmail_read():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     m = parse_pack_toml(_pack_toml("meeting-copilot"))
     scope_ids = {s.id for s in m.scopes}
@@ -91,7 +91,7 @@ def test_meeting_copilot_declares_gmail_read():
 
 
 def test_meeting_copilot_declares_drive_write():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     m = parse_pack_toml(_pack_toml("meeting-copilot"))
     scope_ids = {s.id for s in m.scopes}
@@ -99,7 +99,7 @@ def test_meeting_copilot_declares_drive_write():
 
 
 def test_meeting_copilot_has_max_cost_per_run():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     m = parse_pack_toml(_pack_toml("meeting-copilot"))
     assert m.schedule_budget.max_cost_per_run > 0
@@ -111,7 +111,7 @@ def test_meeting_copilot_has_max_cost_per_run():
 
 
 def test_inbox_sentinel_consent_sheet_renders():
-    from tokoboros.core.og_pack import parse_pack_toml, render_consent_sheet
+    from hachi.core.og_pack import parse_pack_toml, render_consent_sheet
 
     m = parse_pack_toml(_pack_toml("inbox-sentinel"))
     sheet = render_consent_sheet(m)
@@ -121,7 +121,7 @@ def test_inbox_sentinel_consent_sheet_renders():
 
 
 def test_meeting_copilot_consent_sheet_renders():
-    from tokoboros.core.og_pack import parse_pack_toml, render_consent_sheet
+    from hachi.core.og_pack import parse_pack_toml, render_consent_sheet
 
     m = parse_pack_toml(_pack_toml("meeting-copilot"))
     sheet = render_consent_sheet(m)
@@ -135,7 +135,7 @@ def test_meeting_copilot_consent_sheet_renders():
 
 
 def test_list_bundled_pack_dirs_includes_both_packs():
-    from tokoboros.core.bundled_packs import list_bundled_pack_dirs
+    from hachi.core.bundled_packs import list_bundled_pack_dirs
 
     dirs = list_bundled_pack_dirs()
     ids = {d.name for d in dirs}
@@ -144,7 +144,7 @@ def test_list_bundled_pack_dirs_includes_both_packs():
 
 
 def test_list_bundled_manifests_returns_two_manifests():
-    from tokoboros.core.bundled_packs import list_bundled_manifests
+    from hachi.core.bundled_packs import list_bundled_manifests
 
     manifests = list_bundled_manifests()
     ids = {m.id for m in manifests}
@@ -153,7 +153,7 @@ def test_list_bundled_manifests_returns_two_manifests():
 
 
 def test_install_bundled_pack_copies_og_files(tmp_path):
-    from tokoboros.core.bundled_packs import install_bundled_pack
+    from hachi.core.bundled_packs import install_bundled_pack
 
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
@@ -168,7 +168,7 @@ def test_install_bundled_pack_copies_og_files(tmp_path):
 
 
 def test_install_bundled_pack_not_found_returns_none(tmp_path):
-    from tokoboros.core.bundled_packs import install_bundled_pack
+    from hachi.core.bundled_packs import install_bundled_pack
 
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
@@ -177,7 +177,7 @@ def test_install_bundled_pack_not_found_returns_none(tmp_path):
 
 
 def test_get_bundled_consent_sheet_non_empty():
-    from tokoboros.core.bundled_packs import get_bundled_consent_sheet
+    from hachi.core.bundled_packs import get_bundled_consent_sheet
 
     sheet = get_bundled_consent_sheet("inbox-sentinel")
     assert len(sheet) > 0
@@ -185,7 +185,7 @@ def test_get_bundled_consent_sheet_non_empty():
 
 
 def test_get_bundled_consent_sheet_missing_returns_empty():
-    from tokoboros.core.bundled_packs import get_bundled_consent_sheet
+    from hachi.core.bundled_packs import get_bundled_consent_sheet
 
     assert get_bundled_consent_sheet("no-such-pack") == ""
 

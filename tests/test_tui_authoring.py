@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tokoboros.tui.authoring import (
+from hachi.tui.authoring import (
     apply_authoring_update,
     discover_authoring_targets,
     generate_unified_patch,
@@ -11,12 +11,12 @@ from tokoboros.tui.authoring import (
 
 
 def test_discover_targets_and_patch_apply(tmp_path: Path) -> None:
-    workspace = tmp_path / ".tokoboros"
+    workspace = tmp_path / ".hachi"
     skills = workspace / "skills"
     skills.mkdir(parents=True, exist_ok=True)
 
     brain = workspace / "brain.og"
-    config = workspace / "tokoboros.json"
+    config = workspace / "hachi.json"
     skill = skills / "sample.og"
 
     brain.write_text("old brain\n", encoding="utf-8")

@@ -82,7 +82,7 @@ def _make_pack_dir(tmp_path: Path, toml_content: str, og_files: dict[str, str]) 
 
 
 def test_parse_pack_toml_minimal():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     m = parse_pack_toml('id = "my-pack"')
     assert m.id == "my-pack"
@@ -93,7 +93,7 @@ def test_parse_pack_toml_minimal():
 
 
 def test_parse_pack_toml_full_fields():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     toml = _make_toml(
         pack_id="google-workspace",
@@ -102,7 +102,7 @@ def test_parse_pack_toml_full_fields():
         fs_paths=["/home/user/docs"],
         schedule_budget={"max_runs_per_day": 5, "max_cost_per_run": 0.05},
         description="Google workspace pack",
-        author="Tokoboros Team",
+        author="Hachi Team",
     )
     m = parse_pack_toml(toml)
     assert m.id == "google-workspace"
@@ -114,32 +114,32 @@ def test_parse_pack_toml_full_fields():
     assert m.schedule_budget.max_runs_per_day == 5
     assert m.schedule_budget.max_cost_per_run == pytest.approx(0.05)
     assert m.description == "Google workspace pack"
-    assert m.author == "Tokoboros Team"
+    assert m.author == "Hachi Team"
 
 
 def test_parse_pack_toml_missing_id_raises():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     with pytest.raises(ValueError, match="id"):
         parse_pack_toml('semver = "1.0.0"')
 
 
 def test_parse_pack_toml_accepts_bytes():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     m = parse_pack_toml(b'id = "byte-pack"\nsemver = "0.1.0"')
     assert m.id == "byte-pack"
 
 
 def test_parse_pack_toml_unknown_keys_ignored():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     m = parse_pack_toml('id = "x"\nfuture_field = "ignored"')
     assert m.id == "x"
 
 
 def test_parse_pack_toml_sha256s():
-    from tokoboros.core.og_pack import parse_pack_toml
+    from hachi.core.og_pack import parse_pack_toml
 
     toml = textwrap.dedent("""\
         id = "hash-pack"
@@ -156,7 +156,7 @@ def test_parse_pack_toml_sha256s():
 
 
 def test_scope_ids_returns_frozenset():
-    from tokoboros.core.og_pack import OgPackManifest, PackScope
+    from hachi.core.og_pack import OgPackManifest, PackScope
 
     m = OgPackManifest(
         id="x",
@@ -169,7 +169,7 @@ def test_scope_ids_returns_frozenset():
 
 
 def test_widened_scopes_detects_new_permissions():
-    from tokoboros.core.og_pack import OgPackManifest, PackScope
+    from hachi.core.og_pack import OgPackManifest, PackScope
 
     old = OgPackManifest(
         id="pack",
@@ -188,7 +188,7 @@ def test_widened_scopes_detects_new_permissions():
 
 
 def test_widened_scopes_empty_when_no_change():
-    from tokoboros.core.og_pack import OgPackManifest, PackScope
+    from hachi.core.og_pack import OgPackManifest, PackScope
 
     old = OgPackManifest(id="p", scopes=(PackScope(id="gmail.read", description=""),))
     new = OgPackManifest(id="p", scopes=(PackScope(id="gmail.read", description=""),))
@@ -196,7 +196,7 @@ def test_widened_scopes_empty_when_no_change():
 
 
 def test_widened_fs_paths():
-    from tokoboros.core.og_pack import OgPackManifest
+    from hachi.core.og_pack import OgPackManifest
 
     old = OgPackManifest(id="p", fs_paths=("/home/user",))
     new = OgPackManifest(id="p", fs_paths=("/home/user", "/etc/secrets"))
@@ -209,7 +209,7 @@ def test_widened_fs_paths():
 
 
 def test_render_consent_sheet_shows_pack_id():
-    from tokoboros.core.og_pack import OgPackManifest, render_consent_sheet
+    from hachi.core.og_pack import OgPackManifest, render_consent_sheet
 
     m = OgPackManifest(id="my-pack", semver="1.0.0", description="A pack")
     sheet = render_consent_sheet(m)
@@ -219,7 +219,7 @@ def test_render_consent_sheet_shows_pack_id():
 
 
 def test_render_consent_sheet_update_label():
-    from tokoboros.core.og_pack import OgPackManifest, render_consent_sheet
+    from hachi.core.og_pack import OgPackManifest, render_consent_sheet
 
     m = OgPackManifest(id="my-pack", semver="2.0.0")
     sheet = render_consent_sheet(m, update=True)
@@ -227,7 +227,7 @@ def test_render_consent_sheet_update_label():
 
 
 def test_render_consent_sheet_shows_scopes():
-    from tokoboros.core.og_pack import OgPackManifest, PackScope, render_consent_sheet
+    from hachi.core.og_pack import OgPackManifest, PackScope, render_consent_sheet
 
     m = OgPackManifest(
         id="x",
@@ -239,7 +239,7 @@ def test_render_consent_sheet_shows_scopes():
 
 
 def test_render_consent_sheet_no_scopes_friendly():
-    from tokoboros.core.og_pack import OgPackManifest, render_consent_sheet
+    from hachi.core.og_pack import OgPackManifest, render_consent_sheet
 
     m = OgPackManifest(id="x")
     sheet = render_consent_sheet(m)
@@ -247,7 +247,7 @@ def test_render_consent_sheet_no_scopes_friendly():
 
 
 def test_render_consent_sheet_shows_schedule_budget():
-    from tokoboros.core.og_pack import OgPackManifest, ScheduleBudget, render_consent_sheet
+    from hachi.core.og_pack import OgPackManifest, ScheduleBudget, render_consent_sheet
 
     m = OgPackManifest(
         id="x",
@@ -259,7 +259,7 @@ def test_render_consent_sheet_shows_schedule_budget():
 
 
 def test_render_consent_sheet_no_code_execution_note():
-    from tokoboros.core.og_pack import OgPackManifest, render_consent_sheet
+    from hachi.core.og_pack import OgPackManifest, render_consent_sheet
 
     m = OgPackManifest(id="x")
     sheet = render_consent_sheet(m)
@@ -272,7 +272,7 @@ def test_render_consent_sheet_no_code_execution_note():
 
 
 def test_render_scope_diff_empty_when_no_widening():
-    from tokoboros.core.og_pack import OgPackManifest, PackScope, render_scope_diff
+    from hachi.core.og_pack import OgPackManifest, PackScope, render_scope_diff
 
     scope = PackScope(id="gmail.read", description="")
     old = OgPackManifest(id="p", semver="1.0.0", scopes=(scope,))
@@ -281,7 +281,7 @@ def test_render_scope_diff_empty_when_no_widening():
 
 
 def test_render_scope_diff_shows_new_scope():
-    from tokoboros.core.og_pack import OgPackManifest, PackScope, render_scope_diff
+    from hachi.core.og_pack import OgPackManifest, PackScope, render_scope_diff
 
     old = OgPackManifest(
         id="p", semver="1.0.0", scopes=(PackScope(id="gmail.read", description=""),)
@@ -301,7 +301,7 @@ def test_render_scope_diff_shows_new_scope():
 
 
 def test_render_scope_diff_shows_new_fs_path():
-    from tokoboros.core.og_pack import OgPackManifest, render_scope_diff
+    from hachi.core.og_pack import OgPackManifest, render_scope_diff
 
     old = OgPackManifest(id="p", fs_paths=("/home",))
     new = OgPackManifest(id="p", fs_paths=("/home", "/var/data"))
@@ -315,7 +315,7 @@ def test_render_scope_diff_shows_new_fs_path():
 
 
 def test_install_ogpack_from_dir_copies_og_files(tmp_path):
-    from tokoboros.core.og_pack import install_ogpack_from_dir
+    from hachi.core.og_pack import install_ogpack_from_dir
 
     og_content = "::index\n- skill\n::dense\nskill = Skill node\n"
     pack_dir = _make_pack_dir(
@@ -336,7 +336,7 @@ def test_install_ogpack_from_dir_copies_og_files(tmp_path):
 
 
 def test_install_ogpack_from_dir_writes_metadata(tmp_path):
-    from tokoboros.core.og_pack import install_ogpack_from_dir, list_ogpacks
+    from hachi.core.og_pack import install_ogpack_from_dir, list_ogpacks
 
     pack_dir = _make_pack_dir(
         tmp_path,
@@ -354,7 +354,7 @@ def test_install_ogpack_from_dir_writes_metadata(tmp_path):
 
 
 def test_install_ogpack_from_dir_checksum_fails_on_mismatch(tmp_path):
-    from tokoboros.core.og_pack import install_ogpack_from_dir
+    from hachi.core.og_pack import install_ogpack_from_dir
 
     toml = textwrap.dedent("""\
         id = "checksum-pack"
@@ -370,7 +370,7 @@ def test_install_ogpack_from_dir_checksum_fails_on_mismatch(tmp_path):
 
 
 def test_install_ogpack_from_dir_passes_valid_checksum(tmp_path):
-    from tokoboros.core.og_pack import install_ogpack_from_dir
+    from hachi.core.og_pack import install_ogpack_from_dir
 
     og_content = b"::index\n- test\n"
     h = _sha256(og_content)
@@ -390,7 +390,7 @@ def test_install_ogpack_from_dir_passes_valid_checksum(tmp_path):
 
 
 def test_install_ogpack_no_pack_toml_raises(tmp_path):
-    from tokoboros.core.og_pack import install_ogpack_from_dir
+    from hachi.core.og_pack import install_ogpack_from_dir
 
     empty_dir = tmp_path / "empty"
     empty_dir.mkdir()
@@ -407,7 +407,7 @@ def test_install_ogpack_no_pack_toml_raises(tmp_path):
 
 
 def test_install_ogpack_from_archive(tmp_path):
-    from tokoboros.core.og_pack import install_ogpack_from_archive
+    from hachi.core.og_pack import install_ogpack_from_archive
 
     pack_dir = _make_pack_dir(tmp_path, _make_toml("archive-pack"), {"b.og": "data"})
     archive = tmp_path / "archive-pack.ogpack"
@@ -422,7 +422,7 @@ def test_install_ogpack_from_archive(tmp_path):
 
 
 def test_install_from_archive_no_pack_toml_raises(tmp_path):
-    from tokoboros.core.og_pack import install_ogpack_from_archive
+    from hachi.core.og_pack import install_ogpack_from_archive
 
     empty_dir = tmp_path / "empty"
     empty_dir.mkdir()
@@ -443,7 +443,7 @@ def test_install_from_archive_no_pack_toml_raises(tmp_path):
 
 
 def test_list_ogpacks_empty_when_none_installed(tmp_path):
-    from tokoboros.core.og_pack import list_ogpacks
+    from hachi.core.og_pack import list_ogpacks
 
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
@@ -451,7 +451,7 @@ def test_list_ogpacks_empty_when_none_installed(tmp_path):
 
 
 def test_list_ogpacks_after_install(tmp_path):
-    from tokoboros.core.og_pack import install_ogpack_from_dir, list_ogpacks
+    from hachi.core.og_pack import install_ogpack_from_dir, list_ogpacks
 
     pack_dir = _make_pack_dir(tmp_path, _make_toml("listed-pack", semver="3.0.0"), {"x.og": "x"})
     skills_dir = tmp_path / "skills"
@@ -467,7 +467,7 @@ def test_list_ogpacks_after_install(tmp_path):
 
 
 def test_remove_ogpack_found(tmp_path):
-    from tokoboros.core.og_pack import install_ogpack_from_dir, remove_ogpack
+    from hachi.core.og_pack import install_ogpack_from_dir, remove_ogpack
 
     pack_dir = _make_pack_dir(tmp_path, _make_toml("to-remove"), {"y.og": "y"})
     skills_dir = tmp_path / "skills"
@@ -480,7 +480,7 @@ def test_remove_ogpack_found(tmp_path):
 
 
 def test_remove_ogpack_not_found(tmp_path):
-    from tokoboros.core.og_pack import remove_ogpack
+    from hachi.core.og_pack import remove_ogpack
 
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
@@ -489,7 +489,7 @@ def test_remove_ogpack_not_found(tmp_path):
 
 
 def test_get_installed_manifest_round_trip(tmp_path):
-    from tokoboros.core.og_pack import get_installed_manifest, install_ogpack_from_dir
+    from hachi.core.og_pack import get_installed_manifest, install_ogpack_from_dir
 
     pack_dir = _make_pack_dir(
         tmp_path,
@@ -508,7 +508,7 @@ def test_get_installed_manifest_round_trip(tmp_path):
 
 
 def test_get_installed_manifest_missing_returns_none(tmp_path):
-    from tokoboros.core.og_pack import get_installed_manifest
+    from hachi.core.og_pack import get_installed_manifest
 
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
@@ -521,7 +521,7 @@ def test_get_installed_manifest_missing_returns_none(tmp_path):
 
 
 def test_scope_diff_printed_when_update_widens(tmp_path, capsys):
-    from tokoboros.core.og_pack import install_ogpack_from_dir, parse_pack_toml
+    from hachi.core.og_pack import install_ogpack_from_dir, parse_pack_toml
 
     old_toml = _make_toml("evolving", semver="1.0.0", scopes=["gmail.read"])
     new_toml = _make_toml("evolving", semver="2.0.0", scopes=["gmail.read", "gmail.send"])
@@ -545,35 +545,35 @@ def test_scope_diff_printed_when_update_widens(tmp_path, capsys):
 
 
 def test_pack_cli_install_registered():
-    from tokoboros.cli.main import ogpack_app
+    from hachi.cli.main import ogpack_app
 
     names = {c.name or c.callback.__name__ for c in ogpack_app.registered_commands}
     assert any("install" in n for n in names)
 
 
 def test_pack_cli_list_registered():
-    from tokoboros.cli.main import ogpack_app
+    from hachi.cli.main import ogpack_app
 
     names = {c.name or c.callback.__name__ for c in ogpack_app.registered_commands}
     assert any("list" in n for n in names)
 
 
 def test_pack_cli_remove_registered():
-    from tokoboros.cli.main import ogpack_app
+    from hachi.cli.main import ogpack_app
 
     names = {c.name or c.callback.__name__ for c in ogpack_app.registered_commands}
     assert any("remove" in n for n in names)
 
 
 def test_pack_cli_update_registered():
-    from tokoboros.cli.main import ogpack_app
+    from hachi.cli.main import ogpack_app
 
     names = {c.name or c.callback.__name__ for c in ogpack_app.registered_commands}
     assert any("update" in n for n in names)
 
 
 def test_pack_app_added_to_main_app():
-    from tokoboros.cli.main import app
+    from hachi.cli.main import app
 
     group_names = {g.name for g in app.registered_groups}
     assert "pack" in group_names

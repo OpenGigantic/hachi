@@ -6,8 +6,8 @@ import json
 from rich.console import Console
 from textual.app import App
 
-from tokoboros.core.permissions import PermissionDecision, PermissionRequest
-from tokoboros.core.runtime_read_models import (
+from hachi.core.permissions import PermissionDecision, PermissionRequest
+from hachi.core.runtime_read_models import (
     JobSnapshot,
     MCPInventorySnapshot,
     PermissionAuditSnapshot,
@@ -16,11 +16,11 @@ from tokoboros.core.runtime_read_models import (
     SubAgentReportSnapshot,
     ToolCallSnapshot,
 )
-from tokoboros.tui.app import (
+from hachi.tui.app import (
     APP_CSS,
     AuthoringScreen,
     OpsScreen,
-    TokoborosTextualApp,
+    HachiTextualApp,
     _sanitize_agent_markdown,
     _sanitize_legacy_rich_markup,
     _strip_metrics,
@@ -161,12 +161,12 @@ def test_sanitize_legacy_rich_markup_removes_style_tags() -> None:
 
 
 def test_sanitize_agent_markdown_preserves_markdown_emphasis() -> None:
-    raw = " [bold]I'm[/bold] **Tokoboros** and [green]ready[/green]. "
-    assert _sanitize_agent_markdown(raw) == "I'm **Tokoboros** and ready."
+    raw = " [bold]I'm[/bold] **Hachi** and [green]ready[/green]. "
+    assert _sanitize_agent_markdown(raw) == "I'm **Hachi** and ready."
 
 
 def test_queue_ui_callback_returns_false_when_loop_closed() -> None:
-    app = TokoborosTextualApp()
+    app = HachiTextualApp()
     app._loop = _DummyLoop(closed=True)
 
     queued = app._queue_ui_callback(lambda: None)
@@ -175,7 +175,7 @@ def test_queue_ui_callback_returns_false_when_loop_closed() -> None:
 
 
 def test_queue_ui_callback_schedules_when_loop_open() -> None:
-    app = TokoborosTextualApp()
+    app = HachiTextualApp()
     loop = _DummyLoop(closed=False)
     app._loop = loop
 
@@ -194,7 +194,7 @@ def test_queue_ui_callback_schedules_when_loop_open() -> None:
 
 
 def test_persist_ui_state_tolerates_missing_screen() -> None:
-    app = TokoborosTextualApp()
+    app = HachiTextualApp()
     app._state_store = _DummyStateStore()
 
     app._persist_ui_state()
@@ -205,7 +205,7 @@ def test_persist_ui_state_tolerates_missing_screen() -> None:
 def test_collect_warnings_matches_counter_and_extracts_detail() -> None:
     """The WarningsModal must show exactly what the ``warn N`` counter counts, so
     the user can see what the warnings are instead of an opaque number."""
-    app = TokoborosTextualApp()
+    app = HachiTextualApp()
     app._event_buffer = [
         ("session.chat.started", {}),
         ("job.failed", {"label": "persist_delegation", "error": "disk full"}),
@@ -223,12 +223,12 @@ def test_collect_warnings_matches_counter_and_extracts_detail() -> None:
 
 
 def test_warning_detail_handles_empty_payload() -> None:
-    detail = TokoborosTextualApp._warning_detail({})
+    detail = HachiTextualApp._warning_detail({})
     assert detail == "(no detail)"
 
 
 def test_boot_runtime_uses_gateway_path_without_local_boot(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url="http://127.0.0.1:8111")
+    app = HachiTextualApp(gateway_base_url="http://127.0.0.1:8111")
 
     state: dict[str, bool] = {
         "handshake": False,
@@ -237,7 +237,7 @@ def test_boot_runtime_uses_gateway_path_without_local_boot(monkeypatch) -> None:
     }
 
     monkeypatch.setattr(
-        "tokoboros.tui.app.boot_agent",
+        "hachi.tui.app.boot_agent",
         lambda **_kwargs: (_ for _ in ()).throw(
             AssertionError("boot_agent should not run in gateway mode")
         ),
@@ -270,7 +270,7 @@ def test_boot_runtime_uses_gateway_path_without_local_boot(monkeypatch) -> None:
 
 
 def test_gateway_handshake_uses_unversioned_session_create_contract(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url="http://127.0.0.1:8111")
+    app = HachiTextualApp(gateway_base_url="http://127.0.0.1:8111")
 
     captured: dict[str, object] = {}
 
@@ -298,14 +298,14 @@ def test_gateway_handshake_uses_unversioned_session_create_contract(monkeypatch)
         captured["connect_payload"] = json.loads(data.data.decode("utf-8"))
         return _Response({"accepted": True, "session_id": "sess-123"})
 
-    monkeypatch.setattr("tokoboros.tui.app.request.urlopen", _fake_urlopen)
+    monkeypatch.setattr("hachi.tui.app.request.urlopen", _fake_urlopen)
 
     app._consume_gateway_handshake()
 
     assert captured["readiness_url"] == "http://127.0.0.1:8111/readiness"
     assert captured["connect_url"] == "http://127.0.0.1:8111/sessions"
     assert captured["connect_payload"] == {
-        "client_id": "tokoboros-tui",
+        "client_id": "hachi-tui",
         "surface": "tui",
         "protocol_version": "1.0",
         "capabilities": ["events", "health", "readiness"],
@@ -315,7 +315,7 @@ def test_gateway_handshake_uses_unversioned_session_create_contract(monkeypatch)
 
 
 def test_gateway_event_poller_uses_unversioned_events_endpoint(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url="http://127.0.0.1:8111")
+    app = HachiTextualApp(gateway_base_url="http://127.0.0.1:8111")
     app._gateway_session_id = "session-7"
     app._gateway_after_sequence = 0
 
@@ -344,7 +344,7 @@ def test_gateway_event_poller_uses_unversioned_events_endpoint(monkeypatch) -> N
         app._gateway_stop_event.set()
         return _Response()
 
-    monkeypatch.setattr("tokoboros.tui.app.request.urlopen", _fake_urlopen)
+    monkeypatch.setattr("hachi.tui.app.request.urlopen", _fake_urlopen)
     monkeypatch.setattr(
         app, "_runtime_event_from_thread", lambda et, payload: streamed.append((et, payload))
     )
@@ -361,7 +361,7 @@ def test_gateway_event_poller_uses_unversioned_events_endpoint(monkeypatch) -> N
 
 
 def test_gateway_chat_uses_unversioned_messages_endpoint(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url="http://127.0.0.1:8111")
+    app = HachiTextualApp(gateway_base_url="http://127.0.0.1:8111")
     app._gateway_session_id = "session-9"
 
     captured: dict[str, object] = {}
@@ -382,7 +382,7 @@ def test_gateway_chat_uses_unversioned_messages_endpoint(monkeypatch) -> None:
         captured["chat_payload"] = json.loads(target.data.decode("utf-8"))
         return _Response()
 
-    monkeypatch.setattr("tokoboros.tui.app.request.urlopen", _fake_urlopen)
+    monkeypatch.setattr("hachi.tui.app.request.urlopen", _fake_urlopen)
     monkeypatch.setattr(app, "_on_chat_result", lambda text, err: results.append((text, err)))
     monkeypatch.setattr(
         app, "_queue_ui_callback", lambda callback, *args: (callback(*args), True)[1]
@@ -408,11 +408,11 @@ def _sample_permission_request(request_id: str = "req-1") -> PermissionRequest:
 
 def test_request_permission_decision_handles_approve_deny_and_allow_once(monkeypatch) -> None:
     for action in ("approve", "deny", "allow_once"):
-        app = TokoborosTextualApp()
+        app = HachiTextualApp()
 
         def _fake_show_modal(
             request: PermissionRequest,
-            _app: TokoborosTextualApp = app,
+            _app: HachiTextualApp = app,
             _action: str = action,
         ) -> None:
             _app._resolve_permission_decision(
@@ -431,7 +431,7 @@ def test_request_permission_decision_handles_approve_deny_and_allow_once(monkeyp
 def test_request_permission_decision_returns_dismissed_when_modal_closes_without_result(
     monkeypatch,
 ) -> None:
-    app = TokoborosTextualApp()
+    app = HachiTextualApp()
 
     def _fake_show_modal(request: PermissionRequest) -> None:
         app._resolve_permission_decision(
@@ -449,7 +449,7 @@ def test_request_permission_decision_returns_dismissed_when_modal_closes_without
 
 
 def test_request_permission_decision_times_out_and_cleans_waiter(monkeypatch) -> None:
-    app = TokoborosTextualApp()
+    app = HachiTextualApp()
 
     class _TimeoutEvent:
         def wait(self, timeout=None) -> bool:
@@ -458,7 +458,7 @@ def test_request_permission_decision_times_out_and_cleans_waiter(monkeypatch) ->
         def set(self) -> None:
             return
 
-    monkeypatch.setattr("tokoboros.tui.app.threading.Event", _TimeoutEvent)
+    monkeypatch.setattr("hachi.tui.app.threading.Event", _TimeoutEvent)
     # call_from_thread replaced _queue_ui_callback; make it a no-op so the waiter times out.
     monkeypatch.setattr(app, "call_from_thread", lambda fn, *args: None)
 
@@ -471,7 +471,7 @@ def test_request_permission_decision_times_out_and_cleans_waiter(monkeypatch) ->
 
 
 def test_resolve_permission_decision_ignores_replay_for_expired_request() -> None:
-    app = TokoborosTextualApp()
+    app = HachiTextualApp()
     request_id = "req-replay"
 
     class _Event:
@@ -499,7 +499,7 @@ def test_resolve_permission_decision_ignores_replay_for_expired_request() -> Non
 
 
 def test_action_interrupt_stops_poller_and_resolves_pending_approvals() -> None:
-    app = TokoborosTextualApp(gateway_base_url="http://127.0.0.1:8111")
+    app = HachiTextualApp(gateway_base_url="http://127.0.0.1:8111")
 
     class _Event:
         def __init__(self) -> None:
@@ -522,7 +522,7 @@ def test_action_interrupt_stops_poller_and_resolves_pending_approvals() -> None:
 
 
 def test_on_unmount_joins_live_threads_and_cleans_waiters() -> None:
-    app = TokoborosTextualApp(gateway_base_url="http://127.0.0.1:8111")
+    app = HachiTextualApp(gateway_base_url="http://127.0.0.1:8111")
 
     class _DummyThread:
         def __init__(self) -> None:
@@ -595,6 +595,10 @@ def test_authoring_screen_snapshot_refresh_is_noop_without_body() -> None:
 
     class _Host(App[None]):
         CSS = APP_CSS
+        # APP_CSS is parsed before the hachi theme registers, so a bare host
+        # must supply the same custom $variables the real app does (e.g.
+        # $border-muted, $brand-tint). Delegate to the app's own source of truth.
+        get_theme_variable_defaults = HachiTextualApp.get_theme_variable_defaults
 
     async def _run() -> int:
         host = _Host()
@@ -616,7 +620,7 @@ def test_snapshot_body_scrolls_when_content_overflows() -> None:
     viewport and the enclosing VerticalScroll can scroll."""
     from textual.containers import VerticalScroll
 
-    from tokoboros.tui.app import SnapshotScreen
+    from hachi.tui.app import SnapshotScreen
 
     class _TallScreen(SnapshotScreen):
         title_text = "Tall"
@@ -626,6 +630,10 @@ def test_snapshot_body_scrolls_when_content_overflows() -> None:
 
     class _Host(App[None]):
         CSS = APP_CSS
+        # APP_CSS is parsed before the hachi theme registers, so a bare host
+        # must supply the same custom $variables the real app does (e.g.
+        # $border-muted, $brand-tint). Delegate to the app's own source of truth.
+        get_theme_variable_defaults = HachiTextualApp.get_theme_variable_defaults
 
     async def _run() -> int:
         host = _Host()
@@ -641,7 +649,7 @@ def test_snapshot_body_scrolls_when_content_overflows() -> None:
 
 
 def test_tool_card_starts_collapsed_with_running_title() -> None:
-    from tokoboros.tui.widgets import ToolCard
+    from hachi.tui.widgets import ToolCard
 
     card = ToolCard("google_create_task", "title=P0", "title: P0 Review")
     assert card.collapsed is True
@@ -655,7 +663,7 @@ def test_tool_card_composes_without_active_app() -> None:
     where Textual's active-app ContextVar is unset. Collapsible's default
     ``with self.Contents():`` compose raised NoActiveAppError there, so ToolCard
     overrides compose to build Contents without the app lookup."""
-    from tokoboros.tui.widgets import ToolCard
+    from hachi.tui.widgets import ToolCard
 
     card = ToolCard("google_list_emails", "q=in:inbox", "q: in:inbox")
     # Fully consuming compose() must not raise (no app context here).
@@ -666,10 +674,14 @@ def test_tool_card_composes_without_active_app() -> None:
 def test_tool_card_completed_and_error_update_in_app() -> None:
     """mark_completed/mark_error swap status classes and fold the outcome into
     the collapsible title; the full result lands in the (expandable) body."""
-    from tokoboros.tui.widgets import ToolCard
+    from hachi.tui.widgets import ToolCard
 
     class _Host(App[None]):
         CSS = APP_CSS
+        # APP_CSS is parsed before the hachi theme registers, so a bare host
+        # must supply the same custom $variables the real app does (e.g.
+        # $border-muted, $brand-tint). Delegate to the app's own source of truth.
+        get_theme_variable_defaults = HachiTextualApp.get_theme_variable_defaults
 
     async def _run() -> tuple[str, bool, str, bool]:
         host = _Host()

@@ -1,4 +1,4 @@
-"""Tests for the `tokoboros skill report` CLI command.
+"""Tests for the `hachi skill report` CLI command.
 
 The report surfaces the .og self-optimization data (usage tracking + staleness)
 that the engine already collects. These tests isolate both the skills directory
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -20,31 +20,30 @@ FIXTURE = Path(__file__).parent / "fixtures" / "sample_skill.og"
 
 def _isolate(monkeypatch, tmp_path: Path) -> Path:
     """Point the CLI at a temp skills dir and isolate the usage store under tmp home."""
-    import tokoboros.og_engine.engine as engine_mod
-    from tokoboros.core.paths import TokoborosPaths
+    import hachi.og_engine.engine as engine_mod
+    from hachi.core.paths import HachiPaths
 
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     shutil.copy(FIXTURE, skills_dir / "sample_skill.og")
 
     monkeypatch.setattr(
-        "tokoboros.gateway.workspace.get_skills_dir",
+        "hachi.gateway.workspace.get_skills_dir",
         lambda: skills_dir,
     )
-    # Redirect Path.home() so legacy shim reads from tmp_path.
+    # Redirect Path.home() so any home-dir lookups stay inside tmp_path.
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    # Also redirect get_tokoboros_paths so state_dir is under tmp_path (not a system dir).
+    # Also redirect get_hachi_paths so state_dir is under tmp_path (not a system dir).
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    mock_paths = TokoborosPaths(
+    mock_paths = HachiPaths(
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
         cache_dir=tmp_path / "cache",
         state_dir=state_dir,
-        legacy_dir=tmp_path / ".tokoboros",
     )
-    monkeypatch.setattr(engine_mod, "get_tokoboros_paths", lambda: mock_paths)
+    monkeypatch.setattr(engine_mod, "get_hachi_paths", lambda: mock_paths)
     return skills_dir
 
 
@@ -81,7 +80,7 @@ def test_skill_report_reflects_recorded_usage(monkeypatch, tmp_path):
     _isolate(monkeypatch, tmp_path)
 
     # Pre-seed the usage store the engine reads from on construction.
-    usage_path = tmp_path / ".tokoboros" / "brain" / "skill_usage.json"
+    usage_path = tmp_path / "state" / "skill_usage.json"
     usage_path.parent.mkdir(parents=True, exist_ok=True)
     usage_path.write_text(
         json.dumps(

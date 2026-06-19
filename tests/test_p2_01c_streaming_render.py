@@ -11,8 +11,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
-from tokoboros.tui.app import SessionScreen
-from tokoboros.tui.widgets import AgentMessage
+from hachi.tui.app import SessionScreen
+from hachi.tui.widgets import AgentMessage
 
 # ---------------------------------------------------------------------------
 # Proxy — exercises SessionScreen methods without a real Textual app
@@ -176,7 +176,7 @@ def test_non_stream_event_does_not_create_bubble() -> None:
 def test_tool_call_seals_bubble_so_text_and_cards_interleave() -> None:
     """A tool call mid-turn seals the current text bubble; following narration
     starts a fresh bubble below the card — keeping chronological order."""
-    from tokoboros.tui.widgets import AgentMessage, ToolCard
+    from hachi.tui.widgets import AgentMessage, ToolCard
 
     screen = _make_screen()
     screen.ingest_runtime_event("text.stream.delta", {"text": "Let me check"})
@@ -229,9 +229,9 @@ def test_non_escape_key_ignored_even_when_turn_active() -> None:
     screen.app.action_interrupt.assert_not_called()
 
 
-def test_esc_noop_when_app_is_not_tokoborosapp() -> None:
-    """If the app isn't a TokoborosTextualApp, on_key is a no-op."""
-    screen = _ScreenProxy(mock_app=object())  # not a TokoborosTextualApp
+def test_esc_noop_when_app_is_not_hachiapp() -> None:
+    """If the app isn't a HachiTextualApp, on_key is a no-op."""
+    screen = _ScreenProxy(mock_app=object())  # not a HachiTextualApp
     key_event = MagicMock()
     key_event.key = "escape"
     screen.on_key(key_event)  # must not raise

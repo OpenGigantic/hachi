@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import _apply_quick_setup_if_needed, app
+from hachi.cli.main import _apply_quick_setup_if_needed, app
 
 runner = CliRunner()
 
@@ -37,12 +37,12 @@ def test_gateway_command_starts_and_stops_server(monkeypatch) -> None:
     def _raise_interrupt() -> None:
         raise KeyboardInterrupt()
 
-    monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
-    monkeypatch.setattr("tokoboros.cli.main.GatewayHTTPServer", FakeServer)
-    monkeypatch.setattr("tokoboros.cli.main._wait_until_interrupted", _raise_interrupt)
-    monkeypatch.setenv("TOKOBOROS_GATEWAY_API_TOKEN", "test-token")
+    monkeypatch.setattr("hachi.cli.main.ensure_workspace", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._pre_flight_check", lambda: True)
+    monkeypatch.setattr("hachi.cli.main.GatewayHTTPServer", FakeServer)
+    monkeypatch.setattr("hachi.cli.main._wait_until_interrupted", _raise_interrupt)
+    monkeypatch.setenv("HACHI_GATEWAY_API_TOKEN", "test-token")
 
     result = runner.invoke(app, ["gateway", "--host", "0.0.0.0", "--port", "9000"])
 
@@ -69,10 +69,10 @@ def test_gateway_command_returns_error_when_server_fails(monkeypatch) -> None:
         def stop(self) -> None:
             return None
 
-    monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
-    monkeypatch.setattr("tokoboros.cli.main.GatewayHTTPServer", FailingServer)
+    monkeypatch.setattr("hachi.cli.main.ensure_workspace", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._pre_flight_check", lambda: True)
+    monkeypatch.setattr("hachi.cli.main.GatewayHTTPServer", FailingServer)
 
     result = runner.invoke(app, ["gateway", "--port", "9000"])
 
@@ -81,15 +81,15 @@ def test_gateway_command_returns_error_when_server_fails(monkeypatch) -> None:
 
 
 def test_gateway_command_requires_auth_token_for_non_loopback_host(monkeypatch) -> None:
-    monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
-    monkeypatch.delenv("TOKOBOROS_GATEWAY_API_TOKEN", raising=False)
+    monkeypatch.setattr("hachi.cli.main.ensure_workspace", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._pre_flight_check", lambda: True)
+    monkeypatch.delenv("HACHI_GATEWAY_API_TOKEN", raising=False)
 
     result = runner.invoke(app, ["gateway", "--host", "0.0.0.0", "--port", "9000"])
 
     assert result.exit_code == 1
-    assert "TOKOBOROS_GATEWAY_API_TOKEN_FILE" in result.stdout
+    assert "HACHI_GATEWAY_API_TOKEN_FILE" in result.stdout
 
 
 def test_gateway_command_reads_auth_token_from_file(monkeypatch, tmp_path: Path) -> None:
@@ -114,13 +114,13 @@ def test_gateway_command_reads_auth_token_from_file(monkeypatch, tmp_path: Path)
     def _raise_interrupt() -> None:
         raise KeyboardInterrupt()
 
-    monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
-    monkeypatch.setattr("tokoboros.cli.main.GatewayHTTPServer", FakeServer)
-    monkeypatch.setattr("tokoboros.cli.main._wait_until_interrupted", _raise_interrupt)
-    monkeypatch.delenv("TOKOBOROS_GATEWAY_API_TOKEN", raising=False)
-    monkeypatch.setenv("TOKOBOROS_GATEWAY_API_TOKEN_FILE", str(token_file))
+    monkeypatch.setattr("hachi.cli.main.ensure_workspace", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._pre_flight_check", lambda: True)
+    monkeypatch.setattr("hachi.cli.main.GatewayHTTPServer", FakeServer)
+    monkeypatch.setattr("hachi.cli.main._wait_until_interrupted", _raise_interrupt)
+    monkeypatch.delenv("HACHI_GATEWAY_API_TOKEN", raising=False)
+    monkeypatch.setenv("HACHI_GATEWAY_API_TOKEN_FILE", str(token_file))
 
     result = runner.invoke(app, ["gateway", "--host", "0.0.0.0", "--port", "9000"])
 
@@ -137,7 +137,7 @@ def test_gateway_command_passes_runtime_flag(monkeypatch) -> None:
         captured["attach_runtime"] = attach_runtime
 
     monkeypatch.setattr(
-        "tokoboros.cli.main._run_gateway_http_server", _fake_run_gateway_http_server
+        "hachi.cli.main._run_gateway_http_server", _fake_run_gateway_http_server
     )
 
     result = runner.invoke(app, ["gateway", "--port", "8999", "--no-runtime"])
@@ -169,12 +169,12 @@ def test_run_command_launches_tui_in_local_mode(monkeypatch) -> None:
         state["tui_launched"] = True
         state["resume_session_id"] = resume_session_id
 
-    monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
-    monkeypatch.setattr("tokoboros.cli.main.ensure_device_permissions", lambda _console: None)
-    monkeypatch.setattr("tokoboros.cli.main._start_gateway_server", _fake_start_gateway_server)
-    monkeypatch.setattr("tokoboros.cli.main.run_tui", _fake_run_tui)
+    monkeypatch.setattr("hachi.cli.main.ensure_workspace", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._pre_flight_check", lambda: True)
+    monkeypatch.setattr("hachi.cli.main.ensure_device_permissions", lambda _console: None)
+    monkeypatch.setattr("hachi.cli.main._start_gateway_server", _fake_start_gateway_server)
+    monkeypatch.setattr("hachi.cli.main.run_tui", _fake_run_tui)
 
     result = runner.invoke(app, ["run"])
 
@@ -192,11 +192,11 @@ def test_bare_invocation_launches_tui(monkeypatch) -> None:
     ) -> None:
         state["tui_launched"] = True
 
-    monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
-    monkeypatch.setattr("tokoboros.cli.main.ensure_device_permissions", lambda _console: None)
-    monkeypatch.setattr("tokoboros.cli.main.run_tui", _fake_run_tui)
+    monkeypatch.setattr("hachi.cli.main.ensure_workspace", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._pre_flight_check", lambda: True)
+    monkeypatch.setattr("hachi.cli.main.ensure_device_permissions", lambda _console: None)
+    monkeypatch.setattr("hachi.cli.main.run_tui", _fake_run_tui)
 
     result = runner.invoke(app, [])
 
@@ -221,12 +221,12 @@ def test_run_repl_skips_gateway_bootstrap(monkeypatch) -> None:
         state["gateway_started"] = True
         raise AssertionError("gateway should not start for --repl")
 
-    monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
-    monkeypatch.setattr("tokoboros.cli.main.ensure_device_permissions", lambda _console: None)
-    monkeypatch.setattr("tokoboros.cli.main._run_repl", _fake_run_repl)
-    monkeypatch.setattr("tokoboros.cli.main._start_gateway_server", _fake_start_gateway_server)
+    monkeypatch.setattr("hachi.cli.main.ensure_workspace", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._pre_flight_check", lambda: True)
+    monkeypatch.setattr("hachi.cli.main.ensure_device_permissions", lambda _console: None)
+    monkeypatch.setattr("hachi.cli.main._run_repl", _fake_run_repl)
+    monkeypatch.setattr("hachi.cli.main._start_gateway_server", _fake_start_gateway_server)
 
     result = runner.invoke(app, ["run", "--repl"])
 
@@ -248,12 +248,12 @@ def test_run_command_falls_back_to_repl_when_tui_launch_fails(monkeypatch) -> No
     def _fake_repl() -> None:
         state["repl_called"] = True
 
-    monkeypatch.setattr("tokoboros.cli.main.ensure_workspace", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._apply_quick_setup_if_needed", lambda: None)
-    monkeypatch.setattr("tokoboros.cli.main._pre_flight_check", lambda: True)
-    monkeypatch.setattr("tokoboros.cli.main.ensure_device_permissions", lambda _console: None)
-    monkeypatch.setattr("tokoboros.cli.main.run_tui", _boom_run_tui)
-    monkeypatch.setattr("tokoboros.cli.main._run_repl", _fake_repl)
+    monkeypatch.setattr("hachi.cli.main.ensure_workspace", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._apply_quick_setup_if_needed", lambda: None)
+    monkeypatch.setattr("hachi.cli.main._pre_flight_check", lambda: True)
+    monkeypatch.setattr("hachi.cli.main.ensure_device_permissions", lambda _console: None)
+    monkeypatch.setattr("hachi.cli.main.run_tui", _boom_run_tui)
+    monkeypatch.setattr("hachi.cli.main._run_repl", _fake_repl)
 
     result = runner.invoke(app, ["run"])
 
@@ -294,7 +294,7 @@ def test_apply_quick_setup_runs_only_when_needed(monkeypatch) -> None:
             state["apply"] += 1
             assert plan["tier"] == "lightning"
 
-    monkeypatch.setattr("tokoboros.cli.main.OnboardingService", FakeOnboardingService)
+    monkeypatch.setattr("hachi.cli.main.OnboardingService", FakeOnboardingService)
     _apply_quick_setup_if_needed()
 
     assert state == {"best_provider": 1, "build": 1, "apply": 1}
@@ -322,7 +322,7 @@ def test_apply_quick_setup_skips_when_already_configured(monkeypatch) -> None:
         def apply_setup(self, plan: dict) -> None:
             state["apply"] += 1
 
-    monkeypatch.setattr("tokoboros.cli.main.OnboardingService", FakeOnboardingService)
+    monkeypatch.setattr("hachi.cli.main.OnboardingService", FakeOnboardingService)
     _apply_quick_setup_if_needed()
 
     assert state == {"detect": 0, "build": 0, "apply": 0}
@@ -332,10 +332,9 @@ def test_doctor_command_reports_environment(monkeypatch, tmp_path: Path) -> None
     config_dir = tmp_path / "config"
     data_dir = tmp_path / "data"
     state_dir = tmp_path / "state"
-    legacy_dir = tmp_path / "legacy"
     settings_toml = config_dir / "settings.toml"
 
-    for directory in (config_dir, data_dir, state_dir, legacy_dir):
+    for directory in (config_dir, data_dir, state_dir):
         directory.mkdir()
     settings_toml.write_text("[provider]\nkind='anthropic'\n", encoding="utf-8")
 
@@ -344,7 +343,6 @@ def test_doctor_command_reports_environment(monkeypatch, tmp_path: Path) -> None
         data_dir=data_dir,
         state_dir=state_dir,
         global_config_toml=settings_toml,
-        legacy_dir=legacy_dir,
         skills_dir=data_dir / "skills",
     )
     fake_config = SimpleNamespace(
@@ -369,17 +367,17 @@ def test_doctor_command_reports_environment(monkeypatch, tmp_path: Path) -> None
         def healthcheck(self) -> dict[str, str]:
             return {"backend": "memory", "status": "ok"}
 
-    monkeypatch.setattr("tokoboros.cli.main.get_tokoboros_paths", lambda: fake_paths)
-    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: fake_config)
-    monkeypatch.setattr("tokoboros.cli.main.OnboardingService", FakeOnboardingService)
+    monkeypatch.setattr("hachi.cli.main.get_hachi_paths", lambda: fake_paths)
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: fake_config)
+    monkeypatch.setattr("hachi.cli.main.OnboardingService", FakeOnboardingService)
     monkeypatch.setattr(
-        "tokoboros.cli.main.create_default_secret_store",
+        "hachi.cli.main.create_default_secret_store",
         lambda paths=None: FakeSecretStore(),
     )
     # Exercise the safety/limits surfacing deterministically.
-    monkeypatch.setenv("TOKOBOROS_MAX_SESSION_COST_USD", "5.0")
-    monkeypatch.setenv("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", "true")
-    monkeypatch.delenv("TOKOBOROS_MAX_SESSION_TOKENS", raising=False)
+    monkeypatch.setenv("HACHI_MAX_SESSION_COST_USD", "5.0")
+    monkeypatch.setenv("HACHI_ALLOW_OUTBOUND_SECRETS", "true")
+    monkeypatch.delenv("HACHI_MAX_SESSION_TOKENS", raising=False)
 
     result = runner.invoke(app, ["doctor"])
 
@@ -413,7 +411,6 @@ def test_doctor_json_is_parseable(monkeypatch, tmp_path: Path) -> None:
         data_dir=data_dir,
         state_dir=tmp_path / "state",
         global_config_toml=settings_toml,
-        legacy_dir=tmp_path / "legacy",
         skills_dir=data_dir / "skills",
     )
     fake_config = SimpleNamespace(
@@ -438,11 +435,11 @@ def test_doctor_json_is_parseable(monkeypatch, tmp_path: Path) -> None:
         def healthcheck(self) -> dict[str, str]:
             return {"backend": "memory", "status": "ok"}
 
-    monkeypatch.setattr("tokoboros.cli.main.get_tokoboros_paths", lambda: fake_paths)
-    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: fake_config)
-    monkeypatch.setattr("tokoboros.cli.main.OnboardingService", FakeOnboardingService)
+    monkeypatch.setattr("hachi.cli.main.get_hachi_paths", lambda: fake_paths)
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: fake_config)
+    monkeypatch.setattr("hachi.cli.main.OnboardingService", FakeOnboardingService)
     monkeypatch.setattr(
-        "tokoboros.cli.main.create_default_secret_store", lambda paths=None: FakeSecretStore()
+        "hachi.cli.main.create_default_secret_store", lambda paths=None: FakeSecretStore()
     )
 
     # Narrow console: --json must emit via plain print() so the payload is NOT
@@ -472,13 +469,13 @@ def test_security_audit_json_reports_findings_and_exit_code(monkeypatch, tmp_pat
         def __init__(self, _permissions_file: Path) -> None:
             self._term = SimpleNamespace(allow_all=True)
 
-    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: fake_config)
-    monkeypatch.setattr("tokoboros.cli.main.get_permissions_file", lambda: permissions_file)
-    monkeypatch.setattr("tokoboros.cli.main.PermissionGate", FakePermissionGate)
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: fake_config)
+    monkeypatch.setattr("hachi.cli.main.get_permissions_file", lambda: permissions_file)
+    monkeypatch.setattr("hachi.cli.main.PermissionGate", FakePermissionGate)
     monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
     monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
-    monkeypatch.delenv("TOKOBOROS_REST_ALLOWLIST", raising=False)
-    monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "false")
+    monkeypatch.delenv("HACHI_REST_ALLOWLIST", raising=False)
+    monkeypatch.setenv("HACHI_REST_ALLOW_PRIVATE", "false")
 
     # Force a narrow console: --json must emit via plain print() so the payload
     # is NOT soft-wrapped to the terminal width (which would break json.loads).

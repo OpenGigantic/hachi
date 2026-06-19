@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tokoboros.tools.presentation_tools import (
+from hachi.tools.presentation_tools import (
     GENERATE_PRESENTATION_SCHEMA,
     _safe_filename,
     make_generate_presentation,

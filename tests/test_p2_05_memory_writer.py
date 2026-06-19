@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tokoboros.core.memory_writer import (
+from hachi.core.memory_writer import (
     MemoryNode,
     MemoryWriter,
     _read_node_ids,
@@ -209,7 +209,7 @@ def test_slugify_empty_returns_node() -> None:
 
 
 def test_memory_manager_set_memory_writer(tmp_path: Path) -> None:
-    from tokoboros.core.memory import MemoryManager
+    from hachi.core.memory import MemoryManager
 
     mm = MemoryManager()
     w = _writer(tmp_path)
@@ -218,7 +218,7 @@ def test_memory_manager_set_memory_writer(tmp_path: Path) -> None:
 
 
 def test_memory_manager_write_episode(tmp_path: Path) -> None:
-    from tokoboros.core.memory import MemoryManager
+    from hachi.core.memory import MemoryManager
 
     mm = MemoryManager()
     w = _writer(tmp_path)
@@ -228,7 +228,7 @@ def test_memory_manager_write_episode(tmp_path: Path) -> None:
 
 
 def test_memory_manager_write_episode_noop_without_writer() -> None:
-    from tokoboros.core.memory import MemoryManager
+    from hachi.core.memory import MemoryManager
 
     mm = MemoryManager()
     mm.write_episode("sess-999", "No writer attached.")  # must not raise

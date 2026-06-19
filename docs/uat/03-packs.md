@@ -1,5 +1,10 @@
 # UAT Report — Skill Packs, Tarball Security & Skill Authoring
 
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 > **Agent:** UAT Verification · **Commit:** `036dfd9` · **Date:** 2026-06-14
 > **Assigned scenarios:** ADV-010, ADV-011, UC-SKILL-001, UC-SKILL-002, UC-SKILL-003
 > **Related meta-risk:** MR-4
@@ -24,7 +29,7 @@
 
 **Evidence — Source files and line numbers:**
 
-*Site 1: `src/tokoboros/core/og_pack.py:402-403`*
+*Site 1: `src/hachi/core/og_pack.py:402-403`*
 ```python
 with tarfile.open(archive_path, "r:*") as tf:
     tf.extractall(tmp_path)  # noqa: S202
@@ -32,13 +37,13 @@ with tarfile.open(archive_path, "r:*") as tf:
 No `filter=` argument. On Python 3.11/3.12: `fully_trusted` default — `../../` members escape.
 On Python 3.14 (dev machine): `data_filter` default — raises `OutsideDestinationError` — BUT this is accidental safety specific to the dev Python version.
 
-*Site 2: `src/tokoboros/cli/commands/pack.py:57-58` and `183-184`* (same pattern, two locations)
+*Site 2: `src/hachi/cli/commands/pack.py:57-58` and `183-184`* (same pattern, two locations)
 ```python
 with tarfile.open(source_path, "r:*") as tf:
     tf.extractall(tmp_path)  # noqa: S202
 ```
 
-*Site 3: `src/tokoboros/core/community_packs.py:171-199` (`_extract_tar`)*
+*Site 3: `src/hachi/core/community_packs.py:171-199` (`_extract_tar`)*
 After stripping the top-level prefix (e.g. `repo-main/`), the relative path is written directly:
 ```python
 target = dest / rel   # rel can be "../../evil.og"
@@ -135,7 +140,7 @@ The collision is handled (old node is preserved until the next load_file overwri
 
 ### UC-SKILL-002 — PARTIAL (High)
 
-**Claim:** Community pack install via `tokoboros pack install user/repo` validates SSRF, shows consent sheet, and has no signature verification (Stage-2 publish gates not built).
+**Claim:** Community pack install via `hachi pack install user/repo` validates SSRF, shows consent sheet, and has no signature verification (Stage-2 publish gates not built).
 
 **Evidence:**
 
@@ -146,12 +151,12 @@ The collision is handled (old node is preserved until the next load_file overwri
 ```python
 with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
 ```
-No SSRF guard on the index fetch. A user-supplied `--index-url` to `tokoboros pack index refresh` could point to an internal metadata service. `urllib` follows redirects by default.
+No SSRF guard on the index fetch. A user-supplied `--index-url` to `hachi pack index refresh` could point to an internal metadata service. `urllib` follows redirects by default.
 
 **Consent sheet:**
 - CLI `ogpack_install` (via `og_pack.render_consent_sheet`) shows scope consent for `.ogpack` archives — CONFIRMED.
 - `community_packs.install_pack` (the GitHub-shorthand / URL path) has **NO consent sheet, NO scope display**. Files are installed after only SSRF validation.
-- The `community_packs` code path is not wired to the main CLI (`tokoboros pack install`) — `ogpack_install` handles CLI; `community_packs.install_pack` is available as a library but not CLI-exposed. If any internal code path calls it, no consent is shown.
+- The `community_packs` code path is not wired to the main CLI (`hachi pack install`) — `ogpack_install` handles CLI; `community_packs.install_pack` is available as a library but not CLI-exposed. If any internal code path calls it, no consent is shown.
 
 **Signature / integrity verification:**
 - `og_pack.verify_pack_checksums` is called in `install_ogpack_from_dir` but only if `manifest.sha256s` is populated. A manifest with `sha256s = {}` passes with zero failures — trivially bypassable.
@@ -176,13 +181,13 @@ except Exception as e:
 
 **Two distinct failure modes:**
 
-1. **File causes a Python exception during `parse_og_file`** (e.g. non-UTF-8 binary, IOError) → goes into `_skipped_files` → `tokoboros doctor` exposes it under `skills_parse_failures` and `skills_health` includes "N unparseable".
+1. **File causes a Python exception during `parse_og_file`** (e.g. non-UTF-8 binary, IOError) → goes into `_skipped_files` → `hachi doctor` exposes it under `skills_parse_failures` and `skills_health` includes "N unparseable".
 
 2. **File is valid UTF-8 but syntactically wrong .og** (e.g. missing bracket in `::node[`, wrong section name, truncated file) → `parse_og_file` returns `OGFile` with `nodes=[]` (no exception) → `_skipped_files` is NOT populated → skill **silently disappears**.
 
 Tested with: `::node[my_skill  <- typo: no closing bracket` → zero nodes, zero skipped. The `test_malformed_file_does_not_crash` test in `tests/test_og_parser.py` confirms "no crash" but does NOT assert that the failure is surfaced to the user.
 
-**`tokoboros doctor` visibility:** Only exception-raising failures appear in `skills_parse_failures`. Syntax typos that yield zero nodes are invisible even to `doctor`. There is no zero-node warning in `load_file`.
+**`hachi doctor` visibility:** Only exception-raising failures appear in `skills_parse_failures`. Syntax typos that yield zero nodes are invisible even to `doctor`. There is no zero-node warning in `load_file`.
 
 **Claim status: PARTIAL** — binary/IOError failures ARE surfaced (LOW-14 is partially addressed); but the more common author-error case (syntax typos yielding empty parse) is SILENTLY DROPPED.
 
@@ -207,12 +212,12 @@ Tested with: `::node[my_skill  <- typo: no closing bracket` → zero nodes, zero
 
 | File | Relevant lines |
 |---|---|
-| `src/tokoboros/core/og_pack.py` | 386-415 (archive extract, `extractall` no filter) |
-| `src/tokoboros/core/community_packs.py` | 167-200 (`_extract_tar`, traversal via `dest / rel`) |
-| `src/tokoboros/cli/commands/pack.py` | 55-63, 180-189 (two more `extractall` sites) |
-| `src/tokoboros/core/pack_index.py` | 151-158 (`urlopen` without SSRF guard) |
-| `src/tokoboros/core/assertion_eval.py` | entire file (safe bounded evaluator, no eval/exec) |
-| `src/tokoboros/core/memory_guard.py` | 102-135 (`scan()` — NOT called on skill load) |
-| `src/tokoboros/og_engine/engine.py` | 413-502 (load_file, exception handling), 935-1095 (upsert_skill) |
+| `src/hachi/core/og_pack.py` | 386-415 (archive extract, `extractall` no filter) |
+| `src/hachi/core/community_packs.py` | 167-200 (`_extract_tar`, traversal via `dest / rel`) |
+| `src/hachi/cli/commands/pack.py` | 55-63, 180-189 (two more `extractall` sites) |
+| `src/hachi/core/pack_index.py` | 151-158 (`urlopen` without SSRF guard) |
+| `src/hachi/core/assertion_eval.py` | entire file (safe bounded evaluator, no eval/exec) |
+| `src/hachi/core/memory_guard.py` | 102-135 (`scan()` — NOT called on skill load) |
+| `src/hachi/og_engine/engine.py` | 413-502 (load_file, exception handling), 935-1095 (upsert_skill) |
 | `tests/test_skill_packs.py` | all (no traversal coverage) |
 | `tests/test_og_skill_authoring.py` | 115-125 (slug escape only, not tarball member escape) |

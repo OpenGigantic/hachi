@@ -10,24 +10,23 @@ from pathlib import Path
 
 import pytest
 
-from tokoboros.core.config_loader import load_effective_config
-from tokoboros.core.onboarding import (
+from hachi.core.config_loader import load_effective_config
+from hachi.core.onboarding import (
     OnboardingService,
     default_api_key_env_for,
     default_model_for,
 )
-from tokoboros.core.paths import TokoborosPaths
+from hachi.core.paths import HachiPaths
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _paths(tmp_path: Path) -> TokoborosPaths:
-    return TokoborosPaths(
+def _paths(tmp_path: Path) -> HachiPaths:
+    return HachiPaths(
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
         cache_dir=tmp_path / "cache",
         state_dir=tmp_path / "state",
-        legacy_dir=tmp_path / "legacy",
     )
 
 
@@ -58,7 +57,7 @@ def test_openrouter_provider_supported(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_create_llm_client_routes_openrouter() -> None:
-    from tokoboros.core.llm import OpenAICompatibleClient, create_llm_client
+    from hachi.core.llm import OpenAICompatibleClient, create_llm_client
 
     client = create_llm_client({"kind": "openrouter", "model": "openai/gpt-4o-mini"})
     try:
@@ -84,7 +83,7 @@ def test_validate_provider_anthropic_missing_key(tmp_path: Path, monkeypatch) ->
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "tokoboros.core.secret_store.create_default_secret_store",
+        "hachi.core.secret_store.create_default_secret_store",
         lambda *_a, **_kw: SimpleNamespace(get=lambda _n: None),
     )
     ok, msg = _service(tmp_path).validate_provider(kind="anthropic")

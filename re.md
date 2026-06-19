@@ -1,11 +1,16 @@
-Design a terminal-first product experience for Tokoboros, an operator console for an autonomous AI agent runtime.
+> **Historical document.** Written before the rename to Hachi. References to
+> the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
+Design a terminal-first product experience for Hachi, an operator console for an autonomous AI agent runtime.
 
 Do not create wireframes.
 Do not prescribe exact visual styling, colors, spacing, or fixed layouts.
 Focus on capabilities, information architecture, and interaction behavior.
 
 Product context:
-- Tokoboros is a session-based agent runtime with tool-calling, skill retrieval, sub-agent delegation, long-term memory, and safety gating.
+- Hachi is a session-based agent runtime with tool-calling, skill retrieval, sub-agent delegation, long-term memory, and safety gating.
 - It runs locally or through a gateway API.
 - Primary users are developers, operators, and solution engineers who need execution visibility, safe intervention, and troubleshooting controls.
 

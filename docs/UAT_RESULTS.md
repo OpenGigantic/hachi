@@ -1,4 +1,9 @@
-# Tokoboros — UAT Verification Results (reconciliation pass)
+# Hachi — UAT Verification Results (reconciliation pass)
+
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
 
 > **Method:** Code-grounded verification of every scenario in `docs/UAT_BETA_TEST_PLAN.md` against the live working tree.
 > **Build:** `036dfd9` · **Date:** 2026-06-14 · **Coverage:** 110/110 scenarios (84 `UC-*` + 26 `ADV-*`)
@@ -61,7 +66,7 @@ These map almost 1:1 to the meta-risks and **must** be fixed (or get a written, 
 
 1. **Gmail nested-`<script>` regex leak** — `_html_to_text` matches only to the first `</script>`, so nested script tags leak the outer script body into "clean" text. (`gmail.py`, UC-MAIL-006)
 2. **`reply_thread` sends to an empty `To:`** silently when the original `From:` header is absent. (`gmail.py:214`, UC-MAIL-002)
-3. **Slack remediation message is a dead-end** — the bot-token guard tells users to `tokoboros secrets --set slack_user_token`, but `SlackService.__init__` only ever reads `slack_bot_token`; there is no code path that uses a `xoxp-` token. (UC-INT-001)
+3. **Slack remediation message is a dead-end** — the bot-token guard tells users to `hachi secrets --set slack_user_token`, but `SlackService.__init__` only ever reads `slack_bot_token`; there is no code path that uses a `xoxp-` token. (UC-INT-001)
 4. **`"404" in str(e)` false-trigger** in the Gmail thread-read fallback — fires the message-level fallback for any error whose text contains the digits "404" (e.g. a thread-id starting with 404), masking the real error. (UC-MAIL-005)
 5. **Config-ignored singleton returns the wrong backend** — `ProcessSharedServices.get_or_create` fast-paths on `_INSTANCE is not None` with no config/brain-dir equality check; a session requesting a non-default `memory.backend` silently gets the first session's Chroma/FTS5 client, no warning. (`shared_services.py:80`, ADV-024)
 6. **FTS5 refresh TOCTOU** — `refresh()` does `DELETE`+bulk-`INSERT` on one connection while `search()` uses another → a window of empty results (not corruption) during refresh. (UC-PERF-002)
@@ -95,7 +100,7 @@ These map almost 1:1 to the meta-risks and **must** be fixed (or get a written, 
 ### Core, conversation, memory — [01](uat/01-auth.md) [07](uat/07-memory.md) [14](uat/14-core.md)
 | ID | Status | Sev | Note |
 |---|---|---|---|
-| UC-CORE-001 | ⚠️ | Med | Non-TTY exits cleanly; guidance is Unix-only `export`, no `tokoboros secrets`; REPL-fallback may leak a booted session |
+| UC-CORE-001 | ⚠️ | Med | Non-TTY exits cleanly; guidance is Unix-only `export`, no `hachi secrets`; REPL-fallback may leak a booted session |
 | UC-CORE-002 | 🚫 | Med | No hardcoded encryption claim in source; live hallucination check needs LLM |
 | UC-CORE-003 | ✅ | — | Safe-boundary + repair correct; 169 tests pass |
 | UC-CORE-004 | ⚠️ | Low | Skill-switch compaction safe; minor summary pollution |

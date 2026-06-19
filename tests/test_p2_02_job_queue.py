@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 
-from tokoboros.jobs.queue import (
+from hachi.jobs.queue import (
     Job,
     JobRegistry,
     JobResult,

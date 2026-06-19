@@ -1,4 +1,4 @@
-"""Tests for the `tokoboros models` CLI command — lists provider-exposed models
+"""Tests for the `hachi models` CLI command — lists provider-exposed models
 (live), narrowed by the allowed_models guardrail, marking the active model."""
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -41,10 +41,10 @@ def _cfg(*, model: str = "claude-haiku-4-5", allowed: list[str] | None = None) -
 
 def _patch(monkeypatch, cfg: SimpleNamespace, discovered: list[str]) -> _FakeClient:
     client = _FakeClient(discovered)
-    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("tokoboros.cli.main.create_default_secret_store", lambda: object())
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: object())
     # create_llm_client is imported inside the command → patch it at its source.
-    monkeypatch.setattr("tokoboros.core.llm.create_llm_client", lambda *a, **k: client)
+    monkeypatch.setattr("hachi.core.llm.create_llm_client", lambda *a, **k: client)
     return client
 
 

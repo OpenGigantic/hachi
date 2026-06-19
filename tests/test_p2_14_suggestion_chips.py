@@ -13,7 +13,7 @@ from __future__ import annotations
 
 
 def test_suggestion_chip_fields():
-    from tokoboros.core.suggestion_chips import SuggestionChip
+    from hachi.core.suggestion_chips import SuggestionChip
 
     chip = SuggestionChip(
         text="What's the weather?",
@@ -28,7 +28,7 @@ def test_suggestion_chip_fields():
 
 
 def test_suggestion_chip_defaults():
-    from tokoboros.core.suggestion_chips import SuggestionChip
+    from hachi.core.suggestion_chips import SuggestionChip
 
     chip = SuggestionChip(text="Hello")
     assert chip.category == "utility"
@@ -38,38 +38,38 @@ def test_suggestion_chip_defaults():
 
 
 def test_default_chips_non_empty():
-    from tokoboros.core.suggestion_chips import DEFAULT_CHIPS
+    from hachi.core.suggestion_chips import DEFAULT_CHIPS
 
     assert len(DEFAULT_CHIPS) > 0
 
 
 def test_default_chips_has_composer_chips():
-    from tokoboros.core.suggestion_chips import DEFAULT_CHIPS
+    from hachi.core.suggestion_chips import DEFAULT_CHIPS
 
     assert any(c.composer for c in DEFAULT_CHIPS)
 
 
 def test_default_chips_has_utility_chips():
-    from tokoboros.core.suggestion_chips import DEFAULT_CHIPS
+    from hachi.core.suggestion_chips import DEFAULT_CHIPS
 
     assert any(c.category == "utility" for c in DEFAULT_CHIPS)
 
 
 def test_default_chips_has_workflow_chips():
-    from tokoboros.core.suggestion_chips import DEFAULT_CHIPS
+    from hachi.core.suggestion_chips import DEFAULT_CHIPS
 
     assert any(c.category == "workflow" for c in DEFAULT_CHIPS)
 
 
 def test_chips_for_context_max_chips():
-    from tokoboros.core.suggestion_chips import chips_for_context
+    from hachi.core.suggestion_chips import chips_for_context
 
     chips = chips_for_context(max_chips=3)
     assert len(chips) <= 3
 
 
 def test_chips_for_context_composer_first():
-    from tokoboros.core.suggestion_chips import chips_for_context
+    from hachi.core.suggestion_chips import chips_for_context
 
     chips = chips_for_context(prioritise_composer=True, max_chips=10)
     composer_chips = [c for c in chips if c.composer]
@@ -82,7 +82,7 @@ def test_chips_for_context_composer_first():
 
 
 def test_chips_for_context_filters_by_integration():
-    from tokoboros.core.suggestion_chips import chips_for_context
+    from hachi.core.suggestion_chips import chips_for_context
 
     # With only gmail integration, slack/notion/calendar chips should be excluded.
     chips = chips_for_context(available_integrations={"gmail"}, max_chips=20)
@@ -93,7 +93,7 @@ def test_chips_for_context_filters_by_integration():
 
 
 def test_chips_for_context_no_filter_returns_all_categories():
-    from tokoboros.core.suggestion_chips import DEFAULT_CHIPS, chips_for_context
+    from hachi.core.suggestion_chips import DEFAULT_CHIPS, chips_for_context
 
     chips = chips_for_context(available_integrations=None, max_chips=len(DEFAULT_CHIPS))
     categories = {c.category for c in chips}
@@ -102,7 +102,7 @@ def test_chips_for_context_no_filter_returns_all_categories():
 
 
 def test_chips_for_context_empty_integration_set_returns_only_no_integration():
-    from tokoboros.core.suggestion_chips import chips_for_context
+    from hachi.core.suggestion_chips import chips_for_context
 
     chips = chips_for_context(available_integrations=set(), max_chips=20)
     for chip in chips:
@@ -110,7 +110,7 @@ def test_chips_for_context_empty_integration_set_returns_only_no_integration():
 
 
 def test_render_chips_text_contains_chip_text():
-    from tokoboros.core.suggestion_chips import SuggestionChip, render_chips_text
+    from hachi.core.suggestion_chips import SuggestionChip, render_chips_text
 
     chips = [SuggestionChip(text="Do something useful")]
     output = render_chips_text(chips)
@@ -118,7 +118,7 @@ def test_render_chips_text_contains_chip_text():
 
 
 def test_render_chips_text_is_numbered():
-    from tokoboros.core.suggestion_chips import SuggestionChip, render_chips_text
+    from hachi.core.suggestion_chips import SuggestionChip, render_chips_text
 
     chips = [SuggestionChip(text="First chip"), SuggestionChip(text="Second chip")]
     output = render_chips_text(chips)
@@ -127,7 +127,7 @@ def test_render_chips_text_is_numbered():
 
 
 def test_render_chips_text_has_header():
-    from tokoboros.core.suggestion_chips import SuggestionChip, render_chips_text
+    from hachi.core.suggestion_chips import SuggestionChip, render_chips_text
 
     chips = [SuggestionChip(text="x")]
     output = render_chips_text(chips, header="Custom header:")
@@ -135,13 +135,13 @@ def test_render_chips_text_has_header():
 
 
 def test_render_chips_text_empty_returns_empty():
-    from tokoboros.core.suggestion_chips import render_chips_text
+    from hachi.core.suggestion_chips import render_chips_text
 
     assert render_chips_text([]) == ""
 
 
 def test_chips_for_context_returns_list():
-    from tokoboros.core.suggestion_chips import chips_for_context
+    from hachi.core.suggestion_chips import chips_for_context
 
     result = chips_for_context()
     assert isinstance(result, list)

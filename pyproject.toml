@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 
 [project]
-name = "tokoboros"
+name = "hachi-og"
 version = "0.1.0"
-description = "Tokoboros - The Autonomous Agent Engine powered by ObjectGraph (.og)"
+description = "Hachi - The Autonomous Agent Engine powered by ObjectGraph (.og)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
-    { name = "Tokoboros Project" }
+    { name = "Open Gigantic" }
 ]
 keywords = [
     "ai",
@@ -82,17 +82,17 @@ presentations = [
     "python-pptx>=1.0.0",
 ]
 # Opt-in for providers that use reverse-engineered web APIs (potential ToS risk).
-# Install with: pip install tokoboros[unofficial]
-# Then set TOKOBOROS_UNOFFICIAL=1 to actually enable the provider.
+# Install with: pip install hachi-og[unofficial]
+# Then set HACHI_UNOFFICIAL=1 to actually enable the provider.
 unofficial = []
 
 [project.urls]
-Homepage = "https://github.com/OpenGigantic/tokoboros"
-Repository = "https://github.com/OpenGigantic/tokoboros"
-Issues = "https://github.com/OpenGigantic/tokoboros/issues"
+Homepage = "https://github.com/OpenGigantic/hachi"
+Repository = "https://github.com/OpenGigantic/hachi"
+Issues = "https://github.com/OpenGigantic/hachi/issues"
 
 [project.scripts]
-tokoboros = "tokoboros.cli.main:app"
+hachi = "hachi.cli.main:app"
 
 [tool.uv]
 package = true
@@ -112,7 +112,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = ["src", "."]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/tokoboros"]
+packages = ["src/hachi"]

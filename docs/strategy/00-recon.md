@@ -1,6 +1,11 @@
 # Phase 0 — Repository Reconnaissance
 
-**Engagement:** Tokoboros Principal Engineering & Product Strategy
+> **Historical document.** Written before the Hachi rename. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
+**Engagement:** Hachi Principal Engineering & Product Strategy
 **Date:** 2026-06-12 · **Branch:** `feat/telegram-setup-and-pypi-release` (clean) · **HEAD:** `cd77a4d`
 **Voice:** This document is *observation only*. No recommendations appear here (those start in Phase 1).
 
@@ -15,7 +20,7 @@
 
 Where a subagent's claim contradicted a direct read, the direct read wins. (Concretely: one subagent
 misreported the tool names in `tools/og_tools.py` and `tools/os_tools.py`; the tool inventory below was
-re-derived by grepping every `"name":` schema field in `src/tokoboros/tools/` ▶.)
+re-derived by grepping every `"name":` schema field in `src/hachi/tools/` ▶.)
 
 ---
 
@@ -42,27 +47,27 @@ fronted by a Textual TUI (primary), a FastAPI gateway + React web app (secondary
 ## 2. Repository layout (annotated, real paths)
 
 ```
-tokoboros/
+hachi/
 ├── pyproject.toml              # hatchling; deps: anthropic, chromadb, fastapi, textual, typer… ✅
 ├── uv.lock                     # 3,779 lines Ⓐ
-├── Dockerfile                  # python:3.12-slim → `tokoboros gateway` on :8787 Ⓐ
+├── Dockerfile                  # python:3.12-slim → `hachi gateway` on :8787 Ⓐ
 ├── docker-compose.yml          # gateway + frontend services, secret-mounted API token Ⓐ
-├── install.sh / install.ps1    # clone-to-~/.tokoboros-src + uv bootstrap installers Ⓐ
+├── install.sh / install.ps1    # clone-to-~/.hachi-src + uv bootstrap installers Ⓐ
 ├── README.md                   # public claims: 97.2% token savings, 40+ features Ⓐ
 ├── ObjectGraph_Complete_Specification.md   # 76 KB .og whitepaper (12 sections) ✅(headers)
 ├── KNOWLEDGE_TRANSFER.md       # 105 KB internal narrative Ⓐ
 ├── QA_TESTING_PLAN.md          # 47 KB, 8 QA phases marked complete Ⓐ
 ├── plan.md / re.md             # roadmap + TUI design brief (intentional docs) Ⓐ
 ├── abvc/ (.gitkeep only), image.png (59 KB, unreferenced)   # stray Ⓐ
-├── openapi/tokoboros-openapi.json           # generated gateway contract (38.5 KB) Ⓐ
+├── openapi/hachi-openapi.json           # generated gateway contract (38.5 KB) Ⓐ
 ├── docs/
 │   ├── BENCHMARK.md            # the 97.2% methodology Ⓐ (cross-checked vs test ✅)
 │   ├── CONFIGURATION.md, COOKBOOK.md, QA_BUG_REPORT.md
 │   └── qa/                     # 11 manual QA reports (core-engine, telegram, google, …)
 ├── frontend/                   # TanStack Start + React 19 + Vite (NOT SvelteKit) Ⓐ
-│   └── src/generated/tokoboros-api.ts       # openapi-typescript output (1,394 lines) Ⓐ
+│   └── src/generated/hachi-api.ts       # openapi-typescript output (1,394 lines) Ⓐ
 ├── qa/fixtures/                # isolated-runtime setup script + .env.sample
-├── src/tokoboros/
+├── src/hachi/
 │   ├── cli/main.py             # Typer CLI, 4,594 LOC, ~19 commands + 5 sub-apps Ⓐ
 │   ├── core/                   # 47 modules: loop, memory, llm, permissions, vault, …
 │   ├── og_engine/              # parser, engine, serializer, skill_md, graph_viz ✅
@@ -81,7 +86,7 @@ tokoboros/
 
 ## 3. Entry points & runtime surfaces
 
-### 3.1 CLI (`src/tokoboros/cli/main.py`, 4,594 LOC) Ⓐ
+### 3.1 CLI (`src/hachi/cli/main.py`, 4,594 LOC) Ⓐ
 
 Top-level commands (line numbers per subagent audit): `onboard` (902), `quickstart` (922),
 `permissions` (1012), `reauth` (1137), `run` (1296, TUI default / `--repl` fallback / `--resume`),
@@ -91,22 +96,22 @@ lightning/recommended/enhanced/power), `config*` (1478–1605), `google-auth` (1
 Sub-apps: `schedule` (2142), `skill` (2574 — import/list/show/search/deps/graph/viz/lint/**benchmark**/pack…),
 `mcp` (3405), `memory` (3575), `session` (3863).
 
-### 3.2 TUI (`src/tokoboros/tui/`, 4,349 LOC) Ⓐ
+### 3.2 TUI (`src/hachi/tui/`, 4,349 LOC) Ⓐ
 
 `app.py` (3,063 LOC) runs the agent **in-process** via `boot_agent()` — not through the gateway.
 Multi-pane Textual layout (transcript, collapsible sidebar, slash-command palette), reading state from
 `AgentSession.snapshot_*` read-models; permission approvals via modal screens.
 
-### 3.3 Gateway (`src/tokoboros/gateway/fastapi_app.py`, 540 LOC) Ⓐ
+### 3.3 Gateway (`src/hachi/gateway/fastapi_app.py`, 540 LOC) Ⓐ
 
 ~28 typed REST routes + SSE: session CRUD (`/sessions*`), event polling + `/sessions/{id}/stream` (SSE, line 315),
 runtime introspection (`/runtime/events`, `/runtime/mcp/inventory`, `/jobs/*`, `/permissions/audit`),
 config mutation (`PUT /config/provider|permissions|memory`), onboarding (`/setup*`),
 **OpenAI-compatible** `/v1/chat/completions` + `/v1/models` (435, 459), and channel webhook
-`POST /channels/{channel}/inbound` (482). Auth: bearer token (`TOKOBOROS_GATEWAY_API_TOKEN`), optional on loopback.
+`POST /channels/{channel}/inbound` (482). Auth: bearer token (`HACHI_GATEWAY_API_TOKEN`), optional on loopback.
 `control_plane.py` is a typed facade enforcing max 100 sessions / 100k-char prompts Ⓐ.
 
-### 3.4 Channels (`src/tokoboros/channels/`) Ⓐ
+### 3.4 Channels (`src/hachi/channels/`) Ⓐ
 
 `base.py` defines `InboundMessage`/`OutboundMessage`/`ChannelAdapter` + `SessionRunner` callable;
 `router.py`/`runner.py` route channel messages into `session.chat()`. Telegram is the mature path
@@ -117,9 +122,9 @@ Discord/Slack/WhatsApp Ⓐ.
 
 ### 3.5 Other entries
 
-- `daemon.py` — background daemon mode (CLI `tokoboros daemon`, tests `test_cli_daemon.py`, `test_daemon.py`).
+- `daemon.py` — background daemon mode (CLI `hachi daemon`, tests `test_cli_daemon.py`, `test_daemon.py`).
 - Scheduler fires stored schedules straight into `session.chat()` ✅ orchestrator.py:1568–1578.
-- OpenAI-compatible endpoint makes Tokoboros usable as a backend for third-party clients Ⓐ.
+- OpenAI-compatible endpoint makes Hachi usable as a backend for third-party clients Ⓐ.
 
 ---
 
@@ -133,16 +138,16 @@ Discord/Slack/WhatsApp Ⓐ.
   ✅ orchestrator.py:1112–1113).
 - **CI** Ⓐ `.github/workflows/ci.yml`: 5 jobs — `test`, `security` (`security-audit --fail-on-high`;
   `continue-on-error: true` on main at line 49, strict `--fail-on-medium` on PRs at 52–53), `lint`
-  (ruff+mypy both `continue-on-error`), **`benchmark`** (`tokoboros skill benchmark --json --threshold 0.80`,
+  (ruff+mypy both `continue-on-error`), **`benchmark`** (`hachi skill benchmark --json --threshold 0.80`,
   lines 80–98 — the token-savings claim is a hard CI gate), and `frontend-contract` — **commented out**
   (lines 100–143).
 - **Release** Ⓐ `.github/workflows/release.yml`: tag-push → version-vs-tag verification → `uv build` →
   PyPI publish via OIDC trusted publishing (no token). Documented in RELEASING.md.
-- **Install story** Ⓐ: curl|bash / irm|iex installers (clone to `~/.tokoboros-src`, uv-run launcher),
-  `pipx install tokoboros`, source+uv, or docker-compose (gateway :8787 + frontend :5173).
+- **Install story** Ⓐ: curl|bash / irm|iex installers (clone to `~/.hachi-src`, uv-run launcher),
+  `pipx install hachi-og`, source+uv, or docker-compose (gateway :8787 + frontend :5173).
 - **User-side state** ✅ core/paths.py:73–81: platformdirs-native dirs (config/data/state/cache) with
-  one-time import from legacy `~/.tokoboros` (paths.py:95–120). N.B. several docstrings still say
-  `~/.tokoboros/skills/` (e.g. engine.py:4) while the real default is the platformdirs data dir.
+  one-time import from legacy `~/.hachi` (paths.py:95–120). N.B. several docstrings still say
+  `~/.hachi/skills/` (e.g. engine.py:4) while the real default is the platformdirs data dir.
 
 ---
 
@@ -188,7 +193,7 @@ This is the claimed differentiator, so it gets the deepest treatment. All ✅ un
 
 ### 6.2 Production of `.og` files (4 paths)
 
-1. **Shipped**: 29 files copied from `src/tokoboros/default_skills/` per `manifest.json` core/optional
+1. **Shipped**: 29 files copied from `src/hachi/default_skills/` per `manifest.json` core/optional
    packs at first boot — skill_packs.py:90–109, workspace.py:54–61.
 2. **Wizard-generated**: `device-permissions.og` via `generate_permissions_og(tier, paths)` — workspace.py:296–301.
 3. **Agent-authored**: `save_skill` tool → `SkillEngine.upsert_skill` writes `<skills>/learned/<slug>.og`,
@@ -224,8 +229,8 @@ field per entry, 71–74), `OGChangelogEntry`. `::api` blocks get strict JSON va
   `list_skills`, and `use_tools` (lazy tool-group unlock).
 - `resolve_node` deliberately does **not** auto-expand `requires` edges; dependencies are listed by name
   in a footer for on-demand loading — engine.py:505–509, 567–579.
-- Usage tracking: every `load_skill` writes `~/.tokoboros/brain/skill_usage.json` (note: hardcoded
-  `Path.home()/".tokoboros"`, bypassing platformdirs — engine.py:255); stale-skill + analytics reports —
+- Usage tracking: every `load_skill` writes `~/.hachi/brain/skill_usage.json` (note: hardcoded
+  `Path.home()/".hachi"`, bypassing platformdirs — engine.py:255); stale-skill + analytics reports —
   engine.py:1106–1234.
 - Lint: dense-token budget (30 tok est.), dangling index, missing keywords/dense/content — engine.py:104–208.
 - RBAC: node `scope` filtered at query time by engine role; `with_role()` makes shared read-only views for
@@ -298,7 +303,7 @@ core/sub_agent.py), role-scoped `SkillEngine` view, reports persisted to `delega
 
 ## 8. The benchmark behind the headline number ✅▶
 
-`tests/test_og_benchmark.py` (the same engine code drives `tokoboros skill benchmark`, CI-gated ≥0.80):
+`tests/test_og_benchmark.py` (the same engine code drives `hachi skill benchmark`, CI-gated ≥0.80):
 
 - **Observed this session** ▶: `nodes=42 | baseline=8991 tok | 3-pass=253 tok (p1=39, p2=86, p3=128) | savings=97.2%`.
 - **What it measures**: baseline = `resolve_node(blocks=["all"])` of *all 42 shipped nodes* concatenated;
@@ -324,7 +329,7 @@ core/sub_agent.py), role-scoped `SkillEngine` view, reports persisted to `delega
 | D3 | CLAUDE.md: "CI enforces frontend-contract job" | Job commented out in ci.yml:100–143 | Ⓐ |
 | D4 | "O(1) retrieval" (engine.py:17, spec) | Linear fuzzy substring scan in same function | ✅ engine.py:369–372 |
 | D5 | Spec §5.1/5.3/5.4 features (auto-traversal, confidence filtering, visited-skip) | Not implemented | ✅ §6.7 above |
-| D6 | Docstrings: skills at `~/.tokoboros/skills/` | platformdirs data dir (legacy import shim) | ✅ paths.py:73–81 |
+| D6 | Docstrings: skills at `~/.hachi/skills/` | platformdirs data dir (legacy import shim) | ✅ paths.py:73–81 |
 | D7 | engine.py:14–17 markets vs "OpenClaw" inside source docstring | Competitive claim embedded in code, unbenchmarked vs. that product | ✅ |
 | D8 | CLAUDE.md memory description ("compacted per turn") | Compaction is *deferred/conditional*, plus inline-drained queue | ✅ §7 |
 

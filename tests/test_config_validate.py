@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
-from tokoboros.core.config_validate import validate_config
+from hachi.cli.main import app
+from hachi.core.config_validate import validate_config
 
 runner = CliRunner()
 
@@ -80,9 +80,9 @@ def test_validate_config_key_failure_marks_overall_bad() -> None:
 
 # --- CLI command ---------------------------------------------------------
 def test_cli_config_validate_ok(monkeypatch) -> None:
-    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: _cfg())
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: _cfg())
     monkeypatch.setattr(
-        "tokoboros.core.onboarding.OnboardingService.validate_provider",
+        "hachi.core.onboarding.OnboardingService.validate_provider",
         lambda self, **kw: (True, "key resolved"),
     )
     result = runner.invoke(app, ["config-validate", "--json"])
@@ -93,11 +93,11 @@ def test_cli_config_validate_ok(monkeypatch) -> None:
 
 def test_cli_config_validate_nonzero_on_problem(monkeypatch) -> None:
     monkeypatch.setattr(
-        "tokoboros.cli.main.load_effective_config",
+        "hachi.cli.main.load_effective_config",
         lambda: _cfg(model="gpt-4.1", allowed=["claude-haiku-4-5"]),
     )
     monkeypatch.setattr(
-        "tokoboros.core.onboarding.OnboardingService.validate_provider",
+        "hachi.core.onboarding.OnboardingService.validate_provider",
         lambda self, **kw: (True, "key resolved"),
     )
     result = runner.invoke(app, ["config-validate", "--json"])
@@ -107,9 +107,9 @@ def test_cli_config_validate_nonzero_on_problem(monkeypatch) -> None:
 
 
 def test_cli_config_validate_human_readable(monkeypatch) -> None:
-    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: _cfg())
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: _cfg())
     monkeypatch.setattr(
-        "tokoboros.core.onboarding.OnboardingService.validate_provider",
+        "hachi.core.onboarding.OnboardingService.validate_provider",
         lambda self, **kw: (True, "key resolved"),
     )
     result = runner.invoke(app, ["config-validate"])

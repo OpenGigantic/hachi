@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tokoboros.core.rate_limit import RateLimiter
+from hachi.core.rate_limit import RateLimiter
 
 
 def test_allows_up_to_max_then_blocks() -> None:

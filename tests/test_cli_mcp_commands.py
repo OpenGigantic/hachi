@@ -1,4 +1,4 @@
-"""Tests for `tokoboros mcp` CLI sub-commands.
+"""Tests for `hachi mcp` CLI sub-commands.
 
 Covers:
 1. mcp list — no servers → informational message; JSON with empty list
@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -41,7 +41,7 @@ def _setup_skills_dir(tmp_path: Path) -> Path:
 
 def test_mcp_list_no_servers_shows_hint(tmp_path: Path) -> None:
     skills_dir = _setup_skills_dir(tmp_path)
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(app, ["mcp", "list"])
     assert result.exit_code == 0
     assert "No MCP servers" in result.output or "mcp add" in result.output.lower()
@@ -51,7 +51,7 @@ def test_mcp_list_json_empty(tmp_path: Path) -> None:
     import json
 
     skills_dir = _setup_skills_dir(tmp_path)
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(app, ["mcp", "list", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output)
@@ -83,7 +83,7 @@ args: -y @modelcontextprotocol/server-github
 """
     (skills_dir / "mcp-github.og").write_text(og, encoding="utf-8")
 
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(app, ["mcp", "list", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output)
@@ -100,7 +100,7 @@ args: -y @modelcontextprotocol/server-github
 def test_mcp_add_creates_og_file(tmp_path: Path) -> None:
     skills_dir = _setup_skills_dir(tmp_path)
     pkg = "@modelcontextprotocol/server-postgres"
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(app, ["mcp", "add", "postgres", pkg])
     assert result.exit_code == 0, result.output
     dest = skills_dir / "mcp-postgres.og"
@@ -118,7 +118,7 @@ def test_mcp_add_creates_og_file(tmp_path: Path) -> None:
 
 def test_mcp_add_with_env_vars(tmp_path: Path) -> None:
     skills_dir = _setup_skills_dir(tmp_path)
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(
             app,
             [
@@ -142,7 +142,7 @@ def test_mcp_add_with_env_vars(tmp_path: Path) -> None:
 
 def test_mcp_add_rejects_invalid_name(tmp_path: Path) -> None:
     skills_dir = _setup_skills_dir(tmp_path)
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(app, ["mcp", "add", "bad name!", "@some/package"])
     assert result.exit_code == 2
 
@@ -156,7 +156,7 @@ def test_mcp_add_json_output(tmp_path: Path) -> None:
     import json
 
     skills_dir = _setup_skills_dir(tmp_path)
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(app, ["mcp", "add", "myserver", "@org/myserver", "--json"])
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
@@ -176,7 +176,7 @@ def test_mcp_remove_deletes_og_file(tmp_path: Path) -> None:
     og_file = skills_dir / "mcp-github.og"
     og_file.write_text("::meta\nname: github\nrole: mcp\n", encoding="utf-8")
 
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(app, ["mcp", "remove", "github", "--yes"])
     assert result.exit_code == 0, result.output
     assert not og_file.exists()
@@ -190,7 +190,7 @@ def test_mcp_remove_deletes_og_file(tmp_path: Path) -> None:
 
 def test_mcp_remove_missing_exits_1(tmp_path: Path) -> None:
     skills_dir = _setup_skills_dir(tmp_path)
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(app, ["mcp", "remove", "nonexistent", "--yes"])
     assert result.exit_code == 1
     assert "Not found" in result.output or "not found" in result.output.lower()

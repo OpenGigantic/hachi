@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.rest_adapter import UniversalRestAdapter
+from hachi.core.loop import ToolRegistry
+from hachi.core.rest_adapter import UniversalRestAdapter
 
 _SECRET = "sk-ant-" + "a" * 40
 
@@ -36,8 +36,8 @@ def _register(monkeypatch, method: str = "GET"):
             captured.update(kwargs)
             return _FakeResponse()
 
-    monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "true")
-    monkeypatch.setattr("tokoboros.core.rest_adapter.httpx.Client", _FakeClient)
+    monkeypatch.setenv("HACHI_REST_ALLOW_PRIVATE", "true")
+    monkeypatch.setattr("hachi.core.rest_adapter.httpx.Client", _FakeClient)
     adapter = UniversalRestAdapter(registry, allowed_hosts=[])
     api_def = {
         "method": method,
@@ -69,7 +69,7 @@ def test_ordinary_param_is_untouched(monkeypatch) -> None:
 
 
 def test_opt_out_env_keeps_secret(monkeypatch) -> None:
-    monkeypatch.setenv("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", "true")
+    monkeypatch.setenv("HACHI_ALLOW_OUTBOUND_SECRETS", "true")
     registry, captured = _register(monkeypatch, method="GET")
     registry._tools["api"](token=_SECRET)
     assert captured["params"]["token"] == _SECRET

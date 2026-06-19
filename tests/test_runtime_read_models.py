@@ -8,8 +8,8 @@ gateway events endpoint pages against.
 
 from __future__ import annotations
 
-from tokoboros.core.runtime_events import RuntimeEvent
-from tokoboros.core.runtime_read_models import (
+from hachi.core.runtime_events import RuntimeEvent
+from hachi.core.runtime_read_models import (
     ActivitySnapshot,
     RuntimeReadModelStore,
     advance_activity,

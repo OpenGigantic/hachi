@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 
 def test_setup_rotating_log_creates_handler(tmp_path: Path) -> None:
     log_path = tmp_path / "daemon.log"
-    from tokoboros.daemon import setup_rotating_log
+    from hachi.daemon import setup_rotating_log
 
     root = logging.getLogger()
     original_handlers = list(root.handlers)
@@ -42,7 +42,7 @@ def test_setup_rotating_log_creates_handler(tmp_path: Path) -> None:
 
 def test_setup_rotating_log_idempotent(tmp_path: Path) -> None:
     log_path = tmp_path / "daemon2.log"
-    from tokoboros.daemon import setup_rotating_log
+    from hachi.daemon import setup_rotating_log
 
     root = logging.getLogger()
     before = len(root.handlers)
@@ -67,7 +67,7 @@ def test_setup_rotating_log_idempotent(tmp_path: Path) -> None:
 
 
 def test_schedule_runner_stop_joins_thread() -> None:
-    from tokoboros.jobs.scheduler import Scheduler, ScheduleRunner
+    from hachi.jobs.scheduler import Scheduler, ScheduleRunner
 
     sched = Scheduler.__new__(Scheduler)
     sched._schedules = {}  # type: ignore[attr-defined]
@@ -89,7 +89,7 @@ def test_schedule_runner_stop_joins_thread() -> None:
 
 def test_memory_vault_close_idempotent() -> None:
     """close() must not raise and must be callable multiple times."""
-    from tokoboros.core.memory_vault import MemoryVault
+    from hachi.core.memory_vault import MemoryVault
 
     vault = MagicMock(spec=MemoryVault)
     vault.close = MemoryVault.close.__get__(vault, type(vault))  # type: ignore[assignment]
@@ -112,15 +112,15 @@ def test_memory_vault_close_idempotent() -> None:
 
 
 def test_windows_task_xml_has_restart_on_failure(tmp_path: Path) -> None:
-    from tokoboros.daemon import _build_windows_task_xml
+    from hachi.daemon import _build_windows_task_xml
 
-    argv = ["C:\\Python313\\python.exe", "-m", "tokoboros", "gateway", "--runtime"]
-    xml = _build_windows_task_xml(argv, "Tokoboros Gateway", tmp_path / "gateway.log")
+    argv = ["C:\\Python313\\python.exe", "-m", "hachi", "gateway", "--runtime"]
+    xml = _build_windows_task_xml(argv, "Hachi Gateway", tmp_path / "gateway.log")
 
     assert "RestartOnFailure" in xml
     assert "PT30S" in xml  # 30-second restart interval
     assert "LogonTrigger" in xml
-    assert "tokoboros" in xml.lower()
+    assert "hachi" in xml.lower()
 
 
 import logging.handlers  # noqa: E402 — needed for isinstance checks above

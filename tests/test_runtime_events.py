@@ -1,11 +1,11 @@
-from tokoboros.core.runtime_events import (
+from hachi.core.runtime_events import (
     JOB_COMPLETED,
     JOB_STARTED,
     TOOL_CALL_COMPLETED,
     TOOL_CALL_STARTED,
     adapt_event,
 )
-from tokoboros.core.runtime_read_models import RuntimeReadModelStore
+from hachi.core.runtime_read_models import RuntimeReadModelStore
 
 
 def test_tool_call_adapts_without_permission_side_effects() -> None:

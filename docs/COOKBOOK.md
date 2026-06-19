@@ -1,4 +1,4 @@
-# Tokoboros Cookbook
+# Hachi Cookbook
 
 Practical, copy-paste recipes for the most common tasks.
 Each recipe shows the exact commands to run and what you will see.
@@ -30,20 +30,20 @@ Each recipe shows the exact commands to run and what you will see.
 ```bash
 # Install with uv (Python 3.11+ required)
 pip install uv          # or brew install uv / scoop install uv
-uv tool install tokoboros
+uv tool install hachi-og
 
 # Run the interactive setup wizard
-tokoboros setup --tier lightning
+hachi setup --tier lightning
 ```
 
 The wizard asks for your API key (Anthropic by default), writes
-`~/.config/tokoboros/settings.toml`, and verifies the connection.
+`~/.config/hachi/settings.toml`, and verifies the connection.
 
 **Skip the wizard** — set env vars instead:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-tokoboros run          # starts immediately
+hachi run          # starts immediately
 ```
 
 ---
@@ -51,7 +51,7 @@ tokoboros run          # starts immediately
 ## 2. Chat with the agent (TUI)
 
 ```bash
-tokoboros run
+hachi run
 ```
 
 The Textual TUI opens. Type your message and press **Enter**.
@@ -67,10 +67,10 @@ The Textual TUI opens. Type your message and press **Enter**.
 **Resume a previous session:**
 
 ```bash
-tokoboros run --resume <session-id>
+hachi run --resume <session-id>
 # or interactively pick from the list:
-tokoboros session list
-tokoboros run --resume $(tokoboros session list --json | jq -r '.[0].id')
+hachi session list
+hachi run --resume $(hachi session list --json | jq -r '.[0].id')
 ```
 
 ---
@@ -79,10 +79,10 @@ tokoboros run --resume $(tokoboros session list --json | jq -r '.[0].id')
 
 ```bash
 # Pipe a prompt in
-echo "Summarise CHANGELOG.md in three bullet points" | tokoboros run --once
+echo "Summarise CHANGELOG.md in three bullet points" | hachi run --once
 
 # Or pass it directly
-tokoboros run --once "What files changed in the last git commit?"
+hachi run --once "What files changed in the last git commit?"
 ```
 
 `--once` runs a single turn, prints the response, and exits — no TUI.
@@ -92,7 +92,7 @@ Useful in shell scripts and CI.
 
 ## 4. Switch model providers
 
-Edit `~/.config/tokoboros/settings.toml`:
+Edit `~/.config/hachi/settings.toml`:
 
 ```toml
 [provider]
@@ -140,7 +140,7 @@ Restart the agent after changing the config.
 ### Prerequisites
 
 ```bash
-uv tool install "tokoboros[google]"
+uv tool install "hachi-og[google]"
 # or inside the dev repo:
 uv sync --extra google
 ```
@@ -154,7 +154,7 @@ client_id     = "YOUR_OAUTH_CLIENT_ID"
 client_secret = "YOUR_OAUTH_CLIENT_SECRET"
 ```
 
-First `tokoboros run` triggers a browser OAuth consent screen. Credentials
+First `hachi run` triggers a browser OAuth consent screen. Credentials
 are stored in the system keychain — you only authenticate once.
 
 ### Example prompts
@@ -193,7 +193,7 @@ The agent can build `.pptx` files directly — no PowerPoint required.
 ### Install the optional dependency
 
 ```bash
-uv tool install "tokoboros[presentations]"
+uv tool install "hachi-og[presentations]"
 # or inside the dev repo:
 uv sync --extra presentations
 ```
@@ -206,14 +206,14 @@ uv sync --extra presentations
   Use the professional theme and save to ~/Desktop/Q3_Pitch.pptx
 
 > Build a dark-themed onboarding presentation with slides:
-  Welcome | What is Tokoboros | First steps | Getting help
+  Welcome | What is Hachi | First steps | Getting help
   Include presenter notes on each slide.
 ```
 
 ### Direct tool call (for scripting)
 
 ```python
-# Using the Tokoboros Python SDK (coming soon) or via agent tool call:
+# Using the Hachi Python SDK (coming soon) or via agent tool call:
 {
   "tool": "generate_presentation",
   "title": "Q3 Roadmap",
@@ -242,7 +242,7 @@ Output defaults to `~/Downloads/<title>.pptx` when no path is given.
 
 ## 7. Import conversation history
 
-Bring your ChatGPT, Gemini, or Hermes history into Tokoboros so the agent
+Bring your ChatGPT, Gemini, or Hermes history into Hachi so the agent
 remembers your past conversations.
 
 ### Export from each platform
@@ -257,23 +257,23 @@ remembers your past conversations.
 
 ```bash
 # Auto-detect format
-tokoboros memory import ~/Downloads/conversations.json
+hachi memory import ~/Downloads/conversations.json
 
 # Explicit format
-tokoboros memory import ~/Downloads/conversations.json --format chatgpt
+hachi memory import ~/Downloads/conversations.json --format chatgpt
 
 # Dry run — shows what would be imported without writing anything
-tokoboros memory import ~/Downloads/conversations.json --dry-run
+hachi memory import ~/Downloads/conversations.json --dry-run
 
 # Import history only (skip MemoryVault semantic indexing)
-tokoboros memory import ~/Downloads/conversations.json --no-memory
+hachi memory import ~/Downloads/conversations.json --no-memory
 
 # JSON output for scripting
-tokoboros memory import ~/Downloads/conversations.json --json
+hachi memory import ~/Downloads/conversations.json --json
 ```
 
 Each conversation becomes a searchable session and a MemoryVault fact.
-After import, `tokoboros session list` shows the imported conversations
+After import, `hachi session list` shows the imported conversations
 with their original titles.
 
 ---
@@ -282,25 +282,25 @@ with their original titles.
 
 ```bash
 # List recent sessions (most recent first)
-tokoboros session list
+hachi session list
 
 # Show a session transcript
-tokoboros session show <session-id>
+hachi session show <session-id>
 
 # Search across all sessions
-tokoboros session search "OAuth bug"
+hachi session search "OAuth bug"
 
 # Export a session to JSON
-tokoboros session export <session-id> > session.json
+hachi session export <session-id> > session.json
 
 # Delete a session
-tokoboros session delete <session-id>
+hachi session delete <session-id>
 
 # Backfill titles for sessions that have none
-tokoboros session retitle
+hachi session retitle
 
 # Force-regenerate titles for all sessions
-tokoboros session retitle --force
+hachi session retitle --force
 ```
 
 ---
@@ -336,7 +336,7 @@ Place long reference content here — it is only loaded on demand.
 
 ```bash
 # Copy to the skills directory
-cp my-skill.og "$(tokoboros doctor --json | jq -r '.skills_dir')/my-skill.og"
+cp my-skill.og "$(hachi doctor --json | jq -r '.skills_dir')/my-skill.og"
 
 # Or ask the agent to save it inline:
 # > Save the following as a skill called my-skill: ...
@@ -385,14 +385,14 @@ your history.
 > Run the test suite every hour and notify me if it fails
 ```
 
-Schedules are persisted in `~/.local/share/tokoboros/schedules.db` and
+Schedules are persisted in `~/.local/share/hachi/schedules.db` and
 survive restarts.
 
 **CLI management:**
 
 ```bash
-tokoboros schedule list
-tokoboros schedule delete <schedule-id>
+hachi schedule list
+hachi schedule delete <schedule-id>
 ```
 
 ---
@@ -400,41 +400,41 @@ tokoboros schedule delete <schedule-id>
 ## 11b. Run the agent as an always-on background daemon
 
 By default, scheduled tasks only fire when you manually run
-`tokoboros schedule run-due`. Install the daemon so they fire automatically
+`hachi schedule run-due`. Install the daemon so they fire automatically
 24/7, even when no terminal is open.
 
 ```bash
 # Install the gateway as a background service (auto-starts on login)
-tokoboros daemon install
+hachi daemon install
 
 # Check the daemon is running
-tokoboros daemon status
+hachi daemon status
 
 # Temporarily stop it (does NOT uninstall)
-tokoboros daemon stop
-tokoboros daemon start
+hachi daemon stop
+hachi daemon start
 
 # Remove completely
-tokoboros daemon uninstall
+hachi daemon uninstall
 ```
 
 The daemon binds to `127.0.0.1:8787` by default. Use `--host`/`--port` to
 change:
 
 ```bash
-tokoboros daemon install --host 0.0.0.0 --port 8888
+hachi daemon install --host 0.0.0.0 --port 8888
 ```
 
 Logs go to `{state_dir}/gateway.log` — find the path with
-`tokoboros doctor --json | jq -r '.state_dir'`.
+`hachi doctor --json | jq -r '.state_dir'`.
 
 **Platform:** macOS (launchd) · Linux (systemd --user) · Windows (Task Scheduler).
 
 ---
 
-## 11c. Chat with Tokoboros on WhatsApp
+## 11c. Chat with Hachi on WhatsApp
 
-Tokoboros can receive and reply to WhatsApp messages via a local webhook server
+Hachi can receive and reply to WhatsApp messages via a local webhook server
 compatible with both the **Meta Cloud API** and **Twilio**.
 
 ### Quick start (Meta Cloud API)
@@ -446,7 +446,7 @@ export META_WHATSAPP_PHONE_ID=<phone-number-id>
 export META_WHATSAPP_VERIFY_TOKEN=mysecret   # any string you choose
 
 # 2. Start the webhook server
-tokoboros channel whatsapp --port 8080 --verify-token "$META_WHATSAPP_VERIFY_TOKEN"
+hachi channel whatsapp --port 8080 --verify-token "$META_WHATSAPP_VERIFY_TOKEN"
 
 # 3. Expose it publicly (ngrok, Cloudflare Tunnel, etc.)
 ngrok http 8080
@@ -460,7 +460,7 @@ export TWILIO_ACCOUNT_SID=ACxxx
 export TWILIO_AUTH_TOKEN=<auth-token>
 export TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
 
-tokoboros channel whatsapp --port 8080
+hachi channel whatsapp --port 8080
 # Point Twilio Sandbox → "When a message comes in" to https://<your-host>/
 ```
 
@@ -468,7 +468,7 @@ tokoboros channel whatsapp --port 8080
 
 ```bash
 # Only allow messages from these E.164 numbers
-tokoboros channel whatsapp --allow "+447911123456,+14155238886"
+hachi channel whatsapp --allow "+447911123456,+14155238886"
 ```
 
 ---
@@ -495,7 +495,7 @@ stt_provider = "openai"
 
 ```
 > Read aloud: "Your standup is in 5 minutes."
-> Generate a voice file for the following and save to ~/welcome.mp3: Welcome to Tokoboros!
+> Generate a voice file for the following and save to ~/welcome.mp3: Welcome to Hachi!
 ```
 
 ```toml
@@ -508,7 +508,7 @@ tts_voice    = "nova"   # alloy | echo | fable | onyx | nova | shimmer
 
 ## 13. Permissions & security tiers
 
-Tokoboros ships three tiers that gate what the agent can do:
+Hachi ships three tiers that gate what the agent can do:
 
 | Tier | What's allowed |
 |------|---------------|
@@ -527,9 +527,9 @@ allowed_paths = ["~/projects", "~/Downloads"]
 **Audit what the agent can access:**
 
 ```bash
-tokoboros security-audit
-tokoboros security-audit --json          # machine-readable output
-tokoboros security-audit --fail-on-high  # exit 1 if any HIGH findings
+hachi security-audit
+hachi security-audit --json          # machine-readable output
+hachi security-audit --fail-on-high  # exit 1 if any HIGH findings
 ```
 
 ---
@@ -538,21 +538,21 @@ tokoboros security-audit --fail-on-high  # exit 1 if any HIGH findings
 
 ```bash
 # Full diagnostics — checks API keys, paths, DB, permissions
-tokoboros doctor
+hachi doctor
 
 # JSON output for scripting
-tokoboros doctor --json
+hachi doctor --json
 
 # Check a specific integration
-tokoboros doctor --check google
-tokoboros doctor --check voice
+hachi doctor --check google
+hachi doctor --check voice
 ```
 
 **Common issues:**
 
 | Symptom | Fix |
 |---------|-----|
-| `ANTHROPIC_API_KEY not set` | Export the key or run `tokoboros setup` |
+| `ANTHROPIC_API_KEY not set` | Export the key or run `hachi setup` |
 | `ChromaDB unavailable` | `uv sync --extra memory` |
 | `python-pptx not found` | `uv sync --extra presentations` |
 | `Google OAuth failed` | Check `client_id`/`client_secret` in settings.toml |
@@ -563,6 +563,6 @@ tokoboros doctor --check voice
 
 ## Getting help
 
-- Run `tokoboros --help` or `tokoboros <command> --help` for CLI docs.
+- Run `hachi --help` or `hachi <command> --help` for CLI docs.
 - In the TUI, type `/help` for a list of slash commands.
-- Open an issue: https://github.com/OpenGigantic/tokoboros/issues
+- Open an issue: https://github.com/OpenGigantic/hachi/issues

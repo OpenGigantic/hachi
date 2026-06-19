@@ -4,15 +4,15 @@ event stream, TUI transcript, gateway SSE, or persisted SQLite.
 Covers:
   - ADV-009 (tool_call input redaction at the choke point)
   - ADV-009 (tool_result preview redaction before truncation)
-  - Redaction is unconditional — not subject to TOKOBOROS_ALLOW_OUTBOUND_SECRETS.
+  - Redaction is unconditional — not subject to HACHI_ALLOW_OUTBOUND_SECRETS.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from tokoboros.core.runtime_events import TOOL_CALL_COMPLETED, TOOL_CALL_STARTED, adapt_event
-from tokoboros.core.secret_scanner import REDACTION_PLACEHOLDER
+from hachi.core.runtime_events import TOOL_CALL_COMPLETED, TOOL_CALL_STARTED, adapt_event
+from hachi.core.secret_scanner import REDACTION_PLACEHOLDER
 
 # Canonical secret fixtures — just long enough to match the scanner patterns.
 _ANTHROPIC = "sk-ant-" + "A" * 40
@@ -122,8 +122,8 @@ def test_tool_result_clean_passes_through_unchanged() -> None:
 def test_tool_call_redaction_ignores_outbound_opt_out(
     monkeypatch: pytest.MonkeyPatch, opt_out_value: str
 ) -> None:
-    """TOKOBOROS_ALLOW_OUTBOUND_SECRETS must NOT bypass internal event redaction."""
-    monkeypatch.setenv("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", opt_out_value)
+    """HACHI_ALLOW_OUTBOUND_SECRETS must NOT bypass internal event redaction."""
+    monkeypatch.setenv("HACHI_ALLOW_OUTBOUND_SECRETS", opt_out_value)
 
     envelopes = adapt_event(
         "tool_call",
@@ -131,7 +131,7 @@ def test_tool_call_redaction_ignores_outbound_opt_out(
     )
     payload = envelopes[0].primary.payload
     assert _ANTHROPIC not in str(payload), (
-        f"secret leaked with TOKOBOROS_ALLOW_OUTBOUND_SECRETS={opt_out_value!r}"
+        f"secret leaked with HACHI_ALLOW_OUTBOUND_SECRETS={opt_out_value!r}"
     )
 
 
@@ -139,7 +139,7 @@ def test_tool_call_redaction_ignores_outbound_opt_out(
 def test_tool_result_redaction_ignores_outbound_opt_out(
     monkeypatch: pytest.MonkeyPatch, opt_out_value: str
 ) -> None:
-    monkeypatch.setenv("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", opt_out_value)
+    monkeypatch.setenv("HACHI_ALLOW_OUTBOUND_SECRETS", opt_out_value)
 
     envelopes = adapt_event(
         "tool_result",
@@ -147,5 +147,5 @@ def test_tool_result_redaction_ignores_outbound_opt_out(
     )
     preview = envelopes[0].primary.payload["result_preview"]
     assert _ANTHROPIC not in preview, (
-        f"secret leaked with TOKOBOROS_ALLOW_OUTBOUND_SECRETS={opt_out_value!r}"
+        f"secret leaked with HACHI_ALLOW_OUTBOUND_SECRETS={opt_out_value!r}"
     )

@@ -1,4 +1,4 @@
-"""Tests for the `tokoboros session` CLI subcommand group.
+"""Tests for the `hachi session` CLI subcommand group.
 
 Covers:
   1.  session list — returns sessions table (Rich output)
@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -103,7 +103,7 @@ def _mock_store(
 
 
 def test_session_list_rich_output() -> None:
-    with patch("tokoboros.core.session_store.SessionStore", return_value=_mock_store()):
+    with patch("hachi.core.session_store.SessionStore", return_value=_mock_store()):
         result = runner.invoke(app, ["session", "list"])
     assert result.exit_code == 0
     assert "abc1230000000001" in result.output
@@ -117,7 +117,7 @@ def test_session_list_rich_output() -> None:
 
 
 def test_session_list_json() -> None:
-    with patch("tokoboros.core.session_store.SessionStore", return_value=_mock_store()):
+    with patch("hachi.core.session_store.SessionStore", return_value=_mock_store()):
         result = runner.invoke(app, ["session", "list", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output)
@@ -131,7 +131,7 @@ def test_session_list_json() -> None:
 
 
 def test_session_list_empty() -> None:
-    with patch("tokoboros.core.session_store.SessionStore", return_value=_mock_store(sessions=[])):
+    with patch("hachi.core.session_store.SessionStore", return_value=_mock_store(sessions=[])):
         result = runner.invoke(app, ["session", "list"])
     assert result.exit_code == 0
     assert "no sessions" in result.output.lower()
@@ -143,7 +143,7 @@ def test_session_list_empty() -> None:
 
 
 def test_session_show_rich_output() -> None:
-    with patch("tokoboros.core.session_store.SessionStore", return_value=_mock_store()):
+    with patch("hachi.core.session_store.SessionStore", return_value=_mock_store()):
         result = runner.invoke(app, ["session", "show", "abc1230000000001"])
     assert result.exit_code == 0
     assert "abc1230000000001" in result.output
@@ -156,7 +156,7 @@ def test_session_show_rich_output() -> None:
 
 
 def test_session_show_json() -> None:
-    with patch("tokoboros.core.session_store.SessionStore", return_value=_mock_store()):
+    with patch("hachi.core.session_store.SessionStore", return_value=_mock_store()):
         result = runner.invoke(app, ["session", "show", "abc1230000000001", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output)
@@ -173,7 +173,7 @@ def test_session_show_unknown_id_exits() -> None:
     store = _mock_store()
     store.get_recent_sessions.return_value = FAKE_SESSIONS
     store.get_session_messages.return_value = []
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "show", "zzznomatch123456"])
     # Full 16-char ID → goes to get_session_messages directly (no prefix search)
     # Returns empty messages → prints "No messages found"
@@ -186,7 +186,7 @@ def test_session_show_unknown_id_exits() -> None:
 
 
 def test_session_show_prefix_match_resolves() -> None:
-    with patch("tokoboros.core.session_store.SessionStore", return_value=_mock_store()):
+    with patch("hachi.core.session_store.SessionStore", return_value=_mock_store()):
         # "abc123" uniquely prefixes "abc1230000000001"
         result = runner.invoke(app, ["session", "show", "abc123"])
     assert result.exit_code == 0
@@ -205,7 +205,7 @@ def test_session_show_ambiguous_prefix_exits() -> None:
         {**FAKE_SESSIONS[0], "id": "abc1230000000001"},
         {**FAKE_SESSIONS[1], "id": "abc4560000000002"},
     ]
-    with patch("tokoboros.core.session_store.SessionStore", return_value=store):
+    with patch("hachi.core.session_store.SessionStore", return_value=store):
         result = runner.invoke(app, ["session", "show", "abc"])
     assert result.exit_code == 1
     assert "ambiguous" in result.output.lower() or "matches" in result.output.lower()
@@ -217,7 +217,7 @@ def test_session_show_ambiguous_prefix_exits() -> None:
 
 
 def test_session_search_rich_output() -> None:
-    with patch("tokoboros.core.session_store.SessionStore", return_value=_mock_store()):
+    with patch("hachi.core.session_store.SessionStore", return_value=_mock_store()):
         result = runner.invoke(app, ["session", "search", "Hello"])
     assert result.exit_code == 0
     assert "abc1230000000001" in result.output
@@ -230,7 +230,7 @@ def test_session_search_rich_output() -> None:
 
 
 def test_session_search_json() -> None:
-    with patch("tokoboros.core.session_store.SessionStore", return_value=_mock_store()):
+    with patch("hachi.core.session_store.SessionStore", return_value=_mock_store()):
         result = runner.invoke(app, ["session", "search", "Hello", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output)
@@ -245,7 +245,7 @@ def test_session_search_json() -> None:
 
 def test_session_search_no_results() -> None:
     empty = _mock_store(search_results=[])
-    with patch("tokoboros.core.session_store.SessionStore", return_value=empty):
+    with patch("hachi.core.session_store.SessionStore", return_value=empty):
         result = runner.invoke(app, ["session", "search", "zzznomatch"])
     assert result.exit_code == 0
     assert "matched" in result.output.lower() or "no sessions" in result.output.lower()

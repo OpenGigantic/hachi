@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.permissions import _DEFAULT_BLOCKED, PermissionGate, generate_permissions_og
-from tokoboros.tools.os_tools import register_os_tools
+from hachi.core.loop import ToolRegistry
+from hachi.core.permissions import _DEFAULT_BLOCKED, PermissionGate, generate_permissions_og
+from hachi.tools.os_tools import register_os_tools
 
 
 def _write_permissions_file(

@@ -1,4 +1,4 @@
-"""Tests for the .og skill linter (engine.lint_og_file + `tokoboros skill lint`).
+"""Tests for the .og skill linter (engine.lint_og_file + `hachi skill lint`).
 
 The linter enforces the conventions the 3-pass loader depends on: routable nodes
 (index entry + keywords), a within-budget ::dense block, real Pass-3 content, and no
@@ -9,8 +9,8 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
-from tokoboros.og_engine.engine import lint_og_file
+from hachi.cli.main import app
+from hachi.og_engine.engine import lint_og_file
 
 runner = CliRunner()
 

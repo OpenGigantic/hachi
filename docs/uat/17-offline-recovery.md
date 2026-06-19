@@ -1,5 +1,10 @@
 # UC-OFF-001, UC-OFF-002, UC-OFF-003, UC-OFF-004, UC-DEV-001, UC-MOB-001 — Offline & Recovery UAT Verification
 
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 **Tester:** Claude Code (UAT Agent)  
 **Date:** 2026-06-14  
 **Build:** `036dfd9` (Enhance Gmail Integration and TUI Components)  
@@ -15,7 +20,7 @@
 
 **Code Path Analysis:**
 
-**File:** `src/tokoboros/gateway/orchestrator.py:1771-1777`
+**File:** `src/hachi/gateway/orchestrator.py:1771-1777`
 
 ```python
 def _fire_schedule(s: Schedule) -> None:
@@ -26,7 +31,7 @@ def _fire_schedule(s: Schedule) -> None:
         _logging.getLogger(__name__).exception("Schedule fire error for '%s'", s.name)
 ```
 
-**File:** `src/tokoboros/jobs/scheduler.py:376-385` (called by `ScheduleRunner`)
+**File:** `src/hachi/jobs/scheduler.py:376-385` (called by `ScheduleRunner`)
 
 ```python
 try:
@@ -61,7 +66,7 @@ The claim is **INVERTED**. The schedule is **NOT** marked as fired/skipped on ex
 
 **Code Path Analysis:**
 
-**File:** `src/tokoboros/cli/main.py:1490-1495` (setup/onboarding auto-detection)
+**File:** `src/hachi/cli/main.py:1490-1495` (setup/onboarding auto-detection)
 
 ```python
 if detected.get("ollama_cli"):
@@ -72,7 +77,7 @@ if detected.get("ollama_cli"):
     }
 ```
 
-**File:** `src/tokoboros/core/llm.py:628-634` (LLM client creation)
+**File:** `src/hachi/core/llm.py:628-634` (LLM client creation)
 
 ```python
 if kind == "ollama":
@@ -107,7 +112,7 @@ if kind == "ollama":
 
 **Code Path Analysis:**
 
-**File:** `src/tokoboros/gateway/shared_services.py:113-176`
+**File:** `src/hachi/gateway/shared_services.py:113-176`
 
 Three key init paths with explicit exception handling:
 
@@ -135,8 +140,8 @@ if isinstance(_provider, ChromaMemoryProvider):
 ```python
 if _memory_settings.graph or _memory_settings.backend == "fts5_only":
     try:
-        from tokoboros.core.memory_index import MemoryIndex
-        from tokoboros.core.memory_writer import MemoryWriter
+        from hachi.core.memory_index import MemoryIndex
+        from hachi.core.memory_writer import MemoryWriter
         ...
         graph_index = MemoryIndex(...)
         graph_index.refresh()
@@ -149,7 +154,7 @@ if _memory_settings.graph or _memory_settings.backend == "fts5_only":
 → If FTS5 fails, it's caught and logged at `debug` level; other sessions inherit the `None` state.
 
 **Broad exception count:**
-Search across `src/tokoboros` for patterns:
+Search across `src/hachi` for patterns:
 - `except Exception:` followed by `pass` or only logging: Found ~6-8 sites (skill indexing, memory init, MCP health checks).
 - These are NOT silent in the sense of "no trace"; they log at `debug` or `warning` level and allow boot to continue.
 - The claim of "104 swallow sites" is NOT supported by the code (there are far fewer).
@@ -179,11 +184,11 @@ Search across `src/tokoboros` for patterns:
 
 **Code Path Analysis:**
 
-**File:** `src/tokoboros/cli/main.py` (REPL input handling)
+**File:** `src/hachi/cli/main.py` (REPL input handling)
 - No explicit prompt-length cap before sending to the agent.
 - The agent's `loop.py` has a 100k char cap on prompts (`control_plane.py:250`).
 
-**File:** `src/tokoboros/gateway/fastapi_app.py` (API input validation)
+**File:** `src/hachi/gateway/fastapi_app.py` (API input validation)
 - No explicit empty-message rejection; the prompt is passed through to the agent.
 - No Unicode normalization or sanitization before logging.
 
@@ -220,7 +225,7 @@ Search across `src/tokoboros` for patterns:
 
 **Code Path Analysis:**
 
-**File:** `src/tokoboros/cli/main.py:1342-1347` (TUI boot with fallback)
+**File:** `src/hachi/cli/main.py:1342-1347` (TUI boot with fallback)
 
 ```python
 try:
@@ -231,7 +236,7 @@ except Exception as e:
     _run_repl()
 ```
 
-**File:** `src/tokoboros/cli/main.py:855-863` (Pre-flight TTY check)
+**File:** `src/hachi/cli/main.py:855-863` (Pre-flight TTY check)
 
 ```python
 if sys.stdin.isatty():
@@ -243,7 +248,7 @@ if sys.stdin.isatty():
         return ok2
 ```
 
-**File:** `src/tokoboros/tui/app.py` (no explicit credential prompt during boot)
+**File:** `src/hachi/tui/app.py` (no explicit credential prompt during boot)
 - The TUI boots in `run_tui()` and calls `boot_agent()` asynchronously or on first interaction (verify).
 
 **Evidence:**

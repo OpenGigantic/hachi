@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import json
 import os
 import sys
 from pathlib import Path
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.mcp_client import MCPServerConnection
-from tokoboros.core.rest_adapter import UniversalRestAdapter
-from tokoboros.tools.os_tools import _raw_run_shell_script, _raw_run_terminal_command
+from hachi.core.loop import ToolRegistry
+from hachi.core.mcp_client import MCPServerConnection
+from hachi.core.rest_adapter import UniversalRestAdapter
+from hachi.tools.os_tools import _raw_run_shell_script, _raw_run_terminal_command
 
 
 class _FakeVault:
@@ -134,7 +133,7 @@ def test_read_file_returns_directory_listing_for_directory(tmp_path: Path) -> No
     (folder / "a.txt").write_text("a", encoding="utf-8")
     (folder / "sub").mkdir()
 
-    from tokoboros.tools.os_tools import _raw_read_file
+    from hachi.tools.os_tools import _raw_read_file
 
     result = _raw_read_file(str(folder))
     assert "Directory listing for" in result
@@ -192,7 +191,7 @@ def test_rest_adapter_requires_allowlist_for_secret_interpolation() -> None:
     )
 
     result = registry._tools["token_call"]()
-    assert "Secret interpolation requires TOKOBOROS_REST_ALLOWLIST" in result
+    assert "Secret interpolation requires HACHI_REST_ALLOWLIST" in result
 
 
 def test_rest_allowlist_wildcard_matches_subdomains_only() -> None:
@@ -205,7 +204,7 @@ def test_rest_adapter_blocks_dns_resolution_failures(monkeypatch) -> None:
     registry = ToolRegistry()
     adapter = UniversalRestAdapter(registry, allowed_hosts=["api.example.com"])
     monkeypatch.setattr(
-        "tokoboros.core.rest_adapter.socket.getaddrinfo",
+        "hachi.core.rest_adapter.socket.getaddrinfo",
         lambda *_a, **_k: (_ for _ in ()).throw(OSError("dns failure")),
     )
 
@@ -268,8 +267,8 @@ def test_rest_adapter_allows_private_egress_when_explicitly_enabled(monkeypatch)
         def request(self, **_kwargs):
             return _FakeResponse()
 
-    monkeypatch.setenv("TOKOBOROS_REST_ALLOW_PRIVATE", "true")
-    monkeypatch.setattr("tokoboros.core.rest_adapter.httpx.Client", _FakeClient)
+    monkeypatch.setenv("HACHI_REST_ALLOW_PRIVATE", "true")
+    monkeypatch.setattr("hachi.core.rest_adapter.httpx.Client", _FakeClient)
 
     registry = ToolRegistry()
     adapter = UniversalRestAdapter(registry, allowed_hosts=[])
@@ -286,5 +285,5 @@ def test_rest_adapter_allows_private_egress_when_explicitly_enabled(monkeypatch)
     )
 
     result = registry._tools["private_allowed"]()
-    payload = json.loads(result)
-    assert payload["ok"] == "true"
+    # SEC-002: the response is framed as untrusted data; assert the payload survives.
+    assert '"ok"' in result and "true" in result

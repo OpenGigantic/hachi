@@ -7,10 +7,10 @@ uncallable.
 
 from __future__ import annotations
 
-from tokoboros.core.llm import LLMResponse, TokenUsage, ToolCall
-from tokoboros.core.loop import ExecutionLoop, ToolRegistry
-from tokoboros.core.sub_agent import SubAgentMemory
-from tokoboros.tools.og_tools import USE_TOOLS_SCHEMA, _make_use_tools
+from hachi.core.llm import LLMResponse, TokenUsage, ToolCall
+from hachi.core.loop import ExecutionLoop, ToolRegistry
+from hachi.core.sub_agent import SubAgentMemory
+from hachi.tools.og_tools import USE_TOOLS_SCHEMA, _make_use_tools
 
 _EMPTY_SCHEMA = {"type": "object", "properties": {}, "required": []}
 
@@ -154,7 +154,7 @@ def test_active_groups_reset_between_turns() -> None:
 
 
 def test_core_tool_set_size_guard() -> None:
-    from tokoboros.gateway.orchestrator import _CORE_TOOL_NAMES
+    from hachi.gateway.orchestrator import _CORE_TOOL_NAMES
 
     assert 18 <= len(_CORE_TOOL_NAMES) <= 24  # budget can't silently regress
     assert "use_tools" in _CORE_TOOL_NAMES

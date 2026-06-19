@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.tools.delegation_tools import BLOCKED_TOOL_NAMES
-from tokoboros.tools.sandbox_tools import register_sandbox_tools
+from hachi.core.loop import ToolRegistry
+from hachi.tools.delegation_tools import BLOCKED_TOOL_NAMES
+from hachi.tools.sandbox_tools import register_sandbox_tools
 
 
 class _InteractiveGateLike:

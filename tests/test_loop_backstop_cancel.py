@@ -17,10 +17,10 @@ import time
 from typing import Any
 from unittest.mock import MagicMock
 
-from tokoboros.core.cost import CostSnapshot, CostTracker
-from tokoboros.core.llm import LLMResponse, TokenUsage, ToolCall
-from tokoboros.core.loop import ExecutionLoop, ToolRegistry
-from tokoboros.core.sub_agent import SubAgentMemory
+from hachi.core.cost import CostSnapshot, CostTracker
+from hachi.core.llm import LLMResponse, TokenUsage, ToolCall
+from hachi.core.loop import ExecutionLoop, ToolRegistry
+from hachi.core.sub_agent import SubAgentMemory
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -508,7 +508,7 @@ def test_iteration_limit_status_is_incomplete() -> None:
     safety-ceiling exits by its unique event name (SESSION_ITERATION_LIMIT), not by
     overloading the status string — the P1-04 contract pins that to 'incomplete'.
     """
-    from tokoboros.core.runtime_events import SESSION_ITERATION_LIMIT
+    from hachi.core.runtime_events import SESSION_ITERATION_LIMIT
 
     events: list[tuple[str, dict]] = []
     llm = _SlowToolLLM(chunk_delay=0.0, n_chunks=1)

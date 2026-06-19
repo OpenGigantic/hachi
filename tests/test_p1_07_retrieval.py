@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from tokoboros.core.skill_packs import _default_skills_root
-from tokoboros.og_engine.engine import SkillEngine, _tokenize
+from hachi.core.skill_packs import _default_skills_root
+from hachi.og_engine.engine import SkillEngine, _tokenize
 
 # ---------------------------------------------------------------------------
 # Tokenizer unit tests

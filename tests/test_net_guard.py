@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tokoboros.core.net_guard import validate_outbound_url
+from hachi.core.net_guard import validate_outbound_url
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,10 @@
 # UAT — Third-party Integrations & Messaging Channels
 
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 **Build SHA:** 036dfd9  
 **Verified by:** UAT agent (automated code-grounded pass)  
 **Date:** 2026-06-14  
@@ -20,7 +25,7 @@
 
 ### Evidence
 
-**Search path** (`src/tokoboros/integrations/slack/workspace.py:13–50`):
+**Search path** (`src/hachi/integrations/slack/workspace.py:13–50`):
 
 ```python
 # workspace.py:19-24
@@ -28,11 +33,11 @@ if self.bot_token and not self.bot_token.startswith("xoxp-"):
     return (
         "slack_search_messages requires a user OAuth token (xoxp-) with the "
         "search:read scope. Bot tokens cannot call the search.messages API. "
-        "Add a user token via: tokoboros secrets --set slack_user_token"
+        "Add a user token via: hachi secrets --set slack_user_token"
     )
 ```
 
-This is a pre-flight guard that returns an actionable human-readable message before even calling the API. The claim that errors drop the `needed/provided` scope is PARTIALLY CONFIRMED at the base service layer (`src/tokoboros/integrations/slack/service.py:53–55`):
+This is a pre-flight guard that returns an actionable human-readable message before even calling the API. The claim that errors drop the `needed/provided` scope is PARTIALLY CONFIRMED at the base service layer (`src/hachi/integrations/slack/service.py:53–55`):
 
 ```python
 # service.py:50-55
@@ -53,7 +58,7 @@ The `needed/provided` fields ARE surfaced from the API response. However: the `s
 
 1. The pre-flight guard for bot-token rejection is PRESENT and returns an actionable message (claim that "Slack errors drop the scope" is NOT confirmed for this path — the message is explicit about the scope requirement).
 2. The `_get`/`_post` base service DOES include `needed/provided` in raised exceptions, so Slack API error details are surfaced if a user somehow reached the API call.
-3. **CONFIRMED NEW BUG:** The directed remediation (`tokoboros secrets --set slack_user_token`) is a dead-end — the service reads only `slack_bot_token` from the vault; there is no code path that loads `slack_user_token` for the `Authorization` header. Search is permanently blocked even if the user follows the instructions.
+3. **CONFIRMED NEW BUG:** The directed remediation (`hachi secrets --set slack_user_token`) is a dead-end — the service reads only `slack_bot_token` from the vault; there is no code path that loads `slack_user_token` for the `Authorization` header. Search is permanently blocked even if the user follows the instructions.
 4. Zero dedicated Slack search tests — CONFIRMED.
 
 ---
@@ -69,7 +74,7 @@ No 4096-char chunking on the adapter path → Telegram 400 kills the adapter; `p
 
 ### Evidence
 
-**Chunking** (`src/tokoboros/channels/telegram.py:112–116`):
+**Chunking** (`src/hachi/channels/telegram.py:112–116`):
 
 ```python
 def send(self, message: OutboundMessage) -> None:
@@ -81,7 +86,7 @@ def send(self, message: OutboundMessage) -> None:
 
 Chunking IS present on the adapter path. Offline repro confirmed: a 5000-char message produces two chunks of len=4096 and len=904.
 
-**poll_once ok:false handling** (`src/tokoboros/channels/telegram.py:97–104`):
+**poll_once ok:false handling** (`src/hachi/channels/telegram.py:97–104`):
 
 ```python
 def poll_once(self) -> list[InboundMessage]:
@@ -117,9 +122,9 @@ No pagination → silent truncation (`results[:5]`/`[:20]`, blocks not paged); `
 
 **Pagination status:**
 
-- `query_database` (`src/tokoboros/integrations/notion/databases.py:52–61`): **PAGINATED** — full `has_more` / `next_cursor` loop. Fetches all pages.
-- `read_page_blocks` (`src/tokoboros/integrations/notion/pages.py:211–216`): **PAGINATED** — full `has_more` / `next_cursor` loop. Fetches all blocks.
-- `search_workspace` (`src/tokoboros/integrations/notion/databases.py:11–47`): **NOT PAGINATED** — sends `page_size=20` and iterates `results[:_MAX_RESULTS]` where `_MAX_RESULTS = 20`. Silently returns max 20 results. No `has_more` check.
+- `query_database` (`src/hachi/integrations/notion/databases.py:52–61`): **PAGINATED** — full `has_more` / `next_cursor` loop. Fetches all pages.
+- `read_page_blocks` (`src/hachi/integrations/notion/pages.py:211–216`): **PAGINATED** — full `has_more` / `next_cursor` loop. Fetches all blocks.
+- `search_workspace` (`src/hachi/integrations/notion/databases.py:11–47`): **NOT PAGINATED** — sends `page_size=20` and iterates `results[:_MAX_RESULTS]` where `_MAX_RESULTS = 20`. Silently returns max 20 results. No `has_more` check.
 
 The `results[:5]` claim is NOT confirmed (there is no `[:5]` anywhere). The `results[:20]` claim is partially confirmed — `search_workspace` caps at 20 and does not page.
 
@@ -156,7 +161,7 @@ Shared singleton has no re-init/health check — a dead MCP pool is inherited by
 
 ### Evidence
 
-**Singleton get_or_create** (`src/tokoboros/gateway/shared_services.py:61–85`):
+**Singleton get_or_create** (`src/hachi/gateway/shared_services.py:61–85`):
 
 ```python
 @classmethod
@@ -172,9 +177,9 @@ def get_or_create(cls, config, brain_dir, *, force_reinit=False):
 
 The singleton returns the existing instance unconditionally unless `force_reinit=True`. There is no health-check call before returning. A dead MCP pool in `_INSTANCE.mcp_manager` is returned as-is to every new session.
 
-**MCPManager public API** (`src/tokoboros/core/mcp_client.py:363–486`): Methods are `setup_from_node`, `register_tools`, `get_server_tool_count`, `get_inventory`, `server_count`, `total_tool_count`, `shutdown`. There is **no** `health_check`, `restart`, `reinit`, or `recover` method. `get_inventory()` (line 458) does expose `"status": "ready" if server.is_alive else "stopped"` — the dead state IS detectable but no automatic recovery path exists.
+**MCPManager public API** (`src/hachi/core/mcp_client.py:363–486`): Methods are `setup_from_node`, `register_tools`, `get_server_tool_count`, `get_inventory`, `server_count`, `total_tool_count`, `shutdown`. There is **no** `health_check`, `restart`, `reinit`, or `recover` method. `get_inventory()` (line 458) does expose `"status": "ready" if server.is_alive else "stopped"` — the dead state IS detectable but no automatic recovery path exists.
 
-**`is_alive` property** (`src/tokoboros/core/mcp_client.py:270–271`):
+**`is_alive` property** (`src/hachi/core/mcp_client.py:270–271`):
 ```python
 @property
 def is_alive(self) -> bool:
@@ -183,7 +188,7 @@ def is_alive(self) -> bool:
 
 `is_alive` only checks whether the subprocess is still running. If it crashes between requests, `call_tool()` proceeds with a dead stdin (`_process.stdin` is `None` after `stop()` is called, but `_process` remains non-None until `stop()` — so if the process crashes without `stop()` being called, `_process.poll()` returns a non-None exit code and `is_alive` is False, but `_send_request` still attempts the write to the now-closed pipe before returning `None` on timeout).
 
-**Boot-hang risk** (`src/tokoboros/core/mcp_client.py:191–196`): MCP startup polls up to 5 seconds (10 × 0.5s sleep) and requires the subprocess to remain alive for the full 5s before proceeding. If an MCP server command exists but never sends output (e.g. hanging on network/OAuth), the `start()` method blocks for 5s + 2s extra wait + 30s request timeout = up to ~37s per MCP server, all on the boot thread.
+**Boot-hang risk** (`src/hachi/core/mcp_client.py:191–196`): MCP startup polls up to 5 seconds (10 × 0.5s sleep) and requires the subprocess to remain alive for the full 5s before proceeding. If an MCP server command exists but never sends output (e.g. hanging on network/OAuth), the `start()` method blocks for 5s + 2s extra wait + 30s request timeout = up to ~37s per MCP server, all on the boot thread.
 
 **orchestrator.py:1291–1292**: Each non-gateway session creates a fresh `MCPManager()` and calls `_configure_mcp_servers()` — this re-spawns MCP subprocesses per session and does not use the shared singleton. The shared singleton's `mcp_manager` is set up once in `shared_services._init()` but appears to be for the gateway path. The TUI/orchestrator path at lines 1291–1292 creates its OWN MCPManager per session, meaning a dead gateway singleton does NOT directly infect TUI sessions — but the gateway path (multiple sessions sharing via `ProcessSharedServices`) inherits the dead pool.
 
@@ -208,12 +213,12 @@ def is_alive(self) -> bool:
 
 ### Evidence
 
-**TTS output formats** (`src/tokoboros/core/voice.py:59`):
+**TTS output formats** (`src/hachi/core/voice.py:59`):
 ```python
 _TTS_FORMATS = frozenset({"mp3", "opus", "aac", "flac", "wav", "pcm"})
 ```
 
-**STT accepted extensions** (`src/tokoboros/core/voice.py:63–65`):
+**STT accepted extensions** (`src/hachi/core/voice.py:63–65`):
 ```python
 _SUPPORTED_EXTENSIONS = frozenset(
     {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".flac", ".ogg", ".opus", ".aac"}
@@ -230,7 +235,7 @@ Round-trip analysis (offline computation):
 
 The claim that `.opus` and `.aac` are dead-ends is REFUTED — both are in `_SUPPORTED_EXTENSIONS`. Only `.pcm` is the confirmed dead-end.
 
-**WAV duration sentinel** (`src/tokoboros/core/voice.py:248–255`):
+**WAV duration sentinel** (`src/hachi/core/voice.py:248–255`):
 
 ```python
 # voice.py:248-255 — sentinel clamp

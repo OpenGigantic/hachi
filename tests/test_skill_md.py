@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tokoboros.og_engine.engine import SkillEngine
-from tokoboros.og_engine.parser import parse_og_file
-from tokoboros.og_engine.serializer import serialize_og_file
-from tokoboros.og_engine.skill_md import skill_md_to_og
+from hachi.og_engine.engine import SkillEngine
+from hachi.og_engine.parser import parse_og_file
+from hachi.og_engine.serializer import serialize_og_file
+from hachi.og_engine.skill_md import skill_md_to_og
 
 _SAMPLE = """---
 name: PDF Processing

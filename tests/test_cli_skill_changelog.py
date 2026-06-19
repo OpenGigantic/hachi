@@ -1,4 +1,4 @@
-"""Tests for the `tokoboros skill changelog` CLI command — surfaces a skill's
+"""Tests for the `hachi skill changelog` CLI command — surfaces a skill's
 version + ::changelog entries (engine.get_node_changelog), the .og delta-load."""
 
 import json
@@ -7,7 +7,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -40,7 +40,7 @@ def _isolate(monkeypatch, tmp_path: Path) -> Path:
     skills_dir.mkdir()
     shutil.copy(FIXTURE, skills_dir / "sample_skill.og")  # deploy_to_prod: v1.0.0, no changelog
     (skills_dir / "versioned.og").write_text(_VERSIONED_OG, encoding="utf-8")
-    monkeypatch.setattr("tokoboros.gateway.workspace.get_skills_dir", lambda: skills_dir)
+    monkeypatch.setattr("hachi.gateway.workspace.get_skills_dir", lambda: skills_dir)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)  # isolate usage store
     return skills_dir
 

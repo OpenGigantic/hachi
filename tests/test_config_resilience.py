@@ -4,17 +4,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tokoboros.core.config_loader import load_effective_config, write_global_config
-from tokoboros.core.paths import TokoborosPaths
+from hachi.core.config_loader import load_effective_config, write_global_config
+from hachi.core.paths import HachiPaths
 
 
-def _paths(tmp_path: Path) -> TokoborosPaths:
-    return TokoborosPaths(
+def _paths(tmp_path: Path) -> HachiPaths:
+    return HachiPaths(
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
         cache_dir=tmp_path / "cache",
         state_dir=tmp_path / "state",
-        legacy_dir=tmp_path / "legacy",
     )
 
 

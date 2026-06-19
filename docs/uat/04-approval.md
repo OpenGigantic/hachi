@@ -1,4 +1,10 @@
 # UAT Findings — Human Approval Workflow & Destructive-Action Gating
+
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 **Assignment:** MR-5 / UC-PERM-005 / UC-PERM-006 / ADV-020
 **Commit:** `036dfd9`
 **Verified:** 2026-06-14
@@ -26,7 +32,7 @@ persisted (session-only); the 180-second timeout produces a deny.
 ### Evidence
 
 **approve persists for session — CONFIRMED**
-`src/tokoboros/core/permissions.py:820-822`:
+`src/hachi/core/permissions.py:820-822`:
 ```python
 if decision.action == "approve":
     self._allowed_session_paths.add((operation, resolved_target))
@@ -38,7 +44,7 @@ Offline test `tests/test_permissions_interactive.py::test_interactive_gate_appro
 PASSES, confirming single-prompt semantics: handler called once, second call uses the cached set.
 
 **allow_once NOT persisted — CONFIRMED**
-`src/tokoboros/core/permissions.py:823-824`:
+`src/hachi/core/permissions.py:823-824`:
 ```python
 if decision.action == "allow_once":
     return PermissionResult(True, "Allowed once by operator.")
@@ -48,7 +54,7 @@ subsequent call re-invokes the handler. Offline test
 `test_interactive_gate_allow_once_applies_single_call` PASSES (3/3 tests pass).
 
 **180s timeout → auto-deny — CONFIRMED, UX CONCERN**
-`src/tokoboros/tui/app.py:2323-2327`:
+`src/hachi/tui/app.py:2323-2327`:
 ```python
 completed = waiter.wait(timeout=180)
 if not completed:
@@ -89,7 +95,7 @@ inbox."
 ### Evidence
 
 **boot_agent only wires InteractivePermissionGate when on_permission_request is supplied**
-`src/tokoboros/gateway/orchestrator.py:1201-1206`:
+`src/hachi/gateway/orchestrator.py:1201-1206`:
 ```python
 if on_permission_request:
     runtime_gate = InteractivePermissionGate(
@@ -100,16 +106,16 @@ if on_permission_request:
 ```
 
 **TUI passes on_permission_request; FastAPI gateway does NOT**
-`src/tokoboros/tui/app.py:2198-2202`: TUI calls
+`src/hachi/tui/app.py:2198-2202`: TUI calls
 `boot_agent(..., on_permission_request=self._request_permission_decision, ...)`.
 
-`src/tokoboros/gateway/fastapi_app.py`: Full search finds zero calls to `boot_agent` or
+`src/hachi/gateway/fastapi_app.py`: Full search finds zero calls to `boot_agent` or
 any reference to `on_permission_request` / `approval_handler` / `InteractivePermissionGate`.
 The gateway boots its agent via `control_plane.create_session()` → `_on_connect()`, which
 does not pass a permission handler.
 
 **Web approvals inbox is READ-ONLY display**
-`src/tokoboros/gateway/fastapi_app.py:412-416` exposes only a `GET /permissions/audit`
+`src/hachi/gateway/fastapi_app.py:412-416` exposes only a `GET /permissions/audit`
 route fed by `RuntimeReadModelStore._permission_audit`. This is an append-only event list.
 There is no `POST /permissions/approve` or `PUT /permissions/decisions/{id}` route anywhere
 in the gateway or control plane.
@@ -121,7 +127,7 @@ handler, no API call to resolve a pending decision. The UI shows approval state 
 change it.
 
 **No approval handler → auto-deny**
-`src/tokoboros/core/permissions.py:777-778`:
+`src/hachi/core/permissions.py:777-778`:
 ```python
 if not self._approval_handler:
     decision = PermissionDecision(action="deny", rationale="No approval handler available")
@@ -153,8 +159,8 @@ timeout?
 ### Evidence
 
 **TurnContext is frozen at turn START, not before each tool call**
-`src/tokoboros/core/turn_context.py:24` — `@dataclass(frozen=True, slots=True)`.
-`src/tokoboros/core/loop.py:471-472`:
+`src/hachi/core/turn_context.py:24` — `@dataclass(frozen=True, slots=True)`.
+`src/hachi/core/loop.py:471-472`:
 ```python
 prev_context = self._current_turn_context
 self._current_turn_context = turn_context
@@ -164,13 +170,13 @@ The context (system prompt, recalled memory, user profile snapshot) is captured 
 the TurnContext may be stale if underlying state changed mid-turn (e.g., a concurrent
 session modifies the same file, or an operator changes `device-permissions.og`). However,
 the `PermissionGate` itself is **also loaded once at boot** and is immutable
-(`src/tokoboros/core/permissions.py:310`, docstring: "Immutable after construction"). So a
+(`src/hachi/core/permissions.py:310`, docstring: "Immutable after construction"). So a
 mid-turn change to `device-permissions.og` is NOT re-read — neither during the turn nor
 between turns without a restart.
 
 **No re-validation between approval and execution**
 The approval flow is synchronous and blocking within the tool-dispatch thread pool
-(`src/tokoboros/core/loop.py:658-669`). The sequence is:
+(`src/hachi/core/loop.py:658-669`). The sequence is:
 1. LLM decides to call tool (tool_call emitted).
 2. `_execute_single_tool` is submitted to `_tool_pool`.
 3. Inside the thread, `InteractivePermissionGate.check_command/check_path` blocks on
@@ -184,12 +190,12 @@ TOCTOU but means: if a user approves an action that was queued _before_ they cha
 re-check.
 
 **No suspend timeout for core_suspend_workflow**
-`src/tokoboros/tools/workflow_tools.py:15-21`:
+`src/hachi/tools/workflow_tools.py:15-21`:
 ```python
 def suspend_workflow(reason: str) -> str:
     raise SuspendWorkflow(reason=reason)
 ```
-`src/tokoboros/core/loop.py:718-720`:
+`src/hachi/core/loop.py:718-720`:
 ```python
 if suspend_reason:
     self.memory.complete_task(user_input_for_turn, f"Suspended: {suspend_reason}")

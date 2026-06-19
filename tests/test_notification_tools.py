@@ -17,15 +17,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.notifier import (
+from hachi.core.loop import ToolRegistry
+from hachi.core.notifier import (
     _WIN_NOTIFY_BODY_ENV,
     _WIN_NOTIFY_TITLE_ENV,
     DesktopNotifier,
     EmailNotifier,
 )
-from tokoboros.gateway.orchestrator import _CORE_TOOL_NAMES, _GROUP_BY_TOOL_NAME
-from tokoboros.tools.notification_tools import (
+from hachi.gateway.orchestrator import _CORE_TOOL_NAMES, _GROUP_BY_TOOL_NAME
+from hachi.tools.notification_tools import (
     _make_notify_user,
     _make_send_email_digest,
     register_notification_tools,
@@ -78,7 +78,7 @@ class RecordingSender:
 def test_desktop_macos_calls_osascript():
     runner = RecordingRunner()
     n = DesktopNotifier(runner=runner)
-    with mock.patch("tokoboros.core.notifier._platform", return_value="macos"):
+    with mock.patch("hachi.core.notifier._platform", return_value="macos"):
         msg = n.send("Hello", "World")
     assert "osascript" in runner.commands[0]
     assert "Hello" in runner.commands[0][-1]  # Script contains title
@@ -91,7 +91,7 @@ def test_desktop_macos_properly_escapes_special_chars():
     """JSON-quoted args prevent script injection."""
     runner = RecordingRunner()
     n = DesktopNotifier(runner=runner)
-    with mock.patch("tokoboros.core.notifier._platform", return_value="macos"):
+    with mock.patch("hachi.core.notifier._platform", return_value="macos"):
         n.send('say "rm -rf /"', "body")
     script = runner.commands[0][-1]
     # Title must be JSON-quoted, so the raw command can't break out of the string.
@@ -107,7 +107,7 @@ def test_desktop_macos_encodes_newline_and_unicode():
     AppleScript double-quoted literals do not expand ``$()``/``$VAR``."""
     runner = RecordingRunner()
     n = DesktopNotifier(runner=runner)
-    with mock.patch("tokoboros.core.notifier._platform", return_value="macos"):
+    with mock.patch("hachi.core.notifier._platform", return_value="macos"):
         n.send("Tîtlé 🚀", "line1\nline2 — cost $5 $(whoami)")
     script = runner.commands[0][-1]
     # Newline encoded as the AppleScript \n escape (two chars: backslash + n).
@@ -130,7 +130,7 @@ def test_desktop_macos_encodes_newline_and_unicode():
 def test_desktop_linux_calls_notify_send():
     runner = RecordingRunner()
     n = DesktopNotifier(runner=runner)
-    with mock.patch("tokoboros.core.notifier._platform", return_value="linux"):
+    with mock.patch("hachi.core.notifier._platform", return_value="linux"):
         msg = n.send("Alert", "Something happened", urgency="critical")
     cmd = runner.commands[0]
     assert "notify-send" in cmd[0]
@@ -144,7 +144,7 @@ def test_desktop_linux_calls_notify_send():
 def test_desktop_linux_invalid_urgency_defaults_to_normal():
     runner = RecordingRunner()
     n = DesktopNotifier(runner=runner)
-    with mock.patch("tokoboros.core.notifier._platform", return_value="linux"):
+    with mock.patch("hachi.core.notifier._platform", return_value="linux"):
         n.send("T", "B", urgency="urgent")  # Not a valid value
     cmd = runner.commands[0]
     assert "--urgency=normal" in cmd
@@ -158,7 +158,7 @@ def test_desktop_linux_invalid_urgency_defaults_to_normal():
 def test_desktop_windows_calls_powershell():
     runner = RecordingRunner()
     n = DesktopNotifier(runner=runner)
-    with mock.patch("tokoboros.core.notifier._platform", return_value="windows"):
+    with mock.patch("hachi.core.notifier._platform", return_value="windows"):
         msg = n.send("Win Alert", "body text")
     # Notification is queued in a daemon thread; give it a moment to execute.
     deadline = time.monotonic() + 2.0
@@ -188,7 +188,7 @@ def test_desktop_windows_no_powershell_injection():
     n = DesktopNotifier(runner=runner)
     evil_title = "Build `$(hostname)` done"
     evil_body = "Result: $(2+2) and $(Get-Date -Format yyyy); var $env:PATH; tick `n end"
-    with mock.patch("tokoboros.core.notifier._platform", return_value="windows"):
+    with mock.patch("hachi.core.notifier._platform", return_value="windows"):
         n.send(evil_title, evil_body)
 
     cmd, kwargs = runner.calls[0]
@@ -253,7 +253,7 @@ def test_desktop_file_not_found_returns_friendly_message():
         raise FileNotFoundError("osascript not found")
 
     n = DesktopNotifier(runner=_missing)
-    with mock.patch("tokoboros.core.notifier._platform", return_value="macos"):
+    with mock.patch("hachi.core.notifier._platform", return_value="macos"):
         msg = n.send("T", "B")
     assert "not available" in msg.lower()
 
@@ -261,7 +261,7 @@ def test_desktop_file_not_found_returns_friendly_message():
 def test_desktop_unknown_platform_returns_friendly():
     runner = RecordingRunner()
     n = DesktopNotifier(runner=runner)
-    with mock.patch("tokoboros.core.notifier._platform", return_value="unknown"):
+    with mock.patch("hachi.core.notifier._platform", return_value="unknown"):
         msg = n.send("T", "B")
     assert "not supported" in msg.lower() or "not available" in msg.lower()
 
@@ -275,7 +275,7 @@ def test_no_shell_true_on_all_platforms():
     for platform in ("macos", "linux", "windows"):
         runner = RecordingRunner()
         n = DesktopNotifier(runner=runner)
-        with mock.patch("tokoboros.core.notifier._platform", return_value=platform):
+        with mock.patch("hachi.core.notifier._platform", return_value=platform):
             n.send("T", "B")
         assert not runner.shell_used(), f"shell=True detected on {platform}"
 
@@ -286,29 +286,29 @@ def test_no_shell_true_on_all_platforms():
 
 
 def test_email_not_configured_without_smtp_user(monkeypatch):
-    monkeypatch.delenv("TOKOBOROS_SMTP_USER", raising=False)
+    monkeypatch.delenv("HACHI_SMTP_USER", raising=False)
     n = EmailNotifier()
     assert n.is_configured() is False
 
 
 def test_email_configured_with_smtp_user_and_password(monkeypatch):
-    monkeypatch.setenv("TOKOBOROS_SMTP_USER", "user@example.com")
-    monkeypatch.setenv("TOKOBOROS_SMTP_PASSWORD", "secret")
+    monkeypatch.setenv("HACHI_SMTP_USER", "user@example.com")
+    monkeypatch.setenv("HACHI_SMTP_PASSWORD", "secret")
     n = EmailNotifier()
     assert n.is_configured() is True
 
 
 def test_email_not_configured_without_password(monkeypatch):
-    monkeypatch.setenv("TOKOBOROS_SMTP_USER", "user@example.com")
-    monkeypatch.delenv("TOKOBOROS_SMTP_PASSWORD", raising=False)
+    monkeypatch.setenv("HACHI_SMTP_USER", "user@example.com")
+    monkeypatch.delenv("HACHI_SMTP_PASSWORD", raising=False)
     n = EmailNotifier()
     assert n.is_configured() is False
 
 
 def test_email_send_success(monkeypatch):
-    monkeypatch.setenv("TOKOBOROS_SMTP_USER", "user@example.com")
-    monkeypatch.setenv("TOKOBOROS_SMTP_PASSWORD", "secret")
-    monkeypatch.setenv("TOKOBOROS_SMTP_TO", "dest@example.com")
+    monkeypatch.setenv("HACHI_SMTP_USER", "user@example.com")
+    monkeypatch.setenv("HACHI_SMTP_PASSWORD", "secret")
+    monkeypatch.setenv("HACHI_SMTP_TO", "dest@example.com")
     sender = RecordingSender()
     n = EmailNotifier(sender=sender)
     result = n.send("Daily Digest", "Here is your summary")
@@ -322,9 +322,9 @@ def test_email_send_success(monkeypatch):
 
 
 def test_email_send_with_explicit_to(monkeypatch):
-    monkeypatch.setenv("TOKOBOROS_SMTP_USER", "user@example.com")
-    monkeypatch.setenv("TOKOBOROS_SMTP_PASSWORD", "pw")
-    monkeypatch.delenv("TOKOBOROS_SMTP_TO", raising=False)
+    monkeypatch.setenv("HACHI_SMTP_USER", "user@example.com")
+    monkeypatch.setenv("HACHI_SMTP_PASSWORD", "pw")
+    monkeypatch.delenv("HACHI_SMTP_TO", raising=False)
     sender = RecordingSender()
     n = EmailNotifier(sender=sender)
     result = n.send("Subject", "Body", to="custom@example.com")
@@ -332,27 +332,27 @@ def test_email_send_with_explicit_to(monkeypatch):
 
 
 def test_email_send_raises_when_no_recipient(monkeypatch):
-    monkeypatch.setenv("TOKOBOROS_SMTP_USER", "user@example.com")
-    monkeypatch.setenv("TOKOBOROS_SMTP_PASSWORD", "pw")
-    monkeypatch.delenv("TOKOBOROS_SMTP_TO", raising=False)
+    monkeypatch.setenv("HACHI_SMTP_USER", "user@example.com")
+    monkeypatch.setenv("HACHI_SMTP_PASSWORD", "pw")
+    monkeypatch.delenv("HACHI_SMTP_TO", raising=False)
     n = EmailNotifier(sender=RecordingSender())
     with pytest.raises(RuntimeError, match="No recipient"):
         n.send("Subject", "Body")
 
 
 def test_email_unconfigured_raises(monkeypatch):
-    monkeypatch.delenv("TOKOBOROS_SMTP_USER", raising=False)
+    monkeypatch.delenv("HACHI_SMTP_USER", raising=False)
     n = EmailNotifier(sender=RecordingSender())
     with pytest.raises(RuntimeError, match="not configured"):
         n.send("Subject", "Body")
 
 
 def test_email_uses_smtp_from_env_host_port(monkeypatch):
-    monkeypatch.setenv("TOKOBOROS_SMTP_USER", "u@example.com")
-    monkeypatch.setenv("TOKOBOROS_SMTP_PASSWORD", "pw")
-    monkeypatch.setenv("TOKOBOROS_SMTP_HOST", "mail.custom.com")
-    monkeypatch.setenv("TOKOBOROS_SMTP_PORT", "465")
-    monkeypatch.setenv("TOKOBOROS_SMTP_TO", "r@example.com")
+    monkeypatch.setenv("HACHI_SMTP_USER", "u@example.com")
+    monkeypatch.setenv("HACHI_SMTP_PASSWORD", "pw")
+    monkeypatch.setenv("HACHI_SMTP_HOST", "mail.custom.com")
+    monkeypatch.setenv("HACHI_SMTP_PORT", "465")
+    monkeypatch.setenv("HACHI_SMTP_TO", "r@example.com")
     sender = RecordingSender()
     n = EmailNotifier(sender=sender)
     n.send("Test", "body")
@@ -362,9 +362,9 @@ def test_email_uses_smtp_from_env_host_port(monkeypatch):
 
 
 def test_email_sender_failure_propagates(monkeypatch):
-    monkeypatch.setenv("TOKOBOROS_SMTP_USER", "u@example.com")
-    monkeypatch.setenv("TOKOBOROS_SMTP_PASSWORD", "pw")
-    monkeypatch.setenv("TOKOBOROS_SMTP_TO", "r@example.com")
+    monkeypatch.setenv("HACHI_SMTP_USER", "u@example.com")
+    monkeypatch.setenv("HACHI_SMTP_PASSWORD", "pw")
+    monkeypatch.setenv("HACHI_SMTP_TO", "r@example.com")
     sender = RecordingSender(raises=ConnectionRefusedError("refused"))
     n = EmailNotifier(sender=sender)
     with pytest.raises(ConnectionRefusedError):
@@ -380,7 +380,7 @@ def test_notify_user_tool_calls_notifier():
     runner = RecordingRunner()
     notifier = DesktopNotifier(runner=runner)
     tool = _make_notify_user(notifier)
-    with mock.patch("tokoboros.core.notifier._platform", return_value="linux"):
+    with mock.patch("hachi.core.notifier._platform", return_value="linux"):
         out = tool("Alert", "Task done", "normal")
     assert "sent" in out.lower()
     assert runner.commands  # subprocess was called
@@ -390,8 +390,8 @@ def test_notify_user_tool_uses_live_notifier_when_none():
     """When notifier=None, a live DesktopNotifier is instantiated per call."""
     tool = _make_notify_user(None)
     runner = RecordingRunner()
-    with mock.patch("tokoboros.core.notifier._platform", return_value="linux"):
-        with mock.patch("tokoboros.core.notifier._default_runner", new=runner):
+    with mock.patch("hachi.core.notifier._platform", return_value="linux"):
+        with mock.patch("hachi.core.notifier._default_runner", new=runner):
             out = tool("T", "B")
     # Just check it ran without error (runner may not have been called if
     # DesktopNotifier used its own internal _default_runner reference).
@@ -404,16 +404,16 @@ def test_notify_user_tool_uses_live_notifier_when_none():
 
 
 def test_email_digest_tool_not_configured(monkeypatch):
-    monkeypatch.delenv("TOKOBOROS_SMTP_USER", raising=False)
+    monkeypatch.delenv("HACHI_SMTP_USER", raising=False)
     tool = _make_send_email_digest(None)
     out = tool("subject", "body")
     assert "not configured" in out.lower()
 
 
 def test_email_digest_tool_happy_path(monkeypatch):
-    monkeypatch.setenv("TOKOBOROS_SMTP_USER", "u@example.com")
-    monkeypatch.setenv("TOKOBOROS_SMTP_PASSWORD", "pw")
-    monkeypatch.setenv("TOKOBOROS_SMTP_TO", "r@example.com")
+    monkeypatch.setenv("HACHI_SMTP_USER", "u@example.com")
+    monkeypatch.setenv("HACHI_SMTP_PASSWORD", "pw")
+    monkeypatch.setenv("HACHI_SMTP_TO", "r@example.com")
     sender = RecordingSender()
     notifier = EmailNotifier(sender=sender)
     tool = _make_send_email_digest(notifier)
@@ -423,9 +423,9 @@ def test_email_digest_tool_happy_path(monkeypatch):
 
 
 def test_email_digest_tool_failure_is_friendly(monkeypatch):
-    monkeypatch.setenv("TOKOBOROS_SMTP_USER", "u@example.com")
-    monkeypatch.setenv("TOKOBOROS_SMTP_PASSWORD", "pw")
-    monkeypatch.setenv("TOKOBOROS_SMTP_TO", "r@example.com")
+    monkeypatch.setenv("HACHI_SMTP_USER", "u@example.com")
+    monkeypatch.setenv("HACHI_SMTP_PASSWORD", "pw")
+    monkeypatch.setenv("HACHI_SMTP_TO", "r@example.com")
     sender = RecordingSender(raises=OSError("SMTP refused"))
     notifier = EmailNotifier(sender=sender)
     tool = _make_send_email_digest(notifier)
@@ -468,7 +468,7 @@ def test_registered_in_notifications_group():
 
 
 def test_digest_buffer_add_and_count() -> None:
-    from tokoboros.core.notifier import DigestBuffer
+    from hachi.core.notifier import DigestBuffer
 
     buf = DigestBuffer()
     assert buf.pending_count() == 0
@@ -478,7 +478,7 @@ def test_digest_buffer_add_and_count() -> None:
 
 
 def test_digest_buffer_flush_clears_items() -> None:
-    from tokoboros.core.notifier import DigestBuffer, EmailNotifier
+    from hachi.core.notifier import DigestBuffer, EmailNotifier
 
     mock_email = MagicMock(spec=EmailNotifier)
     mock_email.is_configured.return_value = False
@@ -495,7 +495,7 @@ def test_digest_buffer_flush_clears_items() -> None:
 
 
 def test_digest_buffer_flush_empty_returns_zero() -> None:
-    from tokoboros.core.notifier import DigestBuffer
+    from hachi.core.notifier import DigestBuffer
 
     buf = DigestBuffer()
     result = buf.flush()
@@ -504,7 +504,7 @@ def test_digest_buffer_flush_empty_returns_zero() -> None:
 
 
 def test_digest_buffer_flush_sends_email() -> None:
-    from tokoboros.core.notifier import DigestBuffer, EmailNotifier
+    from hachi.core.notifier import DigestBuffer, EmailNotifier
 
     sent: list[dict] = []
 
@@ -524,9 +524,9 @@ def test_digest_buffer_flush_sends_email() -> None:
     with patch.dict(
         "os.environ",
         {
-            "TOKOBOROS_SMTP_USER": "u@example.com",
-            "TOKOBOROS_SMTP_PASSWORD": "pw",
-            "TOKOBOROS_SMTP_TO": "recv@example.com",
+            "HACHI_SMTP_USER": "u@example.com",
+            "HACHI_SMTP_PASSWORD": "pw",
+            "HACHI_SMTP_TO": "recv@example.com",
         },
     ):
         result = buf.flush(subject="Daily digest")
@@ -537,7 +537,7 @@ def test_digest_buffer_flush_sends_email() -> None:
 
 
 def test_digest_buffer_cancel_prevents_flush() -> None:
-    from tokoboros.core.notifier import DigestBuffer
+    from hachi.core.notifier import DigestBuffer
 
     flushed: list[bool] = []
 
@@ -560,8 +560,8 @@ def test_digest_buffer_cancel_prevents_flush() -> None:
 
 
 def test_buffer_notification_tool_increments_count() -> None:
-    from tokoboros.core.notifier import DigestBuffer
-    from tokoboros.tools.notification_tools import _make_buffer_notification
+    from hachi.core.notifier import DigestBuffer
+    from hachi.tools.notification_tools import _make_buffer_notification
 
     buf = DigestBuffer()
     fn = _make_buffer_notification(buf)
@@ -572,8 +572,8 @@ def test_buffer_notification_tool_increments_count() -> None:
 
 
 def test_flush_digest_tool_empty_buffer() -> None:
-    from tokoboros.core.notifier import DigestBuffer
-    from tokoboros.tools.notification_tools import _make_flush_notification_digest
+    from hachi.core.notifier import DigestBuffer
+    from hachi.tools.notification_tools import _make_flush_notification_digest
 
     buf = DigestBuffer()
     fn = _make_flush_notification_digest(buf)
@@ -582,8 +582,8 @@ def test_flush_digest_tool_empty_buffer() -> None:
 
 
 def test_flush_digest_tool_sends_and_reports() -> None:
-    from tokoboros.core.notifier import DigestBuffer
-    from tokoboros.tools.notification_tools import (
+    from hachi.core.notifier import DigestBuffer
+    from hachi.tools.notification_tools import (
         _make_buffer_notification,
         _make_flush_notification_digest,
     )

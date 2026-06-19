@@ -1,7 +1,12 @@
 # Phase 3 — Competitive Position & the Switch Argument
 
-**Engagement:** Tokoboros Principal Engineering & Product Strategy · **Date:** 2026-06-12
-**Inputs:** web verification this session (two research passes, sources inline); Tokoboros-side claims
+> **Historical document.** Written before the Hachi rename. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
+**Engagement:** Hachi Principal Engineering & Product Strategy · **Date:** 2026-06-12
+**Inputs:** web verification this session (two research passes, sources inline); Hachi-side claims
 cite the codebase per Phases 0–2. **Markers:** 🌐 web-verified · Ⓢ single/low-authority source (treat
 as directional) · ⚠️ UNVERIFIED · ✅/▶ repo evidence per earlier phases.
 Voices: §1–§4 **What I found** · §5–§8 **What I propose**.
@@ -22,7 +27,7 @@ Voices: §1–§4 **What I found** · §5–§8 **What I propose**.
 Routines, "personal AI Chief of Staff" framing 🌐) and **Cursor** (Slack-triggered Automations 🌐) are
 materially entering the personal-assistant space. Non-dev standalone assistants (Lindy, Reclaim) grow
 in parallel 🌐.
-**Tokoboros today:** effectively **zero public footprint** — the researcher found no index entries,
+**Hachi today:** effectively **zero public footprint** — the researcher found no index entries,
 comparisons, or security write-ups mentioning it 🌐. (PyPI release infrastructure landed on this very
 branch ✅ release.yml — distribution is in flight, not in market.) This matches prior internal research:
 the gap is distribution, not capability (project memory, 2026-06).
@@ -34,7 +39,7 @@ the gap is distribution, not capability (project memory, 2026-06).
 | Identity | Open-source personal agent by Peter Steinberger (Warelay→Clawdbot/Moltbot→OpenClaw lineage 🌐 [TechCrunch/CNBC]); Steinberger joined OpenAI Feb 2026 🌐 CNBC. ~378k★, fastest-to-100k in GitHub history 🌐. |
 | Architecture | Node/TypeScript local-first **gateway** = control plane for sessions/channels/tools; Docker/SSH sandboxes for non-main sessions 🌐 repo README. |
 | Channels | 20+ (WhatsApp, Telegram, Slack, Discord, Signal, iMessage, Teams, Matrix…) 🌐 repo. |
-| Memory | **Plain markdown, loaded at session start**: SOUL.md, AGENTS.md, TOOLS.md, MEMORY.md + daily notes Ⓢ; human-readable/diffable, no selective loading mechanism — i.e., the "dump" model Tokoboros' benchmark targets. |
+| Memory | **Plain markdown, loaded at session start**: SOUL.md, AGENTS.md, TOOLS.md, MEMORY.md + daily notes Ⓢ; human-readable/diffable, no selective loading mechanism — i.e., the "dump" model Hachi's benchmark targets. |
 | Extensibility | Markdown skills; **ClawHub** registry peaked ~13.7k skills, purged to ~3.3k after audits Ⓢ. |
 | Praise | "Stays running for weeks" Ⓢ; unmatched channel breadth Ⓢ; huge community/tutorial base Ⓢ. |
 | Complaints | **(1) Token-bill surprises** — e.g. $47 burned in 20 min via a WhatsApp echo loop Ⓢ; mitigations are user-side env caps. **(2) Security crisis** 🌐 [Conscia/Censys/Bitsight]: CVE-2026-25253 RCE (CVSS 8.8); 21k–42k exposed instances, **93.4% without auth**; **ClawHavoc**: 800+ malicious ClawHub skills shipping AMOS stealer/RATs; 1.5M agent tokens leaked via Moltbook. **(3)** ~15 h first-week setup/tinkering Ⓢ. |
@@ -64,18 +69,18 @@ MIT/AGPL 🌐; privacy/auth gripes Ⓢ) · Roo Code (dead 🌐) · Gemini CLI (d
 
 **Implication (observation):** the four names in the core question split into two different jobs.
 OpenClaw/Hermes own the *life-agent* job; Claude Code/OpenCode own the *repo* job and only Claude Code
-is crossing over. Tokoboros' codebase (channels, Google tools, scheduler, voice, permission tiers,
+is crossing over. Hachi's codebase (channels, Google tools, scheduler, voice, permission tiers,
 memory vault ✅ Phase 0) is built for the first job.
 
 ---
 
 ## 5. The Core Question, answered (What I propose)
 
-> *"If someone already uses OpenClaw, Hermes Agent, Claude Code, or OpenCode, why switch to Tokoboros?"*
+> *"If someone already uses OpenClaw, Hermes Agent, Claude Code, or OpenCode, why switch to Hachi?"*
 
 **Positioning statement:**
 
-> **Tokoboros is the governed personal agent: OpenClaw-class autonomy where the safety, the spend, and
+> **Hachi is the governed personal agent: OpenClaw-class autonomy where the safety, the spend, and
 > the self-improvement are enforced by code, not by vibes.** Every capability the agent has — or
 > teaches itself — is a typed, versioned, lintable, permission-scoped `.og` file you can diff and
 > audit. Every token has a budget the loop enforces mid-turn. Every shell command, path, URL, and
@@ -104,7 +109,7 @@ every clause is backed by code that exists today (with two engineering caveats f
    markdown memory is *simpler to hand-edit* than `.og` — concede simplicity, sell governance.
 
 **→ From Hermes** (their verified pains: ungoverned self-learning, no sandbox, churn):
-Hermes proved the demand for the *learning agent* — and shipped it ungoverned. Tokoboros has the same
+Hermes proved the demand for the *learning agent* — and shipped it ungoverned. Hachi has the same
 loop (`save_skill` after novel tasks, hot-load, refine ✅ og_tools.py:368–431) **with the governance
 Hermes users ask for**: refinements bump semver and append changelog instead of overwriting ✅
 engine.py:705–747; dense-budget rejection + lint advisories bound what the agent may write ✅; manual
@@ -112,11 +117,11 @@ edits live in plain files the Curator-equivalent never silently rewrites (no aut
 a feature here); `::assertions` make learned procedures machine-checkable before execution ✅; and the
 shell the learned skill ultimately calls is permission-gated, not raw `bash -c` ✅ Phase 1 S5 vs 🌐
 repello.ai. **Honest deltas:** Hermes' FTS5 conversational recall + Honcho user modeling are ahead of
-Tokoboros' Chroma recall in maturity; Hermes ships a Curator (autonomous maintenance) that Tokoboros
+Hachi's Chroma recall in maturity; Hermes ships a Curator (autonomous maintenance) that Hachi
 deliberately lacks — position the absence as a choice.
 
 **→ From Claude Code** (now crossing into life-agent territory):
-Don't fight the repo job — concede it. The switch (or *addition*) argument is sovereignty: Tokoboros
+Don't fight the repo job — concede it. The switch (or *addition*) argument is sovereignty: Hachi
 is self-hosted, **provider-free** (Anthropic/OpenAI-compat/OpenRouter/Groq/DeepSeek/Gemini/Ollama ✅
 llm.py:424–512 — incl. fully local), channel-native (Telegram guided setup ✅ telegram_setup.py),
 permission-tiered for non-developer trust, with hard cost caps instead of subscription throttles
@@ -125,8 +130,8 @@ endpoint ✅ fastapi_app.py:435–457. **Honest deltas:** Claude Code's model qu
 and Anthropic's distribution are unmatched; a claude.ai subscriber happy inside that ecosystem has
 little reason to move — target the self-host/multi-provider/cost-sensitive segment.
 
-**→ From OpenCode:** same terminal sensibility, different job. Pitch Tokoboros as the *second* agent
-on the box: OpenCode writes the code, Tokoboros runs the life — and exposes an OpenAI-compatible API
+**→ From OpenCode:** same terminal sensibility, different job. Pitch Hachi as the *second* agent
+on the box: OpenCode writes the code, Hachi runs the life — and exposes an OpenAI-compatible API
 OpenCode users can point tools at. No head-on switch claim (their job isn't ours).
 
 ### What we must NOT claim (anti-positioning, from Phase 2)
@@ -139,7 +144,7 @@ OpenCode users can point tools at. No head-on switch claim (their job isn't ours
 - Not "the safest agent" as an absolute — claim *governed by construction*, evidenced by the
   security-audit CLI, tiers, and CI gates; invite audits.
 
-## 6. The 3 capabilities Tokoboros must nail to win (What I propose)
+## 6. The 3 capabilities Hachi must nail to win (What I propose)
 
 **C1 — Trustworthy always-on (the OpenClaw counter).** Streaming + per-session serialization +
 durable job queue + daemon restart/log hygiene (Phase 1 R1–R5, R18) so "leave it running for weeks"
@@ -153,7 +158,7 @@ learned skill = diffable, versioned, linted, assertion-checked, scope-tagged `.o
 signing + lint-gated publishing for packs (pre-marketplace), so the ClawHavoc failure mode is
 structurally answered before a registry exists.
 
-**C3 — Five-minute sovereign onboarding (the distribution wedge).** `pipx install tokoboros` →
+**C3 — Five-minute sovereign onboarding (the distribution wedge).** `pipx install hachi-og` →
 `quickstart` → Telegram guided setup ✅ (this branch) → first scheduled briefing, on any provider
 including local — under 5 minutes, zero config files. Prior internal research (project memory):
 capability bar is already met; *distribution* is the binding constraint — PyPI release (this branch),
@@ -162,7 +167,7 @@ README repositioning per §5, and the published benchmark are the three artifact
 ## 7. Risks to this position
 
 1. **Claude Code closes the gap from above** (integrations+Routines already shipping 🌐) before
-   Tokoboros has distribution — mitigation: provider-freedom + self-host segments Anthropic won't serve.
+   Hachi has distribution — mitigation: provider-freedom + self-host segments Anthropic won't serve.
 2. **The governance pitch gets falsified** by the Phase-1/2 defects (unserialized sessions, silent
    memory loss, retrieval misses) if marketing precedes the P0 fixes — sequencing is the strategy.
 3. **OpenClaw hardens** (post-crisis security investment is likely) — mitigation: governance must be

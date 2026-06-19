@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 
 
 def test_workflow_spec_defaults():
-    from tokoboros.core.workflow_composer import WorkflowSpec
+    from hachi.core.workflow_composer import WorkflowSpec
 
     spec = WorkflowSpec(name="my_workflow")
     assert spec.name == "my_workflow"
@@ -32,7 +32,7 @@ def test_workflow_spec_defaults():
 
 
 def test_render_preview_contains_name():
-    from tokoboros.core.workflow_composer import WorkflowSpec, render_workflow_preview
+    from hachi.core.workflow_composer import WorkflowSpec, render_workflow_preview
 
     spec = WorkflowSpec(name="morning_briefing", description="Send daily digest")
     card = render_workflow_preview(spec)
@@ -41,7 +41,7 @@ def test_render_preview_contains_name():
 
 
 def test_render_preview_shows_trigger_cron():
-    from tokoboros.core.workflow_composer import (
+    from hachi.core.workflow_composer import (
         WorkflowSpec,
         WorkflowTrigger,
         render_workflow_preview,
@@ -56,7 +56,7 @@ def test_render_preview_shows_trigger_cron():
 
 
 def test_render_preview_shows_trigger_interval():
-    from tokoboros.core.workflow_composer import (
+    from hachi.core.workflow_composer import (
         WorkflowSpec,
         WorkflowTrigger,
         render_workflow_preview,
@@ -68,7 +68,7 @@ def test_render_preview_shows_trigger_interval():
 
 
 def test_render_preview_shows_trigger_condition():
-    from tokoboros.core.workflow_composer import (
+    from hachi.core.workflow_composer import (
         WorkflowSpec,
         WorkflowTrigger,
         render_workflow_preview,
@@ -83,7 +83,7 @@ def test_render_preview_shows_trigger_condition():
 
 
 def test_render_preview_shows_steps():
-    from tokoboros.core.workflow_composer import WorkflowSpec, WorkflowStep, render_workflow_preview
+    from hachi.core.workflow_composer import WorkflowSpec, WorkflowStep, render_workflow_preview
 
     spec = WorkflowSpec(
         name="x",
@@ -95,7 +95,7 @@ def test_render_preview_shows_steps():
 
 
 def test_render_preview_shows_scopes():
-    from tokoboros.core.workflow_composer import WorkflowSpec, render_workflow_preview
+    from hachi.core.workflow_composer import WorkflowSpec, render_workflow_preview
 
     spec = WorkflowSpec(name="x", scopes=["gmail.read", "slack.send"])
     card = render_workflow_preview(spec)
@@ -104,7 +104,7 @@ def test_render_preview_shows_scopes():
 
 
 def test_render_preview_shows_cost():
-    from tokoboros.core.workflow_composer import WorkflowSpec, render_workflow_preview
+    from hachi.core.workflow_composer import WorkflowSpec, render_workflow_preview
 
     spec = WorkflowSpec(name="x", est_cost_usd=0.0042)
     card = render_workflow_preview(spec)
@@ -112,7 +112,7 @@ def test_render_preview_shows_cost():
 
 
 def test_render_preview_dry_run_label():
-    from tokoboros.core.workflow_composer import WorkflowSpec, render_workflow_preview
+    from hachi.core.workflow_composer import WorkflowSpec, render_workflow_preview
 
     spec = WorkflowSpec(name="x", dry_run=True)
     card = render_workflow_preview(spec)
@@ -120,7 +120,7 @@ def test_render_preview_dry_run_label():
 
 
 def test_render_preview_shows_approve_reject():
-    from tokoboros.core.workflow_composer import WorkflowSpec, render_workflow_preview
+    from hachi.core.workflow_composer import WorkflowSpec, render_workflow_preview
 
     card = render_workflow_preview(WorkflowSpec(name="x"))
     assert "Approve" in card
@@ -128,7 +128,7 @@ def test_render_preview_shows_approve_reject():
 
 
 def test_render_preview_shows_assertions():
-    from tokoboros.core.workflow_composer import WorkflowSpec, render_workflow_preview
+    from hachi.core.workflow_composer import WorkflowSpec, render_workflow_preview
 
     spec = WorkflowSpec(name="x", assertions=["output contains 'done'"])
     card = render_workflow_preview(spec)
@@ -141,7 +141,7 @@ def test_render_preview_shows_assertions():
 
 
 def test_apply_dry_run_sets_flag():
-    from tokoboros.core.workflow_composer import WorkflowSpec, apply_dry_run
+    from hachi.core.workflow_composer import WorkflowSpec, apply_dry_run
 
     spec = WorkflowSpec(name="x")
     dry = apply_dry_run(spec)
@@ -149,7 +149,7 @@ def test_apply_dry_run_sets_flag():
 
 
 def test_apply_dry_run_annotates_send_tools():
-    from tokoboros.core.workflow_composer import WorkflowSpec, WorkflowStep, apply_dry_run
+    from hachi.core.workflow_composer import WorkflowSpec, WorkflowStep, apply_dry_run
 
     spec = WorkflowSpec(
         name="x",
@@ -161,7 +161,7 @@ def test_apply_dry_run_annotates_send_tools():
 
 
 def test_apply_dry_run_does_not_annotate_read_tools():
-    from tokoboros.core.workflow_composer import WorkflowSpec, WorkflowStep, apply_dry_run
+    from hachi.core.workflow_composer import WorkflowSpec, WorkflowStep, apply_dry_run
 
     spec = WorkflowSpec(
         name="x",
@@ -177,7 +177,7 @@ def test_apply_dry_run_does_not_annotate_read_tools():
 
 
 def _make_mock_gate():
-    from tokoboros.core.permissions import PermissionResult
+    from hachi.core.permissions import PermissionResult
 
     mock = MagicMock()
     mock.summary = "Test gate"
@@ -187,7 +187,7 @@ def _make_mock_gate():
 
 
 def test_dry_run_gate_blocks_write():
-    from tokoboros.core.permissions import DryRunGate
+    from hachi.core.permissions import DryRunGate
 
     gate = DryRunGate(_make_mock_gate())
     result = gate.check_path("/home/user/file.txt", "write")
@@ -196,7 +196,7 @@ def test_dry_run_gate_blocks_write():
 
 
 def test_dry_run_gate_blocks_delete():
-    from tokoboros.core.permissions import DryRunGate
+    from hachi.core.permissions import DryRunGate
 
     gate = DryRunGate(_make_mock_gate())
     result = gate.check_path("/home/user/file.txt", "delete")
@@ -204,7 +204,7 @@ def test_dry_run_gate_blocks_delete():
 
 
 def test_dry_run_gate_allows_read():
-    from tokoboros.core.permissions import DryRunGate
+    from hachi.core.permissions import DryRunGate
 
     gate = DryRunGate(_make_mock_gate())
     result = gate.check_path("/home/user/file.txt", "read")
@@ -212,7 +212,7 @@ def test_dry_run_gate_allows_read():
 
 
 def test_dry_run_gate_blocks_mutating_commands():
-    from tokoboros.core.permissions import DryRunGate
+    from hachi.core.permissions import DryRunGate
 
     gate = DryRunGate(_make_mock_gate())
     result = gate.check_command("rm -rf /tmp/test")
@@ -221,7 +221,7 @@ def test_dry_run_gate_blocks_mutating_commands():
 
 
 def test_dry_run_gate_allows_ls():
-    from tokoboros.core.permissions import DryRunGate
+    from hachi.core.permissions import DryRunGate
 
     gate = DryRunGate(_make_mock_gate())
     result = gate.check_command("ls /home")
@@ -229,21 +229,21 @@ def test_dry_run_gate_allows_ls():
 
 
 def test_dry_run_gate_is_dry_run():
-    from tokoboros.core.permissions import DryRunGate
+    from hachi.core.permissions import DryRunGate
 
     gate = DryRunGate(_make_mock_gate())
     assert gate.is_dry_run() is True
 
 
 def test_dry_run_gate_summary_includes_marker():
-    from tokoboros.core.permissions import DryRunGate
+    from hachi.core.permissions import DryRunGate
 
     gate = DryRunGate(_make_mock_gate())
     assert "dry-run" in gate.summary.lower()
 
 
 def test_dry_run_gate_stub_outbound():
-    from tokoboros.core.permissions import DryRunGate
+    from hachi.core.permissions import DryRunGate
 
     gate = DryRunGate(_make_mock_gate())
     stub = gate.stub_outbound("send_email", {"to": "user@example.com"})
@@ -257,7 +257,7 @@ def test_dry_run_gate_stub_outbound():
 
 
 def test_schedule_has_condition_skill_field():
-    from tokoboros.jobs.scheduler import Schedule, ScheduleKind
+    from hachi.jobs.scheduler import Schedule, ScheduleKind
 
     s = Schedule(
         schedule_id="abc",
@@ -271,7 +271,7 @@ def test_schedule_has_condition_skill_field():
 
 
 def test_schedule_condition_skill_defaults_none():
-    from tokoboros.jobs.scheduler import Schedule, ScheduleKind
+    from hachi.jobs.scheduler import Schedule, ScheduleKind
 
     s = Schedule(
         schedule_id="abc",
@@ -285,7 +285,7 @@ def test_schedule_condition_skill_defaults_none():
 
 def test_schedule_from_dict_without_condition_skill():
     """Backward compat: old persisted records without condition_skill load cleanly."""
-    from tokoboros.jobs.scheduler import Schedule
+    from hachi.jobs.scheduler import Schedule
 
     data = {
         "schedule_id": "abc",
@@ -309,7 +309,7 @@ def test_schedule_from_dict_without_condition_skill():
 
 
 def test_schedule_to_dict_includes_condition_skill():
-    from tokoboros.jobs.scheduler import Schedule, ScheduleKind
+    from hachi.jobs.scheduler import Schedule, ScheduleKind
 
     s = Schedule(
         schedule_id="abc",
@@ -350,7 +350,7 @@ def _make_interval_schedule(condition_skill: str | None = None) -> dict:
 
 
 def test_tick_without_condition_evaluator_fires_normally(tmp_path):
-    from tokoboros.jobs.scheduler import Scheduler, ScheduleStore
+    from hachi.jobs.scheduler import Scheduler, ScheduleStore
 
     store_path = tmp_path / "sched.json"
     import json
@@ -366,7 +366,7 @@ def test_tick_without_condition_evaluator_fires_normally(tmp_path):
 
 
 def test_tick_skips_when_condition_evaluator_returns_false(tmp_path):
-    from tokoboros.jobs.scheduler import Scheduler, ScheduleStore
+    from hachi.jobs.scheduler import Scheduler, ScheduleStore
 
     store_path = tmp_path / "sched.json"
     import json
@@ -382,7 +382,7 @@ def test_tick_skips_when_condition_evaluator_returns_false(tmp_path):
 
 
 def test_tick_fires_when_condition_evaluator_returns_true(tmp_path):
-    from tokoboros.jobs.scheduler import Scheduler, ScheduleStore
+    from hachi.jobs.scheduler import Scheduler, ScheduleStore
 
     store_path = tmp_path / "sched.json"
     import json
@@ -398,7 +398,7 @@ def test_tick_fires_when_condition_evaluator_returns_true(tmp_path):
 
 
 def test_tick_skips_when_condition_evaluator_raises(tmp_path):
-    from tokoboros.jobs.scheduler import Scheduler, ScheduleStore
+    from hachi.jobs.scheduler import Scheduler, ScheduleStore
 
     store_path = tmp_path / "sched.json"
     import json
@@ -419,7 +419,7 @@ def test_tick_skips_when_condition_evaluator_raises(tmp_path):
 
 def test_tick_no_condition_skill_ignores_evaluator(tmp_path):
     """A schedule with no condition_skill fires even if an evaluator is supplied."""
-    from tokoboros.jobs.scheduler import Scheduler, ScheduleStore
+    from hachi.jobs.scheduler import Scheduler, ScheduleStore
 
     store_path = tmp_path / "sched.json"
     import json

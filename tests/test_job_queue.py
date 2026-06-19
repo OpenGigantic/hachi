@@ -4,9 +4,9 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 
-from tokoboros.core.runtime_events import RuntimeEvent, now_iso
-from tokoboros.core.runtime_read_models import RuntimeReadModelStore
-from tokoboros.jobs import InMemoryJobQueue, Job, JobStatus, JobWorker
+from hachi.core.runtime_events import RuntimeEvent, now_iso
+from hachi.core.runtime_read_models import RuntimeReadModelStore
+from hachi.jobs import InMemoryJobQueue, Job, JobStatus, JobWorker
 
 
 def _event_sink(read_models: RuntimeReadModelStore):

@@ -1,6 +1,6 @@
 <div align="center">
 
-# Tokoboros
+# Hachi
 
 **The governed personal agent**
 
@@ -15,7 +15,7 @@ _OpenClaw-class autonomy where safety, spend, and self-improvement are enforced 
 
 ---
 
-## What is Tokoboros?
+## What is Hachi?
 
 Every capability the agent has — or teaches itself — is a typed, versioned, lintable,
 permission-scoped `.og` file you can diff and audit.  Every token has a budget the loop
@@ -26,7 +26,7 @@ The category's two defining failures of 2026 — OpenClaw's marketplace poisonin
 Hermes' agent that rewrites its own brain unsupervised — are the two things this architecture
 was built to prevent.
 
-| Problem | How Tokoboros solves it |
+| Problem | How Hachi solves it |
 |---------|-----------------------|
 | **Runaway token spend** | Per-session _and_ per-turn cost/token caps enforced between LLM calls; lazy tool groups; prompt-cache-aware breakpoints. The $47-echo-loop story is structurally impossible under a turn cap. |
 | **Ungoverned self-learning** | `save_skill` bumps semver and appends changelog instead of overwriting; lint + dense-budget rejection bounds what the agent may write; `::assertions` make learned procedures machine-checkable before execution; your manual edits are never silently overwritten. |
@@ -45,31 +45,31 @@ was built to prevent.
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OpenGigantic/tokoboros/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/OpenGigantic/hachi/main/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/OpenGigantic/tokoboros/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/OpenGigantic/hachi/main/install.ps1 | iex
 ```
 
 The installer bootstraps [`uv`](https://docs.astral.sh/uv/) (which manages Python for you),
-fetches Tokoboros, installs dependencies, and launches the guided setup.  No prior Python
+fetches Hachi, installs dependencies, and launches the guided setup.  No prior Python
 setup required.
 
 **Already have Python tooling?** Install the published package directly:
 
 ```bash
-pipx install tokoboros          # or: uv tool install tokoboros
-tokoboros quickstart            # pick a provider + safety level
+pipx install hachi-og          # or: uv tool install hachi-og
+hachi quickstart            # pick a provider + safety level
 ```
 
 Already have the source? Just run the conversational setup:
 
 ```bash
-uv run tokoboros quickstart   # pick a provider, validate your API key up front, choose a safety level
-tokoboros                     # start chatting (no subcommand needed)
+uv run hachi quickstart   # pick a provider, validate your API key up front, choose a safety level
+hachi                     # start chatting (no subcommand needed)
 ```
 
 `quickstart` checks your provider API key **before** the first message (instead of failing
@@ -90,24 +90,24 @@ mid-conversation) — the most common first-run snag for new users.
    structural-injection escaping, RBAC scopes — the shape of an answer to ClawHavoc without a
    marketplace yet.
 
-_Honest deltas: OpenClaw has 20+ channels vs Tokoboros' 4; a massive community and tutorial base;
+_Honest deltas: OpenClaw has 20+ channels vs Hachi's 4; a massive community and tutorial base;
 markdown memory is simpler to hand-edit than `.og`. Concede simplicity, evaluate governance._
 
 ### From Hermes (their verified pains: Curator overwrites manual edits, audit found 4 Critical + 9 High, learning loop off by default)
 
-Hermes proved demand for the learning agent — and shipped it ungoverned. Tokoboros has the same
+Hermes proved demand for the learning agent — and shipped it ungoverned. Hachi has the same
 loop (`save_skill` after novel tasks, hot-load, refine) with the governance Hermes users ask for:
 versioned diffs instead of silent overwrites; lint advisories; machine-checkable `::assertions`
 before execution; shell access that is permission-gated, not raw `bash -c`.
 
-_Honest deltas: Hermes' FTS5 conversational recall + Honcho user modeling are ahead of Tokoboros'
-Chroma recall in maturity. Hermes ships an autonomous Curator; Tokoboros deliberately lacks one —
+_Honest deltas: Hermes' FTS5 conversational recall + Honcho user modeling are ahead of Hachi's
+Chroma recall in maturity. Hermes ships an autonomous Curator; Hachi deliberately lacks one —
 position the absence as a choice._
 
 ### From Claude Code (now crossing into personal-assistant territory)
 
 Don't fight the repo job — Claude Code wins it. The switch (or _addition_) argument is
-sovereignty: Tokoboros is self-hosted, **provider-free** (Anthropic / OpenAI-compat / OpenRouter /
+sovereignty: Hachi is self-hosted, **provider-free** (Anthropic / OpenAI-compat / OpenRouter /
 Groq / DeepSeek / Gemini / Ollama including fully local), channel-native, permission-tiered for
 non-developer trust, with hard cost caps instead of subscription throttles.  For an
 OpenAI-compatible client ecosystem it _is_ an endpoint.
@@ -118,8 +118,8 @@ the self-host/multi-provider/cost-sensitive segment._
 
 ### From OpenCode
 
-Same terminal sensibility, different job. Pitch Tokoboros as the _second_ agent on the box:
-OpenCode writes the code, Tokoboros runs the life — and exposes an OpenAI-compatible API
+Same terminal sensibility, different job. Pitch Hachi as the _second_ agent on the box:
+OpenCode writes the code, Hachi runs the life — and exposes an OpenAI-compatible API
 OpenCode users can point tools at.
 
 ---
@@ -152,11 +152,11 @@ OpenCode users can point tools at.
   memory writes go through the queue (no inline drain latency in the turn path).
 - **Native Integrations** — Google Workspace (Gmail, Drive, Calendar), Notion, Slack — all via
   OAuth; credentials resolved lazily at call time, never at boot.
-- **Universal REST Adapter** — Define any REST API in a `.og` file; Tokoboros auto-generates
+- **Universal REST Adapter** — Define any REST API in a `.og` file; Hachi auto-generates
   the tool; outbound requests scrubbed of leaked credentials before they leave the machine.
 - **Browser Automation** — Real headless browser (`browse_web`, `browser_act`,
   `browser_screenshot`) for live web research; SSRF-guarded and permission-gated
-  (`pip install 'tokoboros[browser]'` + `playwright install chromium`).
+  (`pip install 'hachi-og[browser]'` + `playwright install chromium`).
 - **Vision Input** — `view_image` lets the agent reason about a local file or `http(s)` URL
   (PNG/JPEG/GIF/WebP); permission-gated and SSRF-guarded (Anthropic provider).
 - **Voice Input/Output** — `transcribe_audio` (Whisper) + `speak_text` (TTS); both
@@ -171,10 +171,10 @@ OpenCode users can point tools at.
 - **Security Audit Command** — Built-in `security-audit` CLI checks local runtime posture;
   CI runs with `--fail-on-medium` on PRs.
 - **OpenTelemetry Tracing** — Opt-in spans for LLM and tool calls
-  (`pip install 'tokoboros[tracing]'` + `TOKOBOROS_TRACING=true`); zero overhead when off.
+  (`pip install 'hachi-og[tracing]'` + `HACHI_TRACING=true`); zero overhead when off.
 - **Autonomous Skill Authoring** — The agent writes and refines its own `.og` skills
-  (`save_skill`); import the wider ecosystem with `tokoboros skill import` (SKILL.md → `.og`).
-- **Proactive Scheduling** — `tokoboros schedule add` runs tasks on cron/interval/once with
+  (`save_skill`); import the wider ecosystem with `hachi skill import` (SKILL.md → `.og`).
+- **Proactive Scheduling** — `hachi schedule add` runs tasks on cron/interval/once with
   delivery to chat or a webhook.
 - **Multi-Channel + OpenAI-Compatible API** — Reach the agent from Telegram or any platform via
   a generic inbound webhook; point Open WebUI / LibreChat at `/v1/chat/completions`.
@@ -204,8 +204,8 @@ OpenCode users can point tools at.
 
 ```bash
 # Clone the repository
-git clone https://github.com/OpenGigantic/tokoboros.git
-cd tokoboros
+git clone https://github.com/OpenGigantic/hachi.git
+cd hachi
 
 # Create/update the local environment and install the package
 uv sync
@@ -225,31 +225,31 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 ### Run
 
 ```bash
-# Just type tokoboros — no subcommand needed
-tokoboros
+# Just type hachi — no subcommand needed
+hachi
 ```
 
-Once installed, plain `tokoboros` launches the Textual assistant directly (same as
-`tokoboros run`). Useful flags work on the bare command too:
+Once installed, plain `hachi` launches the Textual assistant directly (same as
+`hachi run`). Useful flags work on the bare command too:
 
 ```bash
-tokoboros                 # start the assistant
-tokoboros -c              # continue the most recent conversation (full context reload)
-tokoboros -r              # pick a past session to resume
-tokoboros --repl          # legacy Rich REPL
-tokoboros --version       # print version
-tokoboros -h              # list every command
+hachi                 # start the assistant
+hachi -c              # continue the most recent conversation (full context reload)
+hachi -r              # pick a past session to resume
+hachi --repl          # legacy Rich REPL
+hachi --version       # print version
+hachi -h              # list every command
 ```
 
 The Textual console boots the agent in-process, so interactive permission approvals
 and in-chat slash commands operate on the live session.  (The HTTP gateway used by the
-web frontend lives behind `tokoboros gateway`.)
+web frontend lives behind `hachi gateway`.)
 
-On first run, Tokoboros will:
+On first run, Hachi will:
 
-1. Create the `~/.tokoboros/` workspace directory
+1. Create the `~/.hachi/` workspace directory
 2. Apply quick-start setup defaults and prepare provider/permission configuration
-3. Copy default skill files to `~/.tokoboros/skills/`
+3. Copy default skill files to `~/.hachi/skills/`
 4. Launch the Textual operator console, or resume setup if configuration is incomplete
 
 #### Slash commands (type in the chat composer)
@@ -262,74 +262,74 @@ On first run, Tokoboros will:
 
 ```bash
 # Launch Textual UI (default — subcommand optional)
-tokoboros
-uv run tokoboros run
+hachi
+uv run hachi run
 
 # Resume a conversation
-tokoboros -c                # most recent session
-tokoboros -r                # choose from a list
+hachi -c                # most recent session
+hachi -r                # choose from a list
 
 # Launch legacy REPL
-uv run tokoboros run --repl
-uv run tokoboros run-repl
+uv run hachi run --repl
+uv run hachi run-repl
 
 # Run setup flow without starting a session
-uv run tokoboros setup --tier lightning
+uv run hachi setup --tier lightning
 
 # Inspect config and canonical paths
-uv run tokoboros config --paths
-uv run tokoboros config-validate --json   # validate settings + provider key (CI-friendly exit code)
-uv run tokoboros models                    # list the provider's models (live), capped by allowed_models
+uv run hachi config --paths
+uv run hachi config-validate --json   # validate settings + provider key (CI-friendly exit code)
+uv run hachi models                    # list the provider's models (live), capped by allowed_models
 
 # Manage secret storage metadata and health
-uv run tokoboros secrets --list
-uv run tokoboros secrets --check
+uv run hachi secrets --list
+uv run hachi secrets --check
 
 # Inspect long-term memory (semantic search + collection stats)
-uv run tokoboros memory search "what framework does this project use"
-uv run tokoboros memory search "preferences" --profile   # user_profile collection
-uv run tokoboros memory stats
+uv run hachi memory search "what framework does this project use"
+uv run hachi memory search "preferences" --profile   # user_profile collection
+uv run hachi memory stats
 
 # Environment and security diagnostics
-uv run tokoboros doctor
-uv run tokoboros doctor --json            # machine-readable diagnostics (CI/automation)
-uv run tokoboros security-audit --json --fail-on-high
+uv run hachi doctor
+uv run hachi doctor --json            # machine-readable diagnostics (CI/automation)
+uv run hachi security-audit --json --fail-on-high
 
 # Start standalone gateway server
-uv run tokoboros gateway --host 127.0.0.1 --port 8787 --runtime
+uv run hachi gateway --host 127.0.0.1 --port 8787 --runtime
 
 # Export OpenAPI contract for clients
-uv run tokoboros gateway-openapi --output openapi/tokoboros-openapi.json
+uv run hachi gateway-openapi --output openapi/hachi-openapi.json
 
 # Fastest first-run setup (conversational; validates your API key up front)
-uv run tokoboros quickstart
+uv run hachi quickstart
 
 # Skills: import SKILL.md, list, export, lint, benchmark, usage report
-uv run tokoboros skill import ./my-skill.md
-uv run tokoboros skill list
-uv run tokoboros skill search "deploy to prod"     # Pass-1 routing: which skills match a query
-uv run tokoboros skill show deploy_to_prod         # Pass-2 view: metadata + dense + token costs
-uv run tokoboros skill changelog deploy_to_prod    # version + ::changelog entries (delta-load)
-uv run tokoboros skill assert deploy_to_prod -p env=prod  # check ::assertion preconditions (CI gate)
-uv run tokoboros skill graph                       # whole-library dependency graph
-uv run tokoboros skill viz -f mermaid              # render the graph as Mermaid
-uv run tokoboros skill viz -f dot -o skills.dot    # Graphviz source
-uv run tokoboros skill viz -f html -o skills.html  # self-contained interactive graph
-uv run tokoboros skill export deploy_to_prod -o deploy.og
-uv run tokoboros skill lint ./my-skills/           # structure + ::dense token-budget check
-uv run tokoboros skill report                      # which skills earn their keep vs. dead weight
-uv run tokoboros skill benchmark                   # token savings (CI-enforced ≥80%)
-uv run tokoboros skill benchmark --suite fast      # + retrieval quality M1
-uv run tokoboros skill benchmark --suite full      # + cost M2, latency M4, pass-depth M7
+uv run hachi skill import ./my-skill.md
+uv run hachi skill list
+uv run hachi skill search "deploy to prod"     # Pass-1 routing: which skills match a query
+uv run hachi skill show deploy_to_prod         # Pass-2 view: metadata + dense + token costs
+uv run hachi skill changelog deploy_to_prod    # version + ::changelog entries (delta-load)
+uv run hachi skill assert deploy_to_prod -p env=prod  # check ::assertion preconditions (CI gate)
+uv run hachi skill graph                       # whole-library dependency graph
+uv run hachi skill viz -f mermaid              # render the graph as Mermaid
+uv run hachi skill viz -f dot -o skills.dot    # Graphviz source
+uv run hachi skill viz -f html -o skills.html  # self-contained interactive graph
+uv run hachi skill export deploy_to_prod -o deploy.og
+uv run hachi skill lint ./my-skills/           # structure + ::dense token-budget check
+uv run hachi skill report                      # which skills earn their keep vs. dead weight
+uv run hachi skill benchmark                   # token savings (CI-enforced ≥80%)
+uv run hachi skill benchmark --suite fast      # + retrieval quality M1
+uv run hachi skill benchmark --suite full      # + cost M2, latency M4, pass-depth M7
 
 # Proactive scheduling (cron / interval / one-shot)
-uv run tokoboros schedule add "daily-brief" "Summarize my unread email" --cron "0 9 * * 1-5"
-uv run tokoboros schedule list
-uv run tokoboros schedule run-due
+uv run hachi schedule add "daily-brief" "Summarize my unread email" --cron "0 9 * * 1-5"
+uv run hachi schedule list
+uv run hachi schedule run-due
 
 # Talk to the agent from Telegram — runs locally, no deploy
-uv run tokoboros channel telegram --setup   # one-time: paste bot token + pick who can talk to it
-uv run tokoboros channel telegram           # subsequent runs use the stored token + allowlist
+uv run hachi channel telegram --setup   # one-time: paste bot token + pick who can talk to it
+uv run hachi channel telegram           # subsequent runs use the stored token + allowlist
 ```
 
 #### Visualize the ObjectGraph
@@ -354,7 +354,7 @@ graph TD
 
 ```bash
 # Terminal 1: gateway
-uv run tokoboros gateway --host 127.0.0.1 --port 8787 --runtime
+uv run hachi gateway --host 127.0.0.1 --port 8787 --runtime
 
 # Terminal 2: frontend dev server
 cd frontend
@@ -382,7 +382,7 @@ Useful endpoints:
 
 The repository includes a two-service local stack:
 
-- `tokoboros` (Python gateway service on `:8787`)
+- `hachi` (Python gateway service on `:8787`)
 - `frontend` (web UI on `:5173`)
 
 ```bash
@@ -394,8 +394,8 @@ docker compose up --build
 ## Architecture
 
 ```
-tokoboros/
-├── src/tokoboros/
+hachi/
+├── src/hachi/
 │   ├── cli/                  # CLI entry point (Typer)
 │   │   └── main.py           # Run modes, gateway server commands, diagnostics
 │   │
@@ -427,7 +427,7 @@ tokoboros/
 │   │   ├── control_plane.py  # Session protocol and gateway runtime interfaces
 │   │   ├── fastapi_app.py    # HTTP routes and OpenAPI surface
 │   │   ├── orchestrator.py   # Agent session factory + runtime wiring
-│   │   └── workspace.py      # ~/.tokoboros/ directory and skill bootstrap
+│   │   └── workspace.py      # ~/.hachi/ directory and skill bootstrap
 │   │
 │   ├── integrations/         # Native platform integrations
 │   │   ├── google/           # Gmail, Drive, Calendar
@@ -443,7 +443,7 @@ tokoboros/
 │   └── tui/
 │       └── app.py            # Textual operator console
 │
-├── src/tokoboros/default_skills/         # Built-in .og skill files
+├── src/hachi/default_skills/             # Built-in .og skill files
 │   ├── general/                          # Everyday skills (email, QR codes, web apps)
 │   ├── technical/                        # Developer skills (code review, debugging)
 │   ├── google/                           # Google Workspace skills
@@ -455,7 +455,7 @@ tokoboros/
 │   └── data/s_real_results_v1.json        # Frozen S-real corpus results
 ├── frontend/                              # TanStack Start web frontend
 ├── openapi/
-│   └── tokoboros-openapi.json            # Generated gateway OpenAPI contract
+│   └── hachi-openapi.json                # Generated gateway OpenAPI contract
 ├── docker-compose.yml                    # Gateway + frontend local stack
 ├── Dockerfile                            # Gateway service image
 ├── AGENTS.md                             # Contributor guidance for coding agents
@@ -525,7 +525,7 @@ and package metadata into the local project environment.
 ::steps
 1. uv sync
 2. uv run python --version
-3. uv run tokoboros --help
+3. uv run hachi --help
 ::assertion
   trigger: after[install]
   check: command('uv run python -c "import typer"') exits 0
@@ -544,11 +544,11 @@ For the complete specification, see [ObjectGraph_Complete_Specification.md](Obje
 
 ### Workspace Structure
 
-Tokoboros resolves paths with `platformdirs` (config/data/state), while still importing from
-legacy `~/.tokoboros/` when needed.
+Hachi resolves paths with `platformdirs` (config/data/state), while still importing from
+legacy `~/.hachi/` when needed.
 
 ```bash
-uv run tokoboros config --paths
+uv run hachi config --paths
 ```
 
 Key path roles:
@@ -638,5 +638,5 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 ---
 
 <div align="center">
-  <sub>Built by the Tokoboros Project</sub>
+  <sub>Built by Open Gigantic</sub>
 </div>

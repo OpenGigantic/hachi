@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from tokoboros.core.turn_context import TurnContext
+from hachi.core.turn_context import TurnContext
 
 
 def test_turn_context_is_frozen_and_composes_prompt() -> None:

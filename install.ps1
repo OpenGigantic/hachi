@@ -1,15 +1,15 @@
-# Tokoboros one-liner installer (Windows / PowerShell)
+# Hachi one-liner installer (Windows / PowerShell)
 #
-#   irm https://raw.githubusercontent.com/OpenGigantic/tokoboros/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/OpenGigantic/hachi/main/install.ps1 | iex
 #
-# Bootstraps uv (which manages Python), fetches Tokoboros, installs deps, and
+# Bootstraps uv (which manages Python), fetches Hachi, installs deps, and
 # launches the guided setup. Override the source repo or install location with
-# the TOKOBOROS_REPO / TOKOBOROS_HOME environment variables.
+# the HACHI_REPO / HACHI_HOME environment variables.
 #Requires -Version 5
 $ErrorActionPreference = "Stop"
 
-$RepoUrl = if ($env:TOKOBOROS_REPO) { $env:TOKOBOROS_REPO } else { "https://github.com/OpenGigantic/tokoboros" }
-$InstallDir = if ($env:TOKOBOROS_HOME) { $env:TOKOBOROS_HOME } else { "$env:USERPROFILE\.tokoboros-src" }
+$RepoUrl = if ($env:HACHI_REPO) { $env:HACHI_REPO } else { "https://github.com/OpenGigantic/hachi" }
+$InstallDir = if ($env:HACHI_HOME) { $env:HACHI_HOME } else { "$env:USERPROFILE\.hachi-src" }
 
 function Info($message) { Write-Host "==> $message" -ForegroundColor Cyan }
 
@@ -26,11 +26,11 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 
 # 2. Fetch (or update) the source.
 if (Test-Path "$InstallDir\.git") {
-    Info "Updating Tokoboros in $InstallDir..."
+    Info "Updating Hachi in $InstallDir..."
     git -C $InstallDir pull --ff-only
 }
 else {
-    Info "Cloning Tokoboros into $InstallDir..."
+    Info "Cloning Hachi into $InstallDir..."
     git clone --depth 1 $RepoUrl $InstallDir
 }
 
@@ -41,10 +41,10 @@ uv sync
 
 # 4. Launch the guided setup.
 Info "Installed! Launching setup..."
-uv run --project $InstallDir tokoboros quickstart
+uv run --project $InstallDir hachi quickstart
 
 Write-Host ""
 Write-Host "────────────────────────────────────────────────────────" -ForegroundColor DarkGray
-Write-Host "Tokoboros is installed. Start chatting with:" -ForegroundColor Green
-Write-Host "  uv run --project `"$InstallDir`" tokoboros run"
+Write-Host "Hachi is installed. Start chatting with:" -ForegroundColor Green
+Write-Host "  uv run --project `"$InstallDir`" hachi run"
 Write-Host "────────────────────────────────────────────────────────" -ForegroundColor DarkGray

@@ -16,8 +16,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tokoboros.og_engine.engine import SkillEngine
-from tokoboros.og_engine.parser import parse_og_file
+from hachi.og_engine.engine import SkillEngine
+from hachi.og_engine.parser import parse_og_file
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -240,7 +240,7 @@ Completely harmless full text.
 
         # Patch the guard scan so it flags all content, regardless of actual content.
         with patch(
-            "tokoboros.core.memory_guard.scan",
+            "hachi.core.memory_guard.scan",
             return_value=(False, "instruction_override"),
         ):
             engine2 = SkillEngine()
@@ -352,7 +352,7 @@ class TestNodeCap:
 
     def test_parser_node_cap_raises_on_direct_call(self, tmp_path: Path) -> None:
         """parse_og_file() must raise when the parser-level hard cap is exceeded."""
-        from tokoboros.og_engine import parser as parser_mod
+        from hachi.og_engine import parser as parser_mod
 
         # Temporarily lower the parser cap for the test.
         original_cap = parser_mod._PARSER_NODE_CAP
@@ -454,7 +454,7 @@ schema = {"type": "object", "properties": {"name": {"type": "string"}, "value": 
 
     def test_json_depth_guard_helper_correct(self) -> None:
         """Unit-test _check_json_depth directly for edge cases."""
-        from tokoboros.og_engine.parser import _check_json_depth
+        from hachi.og_engine.parser import _check_json_depth
 
         # Exactly at limit should pass.
         ok_json = "{" * 20 + "}" * 20

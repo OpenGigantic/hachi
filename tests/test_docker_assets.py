@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def test_dockerfile_runs_the_gateway() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    assert "tokoboros" in dockerfile
+    assert "hachi" in dockerfile
     assert "gateway" in dockerfile
     assert "8787" in dockerfile
 

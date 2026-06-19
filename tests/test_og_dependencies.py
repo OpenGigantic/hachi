@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import json
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.og_engine.engine import SkillEngine
-from tokoboros.og_engine.parser import OGNode
-from tokoboros.tools.og_tools import _make_skill_dependencies, register_og_tools
+from hachi.core.loop import ToolRegistry
+from hachi.og_engine.engine import SkillEngine
+from hachi.og_engine.parser import OGNode
+from hachi.tools.og_tools import _make_skill_dependencies, register_og_tools
 
 
 def _node(name: str, requires=None, edges=None) -> OGNode:

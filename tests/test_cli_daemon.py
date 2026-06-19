@@ -1,4 +1,4 @@
-"""CLI integration tests for ``tokoboros daemon`` commands.
+"""CLI integration tests for ``hachi daemon`` commands.
 
 All subprocess calls are patched so tests run fully offline.
 """
@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -33,7 +33,7 @@ def _make_installer_mock(return_value: str = "OK") -> MagicMock:
 
 def _patch_installer(mock_installer: MagicMock):
     """Patch _make_installer in cli.main to return *mock_installer*."""
-    return patch("tokoboros.cli.commands.daemon._make_installer", return_value=mock_installer)
+    return patch("hachi.cli.commands.daemon._make_installer", return_value=mock_installer)
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ def test_daemon_install_success() -> None:
 
 def test_daemon_install_custom_host_port() -> None:
     inst = _make_installer_mock("Installed")
-    with patch("tokoboros.cli.commands.daemon._make_installer", return_value=inst) as mock_make:
+    with patch("hachi.cli.commands.daemon._make_installer", return_value=inst) as mock_make:
         result = runner.invoke(app, ["daemon", "install", "--host", "0.0.0.0", "--port", "9000"])
     assert result.exit_code == 0
     mock_make.assert_called_once_with("0.0.0.0", 9000)
@@ -95,7 +95,7 @@ def test_daemon_uninstall_error_exits_nonzero() -> None:
 
 
 def test_daemon_start_success() -> None:
-    inst = _make_installer_mock("Started systemd unit 'tokoboros'.")
+    inst = _make_installer_mock("Started systemd unit 'hachi'.")
     with _patch_installer(inst):
         result = runner.invoke(app, ["daemon", "start"])
     assert result.exit_code == 0
@@ -117,7 +117,7 @@ def test_daemon_start_error() -> None:
 
 
 def test_daemon_stop_success() -> None:
-    inst = _make_installer_mock("Stopped systemd unit 'tokoboros'.")
+    inst = _make_installer_mock("Stopped systemd unit 'hachi'.")
     with _patch_installer(inst):
         result = runner.invoke(app, ["daemon", "stop"])
     assert result.exit_code == 0

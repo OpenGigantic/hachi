@@ -11,15 +11,15 @@ from io import StringIO
 
 from rich.console import Console
 
-from tokoboros.tui import theme
-from tokoboros.tui.app import _event_input_summary, _looks_like_error
-from tokoboros.tui.formatters import (
+from hachi.tui import theme
+from hachi.tui.app import _event_input_summary, _looks_like_error
+from hachi.tui.formatters import (
     format_session_info,
     format_settings,
     format_status_bar,
     format_welcome,
 )
-from tokoboros.tui.widgets import (
+from hachi.tui.widgets import (
     InputHistory,
     SlashPalette,
     search_transcript,
@@ -43,7 +43,7 @@ def _render(renderable) -> str:
 
 def test_welcome_greets_the_user() -> None:
     out = _render(format_welcome())
-    assert "Welcome to Tokoboros" in out
+    assert "hachi" in out
     assert "suggestion" in out
 
 
@@ -55,7 +55,7 @@ class _FakeScreen:
     def clear_welcome(self) -> None:
         self.cleared = True
 
-    def set_toko_state(self, state: str) -> None:
+    def set_hachi_state(self, state: str) -> None:
         self.state = state
 
 
@@ -154,7 +154,7 @@ def test_input_history_respects_cap() -> None:
 # --- transcript search ---------------------------------------------------
 _TRANSCRIPT = [
     ("you", "How do I deploy the gateway?"),
-    ("tokoboros", "Run `tokoboros gateway` to start the gateway server locally."),
+    ("hachi", "Run `hachi gateway` to start the gateway server locally."),
     ("you", "Thanks!"),
 ]
 
@@ -164,7 +164,7 @@ def test_search_transcript_finds_case_insensitive_matches() -> None:
     # Two messages mention the gateway (the user question + the agent reply).
     assert [h["index"] for h in hits] == [1, 2]
     assert hits[0]["role"] == "you"
-    assert hits[1]["role"] == "tokoboros"
+    assert hits[1]["role"] == "hachi"
     # The agent reply mentions "gateway" twice.
     assert hits[1]["count"] == 2
 
@@ -245,7 +245,7 @@ def test_format_session_info_renders_status_and_tools() -> None:
                 "status_kind": "running",
                 "model": "claude-haiku-4-5",
                 "tier": "guided",
-                "workspace": "tokoboros",
+                "workspace": "hachi",
                 "session": "abc123",
                 "stream": "live",
                 "jobs": 2,
@@ -285,15 +285,15 @@ def test_format_session_info_handles_empty_tools_and_tokens() -> None:
 def test_format_status_bar_with_usage_shows_model_tokens_cost() -> None:
     out = _render(
         format_status_bar(
-            eye=theme.toko_eye("working")[0],
-            eye_color=theme.toko_eye("working")[1],
+            eye=theme.hachi_eye("working")[0],
+            eye_color=theme.hachi_eye("working")[1],
             state="working",
             model="claude-haiku-4-5",
             tokens=12345,
             cost=0.0123,
         )
     )
-    assert theme.TOKO_WORDMARK in out
+    assert theme.HACHI_WORDMARK in out
     assert "claude-haiku-4-5" in out
     assert "12,345 tok" in out
     assert "~$0.0123" in out
@@ -303,15 +303,16 @@ def test_format_status_bar_with_usage_shows_model_tokens_cost() -> None:
 def test_format_status_bar_without_usage_is_brand_and_state_only() -> None:
     out = _render(
         format_status_bar(
-            eye=theme.toko_eye("idle")[0],
-            eye_color=theme.toko_eye("idle")[1],
+            eye=theme.hachi_eye("idle")[0],
+            eye_color=theme.hachi_eye("idle")[1],
             state="idle",
         )
     )
-    assert theme.TOKO_WORDMARK in out
-    assert "idle" in out
+    assert theme.HACHI_WORDMARK in out
+    # "idle" maps to the hachi status word "on watch"
+    assert "on watch" in out
     # no tokens/cost until the first turn produces usage ("tok " unit, distinct
-    # from the "tok" inside the "tokoboros" wordmark)
+    # from the "tok" inside the hachi wordmark)
     assert "tok " not in out
     assert "$" not in out
 

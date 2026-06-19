@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.core.voice import SpeechToText, TextToSpeech, VoiceError, probe_audio_info
-from tokoboros.tools.voice_tools import (
+from hachi.core.loop import ToolRegistry
+from hachi.core.voice import SpeechToText, TextToSpeech, VoiceError, probe_audio_info
+from hachi.tools.voice_tools import (
     _make_get_audio_info,
     _make_speak_text,
     _make_transcribe_audio,
@@ -113,8 +113,8 @@ def test_stt_missing_text_field(tmp_path: Path) -> None:
 
 def test_stt_from_env_reads_keys(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setenv("TOKOBOROS_STT_API_KEY", "sk-env")
-    monkeypatch.setenv("TOKOBOROS_STT_MODEL", "whisper-large")
+    monkeypatch.setenv("HACHI_STT_API_KEY", "sk-env")
+    monkeypatch.setenv("HACHI_STT_MODEL", "whisper-large")
     stt = SpeechToText.from_env(transcriber=_ok_transcriber())
     assert stt.is_configured() is True
     assert stt._model == "whisper-large"
