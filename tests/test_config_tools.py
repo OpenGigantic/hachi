@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from hachi.tools.config_tools import (
@@ -468,3 +469,193 @@ def test_register_config_tools_registers_all_five() -> None:
     assert "list_mcp_servers" in names
     assert "get_agent_config" in names
     assert "set_agent_config" in names
+
+
+# ---------------------------------------------------------------------------
+# MED-011 — Integration tests: tool-callable path via real ToolRegistry
+#
+# These tests exercise the full tool-invocation path that the LLM uses:
+#   register tools → call via ToolRegistry.execute(ToolCall) → JSON string response.
+#
+# A real ResolvedConfig is used; no mocked namespaces.  Filesystem side effects
+# (add_mcp_server / remove_mcp_server) are contained in tmp_path.
+# ---------------------------------------------------------------------------
+
+
+def _build_real_registry(
+    tmp_path: Path | None = None,
+    config_override: Any | None = None,
+) -> tuple[Any, Any]:
+    """Return a (registry, written_configs) tuple with real tool registrations.
+
+    The config tools are wired to an in-memory ResolvedConfig so no real
+    ~/.hachi/settings.toml is touched.  MCP-management tools are wired to
+    ``tmp_path`` when provided.
+    """
+    from hachi.core.loop import ToolRegistry
+    from hachi.core.settings import ResolvedConfig
+    from hachi.tools.config_tools import (
+        GET_AGENT_CONFIG_SCHEMA,
+        SET_AGENT_CONFIG_SCHEMA,
+        _make_get_agent_config,
+        _make_set_agent_config,
+    )
+
+    registry = ToolRegistry()
+    cfg = config_override if config_override is not None else ResolvedConfig()
+    written: list[ResolvedConfig] = []
+
+    def _load() -> ResolvedConfig:
+        return cfg
+
+    def _write(c: ResolvedConfig) -> None:
+        nonlocal cfg
+        cfg = c
+        written.append(c)
+
+    registry.register(GET_AGENT_CONFIG_SCHEMA, _make_get_agent_config(_load))
+    registry.register(SET_AGENT_CONFIG_SCHEMA, _make_set_agent_config(_load, _write))
+    return registry, written
+
+
+class TestToolCallableIntegration:
+    """Integration tests: invoke config tools the same way the LLM does."""
+
+    # ------------------------------------------------------------------
+    # 25. get_agent_config — no-arg JSON string response via ToolRegistry
+    # ------------------------------------------------------------------
+
+    def test_get_agent_config_via_tool_registry(self) -> None:
+        """get_agent_config() called with an empty JSON input dict returns valid JSON."""
+        from hachi.core.llm import ToolCall
+        from hachi.core.settings import AgentSettings, ProviderSettings, ResolvedConfig
+
+        cfg = ResolvedConfig(
+            provider=ProviderSettings(model="claude-haiku-4-5"),
+            agent=AgentSettings(name="tester"),
+        )
+        registry, _ = _build_real_registry(config_override=cfg)
+
+        tc = ToolCall(id="tc-1", name="get_agent_config", input={})
+        raw = registry.execute(tc)
+
+        # Must be a JSON string (not an exception)
+        assert isinstance(raw, str)
+        data = json.loads(raw)
+        assert data["provider"]["model"] == "claude-haiku-4-5"
+        assert data["agent"]["name"] == "tester"
+        # Security: no api key fields
+        assert "api_key" not in json.dumps(data)
+        assert "api_key_ref" not in json.dumps(data)
+
+    # ------------------------------------------------------------------
+    # 26. set_agent_config — set agent.name via ToolRegistry; persisted
+    # ------------------------------------------------------------------
+
+    def test_set_agent_config_agent_name_via_tool_registry(self) -> None:
+        """set_agent_config(key='agent.name', value='hal') updates config and replies."""
+        from hachi.core.llm import ToolCall
+        from hachi.core.settings import AgentSettings, ResolvedConfig
+
+        cfg = ResolvedConfig(agent=AgentSettings(name="old"))
+        registry, written = _build_real_registry(config_override=cfg)
+
+        tc = ToolCall(
+            id="tc-2", name="set_agent_config", input={"key": "agent.name", "value": "hal"}
+        )
+        raw = registry.execute(tc)
+
+        assert isinstance(raw, str)
+        # Must confirm the update, not return an error
+        assert "updated" in raw.lower()
+        # The write function must have been called
+        assert len(written) == 1
+        assert written[0].agent.name == "hal"
+
+    # ------------------------------------------------------------------
+    # 27. set_agent_config — blocked key returns error string, no exception
+    # ------------------------------------------------------------------
+
+    def test_set_agent_config_blocked_key_returns_error_not_exception(self) -> None:
+        """set_agent_config on a blocked key returns an error string — never raises."""
+        from hachi.core.llm import ToolCall
+        from hachi.core.settings import ResolvedConfig
+
+        registry, written = _build_real_registry(config_override=ResolvedConfig())
+
+        tc = ToolCall(
+            id="tc-3",
+            name="set_agent_config",
+            input={"key": "permissions.tier", "value": "unrestricted"},
+        )
+        # Must NOT raise — the LLM gets back an error string
+        raw = registry.execute(tc)
+
+        assert isinstance(raw, str)
+        assert "blocked" in raw.lower() or "rejected" in raw.lower()
+        # Config write must NOT have been called
+        assert written == []
+
+    # ------------------------------------------------------------------
+    # 28. set_agent_config — unknown key returns error string, no exception
+    # ------------------------------------------------------------------
+
+    def test_set_agent_config_unknown_key_returns_error_not_exception(self) -> None:
+        """set_agent_config on a key not in the allowlist returns an error string."""
+        from hachi.core.llm import ToolCall
+        from hachi.core.settings import ResolvedConfig
+
+        registry, written = _build_real_registry(config_override=ResolvedConfig())
+
+        tc = ToolCall(
+            id="tc-4",
+            name="set_agent_config",
+            input={"key": "provider.api_key", "value": "sk-xxx"},
+        )
+        raw = registry.execute(tc)
+
+        assert isinstance(raw, str)
+        # Any of blocked / rejected / not in allowlist is acceptable
+        assert any(kw in raw.lower() for kw in ("blocked", "rejected", "allowlist", "settable"))
+        assert written == []
+
+    # ------------------------------------------------------------------
+    # 29. Full round-trip: set then get reflects the change
+    # ------------------------------------------------------------------
+
+    def test_set_then_get_round_trip(self) -> None:
+        """set_agent_config followed by get_agent_config reflects the written value."""
+        from hachi.core.llm import ToolCall
+        from hachi.core.loop import ToolRegistry
+        from hachi.core.settings import AgentSettings, ResolvedConfig
+        from hachi.tools.config_tools import (
+            GET_AGENT_CONFIG_SCHEMA,
+            SET_AGENT_CONFIG_SCHEMA,
+            _make_get_agent_config,
+            _make_set_agent_config,
+        )
+
+        # Build a registry where get and set share mutable state.
+        registry = ToolRegistry()
+        state: list[ResolvedConfig] = [ResolvedConfig(agent=AgentSettings(name="before"))]
+
+        def _load() -> ResolvedConfig:
+            return state[0]
+
+        def _write(c: ResolvedConfig) -> None:
+            state[0] = c
+
+        registry.register(GET_AGENT_CONFIG_SCHEMA, _make_get_agent_config(_load))
+        registry.register(SET_AGENT_CONFIG_SCHEMA, _make_set_agent_config(_load, _write))
+
+        # Step 1: set
+        set_tc = ToolCall(
+            id="tc-5", name="set_agent_config", input={"key": "agent.name", "value": "after"}
+        )
+        registry.execute(set_tc)
+
+        # Step 2: get should now reflect the new value
+        get_tc = ToolCall(id="tc-6", name="get_agent_config", input={})
+        raw = registry.execute(get_tc)
+        data = json.loads(raw)
+        assert data["agent"]["name"] == "after"
