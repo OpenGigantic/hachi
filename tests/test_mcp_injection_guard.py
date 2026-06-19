@@ -41,8 +41,11 @@ def test_mcp_injection_output_is_wrapped() -> None:
     assert "srv" in out  # source label names the server
 
 
-def test_mcp_clean_output_unchanged() -> None:
+def test_mcp_clean_output_framed_as_data() -> None:
+    # SEC-002: clean third-party MCP output is still framed as untrusted data
+    # (not escalated), with the original result preserved inside the envelope.
     registry = _registry_with("Result: 42 items processed successfully.")
     out = registry._tools["srv_echo"]()
-    assert "UNTRUSTED EXTERNAL CONTENT" not in out
+    assert "UNTRUSTED EXTERNAL CONTENT" in out
+    assert "was detected" not in out  # data banner, not the injection escalation
     assert "42 items" in out

@@ -15,6 +15,20 @@ from hachi.core.rest_adapter import (
     _truncate_rest_response,
 )
 
+_BEGIN = "<<<UNTRUSTED_CONTENT_BEGIN>>>\n"
+_END = "\n<<<UNTRUSTED_CONTENT_END>>>"
+
+
+def _unwrap(out: str) -> str:
+    """Extract inner content from a guard_untrusted data envelope (SEC-002).
+
+    REST responses are now framed as untrusted data; the projected/truncated
+    payload lives inside the markers.
+    """
+    if _BEGIN in out and _END in out:
+        return out.split(_BEGIN, 1)[1].rsplit(_END, 1)[0]
+    return out
+
 
 def _register(monkeypatch, payload: dict, api_def: dict) -> ToolRegistry:
     registry = ToolRegistry()
@@ -60,7 +74,7 @@ def test_field_projection_returns_only_declared_fields(monkeypatch) -> None:
         "namespace": {"id": 0},
     }
     registry = _register(monkeypatch, payload, {"fields": "title, extract"})
-    result = json.loads(registry._tools["api"]())
+    result = json.loads(_unwrap(registry._tools["api"]()))
     assert result == {"title": "Sunflower", "extract": "A tall plant."}
     assert "extract_html" not in result and "thumbnail" not in result
 
@@ -68,21 +82,22 @@ def test_field_projection_returns_only_declared_fields(monkeypatch) -> None:
 def test_projection_falls_back_to_full_when_no_field_matches(monkeypatch) -> None:
     payload = {"a": 1, "b": 2}
     registry = _register(monkeypatch, payload, {"fields": "nonexistent"})
-    assert json.loads(registry._tools["api"]()) == payload  # not an empty dict
+    assert json.loads(_unwrap(registry._tools["api"]())) == payload  # not an empty dict
 
 
 def test_no_fields_directive_returns_full_response(monkeypatch) -> None:
     payload = {"a": 1, "b": 2}
     registry = _register(monkeypatch, payload, {})
-    assert json.loads(registry._tools["api"]()) == payload
+    assert json.loads(_unwrap(registry._tools["api"]())) == payload
 
 
 def test_oversized_response_is_truncated_with_guidance(monkeypatch) -> None:
     payload = {"data": "x" * (_MAX_REST_RESPONSE_CHARS + 5_000)}
     registry = _register(monkeypatch, payload, {})
     out = registry._tools["api"]()
-    assert len(out) <= _MAX_REST_RESPONSE_CHARS + 200  # cap plus a short notice
-    assert "truncated" in out and "fields=" in out
+    inner = _unwrap(out)  # truncation cap applies to the content inside the envelope
+    assert len(inner) <= _MAX_REST_RESPONSE_CHARS + 200  # cap plus a short notice
+    assert "truncated" in inner and "fields=" in inner
 
 
 def test_truncate_helper_passthrough_when_within_limit() -> None:

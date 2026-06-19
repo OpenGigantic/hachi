@@ -88,9 +88,15 @@ class TerminalRules:
 
 @dataclass(frozen=True)
 class MCPRules:
-    """Immutable ruleset for MCP filesystem server."""
+    """Immutable ruleset for MCP servers."""
 
     filesystem_enabled: bool
+    # SEC-005: non-filesystem MCP servers run arbitrary commands at boot.
+    # Community-pack-sourced servers are default-denied unless allow-listed by
+    # name ([mcp_servers] allowed_servers in device-permissions.og) or the tier
+    # is unrestricted (allowed_servers="*").
+    allow_all_servers: bool = False
+    server_allowlist: tuple[str, ...] = ()
 
 
 # ==========================================
@@ -413,8 +419,17 @@ class PermissionGate:
     def _build_mcp_rules(self, node_map: dict) -> MCPRules:
         """Construct MCPRules from parsed config + tier defaults."""
         cfg = _get_config(node_map, "mcp_filesystem", self._tier)
+        servers_cfg = _get_config(node_map, "mcp_servers", self._tier)
+        raw_allowed = servers_cfg.get("allowed_servers", "").strip()
+        # Tier default when undeclared: unrestricted allows all, others deny.
+        if not raw_allowed and self._tier == "unrestricted":
+            raw_allowed = "*"
+        allow_all = raw_allowed == "*"
+        allowlist = () if allow_all else tuple(_parse_csv(raw_allowed))
         return MCPRules(
             filesystem_enabled=cfg.get("enabled", "true").lower() == "true",
+            allow_all_servers=allow_all,
+            server_allowlist=allowlist,
         )
 
     # ── Internal Helpers ──
@@ -685,6 +700,29 @@ class PermissionGate:
         """Whether the MCP filesystem server should be started."""
         return self._mcp.filesystem_enabled
 
+    def is_mcp_server_allowed(self, name: str, *, trusted: bool = False) -> PermissionResult:
+        """Whether a non-filesystem MCP server may be started (SEC-005).
+
+        Built-in (``trusted``) servers shipped with Hachi are always permitted
+        (still subject to capability/OAuth gating elsewhere).  A server whose
+        ``.og`` definition came from an installed community pack runs an
+        arbitrary ``command`` at boot, so it is default-denied unless the tier
+        is unrestricted or the server is explicitly allow-listed by name in
+        ``device-permissions.og`` ([mcp_servers] allowed_servers=...).
+        """
+        if trusted:
+            return PermissionResult(True, "Built-in MCP server.")
+        if self._mcp.allow_all_servers:
+            return PermissionResult(True, "MCP servers unrestricted by tier.")
+        if name in self._mcp.server_allowlist:
+            return PermissionResult(True, "MCP server explicitly allow-listed.")
+        return PermissionResult(
+            False,
+            f"Untrusted MCP server {name!r} is not approved for tier "
+            f"{self._tier!r}. Add it to [mcp_servers] allowed_servers in "
+            "device-permissions.og to enable it.",
+        )
+
     def get_allowed_paths(self) -> list[Path]:
         """
         Resolved absolute paths the agent can access.
@@ -789,6 +827,9 @@ class InteractivePermissionGate:
 
     def is_mcp_filesystem_enabled(self) -> bool:
         return self._base.is_mcp_filesystem_enabled()
+
+    def is_mcp_server_allowed(self, name: str, *, trusted: bool = False) -> PermissionResult:
+        return self._base.is_mcp_server_allowed(name, trusted=trusted)
 
     def get_allowed_paths(self) -> list[Path]:
         return self._base.get_allowed_paths()
