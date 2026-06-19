@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+from pathlib import Path
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -152,6 +154,62 @@ def _validate_env_var_key(key: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# MED-026: SkillEngine singleton for list_mcp_servers
+#
+# Building a SkillEngine and re-indexing all .og files on every call is
+# expensive (O(#skills) I/O + parse).  We cache one engine per skills-directory
+# path.  The cache is invalidated automatically if the directory changes —
+# callers that add/remove .og files can pass ``invalidate=True`` to
+# ``_get_cached_skill_engine`` to force a reload.
+# ---------------------------------------------------------------------------
+
+_skill_engine_lock: threading.Lock = threading.Lock()
+# Maps absolute skills-dir path → cached SkillEngine instance.
+_skill_engine_cache: dict[str, Any] = {}
+
+
+def _get_cached_skill_engine(skills_dir: Path) -> Any:
+    """Return a cached :class:`~hachi.og_engine.engine.SkillEngine` for *skills_dir*.
+
+    The engine is built and indexed on first call for a given directory.
+    Subsequent calls return the same instance.  Thread-safe via a module-level
+    lock (boot is fast; contention is negligible).
+
+    Args:
+        skills_dir: Absolute path to the skills directory.
+
+    Returns:
+        A ``SkillEngine`` that has already loaded *skills_dir*.
+    """
+    key = str(skills_dir.resolve())
+    with _skill_engine_lock:
+        if key not in _skill_engine_cache:
+            from hachi.og_engine.engine import SkillEngine
+
+            engine = SkillEngine()
+            engine.load_directory(skills_dir)
+            _skill_engine_cache[key] = engine
+        return _skill_engine_cache[key]
+
+
+def _invalidate_skill_engine_cache(skills_dir: Path | None = None) -> None:
+    """Invalidate the cached SkillEngine for *skills_dir* (or all entries).
+
+    Call this after adding or removing ``.og`` files so the next
+    :func:`list_mcp_servers` call sees the updated state.
+
+    Args:
+        skills_dir: Directory whose cache entry should be dropped.
+                    ``None`` clears the entire cache.
+    """
+    with _skill_engine_lock:
+        if skills_dir is None:
+            _skill_engine_cache.clear()
+        else:
+            _skill_engine_cache.pop(str(skills_dir.resolve()), None)
+
+
+# ---------------------------------------------------------------------------
 # MCP tool factories
 # ---------------------------------------------------------------------------
 
@@ -247,6 +305,8 @@ def _make_add_mcp_server(gate: Any = None) -> Any:
                 og_text = og_text.rstrip() + "\n" + "\n".join(env_lines) + "\n"
 
             dest.write_text(og_text, encoding="utf-8")
+            # Invalidate the SkillEngine cache so list_mcp_servers reflects the new entry.
+            _invalidate_skill_engine_cache(skills_dir)
             return (
                 f"MCP server {name!r} registered at {dest}. "
                 f"Restart the agent session to activate it. "
@@ -296,6 +356,8 @@ def _make_remove_mcp_server(gate: Any = None) -> Any:
                 )
 
             target.unlink()
+            # Invalidate the SkillEngine cache so list_mcp_servers no longer shows this entry.
+            _invalidate_skill_engine_cache(skills_dir)
             return (
                 f"MCP server {name!r} removed. "
                 "Restart the agent session for the change to take effect."
@@ -321,10 +383,10 @@ def _make_list_mcp_servers() -> Any:
         """
         try:
             from hachi.gateway.workspace import get_skills_dir
-            from hachi.og_engine.engine import SkillEngine
 
-            engine = SkillEngine()
-            engine.load_directory(get_skills_dir())
+            # MED-026: use the cached engine instead of rebuilding on every call.
+            skills_dir = get_skills_dir()
+            engine = _get_cached_skill_engine(skills_dir)
             nodes = engine.get_nodes_by_role("mcp")
 
             servers = [
