@@ -10,6 +10,7 @@ import { Icon } from '../components/icons/Icon'
 import type { Run, Routine, FinishedTask, FailedTask, RunStep, RoutineRun } from '../lib/data/types'
 import { loadWork, pauseRoutineLive } from '../lib/data/domains/work'
 import { loadOperator } from '../lib/data/domains/operator'
+import { useFocusTrap } from '../lib/hooks/useFocusTrap'
 
 // ---- helpers ------------------------------------------------
 
@@ -202,6 +203,21 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePaus
   const isTask = item.kind === 'task'
   const hasPack = item.kind === 'task' || item.kind === 'finished'
 
+  // MED-013: focus trap (Tab cycling + return-focus) via shared hook.
+  // Escape-to-close is wired separately so it doesn't duplicate the hook.
+  const panelRef = useFocusTrap<HTMLDivElement>(true)
+
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        onClose()
+      }
+    }
+    document.addEventListener('keydown', handleEscape)
+    return () => document.removeEventListener('keydown', handleEscape)
+  }, [onClose])
+
   const packStatusMeta = (s: string) =>
     s === 'done'
       ? { dot: 'var(--hachi-success)', text: 'done', fg: '#2C7A50' }
@@ -214,6 +230,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePaus
       {/* backdrop */}
       <div
         onClick={onClose}
+        aria-hidden="true"
         style={{
           position: 'absolute',
           inset: 0,
@@ -223,6 +240,10 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePaus
       />
       {/* panel */}
       <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={item.title || undefined}
         className="hachi-scroll"
         style={{
           position: 'absolute',
@@ -312,30 +333,34 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePaus
           </div>
         )}
 
-        {/* steps */}
-        <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '6px' }}>Steps</div>
-        <div style={{ display: 'flex', flexDirection: 'column', marginBottom: '20px' }}>
-          {(item.steps ?? []).map((stp, i) => {
-            const meta = stepMeta(stp.state)
-            return (
-              <div
-                key={i}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '11px',
-                  padding: '9px 0',
-                  borderBottom: '0.5px solid var(--hachi-line)',
-                }}
-              >
-                <span style={{ color: meta.color, display: 'inline-flex' }}>
-                  <Icon name={meta.icon} size={16} />
-                </span>
-                <span style={{ fontSize: '14px' }}>{stp.label}</span>
-              </div>
-            )
-          })}
-        </div>
+        {/* steps — only render header+list when there are steps */}
+        {(item.steps ?? []).length > 0 && (
+          <>
+            <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '6px' }}>Steps</div>
+            <div style={{ display: 'flex', flexDirection: 'column', marginBottom: '20px' }}>
+              {(item.steps ?? []).map((stp, i) => {
+                const meta = stepMeta(stp.state)
+                return (
+                  <div
+                    key={i}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '11px',
+                      padding: '9px 0',
+                      borderBottom: '0.5px solid var(--hachi-line)',
+                    }}
+                  >
+                    <span style={{ color: meta.color, display: 'inline-flex' }}>
+                      <Icon name={meta.icon} size={16} />
+                    </span>
+                    <span style={{ fontSize: '14px' }}>{stp.label}</span>
+                  </div>
+                )
+              })}
+            </div>
+          </>
+        )}
 
         {/* the pack */}
         {hasPack && packRoster.length > 0 && (
@@ -395,44 +420,52 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePaus
         {/* routine: schedule + run history */}
         {isRoutine && (
           <>
-            <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '7px' }}>Schedule</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', marginBottom: '18px' }}>
-              <Icon name="repeat" size={15} />
-              {item.schedule} · next {item.next}
-            </div>
-            <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '8px' }}>Recent runs · cost per run</div>
-            <div style={{
-              background: 'var(--hachi-canvas)',
-              border: '0.5px solid var(--hachi-line)',
-              borderRadius: '10px',
-              overflow: 'hidden',
-              marginBottom: '20px',
-            }}>
-              {(item.runHistory ?? []).map((h, i) => {
-                const ico = h.ok ? 'circle-check' : 'minus'
-                const col = h.ok ? 'var(--hachi-success)' : 'var(--hachi-danger)'
-                return (
-                  <div
-                    key={i}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '10px',
-                      padding: '10px 13px',
-                      borderBottom: '0.5px solid var(--hachi-line)',
-                    }}
-                  >
-                    <span style={{ color: col, display: 'inline-flex' }}>
-                      <Icon name={ico} size={15} />
-                    </span>
-                    <span style={{ flex: 1, fontSize: '13px' }}>{h.when}</span>
-                    <span style={{ fontSize: '13px', color: 'var(--hachi-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                      {m(h.cost)}
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
+            {(item.schedule || item.next) && (
+              <>
+                <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '7px' }}>Schedule</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', marginBottom: '18px' }}>
+                  <Icon name="repeat" size={15} />
+                  {item.schedule} · next {item.next}
+                </div>
+              </>
+            )}
+            {(item.runHistory ?? []).length > 0 && (
+              <>
+                <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '8px' }}>Recent runs · cost per run</div>
+                <div style={{
+                  background: 'var(--hachi-canvas)',
+                  border: '0.5px solid var(--hachi-line)',
+                  borderRadius: '10px',
+                  overflow: 'hidden',
+                  marginBottom: '20px',
+                }}>
+                  {(item.runHistory ?? []).map((h, i) => {
+                    const ico = h.ok ? 'circle-check' : 'minus'
+                    const col = h.ok ? 'var(--hachi-success)' : 'var(--hachi-danger)'
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          padding: '10px 13px',
+                          borderBottom: '0.5px solid var(--hachi-line)',
+                        }}
+                      >
+                        <span style={{ color: col, display: 'inline-flex' }}>
+                          <Icon name={ico} size={15} />
+                        </span>
+                        <span style={{ flex: 1, fontSize: '13px' }}>{h.when}</span>
+                        <span style={{ fontSize: '13px', color: 'var(--hachi-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                          {m(h.cost)}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </>
+            )}
           </>
         )}
 
@@ -660,8 +693,8 @@ function SpendLens() {
             <polyline points={linePts} fill="none" stroke="var(--hachi-trust)" strokeWidth="1.6" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
           </svg>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-mono)', fontSize: '10.5px', color: 'var(--hachi-muted)', marginTop: '8px' }}>
-            <span>turn 1</span>
-            <span>turn 7</span>
+            <span>turn {spendBars.length > 0 ? spendBars[0].n : 1}</span>
+            <span>turn {spendBars.length > 0 ? spendBars[spendBars.length - 1].n : 1}</span>
           </div>
         </div>
       </div>
