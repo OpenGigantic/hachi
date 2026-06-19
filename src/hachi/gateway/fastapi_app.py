@@ -36,6 +36,11 @@ _APPROVALS_AVAILABLE = True
 _log = logging.getLogger(__name__)
 
 
+def _is_loopback_host(host: str) -> bool:
+    """Return *True* when ``host`` is a loopback address (127.0.0.1 / ::1 / localhost)."""
+    return host.strip().lower() in {"127.0.0.1", "localhost", "::1"}
+
+
 def _int_env(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, "") or default)
@@ -217,6 +222,8 @@ def _error_response(
 def create_gateway_app(
     control_plane: GatewayControlPlane,
     auth_token: str | None = None,
+    *,
+    bind_host: str | None = None,
 ) -> FastAPI:
     """Create the Hachi gateway FastAPI application.
 
@@ -225,13 +232,19 @@ def create_gateway_app(
         auth_token: Bearer token required on all protected routes.  When *None*
             the token is still enforced unless the opt-out env var
             ``HACHI_GATEWAY_NO_AUTH=1`` is set (power-user escape hatch).
+        bind_host: The host address the server will bind to.  When supplied the
+            function enforces the loopback-only constraint for NO_AUTH mode and
+            the hard-error for non-loopback binds without a token.  When *None*
+            (default, used by unit-test helpers and the OpenAPI export command)
+            these startup guards are skipped.
 
     Auth posture (UC-AUTH-001/ADV-014):
         All protected routes require ``Authorization: Bearer <token>``.
         Loopback binding does NOT exempt authentication — a localhost-only
         daemon is still reachable by any process on the same machine.
         The opt-out env flag ``HACHI_GATEWAY_NO_AUTH=1`` disables the
-        check and logs a WARNING so accidental exposure is visible in logs.
+        check **only when the bind address is a loopback** (E8/T8.2).  Using
+        NO_AUTH on a non-loopback host is a startup error.
 
     CORS posture (UC-AUTH-003):
         Allow-list is limited to local dev origins (localhost:5173/4173) or
@@ -241,6 +254,21 @@ def create_gateway_app(
     """
     # Determine effective auth posture.
     _no_auth_override = os.environ.get("HACHI_GATEWAY_NO_AUTH", "").strip() == "1"
+
+    # E8/T8.2 — Guard 1: NO_AUTH is only allowed on loopback.
+    if _no_auth_override and bind_host is not None and not _is_loopback_host(bind_host):
+        raise ValueError(
+            f"HACHI_GATEWAY_NO_AUTH=1 is not permitted when binding to a non-loopback "
+            f"host ('{bind_host}'). Remove the env var or bind to 127.0.0.1/::1/localhost."
+        )
+
+    # E8/T8.2 — Guard 2: non-loopback bind without a token is a hard startup error.
+    if bind_host is not None and not _is_loopback_host(bind_host) and not auth_token:
+        raise ValueError(
+            f"Gateway cannot start on non-loopback host '{bind_host}' without an auth token. "
+            "Set HACHI_GATEWAY_API_TOKEN (or HACHI_GATEWAY_API_TOKEN_FILE) before starting."
+        )
+
     _auth_enabled = not _no_auth_override
     if _no_auth_override:
         _log.warning(
@@ -290,6 +318,10 @@ def create_gateway_app(
         The security fix is at the CLI layer: ``_start_gateway_server`` now always
         generates/persists a token for loopback hosts, so ``auth_token`` is always
         truthy in normal operation.
+
+        The startup guards in ``create_gateway_app`` (E8/T8.2) ensure that:
+        - ``NO_AUTH=1`` on a non-loopback host is a hard error before serving starts.
+        - A non-loopback host without a token is a hard error before serving starts.
 
         Tests that call ``create_gateway_app(cp)`` without a token continue to work
         because ``auth_token=None`` means no token was configured (not an error case

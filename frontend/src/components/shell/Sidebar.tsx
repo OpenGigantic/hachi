@@ -89,6 +89,8 @@ export function Sidebar() {
 
       {/* Search / palette button */}
       <button
+        type="button"
+        aria-label="Open command palette (Ctrl+K)"
         onClick={openPalette}
         onMouseEnter={() => setSearchHovered(true)}
         onMouseLeave={() => setSearchHovered(false)}

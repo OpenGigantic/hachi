@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react'
 import { createRootRoute, Outlet } from '@tanstack/react-router'
 import { Sidebar } from '../components/shell/Sidebar'
+import { GovernanceBar } from '../components/shell/GovernanceBar'
 import { GlobalOverlays } from '../components/overlays'
 import { useStore } from '../lib/store/store'
 import { bootstrapLiveData } from '../lib/data/bootstrap'
@@ -39,10 +40,15 @@ function RootLayout() {
           flex: 1,
           minWidth: 0,
           position: 'relative',
-          overflow: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
         }}
       >
-        <Outlet />
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+          <Outlet />
+        </div>
+        <GovernanceBar />
       </main>
       <GlobalOverlays />
     </div>

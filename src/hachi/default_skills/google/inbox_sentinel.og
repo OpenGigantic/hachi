@@ -5,11 +5,11 @@
 
 ::index
   # node-id         | type  | scope | conf | keywords
-  inbox_sentinel     | skill | all   | 1.0  | deep work, focus mode, triage, monitor inbox, gmail triage, email filter
+  inbox_sentinel     | skill | all   | 1.0  | deep work, focus mode, triage, monitor inbox, gmail triage, email filter, email inbox, inbox, unread email, email management, gmail inbox
 
 ::node[inbox_sentinel]
 ->[:role=skill]
-->[:keywords=deep work, focus mode, triage, monitor inbox, gmail triage, email filter]
+->[:keywords=deep work, focus mode, triage, monitor inbox, gmail triage, email filter, email inbox, inbox, unread email, email management, gmail inbox]
 
 ::dense
 Autonomous Gmail triage loop for focus sessions: classifies urgency, labels, drafts deferrals.

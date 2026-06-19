@@ -203,8 +203,10 @@ def test_rest_allowlist_wildcard_matches_subdomains_only() -> None:
 def test_rest_adapter_blocks_dns_resolution_failures(monkeypatch) -> None:
     registry = ToolRegistry()
     adapter = UniversalRestAdapter(registry, allowed_hosts=["api.example.com"])
+    # DNS resolution is performed by net_guard (the single SSRF source of truth),
+    # which rest_adapter delegates to — patch getaddrinfo where it actually runs.
     monkeypatch.setattr(
-        "hachi.core.rest_adapter.socket.getaddrinfo",
+        "hachi.core.net_guard.socket.getaddrinfo",
         lambda *_a, **_k: (_ for _ in ()).throw(OSError("dns failure")),
     )
 
@@ -221,7 +223,7 @@ def test_rest_adapter_blocks_dns_resolution_failures(monkeypatch) -> None:
 
     result = registry._tools["dns_fail"]()
     assert "Blocked by outbound policy" in result
-    assert "private or unsafe address" in result
+    assert "DNS resolution failed" in result
 
 
 def test_rest_adapter_rejects_host_header_override_tricks() -> None:
