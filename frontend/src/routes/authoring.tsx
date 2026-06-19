@@ -8,6 +8,7 @@ import {
   loadAuthoringSource,
   applyAuthoring,
   revertAuthoring,
+  generateAuthoring,
 } from '../lib/data/domains/authoring'
 
 // ---- syntax-highlight tokeniser (ported from prototype _ogTokens) ----
@@ -67,6 +68,9 @@ const AUTH_KIND_ICON: Record<AuthTarget['kind'], string> = {
   skill: 'file-code',
 }
 
+// ---- localStorage key for .og explainer dismissal ----
+const OG_EXPLAINER_KEY = 'hachi-og-explainer-dismissed'
+
 // ---- Authoring screen ----
 function Authoring() {
   const authTargets = useStore((s) => s.authTargets)
@@ -90,21 +94,74 @@ function Authoring() {
     void loadAuthoringSource(authSel)
   }, [authSel])
 
-  // local: prompt input (screen-local, not in global store)
-  const [prompt, setPrompt] = useState(
-    'Raise the dense-pass budget and switch to adaptive research strategy.'
+  // LOCAL: prompt input (LOW-002) and generated diff state (CRIT-002)
+  const [prompt, setPrompt] = useState('')
+  const [generatedDiff, setGeneratedDiff] = useState<DiffLine[] | null>(null)
+  const [generateError, setGenerateError] = useState<string | null>(null)
+  const [isGenerating, setIsGenerating] = useState(false)
+
+  // Reset prompt and stale patch when the selected target changes (LOW-002).
+  // Clearing generatedDiff prevents a prior target's diff from appearing under
+  // the new target's name and being accidentally applied.
+  useEffect(() => {
+    setPrompt('')
+    setGeneratedDiff(null)
+    setGenerateError(null)
+  }, [authSel])
+
+  // .og explainer panel dismissal (E6-T1)
+  const [ogExplainerDismissed, setOgExplainerDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(OG_EXPLAINER_KEY) === 'true'
+    } catch {
+      return false
+    }
+  })
+
+  function dismissOgExplainer() {
+    try {
+      localStorage.setItem(OG_EXPLAINER_KEY, 'true')
+    } catch {
+      /* ignore storage errors */
+    }
+    setOgExplainerDismissed(true)
+  }
+
+  // Handle Generate button click (CRIT-002)
+  async function handleGenerate() {
+    if (!authSel || !prompt.trim() || isGenerating) return
+    setIsGenerating(true)
+    setGenerateError(null)
+    setGeneratedDiff(null)
+    const result = await generateAuthoring(authSel, prompt.trim())
+    setIsGenerating(false)
+    if (result.error) {
+      setGenerateError(result.error)
+    } else {
+      setGeneratedDiff(result.diff)
+    }
+  }
+
+  // Compute visible diff lines:
+  // If a generated diff exists, show it; otherwise fall back to authSource (LOW-003 / CRIT-002)
+  const activeDiff: DiffLine[] = generatedDiff !== null ? generatedDiff : authSource
+  const isDiff = authMode === 'diff'
+  const visibleLines: DiffLine[] = activeDiff.filter(
+    (l) => !(authMode === 'source' && l[0] === 'del')
   )
+
+  // Derive diff summary counts from the active diff (LOW-003)
+  const addCount = activeDiff.filter((l) => l[0] === 'add').length
+  const delCount = activeDiff.filter((l) => l[0] === 'del').length
+  const hasDiff = addCount > 0 || delCount > 0
+
   const [hoverTarget, setHoverTarget] = useState<string | null>(null)
   const [hoverGenerate, setHoverGenerate] = useState(false)
   const [hoverApply, setHoverApply] = useState(false)
   const [hoverReject, setHoverReject] = useState(false)
   const [hoverRevert, setHoverRevert] = useState(false)
-
-  // Compute visible diff lines (filter out "del" lines in source mode)
-  const isDiff = authMode === 'diff'
-  const visibleLines: DiffLine[] = authSource.filter(
-    (l) => !(authMode === 'source' && l[0] === 'del')
-  )
+  const [hoverDismissExplainer, setHoverDismissExplainer] = useState(false)
+  const [showWhyTooltip, setShowWhyTooltip] = useState(false)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -142,6 +199,101 @@ function Authoring() {
         style={{ flex: 1, overflow: 'auto', padding: '24px 32px 64px' }}
       >
         <div style={{ maxWidth: 1000, margin: '0 auto' }}>
+
+          {/* E6-T1: .og explainer panel */}
+          {!ogExplainerDismissed && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: '11px 16px',
+                marginBottom: 16,
+                background: 'var(--hachi-brand-tint)',
+                border: '0.5px solid var(--hachi-brand)',
+                borderRadius: 12,
+                fontSize: 13,
+                color: 'var(--hachi-ink)',
+              }}
+            >
+              <span style={{ color: 'var(--hachi-brand)', display: 'inline-flex', flexShrink: 0 }}>
+                <Icon name="file-code" size={15} />
+              </span>
+              <span style={{ flex: 1, lineHeight: '20px' }}>
+                Skills use the{' '}
+                <strong style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>.og</strong>
+                {' '}format — a 3-pass graph that cuts token usage by up to 70 % vs. loading entire
+                files.{' '}
+                <span style={{ position: 'relative', display: 'inline-block' }}>
+                  <button
+                    onMouseEnter={() => setShowWhyTooltip(true)}
+                    onMouseLeave={() => setShowWhyTooltip(false)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      padding: 0,
+                      font: 'inherit',
+                      fontSize: 13,
+                      color: 'var(--hachi-brand)',
+                      cursor: 'pointer',
+                      textDecoration: 'underline',
+                      textDecorationStyle: 'dotted',
+                    }}
+                  >
+                    Why?
+                  </button>
+                  {showWhyTooltip && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        bottom: '100%',
+                        left: 0,
+                        marginBottom: 6,
+                        padding: '8px 12px',
+                        background: 'var(--hachi-surface)',
+                        border: '0.5px solid var(--hachi-line)',
+                        borderRadius: 8,
+                        width: 280,
+                        fontSize: 12.5,
+                        lineHeight: '18px',
+                        color: 'var(--hachi-ink)',
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                        zIndex: 10,
+                        pointerEvents: 'none',
+                      }}
+                    >
+                      Pass 1 reads only the index (~30 tokens) to route to the right node. Pass 2
+                      reads dense summaries. Pass 3 reads full content only when truly needed —
+                      most queries never reach it.
+                    </div>
+                  )}
+                </span>
+              </span>
+              <button
+                onClick={dismissOgExplainer}
+                onMouseEnter={() => setHoverDismissExplainer(true)}
+                onMouseLeave={() => setHoverDismissExplainer(false)}
+                title="Dismiss"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: 26,
+                  height: 26,
+                  borderRadius: 6,
+                  border: 'none',
+                  background: hoverDismissExplainer ? 'var(--hachi-cream)' : 'transparent',
+                  color: 'var(--hachi-muted)',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                  transition: 'background var(--dur-fast) var(--ease)',
+                }}
+              >
+                <Icon name="x" size={13} />
+              </button>
+            </div>
+          )}
+
           {/* Lead copy */}
           <div
             style={{
@@ -156,479 +308,570 @@ function Authoring() {
             silently — you hold the leash here too.
           </div>
 
-          {/* Two-column layout */}
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '260px minmax(0,1fr)',
-              gap: 16,
-              alignItems: 'start',
-            }}
-          >
-            {/* ---- Left: targets list ---- */}
+          {/* LOW-009: empty / loading state when no targets */}
+          {authTargets.length === 0 ? (
             <div
               style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 12,
+                padding: '64px 32px',
                 background: 'var(--hachi-surface)',
                 border: '0.5px solid var(--hachi-line)',
                 borderRadius: 16,
-                padding: 14,
+                color: 'var(--hachi-muted)',
               }}
             >
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  fontSize: 13,
-                  color: 'var(--hachi-muted)',
-                  marginBottom: 12,
-                  padding: '0 2px',
-                }}
-              >
-                <Icon name="folder" size={15} />
-                Targets
+              <span style={{ opacity: 0.45 }}>
+                <Icon name="folder" size={32} />
+              </span>
+              <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--hachi-ink)' }}>
+                No .og targets found
               </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                {authTargets.map((t) => {
-                  const isSelected = t.name === authSel
-                  const isHovered = hoverTarget === t.name
-                  let bg = 'transparent'
-                  if (isSelected) bg = 'var(--hachi-brand-tint)'
-                  else if (isHovered) bg = 'var(--hachi-cream)'
-
-                  return (
-                    <div
-                      key={t.name}
-                      onClick={() => selectAuthTarget(t.name)}
-                      onMouseEnter={() => setHoverTarget(t.name)}
-                      onMouseLeave={() => setHoverTarget(null)}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 9,
-                        padding: '8px 10px',
-                        borderRadius: 8,
-                        cursor: 'pointer',
-                        background: bg,
-                        transition: 'background var(--dur-fast) var(--ease)',
-                      }}
-                    >
-                      <span
-                        style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}
-                      >
-                        <Icon name={AUTH_KIND_ICON[t.kind] ?? 'file-code'} size={13} />
-                      </span>
-                      <span
-                        style={{
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: 12.5,
-                          flex: 1,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {t.name}
-                      </span>
-                      {t.dirty && (
-                        <span
-                          style={{
-                            width: 7,
-                            height: 7,
-                            borderRadius: '50%',
-                            background: 'var(--hachi-working)',
-                            flexShrink: 0,
-                          }}
-                        />
-                      )}
-                    </div>
-                  )
-                })}
+              <div style={{ fontSize: 13, textAlign: 'center', maxWidth: 340 }}>
+                Connect to a running Hachi gateway to load your brain, skill, and config targets.
               </div>
             </div>
-
-            {/* ---- Right: viewer + generate panel ---- */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              {/* Diff / Source viewer */}
+          ) : (
+            /* Two-column layout */
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '260px minmax(0,1fr)',
+                gap: 16,
+                alignItems: 'start',
+              }}
+            >
+              {/* ---- Left: targets list ---- */}
               <div
                 style={{
                   background: 'var(--hachi-surface)',
                   border: '0.5px solid var(--hachi-line)',
                   borderRadius: 16,
-                  overflow: 'hidden',
+                  padding: 14,
                 }}
               >
-                {/* Viewer header */}
                 <div
                   style={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: 10,
-                    padding: '13px 16px',
-                    borderBottom: '0.5px solid var(--hachi-line)',
+                    gap: 8,
+                    fontSize: 13,
+                    color: 'var(--hachi-muted)',
+                    marginBottom: 12,
+                    padding: '0 2px',
                   }}
                 >
-                  <span style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}>
-                    <Icon name="file-code" size={15} />
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontWeight: 500,
-                      fontSize: 13,
-                      flex: 1,
-                    }}
-                  >
-                    {authSel}
-                  </span>
-
-                  {/* Diff / Source toggle */}
-                  <div
-                    style={{
-                      display: 'inline-flex',
-                      background: 'var(--hachi-cream)',
-                      borderRadius: 8,
-                      padding: 2,
-                    }}
-                  >
-                    <button
-                      onClick={() => setAuthMode('diff')}
-                      style={{
-                        height: 28,
-                        padding: '0 13px',
-                        border: 'none',
-                        borderRadius: 6,
-                        font: '500 12px var(--font-body)',
-                        cursor: 'pointer',
-                        background: isDiff ? 'var(--hachi-surface)' : 'transparent',
-                        color: isDiff ? 'var(--hachi-ink)' : 'var(--hachi-muted)',
-                        transition: 'background var(--dur-fast) var(--ease)',
-                      }}
-                    >
-                      Diff
-                    </button>
-                    <button
-                      onClick={() => setAuthMode('source')}
-                      style={{
-                        height: 28,
-                        padding: '0 13px',
-                        border: 'none',
-                        borderRadius: 6,
-                        font: '500 12px var(--font-body)',
-                        cursor: 'pointer',
-                        background: !isDiff ? 'var(--hachi-surface)' : 'transparent',
-                        color: !isDiff ? 'var(--hachi-ink)' : 'var(--hachi-muted)',
-                        transition: 'background var(--dur-fast) var(--ease)',
-                      }}
-                    >
-                      Source
-                    </button>
-                  </div>
+                  <Icon name="folder" size={15} />
+                  Targets
                 </div>
 
-                {/* Code viewer */}
-                <div
-                  className="hachi-scroll"
-                  style={{
-                    background: '#16151A',
-                    maxHeight: 380,
-                    overflow: 'auto',
-                    padding: '12px 0',
-                  }}
-                >
-                  {visibleLines.map((l, i) => {
-                    const type = l[0]
-                    const lineText = l[1]
-                    const { bg, gutColor, barColor } = diffRowStyle(type, isDiff)
-                    const gutter = isDiff && type === 'add'
-                      ? '+'
-                      : isDiff && type === 'del'
-                      ? '−'
-                      : String(i + 1)
-                    const parts = tokenise(lineText)
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {authTargets.map((t) => {
+                    const isSelected = t.name === authSel
+                    const isHovered = hoverTarget === t.name
+                    let bg = 'transparent'
+                    if (isSelected) bg = 'var(--hachi-brand-tint)'
+                    else if (isHovered) bg = 'var(--hachi-cream)'
 
                     return (
                       <div
-                        key={i}
+                        key={t.name}
+                        onClick={() => selectAuthTarget(t.name)}
+                        onMouseEnter={() => setHoverTarget(t.name)}
+                        onMouseLeave={() => setHoverTarget(null)}
                         style={{
                           display: 'flex',
-                          alignItems: 'flex-start',
+                          alignItems: 'center',
+                          gap: 9,
+                          padding: '8px 10px',
+                          borderRadius: 8,
+                          cursor: 'pointer',
                           background: bg,
-                          minHeight: 22,
+                          transition: 'background var(--dur-fast) var(--ease)',
                         }}
                       >
-                        {/* Gutter */}
+                        <span
+                          style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}
+                        >
+                          <Icon name={AUTH_KIND_ICON[t.kind] ?? 'file-code'} size={13} />
+                        </span>
                         <span
                           style={{
-                            width: 38,
-                            flexShrink: 0,
-                            textAlign: 'right',
-                            paddingRight: 12,
                             fontFamily: 'var(--font-mono)',
                             fontSize: 12.5,
-                            lineHeight: '22px',
-                            color: gutColor,
-                            userSelect: 'none',
-                          }}
-                        >
-                          {gutter}
-                        </span>
-                        {/* Color bar */}
-                        <span
-                          style={{
-                            width: 3,
-                            flexShrink: 0,
-                            alignSelf: 'stretch',
-                            background: barColor,
-                          }}
-                        />
-                        {/* Code tokens — overflow-hidden, no wrap */}
-                        <span
-                          style={{
                             flex: 1,
-                            paddingLeft: 12,
-                            fontFamily: 'var(--font-mono)',
-                            fontSize: 12.5,
-                            lineHeight: '22px',
-                            color: '#FBF7EF',
-                            whiteSpace: 'pre',
                             overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
                           }}
                         >
-                          {parts.map((p, pi) => (
-                            <span key={pi} style={{ color: p.color }}>
-                              {p.text}
-                            </span>
-                          ))}
+                          {t.name}
                         </span>
+                        {t.dirty && (
+                          <span
+                            style={{
+                              width: 7,
+                              height: 7,
+                              borderRadius: '50%',
+                              background: 'var(--hachi-working)',
+                              flexShrink: 0,
+                            }}
+                          />
+                        )}
                       </div>
                     )
                   })}
                 </div>
               </div>
 
-              {/* Generate patch panel */}
-              <div
-                style={{
-                  background: 'var(--hachi-surface)',
-                  border: '0.5px solid var(--hachi-line)',
-                  borderRadius: 16,
-                  padding: 18,
-                }}
-              >
-                {/* Panel header */}
+              {/* ---- Right: viewer + generate panel ---- */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {/* Diff / Source viewer */}
                 <div
                   style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                    marginBottom: 13,
+                    background: 'var(--hachi-surface)',
+                    border: '0.5px solid var(--hachi-line)',
+                    borderRadius: 16,
+                    overflow: 'hidden',
                   }}
                 >
-                  <span style={{ color: 'var(--hachi-brand)', display: 'inline-flex' }}>
-                    <Icon name="sparkles" size={16} />
-                  </span>
-                  <span style={{ fontWeight: 500, fontSize: 14 }}>Generate patch</span>
-                </div>
-
-                {/* Prompt row */}
-                <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
-                  <input
-                    value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
+                  {/* Viewer header */}
+                  <div
                     style={{
-                      flex: 1,
-                      minWidth: 0,
-                      height: 38,
-                      padding: '0 12px',
-                      border: '0.5px solid var(--hachi-line)',
-                      borderRadius: 10,
-                      background: 'var(--hachi-canvas)',
-                      font: 'inherit',
-                      fontSize: 13,
-                      color: 'var(--hachi-ink)',
-                      outline: 'none',
-                    }}
-                    placeholder="Describe the change you want…"
-                  />
-                  <button
-                    onMouseEnter={() => setHoverGenerate(true)}
-                    onMouseLeave={() => setHoverGenerate(false)}
-                    style={{
-                      display: 'inline-flex',
+                      display: 'flex',
                       alignItems: 'center',
-                      gap: 7,
-                      height: 38,
-                      padding: '0 14px',
-                      borderRadius: 10,
-                      border: '0.5px solid transparent',
-                      background: hoverGenerate
-                        ? 'var(--hachi-brand-hover)'
-                        : 'var(--hachi-brand)',
-                      color: 'var(--hachi-canvas)',
-                      font: '500 13px var(--font-body)',
-                      cursor: 'pointer',
-                      transition: 'background var(--dur-fast) var(--ease)',
-                      flexShrink: 0,
+                      gap: 10,
+                      padding: '13px 16px',
+                      borderBottom: '0.5px solid var(--hachi-line)',
                     }}
                   >
-                    <Icon name="sparkles" size={14} />
-                    Generate
-                  </button>
-                </div>
-
-                {/* Patch summary row */}
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 12,
-                    padding: '12px 14px',
-                    background: 'var(--hachi-cream)',
-                    border: '0.5px solid var(--hachi-line)',
-                    borderRadius: 10,
-                  }}
-                >
-                  {/* Applied badge */}
-                  {authApplied && (
+                    <span style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}>
+                      <Icon name="file-code" size={15} />
+                    </span>
                     <span
                       style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 6,
-                        padding: '4px 10px',
-                        borderRadius: 999,
-                        background: 'var(--hachi-success-tint)',
-                        color: '#2C7A50',
-                        fontSize: 12,
+                        fontFamily: 'var(--font-mono)',
                         fontWeight: 500,
-                        flexShrink: 0,
+                        fontSize: 13,
+                        flex: 1,
                       }}
                     >
-                      <span
-                        style={{
-                          width: 7,
-                          height: 7,
-                          borderRadius: '50%',
-                          background: 'var(--hachi-success)',
-                        }}
-                      />
-                      applied
+                      {authSel}
                     </span>
-                  )}
 
-                  <span
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: 13,
-                      color: 'var(--hachi-muted)',
-                    }}
-                  >
-                    +3 &minus;2 lines &middot; {authSel}
-                  </span>
-
-                  {/* Action buttons */}
-                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-                    {authApplied ? (
+                    {/* Diff / Source toggle */}
+                    <div
+                      style={{
+                        display: 'inline-flex',
+                        background: 'var(--hachi-cream)',
+                        borderRadius: 8,
+                        padding: 2,
+                      }}
+                    >
                       <button
-                        onClick={() => void revertAuthoring(authSel)}
-                        onMouseEnter={() => setHoverRevert(true)}
-                        onMouseLeave={() => setHoverRevert(false)}
+                        onClick={() => setAuthMode('diff')}
                         style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 6,
-                          height: 34,
+                          height: 28,
                           padding: '0 13px',
-                          borderRadius: 10,
-                          border: '0.5px solid var(--hachi-line)',
-                          background: hoverRevert
-                            ? 'var(--hachi-cream)'
-                            : 'var(--hachi-canvas)',
-                          color: 'var(--hachi-ink)',
-                          font: '500 13px var(--font-body)',
+                          border: 'none',
+                          borderRadius: 6,
+                          font: '500 12px var(--font-body)',
                           cursor: 'pointer',
+                          background: isDiff ? 'var(--hachi-surface)' : 'transparent',
+                          color: isDiff ? 'var(--hachi-ink)' : 'var(--hachi-muted)',
                           transition: 'background var(--dur-fast) var(--ease)',
                         }}
                       >
-                        <Icon name="refresh" size={13} />
-                        Revert
+                        Diff
                       </button>
+                      <button
+                        onClick={() => setAuthMode('source')}
+                        style={{
+                          height: 28,
+                          padding: '0 13px',
+                          border: 'none',
+                          borderRadius: 6,
+                          font: '500 12px var(--font-body)',
+                          cursor: 'pointer',
+                          background: !isDiff ? 'var(--hachi-surface)' : 'transparent',
+                          color: !isDiff ? 'var(--hachi-ink)' : 'var(--hachi-muted)',
+                          transition: 'background var(--dur-fast) var(--ease)',
+                        }}
+                      >
+                        Source
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Code viewer */}
+                  <div
+                    className="hachi-scroll"
+                    style={{
+                      background: '#16151A',
+                      maxHeight: 380,
+                      overflow: 'auto',
+                      padding: '12px 0',
+                    }}
+                  >
+                    {visibleLines.length === 0 ? (
+                      <div
+                        style={{
+                          padding: '32px 24px',
+                          textAlign: 'center',
+                          fontSize: 12.5,
+                          color: 'rgba(251,247,239,0.3)',
+                          fontFamily: 'var(--font-mono)',
+                        }}
+                      >
+                        {isGenerating ? 'Generating…' : 'Select a target to view its source.'}
+                      </div>
                     ) : (
-                      <>
-                        <button
-                          onClick={rejectPatch}
-                          onMouseEnter={() => setHoverReject(true)}
-                          onMouseLeave={() => setHoverReject(false)}
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 6,
-                            height: 34,
-                            padding: '0 13px',
-                            borderRadius: 10,
-                            border: '1px solid var(--hachi-trust)',
-                            background: hoverReject
-                              ? 'var(--hachi-trust-tint)'
-                              : 'transparent',
-                            color: 'var(--hachi-trust)',
-                            font: '500 13px var(--font-body)',
-                            cursor: 'pointer',
-                            transition: 'background var(--dur-fast) var(--ease)',
-                          }}
-                        >
-                          <Icon name="x" size={13} />
-                          Reject
-                        </button>
-                        <button
-                          onClick={() => void applyAuthoring(authSel)}
-                          onMouseEnter={() => setHoverApply(true)}
-                          onMouseLeave={() => setHoverApply(false)}
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 6,
-                            height: 34,
-                            padding: '0 13px',
-                            borderRadius: 10,
-                            border: '0.5px solid transparent',
-                            background: hoverApply
-                              ? 'var(--hachi-brand-hover)'
-                              : 'var(--hachi-brand)',
-                            color: 'var(--hachi-canvas)',
-                            font: '500 13px var(--font-body)',
-                            cursor: 'pointer',
-                            transition: 'background var(--dur-fast) var(--ease)',
-                          }}
-                        >
-                          <Icon name="check" size={13} />
-                          Apply patch
-                        </button>
-                      </>
+                      visibleLines.map((l, i) => {
+                        const type = l[0]
+                        const lineText = l[1]
+                        const { bg, gutColor, barColor } = diffRowStyle(type, isDiff)
+                        const gutter = isDiff && type === 'add'
+                          ? '+'
+                          : isDiff && type === 'del'
+                          ? '−'
+                          : String(i + 1)
+                        const parts = tokenise(lineText)
+
+                        return (
+                          <div
+                            key={i}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'flex-start',
+                              background: bg,
+                              minHeight: 22,
+                            }}
+                          >
+                            {/* Gutter */}
+                            <span
+                              style={{
+                                width: 38,
+                                flexShrink: 0,
+                                textAlign: 'right',
+                                paddingRight: 12,
+                                fontFamily: 'var(--font-mono)',
+                                fontSize: 12.5,
+                                lineHeight: '22px',
+                                color: gutColor,
+                                userSelect: 'none',
+                              }}
+                            >
+                              {gutter}
+                            </span>
+                            {/* Color bar */}
+                            <span
+                              style={{
+                                width: 3,
+                                flexShrink: 0,
+                                alignSelf: 'stretch',
+                                background: barColor,
+                              }}
+                            />
+                            {/* Code tokens — overflow-hidden, no wrap */}
+                            <span
+                              style={{
+                                flex: 1,
+                                paddingLeft: 12,
+                                fontFamily: 'var(--font-mono)',
+                                fontSize: 12.5,
+                                lineHeight: '22px',
+                                color: '#FBF7EF',
+                                whiteSpace: 'pre',
+                                overflow: 'hidden',
+                              }}
+                            >
+                              {parts.map((p, pi) => (
+                                <span key={pi} style={{ color: p.color }}>
+                                  {p.text}
+                                </span>
+                              ))}
+                            </span>
+                          </div>
+                        )
+                      })
                     )}
                   </div>
                 </div>
 
-                {/* Post-apply confirmation line */}
-                {authApplied && (
+                {/* Generate patch panel */}
+                <div
+                  style={{
+                    background: 'var(--hachi-surface)',
+                    border: '0.5px solid var(--hachi-line)',
+                    borderRadius: 16,
+                    padding: 18,
+                  }}
+                >
+                  {/* Panel header */}
                   <div
                     style={{
-                      marginTop: 11,
-                      fontSize: 12.5,
-                      color: '#2C7A50',
                       display: 'flex',
                       alignItems: 'center',
-                      gap: 7,
+                      gap: 10,
+                      marginBottom: 13,
                     }}
                   >
-                    <Icon name="check" size={14} />
-                    Written to ~/.hachi/skills/{authSel} &middot; re-indexed in 0.3s
+                    <span style={{ color: 'var(--hachi-brand)', display: 'inline-flex' }}>
+                      <Icon name="sparkles" size={16} />
+                    </span>
+                    <span style={{ fontWeight: 500, fontSize: 14 }}>Generate patch</span>
                   </div>
-                )}
+
+                  {/* Prompt row */}
+                  <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
+                    <input
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) void handleGenerate() }}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        height: 38,
+                        padding: '0 12px',
+                        border: '0.5px solid var(--hachi-line)',
+                        borderRadius: 10,
+                        background: 'var(--hachi-canvas)',
+                        font: 'inherit',
+                        fontSize: 13,
+                        color: 'var(--hachi-ink)',
+                        outline: 'none',
+                      }}
+                      placeholder="Describe the change you want…"
+                    />
+                    <button
+                      onClick={() => void handleGenerate()}
+                      onMouseEnter={() => setHoverGenerate(true)}
+                      onMouseLeave={() => setHoverGenerate(false)}
+                      disabled={isGenerating || !authSel || !prompt.trim()}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 7,
+                        height: 38,
+                        padding: '0 14px',
+                        borderRadius: 10,
+                        border: '0.5px solid transparent',
+                        background:
+                          isGenerating || !authSel || !prompt.trim()
+                            ? 'var(--hachi-muted)'
+                            : hoverGenerate
+                            ? 'var(--hachi-brand-hover)'
+                            : 'var(--hachi-brand)',
+                        color: 'var(--hachi-canvas)',
+                        font: '500 13px var(--font-body)',
+                        cursor:
+                          isGenerating || !authSel || !prompt.trim() ? 'not-allowed' : 'pointer',
+                        transition: 'background var(--dur-fast) var(--ease)',
+                        flexShrink: 0,
+                        opacity: isGenerating || !authSel || !prompt.trim() ? 0.6 : 1,
+                      }}
+                    >
+                      <Icon name="sparkles" size={14} />
+                      {isGenerating ? 'Generating…' : 'Generate'}
+                    </button>
+                  </div>
+
+                  {/* Inline generate error */}
+                  {generateError && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '10px 14px',
+                        marginBottom: 12,
+                        background: 'rgba(192,57,43,0.10)',
+                        border: '0.5px solid var(--hachi-danger)',
+                        borderRadius: 10,
+                        fontSize: 13,
+                        color: 'var(--hachi-danger)',
+                      }}
+                    >
+                      <Icon name="x" size={14} />
+                      {generateError}
+                      <button
+                        onClick={() => setGenerateError(null)}
+                        style={{
+                          marginLeft: 'auto',
+                          background: 'none',
+                          border: 'none',
+                          padding: 0,
+                          cursor: 'pointer',
+                          color: 'var(--hachi-danger)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <Icon name="x" size={12} />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Patch summary row — only shown when a diff exists (LOW-003) */}
+                  {(hasDiff || authApplied) && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 12,
+                        padding: '12px 14px',
+                        background: 'var(--hachi-cream)',
+                        border: '0.5px solid var(--hachi-line)',
+                        borderRadius: 10,
+                      }}
+                    >
+                      {/* Applied badge */}
+                      {authApplied && (
+                        <span
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            padding: '4px 10px',
+                            borderRadius: 999,
+                            background: 'var(--hachi-success-tint)',
+                            color: '#2C7A50',
+                            fontSize: 12,
+                            fontWeight: 500,
+                            flexShrink: 0,
+                          }}
+                        >
+                          <span
+                            style={{
+                              width: 7,
+                              height: 7,
+                              borderRadius: '50%',
+                              background: 'var(--hachi-success)',
+                            }}
+                          />
+                          applied
+                        </span>
+                      )}
+
+                      {/* Derived diff summary (LOW-003) */}
+                      <span
+                        style={{
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: 13,
+                          color: 'var(--hachi-muted)',
+                        }}
+                      >
+                        {hasDiff
+                          ? `+${addCount} −${delCount} lines · ${authSel ?? ''}`
+                          : authSel ?? ''}
+                      </span>
+
+                      {/* Action buttons */}
+                      <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+                        {authApplied ? (
+                          <button
+                            onClick={() => { if (authSel) void revertAuthoring(authSel) }}
+                            onMouseEnter={() => setHoverRevert(true)}
+                            onMouseLeave={() => setHoverRevert(false)}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 6,
+                              height: 34,
+                              padding: '0 13px',
+                              borderRadius: 10,
+                              border: '0.5px solid var(--hachi-line)',
+                              background: hoverRevert
+                                ? 'var(--hachi-cream)'
+                                : 'var(--hachi-canvas)',
+                              color: 'var(--hachi-ink)',
+                              font: '500 13px var(--font-body)',
+                              cursor: 'pointer',
+                              transition: 'background var(--dur-fast) var(--ease)',
+                            }}
+                          >
+                            <Icon name="refresh" size={13} />
+                            Revert
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => { rejectPatch(); setGeneratedDiff(null); setGenerateError(null) }}
+                              onMouseEnter={() => setHoverReject(true)}
+                              onMouseLeave={() => setHoverReject(false)}
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                height: 34,
+                                padding: '0 13px',
+                                borderRadius: 10,
+                                border: '1px solid var(--hachi-trust)',
+                                background: hoverReject
+                                  ? 'var(--hachi-trust-tint)'
+                                  : 'transparent',
+                                color: 'var(--hachi-trust)',
+                                font: '500 13px var(--font-body)',
+                                cursor: 'pointer',
+                                transition: 'background var(--dur-fast) var(--ease)',
+                              }}
+                            >
+                              <Icon name="x" size={13} />
+                              Reject
+                            </button>
+                            <button
+                              onClick={() => { if (authSel) void applyAuthoring(authSel).then(() => setGeneratedDiff(null)) }}
+                              onMouseEnter={() => setHoverApply(true)}
+                              onMouseLeave={() => setHoverApply(false)}
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                height: 34,
+                                padding: '0 13px',
+                                borderRadius: 10,
+                                border: '0.5px solid transparent',
+                                background: hoverApply
+                                  ? 'var(--hachi-brand-hover)'
+                                  : 'var(--hachi-brand)',
+                                color: 'var(--hachi-canvas)',
+                                font: '500 13px var(--font-body)',
+                                cursor: 'pointer',
+                                transition: 'background var(--dur-fast) var(--ease)',
+                              }}
+                            >
+                              <Icon name="check" size={13} />
+                              Apply patch
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Post-apply confirmation line */}
+                  {authApplied && (
+                    <div
+                      style={{
+                        marginTop: 11,
+                        fontSize: 12.5,
+                        color: '#2C7A50',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 7,
+                      }}
+                    >
+                      <Icon name="check" size={14} />
+                      Written to ~/.hachi/skills/{authSel} &middot; re-indexed in 0.3s
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </div>

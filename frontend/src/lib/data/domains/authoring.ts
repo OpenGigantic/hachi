@@ -2,10 +2,11 @@
 // Hachi Web App — Authoring domain loader
 //
 // Endpoints:
-//   GET  /authoring/targets                       → GatewayTarget[] → AuthTarget[]
-//   GET  /authoring/targets/{name}                → { name, source }
-//   POST /authoring/targets/{name}/apply   body{} → { ok, reindexed_ms }
-//   POST /authoring/targets/{name}/revert  body{} → { ok }
+//   GET  /authoring/targets                             → GatewayTarget[] → AuthTarget[]
+//   GET  /authoring/targets/{name}                      → { name, source }
+//   POST /authoring/targets/{name}/generate  body{prompt} → { diff: DiffLine[] }
+//   POST /authoring/targets/{name}/apply     body{}      → { ok, reindexed_ms }
+//   POST /authoring/targets/{name}/revert    body{}      → { ok }
 // ============================================================
 
 import { apiGet, apiSend, USE_MOCKS } from "../client";
@@ -25,6 +26,16 @@ interface GatewayTarget {
 interface GatewayTargetSource {
   name: string;
   source: string;
+}
+
+interface GatewayGenerateResponse {
+  diff: Array<["" | "add" | "del", string]>;
+}
+
+/** Returned by generateAuthoring — callers hold this in local state. */
+export interface GenerateResult {
+  diff: DiffLine[];
+  error?: string;
 }
 
 // ---- Pure adapters ----
@@ -111,6 +122,47 @@ export async function loadAuthoringSource(
 }
 
 // ---- Mutation wrappers ----
+
+/**
+ * Call POST /authoring/targets/{name}/generate with a natural-language prompt.
+ * Returns a GenerateResult with the diff lines. Never throws — errors are surfaced
+ * as { diff: [], error: "<message>" } so callers can render inline error state.
+ *
+ * NOTE: The backend endpoint is under construction. Until it lands, a 404 (or any
+ * other error) is caught and returned as an error result.
+ */
+export async function generateAuthoring(
+  name: string,
+  prompt: string
+): Promise<GenerateResult> {
+  if (USE_MOCKS) {
+    // Synthetic diff for offline UI work
+    return {
+      diff: [
+        ["", "node deep_research"],
+        ["del", "  budget: dense=8 full=4"],
+        ["add", "  budget: dense=12 full=6"],
+        ["del", "  strategy: sequential"],
+        ["add", "  strategy: adaptive"],
+      ],
+    };
+  }
+  try {
+    const raw = await apiSend<GatewayGenerateResponse>(
+      "POST",
+      "/authoring/targets/" + encodeURIComponent(name) + "/generate",
+      { prompt }
+    );
+    const diff: DiffLine[] = (raw?.diff ?? []).map(
+      ([type, text]) => [type, text] as DiffLine
+    );
+    return { diff };
+  } catch (err: unknown) {
+    const message =
+      err instanceof Error ? err.message : "Generate failed — try again.";
+    return { diff: [], error: message };
+  }
+}
 
 /**
  * Apply the pending patch for the named target.
