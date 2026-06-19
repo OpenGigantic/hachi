@@ -236,6 +236,7 @@ function MockRunSimulation() {
   const closeRun = useStore((s) => s.closeRun);
   const stopRun = useStore((s) => s.stopRun);
   const runAllowLeash = useStore((s) => s.runAllowLeash);
+  const runAlwaysAllow = useStore((s) => s.runAlwaysAllow);
   const runDenyLeash = useStore((s) => s.runDenyLeash);
   const openRun = useStore((s) => s.openRun);
 
@@ -728,7 +729,7 @@ function MockRunSimulation() {
                 action={runLeash.action}
                 why={runLeash.why}
                 onAllowOnce={runAllowLeash}
-                onAlwaysAllow={runAllowLeash}
+                onAlwaysAllow={runAlwaysAllow}
                 onDecline={runDenyLeash}
                 style={{ width: 440, maxWidth: "100%" }}
               />
