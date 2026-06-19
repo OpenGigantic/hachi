@@ -32,7 +32,7 @@ class FakeController:
         if self.raise_unavailable:
             raise BrowserUnavailable("Playwright is not installed.")
 
-    def navigate(self, url):
+    def navigate(self, url, *, allow_private: bool = False):
         self._guard()
         self.calls.append(("navigate", url))
         return {"url": url, "title": "Example Domain"}

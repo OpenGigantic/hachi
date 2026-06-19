@@ -68,14 +68,28 @@ function adapt(raw: GatewaySkill): Skill {
 
 // ---- Loader ----
 
+// Tracks whether this domain has ever received real data from the gateway.
+// In live mode: until the first successful fetch, seeded fixtures must NOT be
+// shown, so on failure we clear the slice instead of leaving them in place.
+let _hasEverSucceeded = false;
+
 export async function loadSkills(): Promise<void> {
   if (USE_MOCKS) return; // keep seeded fixtures
   try {
     const raw = await apiGet<GatewaySkill[]>("/skills");
     useStore.getState().hydrate({ skills: (raw ?? []).map(adapt) });
     useStore.getState().setReconnecting(false);
+    _hasEverSucceeded = true;
   } catch {
-    useStore.getState().setReconnecting(true); // leave fixtures in place
+    if (!_hasEverSucceeded) {
+      // First-load failure: clear seeded fixtures so we never present
+      // fabricated skill list as if it were real gateway data.
+      useStore.getState().hydrate({ skills: [] });
+    }
+    // Whether or not this is the first load, flag reconnecting so the UI
+    // shows the reconnecting indicator. Last-known-good real data is
+    // preserved after the first success.
+    useStore.getState().setReconnecting(true);
   }
 }
 

@@ -51,7 +51,9 @@ def _make_browse_web(controller: BrowserController, gate: Any | None) -> Callabl
             return f"Blocked URL: {reason}"
 
         try:
-            nav = controller.navigate(url)
+            # Pass allow_private so the per-hop redirect guard in BrowserController
+            # honours the same escape hatch as the initial URL check above.
+            nav = controller.navigate(url, allow_private=_allow_private())
             page = controller.read()
         except BrowserUnavailable as exc:
             return f"Browser unavailable: {exc}"

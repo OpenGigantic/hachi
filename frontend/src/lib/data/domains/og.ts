@@ -45,6 +45,11 @@ function adaptOgNode(raw: GatewayOgNode): OgNode {
 
 // ---- Loader ----
 
+// Tracks whether this domain has ever received real data from the gateway.
+// In live mode: until the first successful fetch, seeded fixtures must NOT be
+// shown, so on failure we clear the slice instead of leaving them in place.
+let _hasEverSucceeded = false;
+
 export async function loadOg(): Promise<void> {
   if (USE_MOCKS) return; // keep seeded fixtures
   try {
@@ -52,8 +57,17 @@ export async function loadOg(): Promise<void> {
     const ogNodes: OgNode[] = (raw.nodes ?? []).map(adaptOgNode);
     useStore.getState().hydrate({ ogNodes });
     useStore.getState().setReconnecting(false);
+    _hasEverSucceeded = true;
   } catch {
-    useStore.getState().setReconnecting(true); // leave fixtures in place
+    if (!_hasEverSucceeded) {
+      // First-load failure: clear seeded fixtures so we never present
+      // fabricated OG graph as if it were real gateway data.
+      useStore.getState().hydrate({ ogNodes: [] });
+    }
+    // Whether or not this is the first load, flag reconnecting so the UI
+    // shows the reconnecting indicator. Last-known-good real data is
+    // preserved after the first success.
+    useStore.getState().setReconnecting(true);
   }
 }
 

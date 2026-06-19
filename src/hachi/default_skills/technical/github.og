@@ -5,12 +5,12 @@
 
 ::index
   # node-id    | type  | scope | conf | keywords
-  core_github   | skill | all   | 1.0  | github, issue, bug, repo, productivity, pull request, repository, issue tracker, bug report
+  core_github   | skill | all   | 1.0  | github, issue, bug, repo, productivity, pull request, repository, issue tracker, bug report, deploy, deployment, ci, pipeline, devops
 
 ::node[core_github]
 ->[:role=skill]
 ->[:requires_auth=github_personal_token]
-->[:keywords=github, issue, bug, repo, productivity, pull request, repository, issue tracker, bug report]
+->[:keywords=github, issue, bug, repo, productivity, pull request, repository, issue tracker, bug report, deploy, deployment, ci, pipeline, devops]
 
 ::api[create_github_issue]
 method=POST

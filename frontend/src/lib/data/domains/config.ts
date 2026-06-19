@@ -63,6 +63,11 @@ interface ValidateProviderResponse {
 // Module-level model list (not stored in Zustand — avoids types.ts changes)
 let _availableModels: GatewayModel[] = [];
 
+// Tracks whether this domain has ever received real data from the gateway.
+// In live mode: until the first successful fetch, seeded fixtures must NOT be
+// shown, so on failure we clear the slice instead of leaving them in place.
+let _hasEverSucceeded = false;
+
 /** Returns the last fetched model list (empty until loadConfig resolves). */
 export function getAvailableModels(): GatewayModel[] {
   return _availableModels;
@@ -118,9 +123,20 @@ export async function loadConfig(): Promise<void> {
 
     useStore.getState().hydrate({ safety, provider });
     useStore.getState().setReconnecting(false);
+    _hasEverSucceeded = true;
   } catch {
+    if (!_hasEverSucceeded) {
+      // First-load failure: reset to safe defaults so we never present
+      // the fixture provider/safety config as if it were real gateway data.
+      useStore.getState().hydrate({
+        safety: "standard",
+        provider: { name: "anthropic", model: "claude-haiku-4-5", key: "" },
+      });
+    }
+    // Whether or not this is the first load, flag reconnecting so the UI
+    // shows the reconnecting indicator. Last-known-good real data is
+    // preserved after the first success.
     useStore.getState().setReconnecting(true);
-    // fixtures remain in place
   }
 }
 

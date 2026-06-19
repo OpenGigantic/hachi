@@ -50,14 +50,29 @@ function sourceToLines(source: string): DiffLine[] {
 
 // ---- Loader ----
 
+// Tracks whether this domain has ever received real data from the gateway.
+// In live mode: until the first successful fetch, seeded fixtures must NOT be
+// shown, so on failure we clear the slices instead of leaving them in place.
+let _hasEverSucceeded = false;
+
 export async function loadAuthoring(): Promise<void> {
   if (USE_MOCKS) return; // keep seeded fixtures
   try {
     const raw = await apiGet<GatewayTarget[]>("/authoring/targets");
     useStore.getState().hydrate({ authTargets: (raw ?? []).map(adaptTarget) });
     useStore.getState().setReconnecting(false);
+    _hasEverSucceeded = true;
   } catch {
-    useStore.getState().setReconnecting(true); // leave fixtures in place
+    if (!_hasEverSucceeded) {
+      // First-load failure: clear seeded fixtures so we never present
+      // fabricated authoring targets as if they were real gateway data.
+      // Also clear authSource since it was seeded alongside the targets.
+      useStore.getState().hydrate({ authTargets: [], authSource: [] });
+    }
+    // Whether or not this is the first load, flag reconnecting so the UI
+    // shows the reconnecting indicator. Last-known-good real data is
+    // preserved after the first success.
+    useStore.getState().setReconnecting(true);
   }
 }
 

@@ -59,7 +59,8 @@ export function LeashPrompt({
 }: LeashPromptProps) {
   return (
     <div
-      role="dialog"
+      role="alertdialog"
+      aria-modal="true"
       aria-label={request}
       style={{
         width: 420,

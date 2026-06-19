@@ -6,12 +6,16 @@ Covers:
   - InteractivePermissionGate.require_action delegates to the TUI modal.
   - HandlerApprover maps approve → True, deny → False.
   - RegistryApprover: normal resolve path and timeout-deny path.
+  - RegistryApprover.require_async: async-safe variant (REL-001).
+  - PendingApprovalRegistry.wait_async: awaitable wait via anyio.
+  - Timeout auto-cleanup: timed-out entry removed from registry (REL-001).
   - GoogleService.require_approval delegates to the client approver.
   - UC-PERM-002: UNC path rejection.
 """
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from pathlib import Path
@@ -400,3 +404,105 @@ class TestUNCPathRejection:
         local.write_text("ok", encoding="utf-8")
         result = gate.check_path(str(local), "read")
         assert result.allowed is True
+
+
+# ==========================================
+# REL-001: async-safe approval wait
+# ==========================================
+
+
+class TestRegistryApproverAsync:
+    """REL-001: require_async / wait_async must not block the event loop."""
+
+    def test_require_async_resolve_before_timeout_returns_approve(self) -> None:
+        """Decision delivered before timeout → require_async returns True promptly."""
+        registry = PendingApprovalRegistry()
+        approver = RegistryApprover(registry, emit=_noop_emit, timeout=5.0)
+
+        async def _run() -> tuple[bool, str]:
+            # Resolve the request from a background thread after a short delay.
+            def _resolver():
+                time.sleep(0.05)
+                pending = registry.list_pending()
+                assert pending, "Expected one pending entry"
+                registry.resolve(
+                    pending[0]["request_id"],
+                    PermissionDecision(action="approve", rationale="async gateway ok"),
+                )
+
+            t = threading.Thread(target=_resolver, daemon=True)
+            t.start()
+            result = await approver.require_async("send_email", "Send via async gateway")
+            t.join(timeout=2.0)
+            return result
+
+        ok, reason = asyncio.run(_run())
+        assert ok is True
+        assert "approved" in reason.lower() or "async gateway ok" in reason
+
+    def test_require_async_timeout_auto_denies_and_cleans_up(self) -> None:
+        """Timeout path: require_async denies, cleans up the registry entry (REL-001)."""
+        registry = PendingApprovalRegistry()
+        approver = RegistryApprover(registry, emit=_noop_emit, timeout=0.05)
+
+        async def _run() -> tuple[bool, str]:
+            return await approver.require_async("delete_event", "Delete meeting — no resolver")
+
+        ok, reason = asyncio.run(_run())
+        assert ok is False
+        assert "timed out" in reason
+        # Entry must be removed from the registry after timeout.
+        assert registry.list_pending() == []
+
+    def test_two_concurrent_async_waits_complete_independently(self) -> None:
+        """Two concurrent require_async calls both complete without blocking each other."""
+        registry = PendingApprovalRegistry()
+        approver = RegistryApprover(registry, emit=_noop_emit, timeout=5.0)
+
+        async def _run() -> list[tuple[bool, str]]:
+            # Schedule two concurrent approval requests.
+            async def _task(action: str, summary: str) -> tuple[bool, str]:
+                return await approver.require_async(action, summary)
+
+            task_a = asyncio.create_task(_task("send_email", "Send digest"))
+            task_b = asyncio.create_task(_task("trash_file", "Trash temp"))
+
+            # Give both tasks time to park their requests before resolving.
+            await asyncio.sleep(0.05)
+
+            pending = registry.list_pending()
+            assert len(pending) == 2, f"Expected 2 pending, got {len(pending)}"
+            for entry in pending:
+                registry.resolve(
+                    entry["request_id"],
+                    PermissionDecision(action="approve", rationale="concurrent ok"),
+                )
+
+            return [await task_a, await task_b]
+
+        results = asyncio.run(_run())
+        assert all(ok for ok, _ in results), f"Expected both approved, got {results}"
+
+    def test_sync_require_timeout_auto_cleans_up_entry(self) -> None:
+        """Sync wait timeout auto-removes the entry so it cannot leak (REL-001)."""
+        registry = PendingApprovalRegistry()
+        approver = RegistryApprover(registry, emit=_noop_emit, timeout=0.05)
+
+        ok, reason = approver.require("delete_contact", "Delete — no resolver")
+        assert ok is False
+        assert "timed out" in reason
+        # After timeout, the entry must be gone.
+        assert registry.list_pending() == []
+        # Internal _entries dict must also be empty.
+        assert registry._entries == {}
+
+    def test_wait_async_unknown_request_id_returns_deny(self) -> None:
+        """wait_async with an unknown ID returns a deny immediately."""
+        registry = PendingApprovalRegistry()
+
+        async def _run() -> PermissionDecision:
+            return await registry.wait_async("nonexistent-id", timeout=5.0)
+
+        decision = asyncio.run(_run())
+        assert decision.action == "deny"
+        assert "unknown request_id" in (decision.rationale or "")

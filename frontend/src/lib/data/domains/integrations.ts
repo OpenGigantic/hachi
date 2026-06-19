@@ -179,12 +179,18 @@ function adaptMcpTools(raw: GatewayMcpServer): McpTool[] {
 // 3. Loader: fetch → adapt → hydrate (NEVER throws)
 // ============================================================
 
+// Tracks whether this domain has ever received real data from the gateway.
+// In live mode: until the first successful fetch, seeded fixtures must NOT be
+// shown, so on failure we clear the slices instead of leaving them in place.
+let _hasEverSucceeded = false;
+
 /**
  * Load native integrations (GET /capabilities) and MCP inventory
  * (GET /runtime/mcp/inventory), then hydrate the store.
  *
- * On any error: setReconnecting(true) and leave fixtures in place.
- * On success: setReconnecting(false).
+ * On first-load failure (live mode): clears slices so seeded fixtures are never
+ * shown as real data. On subsequent failures: keeps last-known-good real data
+ * and sets reconnecting. On success: sets reconnecting(false).
  */
 export async function loadIntegrations(): Promise<void> {
   if (USE_MOCKS) return; // keep seeded fixtures
@@ -209,8 +215,16 @@ export async function loadIntegrations(): Promise<void> {
 
     hydrate({ integrations, mcpServers, mcpTools });
     setReconnecting(false);
+    _hasEverSucceeded = true;
   } catch {
-    // Leave fixtures intact; signal the UI that we're offline/degraded.
+    if (!_hasEverSucceeded) {
+      // First-load failure: clear seeded fixtures so we never present
+      // fabricated integration data as if it were real gateway data.
+      hydrate({ integrations: [], mcpServers: [], mcpTools: [] });
+    }
+    // Whether or not this is the first load, flag reconnecting so the UI
+    // shows the reconnecting indicator. Last-known-good real data is
+    // preserved after the first success.
     setReconnecting(true);
   }
 }

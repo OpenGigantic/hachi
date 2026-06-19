@@ -8,7 +8,12 @@
 import React, { useEffect, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
-import { loadMemory, recallMemory } from '../lib/data/domains/memory'
+import {
+  loadMemory,
+  recallMemory,
+  saveFact as saveFactRemote,
+  delFact as delFactRemote,
+} from '../lib/data/domains/memory'
 import { Icon } from '../components/icons/Icon'
 import type { MemGroup, Fact, BlockedItem, RecallHit, Session, SkillUsage } from '../lib/data/types'
 
@@ -19,19 +24,23 @@ function GhostIconBtn({
   onClick,
   hoverBg,
   hoverColor,
+  'aria-label': ariaLabel,
   children,
 }: {
   onClick: () => void
   hoverBg: string
   hoverColor: string
+  'aria-label': string
   children: React.ReactNode
 }) {
   const [hov, setHov] = useState(false)
   return (
     <button
+      type="button"
       onClick={onClick}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
+      aria-label={ariaLabel}
       style={{
         border: 'none',
         background: 'transparent',
@@ -117,10 +126,10 @@ function FactCard({
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ fontSize: '12px', color: 'var(--hachi-muted)' }}>{fact.source}</span>
             <div style={{ display: 'flex', gap: '2px' }}>
-              <GhostIconBtn onClick={onEdit} hoverBg="var(--hachi-cream)" hoverColor="var(--hachi-trust)">
+              <GhostIconBtn onClick={onEdit} hoverBg="var(--hachi-cream)" hoverColor="var(--hachi-trust)" aria-label="Edit fact">
                 <Icon name="pencil" size={15} />
               </GhostIconBtn>
-              <GhostIconBtn onClick={onDelete} hoverBg="var(--hachi-cream)" hoverColor="var(--hachi-danger)">
+              <GhostIconBtn onClick={onDelete} hoverBg="var(--hachi-cream)" hoverColor="var(--hachi-danger)" aria-label="Delete fact">
                 <Icon name="trash" size={15} />
               </GhostIconBtn>
             </div>
@@ -280,7 +289,11 @@ function Memory() {
         <div style={{ flex: 1 }} />
         {/* add a fact */}
         <TextBtn
-          onClick={() => addFact('you')}
+          onClick={() => {
+            // Optimistic only: insert a temp fact in the store and open edit mode.
+            // The actual POST to /memory/facts fires when the user saves (saveFact).
+            addFact('you')
+          }}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -589,10 +602,23 @@ function Memory() {
                     editingFactId={editingFactId}
                     editingText={editingText}
                     onEdit={() => startEditFact(fact.id)}
-                    onDelete={() => delFact(g.id, fact.id)}
+                    onDelete={() => {
+                      // 1. Optimistic: remove from store immediately
+                      delFact(g.id, fact.id)
+                      // 2. Network: DELETE /memory/facts/{fact_id}
+                      //    On failure, loadMemory() inside delFactRemote reverts
+                      void delFactRemote(g.id, fact.id)
+                    }}
                     onSetEditText={setEditText}
                     onCancelEdit={cancelEdit}
-                    onSave={() => saveFact(g.id, fact.id)}
+                    onSave={() => {
+                      const text = editingText
+                      // 1. Optimistic: persist text in store immediately
+                      saveFact(g.id, fact.id)
+                      // 2. Network: DELETE old + POST new (or just POST for temp ids)
+                      //    On failure, loadMemory() inside saveFactRemote reverts
+                      void saveFactRemote(g.id, fact.id, text)
+                    }}
                   />
                 ))}
               </div>

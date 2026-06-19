@@ -63,7 +63,7 @@ class _FakeController:
     def __init__(self, text: str) -> None:
         self._text = text
 
-    def navigate(self, url: str) -> dict:
+    def navigate(self, url: str, *, allow_private: bool = False) -> dict:
         return {"url": url, "title": "Example"}
 
     def read(self) -> dict:
