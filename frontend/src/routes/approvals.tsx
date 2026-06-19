@@ -10,6 +10,9 @@ import { useCountdown } from "../lib/hooks/useCountdown";
 import { Icon } from "../components/icons/Icon";
 import { HachiMark } from "../components/brand/HachiMark";
 import type { Approval, HistoryItem, AuditEntry } from "../lib/data/types";
+
+// localStorage key for dismissing the "What is the leash?" info band
+const LEASH_INFO_KEY = "hachi.leash-info-dismissed";
 import {
   loadApprovals,
   approve,
@@ -17,6 +20,92 @@ import {
   decline,
   declineAll as declineAllMutation,
 } from "../lib/data/domains/approvals";
+
+// ============================================================
+// LeashInfoBand — "What is the leash?" dismissible info band
+// Shown once on first visit; suppressed after dismiss via localStorage.
+// ============================================================
+function LeashInfoBand() {
+  const [visible, setVisible] = useState<boolean>(
+    () => localStorage.getItem(LEASH_INFO_KEY) !== "1"
+  );
+
+  const dismiss = () => {
+    try {
+      localStorage.setItem(LEASH_INFO_KEY, "1");
+    } catch {
+      // Storage unavailable (e.g. private browsing quota) — still hide the band.
+    }
+    setVisible(false);
+  };
+
+  if (!visible) return null;
+
+  return (
+    <div
+      role="status"
+      aria-label="What is the leash?"
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 12,
+        padding: "13px 16px",
+        background: "var(--hachi-trust-tint)",
+        border: "0.5px solid var(--hachi-line)",
+        borderRadius: 12,
+        marginBottom: 4,
+      }}
+    >
+      <span
+        style={{
+          color: "var(--hachi-trust)",
+          display: "inline-flex",
+          flexShrink: 0,
+          marginTop: 2,
+        }}
+      >
+        <Icon name="shield" size={16} />
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            fontFamily: "var(--font-body)",
+            fontWeight: 500,
+            fontSize: 13,
+            color: "var(--hachi-ink)",
+            marginBottom: 3,
+          }}
+        >
+          What is the leash?
+        </div>
+        <div style={{ fontSize: 13, color: "var(--hachi-muted)", lineHeight: "20px" }}>
+          The leash is how you stay in control — before Hachi runs anything risky or
+          irreversible, it pauses here and asks. You decide: allow once, always allow,
+          or decline. Hachi never acts without your say-so on gated actions.
+        </div>
+      </div>
+      <button
+        type="button"
+        aria-label="Dismiss: What is the leash?"
+        onClick={dismiss}
+        style={{
+          flexShrink: 0,
+          border: "none",
+          background: "transparent",
+          color: "var(--hachi-muted)",
+          cursor: "pointer",
+          padding: "2px 4px",
+          display: "inline-flex",
+          alignItems: "center",
+          borderRadius: 6,
+          font: "16px/1 var(--font-body)",
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
 
 // ---- risk metadata (mirrors dc.html riskMeta) ----
 function riskMeta(r: string): {
@@ -573,6 +662,9 @@ function Approvals() {
             gap: 28,
           }}
         >
+          {/* What is the leash? — first-encounter info band */}
+          <LeashInfoBand />
+
           {/* Pending approvals */}
           {hasPending && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -675,34 +767,36 @@ function Approvals() {
             </div>
           </div>
 
-          {/* Past decisions */}
-          <div>
-            <h2
-              style={{
-                margin: "0 0 12px",
-                fontFamily: "var(--font-display)",
-                fontWeight: 500,
-                fontSize: 16,
-              }}
-            >
-              Past decisions
-            </h2>
-            <div
-              style={{
-                background: "var(--hachi-surface)",
-                border: "0.5px solid var(--hachi-line)",
-                borderRadius: 16,
-                overflow: "hidden",
-              }}
-            >
-              {history.map((h) => (
-                <HistoryRow key={h.id} item={h} />
-              ))}
+          {/* Past decisions — only rendered when history is non-empty */}
+          {history.length > 0 && (
+            <div>
+              <h2
+                style={{
+                  margin: "0 0 12px",
+                  fontFamily: "var(--font-display)",
+                  fontWeight: 500,
+                  fontSize: 16,
+                }}
+              >
+                Past decisions
+              </h2>
+              <div
+                style={{
+                  background: "var(--hachi-surface)",
+                  border: "0.5px solid var(--hachi-line)",
+                  borderRadius: 16,
+                  overflow: "hidden",
+                }}
+              >
+                {history.map((h) => (
+                  <HistoryRow key={h.id} item={h} />
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
-          {/* Permission audit — operator only */}
-          {operator && (
+          {/* Permission audit — operator only; only rendered when auditLog is non-empty */}
+          {operator && auditLog.length > 0 && (
             <div>
               <div
                 style={{
@@ -760,6 +854,7 @@ function GoSettingsLink({ onClick }: { onClick: () => void }) {
   const [hover, setHover] = useState(false);
   return (
     <button
+      type="button"
       onClick={onClick}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
