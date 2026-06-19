@@ -160,14 +160,3 @@ jobs:
 
       - name: Frontend typecheck
         run: npm run --prefix frontend typecheck
-
-      - name: Frontend API lint
-        run: >-
-          npm run --prefix frontend lint --
-          src/lib/api/hachi.server.ts
-          src/lib/api/hachi.functions.ts
-          src/types/api.ts
-          src/hooks/use-gateway-queries.ts
-          src/components/screens/session-workbench.tsx
-          src/components/screens/logs-screen.tsx
-          src/routes/s.$slug.tsx

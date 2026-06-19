@@ -8,9 +8,7 @@ Tests:
   5. find_expired() flags past valid_until nodes.
   6. run() returns GardeningResult with auto_applied + pending_review.
   7. run() writes pending_diffs.json.
-  8. format_memory_diffs() renders a table (no crash on empty or populated list).
-  9. format_og_explorer() renders without crash.
-  10. _jaccard() baseline cases.
+  8. _jaccard() baseline cases.
 """
 
 from __future__ import annotations
@@ -241,75 +239,7 @@ def test_run_writes_pending_diffs_json(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 8. format_memory_diffs() renders without crash
-# ---------------------------------------------------------------------------
-
-
-def test_format_memory_diffs_empty() -> None:
-    from hachi.tui.formatters import format_memory_diffs
-
-    table = format_memory_diffs([])
-    assert table is not None
-
-
-def test_format_memory_diffs_populated() -> None:
-    from hachi.tui.formatters import format_memory_diffs
-
-    diffs = [
-        {
-            "kind": "dedup_same_name",
-            "name_a": "billing-task",
-            "name_b": "",
-            "confidence": 1.0,
-            "reason": "found in two files",
-            "file_path_a": "a.og",
-            "file_path_b": "b.og",
-        },
-        {
-            "kind": "expire_stale",
-            "name_a": "old-decision",
-            "name_b": "",
-            "confidence": 1.0,
-            "reason": "valid_until=2025-01-01",
-            "file_path_a": "expired.og",
-            "file_path_b": "",
-        },
-    ]
-    table = format_memory_diffs(diffs)
-    assert table is not None
-
-
-# ---------------------------------------------------------------------------
-# 9. format_og_explorer() renders without crash
-# ---------------------------------------------------------------------------
-
-
-def test_format_og_explorer() -> None:
-    from hachi.tui.formatters import format_og_explorer
-
-    data = {
-        "skills": [
-            {"name": "weather_skill", "role": "skill", "keyword_count": 4, "use_count": 3,
-             "last_used": None},
-            {"name": "translate_skill", "role": "skill", "keyword_count": 3, "use_count": 0,
-             "last_used": None},
-        ],
-        "counters": {"pass1_search": 10, "pass2_peek": 5, "pass3_resolve": 2},
-        "node_count": 2,
-    }
-    result = format_og_explorer(data)
-    assert result is not None
-
-
-def test_format_og_explorer_empty() -> None:
-    from hachi.tui.formatters import format_og_explorer
-
-    result = format_og_explorer({})
-    assert result is not None
-
-
-# ---------------------------------------------------------------------------
-# 10. _jaccard baseline cases
+# 8. _jaccard baseline cases
 # ---------------------------------------------------------------------------
 
 

@@ -1,0 +1,56 @@
+/* global.css — keyframes + scrollbar + resets ported from prototype <style> block (lines 14–29) */
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--hachi-canvas); font-family: var(--font-body); }
+
+@keyframes hachiBlink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+@keyframes hachiFade {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes hachiPop {
+  from { opacity: 0; transform: scale(.98); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes hm-breathe {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-1.5px); }
+}
+
+@keyframes hm-blink {
+  0%, 92%, 100% { background: #16151A; }
+  94%, 97.5%    { background: #F3E9D2; }
+}
+
+@keyframes hm-loop {
+  to { stroke-dashoffset: -260; }
+}
+
+@keyframes ogflow {
+  to { stroke-dashoffset: -18; }
+}
+
+@keyframes hm-zfloat {
+  0%   { opacity: 0; transform: translateY(3px) scale(.9); }
+  35%  { opacity: .95; }
+  100% { opacity: 0; transform: translateY(-10px) scale(1.1); }
+}
+
+.hachi-scroll::-webkit-scrollbar { width: 11px; height: 11px; }
+.hachi-scroll::-webkit-scrollbar-thumb {
+  background: var(--hachi-line);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.hachi-scroll::-webkit-scrollbar-thumb:hover {
+  background: #d3c8b4;
+  background-clip: padding-box;
+}
