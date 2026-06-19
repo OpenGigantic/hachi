@@ -2,13 +2,13 @@
 // Faithfully ports prototype markup lines 212–336 and logic handlers.
 // Screen-local view state only in useState; all domain mutations go through useStore.
 
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
 import { HachiMark } from '../components/brand/HachiMark'
 import { LeashPrompt } from '../components/brand/LeashPrompt'
-import type { ChatMessage, ActionCard } from '../lib/data/types'
+import type { ChatMessage, ActionCard, Integration } from '../lib/data/types'
 // Side-effect import: registers the "chat" loader with bootstrapLiveData()
 // and makes loadSessions available for the per-route refresh below.
 import { loadSessions } from '../lib/data/domains/chat'
@@ -62,19 +62,33 @@ function statusMeta(st: string): {
 }
 
 // ---- slash command items (prototype renderVals lines 2214–2219) ------
+// LOW-024: added /plan /memory /sessions /model /delegate
 
 const SLASH_ITEMS = [
   { cmd: '/routine', desc: 'create a recurring routine' },
   { cmd: '/dry-run', desc: 'try a task once, safely' },
   { cmd: '/remember', desc: 'save a fact to memory' },
   { cmd: '/budget', desc: 'set a spend limit' },
+  { cmd: '/plan', desc: 'show the current task plan' },
+  { cmd: '/memory', desc: 'browse and edit memory' },
+  { cmd: '/sessions', desc: 'switch to a previous session' },
+  { cmd: '/model', desc: 'change the AI model' },
+  { cmd: '/delegate', desc: 'hand off to a sub-agent' },
 ]
 
 // ---- chat starters (prototype renderVals lines 2209–2213) -----------
+// HIGH-019: integrations required to show certain starters
 
-const CHAT_STARTERS = [
-  { label: 'Summarise my inbox', icon: 'mail', text: 'Summarise my inbox and flag anything urgent' },
-  { label: 'Draft a reply to Priya', icon: 'pencil', text: 'Draft a reply to Priya about the Q3 deck' },
+interface ChatStarter {
+  label: string
+  icon: string
+  text: string
+  requiresIntegration?: string  // integration name that must be "connected"
+}
+
+const CHAT_STARTERS: ChatStarter[] = [
+  { label: 'Summarise my inbox', icon: 'mail', text: 'Summarise my inbox and flag anything urgent', requiresIntegration: 'Google' },
+  { label: 'Draft a reply to Priya', icon: 'pencil', text: 'Draft a reply to Priya about the Q3 deck', requiresIntegration: 'Google' },
   { label: 'Create a routine', icon: 'repeat', text: 'Every weekday at 8, summarise my inbox and message me the urgent ones' },
 ]
 
@@ -459,12 +473,15 @@ interface MessageItemProps {
   isLast: boolean
   isStreaming: boolean
   operator: boolean
+  onRetry?: () => void
 }
 
-function MessageItem({ msg, isLast, isStreaming, operator }: MessageItemProps) {
+function MessageItem({ msg, isLast, isStreaming, operator, onRetry }: MessageItemProps) {
   const isYou = msg.role === 'you'
   const isHachi = msg.role === 'hachi'
   const showCursor = isStreaming && isHachi && isLast
+  // Detect error state: streaming ended but message text is the error string
+  const isError = isHachi && !isStreaming && msg.text === 'Something went wrong — please try again.'
 
   if (isYou) {
     return (
@@ -523,7 +540,7 @@ function MessageItem({ msg, isLast, isStreaming, operator }: MessageItemProps) {
             style={{
               fontSize: 15,
               lineHeight: '24px',
-              color: 'var(--hachi-ink)',
+              color: isError ? 'var(--hachi-danger)' : 'var(--hachi-ink)',
             }}
           >
             <Markdown text={msg.text} />
@@ -541,6 +558,37 @@ function MessageItem({ msg, isLast, isStreaming, operator }: MessageItemProps) {
               />
             )}
           </div>
+
+          {/* retry button on error */}
+          {isError && onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                height: 32,
+                padding: '0 12px',
+                borderRadius: 8,
+                border: '1px solid var(--hachi-danger)',
+                background: 'transparent',
+                color: 'var(--hachi-danger)',
+                font: '500 13px var(--font-body)',
+                cursor: 'pointer',
+                alignSelf: 'flex-start',
+              }}
+              onMouseEnter={(e) => {
+                ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-danger-tint)'
+              }}
+              onMouseLeave={(e) => {
+                ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+              }}
+            >
+              <Icon name="repeat" size={13} />
+              Retry
+            </button>
+          )}
 
           {/* action cards */}
           {msg.cards.map((card) => (
@@ -575,17 +623,27 @@ function Conversation() {
   const operator = useStore((s) => s.operator)
   const taskSpent = useStore((s) => s.taskSpent)
   const budget = useStore((s) => s.budget)
+  const sessions = useStore((s) => s.sessions)
+  const integrations = useStore((s) => s.integrations)
   const setComposer = useStore((s) => s.setComposer)
   const startTask = useStore((s) => s.startTask)
   const stopStreaming = useStore((s) => s.stopStreaming)
   const icAllow = useStore((s) => s.icAllow)
+  const icAlwaysAllow = useStore((s) => s.icAlwaysAllow)
   const icDeny = useStore((s) => s.icDeny)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // E6-T5: slash command keyboard navigation index (-1 = none selected)
+  const [slashIdx, setSlashIdx] = useState(-1)
 
   // Refresh recent sessions list on navigate-to (idempotent loader)
   useEffect(() => { void loadSessions() }, [])
+
+  // Reset slash index when menu opens/closes
+  useEffect(() => {
+    if (!slashOpen) setSlashIdx(-1)
+  }, [slashOpen])
 
   // Auto-scroll when messages change or streaming
   useEffect(() => {
@@ -609,16 +667,51 @@ function Conversation() {
   const working = streaming || messages.some((m) => m.role === 'hachi' && m.text === '')
   const chatState = working ? 'Hachi is working' : 'Hachi is on watch'
 
+  // LOW-020: active session title (most recent session)
+  const activeSession = sessions.find((s) => s.active) ?? sessions[0] ?? null
+  const sessionLabel = activeSession?.title ?? 'New conversation'
+
+  // HIGH-019: filter chat starters to those whose integration is connected (or have no requirement)
+  const connectedIntegrationNames = new Set(
+    (integrations as Integration[]).filter((i) => i.status === 'connected').map((i) => i.name)
+  )
+  const visibleStarters = CHAT_STARTERS.filter(
+    (s) => !s.requiresIntegration || connectedIntegrationNames.has(s.requiresIntegration)
+  )
+
   function handleInput(e: React.ChangeEvent<HTMLTextAreaElement>) {
     setComposer(e.target.value)
   }
 
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+  // E6-T5: keyboard nav for slash menu
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSlashIdx((i) => Math.min(i + 1, SLASH_ITEMS.length - 1))
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSlashIdx((i) => Math.max(i - 1, 0))
+        return
+      }
+      if (e.key === 'Enter' && slashIdx >= 0) {
+        e.preventDefault()
+        handleSlashPick(SLASH_ITEMS[slashIdx].cmd)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setComposer('')
+        return
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       if (canSend) startTask(composer)
     }
-  }
+  }, [slashOpen, slashIdx, canSend, composer, startTask, setComposer])
 
   function handleSend() {
     if (canSend) startTask(composer)
@@ -626,6 +719,15 @@ function Conversation() {
 
   function handleSlashPick(cmd: string) {
     setComposer(cmd + ' ')
+    setSlashIdx(-1)
+  }
+
+  // MED-020: retry handler — resend the last "you" message
+  function handleRetry() {
+    const lastYou = [...messages].reverse().find((m) => m.role === 'you')
+    if (lastYou) {
+      startTask(lastYou.text)
+    }
   }
 
   return (
@@ -653,6 +755,20 @@ function Conversation() {
         >
           Conversation
         </h1>
+        {/* LOW-020: session title */}
+        <span
+          style={{
+            fontSize: 13,
+            color: 'var(--hachi-muted)',
+            maxWidth: 200,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+          title={sessionLabel}
+        >
+          {sessionLabel}
+        </span>
         <div
           style={{
             display: 'flex',
@@ -721,24 +837,27 @@ function Conversation() {
                   risky.
                 </div>
               </div>
-              <div
-                style={{
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: 9,
-                  justifyContent: 'center',
-                  maxWidth: 560,
-                }}
-              >
-                {CHAT_STARTERS.map((s) => (
-                  <StarterButton
-                    key={s.label}
-                    label={s.label}
-                    icon={s.icon}
-                    onClick={() => startTask(s.text)}
-                  />
-                ))}
-              </div>
+              {/* HIGH-019: only show starters whose integration is connected */}
+              {visibleStarters.length > 0 && (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 9,
+                    justifyContent: 'center',
+                    maxWidth: 560,
+                  }}
+                >
+                  {visibleStarters.map((s) => (
+                    <StarterButton
+                      key={s.label}
+                      label={s.label}
+                      icon={s.icon}
+                      onClick={() => startTask(s.text)}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -750,6 +869,7 @@ function Conversation() {
               isLast={idx === messages.length - 1}
               isStreaming={streaming}
               operator={operator}
+              onRetry={handleRetry}
             />
           ))}
 
@@ -763,7 +883,7 @@ function Conversation() {
                 action={inContext.action}
                 why={inContext.why}
                 onAllowOnce={icAllow}
-                onAlwaysAllow={icAllow}
+                onAlwaysAllow={icAlwaysAllow}
                 onDecline={icDeny}
               />
             </div>
@@ -802,12 +922,15 @@ function Conversation() {
                 boxShadow: '0 8px 24px rgba(28,26,32,.08)',
                 zIndex: 10,
               }}
+              role="listbox"
+              aria-label="Slash commands"
             >
-              {SLASH_ITEMS.map((item) => (
+              {SLASH_ITEMS.map((item, idx) => (
                 <SlashItem
                   key={item.cmd}
                   cmd={item.cmd}
                   desc={item.desc}
+                  active={idx === slashIdx}
                   onPick={() => handleSlashPick(item.cmd)}
                 />
               ))}
@@ -833,6 +956,9 @@ function Conversation() {
               onKeyDown={handleKeyDown}
               rows={1}
               placeholder="Message Hachi…  /  for commands"
+              aria-label="Message Hachi"
+              aria-autocomplete="list"
+              aria-expanded={slashOpen}
               style={{
                 flex: 1,
                 resize: 'none',
@@ -970,13 +1096,16 @@ function StarterButton({ label, icon, onClick }: StarterButtonProps) {
 interface SlashItemProps {
   cmd: string
   desc: string
+  active: boolean
   onPick: () => void
 }
 
-function SlashItem({ cmd, desc, onPick }: SlashItemProps) {
+function SlashItem({ cmd, desc, active, onPick }: SlashItemProps) {
   return (
     <button
       type="button"
+      role="option"
+      aria-selected={active}
       onClick={onPick}
       style={{
         width: '100%',
@@ -986,7 +1115,7 @@ function SlashItem({ cmd, desc, onPick }: SlashItemProps) {
         padding: '11px 14px',
         border: 'none',
         borderBottom: '0.5px solid var(--hachi-line)',
-        background: 'transparent',
+        background: active ? 'var(--hachi-cream)' : 'transparent',
         cursor: 'pointer',
         textAlign: 'left',
         font: 'inherit',
@@ -995,7 +1124,7 @@ function SlashItem({ cmd, desc, onPick }: SlashItemProps) {
         ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)'
       }}
       onMouseLeave={(e) => {
-        ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+        ;(e.currentTarget as HTMLButtonElement).style.background = active ? 'var(--hachi-cream)' : 'transparent'
       }}
     >
       <span
