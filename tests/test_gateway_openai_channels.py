@@ -70,6 +70,8 @@ def test_openai_models_list() -> None:
 
 
 def test_channel_inbound_routes_to_agent() -> None:
+    # H10: inbound text is now wrapped in guard_untrusted before dispatch, so the
+    # echo reply contains the data envelope, not the raw text.
     app = create_gateway_app(_control_plane())
     with TestClient(app) as client:
         resp = client.post("/channels/slack/inbound", json={"sender_id": "U1", "text": "ping"})
@@ -77,7 +79,9 @@ def test_channel_inbound_routes_to_agent() -> None:
     body = resp.json()
     assert body["channel"] == "slack"
     assert body["recipient_id"] == "U1"
-    assert body["reply"] == "echo:ping"
+    # The reply reflects the guarded text that reached on_chat; it must contain
+    # the original message somewhere inside the envelope.
+    assert "ping" in body["reply"]
 
 
 def test_channel_inbound_is_rate_limited(monkeypatch) -> None:
