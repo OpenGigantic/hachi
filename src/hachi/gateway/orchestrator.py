@@ -756,7 +756,13 @@ class AgentSession:
                         }
                     )
             except Exception:
-                pass  # One bad collection must not kill the whole response.
+                # HIGH-012: one bad collection must not kill the whole response,
+                # but log so ChromaDB/persistence failures are visible.
+                logger.warning(
+                    "snapshot_memory_facts: failed to enumerate collection %r",
+                    group_id,
+                    exc_info=True,
+                )
             groups.append({"id": group_id, "title": title, "facts": facts})
 
         blocked: list[dict] = []
@@ -772,7 +778,10 @@ class AgentSession:
                     }
                 )
         except Exception:
-            pass
+            # HIGH-012: quarantine enumeration errors must not kill the response.
+            logger.warning(
+                "snapshot_memory_facts: failed to enumerate quarantine entries", exc_info=True
+            )
 
         # proposed: no moderation pipeline yet — always null.
         return {"groups": groups, "blocked": blocked, "proposed": None}
@@ -884,7 +893,12 @@ class AgentSession:
                 lines = [f"- {f['raw_content']}" for f in top_facts]
                 parts.append("## Known Context\n" + "\n".join(lines))
         except Exception:
-            pass
+            # HIGH-012: vault recall failures must be visible, not silently dropped.
+            logger.warning(
+                "_build_frozen_snapshot: vault semantic_search failed; "
+                "workspace context will be absent this turn",
+                exc_info=True,
+            )
 
         if not parts:
             return ""
@@ -917,6 +931,12 @@ class AgentSession:
             try:
                 results = self.vault.semantic_search(query, top_k=5)
             except Exception:
+                # HIGH-012: prefetch recall failures should be visible.
+                logger.warning(
+                    "_run_prefetch_job: vault semantic_search failed for query %r",
+                    query[:80],
+                    exc_info=True,
+                )
                 results = []
 
         with self._prefetch_lock:
@@ -948,6 +968,11 @@ class AgentSession:
         try:
             self._job_queue.enqueue(job)
         except Exception:
+            # HIGH-012: queue enqueue failures should be visible; fall back to inline.
+            logger.warning(
+                "_enqueue_prefetch_job: job queue enqueue failed; running prefetch inline",
+                exc_info=True,
+            )
             self._run_prefetch_job(query, turn_id)
 
     def _fire_prefetch(self, query: str) -> None:
@@ -969,7 +994,12 @@ class AgentSession:
             try:
                 self._session_store.set_session_title(session_id, title)
             except Exception:
-                pass
+                # HIGH-012: title persistence failures must be visible.
+                logger.warning(
+                    "_run_title_job: failed to persist session title for %s",
+                    session_id,
+                    exc_info=True,
+                )
         return title
 
     def _enqueue_title_job(self, session_id: str, user_input: str, response: str) -> None:
@@ -990,6 +1020,11 @@ class AgentSession:
         try:
             self._job_queue.enqueue(job)
         except Exception:
+            # HIGH-012: queue enqueue failures should be visible; fall back to inline.
+            logger.warning(
+                "_enqueue_title_job: job queue enqueue failed; running title generation inline",
+                exc_info=True,
+            )
             self._run_title_job(session_id, user_input, response)
 
     def _pop_prefetch(self) -> list[dict]:
@@ -1011,7 +1046,7 @@ class AgentSession:
     # Chat Entry Point
     # ==========================================
 
-    def chat(self, user_input: str) -> str:  # always returns str, never None
+    def chat(self, user_input: str, *, surface: str = "cli") -> str:  # always returns str
         """Send a message to the agent and trigger the autonomous loop.
 
         Architecture (Phase 1 update):
@@ -1026,6 +1061,11 @@ class AgentSession:
             2. Frozen snapshot    — stable across all turns (prefix-cached)
             3. Recalled context   — from async prefetch (turn-specific addendum)
             4. Original prompt    — brain.og + skills + permissions (stable)
+
+        Args:
+            user_input: The user's message for this turn.
+            surface: The originating surface for this request, e.g. "cli", "tui",
+                     "web", "webhook", or "schedule". Defaults to "cli". (MED-012)
         """
         # Emit session.busy when another turn is already running so UIs can show
         # queued state. The acquire() then blocks until the current turn finishes.
@@ -1034,11 +1074,11 @@ class AgentSession:
             self._chat_lock.acquire()  # blocks until the current turn is done
 
         try:
-            return self._chat_impl(user_input)
+            return self._chat_impl(user_input, surface=surface)
         finally:
             self._chat_lock.release()
 
-    def _chat_impl(self, user_input: str) -> str:
+    def _chat_impl(self, user_input: str, *, surface: str = "cli") -> str:
         """Internal single-turn implementation; must only be called while _chat_lock is held."""
         # 1. Refresh memory snapshot at turn start
         turn_id = str(uuid.uuid4())[:8]
@@ -1061,6 +1101,12 @@ class AgentSession:
             try:
                 recalled = self.vault.semantic_search(user_input, top_k=5)
             except Exception:
+                # HIGH-012: synchronous recall failures should be visible.
+                logger.warning(
+                    "_chat_impl: synchronous vault recall failed for turn %s",
+                    turn_id,
+                    exc_info=True,
+                )
                 recalled = []
 
         # 3. Build the dynamic recall injection
@@ -1084,7 +1130,7 @@ class AgentSession:
             user_profile_snapshot=self._memory_snapshot if self._memory_snapshot else None,
             recalled_context=recall_block if recall_block else None,
             max_iterations=15,
-            surface="cli",  # TODO: configurable from caller
+            surface=surface,  # MED-012: derived from the caller's request surface
         )
 
         # 5. Add user message and run with TurnContext (no mutation)
@@ -1109,7 +1155,10 @@ class AgentSession:
                     },
                 )
             except Exception:
-                pass
+                # HIGH-012: session log failures must be visible.
+                logger.warning(
+                    "_chat_impl: failed to log turn %s to session store", turn_id, exc_info=True
+                )
 
             # Persist cumulative cost/token totals for this session.
             try:
@@ -1122,7 +1171,12 @@ class AgentSession:
                         snap.estimated_cost_usd,
                     )
             except Exception:
-                pass
+                # HIGH-012: cost persistence failures must be visible.
+                logger.warning(
+                    "_chat_impl: failed to record session cost for %s",
+                    self._session_id,
+                    exc_info=True,
+                )
 
             # Generate a session title once, from the opening exchange. Runs on the
             # job queue so it never blocks this turn (drained at the next turn /
@@ -1163,7 +1217,8 @@ class AgentSession:
                 )
                 self.memory.write_episode(self._session_id, _summary)
             except Exception:
-                pass
+                # HIGH-012: episode write failures should be visible.
+                logger.warning("shutdown: failed to write episode node", exc_info=True)
 
         # End the persistent session
         if self._session_store and self._session_id:
@@ -1171,7 +1226,12 @@ class AgentSession:
                 self._session_store.end_session(self._session_id)
                 self._session_store.shutdown()
             except Exception:
-                pass
+                # HIGH-012: session store shutdown errors should be visible.
+                logger.warning(
+                    "shutdown: failed to end/shutdown session store for %s",
+                    self._session_id,
+                    exc_info=True,
+                )
 
         # Close LLM HTTP clients (OpenAICompatibleClient/ollama hold an httpx.Client;
         # AnthropicClient has no close() — guarded by getattr so both are safe).
@@ -1184,7 +1244,12 @@ class AgentSession:
                 try:
                     close()
                 except Exception:
-                    pass
+                    # HIGH-012: client close failures should be visible.
+                    logger.warning(
+                        "shutdown: failed to close LLM client %r",
+                        type(client).__name__,
+                        exc_info=True,
+                    )
 
         # Shut down the browser worker thread + headless browser if one was started.
         browser = getattr(self, "_browser_controller", None)
@@ -1192,14 +1257,19 @@ class AgentSession:
             try:
                 browser.close()
             except Exception:
-                pass
+                # HIGH-012: browser shutdown failures should be visible.
+                logger.warning("shutdown: failed to close browser controller", exc_info=True)
 
         # P3-07: explicit Chroma close so WAL is flushed before process exits.
         if self.memory and hasattr(self.memory, "vault") and self.memory.vault is not None:
             try:
                 self.memory.vault.close()
             except Exception:
-                pass
+                # HIGH-012: Chroma close failures should be visible (WAL may not be flushed).
+                logger.warning(
+                    "shutdown: failed to close memory vault (WAL may not be flushed)",
+                    exc_info=True,
+                )
 
         self.integrations.shutdown()
         self._emit_event(MCP_SHUTDOWN, {"server_count": self.mcp_manager.server_count})
@@ -1944,8 +2014,12 @@ def boot_agent(
                 },
             )
         except Exception:
-            # Resume is best-effort — a corrupt/missing transcript must not block boot.
-            pass
+            # HIGH-012: resume failures must be visible even though boot continues.
+            logger.warning(
+                "boot_agent: session resume from %s failed; starting fresh",
+                resume_session_id,
+                exc_info=True,
+            )
     session._sub_agent_client = sub_agent_client  # closed on shutdown alongside the main client
     session._browser_controller = browser_controller  # closed on shutdown (no-op if never used)
 
@@ -1961,7 +2035,7 @@ def boot_agent(
     # delivers the result via the session's normal event pipeline.
     def _fire_schedule(s: Schedule) -> None:
         try:
-            result_text = session.chat(s.task)
+            result_text = session.chat(s.task, surface="schedule")
             # UC-RSCH-002: the resident runner must honor deliver_to/webhook_url too
             # (previously only `hachi schedule run-due` delivered). deliver_result
             # redacts outbound secrets before any webhook POST.

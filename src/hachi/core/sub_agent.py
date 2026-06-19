@@ -431,9 +431,7 @@ class RoleResolver:
         self._roles_dir = self._workspace_dir / "skills" / ROLES_DIRECTORY_NAME
         # Legacy shim: if caller didn't override, also check ~/.hachi/skills/roles/
         self._legacy_roles_dir: Path | None = (
-            Path.home() / ".hachi" / "skills" / ROLES_DIRECTORY_NAME
-            if _using_default
-            else None
+            Path.home() / ".hachi" / "skills" / ROLES_DIRECTORY_NAME if _using_default else None
         )
         self._builtin_dir = Path(__file__).parent.parent / "default_skills" / ROLES_DIRECTORY_NAME
 
@@ -535,7 +533,7 @@ class SubAgentRuntime:
         context: str | None = None,
         tool_registry: ToolRegistry | None = None,
         llm_client: BaseLLMClient | None = None,
-        model: str = DEFAULT_SUB_AGENT_MODEL,
+        model: str | None = None,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         workspace_dir: Path | None = None,
@@ -550,9 +548,16 @@ class SubAgentRuntime:
             context:          Optional context string for the sub-agent.
             tool_registry:    Pre-built ToolRegistry with scoped tools. If None,
                               the sub-agent runs with NO tools (pure reasoning).
-            llm_client:       Pre-configured LLM client. If None, creates a new
-                              AnthropicClient with the specified model.
-            model:            Model identifier (only used if llm_client is None).
+            llm_client:       Pre-configured LLM client. Used as the default when
+                              ``model`` is not explicitly provided.  When ``model``
+                              is provided, a fresh client is built with that model
+                              even if ``llm_client`` is non-None (HIGH-013).
+            model:            Optional model identifier override.  When provided,
+                              always takes precedence over the injected client so
+                              the caller can select a specific model for a
+                              delegation without changing the session-level client.
+                              When None, ``llm_client`` is used if given, otherwise
+                              the DEFAULT_SUB_AGENT_MODEL is used.
             max_iterations:   Maximum ReAct loop iterations before forced termination.
             timeout_seconds:  Wall-clock timeout in seconds.
             workspace_dir:    Path to ~/.hachi/ (auto-resolved if None).
@@ -574,8 +579,26 @@ class SubAgentRuntime:
         role_path = resolver.resolve(role)
         self._og_file = parse_og_file(str(role_path))
 
-        # Configure LLM client
-        self._llm_client = llm_client or self._create_client(model)
+        # HIGH-013: configure LLM client.
+        # • model explicitly provided → always build a fresh client with that model
+        #   (the injected llm_client is only used for credentials/config if needed
+        #   by the concrete client implementation — here we just call _create_client
+        #   so the factory picks up env-var credentials automatically).
+        # • no model, llm_client provided → use the injected client (preserves the
+        #   credential-resolved session client for delegation, which is the common
+        #   case and the previous behaviour).
+        # • neither → build a fresh DEFAULT_SUB_AGENT_MODEL client.
+        if model is not None:
+            self._llm_client = self._create_client(model)
+            logger.info(
+                "SubAgentRuntime: explicit model override for role=%s → model=%s",
+                role,
+                model,
+            )
+        elif llm_client is not None:
+            self._llm_client = llm_client
+        else:
+            self._llm_client = self._create_client(DEFAULT_SUB_AGENT_MODEL)
 
         # Configure tool registry (empty if not provided)
         self._tool_registry = tool_registry or ToolRegistry()
