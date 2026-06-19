@@ -912,6 +912,8 @@ class InteractivePermissionGate:
             self._allowed_session_paths.add((operation, resolved_target))
             return PermissionResult(True, "Approved for session by operator.")
         if decision.action == "allow_once":
+            # MED-007: allow_once is single-use — do NOT add to the session set so
+            # the next identical request is sent to the approval handler again.
             return PermissionResult(True, "Allowed once by operator.")
         return PermissionResult(False, decision.rationale or base_result.reason)
 
@@ -935,6 +937,8 @@ class InteractivePermissionGate:
             self._allowed_session_commands.add(normalized)
             return PermissionResult(True, "Approved for session by operator.")
         if decision.action == "allow_once":
+            # MED-007: allow_once is single-use — do NOT add to the session set so
+            # the next identical request is sent to the approval handler again.
             return PermissionResult(True, "Allowed once by operator.")
         return PermissionResult(False, decision.rationale or base_result.reason)
 
