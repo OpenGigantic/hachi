@@ -43,6 +43,7 @@ import {
   initialBudget,
   initialTaskSpent,
 } from "../data/fixtures";
+import { apiSend } from "../data/client";
 import type {
   Approval,
   HistoryItem,
@@ -163,6 +164,11 @@ interface State {
   };
   // kennel consent overlay
   kennelConsent: KennelConsentItem | null;
+  // kennel browse mode (true = list mode, no specific item selected)
+  kennelBrowseOpen: boolean;
+  // spend caps (editable)
+  taskCap: number;
+  dailyCap: number;
   // chat
   slashOpen: boolean;
   streaming: boolean;
@@ -281,6 +287,7 @@ interface Actions {
   setComposer: (v: string) => void;
   setHomeInput: (v: string) => void;
   icAllow: () => void;
+  icAlwaysAllow: () => void;
   icDeny: () => void;
   toggleCard: (mid: number, key: string) => void;
   dryRunRoutine: (msgId: number) => void;
@@ -290,8 +297,16 @@ interface Actions {
   watchLive: (runId: number) => void;
   closeRun: () => void;
   runAllowLeash: () => void;
+  runAlwaysAllow: () => void;
   runDenyLeash: () => void;
   stopRun: () => void;
+  // kennel browse
+  openKennelBrowse: () => void;
+  // settings helpers
+  addFolderWithPath: (path: string) => void;
+  addCommandWithText: (cmd: string) => void;
+  setTaskCap: (v: number) => void;
+  setDailyCap: (v: number) => void;
   // reconnect
   simulateReconnect: () => void;
 }
@@ -321,52 +336,55 @@ function clearRunIv() { if (_runIv) { clearInterval(_runIv); _runIv = null; } }
 // ============================================================
 const domainDefaults = (): Omit<State, "operator" | "theme"> => ({
   dataMode: USE_MOCKS ? "mock" : "live",
-  spent: initialSpent,
-  budget: initialBudget,
-  taskSpent: initialTaskSpent,
-  approvals: initApprovals(),
-  history,
-  runs,
-  routines,
-  finished,
-  failed,
-  memGroups,
-  blocked,
-  proposed,
-  skills,
-  kennel,
-  integrations,
-  mcpServers,
-  mcpTools,
-  ogNodes,
-  authTargets,
-  authSource,
+  spent: USE_MOCKS ? initialSpent : 0,
+  budget: USE_MOCKS ? initialBudget : 5.0,
+  taskSpent: USE_MOCKS ? initialTaskSpent : 0,
+  approvals: USE_MOCKS ? initApprovals() : [],
+  history: USE_MOCKS ? history : [],
+  runs: USE_MOCKS ? runs : [],
+  routines: USE_MOCKS ? routines : [],
+  finished: USE_MOCKS ? finished : [],
+  failed: USE_MOCKS ? failed : [],
+  memGroups: USE_MOCKS ? memGroups : [],
+  blocked: USE_MOCKS ? blocked : [],
+  proposed: USE_MOCKS ? proposed : null,
+  skills: USE_MOCKS ? skills : [],
+  kennel: USE_MOCKS ? kennel : [],
+  integrations: USE_MOCKS ? integrations : [],
+  mcpServers: USE_MOCKS ? mcpServers : [],
+  mcpTools: USE_MOCKS ? mcpTools : [],
+  ogNodes: USE_MOCKS ? ogNodes : [],
+  authTargets: USE_MOCKS ? authTargets : [],
+  authSource: USE_MOCKS ? authSource : [],
   authSel: "deep_research.og",
   authMode: "diff",
   authApplied: false,
   ogSel: "brain",
   ogView: "graph",
-  spendTurns,
-  spendTidies,
-  spendModels,
-  packRoster,
-  events,
-  toolCalls,
-  auditLog,
-  recall,
-  sessions,
-  skillUsage,
+  spendTurns: USE_MOCKS ? spendTurns : [],
+  spendTidies: USE_MOCKS ? spendTidies : [],
+  spendModels: USE_MOCKS ? spendModels : [],
+  packRoster: USE_MOCKS ? packRoster : [],
+  events: USE_MOCKS ? events : [],
+  toolCalls: USE_MOCKS ? toolCalls : [],
+  auditLog: USE_MOCKS ? auditLog : [],
+  recall: USE_MOCKS ? recall : [],
+  sessions: USE_MOCKS ? sessions : [],
+  skillUsage: USE_MOCKS ? skillUsage : [],
   safety: "standard",
-  askRules,
-  allowedFolders,
-  allowedCommands,
-  opTools,
+  askRules: USE_MOCKS ? askRules : [],
+  allowedFolders: USE_MOCKS ? allowedFolders : [],
+  allowedCommands: USE_MOCKS ? allowedCommands : [],
+  opTools: USE_MOCKS ? opTools : [],
   provider: { name: "anthropic", model: "claude-sonnet-4-5", key: "" },
   reconnecting: false,
   toast: null,
   palette: { open: false, query: "" },
   setup: { open: false, step: 0, key: "", safety: "standard", routine: true, google: false, channel: false },
   kennelConsent: null,
+  kennelBrowseOpen: false,
+  taskCap: 1.0,
+  dailyCap: USE_MOCKS ? initialBudget : 5.0,
   slashOpen: false,
   streaming: false,
   inContext: null,
@@ -870,7 +888,8 @@ export const useStore = create<State & Actions>()(
           }));
           toast("Added " + k.name + " — it's ready to use", "success");
         },
-        cancelKennel: () => set({ kennelConsent: null }),
+        cancelKennel: () => set({ kennelConsent: null, kennelBrowseOpen: false }),
+        openKennelBrowse: () => set({ kennelBrowseOpen: true, kennelConsent: null }),
         removeSkill: (id) => {
           set((s) => ({ skills: s.skills.filter((k) => k.id !== id) }));
           toast("Removed — one fewer thing on Hachi's plate", "success");
@@ -961,11 +980,37 @@ export const useStore = create<State & Actions>()(
             allowedCommands: s.allowedCommands.filter((x) => x !== c),
           })),
         addFolder: () => {
+          // Legacy no-arg path: kept for back-compat with tests / other callers.
+          // Settings UI now uses addFolderWithPath instead.
           set((s) => ({ allowedFolders: [...s.allowedFolders, "~/new-folder"] }));
           toast("Added — edit the path in your config", "success");
         },
-        addCommand: () =>
-          set((s) => ({ allowedCommands: [...s.allowedCommands, "cmd"] })),
+        addFolderWithPath: (path) => {
+          const trimmed = path.trim();
+          if (!trimmed) {
+            toast("Enter a folder path first", "blocked");
+            return;
+          }
+          set((s) => ({ allowedFolders: [...s.allowedFolders, trimmed] }));
+          toast("Folder added", "success");
+        },
+        addCommand: () => {
+          // Legacy no-arg path: kept for back-compat with tests / other callers.
+          set((s) => ({ allowedCommands: [...s.allowedCommands, "cmd"] }));
+        },
+        addCommandWithText: (cmd) => {
+          const trimmed = cmd.trim();
+          if (!trimmed) {
+            toast("Enter a command first", "blocked");
+            return;
+          }
+          set((s) => ({ allowedCommands: [...s.allowedCommands, trimmed] }));
+          toast("Command added", "success");
+        },
+        setTaskCap: (v) => set({ taskCap: v }),
+        setDailyCap: (v) => {
+          set({ dailyCap: v, budget: v });
+        },
         toggleOpTool: (id) =>
           set((s) => ({
             opTools: s.opTools.map((t) =>
@@ -1017,7 +1062,18 @@ export const useStore = create<State & Actions>()(
           // static circular dependency (store → chat → store).
           if (get().dataMode === "live") {
             void import("../data/domains/chat").then(({ startTaskLive }) => {
-              void startTaskLive(trimmed, hachiId);
+              startTaskLive(trimmed, hachiId).catch(() => {
+                // Catch errors from the live send path: reset streaming and surface an error.
+                set((s) => ({
+                  streaming: false,
+                  messages: s.messages.map((m) =>
+                    m.id === hachiId
+                      ? { ...m, text: m.text || "Something went wrong — please try again." }
+                      : m
+                  ),
+                }));
+                toast("Send failed — please try again", "blocked");
+              });
             });
             return;
           }
@@ -1151,6 +1207,37 @@ export const useStore = create<State & Actions>()(
               }
             );
           }, 1500);
+        },
+
+        icAlwaysAllow: () => {
+          // Always-allow: persist to gateway via POST /sessions/{id}/permissions/always-allow
+          // then fall through to the same optimistic path as icAllow.
+          const _ic = get().inContext;
+          if (!_ic) return;
+
+          // Best-effort persist — degrade gracefully if the endpoint is not yet available (404).
+          if (get().dataMode === "live") {
+            void import("../data/domains/chat").then(({ allowLeashLive }) => {
+              void allowLeashLive();
+            });
+            // Also fire always-allow endpoint; ignore 404
+            void (async () => {
+              try {
+                const { apiSend: _apiSend } = await import("../data/client");
+                await _apiSend("POST", `/sessions/current/permissions/always-allow`, {
+                  request: _ic.request,
+                  action: _ic.action,
+                });
+              } catch {
+                // 404 = endpoint not yet deployed; any other error is soft-ignored
+              }
+            })();
+            return;
+          }
+
+          // Mock mode: same visual path as icAllow + show a different toast
+          get().icAllow();
+          toast("Always allowed — Hachi won't ask again for this", "success");
         },
 
         icDeny: () => {
@@ -1329,6 +1416,32 @@ export const useStore = create<State & Actions>()(
           clearRunIv();
           _runIv = setInterval(() => runTick(), 1100);
           toast("On it — Hachi is working", "working");
+        },
+
+        runAlwaysAllow: () => {
+          const rl = get().runLeash;
+          // Best-effort persist to always-allow endpoint; ignore 404
+          if (get().dataMode === "live" && rl) {
+            void (async () => {
+              try {
+                await apiSend("POST", `/sessions/current/permissions/always-allow`, {
+                  request: rl.request,
+                  action: rl.action,
+                });
+              } catch {
+                // 404 = endpoint not yet deployed
+              }
+            })();
+          }
+          // Then proceed exactly like runAllowLeash
+          set((s) => ({
+            runLeash: null,
+            runStreaming: true,
+            runLines: [...s.runLines, { text: "✓ always allowed — posting now", tone: "success" }],
+          }));
+          clearRunIv();
+          _runIv = setInterval(() => runTick(), 1100);
+          toast("Saved — Hachi won't ask again for this", "success");
         },
 
         runDenyLeash: () => {

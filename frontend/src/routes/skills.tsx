@@ -11,6 +11,75 @@ import { Icon } from '../components/icons/Icon';
 import type { Skill, KennelItem } from '../lib/data/types';
 import { loadSkills } from '../lib/data/domains/skills';
 
+// ---- .og explainer localStorage key ----
+const OG_EXPLAINER_KEY = 'hachi-og-explainer-dismissed';
+
+// ---- .og explainer panel (E6-T1) -----------------------------------
+
+function OgExplainerPanel() {
+  const [dismissed, setDismissed] = useState(() =>
+    typeof localStorage !== 'undefined' && localStorage.getItem(OG_EXPLAINER_KEY) === '1'
+  );
+
+  function dismiss() {
+    localStorage.setItem(OG_EXPLAINER_KEY, '1');
+    setDismissed(true);
+  }
+
+  if (dismissed) return null;
+
+  return (
+    <div
+      style={{
+        background: 'var(--hachi-trust-tint)',
+        border: '0.5px solid var(--hachi-trust)',
+        borderRadius: 14,
+        padding: '16px 18px',
+        display: 'flex',
+        gap: 14,
+        alignItems: 'flex-start',
+      }}
+      role="note"
+      aria-label="What is a .og skill file"
+    >
+      <span style={{ color: 'var(--hachi-trust)', display: 'inline-flex', flexShrink: 0, marginTop: 1 }}>
+        <Icon name="file" size={18} />
+      </span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontWeight: 500, fontSize: 14, color: 'var(--hachi-ink)', marginBottom: 4 }}>
+          What is a .og skill file?
+        </div>
+        <div style={{ fontSize: 13, color: 'var(--hachi-muted)', lineHeight: '20px' }}>
+          Skills are stored as <code style={{ fontFamily: 'var(--font-mono)', background: 'var(--hachi-cream)', padding: '1px 5px', borderRadius: 4 }}>.og</code> (ObjectGraph) files. Hachi reads them in three passes — first a short routing index, then summaries, then full content only when needed — so it uses far fewer tokens than loading a whole document. You can browse, add, and remove skills from the kennel below.
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={dismiss}
+        aria-label="Dismiss .og explainer"
+        style={{
+          border: 'none',
+          background: 'transparent',
+          color: 'var(--hachi-muted)',
+          cursor: 'pointer',
+          display: 'inline-flex',
+          padding: 4,
+          borderRadius: 6,
+          flexShrink: 0,
+        }}
+        onMouseEnter={(e) => {
+          ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)'
+        }}
+        onMouseLeave={(e) => {
+          ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+        }}
+      >
+        <Icon name="x" size={15} />
+      </button>
+    </div>
+  );
+}
+
 // ---- local hover-state helpers (not in store) ----------------
 function SkillCard({ sk, operator }: { sk: Skill; operator: boolean }) {
   const removeSkill = useStore((s) => s.removeSkill);
@@ -165,6 +234,7 @@ function Skills() {
   const skills = useStore((s) => s.skills);
   const kennel = useStore((s) => s.kennel);
   const operator = useStore((s) => s.operator);
+  const openKennelBrowse = useStore((s) => s.openKennelBrowse);
 
   useEffect(() => { void loadSkills() }, []);
 
@@ -200,9 +270,9 @@ function Skills() {
           what Hachi can do
         </span>
         <div style={{ flex: 1 }} />
-        {/* Browse the kennel — secondary-style button (navy outline, hover tint) */}
+        {/* CRIT-003: Browse the kennel — wired to openKennelBrowse */}
         <button
-          onClick={() => {/* opens KennelConsent globally — noop; real flow uses addSkill */}}
+          onClick={openKennelBrowse}
           onMouseEnter={() => setBrowseHover(true)}
           onMouseLeave={() => setBrowseHover(false)}
           style={{
@@ -219,6 +289,7 @@ function Skills() {
             cursor: 'pointer',
             transition: 'background var(--dur-fast) var(--ease)',
           }}
+          aria-label="Browse the kennel"
         >
           <Icon name="skills" size={15} />
           Browse the kennel
@@ -239,6 +310,9 @@ function Skills() {
             gap: 26,
           }}
         >
+          {/* E6-T1: .og explainer panel (dismissible, localStorage) */}
+          <OgExplainerPanel />
+
           {/* ---- Installed section ---- */}
           <section>
             <h2
@@ -283,31 +357,33 @@ function Skills() {
             )}
           </section>
 
-          {/* ---- From the kennel section ---- */}
-          <section>
-            <h2
-              style={{
-                margin: '0 0 12px',
-                fontFamily: 'var(--font-display)',
-                fontWeight: 500,
-                fontSize: 15,
-                color: 'var(--hachi-muted)',
-              }}
-            >
-              From the kennel
-            </h2>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '1fr 1fr 1fr',
-                gap: 12,
-              }}
-            >
-              {kennel.map((k) => (
-                <KennelCard key={k.id} k={k} />
-              ))}
-            </div>
-          </section>
+          {/* LOW-007: Only render "From the kennel" section when there are items */}
+          {kennel.length > 0 && (
+            <section>
+              <h2
+                style={{
+                  margin: '0 0 12px',
+                  fontFamily: 'var(--font-display)',
+                  fontWeight: 500,
+                  fontSize: 15,
+                  color: 'var(--hachi-muted)',
+                }}
+              >
+                From the kennel
+              </h2>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr 1fr',
+                  gap: 12,
+                }}
+              >
+                {kennel.map((k) => (
+                  <KennelCard key={k.id} k={k} />
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       </div>
     </div>
