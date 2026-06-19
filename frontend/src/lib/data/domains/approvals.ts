@@ -103,6 +103,12 @@ function adaptApproval(raw: GatewayPendingApproval): Approval {
   const tool = raw.tool ?? "";
   const target = raw.target ?? "";
 
+  // The gateway's PermissionRequest model (src/hachi/core/permissions.py) has no
+  // expiry/timeout/ttl/expires_at field — the 180 s server-side timeout is enforced
+  // via threading.Event.wait() and never communicated to the client. We cannot
+  // fabricate a meaningful countdown. expiresAt=0 / totalMs=0 signals "no expiry
+  // sent", which the ApprovalCard uses to hide the countdown bar entirely rather
+  // than show a misleading 0/0 display.
   return {
     id: stableNumericId(raw.request_id),
     icon: deriveIcon(operation, tool),
@@ -114,7 +120,7 @@ function adaptApproval(raw: GatewayPendingApproval): Approval {
     touches: target ? [target] : [],
     risk: deriveRisk(operation, tool),
     scope: operation,
-    expiresAt: 0,   // no server-sent expiry — countdown disabled
+    expiresAt: 0,   // no server-sent expiry — countdown bar hidden (see comment above)
     totalMs: 0,
   };
 }
@@ -153,6 +159,11 @@ function adaptAuditEntry(raw: GatewayPermissionAudit): AuditEntry {
 // 6. Loader: fetch both endpoints → hydrate → never throw
 // ============================================================
 
+// Tracks whether this domain has ever received real data from the gateway.
+// In live mode: until the first successful fetch, fixtures must NOT be shown,
+// so on failure we clear the slice instead of leaving seeded fixtures in place.
+let _hasEverSucceeded = false;
+
 export async function loadApprovals(): Promise<void> {
   if (USE_MOCKS) return; // keep seeded fixtures
 
@@ -167,8 +178,14 @@ export async function loadApprovals(): Promise<void> {
 
     useStore.getState().hydrate({ approvals, auditLog });
     useStore.getState().setReconnecting(false);
+    _hasEverSucceeded = true;
   } catch {
-    // Leave fixtures in place; flag reconnecting so UI degrades gracefully
+    if (!_hasEverSucceeded) {
+      // First-load failure: clear fixtures so we never show fabricated data as real.
+      useStore.getState().hydrate({ approvals: [], auditLog: [] });
+    }
+    // Whether or not this is the first load, flag reconnecting so the UI degrades
+    // gracefully. Last-known-good real data is preserved after the first success.
     useStore.getState().setReconnecting(true);
   }
 }
@@ -242,4 +259,61 @@ export async function declineAll(): Promise<void> {
   useStore.getState().declineAll();
   // Fire individual denies in parallel; failures are soft (reconnecting flag)
   await Promise.allSettled(ids.map((id) => postDecision(id, "deny")));
+}
+
+// ============================================================
+// 8. In-context leash helper
+//    For the chat/run LeashPrompt that fires from the SSE
+//    "permission.requested" event. That event carries no request_id
+//    (see InContextLeash in types.ts), so we can only match by
+//    comparing the `request` text against pending approval `request`
+//    fields. This is a best-effort match: if multiple approvals are
+//    pending the first one wins. The `chat.ts` allowLeashLive /
+//    denyLeashLive functions should call these so the decision
+//    reaches the gateway (requires a chat.ts update by its owner).
+// ============================================================
+
+/**
+ * Allow the first pending approval whose `request` field matches the given
+ * request text (case-insensitive prefix). Falls back to the very first pending
+ * approval if no text match is found. No-ops when there are no pending approvals.
+ *
+ * Intended to be called from `allowLeashLive` (chat.ts) once that module is
+ * updated to wire in-context leash decisions to the gateway.
+ */
+export async function approveFirstMatching(requestText?: string): Promise<void> {
+  const approvals = useStore.getState().approvals;
+  if (approvals.length === 0) return;
+
+  let target = approvals[0];
+  if (requestText) {
+    const needle = requestText.toLowerCase();
+    const matched = approvals.find(
+      (a) => a.request.toLowerCase().includes(needle) || needle.includes(a.request.toLowerCase())
+    );
+    if (matched) target = matched;
+  }
+
+  await approve(target.id);
+}
+
+/**
+ * Deny the first pending approval (same matching logic as approveFirstMatching).
+ *
+ * Intended to be called from `denyLeashLive` (chat.ts).
+ */
+export async function denyFirstMatching(requestText?: string): Promise<void> {
+  const approvals = useStore.getState().approvals;
+  if (approvals.length === 0) return;
+
+  let target = approvals[0];
+  if (requestText) {
+    const needle = requestText.toLowerCase();
+    const matched = approvals.find(
+      (a) => a.request.toLowerCase().includes(needle) || needle.includes(a.request.toLowerCase())
+    );
+    if (matched) target = matched;
+  }
+
+  await decline(target.id);
 }

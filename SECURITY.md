@@ -67,3 +67,31 @@ Out of scope (use regular GitHub issues):
 - **Memory quarantine** — writes from untrusted content are quarantined and require
   explicit user approval before entering long-term storage
   (`src/hachi/core/memory_vault.py` `MemoryGuard`).
+- **Docker non-root runtime** — the published container image runs as UID 10001
+  (`hachi` user, no supplementary groups). The gateway process never requires root
+  and has no `sudo`/`setuid` paths.
+
+## CI Security Gates
+
+Every push and pull request runs the following automated security checks:
+
+| Check | Tool | Trigger | Failure behaviour |
+|-------|------|---------|-------------------|
+| Dependency CVE scan | `pip-audit` | push + PR | Advisory on `main`; **blocking on PRs** |
+| SAST (medium+ severity) | `bandit -ll` | push + PR | Advisory until src/ medium findings resolved |
+| Application security audit | `hachi security-audit` | push + PR | Blocking on `--fail-on-high`; `--fail-on-medium` on PRs |
+
+### Outstanding CVEs (last audited 2026-06-19)
+
+These CVEs are present in transitive dependencies and are tracked for remediation:
+
+| Package | CVE / Advisory | Fixed in | Notes |
+|---------|---------------|----------|-------|
+| `aiohttp 3.13.5` | CVE-2026-34993, CVE-2026-47265, CVE-2026-50269, CVE-2026-54273–54280 | 3.14.0 / 3.14.1 | Transitive via `chromadb` and `uvicorn`; bump when chromadb pins allow |
+| `starlette 1.2.1` | CVE-2026-54282, CVE-2026-54283 | 1.3.0 / 1.3.1 | Transitive via `fastapi`; bump fastapi to lift starlette |
+| `cryptography 48.0.0` | GHSA-537c-gmf6-5ccf | 48.0.1 | Direct dep; bump `cryptography>=48.0.1` in `pyproject.toml` |
+| `chromadb 1.5.9` | CVE-2026-45829 | unknown | No fix version published yet; track upstream advisory |
+
+To suppress a CVE in CI once a justified exception is needed, add
+`--ignore-vuln <ID>` to the `pip-audit` step in `.github/workflows/ci.yml` with a
+comment that references the tracking issue. Do not add ignores without a public issue.

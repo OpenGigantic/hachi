@@ -12,7 +12,7 @@
 
 ::index
   # node-id          | type     | scope  | conf | keywords
-  identity            | concept  | all    | 1.0  | persona, email, communication
+  identity            | concept  | all    | 1.0  | persona, communication
   composition-rules   | concept  | all    | 1.0  | writing, tone, formatting
   safety-protocol     | concept  | all    | 1.0  | safety, verification, recipients
   report-format       | concept  | all    | 1.0  | report, output, handoff
