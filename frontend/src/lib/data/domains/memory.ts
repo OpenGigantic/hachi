@@ -2,16 +2,18 @@
 // Hachi Web App — Memory domain loader
 //
 // Endpoints:
-//   GET /memory            → GatewayMemory → memGroups, blocked, proposed
-//   GET /memory/recall     → GatewayRecallHit[] → recall
+//   GET  /memory              → GatewayMemory → memGroups, blocked, proposed
+//   GET  /memory/recall       → GatewayRecallHit[] → recall
+//   POST /memory/facts        → add a fact; body: { group, text }; returns { id }
+//   DELETE /memory/facts/{id} → delete a fact by content-hash id; returns { ok }
 //
-// NOTE: the gateway exposes READ-ONLY endpoints. There are no write endpoints
-// for facts (add/edit/delete) or for approving/rejecting proposed changes.
-// The store's optimistic write actions (addFact/saveFact/delFact/approveProposed/
-// rejectProposed) remain local-only until the gateway adds write support.
+// Edit / update: the gateway has no PATCH/PUT endpoint for facts. "Save" is
+// implemented as delete-then-add so the backend stays authoritative. The store
+// optimistic update fires first; on network failure the page re-fetches from
+// the server and surfacing the error via the reconnecting flag.
 // ============================================================
 
-import { apiGet, USE_MOCKS } from "../client";
+import { apiGet, apiSend, USE_MOCKS } from "../client";
 import { registerLoader } from "../live";
 import { useStore } from "../../store/store";
 import type { MemGroup, BlockedItem, ProposedChange, RecallHit } from "../types";
@@ -102,6 +104,11 @@ function adaptRecallHit(raw: GatewayRecallHit): RecallHit {
 
 // ---- Loaders ----
 
+// Tracks whether this domain has ever received real data from the gateway.
+// In live mode: until the first successful fetch, seeded fixtures must NOT be
+// shown, so on failure we clear the slices instead of leaving them in place.
+let _hasEverSucceeded = false;
+
 /** Load memory groups, blocked items, and proposed change from the gateway. */
 export async function loadMemory(): Promise<void> {
   if (USE_MOCKS) return; // keep seeded fixtures
@@ -113,8 +120,17 @@ export async function loadMemory(): Promise<void> {
       proposed: adaptProposed(raw.proposed),
     });
     useStore.getState().setReconnecting(false);
+    _hasEverSucceeded = true;
   } catch {
-    useStore.getState().setReconnecting(true); // leave fixtures in place
+    if (!_hasEverSucceeded) {
+      // First-load failure: clear seeded fixtures so we never present
+      // fabricated memory as if it were real gateway data.
+      useStore.getState().hydrate({ memGroups: [], blocked: [], proposed: null });
+    }
+    // Whether or not this is the first load, flag reconnecting so the UI
+    // shows the reconnecting indicator. Last-known-good real data is
+    // preserved after the first success.
+    useStore.getState().setReconnecting(true);
   }
 }
 
@@ -133,8 +149,114 @@ export async function recallMemory(query: string): Promise<void> {
       recall: (raw ?? []).map(adaptRecallHit),
     });
   } catch {
-    useStore.getState().setReconnecting(true); // leave recall fixtures in place
+    if (!_hasEverSucceeded) {
+      // First-load failure: clear fixture recall hits so they don't appear real.
+      useStore.getState().hydrate({ recall: [] });
+    }
+    useStore.getState().setReconnecting(true);
   }
 }
 
 registerLoader("memory", loadMemory);
+
+// ============================================================
+// Mutation wrappers — POST /memory/facts and DELETE /memory/facts/{id}
+//
+// Pattern (mirrors approvals.ts):
+//   1. Optimistic store update (always, instant)
+//   2. Network call (skipped when USE_MOCKS)
+//   3. On success → refetch via loadMemory() to stay authoritative
+//   4. On failure → setReconnecting(true) + revert the optimistic update by
+//      calling loadMemory() which overwrites the local-only change with server state
+// ============================================================
+
+interface GatewayFactAddResponse {
+  id?: string;
+}
+
+interface GatewayFactDeleteResponse {
+  ok?: boolean;
+}
+
+/**
+ * Add a new fact to the given group. Optimistically inserts an empty fact in
+ * the store and opens it for editing; on success the server returns the real
+ * content-hash id and we re-hydrate from GET /memory so ids are accurate.
+ *
+ * In MOCK mode: delegates entirely to the store action (optimistic-only).
+ */
+export async function addFact(groupId: string, tempFactId: string): Promise<void> {
+  if (USE_MOCKS) return; // store action already ran optimistically
+  try {
+    await apiSend<GatewayFactAddResponse>("POST", "/memory/facts", {
+      group: groupId,
+      text: "",
+    });
+    // Re-hydrate so the temp id is replaced with the real content-hash id
+    await loadMemory();
+    useStore.getState().setReconnecting(false);
+  } catch {
+    // Optimistic state is already in place; re-fetch to revert if we can,
+    // otherwise leave it and flag reconnecting.
+    useStore.getState().setReconnecting(true);
+    void loadMemory(); // best-effort revert
+  }
+}
+
+/**
+ * Save (update) a fact. The gateway has no PATCH endpoint, so this is
+ * implemented as DELETE existing + POST new text, preserving the group.
+ * Optimistic update fires via the store's saveFact action before this call.
+ *
+ * For brand-new (locally-created) facts whose id starts with "fn" (the store's
+ * temp-id prefix), the DELETE step is skipped because the fact does not exist
+ * on the server yet — only the POST runs.
+ *
+ * In MOCK mode: delegates entirely to the store action (optimistic-only).
+ */
+export async function saveFact(
+  groupId: string,
+  factId: string,
+  newText: string
+): Promise<void> {
+  if (USE_MOCKS) return; // store action already ran optimistically
+  const isLocalTemp = factId.startsWith("fn");
+  try {
+    if (!isLocalTemp) {
+      // Step 1: delete the old fact (by its server-side content-hash id)
+      await apiSend<GatewayFactDeleteResponse>("DELETE", `/memory/facts/${factId}`);
+    }
+    // Step 2: add the updated (or new) text
+    if (newText.trim()) {
+      await apiSend<GatewayFactAddResponse>("POST", "/memory/facts", {
+        group: groupId,
+        text: newText.trim(),
+      });
+    }
+    // Re-hydrate so the new content-hash id is accurate
+    await loadMemory();
+    useStore.getState().setReconnecting(false);
+  } catch {
+    useStore.getState().setReconnecting(true);
+    void loadMemory(); // best-effort revert to server state
+  }
+}
+
+/**
+ * Delete a fact permanently. Optimistic removal fires via the store's
+ * delFact action before this call.
+ *
+ * In MOCK mode: delegates entirely to the store action (optimistic-only).
+ */
+export async function delFact(groupId: string, factId: string): Promise<void> {
+  if (USE_MOCKS) return; // store action already ran optimistically
+  try {
+    await apiSend<GatewayFactDeleteResponse>("DELETE", `/memory/facts/${factId}`);
+    useStore.getState().setReconnecting(false);
+    // Re-hydrate for consistency (server may have recomputed group structure)
+    await loadMemory();
+  } catch {
+    useStore.getState().setReconnecting(true);
+    void loadMemory(); // best-effort revert — puts the fact back if it still exists
+  }
+}

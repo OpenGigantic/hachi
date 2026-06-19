@@ -14,6 +14,7 @@ import { apiGet, apiSend, USE_MOCKS } from "../client";
 import { streamSSE } from "../sse";
 import { registerLoader } from "../live";
 import { useStore } from "../../store/store";
+import { approveFirstMatching, denyFirstMatching } from "./approvals";
 import type { Session, ActionCard } from "../types";
 
 // ============================================================
@@ -28,6 +29,36 @@ let _sseAbort: AbortController | null = null;
 // new turn must resume from the last consumed sequence — otherwise turn 2 would
 // replay turn 1's text deltas into the fresh (empty) message.
 let _cursor = 0;
+
+// ── Cost baseline tracking ────────────────────────────────────────────────────
+// The gateway's `usage.updated` payload carries a CUMULATIVE `estimated_cost_usd`
+// (running total since session boot — confirmed in orchestrator.py:720-756 and
+// CostTracker.snapshot() in core/cost.py which accumulates via +=).
+//
+// To derive the cost delta for *this turn* we snapshot two baselines at stream
+// start:
+//   _costCumAtTurnStart  — the last cumulative value seen before this turn's
+//                          first `usage.updated` event. Starts at 0 for the
+//                          first turn; carries forward across turns.
+//   _spentAtTurnStart    — the `spent` field in the store at the moment we
+//                          open the SSE stream, so we can reconstruct the
+//                          absolute `spent` as turns accumulate.
+//
+// On each `usage.updated` tick:
+//   turnDelta = cumulative - _costCumAtTurnStart
+//   taskSpent = turnDelta           (cost of THIS turn only)
+//   spent     = _spentAtTurnStart + turnDelta  (all-time total)
+//
+// Example: gateway sends 0.01, 0.02, 0.03 over 3 ticks of a turn where
+// _costCumAtTurnStart = 0 and _spentAtTurnStart = 0.05 (prior turns).
+//   tick1: taskSpent=0.01, spent=0.06
+//   tick2: taskSpent=0.02, spent=0.07
+//   tick3: taskSpent=0.03, spent=0.08  ← correct; no double-count.
+let _costCumAtTurnStart = 0;
+let _spentAtTurnStart = 0;
+// Updated on every usage.updated tick so we always know the last cumulative
+// value; used to seed _costCumAtTurnStart when the next turn opens.
+let _lastKnownCumCost = 0;
 
 // ============================================================
 // 2. Raw gateway shapes
@@ -227,15 +258,20 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
     case "usage.updated": {
       const totalTokens =
         typeof payload.total_tokens === "number" ? payload.total_tokens : null;
-      const costUsd =
+      // estimated_cost_usd is CUMULATIVE (session running total, not a delta).
+      // Confirmed: orchestrator.py lines 720-756 comment "cumulative counters"
+      // and CostTracker.snapshot() in core/cost.py accumulates via +=.
+      // We convert to a per-turn delta using baselines captured at stream start.
+      const cumCost =
         typeof payload.estimated_cost_usd === "number"
           ? payload.estimated_cost_usd
           : null;
-      if (costUsd != null) {
-        const s = useStore.getState();
+      if (cumCost != null) {
+        _lastKnownCumCost = cumCost;
+        const turnDelta = Math.max(0, cumCost - _costCumAtTurnStart);
         store.hydrate({
-          taskSpent: Math.round((s.taskSpent + costUsd) * 1000) / 1000,
-          spent: Math.round((s.spent + costUsd) * 1000) / 1000,
+          taskSpent: Math.round(turnDelta * 1000) / 1000,
+          spent:     Math.round((_spentAtTurnStart + turnDelta) * 1000) / 1000,
         });
       }
       // totalTokens surfaced but no dedicated UI field currently
@@ -289,6 +325,11 @@ export async function startTaskLive(text: string, hachiMsgId: number): Promise<v
   // Resume from the module-level cursor so a reused session only streams the
   // NEW turn's events (see _cursor docs above), not the whole session history.
   const startAfter = _cursor;
+
+  // Snapshot cost baselines so the usage.updated handler can convert the
+  // gateway's cumulative estimated_cost_usd into a per-turn delta.
+  _costCumAtTurnStart = _lastKnownCumCost;
+  _spentAtTurnStart = useStore.getState().spent;
 
   // Open SSE stream first, THEN fire the message POST in the background.
   // This ensures we don't miss early events from the turn.
@@ -396,18 +437,28 @@ export async function allowLeashLive(): Promise<void> {
   const store = useStore.getState();
   const ic = store.inContext;
   if (!ic) return;
-  // Clear the leash immediately (optimistic)
+  // Clear the leash immediately (optimistic UI update)
   store.hydrate({ inContext: null });
-  // In a full implementation, POST to an approval endpoint here.
-  // The SSE stream continues delivering events after this.
-  // For now: the gateway's permission flow uses the approvals registry;
-  // the in-context leash is informational in the current gateway schema.
-  // The stream will naturally continue after the in-context is cleared.
+  // Best-effort: POST the decision to the gateway so the backend unblocks.
+  // We match by request text since InContextLeash carries no request_id.
+  // Errors are soft — the SSE stream continues regardless.
+  try {
+    await approveFirstMatching(ic.request);
+  } catch {
+    // Gateway POST failed — SSE stream continues, decision is best-effort
+  }
 }
 
 export async function denyLeashLive(): Promise<void> {
   const store = useStore.getState();
+  const ic = store.inContext;
   store.hydrate({ inContext: null });
+  // Best-effort: POST the deny decision to the gateway.
+  try {
+    await denyFirstMatching(ic?.request);
+  } catch {
+    // Gateway POST failed — proceed with local stream abort
+  }
   // Stop streaming — the user declined the permission.
   stopStreamingLive();
   store.hydrate({ streaming: false });
@@ -425,7 +476,9 @@ export async function loadSessions(): Promise<void> {
     useStore.getState().hydrate({ sessions: adapted });
     useStore.getState().setReconnecting(false);
   } catch {
-    // Leave fixtures in place; flag offline
+    // In live mode, do NOT silently present stale fixture sessions as real.
+    // Clear the session slice to show an honest empty/reconnecting state.
+    useStore.getState().hydrate({ sessions: [] });
     useStore.getState().setReconnecting(true);
   }
 }

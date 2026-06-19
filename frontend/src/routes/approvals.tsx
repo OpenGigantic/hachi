@@ -239,49 +239,72 @@ function ApprovalCard({
         </div>
       </div>
 
-      {/* Countdown bar */}
-      <div>
+      {/* Countdown bar — only shown when the gateway sends a real expiry (totalMs > 0).
+          The current gateway does not send an expiry field (PermissionRequest has none).
+          When totalMs === 0 we show a plain "Hachi stays put" note instead of a fake bar. */}
+      {approval.totalMs > 0 ? (
+        <div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              fontSize: 12,
+              color: "var(--hachi-muted)",
+              marginBottom: 6,
+            }}
+          >
+            <span
+              style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+            >
+              <Icon name="clock" size={13} />
+              {" "}auto-declines in {countdownLabel}
+            </span>
+            <span>requests expire — Hachi stays put</span>
+          </div>
+          <div
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(cdPct)}
+            aria-label={`Time remaining: ${countdownLabel}`}
+            style={{
+              height: 3,
+              borderRadius: 999,
+              background: "var(--hachi-line)",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                width: cdPct + "%",
+                height: "100%",
+                background: rm.cd,
+                borderRadius: 999,
+                transition: "width 1s linear",
+              }}
+            />
+          </div>
+        </div>
+      ) : (
         <div
           style={{
             display: "flex",
             alignItems: "center",
-            justifyContent: "space-between",
+            gap: 6,
             fontSize: 12,
             color: "var(--hachi-muted)",
-            marginBottom: 6,
           }}
         >
-          <span
-            style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-          >
-            <Icon name="clock" size={13} />
-            {" "}auto-declines in {countdownLabel}
-          </span>
-          <span>requests expire — Hachi stays put</span>
+          <Icon name="clock" size={13} />
+          no auto-decline — Hachi waits until you decide
         </div>
-        <div
-          style={{
-            height: 3,
-            borderRadius: 999,
-            background: "var(--hachi-line)",
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{
-              width: cdPct + "%",
-              height: "100%",
-              background: rm.cd,
-              borderRadius: 999,
-              transition: "width 1s linear",
-            }}
-          />
-        </div>
-      </div>
+      )}
 
       {/* Action buttons */}
       <div style={{ display: "flex", gap: 9 }}>
         <button
+          type="button"
           onClick={onDecline}
           onMouseEnter={() => setDeclineHover(true)}
           onMouseLeave={() => setDeclineHover(false)}
@@ -300,6 +323,7 @@ function ApprovalCard({
           Decline
         </button>
         <button
+          type="button"
           onClick={onAllowOnce}
           onMouseEnter={() => setAllowHover(true)}
           onMouseLeave={() => setAllowHover(false)}
@@ -320,6 +344,7 @@ function ApprovalCard({
           Allow once
         </button>
         <button
+          type="button"
           onClick={onAlwaysAllow}
           onMouseEnter={() => setAlwaysHover(true)}
           onMouseLeave={() => setAlwaysHover(false)}
@@ -511,6 +536,7 @@ function Approvals() {
         <div style={{ flex: 1 }} />
         {manyPending && (
           <button
+            type="button"
             onClick={() => { void declineAllMutation(); }}
             onMouseEnter={() => setDeclineAllHover(true)}
             onMouseLeave={() => setDeclineAllHover(false)}

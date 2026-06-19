@@ -16,6 +16,7 @@ Run with:
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from typing import Any
 from unittest.mock import MagicMock
@@ -359,10 +360,15 @@ def _try_boot_gateway() -> _LiveGatewayFixture | None:
         return None
 
 
+@pytest.mark.skipif(
+    not os.getenv("ANTHROPIC_API_KEY"),
+    reason="live gateway mechanics require ANTHROPIC_API_KEY (session creation needs an LLM key)",
+)
 class TestChatViewLiveMechanics:
     """Verify live plumbing against a real in-process gateway.
 
-    Tests skip if the gateway cannot start (e.g. locked-down CI).
+    Tests skip if no ANTHROPIC_API_KEY is set (checked at class level) or if
+    the gateway cannot start (checked per-test via _try_boot_gateway).
     """
 
     def test_start_session_returns_id(self) -> None:

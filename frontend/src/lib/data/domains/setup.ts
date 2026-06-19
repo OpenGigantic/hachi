@@ -127,6 +127,11 @@ function buildApplyPlan(answers: WizardAnswers): Record<string, unknown> {
 
 // ---- loader ----
 
+// Tracks whether this domain has ever received real data from the gateway.
+// In live mode: until the first successful fetch, the setup slice should not
+// be pre-populated from seeded fixture defaults.
+let _hasEverSucceeded = false;
+
 /**
  * Load onboarding state from the gateway and hydrate the setup slice.
  *
@@ -138,6 +143,10 @@ function buildApplyPlan(answers: WizardAnswers): Record<string, unknown> {
  *   sandbox       → guarded
  *   guided        → standard
  *   unrestricted  → open
+ *
+ * In live mode, on first-load failure the setup slice is left at its
+ * structural defaults (no content from fixtures). After a successful first
+ * fetch, subsequent failures preserve the last known real gateway state.
  */
 export async function loadSetup(): Promise<void> {
   if (USE_MOCKS) return;
@@ -182,13 +191,104 @@ export async function loadSetup(): Promise<void> {
     });
 
     store.setReconnecting(false);
+    _hasEverSucceeded = true;
   } catch {
+    // The setup slice has no data arrays to clear — it's a wizard form shape.
+    // On first-load failure we leave the slice at its structural defaults
+    // (open: false, step: 0, key: "", safety: "standard", …) which were set
+    // by domainDefaults() and are benign empty-form values, not misleading
+    // fixture data. After first success, last-known-good gateway state is kept.
+    // In all failure cases: flag reconnecting so the UI shows the indicator.
     useStore.getState().setReconnecting(true);
-    // Leave the seeded fixtures / current setup state in place.
   }
 }
 
 registerLoader("setup", loadSetup);
+
+// ============================================================
+// API-key validation
+// ============================================================
+
+/**
+ * Client-side format check for Anthropic API keys.
+ *
+ * Rules (as of 2026):
+ *   - Must start with "sk-ant-"
+ *   - Total length ≥ 100 characters (real keys are ~108 chars)
+ *
+ * Returns a precise error string, or null when the format looks plausible.
+ */
+export function checkKeyFormat(key: string): string | null {
+  const trimmed = key.trim();
+  if (!trimmed.startsWith("sk-ant-")) {
+    return "Anthropic keys start with sk-ant- — check that you copied the full key.";
+  }
+  if (trimmed.length < 100) {
+    return `Key looks too short (${trimmed.length} chars) — Anthropic keys are ~108 characters.`;
+  }
+  return null; // format looks plausible
+}
+
+export type KeyValidationResult =
+  | { status: "idle" }
+  | { status: "checking" }
+  | { status: "format-error"; message: string }
+  | { status: "valid" }
+  | { status: "invalid"; message: string }
+  | { status: "network-error"; message: string };
+
+/**
+ * Validate an Anthropic API key:
+ *   1. Client-side format check (prefix + length).
+ *   2. If format passes, POST to /config/provider/validate for a real round-trip.
+ *
+ * The gateway endpoint (POST /config/provider/validate) is implemented server-side
+ * in src/hachi/gateway/fastapi_app.py (post_provider_validate → control_plane.validate_provider).
+ * It may return HTTP 503 if the validate_provider handler was not injected at gateway
+ * startup, in which case we surface a network-error rather than claiming the key is valid.
+ *
+ * In mock mode: returns "valid" immediately (format check only, same behaviour as before).
+ *
+ * The returned promise NEVER rejects; all error states are encoded in KeyValidationResult.
+ */
+export async function validateKey(key: string): Promise<KeyValidationResult> {
+  const formatError = checkKeyFormat(key);
+  if (formatError) {
+    return { status: "format-error", message: formatError };
+  }
+
+  // Mock mode: skip the network call, trust the format check.
+  if (USE_MOCKS) {
+    return { status: "valid" };
+  }
+
+  try {
+    // POST /config/provider/validate — body mirrors ProviderRequest schema.
+    // We send only `api_key`; the gateway inspects it without persisting.
+    await apiSend<unknown>("POST", "/config/provider/validate", {
+      provider: {
+        kind: "anthropic",
+        api_key: key.trim(),
+      },
+    });
+    return { status: "valid" };
+  } catch (err: unknown) {
+    // Distinguish a clear 401/400 "key rejected" from a 503/network failure.
+    // apiSend throws an Error whose message contains the HTTP status text.
+    const msg = err instanceof Error ? err.message : String(err);
+    const lower = msg.toLowerCase();
+    if (
+      lower.includes("401") ||
+      lower.includes("unauthorized") ||
+      lower.includes("invalid") ||
+      lower.includes("forbidden")
+    ) {
+      return { status: "invalid", message: "The gateway rejected this key — double-check it and try again." };
+    }
+    // 503 means the validate handler wasn't wired at startup; still show the issue clearly.
+    return { status: "network-error", message: "Could not reach the gateway to validate (format check passed)." };
+  }
+}
 
 // ---- mutation wrapper ----
 

@@ -5,12 +5,12 @@
 
 ::index
   # node-id     | type  | scope | conf | keywords
-  core_finance   | skill | all   | 1.0  | crypto, bitcoin, price, finance, market, cryptocurrency, coin, btc, eth, market cap
+  core_finance   | skill | all   | 1.0  | crypto, bitcoin, price, finance, market, cryptocurrency, coin, btc, eth, market cap, financial, financial data, stock, portfolio, shares, investment
 
 ::node[core_finance]
 ->[:role=skill]
 ->[:requires=core_currency]
-->[:keywords=crypto, bitcoin, price, finance, market, cryptocurrency, coin, btc, eth, market cap]
+->[:keywords=crypto, bitcoin, price, finance, market, cryptocurrency, coin, btc, eth, market cap, financial, financial data, stock, portfolio, shares, investment]
 
 ::api[fetch_crypto_price]
 method=GET

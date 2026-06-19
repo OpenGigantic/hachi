@@ -13,6 +13,30 @@ Public API consumed by Agent B (gateway-auth):
     get_approval_registry() -> PendingApprovalRegistry
     registry.list_pending() -> list[dict]
     registry.resolve(request_id: str, decision: PermissionDecision) -> bool
+
+Threading contract
+------------------
+``RegistryApprover.require()`` calls ``PendingApprovalRegistry.wait()``, which
+calls ``threading.Event.wait(timeout=...)`` — a **synchronous blocking call**.
+
+* **Gateway / FastAPI path** — ``fastapi_app.py`` dispatches every agent turn via
+  ``anyio.to_thread.run_sync(...)``, so ``require()`` always runs inside an anyio
+  worker thread.  The asyncio event loop is never blocked directly.
+
+* **Remaining risk (REL-001)** — Under many concurrent unanswered approvals, each
+  blocked ``require()`` call holds one worker thread for up to ``timeout`` seconds.
+  The anyio default thread pool cap is 40.  Callers that can drive an async context
+  should prefer :meth:`RegistryApprover.require_async` which awaits
+  :meth:`PendingApprovalRegistry.wait_async` instead; ``wait_async`` uses
+  ``anyio.to_thread.run_sync`` so it releases the calling coroutine (no loop
+  stall) while still occupying exactly one worker thread, keeping the thread-count
+  exposure identical — but allowing the asyncio scheduler to interleave other work
+  freely.
+
+* **Timeout / cleanup** — :meth:`PendingApprovalRegistry.wait` (and ``wait_async``)
+  call :meth:`~PendingApprovalRegistry._cleanup` automatically on timeout so that
+  a never-answered request cannot pin a thread slot indefinitely **and** cannot
+  accumulate in ``_entries`` and leak memory.
 """
 
 from __future__ import annotations
@@ -20,7 +44,9 @@ from __future__ import annotations
 import threading
 import uuid
 from collections.abc import Callable
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
+
+import anyio
 
 from hachi.core.permissions import (
     PermissionDecision,
@@ -78,6 +104,18 @@ class PendingApprovalRegistry:
     calls ``resolve()`` to unblock the waiting tool call.
 
     This class is thread-safe.
+
+    Threading contract
+    ------------------
+    :meth:`wait` is a **synchronous blocking call** (``threading.Event.wait``).
+    It is safe to call from a worker thread (e.g. inside ``anyio.to_thread.run_sync``).
+    Do **not** call it directly from an async context — use :meth:`wait_async` instead.
+
+    :meth:`wait_async` offloads the blocking wait to an anyio worker thread via
+    ``anyio.to_thread.run_sync``, releasing the event loop while waiting.
+
+    Both :meth:`wait` and :meth:`wait_async` auto-clean up the entry on timeout
+    so that a never-answered request cannot leak memory or pin a thread slot.
     """
 
     def __init__(self) -> None:
@@ -95,7 +133,7 @@ class PendingApprovalRegistry:
         entry = _PendingEntry(request)
         with self._lock:
             self._entries[request.request_id] = entry
-        return request.request_id
+        return cast(str, request.request_id)
 
     def list_pending(self) -> list[dict[str, Any]]:
         """Return all unresolved pending requests as serialisable dicts.
@@ -135,8 +173,25 @@ class PendingApprovalRegistry:
     def wait(self, request_id: str, timeout: float) -> PermissionDecision:
         """Block until *request_id* is resolved or *timeout* seconds pass.
 
-        On timeout returns a deny decision with rationale ``"approval timed out"``
-        so the tool can distinguish a timeout from an explicit user deny.
+        This is a **synchronous blocking call** — run it from a worker thread,
+        never directly from an async context.  Use :meth:`wait_async` instead
+        when calling from a coroutine.
+
+        On timeout the pending entry is **removed** (auto-cleanup) and a deny
+        decision with rationale ``"approval timed out"`` is returned, so the
+        tool can distinguish a timeout from an explicit user deny.
+
+        On a successful signal the entry is **not** removed here — callers must
+        call :meth:`_cleanup` after consuming the decision (``RegistryApprover``
+        does this immediately after ``wait`` returns).
+
+        Args:
+            request_id: ID previously returned by :meth:`create`.
+            timeout:    Maximum seconds to wait.
+
+        Returns:
+            The :class:`~hachi.core.permissions.PermissionDecision` recorded by
+            :meth:`resolve`, or a synthetic deny on timeout / unknown ID.
         """
         with self._lock:
             entry = self._entries.get(request_id)
@@ -144,13 +199,42 @@ class PendingApprovalRegistry:
             return PermissionDecision(action="deny", rationale="unknown request_id")
         signalled = entry.event.wait(timeout=timeout)
         if not signalled:
+            # Auto-cleanup on timeout so the entry does not leak.
+            self._cleanup(request_id)
             return PermissionDecision(action="deny", rationale="approval timed out")
         decision = entry.decision
         assert decision is not None  # event is set only after assignment
         return decision
 
+    async def wait_async(self, request_id: str, timeout: float) -> PermissionDecision:
+        """Async variant of :meth:`wait` — safe to call from a coroutine.
+
+        Offloads the blocking ``threading.Event.wait`` to an anyio worker thread
+        via ``anyio.to_thread.run_sync``, releasing the event loop while waiting.
+        This prevents the approval wait from ever stalling the asyncio scheduler,
+        even if many concurrent approvals are pending simultaneously.
+
+        The timeout and auto-cleanup behaviour are identical to :meth:`wait`.
+
+        Args:
+            request_id: ID previously returned by :meth:`create`.
+            timeout:    Maximum seconds to wait.
+
+        Returns:
+            The :class:`~hachi.core.permissions.PermissionDecision` recorded by
+            :meth:`resolve`, or a synthetic deny on timeout / unknown ID.
+        """
+        return await anyio.to_thread.run_sync(
+            lambda: self.wait(request_id, timeout),
+            abandon_on_cancel=True,
+        )
+
     def _cleanup(self, request_id: str) -> None:
-        """Remove a resolved entry. Called internally after wait() returns."""
+        """Remove a resolved or timed-out entry from the registry.
+
+        Called internally after :meth:`wait` / :meth:`wait_async` return, and
+        automatically on timeout so entries cannot accumulate indefinitely.
+        """
         with self._lock:
             self._entries.pop(request_id, None)
 
@@ -288,6 +372,21 @@ class RegistryApprover:
     in the :class:`PendingApprovalRegistry`, emits ``permission.requested``, then
     blocks on :meth:`~PendingApprovalRegistry.wait` until the gateway endpoint calls
     :meth:`~PendingApprovalRegistry.resolve` or the timeout expires.
+
+    Threading contract
+    ------------------
+    :meth:`require` is **synchronous-blocking** — it must only be called from a
+    worker thread (never directly from the asyncio event loop).  The FastAPI gateway
+    routes all agent turns through ``anyio.to_thread.run_sync``, satisfying this
+    constraint today.
+
+    :meth:`require_async` is the **async-safe** alternative.  It drives the same
+    registry flow but awaits :meth:`~PendingApprovalRegistry.wait_async`, which
+    offloads the blocking event wait to an anyio worker thread without stalling the
+    event loop.  Prefer ``require_async`` in any new async call-site.
+
+    Both methods share identical timeout and cleanup behaviour: a timed-out request
+    is auto-denied and removed from the registry so it cannot leak.
     """
 
     def __init__(
@@ -306,14 +405,10 @@ class RegistryApprover:
         self._emit = emit
         self._timeout = timeout
 
-    def require(self, action: str, summary: str, detail: str = "") -> tuple[bool, str]:
-        """Park the request and block until resolved or timed out.
+    # ── Internal helpers ──
 
-        Args:
-            action:  Canonical action name.
-            summary: Human-readable action summary.
-            detail:  Optional extended context.
-        """
+    def _build_and_park(self, action: str, summary: str, detail: str) -> str:
+        """Create a :class:`PermissionRequest`, store it, emit the event, return request_id."""
         request = PermissionRequest(
             request_id=uuid.uuid4().hex,
             operation="action",
@@ -322,9 +417,7 @@ class RegistryApprover:
             reason=detail or summary,
             policy_summary=f"action:{action}",
         )
-
         request_id = self._registry.create(request)
-
         self._emit(
             "permission.requested",
             {
@@ -336,22 +429,72 @@ class RegistryApprover:
                 "policy_summary": request.policy_summary,
             },
         )
+        return request_id
 
-        decision = self._registry.wait(request_id, self._timeout)
-        self._registry._cleanup(request_id)
-
+    def _emit_decided(
+        self, request_id: str, action: str, summary: str, decision: PermissionDecision
+    ) -> None:
+        """Emit the ``permission.decided`` event after a decision is known."""
         self._emit(
             "permission.decided",
             {
                 "request_id": request_id,
-                "operation": request.operation,
-                "tool": request.tool,
-                "target": request.target,
+                "operation": "action",
+                "tool": action,
+                "target": summary,
                 "decision": decision.action,
                 "reason": decision.rationale,
             },
         )
 
+    def _decision_to_result(self, decision: PermissionDecision) -> tuple[bool, str]:
+        """Convert a :class:`PermissionDecision` to the ``(approved, reason)`` tuple."""
         if decision.action in ("approve", "allow_once"):
             return (True, decision.rationale or "approved")
         return (False, decision.rationale or "denied")
+
+    # ── Public API ──
+
+    def require(self, action: str, summary: str, detail: str = "") -> tuple[bool, str]:
+        """Park the request and **block** synchronously until resolved or timed out.
+
+        **Call only from a worker thread** — never from an async context.
+        Use :meth:`require_async` instead when awaiting from a coroutine.
+
+        Args:
+            action:  Canonical action name.
+            summary: Human-readable action summary.
+            detail:  Optional extended context.
+
+        Returns:
+            ``(True, reason)`` if approved; ``(False, reason)`` if denied or timed out.
+        """
+        request_id = self._build_and_park(action, summary, detail)
+        decision = self._registry.wait(request_id, self._timeout)
+        # _cleanup is called by wait() on timeout; call it here on the normal path.
+        self._registry._cleanup(request_id)
+        self._emit_decided(request_id, action, summary, decision)
+        return self._decision_to_result(decision)
+
+    async def require_async(self, action: str, summary: str, detail: str = "") -> tuple[bool, str]:
+        """Park the request and **await** resolution without blocking the event loop.
+
+        Async-safe alternative to :meth:`require`.  Offloads the blocking
+        ``threading.Event.wait`` to an anyio worker thread via
+        :meth:`~PendingApprovalRegistry.wait_async`, so the event loop remains
+        free to handle other requests while waiting.
+
+        Args:
+            action:  Canonical action name.
+            summary: Human-readable action summary.
+            detail:  Optional extended context.
+
+        Returns:
+            ``(True, reason)`` if approved; ``(False, reason)`` if denied or timed out.
+        """
+        request_id = self._build_and_park(action, summary, detail)
+        decision = await self._registry.wait_async(request_id, self._timeout)
+        # _cleanup is called by wait_async() on timeout; call it here on the normal path.
+        self._registry._cleanup(request_id)
+        self._emit_decided(request_id, action, summary, decision)
+        return self._decision_to_result(decision)

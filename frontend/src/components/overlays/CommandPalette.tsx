@@ -8,6 +8,7 @@ import React, { useEffect, useRef, CSSProperties } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { useStore } from '../../lib/store/store';
 import { Icon } from '../icons/Icon';
+import { useFocusTrap } from '../../lib/hooks/useFocusTrap';
 
 // ---- nav route map (mirrors _navMeta in prototype) ----
 const navRoutes: Record<string, string> = {
@@ -49,6 +50,8 @@ export function CommandPalette() {
 
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
+  // Focus trap keeps keyboard focus inside the palette while open.
+  const trapRef = useFocusTrap<HTMLDivElement>(open);
 
   // Global ⌘K / Ctrl+K toggle + Esc to close
   useEffect(() => {
@@ -185,6 +188,10 @@ export function CommandPalette() {
       onClick={closePalette}
     >
       <div
+        ref={trapRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
         style={panelStyle}
         onClick={(e) => e.stopPropagation()}
       >
