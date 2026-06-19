@@ -56,6 +56,7 @@ htmlcov/
 *.jpeg
 *.gif
 *.html
+!frontend/index.html
 
 # ==========================================
 # Environment & Secrets
