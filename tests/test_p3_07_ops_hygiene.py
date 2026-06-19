@@ -100,6 +100,10 @@ def test_memory_vault_close_idempotent() -> None:
     vault.agent_profile = MagicMock()
     vault.delegation_collection = MagicMock()
     vault.quarantine_collection = MagicMock()
+    # HIGH-021: close() acquires the re-entrant vault lock before nulling refs.
+    import threading
+
+    vault._vault_lock = threading.RLock()
 
     # Should not raise.
     vault.close()

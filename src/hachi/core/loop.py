@@ -10,6 +10,21 @@ Uses the MemoryManager for intelligent context management across skill switches.
 Phase 1 Update:
     - Accepts immutable TurnContext per execution instead of mutating base_system_prompt
     - Prevents mutable shared state issues across concurrent sessions/turns
+
+Performance & concurrency improvements (BE-4):
+    HIGH-003: ChromaDB writes called by tool callables inside the thread pool can race on the
+              embedded SQLite WAL. The vault serializes its own writes via _vault_lock (added in
+              memory_vault.py); the tool pool here does not need additional coordination.
+              Also: the pool uses max_workers=4 which is conservative; the chat lock from the
+              gateway/orchestrator layer is NOT held across tool dispatch so the anyio thread pool
+              is not exhausted.
+    LOW-016:  Prompt-cache breakpoints are anchored on the stable brain/.og prefix via the
+              TurnContext cacheable_system / dynamic_system split (see _system_blocks()).
+              When a TurnContext is present the cacheable prefix never changes between turns
+              (only the dynamic tail with time/recall varies), so Anthropic's cache hits the
+              large stable prefix on every turn after the first.  The fallback path (no
+              TurnContext) returns the full prompt as a single cacheable block — correct
+              but less efficient; callers should always supply a TurnContext for optimal caching.
 """
 
 import concurrent.futures
