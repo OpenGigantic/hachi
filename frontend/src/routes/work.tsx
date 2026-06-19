@@ -102,19 +102,20 @@ function computeSpend(
   spendTidies: { ts: string; before: number; after: number }[],
   spendModels: { name: string; tokens: number; cost: number; color: string }[],
 ) {
-  const barMax = Math.max(...spendTurns.map(t => t.inT + t.out))
+  const barMax = spendTurns.length ? Math.max(...spendTurns.map(t => t.inT + t.out)) : 0
   const spendBars = spendTurns.map(t => ({
     n: t.n,
-    inPct: (t.inT / barMax) * 100,
-    outPct: (t.out / barMax) * 100,
+    inPct: barMax > 0 ? (t.inT / barMax) * 100 : 0,
+    outPct: barMax > 0 ? (t.out / barMax) * 100 : 0,
   }))
 
   const costs = spendTurns.map(t => t.cost)
   const cum: number[] = []
   costs.reduce((a, c) => { const v = a + c; cum.push(v); return v }, 0)
-  const maxCum = cum[cum.length - 1]
+  const maxCum = cum.length ? cum[cum.length - 1] : 0
+  const lineDenom = cum.length > 1 ? cum.length - 1 : 1
   const linePts = cum.map((v, i) =>
-    ((i / (cum.length - 1)) * 100).toFixed(2) + ',' + (100 - (v / maxCum) * 88 - 6).toFixed(2)
+    ((i / lineDenom) * 100).toFixed(2) + ',' + (100 - (maxCum > 0 ? v / maxCum : 0) * 88 - 6).toFixed(2)
   ).join(' ')
   const areaPts = '0,100 ' + linePts + ' 100,100'
 
@@ -125,7 +126,7 @@ function computeSpend(
 
   const tidiesRows = spendTidies.map(c => ({
     ts: c.ts,
-    afterPct: (c.after / c.before) * 100,
+    afterPct: c.before > 0 ? (c.after / c.before) * 100 : 0,
     reclaimedK: ((c.before - c.after) / 1000).toFixed(0) + 'K',
     beforeK: (c.before / 1000).toFixed(0) + 'K',
     afterK: (c.after / 1000).toFixed(0) + 'K',
@@ -137,7 +138,7 @@ function computeSpend(
   const circ = 339.29
   let accFrac = 0
   const donut = spendModels.map(mm => {
-    const frac = mm.tokens / totalTok
+    const frac = totalTok > 0 ? mm.tokens / totalTok : 0
     const seg = {
       color: mm.color,
       dash: (frac * circ).toFixed(2) + ' ' + ((1 - frac) * circ).toFixed(2),
@@ -534,6 +535,28 @@ function SpendLens() {
   const spendTurns = useStore(s => s.spendTurns)
   const spendTidies = useStore(s => s.spendTidies)
   const spendModels = useStore(s => s.spendModels)
+
+  if (spendTurns.length === 0 && spendModels.length === 0 && spendTidies.length === 0) {
+    return (
+      <div style={{ maxWidth: '1000px', margin: '0 auto', padding: '48px 0' }}>
+        <div
+          style={{
+            background: 'var(--hachi-surface)',
+            border: '0.5px solid var(--hachi-line)',
+            borderRadius: '16px',
+            padding: '40px',
+            textAlign: 'center',
+            color: 'var(--hachi-muted)',
+            fontSize: '14px',
+            lineHeight: '22px',
+          }}
+        >
+          No spend yet. Run a task and Hachi will show exactly what it cost — token burn,
+          tidy-ups, and where the money went — right here.
+        </div>
+      </div>
+    )
+  }
 
   const {
     spendBars,
