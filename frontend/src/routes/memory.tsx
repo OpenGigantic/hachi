@@ -3,10 +3,13 @@
 // Recreates prototype lines 669–797 faithfully.
 // Screen-local state: memSearch, recallQuery, recallDone, hovered buttons.
 // All domain mutations via useStore.
+//
+// Layout: two tabs — "Recall" (semantic search) and "Audit" (history/sessions).
+// This reduces cognitive load on a trust-critical feature (MED-019).
 // ============================================================
 
 import React, { useEffect, useState } from 'react'
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import {
   loadMemory,
@@ -63,19 +66,26 @@ function TextBtn({
   children,
   style,
   hoverStyle,
+  disabled,
 }: {
   onClick: () => void
   children: React.ReactNode
   style: React.CSSProperties
   hoverStyle: React.CSSProperties
+  disabled?: boolean
 }) {
   const [hov, setHov] = useState(false)
   return (
     <button
       onClick={onClick}
-      onMouseEnter={() => setHov(true)}
+      onMouseEnter={() => !disabled && setHov(true)}
       onMouseLeave={() => setHov(false)}
-      style={{ ...style, ...(hov ? hoverStyle : {}) }}
+      disabled={disabled}
+      style={{
+        ...style,
+        ...(hov && !disabled ? hoverStyle : {}),
+        ...(disabled ? { opacity: 0.55, cursor: 'not-allowed' } : {}),
+      }}
     >
       {children}
     </button>
@@ -198,9 +208,66 @@ function FactCard({
 }
 
 // ============================================================
+// Tab bar — local sub-view switcher
+// ============================================================
+type MemTab = 'recall' | 'audit'
+
+function TabBar({ active, onChange }: { active: MemTab; onChange: (t: MemTab) => void }) {
+  const tabs: { key: MemTab; label: string; icon: string }[] = [
+    { key: 'recall', label: 'Recall', icon: 'sparkles' },
+    { key: 'audit', label: 'Audit & History', icon: 'shield' },
+  ]
+  return (
+    <div
+      style={{
+        display: 'flex',
+        gap: '4px',
+        padding: '4px',
+        background: 'var(--hachi-surface)',
+        border: '0.5px solid var(--hachi-line)',
+        borderRadius: '12px',
+        width: 'fit-content',
+      }}
+    >
+      {tabs.map((t) => {
+        const isActive = t.key === active
+        return (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => onChange(t.key)}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              height: '32px',
+              padding: '0 14px',
+              borderRadius: '9px',
+              border: 'none',
+              background: isActive ? 'var(--hachi-canvas)' : 'transparent',
+              color: isActive ? 'var(--hachi-ink)' : 'var(--hachi-muted)',
+              font: `${isActive ? 500 : 400} 13px var(--font-body)`,
+              cursor: 'pointer',
+              boxShadow: isActive ? '0 1px 3px rgba(0,0,0,0.07)' : 'none',
+              transition: 'background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease)',
+            }}
+          >
+            <Icon name={t.icon} size={14} />
+            {t.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+
+// ============================================================
 // Main Memory component
 // ============================================================
 function Memory() {
+  const navigate = useNavigate()
+
   // --- store ---
   const memGroups = useStore((s) => s.memGroups)
   const blocked = useStore((s) => s.blocked)
@@ -226,8 +293,14 @@ function Memory() {
 
   // --- local state ---
   const [memSearch, setMemSearch] = useState('')
-  const [recallQuery, setRecallQuery] = useState('what do you know about my repo?')
-  const [recallDone, setRecallDone] = useState(true)
+  // LOW-006: start empty; placeholder communicates intent without pre-filling a repo-specific example
+  const [recallQuery, setRecallQuery] = useState('')
+  // HIGH-010: start false so "Closest Matches" only renders after the user submits a query
+  const [recallDone, setRecallDone] = useState(false)
+  // LOW-008: disable Recall button while a fetch is in-flight
+  const [recallLoading, setRecallLoading] = useState(false)
+  // MED-019: sub-view tabs — "Recall" vs "Audit & History"
+  const [activeTab, setActiveTab] = useState<MemTab>('recall')
 
   // --- computed ---
   const q = memSearch.trim().toLowerCase()
@@ -239,15 +312,24 @@ function Memory() {
     .filter((g) => g.facts.length > 0)
   const memEmpty = q.length > 0 && filteredGroups.length === 0
 
-  // --- session renderVals (computed inline, mirroring prototype line 2289) ---
+  // --- session renderVals ---
   const sessionRows = sessions.map((s: Session) => ({
     ...s,
     turnsLabel: s.turns + ' turns',
     label: s.active ? 'Current' : 'Resume',
     icon: s.active ? 'eye' : 'chat',
+    // HIGH-011: Navigate to /conversation. The gateway has no dedicated resume
+    // endpoint — session history is display-only; the chat module's ensureSession()
+    // creates a fresh session when the user sends their first message. For the
+    // active session navigate immediately; for past sessions show an info toast
+    // so the user knows context will not be injected automatically.
     resume: () => {
-      if (s.active) return
-      showToast('Resuming "' + s.title + '" — picking up where you left off', 'success')
+      if (s.active) {
+        void navigate({ to: '/conversation' })
+        return
+      }
+      showToast('Opening conversation — context from "' + s.title + '" is shown above for reference', 'info')
+      void navigate({ to: '/conversation' })
     },
   }))
 
@@ -287,31 +369,33 @@ function Memory() {
           what Hachi knows about you
         </span>
         <div style={{ flex: 1 }} />
-        {/* add a fact */}
-        <TextBtn
-          onClick={() => {
-            // Optimistic only: insert a temp fact in the store and open edit mode.
-            // The actual POST to /memory/facts fires when the user saves (saveFact).
-            addFact('you')
-          }}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '7px',
-            height: '38px',
-            padding: '0 14px',
-            borderRadius: '10px',
-            border: '0.5px solid var(--hachi-line)',
-            background: 'var(--hachi-canvas)',
-            color: 'var(--hachi-ink)',
-            font: '500 13px var(--font-body)',
-            cursor: 'pointer',
-          }}
-          hoverStyle={{ background: 'var(--hachi-cream)' }}
-        >
-          <Icon name="plus" size={15} />
-          Add a fact
-        </TextBtn>
+        {/* add a fact — only shown on Recall tab where groups are visible */}
+        {activeTab === 'recall' && (
+          <TextBtn
+            onClick={() => {
+              // Optimistic only: insert a temp fact in the store and open edit mode.
+              // The actual POST to /memory/facts fires when the user saves (saveFact).
+              addFact('you')
+            }}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '7px',
+              height: '38px',
+              padding: '0 14px',
+              borderRadius: '10px',
+              border: '0.5px solid var(--hachi-line)',
+              background: 'var(--hachi-canvas)',
+              color: 'var(--hachi-ink)',
+              font: '500 13px var(--font-body)',
+              cursor: 'pointer',
+            }}
+            hoverStyle={{ background: 'var(--hachi-cream)' }}
+          >
+            <Icon name="plus" size={15} />
+            Add a fact
+          </TextBtn>
+        )}
         {/* search */}
         <div
           style={{
@@ -359,482 +443,536 @@ function Memory() {
             gap: '26px',
           }}
         >
+          {/* ---- MED-019: tab switcher ---- */}
+          <TabBar active={activeTab} onChange={setActiveTab} />
 
-          {/* ---- semantic recall ---- */}
-          <div
-            style={{
-              background: 'var(--hachi-surface)',
-              border: '0.5px solid var(--hachi-line)',
-              borderRadius: '16px',
-              padding: '18px',
-            }}
-          >
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '9px',
-                marginBottom: '13px',
-              }}
-            >
-              <span style={{ color: 'var(--hachi-trust)', display: 'inline-flex' }}>
-                <Icon name="sparkles" size={17} />
-              </span>
-              <span style={{ fontWeight: 500, fontSize: '15px' }}>Ask memory anything</span>
-            </div>
-            <div style={{ display: 'flex', gap: '10px' }}>
-              <input
-                value={recallQuery}
-                onChange={(e) => {
-                  setRecallQuery(e.target.value)
-                  setRecallDone(false)
-                }}
-                placeholder="What do you want Hachi to recall?"
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  height: '40px',
-                  padding: '0 13px',
-                  border: '0.5px solid var(--hachi-line)',
-                  borderRadius: '10px',
-                  background: 'var(--hachi-canvas)',
-                  font: 'inherit',
-                  fontSize: '14px',
-                  color: 'var(--hachi-ink)',
-                  outline: 'none',
-                }}
-              />
-              <TextBtn
-                onClick={() => {
-                  void recallMemory(recallQuery)
-                  setRecallDone(true)
-                }}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '7px',
-                  height: '40px',
-                  padding: '0 15px',
-                  borderRadius: '10px',
-                  border: '0.5px solid transparent',
-                  background: 'var(--hachi-brand)',
-                  color: 'var(--hachi-canvas)',
-                  font: '500 13px var(--font-body)',
-                  cursor: 'pointer',
-                }}
-                hoverStyle={{ background: 'var(--hachi-brand-hover)' }}
-              >
-                <Icon name="search" size={15} />
-                Recall
-              </TextBtn>
-            </div>
-
-            {recallDone && (
-              <>
-                <div
-                  style={{
-                    fontSize: '12px',
-                    color: 'var(--hachi-muted)',
-                    margin: '14px 0 8px',
-                  }}
-                >
-                  Closest matches
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {recall.map((r: RecallHit) => (
-                    <div
-                      key={r.fact}
-                      style={{
-                        display: 'flex',
-                        gap: '12px',
-                        alignItems: 'flex-start',
-                        padding: '11px 13px',
-                        background: 'var(--hachi-canvas)',
-                        border: '0.5px solid var(--hachi-line)',
-                        borderRadius: '10px',
-                      }}
-                    >
-                      <span
-                        style={{
-                          color: 'var(--hachi-trust)',
-                          flexShrink: 0,
-                          marginTop: '1px',
-                          display: 'inline-flex',
-                        }}
-                      >
-                        <Icon name="sparkles" size={15} />
-                      </span>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: '13.5px', lineHeight: '20px' }}>{r.fact}</div>
-                        <div
-                          style={{
-                            fontFamily: 'var(--font-mono)',
-                            fontSize: '11.5px',
-                            color: 'var(--hachi-muted)',
-                            marginTop: '4px',
-                          }}
-                        >
-                          {r.src}
-                        </div>
-                      </div>
-                      <span
-                        style={{
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: '12px',
-                          color: 'var(--hachi-trust)',
-                          flexShrink: 0,
-                        }}
-                      >
-                        {r.score}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* ---- proposed change ---- */}
-          {proposed && (
-            <div
-              style={{
-                background: 'var(--hachi-surface)',
-                border: '0.5px solid var(--hachi-brand)',
-                borderRadius: '16px',
-                padding: '18px',
-                display: 'flex',
-                gap: '14px',
-                alignItems: 'flex-start',
-              }}
-            >
+          {/* ============================================================
+              TAB: Recall — semantic search + proposed change + memory groups
+              ============================================================ */}
+          {activeTab === 'recall' && (
+            <>
+              {/* ---- semantic recall ---- */}
               <div
                 style={{
-                  flexShrink: 0,
-                  width: '38px',
-                  height: '38px',
-                  borderRadius: '10px',
-                  background: 'var(--hachi-brand-tint)',
-                  display: 'grid',
-                  placeItems: 'center',
-                  color: 'var(--hachi-brand)',
+                  background: 'var(--hachi-surface)',
+                  border: '0.5px solid var(--hachi-line)',
+                  borderRadius: '16px',
+                  padding: '18px',
                 }}
               >
-                <Icon name="sparkles" size={19} />
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 500, fontSize: '15px', marginBottom: '6px' }}>
-                  Hachi proposes an update
-                </div>
                 <div
                   style={{
-                    fontSize: '14px',
-                    color: 'var(--hachi-muted)',
-                    lineHeight: '22px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '9px',
+                    marginBottom: '13px',
                   }}
                 >
-                  {proposed.from}{' '}
-                  <span style={{ color: 'var(--hachi-ink)' }}>→ {proposed.to}</span>
+                  <span style={{ color: 'var(--hachi-trust)', display: 'inline-flex' }}>
+                    <Icon name="sparkles" size={17} />
+                  </span>
+                  <span style={{ fontWeight: 500, fontSize: '15px' }}>Ask memory anything</span>
                 </div>
-                <div style={{ display: 'flex', gap: '9px', marginTop: '14px' }}>
-                  <TextBtn
-                    onClick={rejectProposed}
-                    style={{
-                      height: '34px',
-                      padding: '0 14px',
-                      borderRadius: '10px',
-                      border: '1px solid var(--hachi-trust)',
-                      background: 'transparent',
-                      color: 'var(--hachi-trust)',
-                      font: '500 13px var(--font-body)',
-                      cursor: 'pointer',
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <input
+                    value={recallQuery}
+                    onChange={(e) => {
+                      setRecallQuery(e.target.value)
+                      setRecallDone(false)
                     }}
-                    hoverStyle={{ background: 'var(--hachi-trust-tint)' }}
-                  >
-                    Reject
-                  </TextBtn>
-                  <TextBtn
-                    onClick={approveProposed}
+                    // LOW-006: placeholder communicates intent; no pre-filled example
+                    placeholder="What do you want Hachi to recall?"
                     style={{
-                      height: '34px',
-                      padding: '0 14px',
+                      flex: 1,
+                      minWidth: 0,
+                      height: '40px',
+                      padding: '0 13px',
+                      border: '0.5px solid var(--hachi-line)',
+                      borderRadius: '10px',
+                      background: 'var(--hachi-canvas)',
+                      font: 'inherit',
+                      fontSize: '14px',
+                      color: 'var(--hachi-ink)',
+                      outline: 'none',
+                    }}
+                  />
+                  {/* LOW-008: disabled + loading state during fetch */}
+                  <TextBtn
+                    disabled={recallLoading}
+                    onClick={() => {
+                      if (recallLoading) return
+                      setRecallLoading(true)
+                      void recallMemory(recallQuery).finally(() => {
+                        setRecallLoading(false)
+                        setRecallDone(true)
+                      })
+                    }}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '7px',
+                      height: '40px',
+                      padding: '0 15px',
                       borderRadius: '10px',
                       border: '0.5px solid transparent',
                       background: 'var(--hachi-brand)',
                       color: 'var(--hachi-canvas)',
                       font: '500 13px var(--font-body)',
-                      cursor: 'pointer',
+                      cursor: recallLoading ? 'not-allowed' : 'pointer',
                     }}
                     hoverStyle={{ background: 'var(--hachi-brand-hover)' }}
                   >
-                    Approve change
+                    <Icon name={recallLoading ? 'loader' : 'search'} size={15} />
+                    {recallLoading ? 'Recalling…' : 'Recall'}
                   </TextBtn>
                 </div>
-              </div>
-            </div>
-          )}
 
-          {/* ---- memory groups ---- */}
-          {filteredGroups.map((g: MemGroup) => (
-            <div key={g.id}>
-              <h2
-                style={{
-                  margin: '0 0 12px',
-                  fontFamily: 'var(--font-display)',
-                  fontWeight: 500,
-                  fontSize: '15px',
-                  color: 'var(--hachi-muted)',
-                }}
-              >
-                {g.title}
-              </h2>
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: '1fr 1fr',
-                  gap: '12px',
-                }}
-              >
-                {g.facts.map((fact: Fact) => (
-                  <FactCard
-                    key={fact.id}
-                    fact={fact}
-                    groupId={g.id}
-                    editingFactId={editingFactId}
-                    editingText={editingText}
-                    onEdit={() => startEditFact(fact.id)}
-                    onDelete={() => {
-                      // 1. Optimistic: remove from store immediately
-                      delFact(g.id, fact.id)
-                      // 2. Network: DELETE /memory/facts/{fact_id}
-                      //    On failure, loadMemory() inside delFactRemote reverts
-                      void delFactRemote(g.id, fact.id)
-                    }}
-                    onSetEditText={setEditText}
-                    onCancelEdit={cancelEdit}
-                    onSave={() => {
-                      const text = editingText
-                      // 1. Optimistic: persist text in store immediately
-                      saveFact(g.id, fact.id)
-                      // 2. Network: DELETE old + POST new (or just POST for temp ids)
-                      //    On failure, loadMemory() inside saveFactRemote reverts
-                      void saveFactRemote(g.id, fact.id, text)
-                    }}
-                  />
-                ))}
-              </div>
-            </div>
-          ))}
-
-          {/* ---- empty state ---- */}
-          {memEmpty && (
-            <div
-              style={{
-                textAlign: 'center',
-                padding: '40px 0',
-                color: 'var(--hachi-muted)',
-              }}
-            >
-              No memories match "{memSearch}".
-            </div>
-          )}
-
-          {/* ---- blocked / quarantined ---- */}
-          <div>
-            <h2
-              style={{
-                margin: '0 0 12px',
-                fontFamily: 'var(--font-display)',
-                fontWeight: 500,
-                fontSize: '15px',
-                color: 'var(--hachi-muted)',
-              }}
-            >
-              Blocked — Hachi refused to store
-            </h2>
-            <div
-              style={{
-                background: 'var(--hachi-surface)',
-                border: '0.5px solid var(--hachi-line)',
-                borderRadius: '14px',
-                overflow: 'hidden',
-              }}
-            >
-              {blocked.map((b: BlockedItem, i: number) => (
-                <div
-                  key={b.id}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '11px',
-                    padding: '13px 16px',
-                    borderBottom:
-                      i < blocked.length - 1
-                        ? '0.5px solid var(--hachi-line)'
-                        : undefined,
-                  }}
-                >
-                  <span style={{ color: 'var(--hachi-danger)', display: 'inline-flex' }}>
-                    <Icon name="shield" size={16} />
-                  </span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: '14px' }}>{b.text}</div>
-                    <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginTop: '2px' }}>
-                      {b.reason}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* ---- skills Hachi leans on ---- */}
-          <div>
-            <h2
-              style={{
-                margin: '0 0 12px',
-                fontFamily: 'var(--font-display)',
-                fontWeight: 500,
-                fontSize: '15px',
-                color: 'var(--hachi-muted)',
-              }}
-            >
-              Skills Hachi leans on
-            </h2>
-            <div
-              style={{
-                background: 'var(--hachi-surface)',
-                border: '0.5px solid var(--hachi-line)',
-                borderRadius: '14px',
-                overflow: 'hidden',
-              }}
-            >
-              {skillRows.map((k, i) => (
-                <div
-                  key={k.name}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '13px',
-                    padding: '12px 16px',
-                    borderBottom:
-                      i < skillRows.length - 1
-                        ? '0.5px solid var(--hachi-line)'
-                        : undefined,
-                  }}
-                >
-                  <span
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '13px',
-                      color: 'var(--hachi-ink)',
-                      flex: 1,
-                      minWidth: 0,
-                    }}
-                  >
-                    {k.name}
-                  </span>
-                  <span style={{ fontSize: '12.5px', color: 'var(--hachi-muted)' }}>
-                    {k.callsLabel}
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '12.5px',
-                      color: 'var(--hachi-muted)',
-                      width: '48px',
-                      textAlign: 'right',
-                    }}
-                  >
-                    {k.tokens}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: '11.5px',
-                      fontWeight: 500,
-                      color: 'var(--hachi-success)',
-                      background: 'var(--hachi-success-tint)',
-                      padding: '3px 9px',
-                      borderRadius: '999px',
-                      flexShrink: 0,
-                    }}
-                  >
-                    {k.savedLabel} tokens
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* ---- resumable sessions ---- */}
-          <div>
-            <h2
-              style={{
-                margin: '0 0 12px',
-                fontFamily: 'var(--font-display)',
-                fontWeight: 500,
-                fontSize: '15px',
-                color: 'var(--hachi-muted)',
-              }}
-            >
-              Sessions — pick up where you left off
-            </h2>
-            <div
-              style={{
-                background: 'var(--hachi-surface)',
-                border: '0.5px solid var(--hachi-line)',
-                borderRadius: '14px',
-                overflow: 'hidden',
-              }}
-            >
-              {sessionRows.map((s, i) => (
-                <div
-                  key={s.id}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '13px',
-                    padding: '13px 16px',
-                    borderBottom:
-                      i < sessionRows.length - 1
-                        ? '0.5px solid var(--hachi-line)'
-                        : undefined,
-                  }}
-                >
-                  <span style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}>
-                    <Icon name={s.icon} size={16} />
-                  </span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: '14px' }}>{s.title}</div>
+                {/* LOW-010: only render results section after a query has been submitted */}
+                {recallDone && (
+                  <>
                     <div
                       style={{
                         fontSize: '12px',
                         color: 'var(--hachi-muted)',
-                        marginTop: '2px',
+                        margin: '14px 0 8px',
                       }}
                     >
-                      {s.turnsLabel} · {s.model} · {s.date}
+                      Closest matches
+                    </div>
+                    {recall.length === 0 ? (
+                      <div style={{ fontSize: '13.5px', color: 'var(--hachi-muted)', padding: '8px 0' }}>
+                        No matches found.
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {recall.map((r: RecallHit) => (
+                          <div
+                            key={r.fact}
+                            style={{
+                              display: 'flex',
+                              gap: '12px',
+                              alignItems: 'flex-start',
+                              padding: '11px 13px',
+                              background: 'var(--hachi-canvas)',
+                              border: '0.5px solid var(--hachi-line)',
+                              borderRadius: '10px',
+                            }}
+                          >
+                            <span
+                              style={{
+                                color: 'var(--hachi-trust)',
+                                flexShrink: 0,
+                                marginTop: '1px',
+                                display: 'inline-flex',
+                              }}
+                            >
+                              <Icon name="sparkles" size={15} />
+                            </span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: '13.5px', lineHeight: '20px' }}>{r.fact}</div>
+                              <div
+                                style={{
+                                  fontFamily: 'var(--font-mono)',
+                                  fontSize: '11.5px',
+                                  color: 'var(--hachi-muted)',
+                                  marginTop: '4px',
+                                }}
+                              >
+                                {r.src}
+                              </div>
+                            </div>
+                            <span
+                              style={{
+                                fontFamily: 'var(--font-mono)',
+                                fontSize: '12px',
+                                color: 'var(--hachi-trust)',
+                                flexShrink: 0,
+                              }}
+                            >
+                              {r.score}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* ---- proposed change ---- */}
+              {proposed && (
+                <div
+                  style={{
+                    background: 'var(--hachi-surface)',
+                    border: '0.5px solid var(--hachi-brand)',
+                    borderRadius: '16px',
+                    padding: '18px',
+                    display: 'flex',
+                    gap: '14px',
+                    alignItems: 'flex-start',
+                  }}
+                >
+                  <div
+                    style={{
+                      flexShrink: 0,
+                      width: '38px',
+                      height: '38px',
+                      borderRadius: '10px',
+                      background: 'var(--hachi-brand-tint)',
+                      display: 'grid',
+                      placeItems: 'center',
+                      color: 'var(--hachi-brand)',
+                    }}
+                  >
+                    <Icon name="sparkles" size={19} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 500, fontSize: '15px', marginBottom: '6px' }}>
+                      Hachi proposes an update
+                    </div>
+                    <div
+                      style={{
+                        fontSize: '14px',
+                        color: 'var(--hachi-muted)',
+                        lineHeight: '22px',
+                      }}
+                    >
+                      {proposed.from}{' '}
+                      <span style={{ color: 'var(--hachi-ink)' }}>→ {proposed.to}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '9px', marginTop: '14px' }}>
+                      <TextBtn
+                        onClick={rejectProposed}
+                        style={{
+                          height: '34px',
+                          padding: '0 14px',
+                          borderRadius: '10px',
+                          border: '1px solid var(--hachi-trust)',
+                          background: 'transparent',
+                          color: 'var(--hachi-trust)',
+                          font: '500 13px var(--font-body)',
+                          cursor: 'pointer',
+                        }}
+                        hoverStyle={{ background: 'var(--hachi-trust-tint)' }}
+                      >
+                        Reject
+                      </TextBtn>
+                      <TextBtn
+                        onClick={approveProposed}
+                        style={{
+                          height: '34px',
+                          padding: '0 14px',
+                          borderRadius: '10px',
+                          border: '0.5px solid transparent',
+                          background: 'var(--hachi-brand)',
+                          color: 'var(--hachi-canvas)',
+                          font: '500 13px var(--font-body)',
+                          cursor: 'pointer',
+                        }}
+                        hoverStyle={{ background: 'var(--hachi-brand-hover)' }}
+                      >
+                        Approve change
+                      </TextBtn>
                     </div>
                   </div>
-                  <TextBtn
-                    onClick={s.resume}
+                </div>
+              )}
+
+              {/* ---- memory groups ---- */}
+              {filteredGroups.map((g: MemGroup) => (
+                <div key={g.id}>
+                  {/* LOW-004: group header always visible (groups are filtered to non-empty) */}
+                  <h2
                     style={{
-                      height: '32px',
-                      padding: '0 13px',
-                      borderRadius: '9px',
-                      border: '0.5px solid var(--hachi-line)',
-                      background: 'var(--hachi-canvas)',
-                      color: 'var(--hachi-ink)',
-                      font: '500 13px var(--font-body)',
-                      cursor: 'pointer',
+                      margin: '0 0 12px',
+                      fontFamily: 'var(--font-display)',
+                      fontWeight: 500,
+                      fontSize: '15px',
+                      color: 'var(--hachi-muted)',
                     }}
-                    hoverStyle={{ background: 'var(--hachi-cream)' }}
                   >
-                    {s.label}
-                  </TextBtn>
+                    {g.title}
+                  </h2>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr',
+                      gap: '12px',
+                    }}
+                  >
+                    {g.facts.map((fact: Fact) => (
+                      <FactCard
+                        key={fact.id}
+                        fact={fact}
+                        groupId={g.id}
+                        editingFactId={editingFactId}
+                        editingText={editingText}
+                        onEdit={() => startEditFact(fact.id)}
+                        onDelete={() => {
+                          // 1. Optimistic: remove from store immediately
+                          delFact(g.id, fact.id)
+                          // 2. Network: DELETE /memory/facts/{fact_id}
+                          //    On failure, loadMemory() inside delFactRemote reverts
+                          void delFactRemote(g.id, fact.id)
+                        }}
+                        onSetEditText={setEditText}
+                        onCancelEdit={cancelEdit}
+                        onSave={() => {
+                          const text = editingText
+                          // 1. Optimistic: persist text in store immediately
+                          saveFact(g.id, fact.id)
+                          // 2. Network: DELETE old + POST new (or just POST for temp ids)
+                          //    On failure, loadMemory() inside saveFactRemote reverts
+                          void saveFactRemote(g.id, fact.id, text)
+                        }}
+                      />
+                    ))}
+                  </div>
                 </div>
               ))}
-            </div>
-          </div>
+
+              {/* ---- empty state ---- */}
+              {memEmpty && (
+                <div
+                  style={{
+                    textAlign: 'center',
+                    padding: '40px 0',
+                    color: 'var(--hachi-muted)',
+                  }}
+                >
+                  No memories match "{memSearch}".
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ============================================================
+              TAB: Audit — blocked items + skill usage + sessions
+              ============================================================ */}
+          {activeTab === 'audit' && (
+            <>
+              {/* ---- blocked / quarantined ---- */}
+              {/* LOW-004: only render section when blocked array is non-empty */}
+              {blocked.length > 0 && (
+                <div>
+                  <h2
+                    style={{
+                      margin: '0 0 12px',
+                      fontFamily: 'var(--font-display)',
+                      fontWeight: 500,
+                      fontSize: '15px',
+                      color: 'var(--hachi-muted)',
+                    }}
+                  >
+                    Blocked — Hachi refused to store
+                  </h2>
+                  <div
+                    style={{
+                      background: 'var(--hachi-surface)',
+                      border: '0.5px solid var(--hachi-line)',
+                      borderRadius: '14px',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {blocked.map((b: BlockedItem, i: number) => (
+                      <div
+                        key={b.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '11px',
+                          padding: '13px 16px',
+                          borderBottom:
+                            i < blocked.length - 1
+                              ? '0.5px solid var(--hachi-line)'
+                              : undefined,
+                        }}
+                      >
+                        <span style={{ color: 'var(--hachi-danger)', display: 'inline-flex' }}>
+                          <Icon name="shield" size={16} />
+                        </span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: '14px' }}>{b.text}</div>
+                          <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginTop: '2px' }}>
+                            {b.reason}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ---- skills Hachi leans on ---- */}
+              {/* LOW-004: only render section when skillRows array is non-empty */}
+              {skillRows.length > 0 && (
+                <div>
+                  <h2
+                    style={{
+                      margin: '0 0 12px',
+                      fontFamily: 'var(--font-display)',
+                      fontWeight: 500,
+                      fontSize: '15px',
+                      color: 'var(--hachi-muted)',
+                    }}
+                  >
+                    Skills Hachi leans on
+                  </h2>
+                  <div
+                    style={{
+                      background: 'var(--hachi-surface)',
+                      border: '0.5px solid var(--hachi-line)',
+                      borderRadius: '14px',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {skillRows.map((k, i) => (
+                      <div
+                        key={k.name}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '13px',
+                          padding: '12px 16px',
+                          borderBottom:
+                            i < skillRows.length - 1
+                              ? '0.5px solid var(--hachi-line)'
+                              : undefined,
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: '13px',
+                            color: 'var(--hachi-ink)',
+                            flex: 1,
+                            minWidth: 0,
+                          }}
+                        >
+                          {k.name}
+                        </span>
+                        <span style={{ fontSize: '12.5px', color: 'var(--hachi-muted)' }}>
+                          {k.callsLabel}
+                        </span>
+                        <span
+                          style={{
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: '12.5px',
+                            color: 'var(--hachi-muted)',
+                            width: '48px',
+                            textAlign: 'right',
+                          }}
+                        >
+                          {k.tokens}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: '11.5px',
+                            fontWeight: 500,
+                            color: 'var(--hachi-success)',
+                            background: 'var(--hachi-success-tint)',
+                            padding: '3px 9px',
+                            borderRadius: '999px',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {k.savedLabel} tokens
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ---- resumable sessions ---- */}
+              {/* LOW-004: only render section when sessionRows array is non-empty */}
+              {sessionRows.length > 0 && (
+                <div>
+                  <h2
+                    style={{
+                      margin: '0 0 12px',
+                      fontFamily: 'var(--font-display)',
+                      fontWeight: 500,
+                      fontSize: '15px',
+                      color: 'var(--hachi-muted)',
+                    }}
+                  >
+                    Sessions — pick up where you left off
+                  </h2>
+                  <div
+                    style={{
+                      background: 'var(--hachi-surface)',
+                      border: '0.5px solid var(--hachi-line)',
+                      borderRadius: '14px',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {sessionRows.map((s, i) => (
+                      <div
+                        key={s.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '13px',
+                          padding: '13px 16px',
+                          borderBottom:
+                            i < sessionRows.length - 1
+                              ? '0.5px solid var(--hachi-line)'
+                              : undefined,
+                        }}
+                      >
+                        <span style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}>
+                          <Icon name={s.icon} size={16} />
+                        </span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: '14px' }}>{s.title}</div>
+                          <div
+                            style={{
+                              fontSize: '12px',
+                              color: 'var(--hachi-muted)',
+                              marginTop: '2px',
+                            }}
+                          >
+                            {s.turnsLabel} · {s.model} · {s.date}
+                          </div>
+                        </div>
+                        <TextBtn
+                          onClick={() => { void s.resume() }}
+                          style={{
+                            height: '32px',
+                            padding: '0 13px',
+                            borderRadius: '9px',
+                            border: '0.5px solid var(--hachi-line)',
+                            background: 'var(--hachi-canvas)',
+                            color: 'var(--hachi-ink)',
+                            font: '500 13px var(--font-body)',
+                            cursor: 'pointer',
+                          }}
+                          hoverStyle={{ background: 'var(--hachi-cream)' }}
+                        >
+                          {s.label}
+                        </TextBtn>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ---- empty audit state ---- */}
+              {blocked.length === 0 && skillRows.length === 0 && sessionRows.length === 0 && (
+                <div
+                  style={{
+                    textAlign: 'center',
+                    padding: '60px 0',
+                    color: 'var(--hachi-muted)',
+                    fontSize: '14px',
+                  }}
+                >
+                  No audit data yet — history will appear here as Hachi works.
+                </div>
+              )}
+            </>
+          )}
 
         </div>
       </div>
