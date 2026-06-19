@@ -17,10 +17,13 @@ every skill into the system prompt (which bloats tokens and causes hallucination
 we provide surgical, O(1) keyword-based retrieval.
 """
 
+import bisect
 import json
 import logging
 import math
 import re
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -363,11 +366,21 @@ class SkillEngine:
         self._token_index: dict[str, list[str]] = {}  # word token → [qualified_id, ...]
         self._df: dict[str, int] = {}  # document frequency: token → number of docs containing it
         self._doc_len: dict[str, int] = {}  # qualified_id → number of indexed tokens
+        # Sorted view of _token_index keys for O(log V) prefix search via bisect.
+        # Rebuilt lazily after load_file mutates _token_index (see _rebuild_sorted_tokens).
+        self._sorted_tokens: list[str] = []
+        self._sorted_tokens_dirty: bool = False  # True when _token_index has new keys
 
         # Phase 4: Persistent usage tracking (platformdirs state_dir)
         _paths = get_hachi_paths()
         self._usage_path = _paths.skill_usage_json
         self._usage: dict[str, dict[str, Any]] = self._load_usage()
+        # Usage-write debounce: skip the disk write when a flush already happened
+        # within _usage_flush_interval seconds.  The first call after boot (or after
+        # the interval expires) always flushes so tests and one-shot runs see the file.
+        self._usage_last_flush: float = 0.0  # monotonic time of last successful _save_usage
+        self._usage_flush_interval: float = 30.0  # seconds between successive writes
+        self._usage_lock: threading.Lock = threading.Lock()
 
         # UC-SKILL-003: Files that failed to parse are collected here so doctor/lint
         # can surface them as "N files failed to parse" instead of silently dropping them.
@@ -409,6 +422,53 @@ class SkillEngine:
         if node.source_file:
             return Path(node.source_file).name.lower() != "brain.og"
         return True
+
+    def _rebuild_sorted_tokens(self) -> None:
+        """Rebuild the sorted token list from ``_token_index`` keys.
+
+        Called lazily before a prefix search when new tokens were added since the last
+        rebuild.  Sorting is O(V log V) but amortised over many queries; in practice
+        ``load_directory`` is called once at boot and searches happen repeatedly.
+        """
+        self._sorted_tokens = sorted(self._token_index.keys())
+        self._sorted_tokens_dirty = False
+
+    def _prefix_matched_qids(self, qt: str) -> set[str]:
+        """Return all qualified node IDs reachable via prefix-of-``qt`` tokens.
+
+        A token in ``_token_index`` qualifies when it is:
+        - at least ``_MIN_TOKEN_LEN`` (3-char rule in original code) characters long,
+        - a proper prefix of ``qt`` (tok != qt, and qt.startswith(tok)).
+
+        Uses a sorted token list + ``bisect`` for O(log V) range entry instead of the
+        original O(V) full-scan.  Results are identical to the naïve scan.
+
+        Args:
+            qt: A single query token (already lower-cased and stopword-filtered).
+
+        Returns:
+            Set of qualified node IDs that match any prefix token.
+        """
+        if self._sorted_tokens_dirty:
+            self._rebuild_sorted_tokens()
+
+        result: set[str] = set()
+        tokens = self._sorted_tokens
+        if not tokens:
+            return result
+
+        # All potential prefix tokens start at or after the 3-char minimum prefix of qt.
+        # Use qt itself as the upper bound because a prefix must be strictly shorter.
+        min_prefix = qt[:_MIN_TOKEN_LEN]
+        lo = bisect.bisect_left(tokens, min_prefix)
+        for i in range(lo, len(tokens)):
+            tok = tokens[i]
+            # Once the token sorts past qt, no further token can be a prefix of qt.
+            if tok >= qt:
+                break
+            if len(tok) >= _MIN_TOKEN_LEN and qt.startswith(tok):
+                result.update(self._token_index[tok])
+        return result
 
     def _resolve_name(self, name: str) -> str | None:
         """Resolve a node name (bare or qualified) to a qualified ID.
@@ -631,6 +691,9 @@ class SkillEngine:
                             self._df[tok] = self._df.get(tok, 0) + 1
                             self._doc_len[entry_qid] = self._doc_len.get(entry_qid, 0) + 1
 
+        # Mark the sorted-token cache as stale so the next search() rebuilds it.
+        self._sorted_tokens_dirty = True
+
     # ------------------------------------------------------------------
     # UC-SKILL-003: Parse-failure reporting
     # ------------------------------------------------------------------
@@ -682,17 +745,23 @@ class SkillEngine:
 
         # Collect candidates via token index.  For each query token, also check
         # prefix-match (e.g. "deployment" → "deploy") so stemming-style recall works.
+        # HIGH-014: prefix search uses bisect on _sorted_tokens for O(log V) lookup
+        # instead of the prior O(V) full dict-key scan.
         candidate_qids: set[str] = set()
         for qt in query_tokens:
             for qid in self._token_index.get(qt, []):
                 candidate_qids.add(qid)
-            # Prefix match: index token is a prefix of the query token
-            for tok in self._token_index:
-                if len(tok) >= 3 and qt.startswith(tok) and tok != qt:
-                    candidate_qids.update(self._token_index[tok])
+            # Prefix match: index token is a prefix of the query token (O(log V))
+            candidate_qids.update(self._prefix_matched_qids(qt))
 
         if not candidate_qids:
             return []
+
+        # Pre-compute per-query-token prefix sets once so the BM25 scoring loop
+        # does not repeat the bisect scan per candidate document.
+        prefix_qids_per_token: dict[str, set[str]] = {
+            qt: self._prefix_matched_qids(qt) for qt in query_tokens
+        }
 
         # BM25 scoring — binary TF (presence) per token per doc
         scores: dict[str, float] = {}
@@ -707,11 +776,9 @@ class SkillEngine:
                 # Determine whether this query token matches anything in this doc
                 tf = 1 if qt in self._token_index and qid in self._token_index[qt] else 0
                 if tf == 0:
-                    # Check prefix-matched tokens
-                    for tok in self._token_index:
-                        if len(tok) >= 3 and qt.startswith(tok) and qid in self._token_index[tok]:
-                            tf = 1
-                            break
+                    # Check prefix-matched tokens using pre-computed bisect result (O(1))
+                    if qid in prefix_qids_per_token[qt]:
+                        tf = 1
                 if tf == 0:
                     continue
 
@@ -1569,11 +1636,14 @@ class SkillEngine:
         return {}
 
     def _save_usage(self) -> None:
-        """Persist the usage database to disk."""
+        """Persist the usage database to disk and reset the debounce timer."""
+        with self._usage_lock:
+            snapshot = dict(self._usage)
+            self._usage_last_flush = time.monotonic()
         try:
             self._usage_path.parent.mkdir(parents=True, exist_ok=True)
             self._usage_path.write_text(
-                json.dumps(self._usage, indent=2, default=str), encoding="utf-8"
+                json.dumps(snapshot, indent=2, default=str), encoding="utf-8"
             )
         except Exception:
             logger.warning("Failed to persist skill usage DB")
@@ -1581,22 +1651,38 @@ class SkillEngine:
     def record_use(self, name: str) -> None:
         """Record a skill load event. Called by the execution loop on load_skill.
 
-        Updates use_count, last_used, and first_used timestamps.
+        Updates use_count, last_used, and first_used timestamps.  Writes are
+        debounced: the JSON file is flushed at most once per
+        ``_usage_flush_interval`` seconds.  The first call after boot (or after
+        the interval expires) always writes immediately so one-shot invocations
+        and tests observe the file on disk.  Call ``flush_usage()`` to force an
+        immediate sync regardless of the timer (e.g. at process shutdown).
 
         Args:
             name: The exact skill node name that was loaded.
         """
         now = datetime.now(UTC).isoformat()
-        entry = self._usage.setdefault(
-            name,
-            {
-                "use_count": 0,
-                "first_used": now,
-                "last_used": now,
-            },
-        )
-        entry["use_count"] += 1
-        entry["last_used"] = now
+        with self._usage_lock:
+            entry = self._usage.setdefault(
+                name,
+                {
+                    "use_count": 0,
+                    "first_used": now,
+                    "last_used": now,
+                },
+            )
+            entry["use_count"] += 1
+            entry["last_used"] = now
+            elapsed = time.monotonic() - self._usage_last_flush
+            should_flush = elapsed >= self._usage_flush_interval
+        if should_flush:
+            self._save_usage()
+
+    def flush_usage(self) -> None:
+        """Force an immediate flush of pending usage writes to disk.
+
+        Call at process shutdown (or in tests) to ensure no writes are lost.
+        """
         self._save_usage()
 
     def get_stale_skills(self, stale_days: int = 30) -> list[dict[str, Any]]:
