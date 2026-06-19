@@ -5,6 +5,142 @@ import { Icon } from '../components/icons/Icon'
 import type { OgNode } from '../lib/data/types'
 import { loadOg } from '../lib/data/domains/og'
 
+// ── .og explainer banner (dismissible, persisted in localStorage) ──────────────
+const OG_EXPLAINER_KEY = 'hachi.og.explainer.dismissed'
+
+function OgExplainerBanner() {
+  const [dismissed, setDismissed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(OG_EXPLAINER_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+
+  if (dismissed) return null
+
+  function dismiss() {
+    try {
+      localStorage.setItem(OG_EXPLAINER_KEY, '1')
+    } catch {
+      // ignore storage errors (private browsing, quota exceeded)
+    }
+    setDismissed(true)
+  }
+
+  return (
+    <div
+      role="note"
+      aria-label="ObjectGraph explainer"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '11px 16px',
+        borderRadius: 12,
+        background: 'var(--hachi-brand-tint)',
+        border: '0.5px solid var(--hachi-brand)',
+        fontSize: 13,
+        color: 'var(--hachi-ink)',
+        lineHeight: '20px',
+      }}
+    >
+      <Icon name="sparkles" size={14} />
+      <span style={{ flex: 1 }}>
+        <strong style={{ fontWeight: 600 }}>.og three-pass reading</strong> loads
+        only the index (~30 tokens) on first pass, so Hachi avoids paying for full
+        skill files on every turn.{' '}
+        <span style={{ position: 'relative', display: 'inline-block' }}>
+          <WhyTooltip />
+        </span>
+      </span>
+      <button
+        aria-label="Dismiss explainer"
+        onClick={dismiss}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 26,
+          height: 26,
+          borderRadius: 6,
+          border: 'none',
+          background: 'transparent',
+          color: 'var(--hachi-muted)',
+          cursor: 'pointer',
+          flexShrink: 0,
+          fontSize: 16,
+          lineHeight: 1,
+        }}
+        onMouseEnter={(e) => {
+          ;(e.currentTarget as HTMLElement).style.background = 'var(--hachi-cream)'
+        }}
+        onMouseLeave={(e) => {
+          ;(e.currentTarget as HTMLElement).style.background = 'transparent'
+        }}
+      >
+        ×
+      </button>
+    </div>
+  )
+}
+
+function WhyTooltip() {
+  const [visible, setVisible] = useState(false)
+  return (
+    <>
+      <span
+        tabIndex={0}
+        aria-describedby="og-why-tooltip"
+        role="button"
+        style={{
+          color: 'var(--hachi-brand)',
+          cursor: 'help',
+          borderBottom: '1px dashed var(--hachi-brand)',
+          outline: 'none',
+        }}
+        onFocus={() => setVisible(true)}
+        onBlur={() => setVisible(false)}
+        onMouseEnter={() => setVisible(true)}
+        onMouseLeave={() => setVisible(false)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') setVisible((v) => !v)
+        }}
+      >
+        Why?
+      </span>
+      {visible && (
+        <span
+          id="og-why-tooltip"
+          role="tooltip"
+          style={{
+            position: 'absolute',
+            bottom: '100%',
+            left: 0,
+            marginBottom: 6,
+            zIndex: 100,
+            background: 'var(--hachi-surface)',
+            border: '0.5px solid var(--hachi-line)',
+            borderRadius: 10,
+            padding: '10px 13px',
+            fontSize: 12,
+            color: 'var(--hachi-muted)',
+            lineHeight: '18px',
+            width: 260,
+            boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+            whiteSpace: 'normal',
+          }}
+        >
+          LLM context is expensive. Loading 30-token index passes for 50 skill
+          nodes costs ~1 500 tokens; loading full files would cost ~50 000+. The
+          agent reads deeper (dense → full) only when it confirms a node is
+          relevant.
+        </span>
+      )}
+    </>
+  )
+}
+
 // ── palette constants ─────────────────────────────────────────────────────────
 const OG_KIND_ICON: Record<string, string> = {
   root: 'brain',
@@ -98,8 +234,14 @@ interface GraphPanelProps {
 
 function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelProps) {
   const pos = computePositions(nodes)
-  const maxFull = Math.max(...nodes.map((n) => n.full))
+  // clamp to 1 so rOf never divides by zero (avoids NaN radius when all full===0)
+  const maxFull = Math.max(1, ...nodes.map((n) => n.full))
   const nodeById = (id: string) => nodes.find((n) => n.id === id)
+
+  // ordered flat list for arrow-key navigation
+  const orderedIds = (['root', 'skill', 'leaf'] as const).flatMap((k) =>
+    nodes.filter((n) => n.kind === k).map((n) => n.id)
+  )
 
   // build edge list
   const edges: [string, string][] = []
@@ -119,11 +261,54 @@ function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelP
     )
   }
 
+  function handleNodeKeyDown(e: React.KeyboardEvent, nodeId: string) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      setOgSel(nodeId)
+      return
+    }
+    const idx = orderedIds.indexOf(nodeId)
+    if (idx === -1) return  // node not in the ordered list (unknown kind) — bail
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault()
+      const next = orderedIds[idx + 1]
+      if (next) {
+        setOgSel(next)
+        // move focus to the next node's <g> via the SVG foreignObject workaround
+        const svgEl = (e.currentTarget as SVGElement).closest('svg')
+        if (svgEl) {
+          const gEls = svgEl.querySelectorAll<SVGGElement>('g[tabindex="0"]')
+          const nextEl = Array.from(gEls).find(
+            (g) => g.getAttribute('data-id') === next
+          )
+          nextEl?.focus()
+        }
+      }
+    }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const prev = orderedIds[idx - 1]
+      if (prev) {
+        setOgSel(prev)
+        const svgEl = (e.currentTarget as SVGElement).closest('svg')
+        if (svgEl) {
+          const gEls = svgEl.querySelectorAll<SVGGElement>('g[tabindex="0"]')
+          const prevEl = Array.from(gEls).find(
+            (g) => g.getAttribute('data-id') === prev
+          )
+          prevEl?.focus()
+        }
+      }
+    }
+  }
+
   return (
     <div style={{ padding: '8px 8px 0' }}>
       <svg
         viewBox="0 0 600 400"
         style={{ width: '100%', height: 'auto', display: 'block' }}
+        aria-label="ObjectGraph dependency diagram"
+        role="img"
       >
         <defs>
           <marker
@@ -191,11 +376,31 @@ function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelP
           return (
             <g
               key={n.id}
-              style={{ cursor: 'pointer' }}
+              data-id={n.id}
+              tabIndex={0}
+              role="button"
+              aria-label={`${n.name} (${n.kind}) — index ${n.index} tokens, full ${n.full} tokens${sel ? ', selected' : ''}`}
+              aria-pressed={sel}
+              style={{ cursor: 'pointer', outline: 'none' }}
               onClick={() => setOgSel(n.id)}
               onMouseEnter={() => setOgHover(n.id)}
               onMouseLeave={() => setOgHover(null)}
+              onFocus={() => setOgHover(n.id)}
+              onBlur={() => setOgHover(null)}
+              onKeyDown={(e) => handleNodeKeyDown(e, n.id)}
             >
+              {/* focus ring — visible when keyboard-focused */}
+              <circle
+                cx={p.x}
+                cy={p.y}
+                r={r + 9}
+                fill="none"
+                stroke="var(--hachi-brand)"
+                strokeWidth={2}
+                opacity={0}
+                className="og-focus-ring"
+                style={{ pointerEvents: 'none' }}
+              />
               {/* selection glow ring */}
               <circle
                 cx={p.x}
@@ -228,7 +433,8 @@ function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelP
                 fontWeight={500}
                 fill={color}
                 opacity={lit ? 1 : 0.4}
-                style={{ fontFamily: 'var(--font-mono)' }}
+                style={{ fontFamily: 'var(--font-mono)', pointerEvents: 'none' }}
+                aria-hidden="true"
               >
                 {n.index}
               </text>
@@ -240,7 +446,8 @@ function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelP
                 fontSize={10.5}
                 fill="var(--hachi-ink)"
                 opacity={lit ? 1 : 0.4}
-                style={{ fontFamily: 'var(--font-body)' }}
+                style={{ fontFamily: 'var(--font-body)', pointerEvents: 'none' }}
+                aria-hidden="true"
               >
                 {n.name.replace('.og', '')}
               </text>
@@ -833,8 +1040,11 @@ function OgExplorer() {
     nodes: ogNodes.length,
     fullK: (totalFull / 1000).toFixed(1) + 'K',
     indexCost: totalIndex,
+    // guard against NaN when ogNodes is empty (totalFull === 0)
     avoidedPct:
-      Math.round((1 - totalIndex / totalFull) * 100) + '%',
+      totalFull > 0
+        ? Math.round((1 - totalIndex / totalFull) * 100) + '%'
+        : '0%',
   }
 
   // selected node (fallback to first)
@@ -907,6 +1117,9 @@ function OgExplorer() {
             gap: 18,
           }}
         >
+          {/* .og explainer banner */}
+          <OgExplainerBanner />
+
           {/* description */}
           <div
             style={{
