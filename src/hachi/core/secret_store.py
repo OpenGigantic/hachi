@@ -171,11 +171,10 @@ class EncryptedFileSecretStore:
         if not self._passphrase:
             raise RuntimeError("Encrypted fallback requires HACHI_SECRET_PASSPHRASE")
 
-        blob = self._read_blob()
-        if blob.get("salt"):
-            salt = base64.b64decode(blob["salt"].encode("utf-8"))
-        else:
-            salt = os.urandom(16)
+        # MED-006: generate a fresh random salt on every write so that two
+        # ciphertexts of the same plaintext are never identical and the old
+        # ciphertext is no longer useful once a new one has been written.
+        salt = os.urandom(16)
 
         key = self._derive_key(self._passphrase, salt)
         cipher = Fernet(key)

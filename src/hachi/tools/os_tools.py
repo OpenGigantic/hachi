@@ -119,7 +119,9 @@ def _raw_run_terminal_command(command: str, cwd: str = ".", timeout: int = 120) 
             return "Error: Empty command is not allowed."
 
         # Hard-block shell chaining/redirection operators since commands run without a shell.
-        blocked_fragments = ("&&", "||", "|", ";", "`", "$(", ">", "<")
+        # MED-008: also block ^ (cmd.exe escape/continuation) and % (variable expansion
+        # in cmd.exe / PowerShell environment-variable injection e.g. %COMSPEC%).
+        blocked_fragments = ("&&", "||", "|", ";", "`", "$(", ">", "<", "^", "%")
         for fragment in blocked_fragments:
             if fragment in raw:
                 return (
