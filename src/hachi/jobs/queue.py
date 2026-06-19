@@ -540,11 +540,24 @@ class SQLiteJobQueue(JobQueue):
     Jobs with only ``func`` set are stored but cannot be re-executed after a
     restart (the callable is not persisted). They complete normally within the
     same process.
+
+    HIGH-016: A single persistent ``sqlite3.Connection`` is opened in ``__init__``
+    and reused for all operations, eliminating the 2+ open/close cycles per second
+    caused by the resident worker's 0.5 s poll interval.  All access is serialised
+    through ``self._lock`` (a re-entrant lock so nested acquisitions within the same
+    thread, e.g. ``enqueue`` → ``_conn``, are safe).  Call ``shutdown()`` to close
+    the connection cleanly.
     """
 
     def __init__(self, db_path: Path | None = None) -> None:
         self._db_path = db_path or _default_db_path()
+        # HIGH-016: single persistent connection; all access serialised via _lock.
+        # check_same_thread=False is safe because _lock guarantees mutual exclusion.
         self._lock = threading.RLock()
+        self._db_conn: sqlite3.Connection = sqlite3.connect(
+            str(self._db_path), timeout=10, check_same_thread=False
+        )
+        self._db_conn.row_factory = sqlite3.Row
         # In-process side-table for callable (``func``) jobs. SQLite cannot persist a
         # live callable, so func-based jobs are dispatched in-process only — the same
         # model InMemoryJobQueue already uses. The SQLite row still records the job for
@@ -565,16 +578,20 @@ class SQLiteJobQueue(JobQueue):
 
     @contextmanager
     def _conn(self) -> Generator[sqlite3.Connection, None, None]:
-        conn = sqlite3.connect(str(self._db_path), timeout=10, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        """Yield the persistent connection under the queue lock.
+
+        Commits on clean exit; rolls back on exception — identical semantics to
+        the former per-call open/close pattern, but without the connection overhead.
+        The lock is re-entrant (RLock) so callers that already hold it (e.g.
+        ``enqueue``) can call ``_conn()`` without deadlocking.
+        """
+        with self._lock:
+            try:
+                yield self._db_conn
+                self._db_conn.commit()
+            except Exception:
+                self._db_conn.rollback()
+                raise
 
     def _init_db(self) -> None:
         with self._conn() as conn:
@@ -806,6 +823,10 @@ class SQLiteJobQueue(JobQueue):
     def shutdown(self) -> None:
         with self._lock:
             self._func_table.clear()
+            try:
+                self._db_conn.close()
+            except Exception:
+                pass
         logger.debug("SQLiteJobQueue shutdown (db=%s)", self._db_path)
 
 
