@@ -1,5 +1,8 @@
-import React, { CSSProperties } from 'react'
+import React, { useState, useEffect, CSSProperties } from 'react'
 import { HachiMark } from './HachiMark'
+
+/** localStorage key — suppress leash explanation after first interaction. */
+const LEASH_EXPLAIN_KEY = 'hachi.leash-explain-dismissed'
 
 export interface LeashPromptProps {
   /** Plain-language request headline, e.g. "Hachi wants to run a command". */
@@ -57,6 +60,33 @@ export function LeashPrompt({
   countdown,
   style,
 }: LeashPromptProps) {
+  const [showExplain, setShowExplain] = useState<boolean>(
+    () => localStorage.getItem(LEASH_EXPLAIN_KEY) !== '1'
+  )
+
+  // Reset explanation visibility when a new prompt is presented (request changes while mounted).
+  useEffect(() => {
+    setShowExplain(localStorage.getItem(LEASH_EXPLAIN_KEY) !== '1')
+  }, [request])
+
+  /**
+   * Mark explanation as seen.
+   * localStorage.setItem can throw in Safari private browsing (QuotaExceededError);
+   * we swallow the error so the downstream action callback always fires.
+   */
+  const markSeen = () => {
+    try {
+      localStorage.setItem(LEASH_EXPLAIN_KEY, '1')
+    } catch {
+      // Storage unavailable (e.g. private browsing quota) — continue without persisting.
+    }
+    setShowExplain(false)
+  }
+
+  const handleAllowOnce = () => { markSeen(); onAllowOnce() }
+  const handleAlwaysAllow = () => { markSeen(); onAlwaysAllow() }
+  const handleDecline = () => { markSeen(); onDecline() }
+
   return (
     <div
       role="alertdialog"
@@ -122,6 +152,24 @@ export function LeashPrompt({
           </div>
         </div>
       </div>
+
+      {/* Leash explanation — shown once on first encounter, suppressed after any interaction */}
+      {showExplain && (
+        <div
+          style={{
+            fontSize: 12,
+            lineHeight: '18px',
+            fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
+            color: 'var(--text-muted, var(--hachi-muted, #8A8580))',
+            background: 'var(--hachi-trust-tint, #E4EAF3)',
+            borderRadius: 'var(--radius-md, 10px)',
+            padding: '8px 12px',
+          }}
+        >
+          The leash keeps you in control — Hachi stops here for any risky or
+          irreversible action and waits for your decision before proceeding.
+        </div>
+      )}
 
       {/* Action block (mono) — only rendered when action is provided */}
       {action && (
@@ -190,7 +238,7 @@ export function LeashPrompt({
       <div style={{ display: 'flex', gap: 8 }}>
         <button
           type="button"
-          onClick={onDecline}
+          onClick={handleDecline}
           style={{
             flex: 1,
             height: 38,
@@ -217,7 +265,7 @@ export function LeashPrompt({
         </button>
         <button
           type="button"
-          onClick={onAllowOnce}
+          onClick={handleAllowOnce}
           style={{
             flex: 1,
             height: 38,
@@ -245,7 +293,7 @@ export function LeashPrompt({
         </button>
         <button
           type="button"
-          onClick={onAlwaysAllow}
+          onClick={handleAlwaysAllow}
           style={{
             flex: 1,
             height: 38,
