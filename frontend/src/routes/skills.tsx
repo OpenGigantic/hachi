@@ -37,6 +37,7 @@ function SkillCard({ sk, operator }: { sk: Skill; operator: boolean }) {
         <span style={{ fontWeight: 500, fontSize: 15, flex: 1 }}>{sk.name}</span>
         {operator && (
           <button
+            type="button"
             onClick={() => {/* operator edit — noop per prototype */}}
             onMouseEnter={() => setEditHover(true)}
             onMouseLeave={() => setEditHover(false)}
@@ -78,9 +79,11 @@ function SkillCard({ sk, operator }: { sk: Skill; operator: boolean }) {
         </span>
         {sk.stale && (
           <button
+            type="button"
             onClick={() => removeSkill(sk.id)}
             onMouseEnter={() => setRemoveHover(true)}
             onMouseLeave={() => setRemoveHover(false)}
+            aria-label={`Remove ${sk.name} skill (not used in 90 days)`}
             style={{
               border: 'none',
               background: 'transparent',

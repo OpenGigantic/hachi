@@ -85,6 +85,12 @@ presentations = [
 # Install with: pip install hachi-og[unofficial]
 # Then set HACHI_UNOFFICIAL=1 to actually enable the provider.
 unofficial = []
+# Security-scanning tools — used by CI (security job) and local audits.
+# Install with: uv sync --extra security
+security = [
+    "pip-audit>=2.7.0",
+    "bandit[toml]>=1.7.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/OpenGigantic/hachi"

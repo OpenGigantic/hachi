@@ -251,7 +251,9 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePaus
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
+            aria-label="Close detail panel"
             style={{
               border: 'none',
               background: 'transparent',
@@ -1029,7 +1031,10 @@ function Work() {
               return (
                 <div
                   key={w.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => handleOpenWork(w)}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleOpenWork(w); } }}
                   style={{
                     background: 'var(--hachi-surface)',
                     border: '0.5px solid var(--hachi-line)',

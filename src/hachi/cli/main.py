@@ -1088,7 +1088,26 @@ def _start_gateway_server(
     port: int = 0,
     attach_runtime: bool = False,
 ) -> tuple[GatewayHTTPServer, str, _InProcessGatewayRuntime | None]:
-    """Start local gateway server and return `(server, base_url, runtime_bridge)`."""
+    """Start local gateway server and return ``(server, base_url, runtime_bridge)``.
+
+    Startup guards (E8/T8.2):
+    - ``HACHI_GATEWAY_NO_AUTH=1`` is rejected when binding a non-loopback host.
+    - A non-loopback bind without a resolvable auth token raises :class:`OSError`.
+
+    Both checks run before the server thread is created so failures are surfaced
+    immediately at call time, not asynchronously inside the server thread.
+    """
+    # E8/T8.2 — Guard 1: NO_AUTH is only permissible on loopback.
+    _no_auth_env = os.environ.get("HACHI_GATEWAY_NO_AUTH", "").strip() == "1"
+    if _no_auth_env and not _is_loopback_host(host):
+        raise OSError(
+            f"HACHI_GATEWAY_NO_AUTH=1 is not permitted when binding to a non-loopback "
+            f"host ('{host}'). Remove the env var or bind to 127.0.0.1/::1/localhost."
+        )
+
+    # E8/T8.2 — Guard 2: non-loopback bind requires an explicit auth token.
+    # _resolve_gateway_auth_token already raises OSError for non-loopback without a token,
+    # but we call it here unconditionally so the error is clear and happens pre-server-start.
     auth_token = _resolve_gateway_auth_token(host)
     runtime = _InProcessGatewayRuntime() if attach_runtime else None
     support = runtime or _InProcessGatewayRuntime()
