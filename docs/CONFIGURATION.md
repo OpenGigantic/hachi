@@ -8,6 +8,77 @@ reads.
 Config lives under your platform config dir (e.g. `~/.config/hachi/settings.toml`
 on Linux); run `hachi doctor` to see the resolved paths.
 
+## Setting secrets on Windows
+
+On Windows, `.env` files are **not auto-loaded by the OS or PowerShell**.  Hachi's CLI
+does parse a project-level `.env` in the current working directory (via
+`_load_dotenv_into_environ` in `cli/main.py`), but that only applies when you run
+`hachi` from inside the project folder.  For reliable credential access — especially
+when running the gateway as a service — use one of the methods below.
+
+### Option 1 — Session-only (current PowerShell window)
+
+```powershell
+# Set for this terminal session only (gone when the window closes)
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+$env:HACHI_GATEWAY_API_TOKEN = "your-token-here"
+```
+
+### Option 2 — Persist for your user account (recommended)
+
+```powershell
+# Write to the user's persistent environment (survives reboots; takes effect in new terminals)
+[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-...", "User")
+[System.Environment]::SetEnvironmentVariable("HACHI_GATEWAY_API_TOKEN", "your-token-here", "User")
+```
+
+Or using the classic `setx` command (equivalent, but note `setx` does **not** update the
+current session — open a new terminal after running it):
+
+```powershell
+setx ANTHROPIC_API_KEY "sk-ant-..."
+setx HACHI_GATEWAY_API_TOKEN "your-token-here"
+```
+
+### Option 3 — Keyring vault (most secure)
+
+Run the interactive setup once; Hachi stores the key in the Windows Credential Manager so
+it never has to live in plaintext in environment variables or files:
+
+```powershell
+hachi quickstart   # or: hachi setup --tier lightning
+```
+
+During setup, paste your API key when prompted.  Hachi calls
+`keyring.set_password("hachi", "ANTHROPIC_API_KEY", <key>)` under the hood, which stores
+it in Windows Credential Manager.  On subsequent runs the key is loaded from the vault
+automatically — no env var needed.
+
+To inspect or manage stored secrets:
+
+```powershell
+hachi secrets --list    # show what is stored in the vault
+hachi secrets --check   # probe that the keyring backend is healthy
+```
+
+### Option 4 — Project `.env` file
+
+Place a `.env` file in the directory you run `hachi` from:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+HACHI_GATEWAY_API_TOKEN=your-token-here
+```
+
+Hachi merges this into `os.environ` on startup (existing env vars are **not** overwritten,
+so Option 1/2/3 take precedence).  This is the closest Windows equivalent of the
+`export VAR=...` pattern used in Unix shell profiles.
+
+> **Note:** If you run the gateway as a Windows Task Scheduler service
+> (`hachi daemon install`), neither the current session nor `.env` will apply — use
+> Option 2 (persistent user env var) or the keyring vault so the service process
+> inherits the credentials.
+
 ## Provider & model
 
 | Variable | Default | Purpose |

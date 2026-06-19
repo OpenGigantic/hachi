@@ -4,11 +4,14 @@
 // Logic: lines 1927–2012, 2452–2471 (openRun, runTick, runAllowLeash,
 //         runDenyLeash, stopRun, closeRun, _finishRun, renderVals run block)
 //
-// TODO(live-run): drive runLines/runPack/runSteps/runSpent from the same SSE
-// stream used in chat.ts (GET /sessions/{id}/stream). The run.tsx simulation
-// (openRun queue + _runIv interval) is left intact until the live session/run
-// mapping is defined in the gateway. Wire up when the gateway exposes a
-// dedicated run-session endpoint or when openRun receives a real session_id.
+// T4.5 decision: Option B (honest, no fabricated simulation).
+// The gateway has no dedicated run/jobs streaming endpoint — only
+// GET /sessions/{id}/stream which serves conversation turns. Driving the
+// run screen from that would misrepresent conversation events as sub-agent
+// orchestration output. Instead, in live mode we show an honest redirect
+// card: the user is told that live run streaming is available in the
+// conversation view and is offered a button to go there.
+// Mock mode preserves the full simulation so offline dev/demos still work.
 // ============================================================
 
 import React, { useEffect, useRef } from "react";
@@ -72,9 +75,152 @@ function packMeta(status: string): { dot: string; text: string; fg: string } {
   return { dot: "var(--hachi-line)", text: "queued", fg: "var(--hachi-muted)" };
 }
 
-// ---- component ----
+// ============================================================
+// Honest live-mode placeholder
+// ============================================================
 
-function LiveRun() {
+function LiveRunHonest() {
+  const navigate = useNavigate();
+
+  const containerStyle: CSSProperties = {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    height: "100%",
+    padding: 32,
+    gap: 0,
+  };
+
+  const cardStyle: CSSProperties = {
+    background: "var(--hachi-surface)",
+    border: "0.5px solid var(--hachi-line)",
+    borderRadius: 16,
+    padding: "36px 40px",
+    maxWidth: 520,
+    width: "100%",
+    display: "flex",
+    flexDirection: "column",
+    gap: 20,
+  };
+
+  const iconRowStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+  };
+
+  const titleStyle: CSSProperties = {
+    margin: 0,
+    fontFamily: "var(--font-display)",
+    fontWeight: 500,
+    fontSize: 20,
+    color: "var(--hachi-ink)",
+  };
+
+  const bodyStyle: CSSProperties = {
+    fontSize: 14,
+    color: "var(--hachi-muted)",
+    lineHeight: "22px",
+    margin: 0,
+  };
+
+  const chatBtnStyle: CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    height: 40,
+    padding: "0 18px",
+    borderRadius: 10,
+    background: "var(--hachi-trust)",
+    color: "#fff",
+    font: "500 14px var(--font-body)",
+    border: "none",
+    cursor: "pointer",
+    alignSelf: "flex-start",
+    transition: "opacity var(--dur-fast) var(--ease)",
+  };
+
+  const backBtnStyle: CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    height: 40,
+    padding: "0 18px",
+    borderRadius: 10,
+    background: "transparent",
+    color: "var(--hachi-muted)",
+    font: "500 14px var(--font-body)",
+    border: "0.5px solid var(--hachi-line)",
+    cursor: "pointer",
+    alignSelf: "flex-start",
+    transition: "background var(--dur-fast) var(--ease)",
+  };
+
+  const btnRowStyle: CSSProperties = {
+    display: "flex",
+    gap: 10,
+    flexWrap: "wrap",
+  };
+
+  return (
+    <div style={containerStyle}>
+      <div style={cardStyle}>
+        <div style={iconRowStyle}>
+          <span style={{ color: "var(--hachi-working)", display: "inline-flex" }}>
+            <Icon name="terminal" size={22} />
+          </span>
+          <h1 style={titleStyle}>Live run streaming</h1>
+        </div>
+
+        <p style={bodyStyle}>
+          Live run streaming — with real sub-agent output, pack progress, and
+          step-by-step planning — is available in the conversation view.
+        </p>
+        <p style={bodyStyle}>
+          Start a task in the chat and Hachi will show you exactly what it's
+          doing as it happens. The live output panel here is only available
+          when a backend run-streaming endpoint is connected.
+        </p>
+
+        <div style={btnRowStyle}>
+          <button
+            style={chatBtnStyle}
+            onClick={() => void navigate({ to: "/conversation" })}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.opacity = "0.85";
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.opacity = "1";
+            }}
+          >
+            <Icon name="message-square" size={15} />
+            Open conversation
+          </button>
+          <button
+            style={backBtnStyle}
+            onClick={() => void navigate({ to: "/" })}
+            onMouseEnter={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.background =
+                "var(--hachi-cream)";
+            }}
+            onMouseLeave={(e) => {
+              (e.currentTarget as HTMLButtonElement).style.background =
+                "transparent";
+            }}
+          >
+            <Icon name="chevron-left" size={15} />
+            Back
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- Mock simulation component (mock mode only) ----
+
+function MockRunSimulation() {
   const navigate = useNavigate();
 
   // Store slices
@@ -592,6 +738,18 @@ function LiveRun() {
       </div>
     </div>
   );
+}
+
+// ---- Top-level route component ----
+// Delegates to the honest placeholder in live mode;
+// keeps the mock simulation in mock mode.
+
+function LiveRun() {
+  const dataMode = useStore((s) => s.dataMode);
+  if (dataMode === "live") {
+    return <LiveRunHonest />;
+  }
+  return <MockRunSimulation />;
 }
 
 export const Route = createFileRoute("/run")({

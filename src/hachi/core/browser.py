@@ -15,6 +15,21 @@ not installed — every command fails with a clear :class:`BrowserUnavailable`
 carrying the install hint, instead of crashing the agent. This means the entire
 control path (thread, queue, error propagation, friendly messaging) is
 exercisable in tests without a real browser present.
+
+Per-hop redirect SSRF guard
+---------------------------
+Playwright's :meth:`page.goto` auto-follows HTTP redirects without re-checking
+each intermediate URL. A server at ``https://good.example.com`` could redirect
+the browser to ``http://169.254.169.254/latest/meta-data/`` (or any other
+private/cloud-metadata address), bypassing the initial URL check in
+:func:`~hachi.tools.browser_tools._make_browse_web`.
+
+To close this gap, :meth:`BrowserController.navigate` installs a Playwright
+route handler (``page.route("**/*", ...)``) that intercepts *every* request the
+page makes — including redirect hops — and aborts it if the URL resolves to a
+non-public address according to :func:`~hachi.core.net_guard.validate_outbound_url`.
+The handler is replaced on each ``navigate`` call so the ``allow_private``
+setting is always current.
 """
 
 from __future__ import annotations
@@ -23,6 +38,8 @@ import queue
 import threading
 from dataclasses import dataclass, field
 from typing import Any
+
+from hachi.core.net_guard import validate_outbound_url as _net_guard_validate
 
 INSTALL_HINT = (
     "Browser automation needs Playwright. Install it once with:\n"
@@ -71,9 +88,16 @@ class BrowserController:
 
     # -- public API ---------------------------------------------------------
 
-    def navigate(self, url: str) -> dict[str, Any]:
-        """Load ``url`` and return ``{url, title}`` of the resulting page."""
-        return self._dispatch("navigate", url=url)
+    def navigate(self, url: str, *, allow_private: bool = False) -> dict[str, Any]:
+        """Load ``url`` and return ``{url, title}`` of the resulting page.
+
+        Args:
+            url: The initial URL to navigate to.
+            allow_private: When ``True``, skip the private-IP guard on redirect hops
+                (mirrors the ``HACHI_REST_ALLOW_PRIVATE`` escape hatch used by tools).
+                Defaults to ``False`` (fail closed).
+        """
+        return self._dispatch("navigate", url=url, allow_private=allow_private)
 
     def read(
         self, selector: str | None = None, max_chars: int = DEFAULT_MAX_CHARS
@@ -187,9 +211,49 @@ class BrowserController:
         except Exception:
             pass
 
+    @staticmethod
+    def _make_ssrf_route_handler(allow_private: bool) -> Any:
+        """Return a Playwright route handler that aborts requests to private hosts.
+
+        The handler is registered via ``page.route("**/*", handler)`` and fires on
+        every HTTP request the page makes, including redirect hops initiated by the
+        server. If :func:`~hachi.core.net_guard.validate_outbound_url` rejects the
+        hop URL, the request is aborted with ``"blockedbyclient"`` so the browser
+        never completes the connection.
+
+        Args:
+            allow_private: Passed through to ``validate_outbound_url`` — when ``True``
+                private/loopback addresses are permitted (dev/test escape hatch).
+
+        Returns:
+            A callable suitable for ``page.route(pattern, handler)``.
+        """
+
+        def _handler(route: Any, request: Any) -> None:
+            hop_url = request.url
+            ok, reason = _net_guard_validate(hop_url, allow_private=allow_private)
+            if not ok:
+                # Abort before the request leaves the process — the private host
+                # never receives a connection.
+                route.abort("blockedbyclient")
+            else:
+                route.continue_()
+
+        return _handler
+
     def _handle(self, page: Any, op: str, kwargs: dict[str, Any]) -> dict[str, Any]:
         """Execute one command against the live page (worker thread only)."""
         if op == "navigate":
+            allow_private: bool = bool(kwargs.get("allow_private", False))
+            # Install a fresh route handler for this navigation so the allow_private
+            # flag is always current. Unrouting first prevents handler accumulation
+            # across multiple navigate() calls on the same page.
+            try:
+                page.unroute("**/*")
+            except Exception:
+                pass  # unroute is best-effort; failures here should not block navigation
+            handler = self._make_ssrf_route_handler(allow_private)
+            page.route("**/*", handler)
             page.goto(kwargs["url"], wait_until="domcontentloaded")
             return {"url": page.url, "title": page.title()}
 

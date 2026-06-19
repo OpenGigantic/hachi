@@ -8,17 +8,15 @@ functions that execute the HTTP requests using `httpx`.
 These dynamic functions are registered directly into the agent's ToolRegistry.
 """
 
-import ipaddress
 import json
 import os
 import re
-import socket
-from urllib.parse import urlparse
 
 import httpx
 
 from hachi.core.credential_vault import CredentialVault
 from hachi.core.loop import ToolRegistry
+from hachi.core.net_guard import validate_outbound_url as _net_guard_validate
 from hachi.core.secret_scanner import outbound_redaction_disabled, redact_secrets
 from hachi.core.untrusted_content import guard_untrusted
 from hachi.og_engine.parser import OGNode
@@ -98,51 +96,27 @@ class UniversalRestAdapter:
                 return True
         return False
 
-    def _is_public_host(self, host: str) -> bool:
-        lowered = host.lower()
-        if lowered in {"localhost", "localhost.localdomain"}:
-            return False
-
-        try:
-            ip = ipaddress.ip_address(lowered)
-            return not (
-                ip.is_private
-                or ip.is_loopback
-                or ip.is_link_local
-                or ip.is_reserved
-                or ip.is_multicast
-                or ip.is_unspecified
-            )
-        except ValueError:
-            pass
-
-        try:
-            infos = socket.getaddrinfo(host, None)
-        except (socket.gaierror, OSError):
-            return False
-
-        for info in infos:
-            addr = info[4][0]
-            ip = ipaddress.ip_address(addr)
-            if (
-                ip.is_private
-                or ip.is_loopback
-                or ip.is_link_local
-                or ip.is_reserved
-                or ip.is_multicast
-                or ip.is_unspecified
-            ):
-                return False
-        return True
-
     def _validate_outbound_url(self, raw_url: str, includes_secret: bool) -> str | None:
+        """Validate ``raw_url`` before sending a request.
+
+        Delegates host/IP safety to :func:`~hachi.core.net_guard.validate_outbound_url`
+        (the single source of truth for SSRF mitigations). Additional REST-layer checks
+        (allowlist, secret-interpolation guard) are applied on top.
+
+        Args:
+            raw_url: The fully-interpolated URL about to be requested.
+            includes_secret: Whether a vault-sourced credential was injected into headers.
+
+        Returns:
+            ``None`` if the URL is safe to request, or a human-readable error string
+            that should be returned to the caller without making the request.
+        """
+        from urllib.parse import urlparse
+
         try:
             parsed = urlparse(raw_url)
         except Exception:
             return "Invalid URL format"
-
-        if parsed.scheme not in {"http", "https"}:
-            return "Only http/https URLs are allowed"
 
         host = parsed.hostname
         if not host:
@@ -155,8 +129,9 @@ class UniversalRestAdapter:
         if includes_secret and not self.allowed_hosts:
             return "Secret interpolation requires HACHI_REST_ALLOWLIST to be configured"
 
-        if not self._allow_private_egress and not self._is_public_host(host_lc):
-            return f"Host '{host_lc}' resolved to a private or unsafe address"
+        ok, reason = _net_guard_validate(raw_url, allow_private=self._allow_private_egress)
+        if not ok:
+            return str(reason)
 
         return None
 

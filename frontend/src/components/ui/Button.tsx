@@ -1,6 +1,6 @@
-import { CSSProperties, ReactNode } from 'react';
+import { CSSProperties, ReactNode, AriaAttributes } from 'react';
 
-export interface ButtonProps {
+export interface ButtonProps extends AriaAttributes {
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
   size?: 'sm' | 'md';
   type?: 'button' | 'submit' | 'reset';
@@ -18,6 +18,7 @@ export function Button({
   disabled = false,
   children,
   style,
+  ...ariaProps
 }: ButtonProps) {
   const height = size === 'sm' ? '32px' : '40px';
   const px = size === 'sm' ? 'var(--space-3)' : 'var(--space-4)';
@@ -100,9 +101,11 @@ export function Button({
       type={type}
       onClick={onClick}
       disabled={disabled}
+      aria-disabled={disabled || undefined}
       style={baseStyles}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
+      {...ariaProps}
     >
       {children}
     </button>

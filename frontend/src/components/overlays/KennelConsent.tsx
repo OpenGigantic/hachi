@@ -5,9 +5,10 @@
 // Shows exactly what the skill will be allowed to do.
 // ============================================================
 
-import React, { CSSProperties, useState } from 'react';
+import React, { CSSProperties, useEffect, useState } from 'react';
 import { useStore } from '../../lib/store/store';
 import { Icon } from '../icons/Icon';
+import { useFocusTrap } from '../../lib/hooks/useFocusTrap';
 
 // Permission sets per skill (mirrored from prototype renderVals)
 const KENNEL_PERMS: Record<string, string[]> = {
@@ -20,6 +21,19 @@ export function KennelConsent() {
   const kc           = useStore((s) => s.kennelConsent);
   const cancelKennel = useStore((s) => s.cancelKennel);
   const confirmKennel = useStore((s) => s.confirmKennel);
+
+  const isOpen = kc !== null;
+  const trapRef = useFocusTrap<HTMLDivElement>(isOpen);
+
+  // Close on Escape.
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') cancelKennel();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [isOpen, cancelKennel]);
 
   if (!kc) return null;
 
@@ -47,7 +61,14 @@ export function KennelConsent() {
 
   return (
     <div style={backdropStyle} onClick={cancelKennel}>
-      <div style={panelStyle} onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={trapRef}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="kennel-consent-title"
+        style={panelStyle}
+        onClick={(e) => e.stopPropagation()}
+      >
 
         {/* Header */}
         <div style={{ padding: '22px 22px 0', display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -62,7 +83,7 @@ export function KennelConsent() {
             <Icon name={kc.icon} size={22} />
           </div>
           <div>
-            <div style={{ fontFamily: 'var(--font-display)', fontWeight: 500, fontSize: 18 }}>
+            <div id="kennel-consent-title" style={{ fontFamily: 'var(--font-display)', fontWeight: 500, fontSize: 18 }}>
               Add {kc.name}
             </div>
             <div style={{ fontSize: 13, color: 'var(--hachi-muted)', marginTop: 1 }}>
@@ -128,6 +149,7 @@ function CancelBtn({ onClick }: { onClick: () => void }) {
   const [hovered, setHovered] = useState(false);
   return (
     <button
+      type="button"
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -152,6 +174,7 @@ function ConfirmBtn({ onClick }: { onClick: () => void }) {
   const [hovered, setHovered] = useState(false);
   return (
     <button
+      type="button"
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}

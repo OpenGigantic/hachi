@@ -17,9 +17,11 @@ export function BudgetWidget({ spent, budget, onClick }: BudgetWidgetProps) {
 
   return (
     <button
+      type="button"
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      aria-label={`Today's budget: ${spentStr} spent of ${budgetStr}`}
       style={{
         textAlign: 'left',
         background: 'var(--hachi-cream)',
@@ -69,6 +71,11 @@ export function BudgetWidget({ spent, budget, onClick }: BudgetWidgetProps) {
         </span>
       </div>
       <div
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(pct)}
+        aria-label={`Budget used: ${spentStr} of ${budgetStr}`}
         style={{
           height: '4px',
           borderRadius: '999px',

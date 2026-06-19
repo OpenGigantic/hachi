@@ -4,12 +4,13 @@
 // Logic: lines 2139–2158 (setup actions), 2434–2449 (setup renderVals)
 // ============================================================
 
-import React, { CSSProperties, useEffect, useState } from 'react';
+import React, { CSSProperties, useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../../lib/store/store';
 import { HachiMark } from '../brand/HachiMark';
 import { Icon } from '../icons/Icon';
 import { Switch } from '../ui/Switch';
-import { loadSetup, applySetup } from '../../lib/data/domains/setup';
+import { loadSetup, applySetup, validateKey, type KeyValidationResult } from '../../lib/data/domains/setup';
+import { useFocusTrap } from '../../lib/hooks/useFocusTrap';
 
 const SAFETY_LEVELS = [
   {
@@ -40,21 +41,60 @@ export function SetupWizard() {
   const toggleSetupChannel  = useStore((s) => s.toggleSetupChannel);
   const setSetupField    = useStore((s) => s.setSetupField);
 
+  // Transient validation state — local only, not in store.
+  const [keyValidation, setKeyValidation] = useState<KeyValidationResult>({ status: 'idle' });
+  // Track which key value was last validated so we can reset to idle on change.
+  const lastValidatedKey = useRef<string>('');
+
+  // Focus trap: keeps focus inside the modal while open; restores on close.
+  const trapRef = useFocusTrap<HTMLDivElement>(setup.open);
+
   // Load real onboarding state on mount (idempotent; mock-safe via USE_MOCKS check inside).
   useEffect(() => {
     void loadSetup();
   }, []);
 
+  // Close on Escape.
+  useEffect(() => {
+    if (!setup.open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeSetup();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [setup.open, closeSetup]);
+
+  // When the key changes, reset validation state to idle (unless it matches what was validated).
+  const handleKeyChange = useCallback((v: string) => {
+    setSetupKey(v);
+    if (v !== lastValidatedKey.current) {
+      setKeyValidation({ status: 'idle' });
+    }
+  }, [setSetupKey]);
+
+  // Called on input blur OR on "Validate" click: run format check + real round-trip.
+  const handleValidateKey = useCallback(async () => {
+    const key = setup.key.trim();
+    if (!key) return; // nothing to validate yet
+    setKeyValidation({ status: 'checking' });
+    const result = await validateKey(key);
+    lastValidatedKey.current = setup.key;
+    setKeyValidation(result);
+  }, [setup.key]);
+
   if (!setup.open) return null;
 
   const step = setup.step;
-  const keyValid   = setup.key.trim().length >= 12;
-  const keyInvalid = setup.key.trim().length > 0 && !keyValid;
-  const keyBorder  = keyValid
-    ? 'var(--hachi-success)'
-    : keyInvalid
-    ? 'var(--hachi-danger)'
-    : 'var(--hachi-line)';
+
+  // Key border colour derived from validation state.
+  const keyBorder = (() => {
+    switch (keyValidation.status) {
+      case 'valid':        return 'var(--hachi-success)';
+      case 'format-error':
+      case 'invalid':      return 'var(--hachi-danger)';
+      default:             return 'var(--hachi-line)';
+    }
+  })();
 
   const setupDots = [0, 1, 2, 3, 4].map((i) =>
     i === step
@@ -126,12 +166,19 @@ export function SetupWizard() {
   };
 
   return (
-    <div style={backdropStyle}>
-      <div style={panelStyle} onClick={(e) => e.stopPropagation()}>
+    <div style={backdropStyle} aria-hidden="false">
+      <div
+        ref={trapRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="setup-wizard-title"
+        style={panelStyle}
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div style={headerStyle}>
           <HachiMark size={26} />
-          <span style={{ fontFamily: 'var(--font-display)', fontWeight: 500, fontSize: 18, flex: 1 }}>
+          <span id="setup-wizard-title" style={{ fontFamily: 'var(--font-display)', fontWeight: 500, fontSize: 18, flex: 1 }}>
             Set up Hachi
           </span>
           <div style={{ display: 'flex', gap: 5 }}>
@@ -148,7 +195,7 @@ export function SetupWizard() {
         {/* Body — step-specific content */}
         <div style={bodyStyle}>
           {step === 0 && <Step0 />}
-          {step === 1 && <Step1 setupKey={setup.key} keyBorder={keyBorder} keyValid={keyValid} keyInvalid={keyInvalid} onKeyChange={setSetupKey} />}
+          {step === 1 && <Step1 setupKey={setup.key} keyBorder={keyBorder} keyValidation={keyValidation} onKeyChange={handleKeyChange} onValidate={() => { void handleValidateKey(); }} />}
           {step === 2 && <Step2 currentSafety={setup.safety} onPick={(v) => setSetupField('safety', v)} />}
           {step === 3 && <Step3 google={setup.google} channel={setup.channel} onToggleGoogle={toggleSetupGoogle} onToggleChannel={toggleSetupChannel} />}
           {step === 4 && <Step4 routine={setup.routine} onToggle={toggleSetupRoutine} />}
@@ -191,16 +238,18 @@ function Step0() {
 function Step1({
   setupKey,
   keyBorder,
-  keyValid,
-  keyInvalid,
+  keyValidation,
   onKeyChange,
+  onValidate,
 }: {
   setupKey: string;
   keyBorder: string;
-  keyValid: boolean;
-  keyInvalid: boolean;
+  keyValidation: KeyValidationResult;
   onKeyChange: (v: string) => void;
+  onValidate: () => void;
 }) {
+  const isChecking = keyValidation.status === 'checking';
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ fontFamily: 'var(--font-display)', fontWeight: 500, fontSize: 18 }}>Connect an AI provider</div>
@@ -213,36 +262,84 @@ function Step1({
       </div>
       <div>
         <div style={{ fontSize: 13, color: 'var(--hachi-muted)', marginBottom: 6 }}>API key</div>
-        <input
-          value={setupKey}
-          onChange={(e) => onKeyChange(e.target.value)}
-          type="password"
-          placeholder="sk-ant-…"
-          style={{
-            width: '100%',
-            height: 44,
-            padding: '0 14px',
-            borderRadius: 10,
-            border: `0.5px solid ${keyBorder}`,
-            background: 'var(--hachi-canvas)',
-            font: 'inherit',
-            fontFamily: 'var(--font-mono)',
-            fontSize: 14,
-            color: 'var(--hachi-ink)',
-            outline: 'none',
-            boxSizing: 'border-box',
-          }}
-        />
-        {keyValid && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: '#2C7A50', marginTop: 8 }}>
-            <Icon name="check" size={15} />
-            Key looks good — validated.
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            value={setupKey}
+            onChange={(e) => onKeyChange(e.target.value)}
+            onBlur={onValidate}
+            type="password"
+            placeholder="sk-ant-…"
+            disabled={isChecking}
+            style={{
+              flex: 1,
+              height: 44,
+              padding: '0 14px',
+              borderRadius: 10,
+              border: `0.5px solid ${keyBorder}`,
+              background: 'var(--hachi-canvas)',
+              font: 'inherit',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 14,
+              color: 'var(--hachi-ink)',
+              outline: 'none',
+              boxSizing: 'border-box',
+              opacity: isChecking ? 0.6 : 1,
+            }}
+          />
+          {/* Validate button — visible once the user has typed something */}
+          {setupKey.trim().length > 0 && (
+            <button
+              type="button"
+              onClick={onValidate}
+              disabled={isChecking}
+              style={{
+                height: 44,
+                padding: '0 14px',
+                borderRadius: 10,
+                border: '0.5px solid var(--hachi-line)',
+                background: 'var(--hachi-canvas)',
+                color: 'var(--hachi-trust)',
+                font: '500 13px var(--font-body)',
+                cursor: isChecking ? 'default' : 'pointer',
+                flexShrink: 0,
+                opacity: isChecking ? 0.5 : 1,
+                transition: 'opacity var(--dur-fast) var(--ease)',
+              }}
+            >
+              {isChecking ? 'Checking…' : 'Validate'}
+            </button>
+          )}
+        </div>
+
+        {/* Validation feedback */}
+        {keyValidation.status === 'checking' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: 'var(--hachi-muted)', marginTop: 8 }}>
+            <Icon name="clock" size={15} />
+            Checking with the gateway…
           </div>
         )}
-        {keyInvalid && (
+        {keyValidation.status === 'valid' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: '#2C7A50', marginTop: 8 }}>
+            <Icon name="check" size={15} />
+            Gateway confirmed — key is valid.
+          </div>
+        )}
+        {keyValidation.status === 'format-error' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: 'var(--hachi-danger)', marginTop: 8 }}>
             <Icon name="alert" size={15} />
-            That doesn't look like a valid key yet.
+            {keyValidation.message}
+          </div>
+        )}
+        {keyValidation.status === 'invalid' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: 'var(--hachi-danger)', marginTop: 8 }}>
+            <Icon name="alert" size={15} />
+            {keyValidation.message}
+          </div>
+        )}
+        {keyValidation.status === 'network-error' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: 'var(--hachi-muted)', marginTop: 8 }}>
+            <Icon name="alert" size={15} />
+            {keyValidation.message}
           </div>
         )}
       </div>
@@ -291,9 +388,11 @@ function SafetyOption({ name, desc, selected, onClick }: {
 
   return (
     <button
+      type="button"
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      aria-pressed={selected}
       style={{
         display: 'flex',
         gap: 12,
@@ -373,9 +472,11 @@ function ConnectRow({
 
   return (
     <button
+      type="button"
       onClick={onToggle}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      aria-pressed={connected}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -466,9 +567,11 @@ function CloseBtn({ onClick }: { onClick: () => void }) {
   const [hovered, setHovered] = React.useState(false);
   return (
     <button
+      type="button"
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      aria-label="Close setup wizard"
       style={{
         border: 'none',
         background: hovered ? 'var(--hachi-cream)' : 'transparent',
@@ -489,6 +592,7 @@ function GhostBtn({ onClick, children }: { onClick: () => void; children: React.
   const [hovered, setHovered] = React.useState(false);
   return (
     <button
+      type="button"
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -513,6 +617,7 @@ function PrimaryBtn({ onClick, children }: { onClick: () => void; children: Reac
   const [hovered, setHovered] = React.useState(false);
   return (
     <button
+      type="button"
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
