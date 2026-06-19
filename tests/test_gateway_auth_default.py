@@ -4,7 +4,7 @@ Covers:
 - Protected routes return 401 without a bearer token (new default posture).
 - Protected routes return 200 with the correct bearer token.
 - Token is generated + persisted + printed when none is configured (loopback).
-- TOKOBOROS_GATEWAY_NO_AUTH=1 disables enforcement and logs a warning.
+- HACHI_GATEWAY_NO_AUTH=1 disables enforcement and logs a warning.
 - GET /approvals and POST /approvals/{id} exist and require auth.
 """
 
@@ -17,8 +17,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from tokoboros.gateway.control_plane import GatewayControlPlane
-from tokoboros.gateway.fastapi_app import create_gateway_app
+from hachi.gateway.control_plane import GatewayControlPlane
+from hachi.gateway.fastapi_app import create_gateway_app
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -44,7 +44,7 @@ def _app_no_token() -> TestClient:
     """Return a TestClient for a gateway app created with ``auth_token=None``.
 
     Under the new default posture, even ``auth_token=None`` requires auth unless
-    ``TOKOBOROS_GATEWAY_NO_AUTH=1`` is set in the environment.
+    ``HACHI_GATEWAY_NO_AUTH=1`` is set in the environment.
     """
     cp = GatewayControlPlane()
     app = create_gateway_app(cp, auth_token=None)
@@ -121,7 +121,7 @@ class TestAuthRequired:
         populated in every real deployment.  Unit tests that call
         ``create_gateway_app(cp)`` directly without a token are still supported.
         """
-        monkeypatch.delenv("TOKOBOROS_GATEWAY_NO_AUTH", raising=False)
+        monkeypatch.delenv("HACHI_GATEWAY_NO_AUTH", raising=False)
         client = _app_no_token()
         resp = client.post("/sessions", json=_CONNECT)
         # No token configured → auth check is skipped (no enforcement without a token).
@@ -131,19 +131,19 @@ class TestAuthRequired:
         """Loopback binding must NOT skip authentication (MR-2 / ADV-014)."""
         # The app itself does not know the bind address — the auth check runs
         # regardless.  This test ensures no "loopback bypass" is snuck back in.
-        monkeypatch.delenv("TOKOBOROS_GATEWAY_NO_AUTH", raising=False)
+        monkeypatch.delenv("HACHI_GATEWAY_NO_AUTH", raising=False)
         client = _app_with_token()
         resp = client.get("/config")
         assert resp.status_code == 401
 
 
 class TestNoAuthOptOut:
-    """TOKOBOROS_GATEWAY_NO_AUTH=1 disables enforcement for power users."""
+    """HACHI_GATEWAY_NO_AUTH=1 disables enforcement for power users."""
 
     def test_sessions_returns_200_without_token_when_no_auth_set(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("TOKOBOROS_GATEWAY_NO_AUTH", "1")
+        monkeypatch.setenv("HACHI_GATEWAY_NO_AUTH", "1")
         cp = GatewayControlPlane()
         app = create_gateway_app(cp, auth_token=_TOKEN)
         client = TestClient(app)
@@ -152,13 +152,13 @@ class TestNoAuthOptOut:
         assert resp.status_code == 200
 
     def test_no_auth_env_zero_keeps_enforcement(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TOKOBOROS_GATEWAY_NO_AUTH", "0")
+        monkeypatch.setenv("HACHI_GATEWAY_NO_AUTH", "0")
         client = _app_with_token()
         resp = client.post("/sessions", json=_CONNECT)
         assert resp.status_code == 401
 
     def test_no_auth_env_not_set_keeps_enforcement(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("TOKOBOROS_GATEWAY_NO_AUTH", raising=False)
+        monkeypatch.delenv("HACHI_GATEWAY_NO_AUTH", raising=False)
         client = _app_with_token()
         resp = client.post("/sessions", json=_CONNECT)
         assert resp.status_code == 401
@@ -175,14 +175,14 @@ class TestTokenGeneration:
     def test_token_generated_and_persisted_when_none_configured(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from tokoboros.cli.main import (
+        from hachi.cli.main import (
             _resolve_gateway_auth_token,
         )
 
         token_path = tmp_path / "gateway-token"
-        monkeypatch.setattr("tokoboros.cli.main._default_gateway_token_path", lambda: token_path)
-        monkeypatch.delenv("TOKOBOROS_GATEWAY_API_TOKEN", raising=False)
-        monkeypatch.delenv("TOKOBOROS_GATEWAY_API_TOKEN_FILE", raising=False)
+        monkeypatch.setattr("hachi.cli.main._default_gateway_token_path", lambda: token_path)
+        monkeypatch.delenv("HACHI_GATEWAY_API_TOKEN", raising=False)
+        monkeypatch.delenv("HACHI_GATEWAY_API_TOKEN_FILE", raising=False)
 
         token = _resolve_gateway_auth_token("127.0.0.1")
         assert token  # truthy
@@ -192,14 +192,14 @@ class TestTokenGeneration:
     def test_generated_token_is_reused_on_second_call(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from tokoboros.cli.main import (
+        from hachi.cli.main import (
             _resolve_gateway_auth_token,
         )
 
         token_path = tmp_path / "gateway-token"
-        monkeypatch.setattr("tokoboros.cli.main._default_gateway_token_path", lambda: token_path)
-        monkeypatch.delenv("TOKOBOROS_GATEWAY_API_TOKEN", raising=False)
-        monkeypatch.delenv("TOKOBOROS_GATEWAY_API_TOKEN_FILE", raising=False)
+        monkeypatch.setattr("hachi.cli.main._default_gateway_token_path", lambda: token_path)
+        monkeypatch.delenv("HACHI_GATEWAY_API_TOKEN", raising=False)
+        monkeypatch.delenv("HACHI_GATEWAY_API_TOKEN_FILE", raising=False)
 
         token_1 = _resolve_gateway_auth_token("127.0.0.1")
         token_2 = _resolve_gateway_auth_token("127.0.0.1")
@@ -208,12 +208,12 @@ class TestTokenGeneration:
     def test_explicit_env_token_takes_precedence_over_persisted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from tokoboros.cli.main import _resolve_gateway_auth_token
+        from hachi.cli.main import _resolve_gateway_auth_token
 
         token_path = tmp_path / "gateway-token"
         token_path.write_text("old-persisted-token\n", encoding="utf-8")
-        monkeypatch.setattr("tokoboros.cli.main._default_gateway_token_path", lambda: token_path)
-        monkeypatch.setenv("TOKOBOROS_GATEWAY_API_TOKEN", "env-explicit-token")
+        monkeypatch.setattr("hachi.cli.main._default_gateway_token_path", lambda: token_path)
+        monkeypatch.setenv("HACHI_GATEWAY_API_TOKEN", "env-explicit-token")
 
         token = _resolve_gateway_auth_token("127.0.0.1")
         assert token == "env-explicit-token"
@@ -221,21 +221,21 @@ class TestTokenGeneration:
     def test_non_loopback_host_requires_explicit_token(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from tokoboros.cli.main import _resolve_gateway_auth_token
+        from hachi.cli.main import _resolve_gateway_auth_token
 
-        monkeypatch.delenv("TOKOBOROS_GATEWAY_API_TOKEN", raising=False)
-        monkeypatch.delenv("TOKOBOROS_GATEWAY_API_TOKEN_FILE", raising=False)
+        monkeypatch.delenv("HACHI_GATEWAY_API_TOKEN", raising=False)
+        monkeypatch.delenv("HACHI_GATEWAY_API_TOKEN_FILE", raising=False)
 
-        with pytest.raises(OSError, match="TOKOBOROS_GATEWAY_API_TOKEN"):
+        with pytest.raises(OSError, match="HACHI_GATEWAY_API_TOKEN"):
             _resolve_gateway_auth_token("0.0.0.0")
 
     def test_load_or_generate_returns_generated_flag(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from tokoboros.cli.main import _load_or_generate_gateway_token
+        from hachi.cli.main import _load_or_generate_gateway_token
 
         token_path = tmp_path / "new-token"
-        monkeypatch.setattr("tokoboros.cli.main._default_gateway_token_path", lambda: token_path)
+        monkeypatch.setattr("hachi.cli.main._default_gateway_token_path", lambda: token_path)
 
         token, generated = _load_or_generate_gateway_token()
         assert generated is True
@@ -244,12 +244,12 @@ class TestTokenGeneration:
     def test_load_or_generate_returns_not_generated_when_already_exists(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from tokoboros.cli.main import _load_or_generate_gateway_token
+        from hachi.cli.main import _load_or_generate_gateway_token
 
         token_path = tmp_path / "existing-token"
         existing = "already-here-abc"
         token_path.write_text(existing + "\n", encoding="utf-8")
-        monkeypatch.setattr("tokoboros.cli.main._default_gateway_token_path", lambda: token_path)
+        monkeypatch.setattr("hachi.cli.main._default_gateway_token_path", lambda: token_path)
 
         token, generated = _load_or_generate_gateway_token()
         assert generated is False
@@ -267,10 +267,10 @@ class TestDaemonTokenEnsure:
     def test_install_generates_token_when_absent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from tokoboros.daemon import DaemonConfig, DaemonInstaller
+        from hachi.daemon import DaemonConfig, DaemonInstaller
 
         token_path = tmp_path / "gateway-token"
-        monkeypatch.setattr("tokoboros.daemon._default_token_path", lambda: token_path)
+        monkeypatch.setattr("hachi.daemon._default_token_path", lambda: token_path)
 
         # Stub out the actual schtasks/launchctl/systemctl subprocess calls.
         def fake_runner(cmd, **_kwargs):
@@ -278,8 +278,8 @@ class TestDaemonTokenEnsure:
 
         # Stub locate_executable so it does not call shutil.which on CI.
         monkeypatch.setattr(
-            "tokoboros.daemon.locate_executable",
-            lambda: Path("/usr/bin/tokoboros"),
+            "hachi.daemon.locate_executable",
+            lambda: Path("/usr/bin/hachi"),
         )
 
         installer = DaemonInstaller(DaemonConfig(host="127.0.0.1", port=8787), runner=fake_runner)
@@ -303,7 +303,7 @@ class TestDaemonTokenEnsure:
             "windows": "_install_windows",
         }[platform]
         monkeypatch.setattr(DaemonInstaller, method, _fake_platform_install)
-        monkeypatch.setattr("tokoboros.daemon._detect_platform", lambda: platform)
+        monkeypatch.setattr("hachi.daemon._detect_platform", lambda: platform)
 
         installer.install()
 
@@ -314,12 +314,12 @@ class TestDaemonTokenEnsure:
     def test_ensure_daemon_token_is_idempotent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from tokoboros.daemon import _ensure_daemon_token
+        from hachi.daemon import _ensure_daemon_token
 
         token_path = tmp_path / "gateway-token"
         existing = "idempotent-existing-token"
         token_path.write_text(existing + "\n", encoding="utf-8")
-        monkeypatch.setattr("tokoboros.daemon._default_token_path", lambda: token_path)
+        monkeypatch.setattr("hachi.daemon._default_token_path", lambda: token_path)
 
         token1 = _ensure_daemon_token()
         token2 = _ensure_daemon_token()
@@ -349,15 +349,15 @@ class TestApprovalsEndpoints:
         # Patch get_approval_registry and _APPROVALS_AVAILABLE inside fastapi_app.
         with (
             patch(
-                "tokoboros.gateway.fastapi_app._APPROVALS_AVAILABLE",
+                "hachi.gateway.fastapi_app._APPROVALS_AVAILABLE",
                 True,
             ),
             patch(
-                "tokoboros.gateway.fastapi_app.get_approval_registry",
+                "hachi.gateway.fastapi_app.get_approval_registry",
                 return_value=fake_registry,
             ),
             patch(
-                "tokoboros.gateway.fastapi_app.PermissionDecision",
+                "hachi.gateway.fastapi_app.PermissionDecision",
                 side_effect=lambda action, rationale="": SimpleNamespace(
                     action=action, rationale=rationale
                 ),
@@ -389,9 +389,9 @@ class TestApprovalsEndpoints:
         fake_registry = MagicMock()
         fake_registry.list_pending.return_value = pending
 
-        monkeypatch.setattr("tokoboros.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
+        monkeypatch.setattr("hachi.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
         monkeypatch.setattr(
-            "tokoboros.gateway.fastapi_app.get_approval_registry",
+            "hachi.gateway.fastapi_app.get_approval_registry",
             lambda: fake_registry,
         )
 
@@ -411,14 +411,14 @@ class TestApprovalsEndpoints:
         fake_registry = MagicMock()
         fake_registry.resolve.return_value = True
 
-        monkeypatch.setattr("tokoboros.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
+        monkeypatch.setattr("hachi.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
         monkeypatch.setattr(
-            "tokoboros.gateway.fastapi_app.get_approval_registry",
+            "hachi.gateway.fastapi_app.get_approval_registry",
             lambda: fake_registry,
         )
         # PermissionDecision is a frozen dataclass; patch with a simple stub.
         monkeypatch.setattr(
-            "tokoboros.gateway.fastapi_app.PermissionDecision",
+            "hachi.gateway.fastapi_app.PermissionDecision",
             lambda action, rationale="": SimpleNamespace(action=action, rationale=rationale),
         )
 
@@ -442,13 +442,13 @@ class TestApprovalsEndpoints:
         fake_registry = MagicMock()
         fake_registry.resolve.return_value = True
 
-        monkeypatch.setattr("tokoboros.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
+        monkeypatch.setattr("hachi.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
         monkeypatch.setattr(
-            "tokoboros.gateway.fastapi_app.get_approval_registry",
+            "hachi.gateway.fastapi_app.get_approval_registry",
             lambda: fake_registry,
         )
         monkeypatch.setattr(
-            "tokoboros.gateway.fastapi_app.PermissionDecision",
+            "hachi.gateway.fastapi_app.PermissionDecision",
             lambda action, rationale="": SimpleNamespace(action=action, rationale=rationale),
         )
 
@@ -468,13 +468,13 @@ class TestApprovalsEndpoints:
         fake_registry = MagicMock()
         fake_registry.resolve.return_value = True
 
-        monkeypatch.setattr("tokoboros.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
+        monkeypatch.setattr("hachi.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
         monkeypatch.setattr(
-            "tokoboros.gateway.fastapi_app.get_approval_registry",
+            "hachi.gateway.fastapi_app.get_approval_registry",
             lambda: fake_registry,
         )
         monkeypatch.setattr(
-            "tokoboros.gateway.fastapi_app.PermissionDecision",
+            "hachi.gateway.fastapi_app.PermissionDecision",
             lambda action, rationale="": SimpleNamespace(action=action, rationale=rationale),
         )
 
@@ -495,13 +495,13 @@ class TestApprovalsEndpoints:
         fake_registry = MagicMock()
         fake_registry.resolve.return_value = False  # unknown id
 
-        monkeypatch.setattr("tokoboros.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
+        monkeypatch.setattr("hachi.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
         monkeypatch.setattr(
-            "tokoboros.gateway.fastapi_app.get_approval_registry",
+            "hachi.gateway.fastapi_app.get_approval_registry",
             lambda: fake_registry,
         )
         monkeypatch.setattr(
-            "tokoboros.gateway.fastapi_app.PermissionDecision",
+            "hachi.gateway.fastapi_app.PermissionDecision",
             lambda action, rationale="": SimpleNamespace(action=action, rationale=rationale),
         )
 
@@ -519,13 +519,13 @@ class TestApprovalsEndpoints:
     def test_post_approval_invalid_action_returns_422(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr("tokoboros.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
+        monkeypatch.setattr("hachi.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
         monkeypatch.setattr(
-            "tokoboros.gateway.fastapi_app.get_approval_registry",
+            "hachi.gateway.fastapi_app.get_approval_registry",
             lambda: MagicMock(),
         )
         monkeypatch.setattr(
-            "tokoboros.gateway.fastapi_app.PermissionDecision",
+            "hachi.gateway.fastapi_app.PermissionDecision",
             lambda action, rationale="": SimpleNamespace(action=action, rationale=rationale),
         )
 
@@ -545,7 +545,7 @@ class TestApprovalsEndpoints:
         # The patch must be active when the request is processed (not just when
         # create_gateway_app is called), because the route handler reads the global
         # _APPROVALS_AVAILABLE at handler-call time.
-        monkeypatch.setattr("tokoboros.gateway.fastapi_app._APPROVALS_AVAILABLE", False)
+        monkeypatch.setattr("hachi.gateway.fastapi_app._APPROVALS_AVAILABLE", False)
 
         cp = GatewayControlPlane()
         app = create_gateway_app(cp, auth_token=_TOKEN)

@@ -1,11 +1,11 @@
-# Git-Sync Guide for Tokoboros Memory
+# Git-Sync Guide for Hachi Memory
 
-This guide explains how to keep your Tokoboros memory graph in sync across devices using
+This guide explains how to keep your Hachi memory graph in sync across devices using
 plain `git`.
 
 ## Why .og files are naturally git-syncable
 
-Tokoboros stores all long-lived memory in `.og` (ObjectGraph) files — plain UTF-8 text with
+Hachi stores all long-lived memory in `.og` (ObjectGraph) files — plain UTF-8 text with
 no binary blobs, no embedded timestamps in every line, and no auto-generated IDs that change
 on read. A fresh `git diff` on a memory file shows only lines you actually changed. This
 makes `.og` files far easier to merge than JSON or SQLite databases.
@@ -13,7 +13,7 @@ makes `.og` files far easier to merge than JSON or SQLite databases.
 ## Per-device journal shards prevent merge conflicts
 
 The main source of git conflicts in a shared memory graph is a journal file that two devices
-write to simultaneously. Tokoboros solves this by giving each device its own shard:
+write to simultaneously. Hachi solves this by giving each device its own shard:
 
 ```
 memory/journal-workstation.og
@@ -25,7 +25,7 @@ Each shard is named after the machine's hostname (sanitised to `[a-zA-Z0-9_-]`, 
 Only the local device ever writes to its own shard, so merges are conflict-free by design.
 All shards are read by every device, so the full journal is always visible.
 
-Use `get_tokoboros_paths().journal_shard_path()` in code to obtain the current device's
+Use `get_hachi_paths().journal_shard_path()` in code to obtain the current device's
 shard path.
 
 ## Conflict policy for shared memory files
@@ -55,7 +55,7 @@ SQLite indexes are **derived** from the `.og` files and rebuild automatically �
 commit them:
 
 ```
-# Tokoboros — derived / machine-local state
+# Hachi — derived / machine-local state
 *.db
 *.db-wal
 *.db-shm
@@ -63,7 +63,7 @@ commit them:
 
 ## One-liner git setup
 
-Run this once in your Tokoboros data directory to initialise a memory repository:
+Run this once in your Hachi data directory to initialise a memory repository:
 
 ```bash
 git init && echo "*.db\n*.db-shm\n*.db-wal" >> .gitignore && git add memory/ && git commit -m "init memory"

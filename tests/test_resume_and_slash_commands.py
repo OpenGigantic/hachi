@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from tokoboros.core.llm import Message
-from tokoboros.core.memory import MemoryManager
-from tokoboros.core.session_store import SessionStore
-from tokoboros.tui.app import TokoborosTextualApp
+from hachi.core.llm import Message
+from hachi.core.memory import MemoryManager
+from hachi.core.session_store import SessionStore
+from hachi.tui.app import HachiTextualApp
 
 _GATEWAY = "http://127.0.0.1:8111"
 
@@ -78,7 +78,7 @@ def test_memory_seed_history_empty_is_noop() -> None:
 
 
 def test_ensure_setup_controller_is_idempotent() -> None:
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     assert app.setup_controller is None
     controller = app.ensure_setup_controller()
     assert controller is not None
@@ -91,7 +91,7 @@ def test_ensure_setup_controller_is_idempotent() -> None:
 
 
 def test_slash_command_quit_calls_exit(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     calls: list[str] = []
     monkeypatch.setattr(app, "exit", lambda: calls.append("exit"))
     app.handle_slash_command("/quit")
@@ -99,7 +99,7 @@ def test_slash_command_quit_calls_exit(monkeypatch) -> None:
 
 
 def test_slash_command_unknown_is_reported(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     notes: list[str] = []
     monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
     app.handle_slash_command("/definitely-not-a-command")
@@ -107,7 +107,7 @@ def test_slash_command_unknown_is_reported(monkeypatch) -> None:
 
 
 def test_slash_command_settings_switches_mode(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     switched: list[str] = []
     monkeypatch.setattr(app, "_switch_mode", lambda mode: switched.append(mode))
     app.handle_slash_command("/settings")
@@ -115,7 +115,7 @@ def test_slash_command_settings_switches_mode(monkeypatch) -> None:
 
 
 def test_slash_command_model_rejects_unknown_discovered_model(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     notes: list[str] = []
     writes: list[str] = []
     reboots: list[bool] = []
@@ -129,9 +129,9 @@ def test_slash_command_model_rejects_unknown_discovered_model(monkeypatch) -> No
         ),
         providers={},
     )
-    monkeypatch.setattr("tokoboros.core.config_loader.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.core.config_loader.load_effective_config", lambda: cfg)
     monkeypatch.setattr(
-        "tokoboros.core.config_loader.write_global_config",
+        "hachi.core.config_loader.write_global_config",
         lambda _cfg: writes.append("write"),
     )
     monkeypatch.setattr(
@@ -147,7 +147,7 @@ def test_slash_command_model_rejects_unknown_discovered_model(monkeypatch) -> No
 
 
 def test_slash_command_model_accepts_discovered_model(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     notes: list[str] = []
     writes: list[str] = []
     reboots: list[bool] = []
@@ -161,9 +161,9 @@ def test_slash_command_model_accepts_discovered_model(monkeypatch) -> None:
         ),
         providers={},
     )
-    monkeypatch.setattr("tokoboros.core.config_loader.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.core.config_loader.load_effective_config", lambda: cfg)
     monkeypatch.setattr(
-        "tokoboros.core.config_loader.write_global_config",
+        "hachi.core.config_loader.write_global_config",
         lambda _cfg: writes.append("write"),
     )
     monkeypatch.setattr(
@@ -179,9 +179,9 @@ def test_slash_command_model_accepts_discovered_model(monkeypatch) -> None:
 
 
 def test_slash_command_plan_expands_prompt(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     sent: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(app, "set_toko_state_safe", lambda _s: None)
+    monkeypatch.setattr(app, "set_hachi_state_safe", lambda _s: None)
     monkeypatch.setattr(
         app,
         "submit_prompt",
@@ -196,9 +196,9 @@ def test_slash_command_plan_expands_prompt(monkeypatch) -> None:
 
 
 def test_slash_command_speak_submits_tts_prompt(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     sent: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(app, "set_toko_state_safe", lambda _s: None)
+    monkeypatch.setattr(app, "set_hachi_state_safe", lambda _s: None)
     monkeypatch.setattr(
         app,
         "submit_prompt",
@@ -213,7 +213,7 @@ def test_slash_command_speak_submits_tts_prompt(monkeypatch) -> None:
 
 
 def test_slash_command_speak_no_arg_warns(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     notes: list[str] = []
     monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
     app.handle_slash_command("/speak")
@@ -222,9 +222,9 @@ def test_slash_command_speak_no_arg_warns(monkeypatch) -> None:
 
 
 def test_slash_command_transcribe_submits_stt_prompt(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     sent: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(app, "set_toko_state_safe", lambda _s: None)
+    monkeypatch.setattr(app, "set_hachi_state_safe", lambda _s: None)
     monkeypatch.setattr(
         app,
         "submit_prompt",
@@ -239,7 +239,7 @@ def test_slash_command_transcribe_submits_stt_prompt(monkeypatch) -> None:
 
 
 def test_slash_command_transcribe_no_arg_warns(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     notes: list[str] = []
     monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
     app.handle_slash_command("/transcribe")
@@ -247,9 +247,9 @@ def test_slash_command_transcribe_no_arg_warns(monkeypatch) -> None:
 
 
 def test_slash_command_notify_submits_notification_prompt(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     sent: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(app, "set_toko_state_safe", lambda _s: None)
+    monkeypatch.setattr(app, "set_hachi_state_safe", lambda _s: None)
     monkeypatch.setattr(
         app,
         "submit_prompt",
@@ -264,7 +264,7 @@ def test_slash_command_notify_submits_notification_prompt(monkeypatch) -> None:
 
 
 def test_slash_command_notify_no_arg_warns(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     notes: list[str] = []
     monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
     app.handle_slash_command("/notify")
@@ -274,7 +274,7 @@ def test_slash_command_notify_no_arg_warns(monkeypatch) -> None:
 def test_slash_command_schedules_shows_list(monkeypatch) -> None:
     from unittest.mock import MagicMock
 
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     notes: list[str] = []
     monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
 
@@ -289,13 +289,13 @@ def test_slash_command_schedules_shows_list(monkeypatch) -> None:
 
     with (
         __import__("unittest.mock", fromlist=["patch"]).patch(
-            "tokoboros.jobs.scheduler.Scheduler", return_value=fake_scheduler
+            "hachi.jobs.scheduler.Scheduler", return_value=fake_scheduler
         ),
         __import__("unittest.mock", fromlist=["patch"]).patch(
-            "tokoboros.jobs.scheduler.ScheduleStore"
+            "hachi.jobs.scheduler.ScheduleStore"
         ),
         __import__("unittest.mock", fromlist=["patch"]).patch(
-            "tokoboros.core.paths.get_tokoboros_paths"
+            "hachi.core.paths.get_hachi_paths"
         ),
     ):
         app.handle_slash_command("/schedules")
@@ -306,7 +306,7 @@ def test_slash_command_schedules_shows_list(monkeypatch) -> None:
 
 
 def test_slash_command_export_no_runtime_warns(monkeypatch) -> None:
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     notes: list[str] = []
     monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
     app._agent = None  # No runtime
@@ -317,7 +317,7 @@ def test_slash_command_export_no_runtime_warns(monkeypatch) -> None:
 def test_slash_command_export_writes_file(monkeypatch, tmp_path) -> None:
     from unittest.mock import MagicMock
 
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     notes: list[str] = []
     monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
 
@@ -343,7 +343,7 @@ def test_slash_command_export_writes_file(monkeypatch, tmp_path) -> None:
 
     out_file = tmp_path / "out.md"
     with __import__("unittest.mock", fromlist=["patch"]).patch(
-        "tokoboros.core.session_store.SessionStore", return_value=fake_store
+        "hachi.core.session_store.SessionStore", return_value=fake_store
     ):
         app.handle_slash_command(f"/export {out_file}")
 
@@ -358,7 +358,7 @@ def test_slash_command_export_writes_file(monkeypatch, tmp_path) -> None:
 def test_slash_command_schedules_no_schedules(monkeypatch) -> None:
     from unittest.mock import MagicMock
 
-    app = TokoborosTextualApp(gateway_base_url=_GATEWAY)
+    app = HachiTextualApp(gateway_base_url=_GATEWAY)
     notes: list[str] = []
     monkeypatch.setattr(app, "_session_note", lambda text, **_kw: notes.append(text))
 
@@ -367,13 +367,13 @@ def test_slash_command_schedules_no_schedules(monkeypatch) -> None:
 
     with (
         __import__("unittest.mock", fromlist=["patch"]).patch(
-            "tokoboros.jobs.scheduler.Scheduler", return_value=fake_scheduler
+            "hachi.jobs.scheduler.Scheduler", return_value=fake_scheduler
         ),
         __import__("unittest.mock", fromlist=["patch"]).patch(
-            "tokoboros.jobs.scheduler.ScheduleStore"
+            "hachi.jobs.scheduler.ScheduleStore"
         ),
         __import__("unittest.mock", fromlist=["patch"]).patch(
-            "tokoboros.core.paths.get_tokoboros_paths"
+            "hachi.core.paths.get_hachi_paths"
         ),
     ):
         app.handle_slash_command("/schedules")

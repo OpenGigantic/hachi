@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
-from tokoboros.og_engine.graph_viz import (
+from hachi.cli.main import app
+from hachi.og_engine.graph_viz import (
     render_dot,
     render_graph,
     render_html,
@@ -124,7 +124,7 @@ def _isolate(monkeypatch, tmp_path: Path) -> Path:
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     shutil.copy(FIXTURE, skills_dir / "sample_skill.og")
-    monkeypatch.setattr("tokoboros.gateway.workspace.get_skills_dir", lambda: skills_dir)
+    monkeypatch.setattr("hachi.gateway.workspace.get_skills_dir", lambda: skills_dir)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     return skills_dir
 

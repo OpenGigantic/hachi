@@ -1,6 +1,6 @@
 """Tests for PromptComposer — pure unit tests, no filesystem or LLM."""
 
-from tokoboros.core.prompt_composer import build_stable_base, compose
+from hachi.core.prompt_composer import build_stable_base, compose
 
 _BRAIN = "STABLE_BRAIN_CONTENT"
 
@@ -89,7 +89,7 @@ def test_compose_stable_split_across_repeated_calls() -> None:
 
 def test_turn_context_delegates_to_composer() -> None:
     """TurnContext.build() should use PromptComposer internally."""
-    from tokoboros.core.turn_context import TurnContext
+    from hachi.core.turn_context import TurnContext
 
     tc = TurnContext.build(
         turn_id="t1",

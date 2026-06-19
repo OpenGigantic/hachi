@@ -9,7 +9,7 @@ This directory provides disposable fixtures for adversarial QA runs.
 
 ## Goal
 
-Run QA phases without touching a real user profile (`~/.tokoboros`) or real credentials.
+Run QA phases without touching a real user profile (`~/.hachi`) or real credentials.
 
 ## Quick start
 

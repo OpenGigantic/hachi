@@ -19,8 +19,8 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
-from tokoboros.og_engine.engine import SkillEngine
+from hachi.cli.main import app
+from hachi.og_engine.engine import SkillEngine
 
 runner = CliRunner()
 
@@ -243,7 +243,7 @@ def test_skill_traverse_cli_json(tmp_path: Path) -> None:
         entry: child
         """,
     )
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(app, ["skill", "traverse", "my_node", "--json"])
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
@@ -271,7 +271,7 @@ def test_skill_traverse_cli_no_hints(tmp_path: Path) -> None:
         Plain
         """,
     )
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(app, ["skill", "traverse", "plain_node"])
     assert result.exit_code == 0, result.output
     assert "no ::traverse hints" in result.output

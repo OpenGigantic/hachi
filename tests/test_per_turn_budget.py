@@ -17,8 +17,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tokoboros.core.cost import CostSnapshot, CostTracker
-from tokoboros.core.loop import ExecutionLoop
+from hachi.core.cost import CostSnapshot, CostTracker
+from hachi.core.loop import ExecutionLoop
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -162,7 +162,7 @@ def test_baseline_captured_before_loop() -> None:
 
 def test_orchestrator_limits_from_config() -> None:
     """_coerce_float/_coerce_int parse [limits] config into the ExecutionLoop kwargs."""
-    from tokoboros.gateway.orchestrator import _coerce_float, _coerce_int
+    from hachi.gateway.orchestrator import _coerce_float, _coerce_int
 
     assert _coerce_float("0.05", None) == pytest.approx(0.05)
     assert _coerce_int("2000", None) == 2000
@@ -176,8 +176,8 @@ def test_orchestrator_limits_from_config() -> None:
 
 
 def test_orchestrator_limits_from_env_vars() -> None:
-    """Env vars TOKOBOROS_MAX_TURN_COST_USD / TOKOBOROS_MAX_TURN_TOKENS are respected."""
-    from tokoboros.gateway.orchestrator import _coerce_float, _coerce_int
+    """Env vars HACHI_MAX_TURN_COST_USD / HACHI_MAX_TURN_TOKENS are respected."""
+    from hachi.gateway.orchestrator import _coerce_float, _coerce_int
 
     # env-var value wins when config value is None
     assert _coerce_float(None, "0.03") == pytest.approx(0.03)

@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import urllib.request
 
-from tokoboros.cli.commands.schedule import _deliver_schedule_result
-from tokoboros.core.secret_scanner import redact_outbound
+from hachi.cli.commands.schedule import _deliver_schedule_result
+from hachi.core.secret_scanner import redact_outbound
 
 _SECRET = "sk-ant-" + "a" * 40
 
@@ -15,14 +15,14 @@ _SECRET = "sk-ant-" + "a" * 40
 # redact_outbound (shared helper)
 # --------------------------------------------------------------------------- #
 def test_redact_outbound_redacts_by_default(monkeypatch) -> None:
-    monkeypatch.delenv("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", raising=False)
+    monkeypatch.delenv("HACHI_ALLOW_OUTBOUND_SECRETS", raising=False)
     out, count = redact_outbound(f"the key is {_SECRET}")
     assert count == 1
     assert "[REDACTED SECRET]" in out and "sk-ant-" not in out
 
 
 def test_redact_outbound_opt_out(monkeypatch) -> None:
-    monkeypatch.setenv("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", "true")
+    monkeypatch.setenv("HACHI_ALLOW_OUTBOUND_SECRETS", "true")
     out, count = redact_outbound(f"the key is {_SECRET}")
     assert count == 0 and _SECRET in out
 
@@ -40,7 +40,7 @@ class _Sched:
 def _capture(monkeypatch) -> dict:
     captured: dict = {}
     monkeypatch.setattr(
-        "tokoboros.core.net_guard.validate_outbound_url", lambda *_a, **_k: (True, "")
+        "hachi.core.net_guard.validate_outbound_url", lambda *_a, **_k: (True, "")
     )
 
     def fake_urlopen(req, timeout=15):
@@ -52,7 +52,7 @@ def _capture(monkeypatch) -> dict:
 
 
 def test_webhook_payload_redacts_secret(monkeypatch) -> None:
-    monkeypatch.delenv("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", raising=False)
+    monkeypatch.delenv("HACHI_ALLOW_OUTBOUND_SECRETS", raising=False)
     captured = _capture(monkeypatch)
     _deliver_schedule_result(_Sched("https://example.com/hook"), f"task done. key={_SECRET}")
     body = captured["data"].decode("utf-8")
@@ -60,7 +60,7 @@ def test_webhook_payload_redacts_secret(monkeypatch) -> None:
 
 
 def test_webhook_opt_out_keeps_secret(monkeypatch) -> None:
-    monkeypatch.setenv("TOKOBOROS_ALLOW_OUTBOUND_SECRETS", "true")
+    monkeypatch.setenv("HACHI_ALLOW_OUTBOUND_SECRETS", "true")
     captured = _capture(monkeypatch)
     _deliver_schedule_result(_Sched("https://example.com/hook"), f"key={_SECRET}")
     body = captured["data"].decode("utf-8")

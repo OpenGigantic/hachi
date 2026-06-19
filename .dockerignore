@@ -16,7 +16,7 @@ frontend/dist
 frontend/.vinxi
 
 # Local runtime/workspace data and dev artifacts.
-.tokoboros
+.hachi
 tests
 *.log
 .DS_Store

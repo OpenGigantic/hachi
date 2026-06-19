@@ -1,5 +1,10 @@
 # UAT Report: Sub-Agent Delegation, Leases & Recursion
 
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 > **HEADLINE FINDING: ADV-006 CONFIRMED CRITICAL** — When a role `.og` file fails to parse, the
 > sub-agent falls back to the **full unfiltered parent tool set** (minus the static blocklist).
 > A malformed or missing role `.og` grants the sub-agent every integration tool (e.g.
@@ -190,7 +195,7 @@ tool_patterns = ""
 try:
     resolver = RoleResolver()
     role_path = resolver.resolve(role)
-    from tokoboros.og_engine.parser import parse_og_file
+    from hachi.og_engine.parser import parse_og_file
     role_og = parse_og_file(str(role_path))
     tool_patterns = role_og.meta.tools
 except Exception:

@@ -7,10 +7,10 @@ cached prefix is reused (0.1x reads) instead of rewritten every turn.
 
 from __future__ import annotations
 
-from tokoboros.core.llm import LLMResponse, TokenUsage
-from tokoboros.core.loop import ExecutionLoop, ToolRegistry
-from tokoboros.core.sub_agent import SubAgentMemory
-from tokoboros.core.turn_context import TurnContext
+from hachi.core.llm import LLMResponse, TokenUsage
+from hachi.core.loop import ExecutionLoop, ToolRegistry
+from hachi.core.sub_agent import SubAgentMemory
+from hachi.core.turn_context import TurnContext
 
 _BASE = "STABLE_BRAIN_AND_OG_CONTENT"
 

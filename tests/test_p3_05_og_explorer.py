@@ -17,7 +17,7 @@ from __future__ import annotations
 
 
 def test_og_explorer_screen_is_snapshot_screen() -> None:
-    from tokoboros.tui.app import OGExplorerScreen, SnapshotScreen
+    from hachi.tui.app import OGExplorerScreen, SnapshotScreen
 
     assert issubclass(OGExplorerScreen, SnapshotScreen)
 
@@ -28,24 +28,24 @@ def test_og_explorer_screen_is_snapshot_screen() -> None:
 
 
 def test_og_explorer_in_modes() -> None:
-    from tokoboros.tui.app import OGExplorerScreen, TokoborosTextualApp
+    from hachi.tui.app import OGExplorerScreen, HachiTextualApp
 
-    assert "og_explorer" in TokoborosTextualApp.MODES
-    assert TokoborosTextualApp.MODES["og_explorer"] is OGExplorerScreen
+    assert "og_explorer" in HachiTextualApp.MODES
+    assert HachiTextualApp.MODES["og_explorer"] is OGExplorerScreen
 
 
 def test_og_explorer_binding_has_action_handler() -> None:
     """Regression: the ctrl+9 / f9 binding referenced ``mode_og_explorer`` but the
     matching ``action_mode_og_explorer`` method was missing, so the key (and the
     footer click) silently did nothing. Every bound mode action must resolve."""
-    from tokoboros.tui.app import TokoborosTextualApp
+    from hachi.tui.app import HachiTextualApp
 
-    actions = {b.action for b in TokoborosTextualApp.BINDINGS if b.action.startswith("mode_")}
+    actions = {b.action for b in HachiTextualApp.BINDINGS if b.action.startswith("mode_")}
     for action in actions:
-        assert hasattr(TokoborosTextualApp, f"action_{action}"), (
+        assert hasattr(HachiTextualApp, f"action_{action}"), (
             f"binding action {action!r} has no action_{action} handler"
         )
-    assert hasattr(TokoborosTextualApp, "action_mode_og_explorer")
+    assert hasattr(HachiTextualApp, "action_mode_og_explorer")
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ def test_og_explorer_binding_has_action_handler() -> None:
 
 
 def test_format_og_explorer_empty_data() -> None:
-    from tokoboros.tui.formatters import format_og_explorer
+    from hachi.tui.formatters import format_og_explorer
 
     result = format_og_explorer({})
     assert result is not None
@@ -71,7 +71,7 @@ def test_format_og_explorer_counters() -> None:
 
     from rich.console import Console
 
-    from tokoboros.tui.formatters import format_og_explorer
+    from hachi.tui.formatters import format_og_explorer
 
     data = {
         "skills": [],
@@ -97,7 +97,7 @@ def test_snapshot_og_explorer_keys() -> None:
     """AgentSession.snapshot_og_explorer() must expose skills, counters, node_count."""
     from unittest.mock import MagicMock
 
-    from tokoboros.gateway.orchestrator import AgentSession
+    from hachi.gateway.orchestrator import AgentSession
 
     mock_engine = MagicMock()
     mock_engine.get_skill_inventory.return_value = [
@@ -128,7 +128,7 @@ def test_snapshot_og_explorer_keys() -> None:
 
 
 def test_format_memory_diffs_column_count() -> None:
-    from tokoboros.tui.formatters import format_memory_diffs
+    from hachi.tui.formatters import format_memory_diffs
 
     table = format_memory_diffs([])
     # Table has 5 columns: Kind, Node A, Node B, Confidence, Reason

@@ -1,7 +1,7 @@
 """P3-06: SDK v0 contract tests.
 
 Validates that:
-1. All documented symbols are importable from ``tokoboros.sdk``.
+1. All documented symbols are importable from ``hachi.sdk``.
 2. The SDK version is a valid semver string.
 3. ``is_compatible()`` correctly compares versions.
 4. ``events`` module exposes the expected event-name constants.
@@ -33,17 +33,17 @@ _STABLE_SYMBOLS = [
 
 
 def test_sdk_exports_all_stable_symbols() -> None:
-    import tokoboros.sdk as sdk
+    import hachi.sdk as sdk
 
     missing = [sym for sym in _STABLE_SYMBOLS if not hasattr(sdk, sym)]
-    assert not missing, f"Missing from tokoboros.sdk: {missing}"
+    assert not missing, f"Missing from hachi.sdk: {missing}"
 
 
 def test_sdk_all_list_matches_stable_symbols() -> None:
-    import tokoboros.sdk as sdk
+    import hachi.sdk as sdk
 
     for sym in _STABLE_SYMBOLS:
-        assert sym in sdk.__all__, f"{sym!r} not in tokoboros.sdk.__all__"
+        assert sym in sdk.__all__, f"{sym!r} not in hachi.sdk.__all__"
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
 
 def test_sdk_version_is_valid_semver() -> None:
-    from tokoboros.sdk import SDK_VERSION, sdk_version
+    from hachi.sdk import SDK_VERSION, sdk_version
 
     assert _SEMVER_RE.match(SDK_VERSION), f"SDK_VERSION {SDK_VERSION!r} is not semver"
     assert sdk_version() == SDK_VERSION
@@ -66,19 +66,19 @@ def test_sdk_version_is_valid_semver() -> None:
 
 
 def test_is_compatible_with_same_version() -> None:
-    from tokoboros.sdk import SDK_VERSION, is_compatible
+    from hachi.sdk import SDK_VERSION, is_compatible
 
     assert is_compatible(SDK_VERSION)
 
 
 def test_is_compatible_with_older_version() -> None:
-    from tokoboros.sdk import is_compatible
+    from hachi.sdk import is_compatible
 
     assert is_compatible("0.0.1")
 
 
 def test_is_compatible_with_future_version() -> None:
-    from tokoboros.sdk import is_compatible
+    from hachi.sdk import is_compatible
 
     assert not is_compatible("99.0.0")
 
@@ -98,14 +98,14 @@ _REQUIRED_EVENTS = [
 
 
 def test_sdk_events_exposes_runtime_event_constants() -> None:
-    from tokoboros.sdk import events
+    from hachi.sdk import events
 
     missing = [name for name in _REQUIRED_EVENTS if not hasattr(events, name)]
     assert not missing, f"Missing from sdk.events: {missing}"
 
 
 def test_sdk_events_are_strings() -> None:
-    from tokoboros.sdk import events
+    from hachi.sdk import events
 
     for name in _REQUIRED_EVENTS:
         val = getattr(events, name)
@@ -120,14 +120,14 @@ def test_sdk_events_are_strings() -> None:
 def test_tool_spec_is_importable_and_has_name_field() -> None:
     import inspect
 
-    from tokoboros.sdk import ToolSpec
+    from hachi.sdk import ToolSpec
 
     sig = inspect.signature(ToolSpec.__init__)
     assert "name" in sig.parameters or hasattr(ToolSpec, "name")
 
 
 def test_og_pack_manifest_is_dataclass_or_basemodel() -> None:
-    from tokoboros.sdk import OgPackManifest
+    from hachi.sdk import OgPackManifest
 
     # Must have id and semver fields (checked at pack install time)
     assert hasattr(OgPackManifest, "__dataclass_fields__") or hasattr(
@@ -138,6 +138,6 @@ def test_og_pack_manifest_is_dataclass_or_basemodel() -> None:
 def test_base_llm_client_is_abstract() -> None:
     import abc
 
-    from tokoboros.sdk import BaseLLMClient
+    from hachi.sdk import BaseLLMClient
 
     assert issubclass(BaseLLMClient, abc.ABC), "BaseLLMClient must extend abc.ABC"

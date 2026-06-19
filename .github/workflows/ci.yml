@@ -51,11 +51,11 @@ jobs:
         run: uv sync --extra dev
 
       - name: Run security audit
-        run: uv run python -m tokoboros.cli.main security-audit --json --fail-on-high
+        run: uv run python -m hachi.cli.main security-audit --json --fail-on-high
         continue-on-error: true
 
       - name: Strict security audit (fail on medium)
-        run: uv run python -m tokoboros.cli.main security-audit --json --fail-on-high --fail-on-medium
+        run: uv run python -m hachi.cli.main security-audit --json --fail-on-high --fail-on-medium
         if: github.event_name == 'pull_request'
 
   lint:
@@ -125,7 +125,7 @@ jobs:
         run: uv sync --extra dev
 
       - name: ObjectGraph benchmark (token-savings + M1 retrieval)
-        run: uv run tokoboros skill benchmark --suite fast --json --threshold 0.80
+        run: uv run hachi skill benchmark --suite fast --json --threshold 0.80
 
   frontend-contract:
     runs-on: ubuntu-latest
@@ -153,7 +153,7 @@ jobs:
         run: npm install --prefix frontend
 
       - name: Export OpenAPI schema
-        run: uv run tokoboros gateway-openapi --output openapi/tokoboros-openapi.json
+        run: uv run hachi gateway-openapi --output openapi/hachi-openapi.json
 
       - name: Verify generated API artifacts are current
         run: npm run --prefix frontend check:api
@@ -164,8 +164,8 @@ jobs:
       - name: Frontend API lint
         run: >-
           npm run --prefix frontend lint --
-          src/lib/api/tokoboros.server.ts
-          src/lib/api/tokoboros.functions.ts
+          src/lib/api/hachi.server.ts
+          src/lib/api/hachi.functions.ts
           src/types/api.ts
           src/hooks/use-gateway-queries.ts
           src/components/screens/session-workbench.tsx

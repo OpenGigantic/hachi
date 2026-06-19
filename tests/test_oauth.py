@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tokoboros.core.oauth import OAuthCallbackHandler, OAuthManager
+from hachi.core.oauth import OAuthCallbackHandler, OAuthManager
 
 
 class _MemorySecretStore:
@@ -29,7 +29,7 @@ class _MemorySecretStore:
 
 
 def test_google_oauth_requires_client_id(monkeypatch) -> None:
-    monkeypatch.setattr("tokoboros.core.oauth.GOOGLE_CLIENT_ID", None)
+    monkeypatch.setattr("hachi.core.oauth.GOOGLE_CLIENT_ID", None)
 
     with pytest.raises(RuntimeError, match="Missing GOOGLE_CLIENT_ID"):
         OAuthManager._require_google_client_id()
@@ -52,9 +52,9 @@ def test_oauth_callback_rejects_state_mismatch() -> None:
 
 
 def test_google_browser_flow_fails_when_callback_port_8080_is_in_use(monkeypatch) -> None:
-    monkeypatch.setattr("tokoboros.core.oauth.GOOGLE_CLIENT_ID", "client-id")
+    monkeypatch.setattr("hachi.core.oauth.GOOGLE_CLIENT_ID", "client-id")
     monkeypatch.setattr(
-        "tokoboros.core.oauth.HTTPServer",
+        "hachi.core.oauth.HTTPServer",
         lambda *_a, **_k: (_ for _ in ()).throw(OSError("Address already in use")),
     )
 
@@ -75,9 +75,9 @@ def test_google_browser_flow_fails_closed_when_consent_is_cancelled(monkeypatch)
         def handle_request(self) -> None:
             self.auth_code = None
 
-    monkeypatch.setattr("tokoboros.core.oauth.GOOGLE_CLIENT_ID", "client-id")
-    monkeypatch.setattr("tokoboros.core.oauth.HTTPServer", _FakeServer)
-    monkeypatch.setattr("tokoboros.core.oauth.webbrowser.open", lambda *_a, **_k: True)
+    monkeypatch.setattr("hachi.core.oauth.GOOGLE_CLIENT_ID", "client-id")
+    monkeypatch.setattr("hachi.core.oauth.HTTPServer", _FakeServer)
+    monkeypatch.setattr("hachi.core.oauth.webbrowser.open", lambda *_a, **_k: True)
 
     manager = OAuthManager(secret_store=_MemorySecretStore())
 
@@ -94,8 +94,8 @@ def test_google_token_refresh_failure_propagates(monkeypatch) -> None:
         def json(self):
             return {"error": "invalid_grant", "error_description": "Token has been expired"}
 
-    monkeypatch.setattr("tokoboros.core.oauth.GOOGLE_CLIENT_ID", "client-id")
-    monkeypatch.setattr("tokoboros.core.oauth.httpx.post", lambda *_a, **_k: _FailingResponse())
+    monkeypatch.setattr("hachi.core.oauth.GOOGLE_CLIENT_ID", "client-id")
+    monkeypatch.setattr("hachi.core.oauth.httpx.post", lambda *_a, **_k: _FailingResponse())
 
     manager = OAuthManager(secret_store=_MemorySecretStore())
 

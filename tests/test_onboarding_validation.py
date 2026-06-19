@@ -4,18 +4,17 @@ from pathlib import Path
 
 import pytest
 
-from tokoboros.core.config_loader import load_effective_config, write_global_config
-from tokoboros.core.onboarding import OnboardingService
-from tokoboros.core.paths import TokoborosPaths
+from hachi.core.config_loader import load_effective_config, write_global_config
+from hachi.core.onboarding import OnboardingService
+from hachi.core.paths import HachiPaths
 
 
-def _paths(tmp_path: Path) -> TokoborosPaths:
-    return TokoborosPaths(
+def _paths(tmp_path: Path) -> HachiPaths:
+    return HachiPaths(
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
         cache_dir=tmp_path / "cache",
         state_dir=tmp_path / "state",
-        legacy_dir=tmp_path / "legacy",
     )
 
 
@@ -42,7 +41,7 @@ def test_apply_setup_rejects_invalid_provider_kind(tmp_path: Path) -> None:
 def test_apply_setup_normalizes_stale_model_when_provider_changes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.delenv("TOKOBOROS_MODEL", raising=False)
+    monkeypatch.delenv("HACHI_MODEL", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)

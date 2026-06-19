@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tokoboros.core.session_store import SessionStore
+from hachi.core.session_store import SessionStore
 
 
 def test_log_message_rejects_unknown_session_id(tmp_path: Path) -> None:

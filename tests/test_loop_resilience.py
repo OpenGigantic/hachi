@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-from tokoboros.core.cost import CostTracker
-from tokoboros.core.llm import LLMResponse, TokenUsage, ToolCall
-from tokoboros.core.loop import ExecutionLoop, SuspendWorkflow, ToolRegistry
-from tokoboros.core.sub_agent import SubAgentMemory
+from hachi.core.cost import CostTracker
+from hachi.core.llm import LLMResponse, TokenUsage, ToolCall
+from hachi.core.loop import ExecutionLoop, SuspendWorkflow, ToolRegistry
+from hachi.core.sub_agent import SubAgentMemory
 
 
 class _SpendingLLM:
@@ -152,7 +152,7 @@ def test_suspend_pairs_every_tool_use() -> None:
 
 
 def test_transient_llm_error_is_retried(monkeypatch) -> None:
-    monkeypatch.setattr("tokoboros.core.loop.time.sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr("hachi.core.loop.time.sleep", lambda *_a, **_k: None)
 
     calls = {"n": 0}
 
@@ -180,7 +180,7 @@ def test_transient_llm_error_is_retried(monkeypatch) -> None:
 
 
 def test_non_transient_llm_error_is_not_retried(monkeypatch) -> None:
-    monkeypatch.setattr("tokoboros.core.loop.time.sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr("hachi.core.loop.time.sleep", lambda *_a, **_k: None)
 
     calls = {"n": 0}
 

@@ -22,10 +22,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.og_engine.engine import SkillEngine
-from tokoboros.og_engine.parser import OGNode
-from tokoboros.tools.delegation_tools import (
+from hachi.core.loop import ToolRegistry
+from hachi.og_engine.engine import SkillEngine
+from hachi.og_engine.parser import OGNode
+from hachi.tools.delegation_tools import (
     _build_scoped_registry,
     _rebind_og_tools_for_role,
 )
@@ -259,7 +259,7 @@ def test_sub_agent_peek_skill_hides_orchestrator_scoped_nodes(tmp_path: Path) ->
 
 def test_orchestrator_peek_skill_shows_orchestrator_scoped_nodes() -> None:
     private_node = _node("brain_identity", scope="orchestrator")
-    private_node.dense = "I am Tokoboros, the orchestrator."
+    private_node.dense = "I am Hachi, the orchestrator."
 
     engine = _engine_with_nodes(private_node)
     orch_engine = engine.with_role("orchestrator")
@@ -297,12 +297,12 @@ def test_sub_agent_load_skill_blocked_for_orchestrator_node() -> None:
 
 
 def test_register_delegation_tools_passes_engine() -> None:
-    from tokoboros.tools.delegation_tools import register_delegation_tools
+    from hachi.tools.delegation_tools import register_delegation_tools
 
     registry = MagicMock()
     engine = MagicMock()
 
-    with patch("tokoboros.tools.delegation_tools._make_delegate_task") as mock_factory:
+    with patch("hachi.tools.delegation_tools._make_delegate_task") as mock_factory:
         mock_factory.return_value = lambda: None
         register_delegation_tools(registry, skill_engine=engine)
 

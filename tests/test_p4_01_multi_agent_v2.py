@@ -25,7 +25,7 @@ from pathlib import Path
 
 
 def test_lease_acquire_free_target() -> None:
-    from tokoboros.core.lease_manager import LeaseManager
+    from hachi.core.lease_manager import LeaseManager
 
     mgr = LeaseManager()
     ok, conflict = mgr.acquire("researcher", ["projects/billing"])
@@ -39,7 +39,7 @@ def test_lease_acquire_free_target() -> None:
 
 
 def test_lease_acquire_conflict() -> None:
-    from tokoboros.core.lease_manager import LeaseManager
+    from hachi.core.lease_manager import LeaseManager
 
     mgr = LeaseManager()
     mgr.acquire("researcher", ["projects/billing"])
@@ -56,7 +56,7 @@ def test_lease_acquire_conflict() -> None:
 
 
 def test_lease_prefix_match() -> None:
-    from tokoboros.core.lease_manager import LeaseManager
+    from hachi.core.lease_manager import LeaseManager
 
     mgr = LeaseManager()
     mgr.acquire("agent-a", ["projects/billing"])
@@ -71,7 +71,7 @@ def test_lease_prefix_match() -> None:
 
 
 def test_lease_release_clears_target() -> None:
-    from tokoboros.core.lease_manager import LeaseManager
+    from hachi.core.lease_manager import LeaseManager
 
     mgr = LeaseManager()
     mgr.acquire("researcher", ["projects/billing"])
@@ -87,7 +87,7 @@ def test_lease_release_clears_target() -> None:
 
 
 def test_lease_ttl_expiry() -> None:
-    from tokoboros.core.lease_manager import LeaseManager
+    from hachi.core.lease_manager import LeaseManager
 
     mgr = LeaseManager()
     mgr.acquire("researcher", ["projects/old"], ttl_seconds=0.001)
@@ -103,7 +103,7 @@ def test_lease_ttl_expiry() -> None:
 
 
 def test_lease_snapshot() -> None:
-    from tokoboros.core.lease_manager import LeaseManager
+    from hachi.core.lease_manager import LeaseManager
 
     mgr = LeaseManager()
     mgr.acquire("researcher", ["projects/billing", "drive.write"])
@@ -120,7 +120,7 @@ def test_lease_snapshot() -> None:
 
 
 def test_sub_agent_report_needs_default() -> None:
-    from tokoboros.core.sub_agent import SubAgentReport, SubAgentStatus
+    from hachi.core.sub_agent import SubAgentReport, SubAgentStatus
 
     report = SubAgentReport(
         status=SubAgentStatus.SUCCESS,
@@ -137,7 +137,7 @@ def test_sub_agent_report_needs_default() -> None:
 
 
 def test_sub_agent_report_needs_in_string() -> None:
-    from tokoboros.core.sub_agent import SubAgentReport, SubAgentStatus
+    from hachi.core.sub_agent import SubAgentReport, SubAgentStatus
 
     report = SubAgentReport(
         status=SubAgentStatus.SUCCESS,
@@ -159,7 +159,7 @@ def test_sub_agent_report_needs_in_string() -> None:
 
 
 def test_memory_writer_provenance_edge(tmp_path: Path) -> None:
-    from tokoboros.core.memory_writer import MemoryNode, MemoryWriter
+    from hachi.core.memory_writer import MemoryNode, MemoryWriter
 
     writer = MemoryWriter(memory_dir=tmp_path)
     node = MemoryNode(name="billing-fact", role="fact", dense="billing schema v2")
@@ -177,7 +177,7 @@ def test_memory_writer_provenance_edge(tmp_path: Path) -> None:
 
 
 def test_memory_writer_write_fact(tmp_path: Path) -> None:
-    from tokoboros.core.memory_writer import MemoryWriter
+    from hachi.core.memory_writer import MemoryWriter
 
     writer = MemoryWriter(memory_dir=tmp_path)
     fact_id = writer.write_fact("billing migration uses pgloader", category="decision")
@@ -196,9 +196,9 @@ def test_memory_writer_write_fact(tmp_path: Path) -> None:
 
 
 def test_delegate_task_blocked_by_lease() -> None:
-    from tokoboros.core.lease_manager import LeaseManager
-    from tokoboros.core.loop import ToolRegistry
-    from tokoboros.tools.delegation_tools import _make_delegate_task
+    from hachi.core.lease_manager import LeaseManager
+    from hachi.core.loop import ToolRegistry
+    from hachi.tools.delegation_tools import _make_delegate_task
 
     mgr = LeaseManager()
     mgr.acquire("existing-agent", ["projects/billing"])

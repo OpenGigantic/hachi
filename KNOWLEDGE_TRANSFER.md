@@ -1,11 +1,16 @@
-# Tokoboros Knowledge Transfer
+# Hachi Knowledge Transfer
 
-Repository: OpenGigantic/tokoboros  
+> **Historical document.** Written before the rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
+Repository: OpenGigantic/hachi  
 Branch: main  
 Snapshot date: 2026-05-30  
 Source basis: repository contents plus commit history on `main`
 
-This document is written for an engineer who understands software engineering in general but knows nothing about Tokoboros specifically.
+This document is written for an engineer who understands software engineering in general but knows nothing about Hachi specifically.
 
 For every major concept, component, and workflow, this document tries to answer six questions:
 
@@ -22,15 +27,15 @@ The codebase is young and opinionated. A lot of design is explicit in source com
 
 ### 1.1 What this project does
 
-Tokoboros is a local, CLI-first autonomous agent runtime built around three core ideas:
+Hachi is a local, CLI-first autonomous agent runtime built around three core ideas:
 
 - The agent should not read gigantic instruction files blindly; it should route into specific skill nodes inside ObjectGraph `.og` files.
 - The main agent should not do every task itself; it should be able to spawn specialized sub-agents with isolated context windows.
 - The agent should act through a real tool surface, not by pretending. That tool surface includes local file/terminal access, dynamic REST tools, native Google/Notion/Slack tools, and optionally MCP servers.
 
-In practical terms, the user runs `tokoboros run`, types requests into a REPL, and the system:
+In practical terms, the user runs `hachi run`, types requests into a REPL, and the system:
 
-- loads a local workspace under `~/.tokoboros/`
+- loads a local workspace under `~/.hachi/`
 - parses `.og` role and skill files
 - builds a system prompt from `brain.og`
 - exposes tools to Anthropic Claude
@@ -46,9 +51,9 @@ Modern agent systems tend to fail in three recurring ways:
 - they mix unrelated tasks into one context window
 - they rely on brittle prompt instructions instead of explicit execution surfaces
 
-#### Why Tokoboros exists
+#### Why Hachi exists
 
-Tokoboros exists to reduce token cost, reduce context pollution, and make autonomous execution more deterministic.
+Hachi exists to reduce token cost, reduce context pollution, and make autonomous execution more deterministic.
 
 #### How it solves that problem
 
@@ -61,7 +66,7 @@ Tokoboros exists to reduce token cost, reduce context pollution, and make autono
 
 #### What breaks if this problem is not solved?
 
-Without these design choices, Tokoboros would devolve into a standard chat wrapper around Claude with expensive prompts, weak state handling, and unsafe local execution.
+Without these design choices, Hachi would devolve into a standard chat wrapper around Claude with expensive prompts, weak state handling, and unsafe local execution.
 
 #### Alternatives
 
@@ -70,7 +75,7 @@ Without these design choices, Tokoboros would devolve into a standard chat wrapp
 - Server-side orchestration with a workflow engine
 - A pure rule engine without LLM routing
 
-Tokoboros explicitly chooses local-first, prompt-cached, LLM-tool-driven orchestration instead.
+Hachi explicitly chooses local-first, prompt-cached, LLM-tool-driven orchestration instead.
 
 ### 1.3 Target users
 
@@ -92,7 +97,7 @@ The design assumes a technically comfortable user who is willing to grant device
 What it is: a coding-oriented local agent that can read files, write files, run commands, and spawn a coder sub-agent.  
 Why it exists: software tasks are tool-heavy and context-noisy.  
 How it works: the orchestrator loads engineering role/skill instructions, then calls OS tools or delegates.  
-What breaks if removed: Tokoboros becomes only a read-only conversational assistant.  
+What breaks if removed: Hachi becomes only a read-only conversational assistant.  
 Alternative: embed everything into the main prompt and use one agent only.
 
 #### Use case: connected workspace assistant
@@ -140,7 +145,7 @@ Treat this codebase as a coherent first-generation architecture rather than a ma
 
 | Decision | What and why | How it works | What breaks if removed | Alternatives |
 | --- | --- | --- | --- | --- |
-| CLI-first local runtime | The product is a terminal application, not a server. This avoids hosting complexity and aligns with local device access. | Typer command -> REPL in `src/tokoboros/cli/main.py`. | No interactive local agent, no permission-gated device operations. | FastAPI service, Electron app, VS Code extension first. |
+| CLI-first local runtime | The product is a terminal application, not a server. This avoids hosting complexity and aligns with local device access. | Typer command -> REPL in `src/hachi/cli/main.py`. | No interactive local agent, no permission-gated device operations. | FastAPI service, Electron app, VS Code extension first. |
 | ObjectGraph skill format | Skills are structured `.og` files instead of plain markdown. This exists to reduce token waste and make routing explicit. | `parse_og_file()` builds `OGFile` and `OGNode`; `SkillEngine` indexes keywords and resolves context. | Skill routing becomes much noisier and more expensive. | Markdown + embeddings, YAML runbooks, code-only tools. |
 | ToolRegistry-based reasoning | The LLM acts through a fixed tool surface instead of freeform hidden behavior. | `ExecutionLoop` passes JSON schemas to Claude, then `ToolRegistry.execute()` runs the chosen handler. | Real execution becomes weaker and hallucination risk rises. | Custom planner/executor, manually scripted flows. |
 | Permission gate | Device access must be explicitly constrained. | `PermissionGate` parses `device-permissions.og`, wraps OS tools, and injects constraints into the prompt. | Unsafe file and terminal operations become possible. | OS sandboxing only, per-tool confirmations, container-only runtime. |
@@ -186,10 +191,10 @@ flowchart LR
 
 This repository has two kinds of assets:
 
-- Python runtime code under `src/tokoboros/`
-- declarative ObjectGraph assets under `src/tokoboros/default_skills/`
+- Python runtime code under `src/hachi/`
+- declarative ObjectGraph assets under `src/hachi/default_skills/`
 
-The most important structural fact is that first boot copies the shipped `.og` files into `~/.tokoboros/skills/` and `~/.tokoboros/brain.og`. After that, the runtime reads the user-local copies, not the repository files. That is a crucial debugging and product-behavior detail.
+The most important structural fact is that first boot copies the shipped `.og` files into `~/.hachi/skills/` and `~/.hachi/brain.og`. After that, the runtime reads the user-local copies, not the repository files. That is a crucial debugging and product-behavior detail.
 
 ### 2.1 Root files
 
@@ -206,7 +211,7 @@ The most important structural fact is that first boot copies the shipped `.og` f
 ### 2.2 Package map
 
 ```text
-src/tokoboros/
+src/hachi/
   cli/
   core/
   default_skills/
@@ -216,158 +221,158 @@ src/tokoboros/
   tools/
 ```
 
-### 2.3 `src/tokoboros/cli`
+### 2.3 `src/hachi/cli`
 
 | File | What it is and why it exists | Key internals | Runtime impact if removed | Alternatives |
 | --- | --- | --- | --- | --- |
-| `src/tokoboros/cli/__init__.py` | Package marker with a short docstring. | No logic. | Nothing operational; only packaging clarity changes. | Omit file in modern namespace package layout. |
-| `src/tokoboros/cli/main.py` | User-facing entry point and REPL. Exists so package install creates a usable command. | Typer app, Rich rendering, `run`, `onboard`, `permissions`, `reauth`, `_render_event`. | There is no usable application entry point. | Textual UI, web UI, service API. |
+| `src/hachi/cli/__init__.py` | Package marker with a short docstring. | No logic. | Nothing operational; only packaging clarity changes. | Omit file in modern namespace package layout. |
+| `src/hachi/cli/main.py` | User-facing entry point and REPL. Exists so package install creates a usable command. | Typer app, Rich rendering, `run`, `onboard`, `permissions`, `reauth`, `_render_event`. | There is no usable application entry point. | Textual UI, web UI, service API. |
 
-### 2.4 `src/tokoboros/gateway`
-
-| File | What it is and why it exists | Key internals | Runtime impact if removed | Alternatives |
-| --- | --- | --- | --- | --- |
-| `src/tokoboros/gateway/__init__.py` | Package marker. | No logic. | None. | Namespace package. |
-| `src/tokoboros/gateway/workspace.py` | Local workspace bootstrap and config loader. Exists because Tokoboros stores almost everything under `~/.tokoboros/`. | `ensure_workspace`, `load_config`, `load_brain`, permission wizard helpers. | First-run bootstrap, workspace config, and permission onboarding all break. | XDG/AppData config library, DB-backed config, installer-managed config. |
-| `src/tokoboros/gateway/orchestrator.py` | Session assembly point. Exists to bind all subsystems into one runnable agent. | `boot_agent`, `AgentSession`, frozen snapshot, async prefetch, session shutdown, MCP configuration. | The product has no coherent runtime assembly. | Dependency injection container, service locator, explicit builder classes. |
-
-### 2.5 `src/tokoboros/core`
+### 2.4 `src/hachi/gateway`
 
 | File | What it is and why it exists | Key internals | Runtime impact if removed | Alternatives |
 | --- | --- | --- | --- | --- |
-| `src/tokoboros/core/__init__.py` | Package marker. | No logic. | None. | Namespace package. |
-| `src/tokoboros/core/constants.py` | Shared ObjectGraph tag constants. | `TAG_*`, `ROLE_*`. | Low runtime impact; mostly centralization loss. | Inline strings, enum classes. |
-| `src/tokoboros/core/credential_vault.py` | Token store for Slack/Notion/GitHub-style secrets. Exists to avoid forcing users to edit env files manually. | Plain JSON load/save, interactive prompt on missing token. | Dynamic REST and native token-based integrations become harder to use. | OS keychain, encrypted vault, `.env`. |
-| `src/tokoboros/core/errors.py` | Small custom exception module. | `OGParseError`, `OGValidationError`. | Mostly semantic clarity loss; parser currently does not lean heavily on them. | Built-in exceptions only. |
-| `src/tokoboros/core/integrations.py` | Runtime for classic `.og`-defined `env` and `integration` nodes. Exists as a no-code bridge from declarative config to persistent SMTP/HTTP tools. | `IntegrationRuntime`, SMTP and HTTP setup, schema builder. | User-defined `integration`/`env` nodes cannot become live tools. | Only native integrations, only REST adapter, MCP only. |
-| `src/tokoboros/core/llm.py` | LLM abstraction and Anthropic implementation. Exists to isolate provider details from the loop. | `Message`, `ToolCall`, `LLMResponse`, `BaseLLMClient`, `AnthropicClient`. | The agent cannot talk to Claude or expose tools. | OpenAI client, local model wrapper, direct SDK calls in loop. |
-| `src/tokoboros/core/loop.py` | Core reasoning/execution engine. Exists to implement the observe-think-act cycle. | `ToolRegistry`, `ExecutionLoop`, `SuspendWorkflow`, `AgentException`. | No autonomous loop, no tool execution, no completion semantics. | State machine engine, planner/executor split, workflow DAG. |
-| `src/tokoboros/core/mcp_client.py` | JSON-RPC stdio client for MCP servers. Exists to integrate external tools without hardcoding them. | `MCPServerConnection`, `MCPManager`. | MCP-based extensibility disappears. | HTTP-based MCP bridge, plugin SDK, native Python wrappers only. |
-| `src/tokoboros/core/memory.py` | Active-session memory manager. Exists to control context growth and preserve continuity. | Task ledger, sliding window, pending compaction, background summarization/fact extraction. | Long sessions become expensive and messy. | Token counter only, truncation only, external memory service. |
-| `src/tokoboros/core/memory_guard.py` | Prompt-injection scanner for stored memories. Exists because recalled memories are injected into prompts later. | Regex threat patterns and invisible Unicode detection. | Memory becomes a durable injection surface. | LLM-based sanitization, stricter structured schema. |
-| `src/tokoboros/core/memory_provider.py` | Abstraction layer for pluggable memory backends. Exists as an architectural extension point. | `MemoryProvider`, `ChromaMemoryProvider`. | Very little today; current orchestrator still uses `MemoryVault` directly. | Remove until needed, or wire into orchestrator fully. |
-| `src/tokoboros/core/memory_vault.py` | Long-term vector memory backed by ChromaDB. Exists for cross-turn and cross-session semantic recall. | Collections `core_memory`, `user_profile`, `agent_profile`, `delegation_log`; content-addressable IDs; guard-wrapped writes. | Long-term recall and delegation analytics vanish. | SQLite FTS, Qdrant, pgvector, plain JSON. |
-| `src/tokoboros/core/models.py` | Older/parallel ObjectGraph model definitions. Exists as a design artifact for a richer OG reader/transpiler model, but is not used by the active runtime. | `OGIndex`, `OGNodeMeta`, `OGQueryResult`, etc. | Nothing in the current runtime breaks. | Delete or consolidate into `og_engine/parser.py`. |
-| `src/tokoboros/core/oauth.py` | Browser-based Google OAuth token manager. Exists to make Google integrations usable without manual API key setup. | Local HTTP callback server, token refresh, token file storage. | Google Workspace integrations cannot authenticate themselves. | Google official SDKs, device code flow, service accounts. |
-| `src/tokoboros/core/permissions.py` | Device access policy engine. Exists as the main security boundary for file, terminal, and MCP filesystem access. | Immutable rulesets, tier defaults, path/command checks, `.og` template generator. | Local execution becomes unsafe and unconstrained. | OS sandbox, per-action confirmation UX, container-only runtime. |
-| `src/tokoboros/core/rest_adapter.py` | Dynamic REST tool generator. Exists so `.og` files can create real tools without Python code. | Parses node `api_defs`, builds tool schemas, injects headers/tokens, executes `httpx` requests. | Most shipped general skills and GitHub skill stop being executable. | Hard-code APIs in Python, external plugin system. |
-| `src/tokoboros/core/sandbox.py` | Ephemeral Python execution environment using `uv`. Exists for code/data tasks that should not pollute the host environment. | `SandboxExecutor`, execution hashing, isolated env vars. | `python_sandbox` tool disappears. | Docker, subprocess + venv, remote code runner. |
-| `src/tokoboros/core/session_store.py` | SQLite persistence for session transcripts. Exists for cross-session search and lightweight auditability. | Session/message tables, WAL mode, `search_sessions`. | Past-session recall and session analytics disappear. | JSONL logs, Postgres, embedded FTS engine. |
-| `src/tokoboros/core/sub_agent.py` | Isolated delegated-agent runtime. Exists so the orchestrator can offload tasks without contaminating its own context. | `SubAgentRuntime`, `SubAgentMemory`, `PromptBuilder`, `RoleResolver`, `SubAgentReport`. | Delegation design collapses. | External worker service, reusable orchestration tasks, same-loop delegation. |
+| `src/hachi/gateway/__init__.py` | Package marker. | No logic. | None. | Namespace package. |
+| `src/hachi/gateway/workspace.py` | Local workspace bootstrap and config loader. Exists because Hachi stores almost everything under `~/.hachi/`. | `ensure_workspace`, `load_config`, `load_brain`, permission wizard helpers. | First-run bootstrap, workspace config, and permission onboarding all break. | XDG/AppData config library, DB-backed config, installer-managed config. |
+| `src/hachi/gateway/orchestrator.py` | Session assembly point. Exists to bind all subsystems into one runnable agent. | `boot_agent`, `AgentSession`, frozen snapshot, async prefetch, session shutdown, MCP configuration. | The product has no coherent runtime assembly. | Dependency injection container, service locator, explicit builder classes. |
 
-### 2.6 `src/tokoboros/og_engine`
+### 2.5 `src/hachi/core`
 
 | File | What it is and why it exists | Key internals | Runtime impact if removed | Alternatives |
 | --- | --- | --- | --- | --- |
-| `src/tokoboros/og_engine/__init__.py` | Package marker. | No logic. | None. | Namespace package. |
-| `src/tokoboros/og_engine/parser.py` | ObjectGraph lexical parser. Exists to turn `.og` source text into structured models. | `OGFile`, `OGNode`, regex-based block parsing, file-level and node-level tag parsers. | Skills, roles, permissions, and integration definitions cannot be loaded. | YAML/JSON parser, PEG parser, markdown AST with extensions. |
-| `src/tokoboros/og_engine/engine.py` | In-memory skill index and renderer. Exists to search and resolve skill nodes cheaply. | `SkillEngine`, keyword index, recursive dependency resolution, skill usage tracking. | `search_skills`, `load_skill`, native role lookup, and integration discovery all break. | Embedding search, SQLite index, Lucene-like index. |
+| `src/hachi/core/__init__.py` | Package marker. | No logic. | None. | Namespace package. |
+| `src/hachi/core/constants.py` | Shared ObjectGraph tag constants. | `TAG_*`, `ROLE_*`. | Low runtime impact; mostly centralization loss. | Inline strings, enum classes. |
+| `src/hachi/core/credential_vault.py` | Token store for Slack/Notion/GitHub-style secrets. Exists to avoid forcing users to edit env files manually. | Plain JSON load/save, interactive prompt on missing token. | Dynamic REST and native token-based integrations become harder to use. | OS keychain, encrypted vault, `.env`. |
+| `src/hachi/core/errors.py` | Small custom exception module. | `OGParseError`, `OGValidationError`. | Mostly semantic clarity loss; parser currently does not lean heavily on them. | Built-in exceptions only. |
+| `src/hachi/core/integrations.py` | Runtime for classic `.og`-defined `env` and `integration` nodes. Exists as a no-code bridge from declarative config to persistent SMTP/HTTP tools. | `IntegrationRuntime`, SMTP and HTTP setup, schema builder. | User-defined `integration`/`env` nodes cannot become live tools. | Only native integrations, only REST adapter, MCP only. |
+| `src/hachi/core/llm.py` | LLM abstraction and Anthropic implementation. Exists to isolate provider details from the loop. | `Message`, `ToolCall`, `LLMResponse`, `BaseLLMClient`, `AnthropicClient`. | The agent cannot talk to Claude or expose tools. | OpenAI client, local model wrapper, direct SDK calls in loop. |
+| `src/hachi/core/loop.py` | Core reasoning/execution engine. Exists to implement the observe-think-act cycle. | `ToolRegistry`, `ExecutionLoop`, `SuspendWorkflow`, `AgentException`. | No autonomous loop, no tool execution, no completion semantics. | State machine engine, planner/executor split, workflow DAG. |
+| `src/hachi/core/mcp_client.py` | JSON-RPC stdio client for MCP servers. Exists to integrate external tools without hardcoding them. | `MCPServerConnection`, `MCPManager`. | MCP-based extensibility disappears. | HTTP-based MCP bridge, plugin SDK, native Python wrappers only. |
+| `src/hachi/core/memory.py` | Active-session memory manager. Exists to control context growth and preserve continuity. | Task ledger, sliding window, pending compaction, background summarization/fact extraction. | Long sessions become expensive and messy. | Token counter only, truncation only, external memory service. |
+| `src/hachi/core/memory_guard.py` | Prompt-injection scanner for stored memories. Exists because recalled memories are injected into prompts later. | Regex threat patterns and invisible Unicode detection. | Memory becomes a durable injection surface. | LLM-based sanitization, stricter structured schema. |
+| `src/hachi/core/memory_provider.py` | Abstraction layer for pluggable memory backends. Exists as an architectural extension point. | `MemoryProvider`, `ChromaMemoryProvider`. | Very little today; current orchestrator still uses `MemoryVault` directly. | Remove until needed, or wire into orchestrator fully. |
+| `src/hachi/core/memory_vault.py` | Long-term vector memory backed by ChromaDB. Exists for cross-turn and cross-session semantic recall. | Collections `core_memory`, `user_profile`, `agent_profile`, `delegation_log`; content-addressable IDs; guard-wrapped writes. | Long-term recall and delegation analytics vanish. | SQLite FTS, Qdrant, pgvector, plain JSON. |
+| `src/hachi/core/models.py` | Older/parallel ObjectGraph model definitions. Exists as a design artifact for a richer OG reader/transpiler model, but is not used by the active runtime. | `OGIndex`, `OGNodeMeta`, `OGQueryResult`, etc. | Nothing in the current runtime breaks. | Delete or consolidate into `og_engine/parser.py`. |
+| `src/hachi/core/oauth.py` | Browser-based Google OAuth token manager. Exists to make Google integrations usable without manual API key setup. | Local HTTP callback server, token refresh, token file storage. | Google Workspace integrations cannot authenticate themselves. | Google official SDKs, device code flow, service accounts. |
+| `src/hachi/core/permissions.py` | Device access policy engine. Exists as the main security boundary for file, terminal, and MCP filesystem access. | Immutable rulesets, tier defaults, path/command checks, `.og` template generator. | Local execution becomes unsafe and unconstrained. | OS sandbox, per-action confirmation UX, container-only runtime. |
+| `src/hachi/core/rest_adapter.py` | Dynamic REST tool generator. Exists so `.og` files can create real tools without Python code. | Parses node `api_defs`, builds tool schemas, injects headers/tokens, executes `httpx` requests. | Most shipped general skills and GitHub skill stop being executable. | Hard-code APIs in Python, external plugin system. |
+| `src/hachi/core/sandbox.py` | Ephemeral Python execution environment using `uv`. Exists for code/data tasks that should not pollute the host environment. | `SandboxExecutor`, execution hashing, isolated env vars. | `python_sandbox` tool disappears. | Docker, subprocess + venv, remote code runner. |
+| `src/hachi/core/session_store.py` | SQLite persistence for session transcripts. Exists for cross-session search and lightweight auditability. | Session/message tables, WAL mode, `search_sessions`. | Past-session recall and session analytics disappear. | JSONL logs, Postgres, embedded FTS engine. |
+| `src/hachi/core/sub_agent.py` | Isolated delegated-agent runtime. Exists so the orchestrator can offload tasks without contaminating its own context. | `SubAgentRuntime`, `SubAgentMemory`, `PromptBuilder`, `RoleResolver`, `SubAgentReport`. | Delegation design collapses. | External worker service, reusable orchestration tasks, same-loop delegation. |
 
-### 2.7 `src/tokoboros/tools`
-
-| File | What it is and why it exists | Key internals | Runtime impact if removed | Alternatives |
-| --- | --- | --- | --- | --- |
-| `src/tokoboros/tools/__init__.py` | Package marker. | No logic. | None. | Namespace package. |
-| `src/tokoboros/tools/delegation_tools.py` | LLM-facing wrapper for sub-agent spawning. Exists to expose delegation as a tool instead of hardcoded planner logic. | `delegate_task`, `list_roles`, scoped registry builder, persistence thread. | Orchestrator cannot spawn specialized workers. | Planner-side hidden delegation. |
-| `src/tokoboros/tools/memory_tools.py` | LLM-facing memory API. Exists to expose save/search/delete operations to the model. | `core_*` memory tools, cross-session search tool. | The LLM cannot persist or recall user/workspace/session context directly. | Hidden memory writes only, no memory tools. |
-| `src/tokoboros/tools/og_tools.py` | LLM-facing skill search/load API. Exists because skills are the primary declarative behavior layer. | `search_skills`, `list_skills`, `load_skill`. | The agent cannot exploit `.og` skill files during execution. | Bake all skills into prompt, retrieval middleware. |
-| `src/tokoboros/tools/os_tools.py` | Local file and terminal tools. Exists because local agency requires device I/O. | `read_file`, `write_file`, `run_terminal_command`, gated and raw implementations. | The agent cannot touch the host machine. | Container exec, remote tool server, VS Code APIs only. |
-| `src/tokoboros/tools/sandbox_tools.py` | LLM-facing sandbox wrapper. Exists to make isolated Python execution accessible as a tool. | `python_sandbox`. | Data-analysis/code-exec jobs must use terminal or disappear. | Notebook runner, remote compute worker. |
-| `src/tokoboros/tools/workflow_tools.py` | Workflow control tool family. Exists so long-running skills can pause intentionally. | `core_suspend_workflow`. | Monitoring or approval workflows cannot express pause points. | Explicit state machine outside LLM loop. |
-
-### 2.8 `src/tokoboros/integrations/google`
-
-| File | What it is and why it exists | Key internals | Runtime impact if removed | Alternatives |
-| --- | --- | --- | --- | --- |
-| `src/tokoboros/integrations/google/__init__.py` | Google integration hub/facade. Exists to aggregate scopes and register all Google tools. | `GoogleIntegrationHub`. | Native Google tooling disappears. | Instantiate services ad hoc per tool family. |
-| `src/tokoboros/integrations/google/service.py` | Abstract service contract. | `GoogleService`. | Shared contract disappears; runtime still possible but less structured. | Duck typing only. |
-| `src/tokoboros/integrations/google/client.py` | Authenticated HTTP wrapper for Google APIs. | `GoogleHTTPClient`, lazy headers, `get/post/patch/upload_multipart/delete`. | Every Google service must reimplement auth and requests. | Official Google SDKs, per-service HTTP wrappers. |
-| `src/tokoboros/integrations/google/gmail.py` | Gmail tool family. | Send, list, search, draft, reply, archive, label, batch categorize, read thread. | Email workflows disappear. | Gmail MCP, direct SMTP/IMAP, user scripts. |
-| `src/tokoboros/integrations/google/calendar.py` | Calendar tool family. | Create/list/update/delete events, free-busy scan. | Scheduling workflows disappear. | Calendar MCP, official SDK. |
-| `src/tokoboros/integrations/google/drive.py` | Drive file-management tool family. | Search, create folder, upload, move, share, trash. | File automation in Drive disappears. | Drive MCP, official SDK. |
-| `src/tokoboros/integrations/google/docs.py` | Docs tool family. | Create, read, append text. | Document workflows disappear. | Docs MCP, official SDK. |
-| `src/tokoboros/integrations/google/sheets.py` | Sheets tool family. | Create sheet, append row, read range. | Spreadsheet automation disappears. | Sheets MCP, official SDK. |
-| `src/tokoboros/integrations/google/contacts.py` | Contacts tool family. | Search, create, update, list, delete contacts. | Contact resolution workflows disappear. | People API wrapper elsewhere, Google MCP. |
-| `src/tokoboros/integrations/google/meet.py` | Meet monitoring/transcript daemon. | `google_monitor_meeting`, polling thread, transcript storage into `MemoryVault`. | Meeting-note capture disappears. | Local audio/STT, Meet SDK, manual notes. |
-
-### 2.9 `src/tokoboros/integrations/notion`
+### 2.6 `src/hachi/og_engine`
 
 | File | What it is and why it exists | Key internals | Runtime impact if removed | Alternatives |
 | --- | --- | --- | --- | --- |
-| `src/tokoboros/integrations/notion/__init__.py` | Re-export package facade. | `__all__` exports. | Low impact; imports become noisier. | Import modules directly. |
-| `src/tokoboros/integrations/notion/service.py` | Shared Notion HTTP client wrapper. | Token retrieval, headers, `_get/_post/_patch`. | Notion services must duplicate auth logic. | Official Notion SDK. |
-| `src/tokoboros/integrations/notion/pages.py` | Notion page CRUD and markdown-to-block conversion. | `create_page`, `_parse_markdown_to_blocks`, `read_page_blocks`, append/archive methods. | Page-oriented Notion workflows disappear. | SDK, richer markdown parser, MCP. |
-| `src/tokoboros/integrations/notion/databases.py` | Workspace search and database query tools. | `notion_search_workspace`, `notion_query_database`. | Database discovery/listing disappears. | SDK or MCP. |
+| `src/hachi/og_engine/__init__.py` | Package marker. | No logic. | None. | Namespace package. |
+| `src/hachi/og_engine/parser.py` | ObjectGraph lexical parser. Exists to turn `.og` source text into structured models. | `OGFile`, `OGNode`, regex-based block parsing, file-level and node-level tag parsers. | Skills, roles, permissions, and integration definitions cannot be loaded. | YAML/JSON parser, PEG parser, markdown AST with extensions. |
+| `src/hachi/og_engine/engine.py` | In-memory skill index and renderer. Exists to search and resolve skill nodes cheaply. | `SkillEngine`, keyword index, recursive dependency resolution, skill usage tracking. | `search_skills`, `load_skill`, native role lookup, and integration discovery all break. | Embedding search, SQLite index, Lucene-like index. |
 
-### 2.10 `src/tokoboros/integrations/slack`
+### 2.7 `src/hachi/tools`
 
 | File | What it is and why it exists | Key internals | Runtime impact if removed | Alternatives |
 | --- | --- | --- | --- | --- |
-| `src/tokoboros/integrations/slack/__init__.py` | Re-export package facade. | `__all__` exports. | Low impact. | Direct imports. |
-| `src/tokoboros/integrations/slack/service.py` | Shared Slack API wrapper. | `_get`, `_post`, `_post_multipart`, header assembly. | Slack services duplicate auth logic. | Slack SDK. |
-| `src/tokoboros/integrations/slack/chat.py` | Channel/thread messaging tools. | Send message, upload file, read channel/thread, add reaction. | Slack chat workflows disappear. | Slack SDK, MCP. |
-| `src/tokoboros/integrations/slack/workspace.py` | Workspace discovery tools. | Search messages, list channels. | Slack discovery/search workflows disappear. | Slack SDK, MCP. |
+| `src/hachi/tools/__init__.py` | Package marker. | No logic. | None. | Namespace package. |
+| `src/hachi/tools/delegation_tools.py` | LLM-facing wrapper for sub-agent spawning. Exists to expose delegation as a tool instead of hardcoded planner logic. | `delegate_task`, `list_roles`, scoped registry builder, persistence thread. | Orchestrator cannot spawn specialized workers. | Planner-side hidden delegation. |
+| `src/hachi/tools/memory_tools.py` | LLM-facing memory API. Exists to expose save/search/delete operations to the model. | `core_*` memory tools, cross-session search tool. | The LLM cannot persist or recall user/workspace/session context directly. | Hidden memory writes only, no memory tools. |
+| `src/hachi/tools/og_tools.py` | LLM-facing skill search/load API. Exists because skills are the primary declarative behavior layer. | `search_skills`, `list_skills`, `load_skill`. | The agent cannot exploit `.og` skill files during execution. | Bake all skills into prompt, retrieval middleware. |
+| `src/hachi/tools/os_tools.py` | Local file and terminal tools. Exists because local agency requires device I/O. | `read_file`, `write_file`, `run_terminal_command`, gated and raw implementations. | The agent cannot touch the host machine. | Container exec, remote tool server, VS Code APIs only. |
+| `src/hachi/tools/sandbox_tools.py` | LLM-facing sandbox wrapper. Exists to make isolated Python execution accessible as a tool. | `python_sandbox`. | Data-analysis/code-exec jobs must use terminal or disappear. | Notebook runner, remote compute worker. |
+| `src/hachi/tools/workflow_tools.py` | Workflow control tool family. Exists so long-running skills can pause intentionally. | `core_suspend_workflow`. | Monitoring or approval workflows cannot express pause points. | Explicit state machine outside LLM loop. |
 
-### 2.11 `src/tokoboros/default_skills`
+### 2.8 `src/hachi/integrations/google`
+
+| File | What it is and why it exists | Key internals | Runtime impact if removed | Alternatives |
+| --- | --- | --- | --- | --- |
+| `src/hachi/integrations/google/__init__.py` | Google integration hub/facade. Exists to aggregate scopes and register all Google tools. | `GoogleIntegrationHub`. | Native Google tooling disappears. | Instantiate services ad hoc per tool family. |
+| `src/hachi/integrations/google/service.py` | Abstract service contract. | `GoogleService`. | Shared contract disappears; runtime still possible but less structured. | Duck typing only. |
+| `src/hachi/integrations/google/client.py` | Authenticated HTTP wrapper for Google APIs. | `GoogleHTTPClient`, lazy headers, `get/post/patch/upload_multipart/delete`. | Every Google service must reimplement auth and requests. | Official Google SDKs, per-service HTTP wrappers. |
+| `src/hachi/integrations/google/gmail.py` | Gmail tool family. | Send, list, search, draft, reply, archive, label, batch categorize, read thread. | Email workflows disappear. | Gmail MCP, direct SMTP/IMAP, user scripts. |
+| `src/hachi/integrations/google/calendar.py` | Calendar tool family. | Create/list/update/delete events, free-busy scan. | Scheduling workflows disappear. | Calendar MCP, official SDK. |
+| `src/hachi/integrations/google/drive.py` | Drive file-management tool family. | Search, create folder, upload, move, share, trash. | File automation in Drive disappears. | Drive MCP, official SDK. |
+| `src/hachi/integrations/google/docs.py` | Docs tool family. | Create, read, append text. | Document workflows disappear. | Docs MCP, official SDK. |
+| `src/hachi/integrations/google/sheets.py` | Sheets tool family. | Create sheet, append row, read range. | Spreadsheet automation disappears. | Sheets MCP, official SDK. |
+| `src/hachi/integrations/google/contacts.py` | Contacts tool family. | Search, create, update, list, delete contacts. | Contact resolution workflows disappear. | People API wrapper elsewhere, Google MCP. |
+| `src/hachi/integrations/google/meet.py` | Meet monitoring/transcript daemon. | `google_monitor_meeting`, polling thread, transcript storage into `MemoryVault`. | Meeting-note capture disappears. | Local audio/STT, Meet SDK, manual notes. |
+
+### 2.9 `src/hachi/integrations/notion`
+
+| File | What it is and why it exists | Key internals | Runtime impact if removed | Alternatives |
+| --- | --- | --- | --- | --- |
+| `src/hachi/integrations/notion/__init__.py` | Re-export package facade. | `__all__` exports. | Low impact; imports become noisier. | Import modules directly. |
+| `src/hachi/integrations/notion/service.py` | Shared Notion HTTP client wrapper. | Token retrieval, headers, `_get/_post/_patch`. | Notion services must duplicate auth logic. | Official Notion SDK. |
+| `src/hachi/integrations/notion/pages.py` | Notion page CRUD and markdown-to-block conversion. | `create_page`, `_parse_markdown_to_blocks`, `read_page_blocks`, append/archive methods. | Page-oriented Notion workflows disappear. | SDK, richer markdown parser, MCP. |
+| `src/hachi/integrations/notion/databases.py` | Workspace search and database query tools. | `notion_search_workspace`, `notion_query_database`. | Database discovery/listing disappears. | SDK or MCP. |
+
+### 2.10 `src/hachi/integrations/slack`
+
+| File | What it is and why it exists | Key internals | Runtime impact if removed | Alternatives |
+| --- | --- | --- | --- | --- |
+| `src/hachi/integrations/slack/__init__.py` | Re-export package facade. | `__all__` exports. | Low impact. | Direct imports. |
+| `src/hachi/integrations/slack/service.py` | Shared Slack API wrapper. | `_get`, `_post`, `_post_multipart`, header assembly. | Slack services duplicate auth logic. | Slack SDK. |
+| `src/hachi/integrations/slack/chat.py` | Channel/thread messaging tools. | Send message, upload file, read channel/thread, add reaction. | Slack chat workflows disappear. | Slack SDK, MCP. |
+| `src/hachi/integrations/slack/workspace.py` | Workspace discovery tools. | Search messages, list channels. | Slack discovery/search workflows disappear. | Slack SDK, MCP. |
+
+### 2.11 `src/hachi/default_skills`
 
 #### Core shipped `.og` files
 
 | File | What it is and why it exists | Runtime impact if removed | Alternatives |
 | --- | --- | --- | --- |
-| `src/tokoboros/default_skills/brain.og` | The orchestrator's identity and operating rules. Exists because prompt instructions are treated as structured data. | The main agent loses its persona, behavior rules, and tool philosophy. | Hardcoded system prompt in Python. |
-| `src/tokoboros/default_skills/core_integrations.og` | Declares built-in `native_integration` nodes for Google, Slack, Notion. | Native integrations are not discovered on boot. | Hardcode these in Python. |
+| `src/hachi/default_skills/brain.og` | The orchestrator's identity and operating rules. Exists because prompt instructions are treated as structured data. | The main agent loses its persona, behavior rules, and tool philosophy. | Hardcoded system prompt in Python. |
+| `src/hachi/default_skills/core_integrations.og` | Declares built-in `native_integration` nodes for Google, Slack, Notion. | Native integrations are not discovered on boot. | Hardcode these in Python. |
 
 #### General skills
 
 | File | Purpose | Why it exists | Runtime impact if removed |
 | --- | --- | --- | --- |
-| `src/tokoboros/default_skills/general/currency.og` | Dynamic currency conversion via Frankfurter API. | Example and utility skill. | `convert_currency` tool is not generated. |
-| `src/tokoboros/default_skills/general/dictionary.og` | Dictionary/thesaurus lookup via Free Dictionary API. | Deterministic lexical lookup. | `lookup_word` tool is not generated. |
-| `src/tokoboros/default_skills/general/finance.og` | Crypto price lookup via CoinGecko. | External financial data without hallucination. | `fetch_crypto_price` tool disappears. |
-| `src/tokoboros/default_skills/general/flight_radar.og` | Local airspace lookup via OpenSky. | Real-time aviation example skill. | `fetch_local_airspace` tool disappears. |
-| `src/tokoboros/default_skills/general/math_engine.og` | Deterministic math via MathJS API. | Outsource non-trivial calculations from the LLM. | `evaluate_math` tool disappears. |
-| `src/tokoboros/default_skills/general/network.og` | IP lookup via ipapi. | Network intelligence without custom code. | `lookup_ip` tool disappears. |
-| `src/tokoboros/default_skills/general/qr_creator.og` | QR-code creation workflow using shell `curl`. | Demonstrates a non-REST skill that orchestrates OS tools. | No built-in QR workflow. |
-| `src/tokoboros/default_skills/general/translator.og` | Translation via MyMemory API. | Deterministic translation path. | `translate_text` tool disappears. |
-| `src/tokoboros/default_skills/general/weather.og` | Weather lookup via wttr.in. | Canonical example of skill -> REST tool -> summary flow. | `fetch_weather` tool disappears. |
-| `src/tokoboros/default_skills/general/wiki.og` | Wikipedia summary lookup. | Fast factual backgrounding. | `fetch_wiki_summary` tool disappears. |
+| `src/hachi/default_skills/general/currency.og` | Dynamic currency conversion via Frankfurter API. | Example and utility skill. | `convert_currency` tool is not generated. |
+| `src/hachi/default_skills/general/dictionary.og` | Dictionary/thesaurus lookup via Free Dictionary API. | Deterministic lexical lookup. | `lookup_word` tool is not generated. |
+| `src/hachi/default_skills/general/finance.og` | Crypto price lookup via CoinGecko. | External financial data without hallucination. | `fetch_crypto_price` tool disappears. |
+| `src/hachi/default_skills/general/flight_radar.og` | Local airspace lookup via OpenSky. | Real-time aviation example skill. | `fetch_local_airspace` tool disappears. |
+| `src/hachi/default_skills/general/math_engine.og` | Deterministic math via MathJS API. | Outsource non-trivial calculations from the LLM. | `evaluate_math` tool disappears. |
+| `src/hachi/default_skills/general/network.og` | IP lookup via ipapi. | Network intelligence without custom code. | `lookup_ip` tool disappears. |
+| `src/hachi/default_skills/general/qr_creator.og` | QR-code creation workflow using shell `curl`. | Demonstrates a non-REST skill that orchestrates OS tools. | No built-in QR workflow. |
+| `src/hachi/default_skills/general/translator.og` | Translation via MyMemory API. | Deterministic translation path. | `translate_text` tool disappears. |
+| `src/hachi/default_skills/general/weather.og` | Weather lookup via wttr.in. | Canonical example of skill -> REST tool -> summary flow. | `fetch_weather` tool disappears. |
+| `src/hachi/default_skills/general/wiki.og` | Wikipedia summary lookup. | Fast factual backgrounding. | `fetch_wiki_summary` tool disappears. |
 
 #### Google workflow skills
 
 | File | Purpose | Why it exists | Runtime impact if removed |
 | --- | --- | --- | --- |
-| `src/tokoboros/default_skills/google/inbox_sentinel.og` | Inbox-monitoring workflow. | Demonstrates chained native-tool workflows. | No shipped inbox-monitoring blueprint. |
-| `src/tokoboros/default_skills/google/meeting_copilot.og` | Meeting prep/follow-up workflow. | Demonstrates Google-tool orchestration. | No shipped meeting-assistant blueprint. |
-| `src/tokoboros/default_skills/google/morning_briefing.og` | Daily briefing workflow. | Demonstrates multi-tool orchestration plus workflow suspension. | No shipped morning briefing blueprint. |
-| `src/tokoboros/default_skills/google/receipt_sweeper.og` | Receipt extraction/organization workflow. | Demonstrates Gmail + Drive automation. | No shipped expense-cleanup workflow. |
-| `src/tokoboros/default_skills/google/travel_organizer.og` | Travel extraction/organization workflow. | Demonstrates cross-tool personal-assistant workflow. | No shipped travel-organizer blueprint. |
+| `src/hachi/default_skills/google/inbox_sentinel.og` | Inbox-monitoring workflow. | Demonstrates chained native-tool workflows. | No shipped inbox-monitoring blueprint. |
+| `src/hachi/default_skills/google/meeting_copilot.og` | Meeting prep/follow-up workflow. | Demonstrates Google-tool orchestration. | No shipped meeting-assistant blueprint. |
+| `src/hachi/default_skills/google/morning_briefing.og` | Daily briefing workflow. | Demonstrates multi-tool orchestration plus workflow suspension. | No shipped morning briefing blueprint. |
+| `src/hachi/default_skills/google/receipt_sweeper.og` | Receipt extraction/organization workflow. | Demonstrates Gmail + Drive automation. | No shipped expense-cleanup workflow. |
+| `src/hachi/default_skills/google/travel_organizer.og` | Travel extraction/organization workflow. | Demonstrates cross-tool personal-assistant workflow. | No shipped travel-organizer blueprint. |
 
 #### Notion workflow skills
 
 | File | Purpose | Why it exists | Runtime impact if removed |
 | --- | --- | --- | --- |
-| `src/tokoboros/default_skills/notion/notion_brain_dump.og` | Capture-to-Notion workflow. | Demonstrates personal knowledge capture. | No shipped Notion inbox workflow. |
-| `src/tokoboros/default_skills/notion/project_kickoff.og` | Project kickoff automation. | Demonstrates Notion-centered team workflow. | No shipped kickoff blueprint. |
-| `src/tokoboros/default_skills/notion/weekly_review.og` | Weekly review workflow. | Demonstrates reflective planning flow. | No shipped review blueprint. |
+| `src/hachi/default_skills/notion/notion_brain_dump.og` | Capture-to-Notion workflow. | Demonstrates personal knowledge capture. | No shipped Notion inbox workflow. |
+| `src/hachi/default_skills/notion/project_kickoff.og` | Project kickoff automation. | Demonstrates Notion-centered team workflow. | No shipped kickoff blueprint. |
+| `src/hachi/default_skills/notion/weekly_review.og` | Weekly review workflow. | Demonstrates reflective planning flow. | No shipped review blueprint. |
 
 #### Role blueprints
 
 | File | Purpose | Why it exists | Runtime impact if removed |
 | --- | --- | --- | --- |
-| `src/tokoboros/default_skills/roles/analyst.og` | Analyst sub-agent persona and rules. | Gives delegation a data-analysis role. | `delegate_task(role="analyst")` loses its default blueprint. |
-| `src/tokoboros/default_skills/roles/coder.og` | Coder sub-agent persona and rules. | Gives delegation a software-engineering role. | `delegate_task(role="coder")` loses its default blueprint. |
-| `src/tokoboros/default_skills/roles/devops.og` | DevOps sub-agent persona and rules. | Gives delegation an ops role. | `delegate_task(role="devops")` loses its default blueprint. |
-| `src/tokoboros/default_skills/roles/emailer.og` | Emailer sub-agent persona and rules. | Gives delegation a writing/sending role. | `delegate_task(role="emailer")` loses its default blueprint. |
-| `src/tokoboros/default_skills/roles/researcher.og` | Researcher sub-agent persona and rules. | Gives delegation a research role. | `delegate_task(role="researcher")` loses its default blueprint. |
+| `src/hachi/default_skills/roles/analyst.og` | Analyst sub-agent persona and rules. | Gives delegation a data-analysis role. | `delegate_task(role="analyst")` loses its default blueprint. |
+| `src/hachi/default_skills/roles/coder.og` | Coder sub-agent persona and rules. | Gives delegation a software-engineering role. | `delegate_task(role="coder")` loses its default blueprint. |
+| `src/hachi/default_skills/roles/devops.og` | DevOps sub-agent persona and rules. | Gives delegation an ops role. | `delegate_task(role="devops")` loses its default blueprint. |
+| `src/hachi/default_skills/roles/emailer.og` | Emailer sub-agent persona and rules. | Gives delegation a writing/sending role. | `delegate_task(role="emailer")` loses its default blueprint. |
+| `src/hachi/default_skills/roles/researcher.og` | Researcher sub-agent persona and rules. | Gives delegation a research role. | `delegate_task(role="researcher")` loses its default blueprint. |
 
 #### Slack and technical skills
 
 | File | Purpose | Why it exists | Runtime impact if removed |
 | --- | --- | --- | --- |
-| `src/tokoboros/default_skills/slack/daily_standup.og` | Standup-generation workflow. | Demonstrates Slack-centric ritual automation. | No shipped standup blueprint. |
-| `src/tokoboros/default_skills/slack/dnd_coordinator.og` | DnD coordination workflow. | Demonstrates hobby/community orchestration. | No shipped DnD coordinator. |
-| `src/tokoboros/default_skills/slack/urgent_escalator.og` | Urgent escalation workflow. | Demonstrates message-monitoring/escalation. | No shipped escalation blueprint. |
-| `src/tokoboros/default_skills/technical/github.og` | GitHub issue creation skill. | Demonstrates token-backed dynamic REST tooling. | `create_github_issue` tool disappears. |
+| `src/hachi/default_skills/slack/daily_standup.og` | Standup-generation workflow. | Demonstrates Slack-centric ritual automation. | No shipped standup blueprint. |
+| `src/hachi/default_skills/slack/dnd_coordinator.og` | DnD coordination workflow. | Demonstrates hobby/community orchestration. | No shipped DnD coordinator. |
+| `src/hachi/default_skills/slack/urgent_escalator.og` | Urgent escalation workflow. | Demonstrates message-monitoring/escalation. | No shipped escalation blueprint. |
+| `src/hachi/default_skills/technical/github.og` | GitHub issue creation skill. | Demonstrates token-backed dynamic REST tooling. | `create_github_issue` tool disappears. |
 
 ## 3. Architecture Deep Dive
 
@@ -433,8 +438,8 @@ There is no product. The rest of the repo is supporting machinery around this lo
 #### Inbound data
 
 - user text from the terminal
-- config files from `~/.tokoboros/`
-- `.og` definitions from `~/.tokoboros/skills/`
+- config files from `~/.hachi/`
+- `.og` definitions from `~/.hachi/skills/`
 - tokens from env vars or vault files
 
 #### Internal data transformations
@@ -454,7 +459,7 @@ There is no product. The rest of the repo is supporting machinery around this lo
 
 ### 3.4 Control flow
 
-Tokoboros uses centralized orchestration rather than distributed message passing.
+Hachi uses centralized orchestration rather than distributed message passing.
 
 - `boot_agent()` wires dependencies together.
 - `ExecutionLoop` controls the active turn.
@@ -484,13 +489,13 @@ sequenceDiagram
     participant SS as SessionStore
     participant LOOP as ExecutionLoop
 
-    User->>CLI: tokoboros run
+    User->>CLI: hachi run
     CLI->>WS: ensure_workspace()
     CLI->>WS: ensure_device_permissions()
     CLI->>BOOT: boot_agent(on_event)
     BOOT->>PG: PermissionGate(device-permissions.og)
     BOOT->>WS: load_config(), load_brain(), get_skills_dir()
-    BOOT->>SE: load_directory(~/.tokoboros/skills)
+    BOOT->>SE: load_directory(~/.hachi/skills)
     BOOT->>MV: create Chroma collections
     BOOT->>SS: open SQLite sessions.db
     BOOT->>LOOP: construct loop with llm client + tool registry
@@ -517,7 +522,7 @@ There is no explicit flush for `MemoryVault`; Chroma's persistent client manages
 | Hatchling | Python build backend. | Simple PEP 517 packaging. | `build-backend = "hatchling.build"`. | setuptools, poetry-core, pdm-backend. |
 | uv | Package/env/project manager used in docs and workflows. | Fast lock+sync workflow with integrated venv management. | `uv sync` and `uv sync --extra dev`. | poetry, pipx, pdm. |
 | Ruff | Linter/formatter. | Fast lint/format pass. | `ruff check src/`, `ruff format src/`. | flake8 + black + isort. |
-| MyPy | Static type checker. | Intended type safety. | `mypy src/tokoboros/`. | pyright, pyre. |
+| MyPy | Static type checker. | Intended type safety. | `mypy src/hachi/`. | pyright, pyre. |
 | Pytest | Test runner. | Intended test harness. | `pytest`. | unittest, nose. |
 
 ### 4.2 Compilation and bundling process
@@ -527,19 +532,19 @@ This project is interpreted Python. There is no TypeScript transpilation, JavaSc
 #### Inputs
 
 - `pyproject.toml`
-- Python source under `src/tokoboros/`
+- Python source under `src/hachi/`
 - README for package metadata
 
 #### Outputs
 
 - local synced project environment when using `uv sync`
 - standard wheel/sdist when using a PEP 517 builder
-- console script `tokoboros`
+- console script `hachi`
 
 #### Internal mechanism
 
-- `project.scripts` maps `tokoboros` to `tokoboros.cli.main:app`
-- `tool.hatch.build.targets.wheel.packages = ["src/tokoboros"]` tells Hatchling what to package
+- `project.scripts` maps `hachi` to `hachi.cli.main:app`
+- `tool.hatch.build.targets.wheel.packages = ["src/hachi"]` tells Hatchling what to package
 - there are no code generation steps during build
 
 ### 4.3 Build commands
@@ -550,7 +555,7 @@ This project is interpreted Python. There is no TypeScript transpilation, JavaSc
 | `uv sync --extra dev` | same + dev extras | synced env + pytest/ruff/mypy deps | same with optional `dev` extra | Contributor setup path. |
 | `uv run ruff check src/` | source tree | lint findings | Ruff static analysis via uv-managed env | No repo automation runs it for you. |
 | `uv run ruff format src/` | source tree | reformatted files | Ruff formatter via uv-managed env | Optional/manual. |
-| `uv run mypy src/tokoboros/` | source tree | type findings | MyPy static analysis via uv-managed env | Strict mode configured, but enforcement is manual. |
+| `uv run mypy src/hachi/` | source tree | type findings | MyPy static analysis via uv-managed env | Strict mode configured, but enforcement is manual. |
 | `uv run pytest` | expected `tests/` tree | test results | Pytest test discovery via uv-managed env | `tool.pytest.ini_options.testpaths = ["tests"]`. |
 
 ### 4.4 Generated runtime artifacts
@@ -559,17 +564,17 @@ These are not build artifacts, but they matter operationally:
 
 | Artifact | Location | Why it exists |
 | --- | --- | --- |
-| User workspace | `~/.tokoboros/` | Central local state root |
-| Brain prompt copy | `~/.tokoboros/brain.og` | User-local brain file loaded at runtime |
-| Config | `~/.tokoboros/tokoboros.json` | Model/max token configuration |
-| Permissions | `~/.tokoboros/device-permissions.og` | Device security policy |
-| Local skills | `~/.tokoboros/skills/**/*` | User-local copies of built-in and custom skills |
-| Memory vault | `~/.tokoboros/brain/chroma_vault` | Chroma persistence |
-| Session DB | `~/.tokoboros/brain/sessions.db` | SQLite transcript persistence |
-| Skill analytics | `~/.tokoboros/brain/skill_usage.json` | Load counts and stale-skill metadata |
-| Vault tokens | `~/.tokoboros/vault.json` | Slack/Notion/GitHub-style tokens |
-| OAuth tokens | `~/.tokoboros/tokens/google.json` | Google OAuth refresh/access tokens |
-| Sandbox runs | `~/.tokoboros/sandbox/exec_<hash>/` | Isolated code execution payloads |
+| User workspace | `~/.hachi/` | Central local state root |
+| Brain prompt copy | `~/.hachi/brain.og` | User-local brain file loaded at runtime |
+| Config | `~/.hachi/hachi.json` | Model/max token configuration |
+| Permissions | `~/.hachi/device-permissions.og` | Device security policy |
+| Local skills | `~/.hachi/skills/**/*` | User-local copies of built-in and custom skills |
+| Memory vault | `~/.hachi/brain/chroma_vault` | Chroma persistence |
+| Session DB | `~/.hachi/brain/sessions.db` | SQLite transcript persistence |
+| Skill analytics | `~/.hachi/brain/skill_usage.json` | Load counts and stale-skill metadata |
+| Vault tokens | `~/.hachi/vault.json` | Slack/Notion/GitHub-style tokens |
+| OAuth tokens | `~/.hachi/tokens/google.json` | Google OAuth refresh/access tokens |
+| Sandbox runs | `~/.hachi/sandbox/exec_<hash>/` | Isolated code execution payloads |
 
 ## 5. Dependency Analysis
 
@@ -579,7 +584,7 @@ These are not build artifacts, but they matter operationally:
 | --- | --- | --- | --- | --- | --- |
 | `anthropic` | Claude SDK for text + tool calling. | The system is built explicitly around Anthropic prompt caching and tool use. | `anthropic.Anthropic(...).messages.create(...)` | The main and sub-agent loops cannot run. | OpenAI SDK, local model wrappers, LiteLLM. |
 | `pydantic` | Structured runtime models. | Convenient typed models with validation and serialization. | `BaseModel`, `Field`, `model_dump()` | Parser and LLM message/type models lose structure. | dataclasses, attrs, marshmallow. |
-| `typer` | CLI application layer. | Lightweight CLI on top of Click with type hints. | `Typer`, `Option`, command decorators | `tokoboros` command disappears. | Click, argparse. |
+| `typer` | CLI application layer. | Lightweight CLI on top of Click with type hints. | `Typer`, `Option`, command decorators | `hachi` command disappears. | Click, argparse. |
 | `rich` | Terminal rendering. | High-quality REPL feedback and panels. | `Console`, `Panel`, `Markdown`, `Rule`, `Prompt`, `Table` | The UI becomes much less readable. | plain print, Textual, curses. |
 
 ### 5.2 Declared development dependencies
@@ -620,34 +625,34 @@ This is one of the most important senior-engineer caveats in the repo.
 
 | Entry point | Execution path | What it does | What breaks if removed |
 | --- | --- | --- | --- |
-| `tokoboros` console script | `pyproject.toml -> tokoboros.cli.main:app` | Starts Typer app | Package install yields no command |
-| `tokoboros run` | `cli/main.py::run()` | Boots workspace and enters REPL | No interactive runtime |
-| `tokoboros onboard` | `cli/main.py::onboard()` | Creates `~/.tokoboros/` layout | First-run bootstrap becomes manual |
-| `tokoboros permissions` | `cli/main.py::permissions()` | View/reset/tweak `device-permissions.og` | Security UX becomes manual file editing only |
-| `tokoboros reauth` | `cli/main.py::reauth()` | Deletes `vault.json` | Credential reset becomes manual |
+| `hachi` console script | `pyproject.toml -> hachi.cli.main:app` | Starts Typer app | Package install yields no command |
+| `hachi run` | `cli/main.py::run()` | Boots workspace and enters REPL | No interactive runtime |
+| `hachi onboard` | `cli/main.py::onboard()` | Creates `~/.hachi/` layout | First-run bootstrap becomes manual |
+| `hachi permissions` | `cli/main.py::permissions()` | View/reset/tweak `device-permissions.og` | Security UX becomes manual file editing only |
+| `hachi reauth` | `cli/main.py::reauth()` | Deletes `vault.json` | Credential reset becomes manual |
 
 ### 6.2 Internal runtime entry points
 
 | Entry point | Why it exists | Internal path |
 | --- | --- | --- |
-| `boot_agent()` | Central composition root | `src/tokoboros/gateway/orchestrator.py` |
-| `AgentSession.chat()` | Turn-level orchestration | `src/tokoboros/gateway/orchestrator.py` |
-| `ExecutionLoop.run()` | ReAct loop | `src/tokoboros/core/loop.py` |
-| `delegate_task` tool | Sub-agent spawning | `src/tokoboros/tools/delegation_tools.py` |
-| Dynamic REST tool registration | `.og` `::api` -> tool closures | `src/tokoboros/core/rest_adapter.py` |
-| Native tool registration | Google/Notion/Slack tool families | `src/tokoboros/integrations/*` |
-| MCP tool registration | External server-discovered tools | `src/tokoboros/core/mcp_client.py` |
+| `boot_agent()` | Central composition root | `src/hachi/gateway/orchestrator.py` |
+| `AgentSession.chat()` | Turn-level orchestration | `src/hachi/gateway/orchestrator.py` |
+| `ExecutionLoop.run()` | ReAct loop | `src/hachi/core/loop.py` |
+| `delegate_task` tool | Sub-agent spawning | `src/hachi/tools/delegation_tools.py` |
+| Dynamic REST tool registration | `.og` `::api` -> tool closures | `src/hachi/core/rest_adapter.py` |
+| Native tool registration | Google/Notion/Slack tool families | `src/hachi/integrations/*` |
+| MCP tool registration | External server-discovered tools | `src/hachi/core/mcp_client.py` |
 
 ### 6.3 Configuration loading sequence
 
-`tokoboros run` loads configuration in this order:
+`hachi run` loads configuration in this order:
 
 1. `ensure_workspace()` guarantees files exist.
 2. `ensure_device_permissions()` ensures the permissions manifest exists.
 3. `PermissionGate` loads `device-permissions.og`.
-4. `load_config()` reads `~/.tokoboros/tokoboros.json`.
-5. `load_brain()` parses `~/.tokoboros/brain.og` and renders it into prompt text.
-6. `SkillEngine.load_directory()` reads `~/.tokoboros/skills/**/*.og`.
+4. `load_config()` reads `~/.hachi/hachi.json`.
+5. `load_brain()` parses `~/.hachi/brain.og` and renders it into prompt text.
+6. `SkillEngine.load_directory()` reads `~/.hachi/skills/**/*.og`.
 
 ## 7. Runtime Execution Walkthrough
 
@@ -659,10 +664,10 @@ The effective entrypoint is the console script created from `pyproject.toml`:
 
 ```toml
 [project.scripts]
-tokoboros = "tokoboros.cli.main:app"
+hachi = "hachi.cli.main:app"
 ```
 
-That means the first runtime object of interest is the Typer app in `src/tokoboros/cli/main.py`.
+That means the first runtime object of interest is the Typer app in `src/hachi/cli/main.py`.
 
 ### 7.2 CLI boot path
 
@@ -683,7 +688,7 @@ def run():
 
 Line-by-line behavior:
 
-1. `ensure_workspace()` creates `~/.tokoboros/`, `skills/`, and `sessions/`, copies built-in skills if the skills directory is empty, writes `brain.og` if absent, and writes default `tokoboros.json` if absent.
+1. `ensure_workspace()` creates `~/.hachi/`, `skills/`, and `sessions/`, copies built-in skills if the skills directory is empty, writes `brain.og` if absent, and writes default `hachi.json` if absent.
 2. `ensure_device_permissions(console)` checks for `device-permissions.og`; if absent, it launches the interactive wizard.
 3. `boot_agent(on_event=_render_event)` constructs the entire runtime.
 4. The CLI enters an infinite REPL loop.
@@ -721,7 +726,7 @@ Detailed creation order:
 1. `PermissionGate` is created first. This is deliberate; all later tool registration depends on it.
 2. Local config JSON is read.
 3. The local `brain.og` file is parsed and rendered into prompt text.
-4. `SkillEngine` parses every `.og` file in `~/.tokoboros/skills/` and indexes all nodes.
+4. `SkillEngine` parses every `.og` file in `~/.hachi/skills/` and indexes all nodes.
 5. `IntegrationRuntime` scans for `env` and `integration` nodes. In the shipped default skills, there are no such nodes, so this extension path is idle by default.
 6. `MCPManager` scans for `mcp` nodes. Again, no built-in MCP nodes ship in the repo, so this path is also dormant by default.
 7. Native integration nodes from `core_integrations.og` are detected, which causes boot-time construction of:
@@ -819,15 +824,15 @@ To make this concrete, trace the request: `What is the weather in London?`
 
 | Step | File / method | What happens | Data transformation | Error handling |
 | --- | --- | --- | --- | --- |
-| 1 | `src/tokoboros/cli/main.py::run` | User enters text in REPL. | Raw terminal string -> `user_input`. | Empty input is skipped; Ctrl+C shuts down cleanly. |
-| 2 | `src/tokoboros/gateway/orchestrator.py::AgentSession.chat` | Time header, frozen snapshot, and recalled context are added to the system prompt. | String -> enriched prompt context. | Vault recall failures are swallowed and treated as empty recall. |
-| 3 | `src/tokoboros/core/loop.py::ExecutionLoop.run` | Claude gets message history + tool schemas and decides next action. | LLM output -> text and tool calls. | Loop limit raises `AgentException`. |
-| 4 | `src/tokoboros/tools/og_tools.py::search_skills` | Model searches for relevant skill. | Query string -> JSON string listing matches like `core_weather`. | Returns friendly "No matching skills found" string. |
-| 5 | `src/tokoboros/tools/og_tools.py::load_skill` | Model loads `core_weather`. | Skill name -> rendered skill context string. | Missing skill returns error string from `SkillEngine.resolve_context`. |
-| 6 | `src/tokoboros/core/rest_adapter.py::dynamic_api_tool` for `fetch_weather` | Dynamic REST tool calls wttr.in. | Skill-defined schema args -> URL/headers -> HTTP response text/JSON string. | Returns `HTTP Error...`, `Request Error...`, or `Unexpected Error...` strings. |
-| 7 | `src/tokoboros/core/loop.py` | Tool result is appended as a `tool_result` content block. | Raw tool output -> Anthropic-compatible message block. | Tool exceptions become strings inside `ToolRegistry.execute`. |
-| 8 | `src/tokoboros/core/llm.py::AnthropicClient.generate` | Model synthesizes final natural-language response. | JSON/string tool output -> user-facing markdown. | If provider call fails, exception bubbles to CLI. |
-| 9 | `src/tokoboros/core/memory.py::sync_turn` and `src/tokoboros/core/session_store.py::log_message` | Finished turn is summarized/persisted asynchronously and logged to SQLite. | Transcript -> semantic facts and session rows. | Extraction errors are swallowed; SQLite logging errors are swallowed by `AgentSession.chat`. |
+| 1 | `src/hachi/cli/main.py::run` | User enters text in REPL. | Raw terminal string -> `user_input`. | Empty input is skipped; Ctrl+C shuts down cleanly. |
+| 2 | `src/hachi/gateway/orchestrator.py::AgentSession.chat` | Time header, frozen snapshot, and recalled context are added to the system prompt. | String -> enriched prompt context. | Vault recall failures are swallowed and treated as empty recall. |
+| 3 | `src/hachi/core/loop.py::ExecutionLoop.run` | Claude gets message history + tool schemas and decides next action. | LLM output -> text and tool calls. | Loop limit raises `AgentException`. |
+| 4 | `src/hachi/tools/og_tools.py::search_skills` | Model searches for relevant skill. | Query string -> JSON string listing matches like `core_weather`. | Returns friendly "No matching skills found" string. |
+| 5 | `src/hachi/tools/og_tools.py::load_skill` | Model loads `core_weather`. | Skill name -> rendered skill context string. | Missing skill returns error string from `SkillEngine.resolve_context`. |
+| 6 | `src/hachi/core/rest_adapter.py::dynamic_api_tool` for `fetch_weather` | Dynamic REST tool calls wttr.in. | Skill-defined schema args -> URL/headers -> HTTP response text/JSON string. | Returns `HTTP Error...`, `Request Error...`, or `Unexpected Error...` strings. |
+| 7 | `src/hachi/core/loop.py` | Tool result is appended as a `tool_result` content block. | Raw tool output -> Anthropic-compatible message block. | Tool exceptions become strings inside `ToolRegistry.execute`. |
+| 8 | `src/hachi/core/llm.py::AnthropicClient.generate` | Model synthesizes final natural-language response. | JSON/string tool output -> user-facing markdown. | If provider call fails, exception bubbles to CLI. |
+| 9 | `src/hachi/core/memory.py::sync_turn` and `src/hachi/core/session_store.py::log_message` | Finished turn is summarized/persisted asynchronously and logged to SQLite. | Transcript -> semantic facts and session rows. | Extraction errors are swallowed; SQLite logging errors are swallowed by `AgentSession.chat`. |
 
 ### 8.2 Sequence diagram
 
@@ -867,7 +872,7 @@ sequenceDiagram
 
 ### 8.3 Why this matters for new engineers
 
-If you come from a web-service background, do not look for `router -> controller -> service -> repository`. Tokoboros instead uses:
+If you come from a web-service background, do not look for `router -> controller -> service -> repository`. Hachi instead uses:
 
 `REPL -> session assembler -> LLM loop -> tool registry -> tool handler -> external side effect`
 
@@ -881,7 +886,7 @@ The analogues are:
 
 ## 9. Data Model Deep Dive
 
-### 9.1 LLM conversation models (`src/tokoboros/core/llm.py`)
+### 9.1 LLM conversation models (`src/hachi/core/llm.py`)
 
 #### `Message`
 
@@ -909,7 +914,7 @@ Alternative: raw dicts or provider SDK types.
 | `content` | Final assistant text for this provider call | May be empty if the model only emitted tools |
 | `tool_calls` | Requested tool invocations | Zero or more |
 
-### 9.2 ObjectGraph parser models (`src/tokoboros/og_engine/parser.py`)
+### 9.2 ObjectGraph parser models (`src/hachi/og_engine/parser.py`)
 
 #### `OGIndexEntry`
 
@@ -963,7 +968,7 @@ Why it exists: separates file-level routing metadata from node bodies.
 What breaks if removed: parser and sub-agent prompt building become much more awkward.  
 Alternative: parallel sidecar metadata files.
 
-### 9.3 Permission and security models (`src/tokoboros/core/permissions.py`)
+### 9.3 Permission and security models (`src/hachi/core/permissions.py`)
 
 | Model | Fields | Why it exists |
 | --- | --- | --- |
@@ -978,10 +983,10 @@ These are frozen dataclasses on purpose. The design intent is that permissions a
 
 | Model | File | Meaning |
 | --- | --- | --- |
-| `TaskRecord` | `src/tokoboros/core/memory.py` | One completed task in the active session ledger |
-| `SandboxResult` | `src/tokoboros/core/sandbox.py` | Structured sandbox execution result |
-| `SubAgentReport` | `src/tokoboros/core/sub_agent.py` | Compact handoff object from sub-agent to orchestrator |
-| `SubAgentStatus` | `src/tokoboros/core/sub_agent.py` | `success`, `error`, `timeout` |
+| `TaskRecord` | `src/hachi/core/memory.py` | One completed task in the active session ledger |
+| `SandboxResult` | `src/hachi/core/sandbox.py` | Structured sandbox execution result |
+| `SubAgentReport` | `src/hachi/core/sub_agent.py` | Compact handoff object from sub-agent to orchestrator |
+| `SubAgentStatus` | `src/hachi/core/sub_agent.py` | `success`, `error`, `timeout` |
 
 `SubAgentReport` fields are especially important:
 
@@ -998,7 +1003,7 @@ These are frozen dataclasses on purpose. The design intent is that permissions a
 
 ### 9.5 Legacy / unused models
 
-`src/tokoboros/core/models.py` defines a second ObjectGraph model family (`OGNodeMeta`, `OGQueryResult`, `OGDeltaResult`, `OGSession`, etc.). In the current runtime snapshot, nothing imports or uses these types.
+`src/hachi/core/models.py` defines a second ObjectGraph model family (`OGNodeMeta`, `OGQueryResult`, `OGDeltaResult`, `OGSession`, etc.). In the current runtime snapshot, nothing imports or uses these types.
 
 That means:
 
@@ -1007,16 +1012,16 @@ That means:
 
 ## 10. Database Layer
 
-Tokoboros does not have an application database in the normal CRUD sense. It has two local persistence layers:
+Hachi does not have an application database in the normal CRUD sense. It has two local persistence layers:
 
 - ChromaDB for semantic memory
 - SQLite for session transcripts
 
-### 10.1 ChromaDB layer (`src/tokoboros/core/memory_vault.py`)
+### 10.1 ChromaDB layer (`src/hachi/core/memory_vault.py`)
 
 #### ChromaDB definition
 
-An embedded vector store rooted at `~/.tokoboros/brain/chroma_vault`.
+An embedded vector store rooted at `~/.hachi/brain/chroma_vault`.
 
 #### Chroma collections
 
@@ -1065,7 +1070,7 @@ Why this matters:
 - SQLite FTS with no embeddings
 - plain append-only logs with LLM summarization only
 
-### 10.2 SQLite layer (`src/tokoboros/core/session_store.py`)
+### 10.2 SQLite layer (`src/hachi/core/session_store.py`)
 
 #### SQLite schema
 
@@ -1121,13 +1126,13 @@ What this means:
 
 ### 11.1 Inbound APIs
 
-There are no inbound HTTP APIs and no REST endpoints exposed by Tokoboros itself.
+There are no inbound HTTP APIs and no REST endpoints exposed by Hachi itself.
 
 That means there is no section to document of the form:
 
 `/users -> controller -> service -> repository`
 
-Instead, Tokoboros exposes an internal tool API to the LLM and then consumes outbound third-party APIs.
+Instead, Hachi exposes an internal tool API to the LLM and then consumes outbound third-party APIs.
 
 ### 11.2 Core tool APIs exposed to the LLM
 
@@ -1135,7 +1140,7 @@ Instead, Tokoboros exposes an internal tool API to the LLM and then consumes out
 
 | Tool | File / handler | Input schema | Response shape | Auth | Internal flow |
 | --- | --- | --- | --- | --- | --- |
-| `search_skills` | `src/tokoboros/tools/og_tools.py` | `{ query: string }` | JSON string list of name/role/keywords/source_file | none | `SkillEngine.search()` |
+| `search_skills` | `src/hachi/tools/og_tools.py` | `{ query: string }` | JSON string list of name/role/keywords/source_file | none | `SkillEngine.search()` |
 | `list_skills` | same | `{}` | JSON string list of loaded nodes | none | `SkillEngine.list_all_skills()` |
 | `load_skill` | same | `{ name: string }` | rendered skill context string | none | `SkillEngine.resolve_context()` |
 
@@ -1143,7 +1148,7 @@ Instead, Tokoboros exposes an internal tool API to the LLM and then consumes out
 
 | Tool | File / handler | Input schema | Response shape | Auth / authorization | Internal flow |
 | --- | --- | --- | --- | --- | --- |
-| `read_file` | `src/tokoboros/tools/os_tools.py` | `{ path }` | raw file text or error string | permission-gated | `PermissionGate.check_path(..., "read")` -> file read |
+| `read_file` | `src/hachi/tools/os_tools.py` | `{ path }` | raw file text or error string | permission-gated | `PermissionGate.check_path(..., "read")` -> file read |
 | `write_file` | same | `{ path, content }` | success/error string | permission-gated | `check_path(..., "write")` -> file write |
 | `run_terminal_command` | same | `{ command, cwd? }` | stdout/stderr/exit-code string | permission-gated | `check_command()` -> subprocess run |
 
@@ -1163,10 +1168,10 @@ Instead, Tokoboros exposes an internal tool API to the LLM and then consumes out
 
 | Tool | Purpose | File |
 | --- | --- | --- |
-| `core_suspend_workflow` | intentionally halt the active workflow | `src/tokoboros/tools/workflow_tools.py` |
-| `python_sandbox` | isolated Python code execution with optional deps | `src/tokoboros/tools/sandbox_tools.py` |
-| `delegate_task` | spawn a specialized sub-agent | `src/tokoboros/tools/delegation_tools.py` |
-| `list_roles` | enumerate available delegation roles | `src/tokoboros/tools/delegation_tools.py` |
+| `core_suspend_workflow` | intentionally halt the active workflow | `src/hachi/tools/workflow_tools.py` |
+| `python_sandbox` | isolated Python code execution with optional deps | `src/hachi/tools/sandbox_tools.py` |
+| `delegate_task` | spawn a specialized sub-agent | `src/hachi/tools/delegation_tools.py` |
+| `list_roles` | enumerate available delegation roles | `src/hachi/tools/delegation_tools.py` |
 
 ### 11.3 Dynamic REST APIs generated from shipped `.og` files
 
@@ -1174,22 +1179,22 @@ These are created at boot by `UniversalRestAdapter.register_node_apis()`.
 
 | Tool | Source skill file | Method / endpoint | Purpose | Auth |
 | --- | --- | --- | --- | --- |
-| `convert_currency` | `src/tokoboros/default_skills/general/currency.og` | `GET https://api.frankfurter.app/latest?...` | fiat conversion | none |
-| `lookup_word` | `src/tokoboros/default_skills/general/dictionary.og` | `GET https://api.dictionaryapi.dev/api/v2/entries/en/{word}` | dictionary lookup | none |
-| `fetch_crypto_price` | `src/tokoboros/default_skills/general/finance.og` | `GET https://api.coingecko.com/api/v3/simple/price?...` | crypto pricing | none |
-| `fetch_local_airspace` | `src/tokoboros/default_skills/general/flight_radar.og` | `GET https://opensky-network.org/api/states/all?...` | live airspace lookup | none |
-| `evaluate_math` | `src/tokoboros/default_skills/general/math_engine.og` | `POST https://api.mathjs.org/v4/` | deterministic math | none |
-| `lookup_ip` | `src/tokoboros/default_skills/general/network.og` | `GET https://ipapi.co/{ip_address}/json/` | IP intelligence | none |
-| `translate_text` | `src/tokoboros/default_skills/general/translator.og` | `GET https://api.mymemory.translated.net/get?...` | translation | none |
-| `fetch_weather` | `src/tokoboros/default_skills/general/weather.og` | `GET https://wttr.in/{location}?format=j1` | weather lookup | none |
-| `fetch_wiki_summary` | `src/tokoboros/default_skills/general/wiki.og` | `GET https://en.wikipedia.org/api/rest_v1/page/summary/{title}` | encyclopedia summary | none |
-| `create_github_issue` | `src/tokoboros/default_skills/technical/github.og` | `POST https://api.github.com/repos/{owner}/{repo}/issues` | GitHub issue creation | GitHub token from `CredentialVault` |
+| `convert_currency` | `src/hachi/default_skills/general/currency.og` | `GET https://api.frankfurter.app/latest?...` | fiat conversion | none |
+| `lookup_word` | `src/hachi/default_skills/general/dictionary.og` | `GET https://api.dictionaryapi.dev/api/v2/entries/en/{word}` | dictionary lookup | none |
+| `fetch_crypto_price` | `src/hachi/default_skills/general/finance.og` | `GET https://api.coingecko.com/api/v3/simple/price?...` | crypto pricing | none |
+| `fetch_local_airspace` | `src/hachi/default_skills/general/flight_radar.og` | `GET https://opensky-network.org/api/states/all?...` | live airspace lookup | none |
+| `evaluate_math` | `src/hachi/default_skills/general/math_engine.og` | `POST https://api.mathjs.org/v4/` | deterministic math | none |
+| `lookup_ip` | `src/hachi/default_skills/general/network.og` | `GET https://ipapi.co/{ip_address}/json/` | IP intelligence | none |
+| `translate_text` | `src/hachi/default_skills/general/translator.og` | `GET https://api.mymemory.translated.net/get?...` | translation | none |
+| `fetch_weather` | `src/hachi/default_skills/general/weather.og` | `GET https://wttr.in/{location}?format=j1` | weather lookup | none |
+| `fetch_wiki_summary` | `src/hachi/default_skills/general/wiki.og` | `GET https://en.wikipedia.org/api/rest_v1/page/summary/{title}` | encyclopedia summary | none |
+| `create_github_issue` | `src/hachi/default_skills/technical/github.og` | `POST https://api.github.com/repos/{owner}/{repo}/issues` | GitHub issue creation | GitHub token from `CredentialVault` |
 
 Important internal detail: the adapter injects a warning into each tool description telling the model it must call `load_skill('<node_name>')` first. This is meant to preserve behavioral instructions and safety assertions even though the raw REST tool exists.
 
 ### 11.4 Native Google tools
 
-#### Gmail tools (`src/tokoboros/integrations/google/gmail.py`)
+#### Gmail tools (`src/hachi/integrations/google/gmail.py`)
 
 | Tool | Underlying API path | Purpose |
 | --- | --- | --- |
@@ -1206,7 +1211,7 @@ Important internal detail: the adapter injects a warning into each tool descript
 | `google_categorize_email` | message modify | add label to message |
 | `google_batch_categorize_emails` | batch modify | label many messages |
 
-#### Calendar tools (`src/tokoboros/integrations/google/calendar.py`)
+#### Calendar tools (`src/hachi/integrations/google/calendar.py`)
 
 | Tool | Purpose | Notes |
 | --- | --- | --- |
@@ -1232,23 +1237,23 @@ Authentication model: Google tools use OAuth through `OAuthManager`. The system 
 
 | Tool | File | Purpose | Auth |
 | --- | --- | --- | --- |
-| `notion_create_page` | `src/tokoboros/integrations/notion/pages.py` | create page | token from `CredentialVault` |
+| `notion_create_page` | `src/hachi/integrations/notion/pages.py` | create page | token from `CredentialVault` |
 | `notion_read_page` | same | read blocks/page contents | same |
 | `notion_append_to_page` | same | append markdown-derived blocks | same |
 | `notion_archive_page` | same | archive page | same |
-| `notion_search_workspace` | `src/tokoboros/integrations/notion/databases.py` | global search | same |
+| `notion_search_workspace` | `src/hachi/integrations/notion/databases.py` | global search | same |
 | `notion_query_database` | same | list database pages | same |
 
 ### 11.6 Native Slack tools
 
 | Tool | File | Purpose | Auth |
 | --- | --- | --- | --- |
-| `slack_send_message` | `src/tokoboros/integrations/slack/chat.py` | send message | token from `CredentialVault` |
+| `slack_send_message` | `src/hachi/integrations/slack/chat.py` | send message | token from `CredentialVault` |
 | `slack_upload_file` | same | upload file via Slack v2 flow | same |
 | `slack_read_channel` | same | read recent channel messages | same |
 | `slack_read_thread` | same | read thread replies | same |
 | `slack_add_reaction` | same | add emoji reaction | same |
-| `slack_list_channels` | `src/tokoboros/integrations/slack/workspace.py` | channel discovery | same |
+| `slack_list_channels` | `src/hachi/integrations/slack/workspace.py` | channel discovery | same |
 | `slack_search_messages` | same | workspace search | same |
 
 ### 11.7 Classic `.og` integration and MCP APIs
@@ -1257,9 +1262,9 @@ These are supported by code but not populated by the shipped default skills.
 
 | Surface | What it is | Where it is wired |
 | --- | --- | --- |
-| `role=env` nodes | key/value env credential ingestion | `src/tokoboros/core/integrations.py` |
-| `role=integration` nodes | SMTP/HTTP persistent integration definitions | `src/tokoboros/core/integrations.py` |
-| `role=mcp` nodes | subprocess-based MCP server definitions | `src/tokoboros/core/mcp_client.py` and `src/tokoboros/gateway/orchestrator.py` |
+| `role=env` nodes | key/value env credential ingestion | `src/hachi/core/integrations.py` |
+| `role=integration` nodes | SMTP/HTTP persistent integration definitions | `src/hachi/core/integrations.py` |
+| `role=mcp` nodes | subprocess-based MCP server definitions | `src/hachi/core/mcp_client.py` and `src/hachi/gateway/orchestrator.py` |
 
 Out of the box, only `role=native_integration` is actually present in the default `.og` set.
 
@@ -1267,7 +1272,7 @@ Out of the box, only `role=native_integration` is actually present in the defaul
 
 ### 12.1 What exists
 
-Tokoboros is not queue-based, but it does have local asynchronous/event-like behavior:
+Hachi is not queue-based, but it does have local asynchronous/event-like behavior:
 
 - execution events emitted to the UI callback
 - background memory prefetch
@@ -1321,12 +1326,12 @@ Alternative: explicit scheduler or external daemon process.
 | Anthropic API key | `ANTHROPIC_API_KEY` env var | required for all model calls | no default; boot fails if absent |
 | Google OAuth client ID | `GOOGLE_CLIENT_ID` env var | override for Google OAuth app | falls back to hardcoded public client ID |
 | Google OAuth client secret | `GOOGLE_CLIENT_SECRET` env var | override for Google OAuth secret | falls back to hardcoded secret |
-| Agent config JSON | `~/.tokoboros/tokoboros.json` | model, temperature, max tokens | default model `claude-haiku-4-5`, temp `0.0`, max `8192` |
-| Brain file | `~/.tokoboros/brain.og` | orchestrator identity/rules | copied from shipped default on first boot |
-| Device permissions | `~/.tokoboros/device-permissions.og` | filesystem/terminal/MCP policy | created by wizard |
-| Skills directory | `~/.tokoboros/skills/` | roles, general skills, integration definitions | copied from shipped defaults if empty |
-| OAuth token files | `~/.tokoboros/tokens/*.json` | refresh/access tokens | created on demand |
-| Vault file | `~/.tokoboros/vault.json` | Slack/Notion/GitHub token store | created on demand |
+| Agent config JSON | `~/.hachi/hachi.json` | model, temperature, max tokens | default model `claude-haiku-4-5`, temp `0.0`, max `8192` |
+| Brain file | `~/.hachi/brain.og` | orchestrator identity/rules | copied from shipped default on first boot |
+| Device permissions | `~/.hachi/device-permissions.og` | filesystem/terminal/MCP policy | created by wizard |
+| Skills directory | `~/.hachi/skills/` | roles, general skills, integration definitions | copied from shipped defaults if empty |
+| OAuth token files | `~/.hachi/tokens/*.json` | refresh/access tokens | created on demand |
+| Vault file | `~/.hachi/vault.json` | Slack/Notion/GitHub token store | created on demand |
 
 ### 13.2 Feature flags
 
@@ -1364,13 +1369,13 @@ Because the app is local-first and single-user. A config service would be overki
 #### Anthropic
 
 - Credential type: environment variable
-- Code path: `src/tokoboros/core/llm.py`
+- Code path: `src/hachi/core/llm.py`
 - Failure mode: `ValueError` on missing key during client initialization
 
 #### Google Workspace
 
 - Credential type: OAuth access + refresh tokens
-- Code path: `src/tokoboros/core/oauth.py`
+- Code path: `src/hachi/core/oauth.py`
 - Flow: local callback server + browser-based consent + token refresh
 
 ```mermaid
@@ -1392,7 +1397,7 @@ sequenceDiagram
 #### Notion / Slack / GitHub / arbitrary REST secrets
 
 - Credential type: token stored in `CredentialVault`
-- Code path: `src/tokoboros/core/credential_vault.py` and `src/tokoboros/core/rest_adapter.py`
+- Code path: `src/hachi/core/credential_vault.py` and `src/hachi/core/rest_adapter.py`
 - Flow: missing token triggers console prompt, token is saved locally, later headers interpolate `{token_name}` placeholders
 
 ### 14.2 Authorization model
@@ -1426,7 +1431,7 @@ The main authorization system is local capability gating, not user/tenant RBAC.
 
 These are source-verified limitations, not guesses:
 
-- `CredentialVault` claims secure storage but currently writes plaintext JSON to `~/.tokoboros/vault.json`; there is no encryption at rest.
+- `CredentialVault` claims secure storage but currently writes plaintext JSON to `~/.hachi/vault.json`; there is no encryption at rest.
 - Google OAuth fallback client ID and secret are hardcoded in source.
 - Token prompting is interactive console input, so there is no non-interactive secret-management story.
 - The code supports sub-agent tool blocking, but the workflow tool is named `core_suspend_workflow` while the blocklist references `suspend_workflow`. That mismatch means the intended block is incomplete.
@@ -1437,9 +1442,9 @@ These are source-verified limitations, not guesses:
 
 | Error type | File | Meaning |
 | --- | --- | --- |
-| `OGParseError` | `src/tokoboros/core/errors.py` | parser-specific error type |
+| `OGParseError` | `src/hachi/core/errors.py` | parser-specific error type |
 | `OGValidationError` | same | validation error type |
-| `AgentException` | `src/tokoboros/core/loop.py` | general execution-loop failure, usually iteration limit |
+| `AgentException` | `src/hachi/core/loop.py` | general execution-loop failure, usually iteration limit |
 | `SuspendWorkflow` | same | intentional non-error control-flow interruption |
 
 ### 15.2 Dominant error-handling style
@@ -1499,7 +1504,7 @@ Suggested structure:
 ```python
 from pathlib import Path
 
-from tokoboros.og_engine.parser import parse_og_file
+from hachi.og_engine.parser import parse_og_file
 
 
 def test_parse_basic_weather_skill(tmp_path: Path) -> None:
@@ -1616,8 +1621,8 @@ No dashboards or alerting rules are defined in-repo.
 | Signal | Location |
 | --- | --- |
 | interactive execution view | terminal output via Rich |
-| cross-session transcript search | `~/.tokoboros/brain/sessions.db` |
-| memory facts | `~/.tokoboros/brain/chroma_vault` |
+| cross-session transcript search | `~/.hachi/brain/sessions.db` |
+| memory facts | `~/.hachi/brain/chroma_vault` |
 | Google Meet daemon activity | stdout prints in the running terminal |
 
 ## 19. Performance Analysis
@@ -1626,12 +1631,12 @@ No dashboards or alerting rules are defined in-repo.
 
 | Optimization | Where | Why it helps |
 | --- | --- | --- |
-| Anthropic prompt caching | `src/tokoboros/core/llm.py` | reduces repeated prompt/tool schema cost |
-| Frozen memory snapshot | `src/tokoboros/gateway/orchestrator.py` | keeps large stable context cacheable |
+| Anthropic prompt caching | `src/hachi/core/llm.py` | reduces repeated prompt/tool schema cost |
+| Frozen memory snapshot | `src/hachi/gateway/orchestrator.py` | keeps large stable context cacheable |
 | Async memory prefetch | same | shifts recall work out of the user-visible turn |
-| Session-memory compaction | `src/tokoboros/core/memory.py` | reduces history growth |
-| ObjectGraph search/load split | `src/tokoboros/tools/og_tools.py` + `SkillEngine` | avoids loading every skill at once |
-| Bounded user profile | `src/tokoboros/core/memory_vault.py` | prevents identity prompt bloat |
+| Session-memory compaction | `src/hachi/core/memory.py` | reduces history growth |
+| ObjectGraph search/load split | `src/hachi/tools/og_tools.py` + `SkillEngine` | avoids loading every skill at once |
+| Bounded user profile | `src/hachi/core/memory_vault.py` | prevents identity prompt bloat |
 
 ### 19.2 Likely bottlenecks and hot paths
 
@@ -1659,7 +1664,7 @@ No dashboards or alerting rules are defined in-repo.
 | --- | --- | --- | --- | --- |
 | Abstract Base Class | `BaseLLMClient`, `GoogleService`, `MemoryProvider` | stable contracts across implementations | clear boundaries, swappable implementations | some abstractions are aspirational and not fully wired |
 | Factory via closures | `tools/og_tools.py`, `tools/delegation_tools.py`, `tools/os_tools.py` | bind runtime instances into tool handlers | simple and lightweight | harder to introspect/test than explicit classes |
-| Adapter | `UniversalRestAdapter`, `ChromaMemoryProvider`, `GoogleHTTPClient` | normalize third-party systems into Tokoboros-friendly interfaces | extensibility, simplified calling surface | can hide provider-specific capabilities |
+| Adapter | `UniversalRestAdapter`, `ChromaMemoryProvider`, `GoogleHTTPClient` | normalize third-party systems into Hachi-friendly interfaces | extensibility, simplified calling surface | can hide provider-specific capabilities |
 | Facade / hub | `GoogleIntegrationHub`, `MCPManager`, `IntegrationRuntime`, `boot_agent()` | gather multiple subsystems behind a single entry point | simpler orchestration | more responsibility concentrated in single modules |
 | Interpreter / parser | `parse_og_file()` | turn structured text into runtime objects | no-code extensibility | regex parser can drift from spec |
 | Immutable value objects | permission dataclasses, `SubAgentReport` | make policy/result state safer and easier to reason about | fewer accidental mutations | updates require full reconstruction |
@@ -1680,12 +1685,12 @@ Patterns explicitly not used in a meaningful way:
 1. Sync environment with `uv sync --extra dev`.
 2. Run commands through `uv run ...`.
 3. Export `ANTHROPIC_API_KEY`.
-4. Run `uv run tokoboros run`.
+4. Run `uv run hachi run`.
 5. Complete the permissions wizard on first boot.
 
 ### 21.2 Debugging boot issues
 
-1. Check `~/.tokoboros/tokoboros.json` and `device-permissions.og`.
+1. Check `~/.hachi/hachi.json` and `device-permissions.og`.
 2. Confirm `ANTHROPIC_API_KEY` is set.
 3. Confirm undeclared but required packages such as `httpx` and `chromadb` are installed.
 4. If sandbox is involved, verify `uv` exists.
@@ -1693,19 +1698,19 @@ Patterns explicitly not used in a meaningful way:
 
 ### 21.3 Adding a new `.og` skill
 
-1. Create a `.og` file under `~/.tokoboros/skills/` or ship one under `src/tokoboros/default_skills/`.
+1. Create a `.og` file under `~/.hachi/skills/` or ship one under `src/hachi/default_skills/`.
 2. Include at minimum:
    - `::node[...]`
    - `->[:role=skill]`
    - `->[:keywords=...]`
    - `::dense`
    - optional `::steps` and `::api[...]`
-3. Restart Tokoboros so `SkillEngine` reloads the directory.
+3. Restart Hachi so `SkillEngine` reloads the directory.
 4. Use `search_skills` in a session to verify discoverability.
 
 ### 21.4 Adding a new native integration tool
 
-1. Add or extend a service module under `src/tokoboros/integrations/...`.
+1. Add or extend a service module under `src/hachi/integrations/...`.
 2. Implement a method that calls the provider API.
 3. Register a JSON schema tool in `register_tools()`.
 4. Make sure the service exposes the right auth scopes/headers.
@@ -1722,10 +1727,10 @@ Patterns explicitly not used in a meaningful way:
 
 Recommended reading order:
 
-1. `src/tokoboros/cli/main.py`
-2. `src/tokoboros/gateway/orchestrator.py`
-3. `src/tokoboros/core/loop.py`
-4. `src/tokoboros/core/memory.py`
+1. `src/hachi/cli/main.py`
+2. `src/hachi/gateway/orchestrator.py`
+3. `src/hachi/core/loop.py`
+4. `src/hachi/core/memory.py`
 5. the relevant tool module
 
 Then reproduce with the smallest possible prompt and check which tool path is actually taken.
@@ -1739,7 +1744,7 @@ If by "endpoint" you mean "external capability":
 - add a dynamic REST tool through `.og` `::api`
 - or add a native integration method and register it as a tool
 
-If you truly need Tokoboros to expose an HTTP API, that is a new architecture layer that does not exist yet.
+If you truly need Hachi to expose an HTTP API, that is a new architecture layer that does not exist yet.
 
 ### 21.8 Creating a migration
 
@@ -1747,7 +1752,7 @@ There is no migration framework.
 
 For SQLite schema changes:
 
-1. update `_init_schema()` in `src/tokoboros/core/session_store.py`
+1. update `_init_schema()` in `src/hachi/core/session_store.py`
 2. decide how existing local DBs should be upgraded
 3. document the upgrade path manually
 
@@ -1816,7 +1821,7 @@ Because the repository currently has no CI and very short commit history, code r
 
 ### 23.1 Hidden assumptions
 
-1. The repo's shipped `.og` files are copied into `~/.tokoboros/skills/` on first boot. Existing users will continue to run their local copied versions even if you update the repo defaults later.
+1. The repo's shipped `.og` files are copied into `~/.hachi/skills/` on first boot. Existing users will continue to run their local copied versions even if you update the repo defaults later.
 2. The orchestrator supports classic `.og` `env`, `integration`, and `mcp` nodes, but the shipped default skills only define `native_integration` nodes. That means some engine features are extension points, not out-of-the-box behavior.
 3. Slack and Notion native integrations can prompt for credentials during boot because `core_integrations.og` causes them to be instantiated eagerly.
 4. The main memory system uses Anthropic calls in background threads for summarization and fact extraction. Memory management is not free.
@@ -1827,9 +1832,9 @@ Because the repository currently has no CI and very short commit history, code r
 2. `CredentialVault` says it stores tokens securely/encrypted, but the implementation writes plaintext JSON.
 3. The parser recognizes `::assertion` (singular), but many shipped skills use `::assertions` (plural). Those assertions are therefore very likely ignored by the current parser.
 4. `delegation_tools.py` intends to block workflow suspension inside sub-agents, but the blocklist uses `suspend_workflow` while the actual registered tool name is `core_suspend_workflow`.
-5. `src/tokoboros/core/models.py` is not referenced by the active runtime.
-6. `src/tokoboros/core/memory_provider.py` introduces an abstraction that the orchestrator does not currently use.
-7. `src/tokoboros/tools/memory_tools.py` defines agent-profile helper functions, but no corresponding tool schemas are registered.
+5. `src/hachi/core/models.py` is not referenced by the active runtime.
+6. `src/hachi/core/memory_provider.py` introduces an abstraction that the orchestrator does not currently use.
+7. `src/hachi/tools/memory_tools.py` defines agent-profile helper functions, but no corresponding tool schemas are registered.
 
 ### 23.3 Known limitations
 
@@ -1842,7 +1847,7 @@ Because the repository currently has no CI and very short commit history, code r
 
 ### 23.4 Common newcomer mistakes
 
-1. Editing `src/tokoboros/default_skills/*.og` and expecting an already-initialized local workspace to change immediately.
+1. Editing `src/hachi/default_skills/*.og` and expecting an already-initialized local workspace to change immediately.
 2. Looking for a web router/controller stack that does not exist.
 3. Assuming all dependencies are captured in `pyproject.toml`.
 4. Forgetting that many behaviors are defined in `.og` rather than Python.
@@ -1863,33 +1868,33 @@ Because the repository currently has no CI and very short commit history, code r
 
 1. Read `README.md`.
 2. Read `ObjectGraph_Complete_Specification.md` selectively: executive summary, problem statement, 3-pass model.
-3. Read `src/tokoboros/default_skills/brain.og`.
-4. Read `src/tokoboros/cli/main.py` and `src/tokoboros/gateway/orchestrator.py`.
+3. Read `src/hachi/default_skills/brain.og`.
+4. Read `src/hachi/cli/main.py` and `src/hachi/gateway/orchestrator.py`.
 
 Goal: understand what the product is and how it boots.
 
 ### Day 2
 
-1. Read `src/tokoboros/core/loop.py`.
-2. Read `src/tokoboros/core/llm.py`.
-3. Read `src/tokoboros/core/memory.py`.
-4. Read `src/tokoboros/core/permissions.py`.
+1. Read `src/hachi/core/loop.py`.
+2. Read `src/hachi/core/llm.py`.
+3. Read `src/hachi/core/memory.py`.
+4. Read `src/hachi/core/permissions.py`.
 
 Goal: understand the control loop, prompt construction, memory, and safety model.
 
 ### Day 3
 
-1. Read `src/tokoboros/og_engine/parser.py`.
-2. Read `src/tokoboros/og_engine/engine.py`.
-3. Read `src/tokoboros/tools/og_tools.py`.
-4. Read `src/tokoboros/core/rest_adapter.py`.
+1. Read `src/hachi/og_engine/parser.py`.
+2. Read `src/hachi/og_engine/engine.py`.
+3. Read `src/hachi/tools/og_tools.py`.
+4. Read `src/hachi/core/rest_adapter.py`.
 
 Goal: understand how `.og` files become executable behavior.
 
 ### Week 1
 
-1. Read `src/tokoboros/core/sub_agent.py` and `src/tokoboros/tools/delegation_tools.py`.
-2. Read `src/tokoboros/core/memory_vault.py` and `src/tokoboros/core/session_store.py`.
+1. Read `src/hachi/core/sub_agent.py` and `src/hachi/tools/delegation_tools.py`.
+2. Read `src/hachi/core/memory_vault.py` and `src/hachi/core/session_store.py`.
 3. Read one native integration family end to end, preferably Google.
 4. Run the system locally and trace one simple skill request and one delegated request.
 
@@ -1905,19 +1910,19 @@ Goal: understand how `.og` files become executable behavior.
 
 1. `README.md`
 2. `ObjectGraph_Complete_Specification.md`
-3. `src/tokoboros/default_skills/brain.og`
-4. `src/tokoboros/cli/main.py`
-5. `src/tokoboros/gateway/orchestrator.py`
-6. `src/tokoboros/core/loop.py`
-7. `src/tokoboros/og_engine/parser.py`
-8. `src/tokoboros/og_engine/engine.py`
-9. `src/tokoboros/core/memory.py`
-10. `src/tokoboros/core/permissions.py`
-11. `src/tokoboros/core/memory_vault.py`
-12. `src/tokoboros/core/sub_agent.py`
-13. `src/tokoboros/tools/delegation_tools.py`
-14. `src/tokoboros/core/rest_adapter.py`
-15. `src/tokoboros/default_skills/roles/coder.og`
+3. `src/hachi/default_skills/brain.og`
+4. `src/hachi/cli/main.py`
+5. `src/hachi/gateway/orchestrator.py`
+6. `src/hachi/core/loop.py`
+7. `src/hachi/og_engine/parser.py`
+8. `src/hachi/og_engine/engine.py`
+9. `src/hachi/core/memory.py`
+10. `src/hachi/core/permissions.py`
+11. `src/hachi/core/memory_vault.py`
+12. `src/hachi/core/sub_agent.py`
+13. `src/hachi/tools/delegation_tools.py`
+14. `src/hachi/core/rest_adapter.py`
+15. `src/hachi/default_skills/roles/coder.og`
 
 ### 25.2 Most important classes/modules
 
@@ -1946,7 +1951,7 @@ Goal: understand how `.og` files become executable behavior.
 
 ### 25.4 Core business logic
 
-The true business logic of Tokoboros is distributed across both Python and ObjectGraph.
+The true business logic of Hachi is distributed across both Python and ObjectGraph.
 
 If you only read Python, you will miss:
 
@@ -1967,7 +1972,7 @@ The system only makes sense when you read both together.
 
 ## Final Assessment
 
-Tokoboros is a promising, coherent first-generation local agent platform with a strong conceptual center:
+Hachi is a promising, coherent first-generation local agent platform with a strong conceptual center:
 
 - ObjectGraph for declarative, queryable skills
 - a tool-driven Claude loop for execution

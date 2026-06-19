@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 
 def _make_loop():
     """Build a minimal ExecutionLoop without wiring up real LLM/memory."""
-    from tokoboros.core.loop import ExecutionLoop
+    from hachi.core.loop import ExecutionLoop
 
     loop = ExecutionLoop.__new__(ExecutionLoop)
     # Minimal wiring so the methods under test work without a full bootstrap.
@@ -84,7 +84,7 @@ def test_execute_single_tool_success() -> None:
 
 
 def test_execute_single_tool_suspend() -> None:
-    from tokoboros.core.loop import SuspendWorkflow
+    from hachi.core.loop import SuspendWorkflow
 
     loop = _make_loop()
     loop.registry.execute.side_effect = SuspendWorkflow("pause requested")

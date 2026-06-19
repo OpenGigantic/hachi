@@ -12,25 +12,25 @@ import json
 
 import pytest
 
-from tokoboros.channels.base import OutboundMessage
-from tokoboros.channels.discord import (
+from hachi.channels.base import OutboundMessage
+from hachi.channels.discord import (
     MAX_CONTENT,
     DiscordAdapter,
     DiscordError,
     DiscordSender,
 )
-from tokoboros.channels.discord import (
+from hachi.channels.discord import (
     build_bot_request as d_bot_request,
 )
-from tokoboros.channels.slack import (
+from hachi.channels.slack import (
     SlackAdapter,
     SlackError,
     SlackSender,
 )
-from tokoboros.channels.slack import (
+from hachi.channels.slack import (
     build_bot_request as s_bot_request,
 )
-from tokoboros.channels.whatsapp import (
+from hachi.channels.whatsapp import (
     MAX_TEXT,
     WhatsAppAdapter,
     WhatsAppError,
@@ -38,8 +38,8 @@ from tokoboros.channels.whatsapp import (
     build_meta_request,
     build_twilio_request,
 )
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.tools.messaging_tools import register_messaging_tools
+from hachi.core.loop import ToolRegistry
+from hachi.tools.messaging_tools import register_messaging_tools
 
 
 class RecordingPoster:
@@ -346,7 +346,7 @@ def test_whatsapp_ssrf_blocked():
     import unittest.mock
 
     with unittest.mock.patch(
-        "tokoboros.channels.whatsapp.validate_outbound_url",
+        "hachi.channels.whatsapp.validate_outbound_url",
         return_value=(False, "private address"),
     ):
         with pytest.raises(WhatsAppError, match="blocked"):

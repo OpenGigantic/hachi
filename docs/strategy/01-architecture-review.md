@@ -1,6 +1,11 @@
 # Phase 1 — Architecture Review
 
-**Engagement:** Tokoboros Principal Engineering & Product Strategy
+> **Historical document.** Written before the Hachi rename. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
+**Engagement:** Hachi Principal Engineering & Product Strategy
 **Date:** 2026-06-12 · Builds on [00-recon.md](00-recon.md) (file map, test baseline, `.og` pipeline).
 **Evidence markers:** ✅ direct read · Ⓐ subagent-verified (path:line cited) · ▶ executed/observed.
 Two subagent claims were checked and found wrong; they are corrected here, not repeated
@@ -129,8 +134,8 @@ remember this" (memory.py:14–15) currently has no failure signal when it break
 - **Global node namespace**: `self._nodes[node.name] = node` — any two `.og` files with a same-named
   node silently overwrite each other (user-authored `learned/` skills can shadow shipped ones) ✅
   engine.py:323–324.
-- Hardcoded legacy paths bypass `platformdirs`: usage DB at `Path.home()/".tokoboros"/brain/` ✅
-  engine.py:255; `RoleResolver` searches `~/.tokoboros/skills/roles` ✅ sub_agent.py:414–416 — user
+- Hardcoded legacy paths bypass `platformdirs`: usage DB at `Path.home()/".hachi"/brain/` ✅
+  engine.py:255; `RoleResolver` searches `~/.hachi/skills/roles` ✅ sub_agent.py:414–416 — user
   role overrides land in a directory the rest of the system no longer treats as canonical
   (paths.py:73–81 ✅).
 - Retrieval is exact-keyword + linear fuzzy substring, unranked by `confidence` (Phase 0 §6.4) —
@@ -189,7 +194,7 @@ harness would catch.
 | TD-7 | Med-High | Global skill-node namespace collision | engine.py:323–324 ✅ |
 | TD-8 | Med-High | Per-session full runtime boot in gateway (MCP × N sessions) | cli/main.py:176–187 Ⓐ; orchestrator.py:1027–1175 ✅ |
 | TD-9 | Medium | cli/main.py / tui/app.py / orchestrator.py monoliths + duplication clusters | Ⓐ smells audit §5–6 |
-| TD-10 | Medium | Legacy-path drift (`~/.tokoboros`) in engine + RoleResolver | engine.py:255 ✅; sub_agent.py:414 ✅ |
+| TD-10 | Medium | Legacy-path drift (`~/.hachi`) in engine + RoleResolver | engine.py:255 ✅; sub_agent.py:414 ✅ |
 | TD-11 | Medium | frontend-contract CI disabled; CLAUDE.md stale | ci.yml:100–143 Ⓐ; Phase-0 D2/D3 |
 | TD-12 | Medium | Unjoined daemon threads (scheduler, notifier, TUI, meet polling) | scheduler.py:395 Ⓐ; notifier.py:180 Ⓐ; meet.py:73–140 Ⓐ |
 | TD-13 | Medium | Iteration-limit failure mode; sequential tool execution | loop.py:591–593, 507–567 ✅ |
@@ -237,7 +242,7 @@ my confidence the estimate and approach are right. Each item names the assumptio
 |---|---|---|---|---|
 | R5 | **SQLite-backed JobQueue + resident worker thread** (the ABC anticipates it — queue.py:11). Drain-at-turn-start becomes a fallback, not the mechanism. Persist jobs in the existing state dir; resume pending jobs on boot. | TD-3 | 2–4 d (high) | Job funcs must become re-creatable (store name+payload, not callables) — today `func` is a live callable (queue.py:57), so this needs a small job-registry indirection. |
 | R6 | **Qualified skill-node IDs.** Index nodes as `<file-stem>:<node>` with bare-name resolution when unambiguous; warn on collision at load; migrate `requires` resolution. Protects user/community packs from silent shadowing. | TD-7 | 1–2 d (med-high) | Shipped skills have no intra-collisions today (▶ 42 nodes load cleanly), so back-compat shims are cheap now and expensive later. |
-| R7 | **One path truth.** Move skill-usage DB and RoleResolver onto `get_tokoboros_paths()` with a legacy-dir read shim. | TD-10 | 0.5 d (high) | Mirrors the existing legacy-import pattern (paths.py:95–120). |
+| R7 | **One path truth.** Move skill-usage DB and RoleResolver onto `get_hachi_paths()` with a legacy-dir read shim. | TD-10 | 0.5 d (high) | Mirrors the existing legacy-import pattern (paths.py:95–120). |
 | R8 | **Honest type gate.** Pick one: (a) burn down the 386 (most are mechanical: implicit-Optional, `Any` bases in integrations) then flip lint to blocking on PRs, or (b) scope strict mypy to `core/` + `og_engine/` + `gateway/` and gate that. Current strict-but-ignored config is the worst of both. | TD-6 | (a) 3–6 d / (b) 0.5 d (high) | (b) first, (a) opportunistically. |
 | R9 | **E2E loop harness.** A scripted fake LLM (queue of responses incl. tool_use batches, errors, skill switches) driving `ExecutionLoop` + real `ToolRegistry` through multi-turn scenarios: tool error→`is_error`, compaction mid-conversation, budget stop, concurrent-chat regression (pairs with R1). | W9 | 2–3 d (high) | Inline mock-LLM patterns in tests already prove the shape (test_loop_resilience.py:18–32 Ⓐ). |
 | R10 | **Re-enable `frontend-contract` CI** (job exists, commented) and fix CLAUDE.md's stale claims (SvelteKit→TanStack, contract job, memory description). | TD-11 | 0.5–1 d (high) | The generate+diff script already works locally (frontend/package.json Ⓐ). |
@@ -254,7 +259,7 @@ my confidence the estimate and approach are right. Each item names the assumptio
 | R16 | 500-handler: generic message + correlation id (details to log only); ship compose with token required when host ≠ loopback | TD-15 | 0.5–1 d (high) |
 | R17 | Move `chatgpt-web` provider out of core (opt-in extra or community plugin) with an explicit risk README | TD-16 | 0.5 d (high) |
 | R18 | Ops hygiene: log rotation for daemon log; document/automate Windows restart (`schtasks` limitations); join threads on shutdown; explicit Chroma close | TD-12, TD-18 | 1–2 d (medium) |
-| R19 | Externalize the price table (data file + `tokoboros models --prices` refresh) | TD-18 | 1 d (medium) |
+| R19 | Externalize the price table (data file + `hachi models --prices` refresh) | TD-18 | 1 d (medium) |
 | R20 | Cache the per-turn "important context" snapshot (invalidate on vault writes) to take a Chroma query out of the hot path | W10 | 0.5–1 d (medium) |
 
 ### Sequencing note (proposal)

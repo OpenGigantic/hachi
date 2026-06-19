@@ -25,7 +25,7 @@ from unittest.mock import MagicMock
 
 
 def test_memory_backend_literal_fts5_only() -> None:
-    from tokoboros.core.settings import MemorySettings
+    from hachi.core.settings import MemorySettings
 
     s = MemorySettings(backend="fts5_only")
     assert s.backend == "fts5_only"
@@ -37,8 +37,8 @@ def test_memory_backend_literal_fts5_only() -> None:
 
 
 def test_resolve_provider_fts5_only() -> None:
-    from tokoboros.core.memory_provider import FTS5MemoryProvider, resolve_provider
-    from tokoboros.core.settings import MemorySettings
+    from hachi.core.memory_provider import FTS5MemoryProvider, resolve_provider
+    from hachi.core.settings import MemorySettings
 
     settings = MemorySettings(backend="fts5_only")
     provider = resolve_provider(settings)
@@ -51,7 +51,7 @@ def test_resolve_provider_fts5_only() -> None:
 
 
 def test_fts5_provider_search_no_index() -> None:
-    from tokoboros.core.memory_provider import FTS5MemoryProvider
+    from hachi.core.memory_provider import FTS5MemoryProvider
 
     provider = FTS5MemoryProvider()
     provider.initialize(brain_dir="/tmp/fake")
@@ -65,7 +65,7 @@ def test_fts5_provider_search_no_index() -> None:
 
 
 def test_fts5_provider_search_delegates() -> None:
-    from tokoboros.core.memory_provider import FTS5MemoryProvider
+    from hachi.core.memory_provider import FTS5MemoryProvider
 
     mock_index = MagicMock()
     mock_index.search.return_value = [
@@ -87,7 +87,7 @@ def test_fts5_provider_search_delegates() -> None:
 
 
 def test_fts5_provider_upsert_fallback_uuid() -> None:
-    from tokoboros.core.memory_provider import FTS5MemoryProvider
+    from hachi.core.memory_provider import FTS5MemoryProvider
 
     provider = FTS5MemoryProvider()
     fact_id = provider.upsert("billing migrate schema", category="task")
@@ -101,7 +101,7 @@ def test_fts5_provider_upsert_fallback_uuid() -> None:
 
 
 def test_fts5_provider_delete_returns_false() -> None:
-    from tokoboros.core.memory_provider import FTS5MemoryProvider
+    from hachi.core.memory_provider import FTS5MemoryProvider
 
     provider = FTS5MemoryProvider()
     assert provider.delete("any-id") is False
@@ -113,7 +113,7 @@ def test_fts5_provider_delete_returns_false() -> None:
 
 
 def test_chroma_to_files_dry_run_writes_nothing(tmp_path: Path) -> None:
-    from tokoboros.core.memory_exporter import chroma_to_files
+    from hachi.core.memory_exporter import chroma_to_files
 
     vault = _mock_vault_with_facts()
     result = chroma_to_files(vault, memory_dir=tmp_path, dry_run=True)
@@ -131,7 +131,7 @@ def test_chroma_to_files_dry_run_writes_nothing(tmp_path: Path) -> None:
 
 
 def test_chroma_to_files_exports_facts(tmp_path: Path) -> None:
-    from tokoboros.core.memory_exporter import chroma_to_files
+    from hachi.core.memory_exporter import chroma_to_files
 
     vault = _mock_vault_with_facts()
     result = chroma_to_files(vault, memory_dir=tmp_path, dry_run=False)
@@ -154,7 +154,7 @@ def test_chroma_to_files_exports_facts(tmp_path: Path) -> None:
 
 
 def test_chroma_to_files_skips_existing(tmp_path: Path) -> None:
-    from tokoboros.core.memory_exporter import chroma_to_files
+    from hachi.core.memory_exporter import chroma_to_files
 
     vault = _mock_vault_with_facts()
     # First run
@@ -172,7 +172,7 @@ def test_chroma_to_files_skips_existing(tmp_path: Path) -> None:
 
 
 def test_export_result_str() -> None:
-    from tokoboros.core.memory_exporter import ExportResult
+    from hachi.core.memory_exporter import ExportResult
 
     r = ExportResult(exported=5, skipped_existing=2, errors=0, output_files=["a.og", "b.og"])
     s = str(r)
@@ -186,7 +186,7 @@ def test_export_result_str() -> None:
 
 
 def test_extract_keywords_strips_stopwords() -> None:
-    from tokoboros.core.memory_exporter import _extract_keywords
+    from hachi.core.memory_exporter import _extract_keywords
 
     kw = _extract_keywords("the billing task is open and needs migration", max_kw=5)
     assert "the" not in kw

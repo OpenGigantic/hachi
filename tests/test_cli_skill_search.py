@@ -1,4 +1,4 @@
-"""Tests for the `tokoboros skill search` CLI command — surfaces the .og Pass-1
+"""Tests for the `hachi skill search` CLI command — surfaces the .og Pass-1
 keyword routing (engine.search) the agent uses to pick which skill to load."""
 
 import json
@@ -7,7 +7,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -18,7 +18,7 @@ def _isolate(monkeypatch, tmp_path: Path) -> Path:
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     shutil.copy(FIXTURE, skills_dir / "sample_skill.og")
-    monkeypatch.setattr("tokoboros.gateway.workspace.get_skills_dir", lambda: skills_dir)
+    monkeypatch.setattr("hachi.gateway.workspace.get_skills_dir", lambda: skills_dir)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)  # isolate usage store
     return skills_dir
 

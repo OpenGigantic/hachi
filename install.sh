@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# Tokoboros one-liner installer (macOS / Linux)
+# Hachi one-liner installer (macOS / Linux)
 #
-#   curl -fsSL https://raw.githubusercontent.com/OpenGigantic/tokoboros/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/OpenGigantic/hachi/main/install.sh | bash
 #
-# Bootstraps uv (which manages Python), fetches Tokoboros, installs deps, and
+# Bootstraps uv (which manages Python), fetches Hachi, installs deps, and
 # launches the guided setup. Override the source repo or install location with
-# the TOKOBOROS_REPO / TOKOBOROS_HOME environment variables.
+# the HACHI_REPO / HACHI_HOME environment variables.
 set -euo pipefail
 
-REPO_URL="${TOKOBOROS_REPO:-https://github.com/OpenGigantic/tokoboros}"
-INSTALL_DIR="${TOKOBOROS_HOME:-$HOME/.tokoboros-src}"
+REPO_URL="${HACHI_REPO:-https://github.com/OpenGigantic/hachi}"
+INSTALL_DIR="${HACHI_HOME:-$HOME/.hachi-src}"
 BIN_DIR="$HOME/.local/bin"
 
 info() { printf "\033[36m==>\033[0m %s\n" "$1"; }
@@ -30,10 +30,10 @@ fi
 
 # 2. Fetch (or update) the source.
 if [ -d "$INSTALL_DIR/.git" ]; then
-  info "Updating Tokoboros in $INSTALL_DIR..."
+  info "Updating Hachi in $INSTALL_DIR..."
   git -C "$INSTALL_DIR" pull --ff-only
 else
-  info "Cloning Tokoboros into $INSTALL_DIR..."
+  info "Cloning Hachi into $INSTALL_DIR..."
   git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
 fi
 
@@ -44,26 +44,26 @@ uv sync
 
 # 4. Drop a friendly launcher on PATH.
 mkdir -p "$BIN_DIR"
-cat >"$BIN_DIR/tokoboros" <<EOF
+cat >"$BIN_DIR/hachi" <<EOF
 #!/usr/bin/env bash
-exec uv run --project "$INSTALL_DIR" tokoboros "\$@"
+exec uv run --project "$INSTALL_DIR" hachi "\$@"
 EOF
-chmod +x "$BIN_DIR/tokoboros"
+chmod +x "$BIN_DIR/hachi"
 
 # 5. Launch the guided setup.
 info "Installed! Launching setup..."
-"$BIN_DIR/tokoboros" quickstart || true
+"$BIN_DIR/hachi" quickstart || true
 
 cat <<EOF
 
 ────────────────────────────────────────────────────────
-Tokoboros is installed. If the 'tokoboros' command isn't found,
+Hachi is installed. If the 'hachi' command isn't found,
 add this to your shell profile (~/.bashrc or ~/.zshrc):
 
   export PATH="\$HOME/.local/bin:\$PATH"
 
 Then start chatting:
 
-  tokoboros run
+  hachi run
 ────────────────────────────────────────────────────────
 EOF

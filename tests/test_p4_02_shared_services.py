@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 
 
 def _make_fake_instance():
-    from tokoboros.gateway.shared_services import ProcessSharedServices
+    from hachi.gateway.shared_services import ProcessSharedServices
 
     return ProcessSharedServices(
         skill_engine=MagicMock(),
@@ -36,7 +36,7 @@ def _make_fake_instance():
 
 def _patched_shared(tmp_path_str: str = "/tmp/fake_brain"):
     """Call get_or_create() with _init() mocked so no real services are started."""
-    from tokoboros.gateway.shared_services import ProcessSharedServices
+    from hachi.gateway.shared_services import ProcessSharedServices
 
     ProcessSharedServices.clear()
     with patch.object(ProcessSharedServices, "_init", return_value=_make_fake_instance()):
@@ -50,7 +50,7 @@ def _patched_shared(tmp_path_str: str = "/tmp/fake_brain"):
 
 
 def test_get_or_create_returns_singleton() -> None:
-    from tokoboros.gateway.shared_services import ProcessSharedServices
+    from hachi.gateway.shared_services import ProcessSharedServices
 
     try:
         inst1 = _patched_shared()
@@ -67,8 +67,8 @@ def test_get_or_create_returns_singleton() -> None:
 
 
 def test_clear_destroys_singleton() -> None:
-    import tokoboros.gateway.shared_services as _mod
-    from tokoboros.gateway.shared_services import ProcessSharedServices
+    import hachi.gateway.shared_services as _mod
+    from hachi.gateway.shared_services import ProcessSharedServices
 
     _patched_shared()
     ProcessSharedServices.clear()
@@ -82,7 +82,7 @@ def test_clear_destroys_singleton() -> None:
 
 
 def test_after_clear_new_instance_is_created() -> None:
-    from tokoboros.gateway.shared_services import ProcessSharedServices
+    from hachi.gateway.shared_services import ProcessSharedServices
 
     inst1 = _patched_shared()
     ProcessSharedServices.clear()
@@ -96,7 +96,7 @@ def test_after_clear_new_instance_is_created() -> None:
 
 
 def test_singleton_has_expected_fields() -> None:
-    from tokoboros.gateway.shared_services import ProcessSharedServices
+    from hachi.gateway.shared_services import ProcessSharedServices
 
     try:
         inst = _patched_shared()
@@ -117,7 +117,7 @@ def test_singleton_has_expected_fields() -> None:
 
 
 def test_skill_engine_is_present() -> None:
-    from tokoboros.gateway.shared_services import ProcessSharedServices
+    from hachi.gateway.shared_services import ProcessSharedServices
 
     try:
         inst = _patched_shared()
@@ -132,7 +132,7 @@ def test_skill_engine_is_present() -> None:
 
 
 def test_uptime_seconds_increases() -> None:
-    from tokoboros.gateway.shared_services import ProcessSharedServices
+    from hachi.gateway.shared_services import ProcessSharedServices
 
     try:
         inst = _patched_shared()
@@ -150,7 +150,7 @@ def test_uptime_seconds_increases() -> None:
 
 
 def test_force_reinit_creates_new_instance() -> None:
-    from tokoboros.gateway.shared_services import ProcessSharedServices
+    from hachi.gateway.shared_services import ProcessSharedServices
 
     try:
         inst1 = _patched_shared()

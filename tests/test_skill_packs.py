@@ -34,8 +34,8 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
-from tokoboros.core.community_packs import (
+from hachi.cli.main import app
+from hachi.core.community_packs import (
     _derive_pack_name,
     _parse_shorthand,
     install_pack,
@@ -332,7 +332,7 @@ def test_remove_pack_unknown(tmp_path: Path) -> None:
 def test_cli_pack_list_empty(tmp_path: Path) -> None:
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(app, ["skill", "pack", "list"])
     assert result.exit_code == 0, result.output
     assert "No community packs" in result.output
@@ -351,7 +351,7 @@ def test_cli_pack_install_local(tmp_path: Path) -> None:
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
 
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(app, ["skill", "pack", "install", str(src)])
     assert result.exit_code == 0, result.output
     assert "Installed" in result.output
@@ -371,7 +371,7 @@ def test_cli_pack_install_json(tmp_path: Path) -> None:
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
 
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(app, ["skill", "pack", "install", str(src), "--json"])
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
@@ -390,7 +390,7 @@ def test_cli_pack_remove(tmp_path: Path) -> None:
     pack_dir.mkdir(parents=True)
     (pack_dir / "s.og").write_text(_simple_og("s"), encoding="utf-8")
 
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(app, ["skill", "pack", "remove", "mypkg"])
     assert result.exit_code == 0, result.output
     assert "Removed" in result.output
@@ -405,7 +405,7 @@ def test_cli_pack_remove(tmp_path: Path) -> None:
 def test_cli_pack_install_failure(tmp_path: Path) -> None:
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(
             app,
             ["skill", "pack", "install", "https://127.0.0.1/bad.tar.gz"],
@@ -428,7 +428,7 @@ def test_cli_pack_list_json(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    with patch("tokoboros.gateway.workspace.get_skills_dir", return_value=skills_dir):
+    with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
         result = runner.invoke(app, ["skill", "pack", "list", "--json"])
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)

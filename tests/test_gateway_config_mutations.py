@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from tokoboros.cli.main import _InProcessGatewayRuntime
-from tokoboros.gateway.control_plane import GatewayProtocolError
+from hachi.cli.main import _InProcessGatewayRuntime
+from hachi.gateway.control_plane import GatewayProtocolError
 
 
 class _FakeConfig:
@@ -46,8 +46,8 @@ def test_update_provider_accepts_supported_kinds(monkeypatch) -> None:
     cfg.provider.kind = "openai-compatible"
     cfg.provider.model = "gpt-4.1-mini"
 
-    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("tokoboros.cli.main.write_global_config", lambda _config: None)
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
 
     anthropic = runtime.update_provider(
         {"provider": {"kind": "anthropic", "model": "gpt-4.1-mini"}}
@@ -77,8 +77,8 @@ def test_update_provider_rejects_invalid_kind_and_blank_model(monkeypatch) -> No
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
 
-    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("tokoboros.cli.main.write_global_config", lambda _config: None)
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
 
     with pytest.raises(GatewayProtocolError, match="provider.kind must be"):
         runtime.update_provider({"provider": {"kind": "not-real"}})
@@ -91,8 +91,8 @@ def test_update_provider_currently_accepts_malformed_base_url(monkeypatch) -> No
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
 
-    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("tokoboros.cli.main.write_global_config", lambda _config: None)
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
 
     result = runtime.update_provider(
         {
@@ -133,8 +133,8 @@ def test_update_permissions_rejects_invalid_tier(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
 
-    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("tokoboros.cli.main.write_global_config", lambda _config: None)
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
 
     with pytest.raises(GatewayProtocolError, match="permissions.tier must be"):
         runtime.update_permissions({"permissions": {"tier": "root"}})
@@ -144,8 +144,8 @@ def test_update_permissions_accepts_supported_tiers(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
 
-    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("tokoboros.cli.main.write_global_config", lambda _config: None)
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
 
     for tier in ("sandbox", "guided", "unrestricted"):
         result = runtime.update_permissions({"permissions": {"tier": tier}})
@@ -156,8 +156,8 @@ def test_update_memory_is_idempotent_for_noop_payload(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
 
-    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("tokoboros.cli.main.write_global_config", lambda _config: None)
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
 
     baseline = runtime.update_memory({"memory": {}})
     repeated = runtime.update_memory({"memory": {}})
@@ -171,8 +171,8 @@ def test_update_memory_partial_write_preserves_other_fields(monkeypatch) -> None
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
 
-    monkeypatch.setattr("tokoboros.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("tokoboros.cli.main.write_global_config", lambda _config: None)
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
 
     result = runtime.update_memory({"memory": {"enable_session_history": False}})
 

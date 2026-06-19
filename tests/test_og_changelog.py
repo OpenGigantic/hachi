@@ -7,9 +7,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tokoboros.core.loop import ToolRegistry
-from tokoboros.og_engine.engine import SkillEngine
-from tokoboros.tools.og_tools import _make_skill_changelog, register_og_tools
+from hachi.core.loop import ToolRegistry
+from hachi.og_engine.engine import SkillEngine
+from hachi.tools.og_tools import _make_skill_changelog, register_og_tools
 
 
 def test_get_node_changelog_after_create_and_refine(tmp_path: Path) -> None:

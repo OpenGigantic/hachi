@@ -6,7 +6,7 @@
 |---------|-----------|
 | Latest on `main` | Yes |
 
-Tokoboros is currently pre-1.0 (development release). Security fixes are applied
+Hachi is currently pre-1.0 (development release). Security fixes are applied
 to the `main` branch only; no backport branches exist yet.
 
 ## Reporting a Vulnerability
@@ -37,15 +37,15 @@ Security issues we consider in-scope:
 
 - **Permission gate bypass** — any path that executes an OS command or filesystem
   write outside the declared roots in `device-permissions.og`
-  (`src/tokoboros/tools/permissions.py`)
+  (`src/hachi/tools/permissions.py`)
 - **Credential/secret exposure** — credentials leaking via logs, API responses,
-  error messages, or the session transcript (`src/tokoboros/core/session_store.py`)
-- **Gateway authentication bypass** — `src/tokoboros/gateway/fastapi_app.py`
+  error messages, or the session transcript (`src/hachi/core/session_store.py`)
+- **Gateway authentication bypass** — `src/hachi/gateway/fastapi_app.py`
   bearer-token gate skipped under any condition
 - **Session isolation failures** — one user's session data readable by another
   session or by the gateway's event stream
 - **Sub-agent privilege escalation** — a delegated sub-agent exceeding its declared
-  scope (`src/tokoboros/core/sub_agent.py` `PermissionScope`)
+  scope (`src/hachi/core/sub_agent.py` `PermissionScope`)
 - **Dependency confusion / supply-chain** — malicious `.ogpack` installable without
   user consent (when the pack marketplace ships in P2)
 
@@ -53,7 +53,7 @@ Out of scope (use regular GitHub issues):
 
 - Rate limiting / DoS against a locally-hosted gateway
 - Issues requiring physical access to the machine
-- Social-engineering attacks against the user (Tokoboros is a local-first tool)
+- Social-engineering attacks against the user (Hachi is a local-first tool)
 
 ## Security Architecture Notes
 
@@ -61,9 +61,9 @@ Out of scope (use regular GitHub issues):
   by a pure-Python parser; they do not execute code at install time. This is a
   deliberate design constraint (`docs/strategy/05-agent-platform.md` §6).
 - **PermissionGate** enforces filesystem roots and shell-command allowlists at
-  call time, not at prompt time (`src/tokoboros/tools/permissions.py`).
+  call time, not at prompt time (`src/hachi/tools/permissions.py`).
 - **Credentials** are stored in the system keyring via `keyring`; the `.env`
-  fallback path is documented as development-only (`src/tokoboros/core/llm.py:50–52`).
+  fallback path is documented as development-only (`src/hachi/core/llm.py:50–52`).
 - **Memory quarantine** — writes from untrusted content are quarantined and require
   explicit user approval before entering long-term storage
-  (`src/tokoboros/core/memory_vault.py` `MemoryGuard`).
+  (`src/hachi/core/memory_vault.py` `MemoryGuard`).

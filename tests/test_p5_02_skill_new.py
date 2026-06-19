@@ -1,4 +1,4 @@
-"""P5-02 tests — tokoboros skill new scaffold command."""
+"""P5-02 tests — hachi skill new scaffold command."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.commands.skill import skill_app
-from tokoboros.og_engine.parser import parse_og_file
+from hachi.cli.commands.skill import skill_app
+from hachi.og_engine.parser import parse_og_file
 
 runner = CliRunner()
 

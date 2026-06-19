@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from tokoboros.core.cost import CostTracker, pricing_for
-from tokoboros.core.llm import LLMResponse, TokenUsage
-from tokoboros.core.runtime_events import USAGE_UPDATED, adapt_event
+from hachi.core.cost import CostTracker, pricing_for
+from hachi.core.llm import LLMResponse, TokenUsage
+from hachi.core.runtime_events import USAGE_UPDATED, adapt_event
 
 
 def test_pricing_longest_prefix_match() -> None:

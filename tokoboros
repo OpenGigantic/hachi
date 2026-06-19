@@ -1,3 +1,0 @@
-#!/bin/bash
-# Tokoboros CLI wrapper - delegates to the installed script in .venv
-exec "$(dirname "$0")/.venv/Scripts/tokoboros" "$@"

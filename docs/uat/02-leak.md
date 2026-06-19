@@ -1,5 +1,10 @@
 # UAT Leakage Report — Secret/PII into Event Stream, SSE, Transcript, Web Companion
 
+> **Historical document.** Written before the project rename to Hachi. References to
+> "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+
 **UAT Agent:** UAT VERIFICATION agent
 **Commit under test:** `036dfd9` (Enhance Gmail Integration and TUI Components)
 **Date:** 2026-06-14
@@ -18,12 +23,12 @@ MR-3 asserts that secrets entered as tool arguments or returned as tool results 
 
 ### Evidence
 
-**`src/tokoboros/core/runtime_events.py:59` — cap confirmed at 2000:**
+**`src/hachi/core/runtime_events.py:59` — cap confirmed at 2000:**
 ```python
 TOOL_RESULT_PREVIEW_MAX = 2000   # raised from 500 in commit 036dfd9, no redaction added
 ```
 
-**`src/tokoboros/core/runtime_events.py:156-170` — `tool.call.started`, raw `input` emitted:**
+**`src/hachi/core/runtime_events.py:156-170` — `tool.call.started`, raw `input` emitted:**
 ```python
 if event_type == "tool_call":
     tool_name = payload.get("name", "unknown")
@@ -42,7 +47,7 @@ if event_type == "tool_call":
     ]
 ```
 
-**`src/tokoboros/core/runtime_events.py:172-186` — `tool.call.completed`, raw `result_preview`:**
+**`src/hachi/core/runtime_events.py:172-186` — `tool.call.completed`, raw `result_preview`:**
 ```python
 if event_type == "tool_result":
     tool_name = payload.get("name", "unknown")
@@ -61,12 +66,12 @@ if event_type == "tool_result":
     ]
 ```
 
-**`src/tokoboros/core/loop.py:630` — `tool_call` event emitted with raw tool input:**
+**`src/hachi/core/loop.py:630` — `tool_call` event emitted with raw tool input:**
 ```python
 self.on_event("tool_call", {"name": tool_call.name, "input": tool_call.input})
 ```
 
-**`src/tokoboros/core/loop.py:683-688` — `tool_result` event emitted with raw result:**
+**`src/hachi/core/loop.py:683-688` — `tool_result` event emitted with raw result:**
 ```python
 self.on_event(
     "tool_result",
@@ -78,14 +83,14 @@ self.on_event(
 ```
 
 **`redact_outbound` call sites (grep of entire `src/`):**
-- `src/tokoboros/cli/commands/schedule.py:235-237` — webhook delivery only
-- `src/tokoboros/integrations/slack/chat.py:9,16` — Slack outbound only
-- `src/tokoboros/tools/messaging_tools.py:23,51` — Slack/Discord send only
-- `src/tokoboros/core/secret_scanner.py:81` — definition
+- `src/hachi/cli/commands/schedule.py:235-237` — webhook delivery only
+- `src/hachi/integrations/slack/chat.py:9,16` — Slack outbound only
+- `src/hachi/tools/messaging_tools.py:23,51` — Slack/Discord send only
+- `src/hachi/core/secret_scanner.py:81` — definition
 
 `redact_outbound` is **not imported or called** anywhere in `core/loop.py`, `core/runtime_events.py`, `gateway/fastapi_app.py`, or `core/runtime_read_models.py`.
 
-**`src/tokoboros/gateway/orchestrator.py:1176-1184` — relay_event pipeline (no redaction injected):**
+**`src/hachi/gateway/orchestrator.py:1176-1184` — relay_event pipeline (no redaction injected):**
 ```python
 def relay_event(event_type: str, payload: dict[str, Any] | None = None) -> None:
     envelopes = adapt_event(event_type, payload)
@@ -96,7 +101,7 @@ def relay_event(event_type: str, payload: dict[str, Any] | None = None) -> None:
             on_event(event.name, event.payload)   # forwarded unredacted to TUI/SSE
 ```
 
-**`src/tokoboros/gateway/fastapi_app.py:373-381` — SSE stream emits event payload verbatim:**
+**`src/hachi/gateway/fastapi_app.py:373-381` — SSE stream emits event payload verbatim:**
 ```python
 for event in events:
     cursor = event["sequence"]
@@ -110,7 +115,7 @@ for event in events:
 **Offline repro (run against live working tree):**
 ```
 PYTHONPATH=src python -c "
-from tokoboros.core.runtime_events import adapt_event
+from hachi.core.runtime_events import adapt_event
 secret = 'sk-ant-api03-' + 'A' * 40
 ev1 = adapt_event('tool_call', {'name': 'run_terminal_command', 'input': {'command': f'echo {secret}'}})
 print('in tool.call.started input:', secret in str(ev1[0].primary.payload))
@@ -212,7 +217,7 @@ UC-AUTH-004 asserts that an invalid `ANTHROPIC_API_KEY` fails with a clean error
 
 ### Evidence
 
-**`src/tokoboros/gateway/fastapi_app.py:241-262` — catch-all exception handler:**
+**`src/hachi/gateway/fastapi_app.py:241-262` — catch-all exception handler:**
 ```python
 @app.exception_handler(Exception)
 async def _internal_error_handler(_request: Request, exc: Exception) -> JSONResponse:

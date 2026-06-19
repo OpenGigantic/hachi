@@ -1,4 +1,9 @@
-# QA Testing Plan — Tokoboros Application
+# QA Testing Plan — Hachi Application
+
+> **Historical document.** Written before the rename to Hachi. References to
+> the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
+> below describe the project **Hachi** (package `hachi`, CLI `hachi`, dist
+> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
 
 ## Tracking
 
@@ -18,31 +23,31 @@
 - [x] Task 3: Identify current input/trust boundaries, auth boundaries, and async/concurrency surfaces that later phases must attack.
 - [x] Task 4: Provision isolated QA fixtures: disposable config/data/state directories, bearer-token file, sample `.env`, and mocked integration credentials.
 
-**Success criteria:** A tester can describe the live surfaces, deploy the app in an isolated workspace, and execute later phases without touching real secrets or a real `~/.tokoboros` profile.
+**Success criteria:** A tester can describe the live surfaces, deploy the app in an isolated workspace, and execute later phases without touching real secrets or a real `~/.hachi` profile.
 **Notes:** Re-verify historical findings before carrying them forward. The previous checked-in plan is stale relative to current code: session event scoping, memory boolean validation, prompt length limits, and SQLite foreign-key behavior have already changed, while TUI gateway protocol compatibility still needs fresh verification.
 
 ### Phase 1 Execution Log (2026-06-01)
 
 #### Task 1 result: confirmed live entry points and route surfaces
 
-- CLI command surface in `src/tokoboros/cli/main.py` currently includes: `onboard`, `permissions`, `reauth`, `run`, `run-repl`, `gateway`, `gateway-openapi`, `setup`, `config`, `secrets`, `doctor`, and `security-audit`.
-- FastAPI gateway route surface in `src/tokoboros/gateway/fastapi_app.py` includes: `/health`, `/readiness`, `/capabilities`, `/models`, `/sessions`, `/sessions/{session_id}`, `/sessions/{session_id}/messages`, `/sessions/{session_id}/events`, `/runtime/events`, `/runtime/mcp/inventory`, `/jobs/active`, `/jobs/failed`, `/permissions/audit`, `/subagents/reports`, `/config`, `/config/provider`, `/config/provider/validate`, `/config/permissions`, `/config/memory`, `/setup`, `/setup/apply`.
-- OpenAPI parity check against `openapi/tokoboros-openapi.json` confirms unversioned path names for the primary session/config/setup routes listed above.
-- Textual mode surface in `src/tokoboros/tui/app.py` confirms `session`, `ops`, `memory`, `integrations`, `authoring`, `settings` (default mode: `session`).
+- CLI command surface in `src/hachi/cli/main.py` currently includes: `onboard`, `permissions`, `reauth`, `run`, `run-repl`, `gateway`, `gateway-openapi`, `setup`, `config`, `secrets`, `doctor`, and `security-audit`.
+- FastAPI gateway route surface in `src/hachi/gateway/fastapi_app.py` includes: `/health`, `/readiness`, `/capabilities`, `/models`, `/sessions`, `/sessions/{session_id}`, `/sessions/{session_id}/messages`, `/sessions/{session_id}/events`, `/runtime/events`, `/runtime/mcp/inventory`, `/jobs/active`, `/jobs/failed`, `/permissions/audit`, `/subagents/reports`, `/config`, `/config/provider`, `/config/provider/validate`, `/config/permissions`, `/config/memory`, `/setup`, `/setup/apply`.
+- OpenAPI parity check against `openapi/hachi-openapi.json` confirms unversioned path names for the primary session/config/setup routes listed above.
+- Textual mode surface in `src/hachi/tui/app.py` confirms `session`, `ops`, `memory`, `integrations`, `authoring`, `settings` (default mode: `session`).
 - Frontend route surface in `frontend/src/routes` confirms active file routes: `/` (`index.tsx`) and `/s/$slug` (`s.$slug.tsx`) under root shell `__root.tsx`.
 
 #### Task 2 result: dependency and runtime inventory captured
 
 - Core Python runtime dependencies declared in `pyproject.toml`: `fastapi`, `uvicorn`, `pydantic`, `anthropic`, `httpx`, `chromadb`, `platformdirs`, `keyring`, `cryptography`, `tomlkit`, `typer`, `rich`, `textual`.
-- Persistent stores and files from `src/tokoboros/core/paths.py` and runtime modules:
+- Persistent stores and files from `src/hachi/core/paths.py` and runtime modules:
 - Config: canonical `settings.toml` and `device-permissions.og` under platform config dir.
 - State: `sessions.db`, `tui_state.db`, `secrets.enc`, `secrets_metadata.json` under platform state dir.
 - Data: `skills/` and `chroma_vault/` under platform data dir.
-- Subprocess-backed surfaces confirmed in `src/tokoboros/core/mcp_client.py` (MCP server processes) and `src/tokoboros/tools/os_tools.py` (terminal command execution).
+- Subprocess-backed surfaces confirmed in `src/hachi/core/mcp_client.py` (MCP server processes) and `src/hachi/tools/os_tools.py` (terminal command execution).
 - High-value environment variables confirmed for later abuse phases:
-- Gateway/auth: `TOKOBOROS_GATEWAY_API_TOKEN`, `TOKOBOROS_GATEWAY_API_TOKEN_FILE`, `TOKOBOROS_GATEWAY_MAX_SESSIONS`, `TOKOBOROS_GATEWAY_MAX_PROMPT_CHARS`.
-- Frontend bridge: `TOKOBOROS_GATEWAY_BASE_URL`, `TOKOBOROS_GATEWAY_AUTH_HEADER`, `TOKOBOROS_GATEWAY_AUTH_HEADER_FILE`, `TOKOBOROS_GATEWAY_POLL_MS`.
-- Egress and secrets: `TOKOBOROS_REST_ALLOWLIST`, `TOKOBOROS_REST_ALLOW_PRIVATE`, `TOKOBOROS_SECRET_PASSPHRASE`.
+- Gateway/auth: `HACHI_GATEWAY_API_TOKEN`, `HACHI_GATEWAY_API_TOKEN_FILE`, `HACHI_GATEWAY_MAX_SESSIONS`, `HACHI_GATEWAY_MAX_PROMPT_CHARS`.
+- Frontend bridge: `HACHI_GATEWAY_BASE_URL`, `HACHI_GATEWAY_AUTH_HEADER`, `HACHI_GATEWAY_AUTH_HEADER_FILE`, `HACHI_GATEWAY_POLL_MS`.
+- Egress and secrets: `HACHI_REST_ALLOWLIST`, `HACHI_REST_ALLOW_PRIVATE`, `HACHI_SECRET_PASSPHRASE`.
 
 #### Task 3 result: boundaries and concurrency surfaces identified
 
@@ -57,7 +62,7 @@
 - Device access policy is centralized in `PermissionGate` with tier defaults, canonical path resolution, blocked-path precedence, and immutable post-load rule sets.
 - Async/concurrency surfaces:
 - Threaded control paths include gateway server thread, TUI boot/chat/event polling threads, MCP reader thread, and optional integration pollers.
-- Queue-backed background work exists via `tokoboros.jobs` (`InMemoryJobQueue`, `JobWorker`) with explicit retry and status transitions.
+- Queue-backed background work exists via `hachi.jobs` (`InMemoryJobQueue`, `JobWorker`) with explicit retry and status transitions.
 - Session event buffers are capped at 2000 entries per session in `_InProcessGatewayRuntime`.
 
 #### Task 4 result: isolated fixtures provisioned in-repo
@@ -75,7 +80,7 @@
 **Objective:** Break the HTTP session lifecycle, auth modes, ordering assumptions, and per-session isolation guarantees.
 
 - [x] Task 5: Establish a control case for the loopback gateway: create session, send message, read events, read state, list recent sessions, and close the session.
-- [x] Task 6: Verify non-loopback gateway startup fails without `TOKOBOROS_GATEWAY_API_TOKEN` or `TOKOBOROS_GATEWAY_API_TOKEN_FILE`.
+- [x] Task 6: Verify non-loopback gateway startup fails without `HACHI_GATEWAY_API_TOKEN` or `HACHI_GATEWAY_API_TOKEN_FILE`.
 - [x] Task 7: Exercise bearer-token success and failure paths on protected routes when auth is enabled, while confirming `/health` and `/readiness` stay reachable.
 - [x] Task 8: Fuzz session, message, and event payloads with blank IDs, wrong types, bad protocol versions, negative or oversized limits, and oversized prompts.
 - [x] Task 9: Execute out-of-order and duplicate operations: chat before connect, events after delete, repeated delete, unknown session IDs, and runtime-detached routes.
@@ -154,8 +159,8 @@
 - [x] Task 14: Attempt permission-tier escalation through config updates across loopback and authenticated deployment modes.
 - [x] Task 15: Attack memory-config updates with wrong data types, partial payloads, duplicate writes, and no-op writes to confirm idempotent behavior.
 - [x] Task 16: Attack setup application with invalid tiers, invalid `permission_tier`, bad boolean fields, unexpected integration payloads, missing required answers, and out-of-order steps.
-- [x] Task 17: Verify precedence and drift across global config, project `.tokoboros/settings.toml`, project `.env`, and process env vars, including malformed `.env` quoting and numeric parsing failures.
-- [x] Task 18: Verify the frontend server-side auth bridge using `TOKOBOROS_GATEWAY_AUTH_HEADER` and `TOKOBOROS_GATEWAY_AUTH_HEADER_FILE`, including stale, malformed, and rotated token values.
+- [x] Task 17: Verify precedence and drift across global config, project `.hachi/settings.toml`, project `.env`, and process env vars, including malformed `.env` quoting and numeric parsing failures.
+- [x] Task 18: Verify the frontend server-side auth bridge using `HACHI_GATEWAY_AUTH_HEADER` and `HACHI_GATEWAY_AUTH_HEADER_FILE`, including stale, malformed, and rotated token values.
 
 **Success criteria:** Config and setup mutations reject invalid state, privilege changes cannot bypass deployment auth assumptions, and config layering behaves predictably under malformed inputs.
 **Notes:** Current setup tiers are `lightning`, `recommended`, `enhanced`, and `power`. Current permission tiers are `sandbox`, `guided`, and `unrestricted`.
@@ -220,9 +225,9 @@
 #### Task 18 result: frontend server-side auth bridge behavior verified (with findings)
 
 - Verified server-side auth header resolution in `frontend/src/lib/config.server.ts` for malformed, file-backed, stale, and rotated token scenarios.
-- Confirmed file-backed token rotation is picked up on subsequent `getServerConfig()` calls when only `TOKOBOROS_GATEWAY_AUTH_HEADER_FILE` is set.
-- Finding: malformed direct header values from `TOKOBOROS_GATEWAY_AUTH_HEADER` are forwarded verbatim (for example `badtoken`) with no normalization or validation.
-- Finding: `TOKOBOROS_GATEWAY_AUTH_HEADER` takes precedence over `TOKOBOROS_GATEWAY_AUTH_HEADER_FILE`; if the env header becomes stale, file rotation does not take effect until env is cleared.
+- Confirmed file-backed token rotation is picked up on subsequent `getServerConfig()` calls when only `HACHI_GATEWAY_AUTH_HEADER_FILE` is set.
+- Finding: malformed direct header values from `HACHI_GATEWAY_AUTH_HEADER` are forwarded verbatim (for example `badtoken`) with no normalization or validation.
+- Finding: `HACHI_GATEWAY_AUTH_HEADER` takes precedence over `HACHI_GATEWAY_AUTH_HEADER_FILE`; if the env header becomes stale, file rotation does not take effect until env is cleared.
 - Validation command:
 - `npx -y tsx -e "...getServerConfig() auth-bridge probe..."` (run from `frontend/`)
 - Observed outputs:
@@ -247,12 +252,12 @@
 - [x] Task 20: Verify file-size, write, and delete gates at exact boundary values, including zero-byte, exact-limit, and over-limit files.
 - [x] Task 21: Attack terminal policy with allowlist-prefix collisions, blocked substrings, nested interpreters, Windows quoting edge cases, and timeout-bound long-running commands.
 - [x] Task 22: Exercise runtime approval flows for deny, approve, allow-once, dismissal, and timeout, then verify expired requests cannot be replayed.
-- [x] Task 23: Break secret storage by simulating unavailable keyring, missing `TOKOBOROS_SECRET_PASSPHRASE`, corrupted metadata, and delete or list desynchronization.
+- [x] Task 23: Break secret storage by simulating unavailable keyring, missing `HACHI_SECRET_PASSPHRASE`, corrupted metadata, and delete or list desynchronization.
 - [x] Task 24: Probe REST adapter SSRF defenses with loopback and private IPs, wildcard allowlists, DNS resolution failures, host-header tricks, and secret interpolation without an allowlist.
 - [x] Task 25: Attack the OAuth browser flow with missing Google client ID, state mismatch, occupied callback port `8080`, cancelled consent, and refresh-token failure.
 
 **Success criteria:** Device access remains policy-bound, outbound requests fail closed for unsafe destinations, and secret or OAuth handling does not silently degrade into unsafe behavior.
-**Notes:** Current filesystem and terminal policy defaults vary by permission tier. REST egress policy is controlled by `TOKOBOROS_REST_ALLOWLIST` and `TOKOBOROS_REST_ALLOW_PRIVATE`.
+**Notes:** Current filesystem and terminal policy defaults vary by permission tier. REST egress policy is controlled by `HACHI_REST_ALLOWLIST` and `HACHI_REST_ALLOW_PRIVATE`.
 
 ### Phase 4 Execution Log (2026-06-01, partial)
 
@@ -439,7 +444,7 @@
 
 **Objective:** Break interactive operator surfaces, gateway-client compatibility, routing guards, and shutdown behavior.
 
-- [x] Task 33: Run `tokoboros run` on fresh and already-configured workspaces to verify setup gating, gateway bootstrap, and REPL fallback behavior.
+- [x] Task 33: Run `hachi run` on fresh and already-configured workspaces to verify setup gating, gateway bootstrap, and REPL fallback behavior.
 - [x] Task 34: Re-verify TUI gateway mode against the live HTTP contract, including current route names and payload shapes, to catch legacy `/v1` protocol drift.
 - [x] Task 35: Interrupt TUI boot, active chat, and gateway polling to look for thread leaks, double-shutdowns, stuck approval waiters, or stale event buffers.
 - [x] Task 36: Abuse the web session workbench with repeated connect clicks, prompt spam, stale session IDs, deleted sessions, and long-running polls.
@@ -455,7 +460,7 @@
 #### Task 33 result: run-path setup gating, gateway bootstrap, and REPL fallback verified
 
 - Added setup-gating coverage for fresh vs already-configured states by exercising `_apply_quick_setup_if_needed()` with controlled onboarding service stubs.
-- Added explicit `tokoboros run` fallback coverage for TUI launch failure; confirmed REPL fallback is invoked and gateway runtime/server are still shut down cleanly.
+- Added explicit `hachi run` fallback coverage for TUI launch failure; confirmed REPL fallback is invoked and gateway runtime/server are still shut down cleanly.
 - Coverage references:
 - `tests/test_cli_gateway_command.py::test_apply_quick_setup_runs_only_when_needed`
 - `tests/test_cli_gateway_command.py::test_apply_quick_setup_skips_when_already_configured`
@@ -464,7 +469,7 @@
 #### Task 34 result: TUI gateway protocol drift fixed to unversioned contract
 
 - Finding: TUI gateway client still targeted legacy `/v1/connect`, `/v1/events`, and `/v1/chat` envelopes.
-- Fix applied in `src/tokoboros/tui/app.py` to use current unversioned gateway routes:
+- Fix applied in `src/hachi/tui/app.py` to use current unversioned gateway routes:
 - `POST /sessions` for connect handshake
 - `GET /sessions/{session_id}/events` for event polling
 - `POST /sessions/{session_id}/messages` for chat
@@ -601,15 +606,15 @@
 #### Task 43 result: Docker/Compose deployment contract validated (with hardening)
 
 - Added deployment contract checks for bind-address auth wiring, state-volume persistence mounts, frontend-to-gateway base URL, and restart-policy presence.
-- Hardening applied: `docker-compose.yml` now sets `restart: unless-stopped` for both `tokoboros` and `frontend` services to improve restart recovery posture.
+- Hardening applied: `docker-compose.yml` now sets `restart: unless-stopped` for both `hachi` and `frontend` services to improve restart recovery posture.
 - Coverage references:
 - `tests/test_phase7_integrations_mcp_sandbox_deployment.py::test_dockerfile_exposes_gateway_runtime_command`
 - `tests/test_phase7_integrations_mcp_sandbox_deployment.py::test_compose_enforces_auth_persistence_and_restart_contract`
 
 #### Task 44 result: post-test diagnostics and smoke verification captured
 
-- Ran `uv run tokoboros doctor`; environment and filesystem diagnostics reported healthy baseline (`provider_kind=anthropic`, `permissions_tier=guided`, `secret_backend=keyring`).
-- Ran `uv run tokoboros security-audit --json`; findings reported fail posture with known actionable issues (`oauth.google_client_id_missing`, `rest.allowlist_missing`, `sandbox.process_backend`).
+- Ran `uv run hachi doctor`; environment and filesystem diagnostics reported healthy baseline (`provider_kind=anthropic`, `permissions_tier=guided`, `secret_backend=keyring`).
+- Ran `uv run hachi security-audit --json`; findings reported fail posture with known actionable issues (`oauth.google_client_id_missing`, `rest.allowlist_missing`, `sandbox.process_backend`).
 - Re-ran full automated smoke via `PYTHONPATH=src uv run --with pytest --no-project pytest -q`; result `155 passed, 1 skipped`.
 
 #### Phase 7 verification command results

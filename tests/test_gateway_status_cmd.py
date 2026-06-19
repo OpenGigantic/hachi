@@ -1,4 +1,4 @@
-"""Tests for `tokoboros gateway-status`.
+"""Tests for `hachi gateway-status`.
 
 Fully offline: urllib calls are mocked so no real HTTP connection is made.
 """
@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from tokoboros.cli.main import app
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -94,4 +94,4 @@ class TestGatewayStatusUnreachable:
             side_effect=urllib.error.URLError("Connection refused"),
         ):
             result = runner.invoke(app, ["gateway-status"])
-        assert "tokoboros gateway" in result.output
+        assert "hachi gateway" in result.output

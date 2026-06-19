@@ -7,8 +7,8 @@ dashboard's Tool Timeline panel without any extra loop plumbing.
 
 from __future__ import annotations
 
-from tokoboros.core.runtime_events import RuntimeEvent
-from tokoboros.core.runtime_read_models import RuntimeReadModelStore
+from hachi.core.runtime_events import RuntimeEvent
+from hachi.core.runtime_read_models import RuntimeReadModelStore
 
 
 def _ev(name: str, payload: dict, timestamp: str) -> RuntimeEvent:

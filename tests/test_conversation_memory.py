@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import pytest
 
-from tokoboros.core.conversation_memory import ConversationMemory, IterationState
-from tokoboros.core.llm import LLMResponse, TokenUsage
-from tokoboros.core.loop import ExecutionLoop, ToolRegistry
-from tokoboros.core.memory import MemoryManager
-from tokoboros.core.testing import InMemoryConversationMemory
+from hachi.core.conversation_memory import ConversationMemory, IterationState
+from hachi.core.llm import LLMResponse, TokenUsage
+from hachi.core.loop import ExecutionLoop, ToolRegistry
+from hachi.core.memory import MemoryManager
+from hachi.core.testing import InMemoryConversationMemory
 
 # ---------------------------------------------------------------------------
 # Protocol satisfaction
@@ -125,7 +125,7 @@ def test_loop_uses_in_memory_adaptor() -> None:
 
 def test_loop_uses_in_memory_adaptor_with_turn_context() -> None:
     """When a TurnContext is supplied, user_input comes from it — not from memory."""
-    from tokoboros.core.turn_context import TurnContext
+    from hachi.core.turn_context import TurnContext
 
     mem = InMemoryConversationMemory()
     loop = ExecutionLoop(
@@ -166,7 +166,7 @@ def test_loop_calls_prepare_for_turn_each_iteration() -> None:
         _call = 0
 
         def generate(self, **_kwargs) -> LLMResponse:
-            from tokoboros.core.llm import ToolCall
+            from hachi.core.llm import ToolCall
 
             self._call += 1
             if self._call == 1:

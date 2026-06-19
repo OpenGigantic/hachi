@@ -16,7 +16,7 @@ import json
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from tokoboros.core.llm import (
+from hachi.core.llm import (
     LLMResponse,
     Message,
     TokenUsage,
@@ -46,7 +46,7 @@ class _MinimalClient:
     # We can't actually inherit since _MinimalClient doesn't extend BaseLLMClient,
     # so we import the default from the ABC and call it directly.
     def generate_stream(self, **kwargs: Any):  # type: ignore[override]
-        from tokoboros.core.llm import BaseLLMClient
+        from hachi.core.llm import BaseLLMClient
 
         return BaseLLMClient.generate_stream(self, **kwargs)  # type: ignore[arg-type]
 
@@ -121,9 +121,9 @@ def test_drain_stream_returns_chunks_and_response() -> None:
 
 def _make_anthropic_client() -> Any:
     """Return an AnthropicClient with the Anthropic SDK patched so no API key needed."""
-    from tokoboros.core.llm import AnthropicClient
+    from hachi.core.llm import AnthropicClient
 
-    with patch("tokoboros.core.llm.anthropic.Anthropic") as mock_anthropic:
+    with patch("hachi.core.llm.anthropic.Anthropic") as mock_anthropic:
         client = AnthropicClient.__new__(AnthropicClient)
         client.api_key = "sk-test"
         client.model = "claude-test"
@@ -230,7 +230,7 @@ def test_anthropic_generate_stream_passes_system_prompt() -> None:
 
 
 def _make_openai_client() -> Any:
-    from tokoboros.core.llm import OpenAICompatibleClient
+    from hachi.core.llm import OpenAICompatibleClient
 
     client = OpenAICompatibleClient.__new__(OpenAICompatibleClient)
     client.base_url = "https://api.example.com/v1"
@@ -345,7 +345,7 @@ def test_openai_stream_empty_lines_ignored() -> None:
 
 def test_anthropic_generate_still_works_after_refactor() -> None:
     """Refactoring generate() to use _build_kwargs must not change its behaviour."""
-    from tokoboros.core.llm import AnthropicClient
+    from hachi.core.llm import AnthropicClient
 
     client = AnthropicClient.__new__(AnthropicClient)
     client.api_key = "sk-test"

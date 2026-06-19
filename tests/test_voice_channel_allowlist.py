@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from tokoboros.channels import ChannelRouter, InboundMessage
-from tokoboros.core.voice import TextToSpeech, VoiceError
+from hachi.channels import ChannelRouter, InboundMessage
+from hachi.core.voice import TextToSpeech, VoiceError
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 
 def test_status_strip_shows_state():
-    from tokoboros.tui.formatters import format_status_strip
+    from hachi.tui.formatters import format_status_strip
 
     text = format_status_strip({"status": "Working…", "status_kind": "running"})
     plain = text.plain
@@ -24,49 +24,49 @@ def test_status_strip_shows_state():
 
 
 def test_status_strip_shows_jobs():
-    from tokoboros.tui.formatters import format_status_strip
+    from hachi.tui.formatters import format_status_strip
 
     text = format_status_strip({"status": "Idle", "status_kind": "idle", "jobs": 3})
     assert "3" in text.plain
 
 
 def test_status_strip_shows_approvals_with_bang():
-    from tokoboros.tui.formatters import format_status_strip
+    from hachi.tui.formatters import format_status_strip
 
     text = format_status_strip({"status": "Idle", "status_kind": "idle", "approvals": 2})
     assert "2!" in text.plain
 
 
 def test_status_strip_no_bang_when_zero_approvals():
-    from tokoboros.tui.formatters import format_status_strip
+    from hachi.tui.formatters import format_status_strip
 
     text = format_status_strip({"status": "Idle", "status_kind": "idle", "approvals": 0})
     assert "0!" not in text.plain
 
 
 def test_status_strip_shows_spend_when_cost_provided():
-    from tokoboros.tui.formatters import format_status_strip
+    from hachi.tui.formatters import format_status_strip
 
     text = format_status_strip({"status": "Idle", "status_kind": "idle", "cost": 0.0412})
     assert "$" in text.plain
 
 
 def test_status_strip_omits_spend_when_no_cost():
-    from tokoboros.tui.formatters import format_status_strip
+    from hachi.tui.formatters import format_status_strip
 
     text = format_status_strip({"status": "Idle", "status_kind": "idle"})
     assert "$" not in text.plain
 
 
 def test_status_strip_shows_warnings_when_nonzero():
-    from tokoboros.tui.formatters import format_status_strip
+    from hachi.tui.formatters import format_status_strip
 
     text = format_status_strip({"status": "Idle", "status_kind": "idle", "warnings": 1})
     assert "warn" in text.plain
 
 
 def test_status_strip_empty_info():
-    from tokoboros.tui.formatters import format_status_strip
+    from hachi.tui.formatters import format_status_strip
 
     text = format_status_strip({})
     assert text.plain  # must not crash
@@ -89,7 +89,7 @@ _SAMPLE_USAGE = {
 
 def test_format_spend_empty_usage_returns_friendly_message():
 
-    from tokoboros.tui.formatters import format_spend
+    from hachi.tui.formatters import format_spend
 
     result = format_spend({})
     # Should return a Group-like renderable with a friendly message (no crash).
@@ -99,7 +99,7 @@ def test_format_spend_empty_usage_returns_friendly_message():
 def test_format_spend_shows_input_tokens():
     from rich.console import Console
 
-    from tokoboros.tui.formatters import format_spend
+    from hachi.tui.formatters import format_spend
 
     result = format_spend(_SAMPLE_USAGE, model="claude-haiku-4-5")
     console = Console(record=True, width=120)
@@ -111,7 +111,7 @@ def test_format_spend_shows_input_tokens():
 def test_format_spend_shows_cache_hit_rate():
     from rich.console import Console
 
-    from tokoboros.tui.formatters import format_spend
+    from hachi.tui.formatters import format_spend
 
     result = format_spend(_SAMPLE_USAGE, model="claude-haiku-4-5")
     console = Console(record=True, width=120)
@@ -123,7 +123,7 @@ def test_format_spend_shows_cache_hit_rate():
 def test_format_spend_shows_model_name():
     from rich.console import Console
 
-    from tokoboros.tui.formatters import format_spend
+    from hachi.tui.formatters import format_spend
 
     result = format_spend(_SAMPLE_USAGE, model="claude-haiku-4-5")
     console = Console(record=True, width=120)
@@ -135,7 +135,7 @@ def test_format_spend_shows_model_name():
 def test_format_spend_shows_compaction_events():
     from rich.console import Console
 
-    from tokoboros.tui.formatters import format_spend
+    from hachi.tui.formatters import format_spend
 
     events = [
         {"name": "context.compacted", "timestamp": "2026-06-13T10:00:00",
@@ -151,7 +151,7 @@ def test_format_spend_shows_compaction_events():
 def test_format_spend_no_compaction_events_shows_none():
     from rich.console import Console
 
-    from tokoboros.tui.formatters import format_spend
+    from hachi.tui.formatters import format_spend
 
     result = format_spend(_SAMPLE_USAGE, model="claude-haiku-4-5", events=[])
     console = Console(record=True, width=120)
@@ -166,7 +166,7 @@ def test_format_spend_no_compaction_events_shows_none():
 
 
 def test_status_strip_widget_exists():
-    from tokoboros.tui.widgets import StatusStrip
+    from hachi.tui.widgets import StatusStrip
 
     assert hasattr(StatusStrip, "update_info")
 
@@ -174,7 +174,7 @@ def test_status_strip_widget_exists():
 def test_status_strip_widget_is_static_subclass():
     from textual.widgets import Static
 
-    from tokoboros.tui.widgets import StatusStrip
+    from hachi.tui.widgets import StatusStrip
 
     assert issubclass(StatusStrip, Static)
 
@@ -185,27 +185,27 @@ def test_status_strip_widget_is_static_subclass():
 
 
 def test_spend_screen_in_modes():
-    from tokoboros.tui.app import TokoborosTextualApp
+    from hachi.tui.app import HachiTextualApp
 
-    assert "spend" in TokoborosTextualApp.MODES
+    assert "spend" in HachiTextualApp.MODES
 
 
 def test_spend_screen_has_ctrl3_binding():
-    from tokoboros.tui.app import TokoborosTextualApp
+    from hachi.tui.app import HachiTextualApp
 
-    keys = {b.key for b in TokoborosTextualApp.BINDINGS}
+    keys = {b.key for b in HachiTextualApp.BINDINGS}
     assert "ctrl+3" in keys
 
 
 def test_spend_screen_action_exists():
-    from tokoboros.tui.app import TokoborosTextualApp
+    from hachi.tui.app import HachiTextualApp
 
-    assert hasattr(TokoborosTextualApp, "action_mode_spend")
+    assert hasattr(HachiTextualApp, "action_mode_spend")
 
 
 def test_memory_still_accessible_ctrl4():
-    from tokoboros.tui.app import TokoborosTextualApp
+    from hachi.tui.app import HachiTextualApp
 
     # After adding Spend at ctrl+3, Memory moved to ctrl+4
-    bindings = {b.key: b.action for b in TokoborosTextualApp.BINDINGS}
+    bindings = {b.key: b.action for b in HachiTextualApp.BINDINGS}
     assert "mode_memory" in bindings.get("ctrl+4", "")

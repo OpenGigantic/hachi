@@ -14,8 +14,8 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from tokoboros.channels import telegram_setup as ts
-from tokoboros.cli.main import app
+from hachi.channels import telegram_setup as ts
+from hachi.cli.main import app
 
 runner = CliRunner()
 
@@ -36,14 +36,13 @@ class _FakeVault:
 
 
 def _temp_paths(tmp_path: Path):
-    from tokoboros.core.paths import TokoborosPaths
+    from hachi.core.paths import HachiPaths
 
-    return TokoborosPaths(
+    return HachiPaths(
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
         cache_dir=tmp_path / "cache",
         state_dir=tmp_path / "state",
-        legacy_dir=tmp_path / "legacy",
     )
 
 
@@ -179,13 +178,13 @@ class TestChannelTelegramSetupCmd:
         onboarding = MagicMock()
         onboarding.return_value.needs_setup.return_value = False
         return adapter, (
-            patch("tokoboros.channels.telegram.TelegramAdapter", adapter_cls),
-            patch("tokoboros.channels.runner.GatewaySessionRunner"),
-            patch("tokoboros.channels.ChannelRouter"),
-            patch("tokoboros.channels.telegram_setup.save_token"),
-            patch("tokoboros.channels.telegram_setup.save_allowlist"),
-            patch("tokoboros.channels.telegram_setup.load_allowlist", return_value=["555"]),
-            patch("tokoboros.core.onboarding.OnboardingService", onboarding),
+            patch("hachi.channels.telegram.TelegramAdapter", adapter_cls),
+            patch("hachi.channels.runner.GatewaySessionRunner"),
+            patch("hachi.channels.ChannelRouter"),
+            patch("hachi.channels.telegram_setup.save_token"),
+            patch("hachi.channels.telegram_setup.save_allowlist"),
+            patch("hachi.channels.telegram_setup.load_allowlist", return_value=["555"]),
+            patch("hachi.core.onboarding.OnboardingService", onboarding),
         )
 
     def test_setup_persists_token_and_allowlist(self) -> None:
@@ -195,8 +194,8 @@ class TestChannelTelegramSetupCmd:
             patches[0],
             patches[1],
             patches[2],
-            patch("tokoboros.channels.telegram_setup.save_token") as save_token,
-            patch("tokoboros.channels.telegram_setup.save_allowlist") as save_allow,
+            patch("hachi.channels.telegram_setup.save_token") as save_token,
+            patch("hachi.channels.telegram_setup.save_allowlist") as save_allow,
             patches[5],
             patches[6],
         ):
@@ -226,7 +225,7 @@ class TestChannelTelegramSetupCmd:
             patches[4],
             patches[5],
             patches[6],
-            patch("tokoboros.channels.telegram_setup.resolve_token", return_value=None),
+            patch("hachi.channels.telegram_setup.resolve_token", return_value=None),
         ):
             result = runner.invoke(app, ["channel", "telegram"])
         assert result.exit_code == 2
@@ -242,7 +241,7 @@ class TestChannelTelegramSetupCmd:
             patches[5],
             patches[6],
             patch(
-                "tokoboros.channels.telegram_setup.resolve_token",
+                "hachi.channels.telegram_setup.resolve_token",
                 return_value="123:" + "A" * 30,
             ),
         ):
