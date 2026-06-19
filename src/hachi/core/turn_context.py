@@ -112,7 +112,11 @@ class TurnContext:
 
         # Full prompt keeps the stable content first (model reads instructions
         # before per-turn context); also the single-block fallback path then caches.
-        composed_prompt = f"{cacheable_system}\n\n{dynamic_system}"
+        # Guard against a trailing \n\n when dynamic_system is empty (LOW-017).
+        if dynamic_system:
+            composed_prompt = f"{cacheable_system}\n\n{dynamic_system}"
+        else:
+            composed_prompt = cacheable_system
 
         return cls(
             turn_id=turn_id,
