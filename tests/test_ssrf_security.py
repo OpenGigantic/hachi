@@ -18,7 +18,7 @@ import pytest
 
 from hachi.core.browser import BrowserController, BrowserUnavailable
 from hachi.core.loop import ToolRegistry
-from hachi.core.net_guard import validate_outbound_url
+from hachi.core.net_guard import ValidationResult, validate_outbound_url
 from hachi.tools.browser_tools import _make_browse_web
 
 # ---------------------------------------------------------------------------
@@ -81,47 +81,48 @@ class TestRestAdapterSsrfDelegation:
 
     def test_blocks_loopback(self) -> None:
         adapter = self._make_adapter()
-        result = adapter._validate_outbound_url("http://127.0.0.1/admin", includes_secret=False)
-        assert result is not None
-        assert "127.0.0.1" in result or "non-public" in result or "loopback" in result.lower() or "private" in result.lower()  # noqa: E501
+        error, _ = adapter._validate_outbound_url("http://127.0.0.1/admin", includes_secret=False)
+        assert error is not None
+        assert "127.0.0.1" in error or "non-public" in error or "loopback" in error.lower() or "private" in error.lower()  # noqa: E501
 
     def test_blocks_metadata_endpoint(self) -> None:
         adapter = self._make_adapter()
-        result = adapter._validate_outbound_url(
+        error, _ = adapter._validate_outbound_url(
             "http://169.254.169.254/latest/meta-data/", includes_secret=False
         )
-        assert result is not None, "Cloud metadata endpoint must be blocked"
+        assert error is not None, "Cloud metadata endpoint must be blocked"
 
     def test_blocks_private_rfc1918(self) -> None:
         adapter = self._make_adapter()
-        result = adapter._validate_outbound_url("http://192.168.0.1/", includes_secret=False)
-        assert result is not None
+        error, _ = adapter._validate_outbound_url("http://192.168.0.1/", includes_secret=False)
+        assert error is not None
 
     def test_allow_private_bypasses(self) -> None:
         adapter = self._make_adapter(allow_private=True)
-        result = adapter._validate_outbound_url("http://10.0.0.5/hook", includes_secret=False)
-        assert result is None, "allow_private=True must pass private addresses through"
+        error, _ = adapter._validate_outbound_url("http://10.0.0.5/hook", includes_secret=False)
+        assert error is None, "allow_private=True must pass private addresses through"
 
     def test_public_url_passes(self) -> None:
         adapter = self._make_adapter()
         # Use a literal public IP to avoid real DNS lookup in tests.
-        result = adapter._validate_outbound_url("http://1.1.1.1/", includes_secret=False)
-        assert result is None, f"Public IP should be allowed; got: {result}"
+        error, _ = adapter._validate_outbound_url("http://1.1.1.1/", includes_secret=False)
+        assert error is None, f"Public IP should be allowed; got: {error}"
 
     def test_non_http_scheme_blocked(self) -> None:
         adapter = self._make_adapter()
-        result = adapter._validate_outbound_url("file:///etc/passwd", includes_secret=False)
-        assert result is not None
+        error, _ = adapter._validate_outbound_url("file:///etc/passwd", includes_secret=False)
+        assert error is not None
 
     def test_net_guard_is_called(self) -> None:
         """_validate_outbound_url must invoke net_guard, not its own IP logic."""
         adapter = self._make_adapter()
         with patch(
-            "hachi.core.rest_adapter._net_guard_validate", return_value=(False, "mocked-block")
+            "hachi.core.rest_adapter._net_guard_validate",
+            return_value=ValidationResult(ok=False, reason="mocked-block"),
         ) as mock_guard:
-            result = adapter._validate_outbound_url("http://1.1.1.1/", includes_secret=False)
+            error, _ = adapter._validate_outbound_url("http://1.1.1.1/", includes_secret=False)
         mock_guard.assert_called_once()
-        assert result == "mocked-block"
+        assert error == "mocked-block"
 
     def test_allowlist_checked_before_net_guard(self) -> None:
         """When an allowlist is configured, a host not on it is rejected before net_guard."""
@@ -129,11 +130,11 @@ class TestRestAdapterSsrfDelegation:
 
         registry = ToolRegistry()
         adapter = UniversalRestAdapter(registry, allowed_hosts=["api.allowed.com"])
-        result = adapter._validate_outbound_url(
+        error, _ = adapter._validate_outbound_url(
             "http://other-host.com/", includes_secret=False
         )
-        assert result is not None
-        assert "HACHI_REST_ALLOWLIST" in result
+        assert error is not None
+        assert "HACHI_REST_ALLOWLIST" in error
 
 
 # ---------------------------------------------------------------------------
