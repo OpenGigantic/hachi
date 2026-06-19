@@ -539,7 +539,9 @@ export interface paths {
          *
          *     Returns:
          *         A JSON object ``{"pending": [...]}`` with every unresolved request
-         *         from the approval registry.
+         *         from the approval registry.  Each entry includes ``expiresAt``
+         *         (MED-021) — an ISO-8601 timestamp so that the frontend countdown
+         *         timer can render.
          */
         get: operations["get_approvals_approvals_get"];
         put?: never;

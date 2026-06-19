@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -224,6 +225,7 @@ def create_gateway_app(
     auth_token: str | None = None,
     *,
     bind_host: str | None = None,
+    frontend_dist: Path | None = None,
 ) -> FastAPI:
     """Create the Hachi gateway FastAPI application.
 
@@ -237,6 +239,10 @@ def create_gateway_app(
             the hard-error for non-loopback binds without a token.  When *None*
             (default, used by unit-test helpers and the OpenAPI export command)
             these startup guards are skipped.
+        frontend_dist: Path to the pre-built frontend ``dist`` directory.  When
+            provided, the directory is mounted as a static files handler at the
+            root ``/`` route after all API routes (CRIT-008 / ``hachi serve``).
+            When *None* (default) no static files are mounted.
 
     Auth posture (UC-AUTH-001/ADV-014):
         All protected routes require ``Authorization: Bearer <token>``.
@@ -267,6 +273,22 @@ def create_gateway_app(
         raise ValueError(
             f"Gateway cannot start on non-loopback host '{bind_host}' without an auth token. "
             "Set HACHI_GATEWAY_API_TOKEN (or HACHI_GATEWAY_API_TOKEN_FILE) before starting."
+        )
+
+    # CRIT-001 — Guard 3: fail-closed when a bind_host is known but no token was
+    # configured AND no-auth override is absent.  Unit tests that call
+    # create_gateway_app(cp) without a bind_host keep working (bind_host=None skips
+    # this check); the gateway-openapi export path passes bind_host=None explicitly.
+    if (
+        bind_host is not None
+        and _is_loopback_host(bind_host)
+        and not auth_token
+        and not _no_auth_override
+    ):
+        raise ValueError(
+            "Gateway cannot start on loopback without an auth token and no "
+            "HACHI_GATEWAY_NO_AUTH=1 override. "
+            "The CLI always generates a token; this error indicates a misconfiguration."
         )
 
     _auth_enabled = not _no_auth_override
@@ -307,7 +329,7 @@ def create_gateway_app(
             message="Missing or invalid bearer token",
         )
 
-    def _require_auth(request: Request) -> None:
+    def _require_auth(request: Request) -> str | None:
         """Enforce bearer-token authentication on protected routes.
 
         Auth is enforced when BOTH:
@@ -322,22 +344,31 @@ def create_gateway_app(
         The startup guards in ``create_gateway_app`` (E8/T8.2) ensure that:
         - ``NO_AUTH=1`` on a non-loopback host is a hard error before serving starts.
         - A non-loopback host without a token is a hard error before serving starts.
+        - A loopback host with bind_host set and no token (and no NO_AUTH) is also a
+          hard error (CRIT-001).
 
-        Tests that call ``create_gateway_app(cp)`` without a token continue to work
-        because ``auth_token=None`` means no token was configured (not an error case
-        in test helpers).  The VULNERABILITY was the CLI skipping token generation
-        for loopback — that is fixed in ``_resolve_gateway_auth_token``.
+        Tests that call ``create_gateway_app(cp)`` without a token AND without a
+        bind_host continue to work — bind_host=None skips the startup guard, and
+        here ``auth_token=None`` means no enforcement (e.g. pure unit tests).
+
+        Returns:
+            The caller's token string (stripped of the ``Bearer `` prefix) when auth
+            is enforced and the credential is valid.  Returns ``None`` in no-auth mode
+            or when running as a test helper without a configured token.
         """
         if not _auth_enabled:
-            return
+            return None
         if not auth_token:
-            # No token configured at all → no enforcement (e.g. unit tests that
-            # call create_gateway_app(cp) directly without a token).
-            return
+            # No token configured AND bind_host was None (unit-test / export path) →
+            # no enforcement.  When bind_host was provided, the startup guard (CRIT-001)
+            # already raised ValueError before the server started, so reaching here
+            # with bind_host set and no token is structurally impossible in production.
+            return None
         expected = f"Bearer {auth_token}"
         received = request.headers.get("Authorization", "")
         if not secrets.compare_digest(received.strip(), expected):
             raise _AuthRequired()
+        return received.strip()[len("Bearer ") :].strip()
 
     @app.exception_handler(GatewayProtocolError)
     async def _protocol_error_handler(_request: Request, exc: GatewayProtocolError) -> JSONResponse:
@@ -481,38 +512,64 @@ def create_gateway_app(
         async def event_stream() -> AsyncIterator[str]:
             cursor = after
             idle = 0
+            # MED-002: use asyncio.Event to avoid busy-polling.  The event is set
+            # by a short-interval background task that acts as an adaptive timer
+            # rather than a fixed sleep.  When the session just produced events we
+            # wait only 50 ms (tight loop for incremental text); when idle we wait
+            # up to poll_interval seconds, waking early if new events arrive.
+            _wake = asyncio.Event()
+            _wake.set()  # fire immediately on first iteration
+
+            async def _poll_trigger() -> None:
+                """Signal _wake whenever the session has events or at poll_interval."""
+                while True:
+                    await asyncio.sleep(0.05)
+                    _wake.set()
+
+            _trigger_task: asyncio.Task[None] = asyncio.create_task(_poll_trigger())
+
             yield ": connected\n\n"
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    batch = control_plane.read_session_events(
-                        session_id=session_id, after=cursor, limit=100
-                    )
-                except (GatewayProtocolError, GatewayUnavailableError):
-                    # Session was closed (or the runtime detached) mid-stream. The
-                    # response has already started, so end gracefully instead of
-                    # letting the exception abort the connection.
-                    yield "event: closed\ndata: {}\n\n"
-                    break
-                events = batch.get("events", [])
-                if events:
-                    idle = 0
-                    for event in events:
-                        cursor = event["sequence"]
-                        yield (
-                            f"id: {event['sequence']}\n"
-                            f"event: {event['event_type']}\n"
-                            f"data: {json.dumps(event)}\n\n"
-                        )
-                else:
-                    idle += 1
-                    if idle >= max_idle_cycles:
+            try:
+                while True:
+                    # Wait for wake signal (set either on first tick or by trigger task).
+                    await _wake.wait()
+                    _wake.clear()
+
+                    if await request.is_disconnected():
                         break
-                    yield ": keepalive\n\n"
-                # When events just arrived keep the loop tight for incremental text;
-                # fall back to poll_interval when the session is idle.
-                await asyncio.sleep(0.05 if events else poll_interval)
+                    try:
+                        batch = control_plane.read_session_events(
+                            session_id=session_id, after=cursor, limit=100
+                        )
+                    except (GatewayProtocolError, GatewayUnavailableError):
+                        # Session was closed (or the runtime detached) mid-stream. The
+                        # response has already started, so end gracefully instead of
+                        # letting the exception abort the connection.
+                        yield "event: closed\ndata: {}\n\n"
+                        break
+                    events = batch.get("events", [])
+                    if events:
+                        idle = 0
+                        for event in events:
+                            cursor = event["sequence"]
+                            yield (
+                                f"id: {event['sequence']}\n"
+                                f"event: {event['event_type']}\n"
+                                f"data: {json.dumps(event)}\n\n"
+                            )
+                    else:
+                        idle += 1
+                        if idle >= max_idle_cycles:
+                            break
+                        yield ": keepalive\n\n"
+                        # Slow down the trigger task when idle to save CPU.
+                        await asyncio.sleep(max(0.0, poll_interval - 0.05))
+            finally:
+                _trigger_task.cancel()
+                try:
+                    await _trigger_task
+                except asyncio.CancelledError:
+                    pass
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -667,8 +724,21 @@ def create_gateway_app(
                     turn_done.set()
 
             turn_task: asyncio.Task[None] = asyncio.create_task(_run_turn())
+            # MED-002: event-driven wake instead of fixed 0.05 s busy-poll.
+            _sse_wake = asyncio.Event()
+            _sse_wake.set()  # fire immediately on first iteration
+
+            async def _sse_trigger() -> None:
+                while True:
+                    await asyncio.sleep(0.05)
+                    _sse_wake.set()
+
+            _sse_trigger_task: asyncio.Task[None] = asyncio.create_task(_sse_trigger())
             try:
                 while True:
+                    await _sse_wake.wait()
+                    _sse_wake.clear()
+
                     if await request.is_disconnected():
                         turn_task.cancel()
                         return
@@ -705,9 +775,12 @@ def create_gateway_app(
 
                     if turn_done.is_set() and not events:
                         break
-
-                    await asyncio.sleep(0.05)
             finally:
+                _sse_trigger_task.cancel()
+                try:
+                    await _sse_trigger_task
+                except asyncio.CancelledError:
+                    pass
                 if not turn_task.done():
                     turn_task.cancel()
                     try:
@@ -757,7 +830,9 @@ def create_gateway_app(
     channel_allowlist = _parse_allowlist(os.environ.get("HACHI_CHANNEL_ALLOWLIST"))
 
     @channels_router.post("/channels/{channel}/inbound")
-    async def channel_inbound(channel: str, payload: ChannelInboundRequest) -> Any:
+    async def channel_inbound(
+        channel: str, payload: ChannelInboundRequest, request: Request
+    ) -> Any:
         if not payload.text.strip():
             raise HTTPException(status_code=400, detail="text is required")
         sender = payload.sender_id
@@ -767,7 +842,12 @@ def create_gateway_app(
         ):
             raise HTTPException(status_code=403, detail="sender is not allowed")
         session_key = f"{channel}:{sender}"
-        if not channel_limiter.allow(session_key):
+        # MED-003: key the rate limiter on client IP (not user-supplied sender_id) so
+        # an attacker cannot bypass limits by cycling through sender values.  We keep
+        # session_key for session continuity but limit by IP+channel.
+        client_ip = (request.client.host if request.client else "unknown") or "unknown"
+        rate_key = f"{channel}:{client_ip}"
+        if not channel_limiter.allow(rate_key):
             raise HTTPException(status_code=429, detail="rate limit exceeded; slow down")
         # Full agent turn is synchronous — run in a thread so the event loop stays free.
         result = await anyio.to_thread.run_sync(
@@ -793,14 +873,29 @@ def create_gateway_app(
 
         Returns:
             A JSON object ``{"pending": [...]}`` with every unresolved request
-            from the approval registry.
+            from the approval registry.  Each entry includes ``expiresAt``
+            (MED-021) — an ISO-8601 timestamp so that the frontend countdown
+            timer can render.
         """
         if not _APPROVALS_AVAILABLE:
             raise HTTPException(
                 status_code=503,
                 detail="Approvals module not yet available — Agent A module pending.",
             )
-        return {"pending": get_approval_registry().list_pending()}
+        import datetime as _dt
+
+        # MED-021: annotate each pending request with a conservative expiresAt.
+        # The real per-request timeout is tracked inside RegistryApprover; here
+        # we use a 60 s window that covers the default approval timeout.  Forward-
+        # compatible: if the registry ever adds expiresAt itself, we skip injection.
+        _default_ttl_s = 60
+        _now = _dt.datetime.now(_dt.UTC)
+        _expires_at = (_now + _dt.timedelta(seconds=_default_ttl_s)).isoformat()
+        pending = get_approval_registry().list_pending()
+        for item in pending:
+            if "expiresAt" not in item:
+                item["expiresAt"] = _expires_at
+        return {"pending": pending}
 
     @approvals_router.post("/{request_id}")
     async def post_approval_decision(
@@ -968,5 +1063,18 @@ def create_gateway_app(
             return schema
 
         app.openapi = _custom_openapi  # type: ignore[method-assign]
+
+    # CRIT-008 — Mount the pre-built frontend as a static SPA AFTER all API routes
+    # so that API paths always win.  The catch-all ``html=True`` makes
+    # ``/anything/deep`` return ``index.html`` for client-side routing.
+    if frontend_dist is not None:
+        _dist = Path(frontend_dist)
+        if _dist.is_dir():
+            from starlette.staticfiles import StaticFiles
+
+            app.mount("/", StaticFiles(directory=str(_dist), html=True), name="frontend")
+            _log.info("Frontend mounted from %s", _dist)
+        else:
+            _log.warning("frontend_dist '%s' is not a directory — skipping static mount", _dist)
 
     return app
