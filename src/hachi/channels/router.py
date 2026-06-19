@@ -6,6 +6,7 @@ import logging
 from collections.abc import Iterable
 
 from hachi.channels.base import InboundMessage, OutboundMessage, SessionRunner
+from hachi.core.untrusted_content import guard_untrusted
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,12 @@ class ChannelRouter:
 
         session = self.session_key(message.channel, message.sender_id)
         try:
-            reply = self._runner(session, message.text)
+            # HIGH-002: wrap inbound channel text in the untrusted-content data envelope
+            # before it reaches the LLM. Channel messages are untrusted third-party input
+            # and can contain prompt-injection payloads aimed at hijacking the agent.
+            source = f"{message.channel}:{message.sender_id}"
+            guarded_text, _flagged = guard_untrusted(message.text, source=source)
+            reply = self._runner(session, guarded_text)
         except Exception as e:  # never let one bad turn kill the receive loop
             logger.exception("Agent run failed for %s", session)
             reply = f"⚠️ Sorry, something went wrong handling your message: {e}"

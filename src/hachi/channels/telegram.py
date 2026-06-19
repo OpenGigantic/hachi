@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _API = "https://api.telegram.org/bot{token}/{method}"
+# Safe URL template for logging — token placeholder never filled with the real value.
+_API_LOG = "https://api.telegram.org/bot<redacted>/{method}"
 
 
 def parse_updates(updates: list[dict[str, Any]]) -> list[InboundMessage]:
@@ -84,7 +86,11 @@ class TelegramAdapter(ChannelAdapter):
         self._command_registry = command_registry
 
     def _call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        # MED-005: build the real URL with the token only for the actual request;
+        # never log the full URL — the token embedded in the path would be captured
+        # by proxies, log aggregators, and DEBUG-level log consumers.
         url = _API.format(token=self._token, method=method)
+        logger.debug("Telegram API call: %s", _API_LOG.format(method=method))
         data = json.dumps(params).encode("utf-8")
         request = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/json"}
@@ -96,9 +102,7 @@ class TelegramAdapter(ChannelAdapter):
     def poll_once(self) -> list[InboundMessage]:
         result = self._call("getUpdates", {"offset": self._offset, "timeout": self._timeout})
         if not result.get("ok", True):
-            import logging
-
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "Telegram getUpdates returned ok=false: %s", result.get("description", result)
             )
             return []
