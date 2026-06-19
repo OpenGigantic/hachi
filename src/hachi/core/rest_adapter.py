@@ -16,6 +16,7 @@ import httpx
 
 from hachi.core.credential_vault import CredentialVault
 from hachi.core.loop import ToolRegistry
+from hachi.core.net_guard import ValidationResult
 from hachi.core.net_guard import validate_outbound_url as _net_guard_validate
 from hachi.core.secret_scanner import outbound_redaction_disabled, redact_secrets
 from hachi.core.untrusted_content import guard_untrusted
@@ -96,7 +97,9 @@ class UniversalRestAdapter:
                 return True
         return False
 
-    def _validate_outbound_url(self, raw_url: str, includes_secret: bool) -> str | None:
+    def _validate_outbound_url(
+        self, raw_url: str, includes_secret: bool
+    ) -> tuple[str, ValidationResult] | tuple[None, None]:
         """Validate ``raw_url`` before sending a request.
 
         Delegates host/IP safety to :func:`~hachi.core.net_guard.validate_outbound_url`
@@ -108,32 +111,35 @@ class UniversalRestAdapter:
             includes_secret: Whether a vault-sourced credential was injected into headers.
 
         Returns:
-            ``None`` if the URL is safe to request, or a human-readable error string
-            that should be returned to the caller without making the request.
+            ``(None, None)`` if the URL is safe to request, or
+            ``(error_string, None)`` that should be returned to the caller without making
+            the request.  When safe, the second element is the :class:`ValidationResult`
+            which carries the pre-resolved IP set — callers SHOULD use it to build a
+            pinned connection and avoid a second DNS lookup (DNS-rebinding TOCTOU).
         """
         from urllib.parse import urlparse
 
         try:
             parsed = urlparse(raw_url)
         except Exception:
-            return "Invalid URL format"
+            return "Invalid URL format", None
 
         host = parsed.hostname
         if not host:
-            return "URL hostname is required"
+            return "URL hostname is required", None
 
         host_lc = host.lower()
         if self.allowed_hosts and not self._host_in_allowlist(host_lc, self.allowed_hosts):
-            return f"Host '{host_lc}' is not allowed by HACHI_REST_ALLOWLIST"
+            return f"Host '{host_lc}' is not allowed by HACHI_REST_ALLOWLIST", None
 
         if includes_secret and not self.allowed_hosts:
-            return "Secret interpolation requires HACHI_REST_ALLOWLIST to be configured"
+            return "Secret interpolation requires HACHI_REST_ALLOWLIST to be configured", None
 
-        ok, reason = _net_guard_validate(raw_url, allow_private=self._allow_private_egress)
-        if not ok:
-            return str(reason)
+        result = _net_guard_validate(raw_url, allow_private=self._allow_private_egress)
+        if not result.ok:
+            return str(result.reason), None
 
-        return None
+        return None, result
 
     def register_node_apis(self, node: OGNode):
         """Parses all API definitions in an OGNode and registers them as tools."""
@@ -268,18 +274,43 @@ class UniversalRestAdapter:
             json_payload, _redacted_body = _redact_mapping_secrets(json_payload)
 
             # 4. Execute HTTP Request
-            validation_error = self._validate_outbound_url(url, includes_secret=secret_interpolated)
+            validation_error, net_result = self._validate_outbound_url(
+                url, includes_secret=secret_interpolated
+            )
             if validation_error:
                 return f"Blocked by outbound policy: {validation_error}"
 
             try:
+                from urllib.parse import urlparse as _urlparse
+
+                # DNS-pinning: connect to the IP we resolved during validation rather
+                # than letting httpx re-resolve the hostname (DNS-rebinding TOCTOU fix).
+                # When net_result has resolved IPs, pick one and substitute it into the
+                # URL; set the Host header so TLS SNI and virtual-hosting still work.
+                connect_url = url
+                if net_result is not None and net_result.resolved_ips:
+                    _parsed = _urlparse(url)
+                    _pinned_ip = next(iter(net_result.resolved_ips))
+                    # Format IPv6 addresses with brackets as required by RFC 2732.
+                    _ip_host = f"[{_pinned_ip}]" if ":" in _pinned_ip else _pinned_ip
+                    # Preserve the original Host header if the caller set one (blocked
+                    # by the header policy above, so in practice we set it ourselves).
+                    if "host" not in {k.lower() for k in headers}:
+                        headers["Host"] = _parsed.hostname or ""
+                    _port = _parsed.port
+                    _netloc = f"{_ip_host}:{_port}" if _port else _ip_host
+                    connect_url = _parsed._replace(netloc=_netloc).geturl()
+
                 # follow_redirects=False is explicit: a 3xx to an internal host is a
-                # classic SSRF bypass of the public-host check above. (Residual: a
-                # narrow DNS-rebinding window between validation and connect remains;
-                # mitigated by the public-IP check + the secret allowlist.)
+                # classic SSRF bypass of the public-host check above. DNS-rebinding
+                # TOCTOU is closed by connecting to the pinned IP above.
                 with httpx.Client(timeout=15.0, follow_redirects=False) as client:
                     response = client.request(
-                        method=method, url=url, headers=headers, params=params, json=json_payload
+                        method=method,
+                        url=connect_url,
+                        headers=headers,
+                        params=params,
+                        json=json_payload,
                     )
                     response.raise_for_status()
 
