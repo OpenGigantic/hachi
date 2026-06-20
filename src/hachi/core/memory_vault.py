@@ -295,6 +295,11 @@ class MemoryVault:
         # P2-04: optional FTS5 graph index; set via attach_graph_index()
         self._graph_index: Any = None
 
+        # H12: closed flag — set to True by close() under _vault_lock so that
+        # subsequent collection-access calls raise RuntimeError rather than
+        # crashing with AttributeError on a nulled collection ref.
+        self._closed: bool = False
+
     # ==========================================
     # Lifecycle
     # ==========================================
@@ -304,14 +309,21 @@ class MemoryVault:
 
         Call this during graceful shutdown so the embedded Chroma SQLite WAL is
         flushed and the file handle released before the process exits.  Safe to
-        call multiple times.
+        call multiple times (idempotent).
 
         HIGH-021: Acquires _vault_lock before nulling collection refs so any
         in-flight tool calls that already hold the lock finish cleanly before
         teardown begins.  _server.stop() is wrapped in try/except AttributeError
         so it does not raise on Chroma versions that lack the attribute.
+
+        H12: Sets ``_closed = True`` under the lock so that any subsequent
+        collection-access call raises ``RuntimeError("MemoryVault is closed")``
+        instead of crashing with ``AttributeError`` on a nulled collection ref.
         """
         with self._vault_lock:
+            if self._closed:
+                # Already closed — idempotent, nothing to do.
+                return
             try:
                 server = getattr(self.client, "_server", None)
                 # PersistentClient exposes no explicit close(); stopping the internal
@@ -325,7 +337,7 @@ class MemoryVault:
                             _stop_fn()
                         except AttributeError:
                             # _server.stop() may not exist on all Chroma versions.
-                            logger.debug(
+                            logger.warning(
                                 "MemoryVault.close: _server.stop() raised AttributeError"
                             )
                 # Always release the collection references so GC can finalise.
@@ -340,6 +352,28 @@ class MemoryVault:
                         setattr(self, attr, None)
             except Exception:
                 pass
+            finally:
+                # Set _closed last so that if an exception occurs mid-teardown we
+                # still mark the vault as closed — callers must not retry after close.
+                self._closed = True
+
+    # ==========================================
+    # H12: Closed-state guard
+    # ==========================================
+
+    def _assert_open(self) -> None:
+        """Raise RuntimeError if the vault has been closed.
+
+        Must be called under ``_vault_lock`` (the caller acquires it).  All public
+        collection-access methods call this at entry so that post-close calls fail
+        deterministically with a clear message rather than crashing with
+        ``AttributeError: 'NoneType' object has no attribute 'upsert'``.
+
+        Raises:
+            RuntimeError: When ``close()`` has already been called.
+        """
+        if self._closed:
+            raise RuntimeError("MemoryVault is closed")
 
     # ==========================================
     # P2-04: Graph index (M0)
@@ -397,6 +431,7 @@ class MemoryVault:
         """Scan content through MemoryGuard, then upsert into the target collection.
 
         HIGH-021: acquires _vault_lock around the ChromaDB write.
+        H12: raises RuntimeError if the vault has been closed.
 
         Returns:
             The fact ID on success, or a 'BLOCKED:<threat>' string on rejection.
@@ -409,6 +444,7 @@ class MemoryVault:
 
         fact_id = self._generate_id(content)
         with self._vault_lock:
+            self._assert_open()
             collection.upsert(
                 ids=[fact_id],
                 documents=[content],
@@ -444,6 +480,7 @@ class MemoryVault:
         wrapped = self._wrap_untrusted_content(content, threat_id)
 
         with self._vault_lock:
+            self._assert_open()
             self.quarantine_collection.upsert(
                 ids=[quarantine_id],
                 documents=[wrapped],
@@ -464,6 +501,7 @@ class MemoryVault:
     def get_quarantine_entries(self, top_k: int = 20) -> list[dict[str, Any]]:
         """Return recent quarantined memory entries for audit/review flows."""
         with self._vault_lock:
+            self._assert_open()
             if self.quarantine_collection.count() == 0:
                 return []
             rows = self.quarantine_collection.get(limit=max(1, top_k))
@@ -497,8 +535,10 @@ class MemoryVault:
 
         Returns a clean list of fact dicts ready for LLM injection.
         HIGH-021: acquires _vault_lock around the ChromaDB query.
+        H12: raises RuntimeError if the vault has been closed.
         """
         with self._vault_lock:
+            self._assert_open()
             if collection.count() == 0:
                 return []
             results = collection.query(query_texts=[query], n_results=top_k)
@@ -561,6 +601,7 @@ class MemoryVault:
         chroma_ok = True
         try:
             with self._vault_lock:
+                self._assert_open()
                 self.collection.delete(ids=[fact_id])
         except Exception as exc:
             logger.warning("delete_fact: Chroma deletion failed for %s: %s", fact_id, exc)
@@ -630,6 +671,7 @@ class MemoryVault:
         # Check capacity (allow upserts for existing content — they don't grow the count)
         existing_id = self._generate_id(content)
         with self._vault_lock:
+            self._assert_open()
             existing = self.user_collection.get(ids=[existing_id])
             is_update = bool(existing and existing.get("ids"))
             count = self.user_collection.count()
@@ -650,6 +692,7 @@ class MemoryVault:
         """
         try:
             with self._vault_lock:
+                self._assert_open()
                 self.user_collection.delete(ids=[fact_id])
             return True
         except Exception:
@@ -676,6 +719,7 @@ class MemoryVault:
         Returns an empty string if no user facts exist.
         """
         with self._vault_lock:
+            self._assert_open()
             results = self.user_collection.get()
 
         if not results or not results.get("documents"):
@@ -696,6 +740,7 @@ class MemoryVault:
         Useful for the LLM to decide whether to curate before saving.
         """
         with self._vault_lock:
+            self._assert_open()
             count = self.user_collection.count()
         return {
             "entries": count,
@@ -711,6 +756,7 @@ class MemoryVault:
         """Store an agent persona directive into the bounded agent_profile collection."""
         try:
             with self._vault_lock:
+                self._assert_open()
                 count = self.agent_profile.count()
             if count >= USER_PROFILE_MAX_ENTRIES:
                 return (
@@ -728,6 +774,7 @@ class MemoryVault:
         """Remove a fact from the agent_profile by ID."""
         try:
             with self._vault_lock:
+                self._assert_open()
                 self.agent_profile.delete(ids=[fact_id])
             return True
         except Exception:
@@ -737,6 +784,7 @@ class MemoryVault:
         """Retrieve the entire agent profile for injection into the system prompt prefix cache."""
         try:
             with self._vault_lock:
+                self._assert_open()
                 results = self.agent_profile.get()
             if not results or not results["ids"]:
                 return ""
@@ -792,6 +840,7 @@ class MemoryVault:
         now = self._now_iso()
 
         with self._vault_lock:
+            self._assert_open()
             self.delegation_collection.upsert(
                 ids=[entry_id],
                 documents=[document],
@@ -833,6 +882,7 @@ class MemoryVault:
             Ranked list of delegation log entries.
         """
         with self._vault_lock:
+            self._assert_open()
             if self.delegation_collection.count() == 0:
                 return []
 
@@ -876,6 +926,7 @@ class MemoryVault:
             Dict with total delegations, success rate, and per-role counts.
         """
         with self._vault_lock:
+            self._assert_open()
             total = self.delegation_collection.count()
             if total == 0:
                 return {"total": 0, "message": "No delegations recorded yet."}

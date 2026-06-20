@@ -216,6 +216,8 @@ class GatewayControlPlane:
                 "surface": req.surface,
                 "capabilities": list(req.capabilities),
                 "connected_at": _now_iso(),
+                # C1: store owner hash at creation time; None means no-auth / legacy.
+                "owner_token_hash": None,
             }
 
         if self._on_connect is not None:
@@ -258,6 +260,39 @@ class GatewayControlPlane:
             "protocol_version": response.protocol_version,
             "server_capabilities": list(response.server_capabilities),
         }
+
+    def set_session_owner(self, session_id: str, owner_token_hash: str) -> None:
+        """Record the sha256(bearer_token) digest as the owner of this session.
+
+        C1 — called by the FastAPI layer immediately after create_session returns,
+        using the digest of the validated bearer token.  Stored in-memory for
+        fast O(1) ownership checks on every subsequent request.
+
+        Args:
+            session_id: The session created by this caller.
+            owner_token_hash: sha256 hex-digest of the caller's raw bearer token.
+        """
+        with self._connections_lock:
+            if session_id in self._connections:
+                self._connections[session_id]["owner_token_hash"] = owner_token_hash
+
+    def get_session_owner(self, session_id: str) -> str | None:
+        """Return the stored owner_token_hash for a session, or None if not set.
+
+        C1 — None means a legacy / no-auth session; callers MUST allow access
+        (backward-compat policy: NULL owner = allow).
+
+        Args:
+            session_id: Session to query.
+
+        Returns:
+            sha256 hex-digest string, or None for legacy / anonymous sessions.
+        """
+        with self._connections_lock:
+            record = self._connections.get(session_id)
+        if record is None:
+            return None
+        return record.get("owner_token_hash")
 
     def send_message(self, *, session_id: str, prompt: str) -> dict[str, Any]:
         if self._on_chat is None:

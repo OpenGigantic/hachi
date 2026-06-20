@@ -104,6 +104,8 @@ def test_memory_vault_close_idempotent() -> None:
     import threading
 
     vault._vault_lock = threading.RLock()
+    # HIGH-021/H12: close() guards re-entry with a _closed flag (set in __init__).
+    vault._closed = False
 
     # Should not raise.
     vault.close()
