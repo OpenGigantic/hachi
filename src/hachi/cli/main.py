@@ -43,6 +43,7 @@ from hachi.core.onboarding import (
 )
 from hachi.core.paths import get_hachi_paths
 from hachi.core.permissions import PermissionGate
+from hachi.core.secret_scanner import redact_secrets
 from hachi.core.secret_store import create_default_secret_store
 from hachi.core.session_store import SessionStore
 from hachi.gateway.control_plane import (
@@ -704,6 +705,11 @@ class _InProcessGatewayRuntime:
         results: list[dict] = []
         for row in rows:
             fact = row.get("raw_content") or row.get("content", "")
+            # G4-T2 (SEC-03): redact secrets at the API boundary before returning to the
+            # client.  _redact_results() inside semantic_search() already applies the
+            # vault-local patterns; redact_secrets() adds the full secret_scanner pattern
+            # set (GitHub, Stripe, npm, JWT, …) as a defence-in-depth layer.
+            fact, _ = redact_secrets(str(fact))
             src = row.get("category", "")
             # The row uses key "score" (from RRF merge) or "distance" (from Chroma).
             # Tolerate absence of both keys.
