@@ -162,6 +162,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sessions/{session_id}/permissions/always-allow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Always Allow
+         * @description Persist a standing always-allow rule for the given request+action pair.
+         *
+         *     The frontend sends ``session_id = "current"`` as a sentinel; the backend
+         *     resolves it to the active session or persists the rule globally.
+         *
+         *     Body: ``{"request": "<tool/path>", "action": "<operation>"}``
+         */
+        post: operations["post_always_allow_sessions__session_id__permissions_always_allow_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sessions/{session_id}/events": {
         parameters: {
             query?: never;
@@ -231,6 +256,28 @@ export interface paths {
         get: operations["get_mcp_inventory_runtime_mcp_inventory_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runtime/mcp/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Mcp Register
+         * @description Register a new MCP server and add it to the runtime configuration.
+         *
+         *     Body: ``{"name": "...", "command": "npx", "args": "...", "env_vars": {}}``
+         */
+        post: operations["post_mcp_register_runtime_mcp_register_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -441,6 +488,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/config/limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Limits
+         * @description Persist per-task and daily spend caps.
+         *
+         *     Body: ``{"per_task_cap_usd": 1.0, "daily_cap_usd": 5.0}``
+         */
+        put: operations["put_limits_config_limits_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/permissions/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Allowed Folder
+         * @description Append a folder path to the allowed_paths list and persist to device-permissions.og.
+         */
+        post: operations["post_allowed_folder_config_permissions_folders_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/permissions/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Allowed Command
+         * @description Append a command to the allowed_commands list and persist to device-permissions.og.
+         */
+        post: operations["post_allowed_command_config_permissions_commands_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/setup": {
         parameters: {
             query?: never;
@@ -603,6 +712,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/skills/kennel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Kennel
+         * @description Return the available skills catalogue (kennel) for browsing and installation.
+         */
+        get: operations["get_kennel_skills_kennel_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/skills/add": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Skill Add
+         * @description Install a skill from the kennel by id.
+         *
+         *     Body: ``{"kennel_id": "..."}``
+         */
+        post: operations["post_skill_add_skills_add_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/memory": {
         parameters: {
             query?: never;
@@ -748,6 +899,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/authoring/targets/{name}/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Authoring Generate
+         * @description Generate a proposed patch for the named target via the LLM (G1-T2 / CRIT-002).
+         *
+         *     Runs the blocking LLM call off the event loop via anyio.to_thread.run_sync.
+         *     Returns a real unified diff (old vs proposed) and the proposed content.
+         *     Pending content is stored server-side so /apply can write it without
+         *     the client having to re-send the full body.
+         *
+         *     Body: ``{"prompt": "describe the change you want"}``
+         *     Response: ``{"diff": [["" | "add" | "del", "<line>"], ...]}``
+         */
+        post: operations["post_authoring_generate_authoring_targets__name__generate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/authoring/targets/{name}/apply": {
         parameters: {
             query?: never;
@@ -759,7 +938,7 @@ export interface paths {
         put?: never;
         /**
          * Post Authoring Apply
-         * @description Apply a pending patch to the target (stub — no patch pipeline yet).
+         * @description Apply the pending patch to the target and trigger a skill-engine re-index.
          */
         post: operations["post_authoring_apply_authoring_targets__name__apply_post"];
         delete?: never;
@@ -779,7 +958,7 @@ export interface paths {
         put?: never;
         /**
          * Post Authoring Revert
-         * @description Revert a pending patch on the target (stub — no patch pipeline yet).
+         * @description Revert the most recently applied patch for the target.
          */
         post: operations["post_authoring_revert_authoring_targets__name__revert_post"];
         delete?: never;
@@ -813,6 +992,32 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AllowedCommandRequest
+         * @description Body for POST /config/permissions/commands (G1-T3).
+         */
+        AllowedCommandRequest: {
+            /** Command */
+            command: string;
+        };
+        /**
+         * AllowedFolderRequest
+         * @description Body for POST /config/permissions/folders (G1-T3).
+         */
+        AllowedFolderRequest: {
+            /** Path */
+            path: string;
+        };
+        /**
+         * AlwaysAllowRequest
+         * @description Body for POST /sessions/{id}/permissions/always-allow (G1-T4).
+         */
+        AlwaysAllowRequest: {
+            /** Request */
+            request: string;
+            /** Action */
+            action: string;
+        };
+        /**
          * ApprovalActionRequest
          * @description Body for POST /approvals/{request_id} (UC-PERM-006).
          */
@@ -824,6 +1029,14 @@ export interface components {
              * @default
              */
             rationale: string;
+        };
+        /**
+         * AuthoringGenerateRequest
+         * @description Body for POST /authoring/targets/{name}/generate (G1-T2 / CRIT-002).
+         */
+        AuthoringGenerateRequest: {
+            /** Prompt */
+            prompt: string;
         };
         /**
          * CapabilityToggleRequest
@@ -873,6 +1086,32 @@ export interface components {
             protocol_version: string;
             /** Time */
             time: string;
+        };
+        /**
+         * LimitsRequest
+         * @description Body for PUT /config/limits (G1-T3).
+         */
+        LimitsRequest: {
+            /** Per Task Cap Usd */
+            per_task_cap_usd?: number | null;
+            /** Daily Cap Usd */
+            daily_cap_usd?: number | null;
+        };
+        /**
+         * McpRegisterRequest
+         * @description Body for POST /runtime/mcp/register (G1-T5).
+         */
+        McpRegisterRequest: {
+            /** Name */
+            name: string;
+            /** Command */
+            command: string;
+            /** Args */
+            args: string;
+            /** Env Vars */
+            env_vars?: {
+                [key: string]: string;
+            };
         };
         /**
          * MemoryFactAddRequest
@@ -1005,6 +1244,14 @@ export interface components {
             plan: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * SkillAddRequest
+         * @description Body for POST /skills/add (G1-T6).
+         */
+        SkillAddRequest: {
+            /** Kennel Id */
+            kennel_id: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -1401,6 +1648,48 @@ export interface operations {
             };
         };
     };
+    post_always_allow_sessions__session_id__permissions_always_allow_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AlwaysAllowRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_session_events_sessions__session_id__events_get: {
         parameters: {
             query?: {
@@ -1547,6 +1836,46 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    post_mcp_register_runtime_mcp_register_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["McpRegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
             };
         };
     };
@@ -1986,6 +2315,126 @@ export interface operations {
             };
         };
     };
+    put_limits_config_limits_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LimitsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_allowed_folder_config_permissions_folders_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AllowedFolderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_allowed_command_config_permissions_commands_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AllowedCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_setup_setup_get: {
         parameters: {
             query?: never;
@@ -2258,6 +2707,73 @@ export interface operations {
             };
         };
     };
+    get_kennel_skills_kennel_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    post_skill_add_skills_add_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SkillAddRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_memory_memory_get: {
         parameters: {
             query?: never;
@@ -2466,6 +2982,48 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_authoring_generate_authoring_targets__name__generate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuthoringGenerateRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

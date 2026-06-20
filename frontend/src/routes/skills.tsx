@@ -9,7 +9,7 @@ import { createFileRoute } from '@tanstack/react-router';
 import { useStore } from '../lib/store/store';
 import { Icon } from '../components/icons/Icon';
 import type { Skill, KennelItem } from '../lib/data/types';
-import { loadSkills } from '../lib/data/domains/skills';
+import { loadSkills, loadKennel } from '../lib/data/domains/skills';
 
 // ---- .og explainer localStorage key ----
 const OG_EXPLAINER_KEY = 'hachi-og-explainer-dismissed';
@@ -236,7 +236,7 @@ function Skills() {
   const operator = useStore((s) => s.operator);
   const openKennelBrowse = useStore((s) => s.openKennelBrowse);
 
-  useEffect(() => { void loadSkills() }, []);
+  useEffect(() => { void loadSkills(); void loadKennel(); }, []);
 
   // "Browse the kennel" header button hover
   const [browseHover, setBrowseHover] = useState(false);

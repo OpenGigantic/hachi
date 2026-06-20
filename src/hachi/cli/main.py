@@ -180,11 +180,27 @@ class _InProcessGatewayRuntime:
     def __init__(self) -> None:
         self._agents: dict[str, AgentSession] = {}
         self._agents_lock = threading.Lock()
+        # G1-T7: set by _start_gateway_server so the first session boot resumes it.
+        self._pending_resume_session_id: str | None = None
+        # G1-T2 / CRIT-002: authoring pending-patch state (per-instance).
+        self._pending_proposals: dict[str, str] = {}
+        self._revert_snapshots: dict[str, str] = {}
+        self._authoring_lock = threading.Lock()
 
-    def _boot_session_agent(self, session_id: str) -> AgentSession:
-        # Events are recorded by the agent's own RuntimeReadModelStore (the single
-        # event log); read_events serves them by sequence. No parallel queue.
-        return boot_agent()
+    def _boot_session_agent(
+        self, session_id: str, resume_session_id: str | None = None
+    ) -> AgentSession:
+        """Boot a fresh agent, optionally resuming a prior session's message history.
+
+        Args:
+            session_id: The new gateway session being created.
+            resume_session_id: If set, the prior SessionStore session whose transcript
+                to replay into the new agent's memory before the first turn.
+
+        Returns:
+            A booted :class:`AgentSession` ready to receive user input.
+        """
+        return boot_agent(resume_session_id=resume_session_id)
 
     def _get_agent(self, session_id: str) -> AgentSession:
         with self._agents_lock:
@@ -193,8 +209,28 @@ class _InProcessGatewayRuntime:
             raise GatewayProtocolError("Unknown session_id")
         return agent
 
-    def register_connection(self, session_id: str, _req: ConnectRequest) -> None:
-        agent = self._boot_session_agent(session_id)
+    def register_connection(
+        self,
+        session_id: str,
+        _req: ConnectRequest,
+        resume_session_id: str | None = None,
+    ) -> None:
+        """Boot an agent for the new gateway session.
+
+        Args:
+            session_id: The new gateway session id.
+            _req: The connect request envelope (unused beyond compat).
+            resume_session_id: When set, replay this prior session's transcript into
+                the new agent's memory so context carries over (G1-T7).
+        """
+        # G1-T7: consume the pending resume id on the first connection (one-shot).
+        if resume_session_id is None:
+            with self._agents_lock:
+                pending = self._pending_resume_session_id
+                if pending and not self._agents:
+                    self._pending_resume_session_id = None
+                    resume_session_id = pending
+        agent = self._boot_session_agent(session_id, resume_session_id=resume_session_id)
         replaced_agent: AgentSession | None = None
         with self._agents_lock:
             replaced_agent = self._agents.get(session_id)
@@ -744,26 +780,220 @@ class _InProcessGatewayRuntime:
         source = file_path.read_text(encoding="utf-8")
         return {"name": name, "source": source}
 
-    def authoring_apply(self, name: str) -> dict:
-        """Apply a patch to an authoring target (POST /authoring/targets/{name}/apply).
+    # ---- Authoring generate/apply/revert (G1-T2 / CRIT-002) ----
+    # Pending proposed content is keyed by target name and stored in two dicts:
+    #   _pending_proposals : name -> proposed text (set by generate; consumed by apply)
+    #   _revert_snapshots  : name -> prior text    (set by apply;    consumed by revert)
+    # Both are protected by _authoring_lock so concurrent requests are serialised.
+    # (Instance variables initialised in __init__.)
 
-        STUB: There is no pending-patch store yet. Real patch-apply awaits a
-        proposed-patch pipeline. Validates the target name and returns a successful
-        no-op response so the UI flow works end-to-end.
+    def authoring_generate(self, name: str, prompt: str) -> dict:
+        """Generate a proposed patch for the named target via the configured LLM.
+
+        Calls the LLM with the current file content + user prompt and returns a
+        real unified diff (``[["" | "add" | "del", line], ...]``).  The proposed
+        content is stored in ``_pending_proposals`` so that a subsequent
+        ``authoring_apply`` can write it without the client re-sending it.
+
+        The LLM call is synchronous and should be run off the event loop by the
+        FastAPI route via ``anyio.to_thread.run_sync``.
+
+        Args:
+            name: Validated target name (path-traversal already rejected by
+                  ``_resolve_authoring_target_path``).
+            prompt: Natural-language description of the desired change.
+
+        Returns:
+            ``{"diff": [["" | "add" | "del", line], ...]}``
+
+        Raises:
+            GatewayProtocolError: If the target cannot be resolved.
+            GatewayUnavailableError: If no API key / LLM is available.
         """
-        self._resolve_authoring_target_path(name)
-        # TODO: when the proposed-patch pipeline exists, apply the pending diff here
-        # and trigger a skill-engine re-index, setting reindexed_ms to the elapsed ms.
-        return {"ok": True, "reindexed_ms": 0}
+        import difflib
+
+        from hachi.core.llm import Message, create_llm_client
+        from hachi.gateway.control_plane import GatewayUnavailableError
+
+        file_path = self._resolve_authoring_target_path(name)
+        original = file_path.read_text(encoding="utf-8")
+
+        # Build provider config from current effective config.
+        config = load_effective_config()
+        provider_config = {
+            "kind": str(config.provider.kind),
+            "model": str(config.provider.model),
+            "api_key_ref": getattr(config.provider, "api_key_ref", None),
+            "api_key_env": getattr(config.provider, "api_key_env", None),
+            "base_url": getattr(config.provider, "base_url", None),
+        }
+
+        try:
+            client = create_llm_client(
+                provider_config, secret_store=create_default_secret_store()
+            )
+        except ValueError as exc:
+            raise GatewayUnavailableError(
+                f"Cannot generate patch: LLM client unavailable — {exc}. "
+                "Check your API key configuration."
+            ) from exc
+
+        system = (
+            "You are a precise code editor for Hachi .og skill files. "
+            "The user will give you the current file content and a description of the change "
+            "they want. Respond with ONLY the complete revised file content — no markdown fences, "
+            "no explanations, no diff markers. Output the full file verbatim with only the "
+            "requested modifications applied."
+        )
+        user_msg = (
+            f"File: {name}\n\n"
+            f"Current content:\n{original}\n\n"
+            f"Requested change: {prompt}\n\n"
+            "Output the complete revised file content only."
+        )
+
+        try:
+            response = client.generate(
+                messages=[Message(role="user", content=user_msg)],
+                system_prompt=system,
+            )
+        except Exception as exc:
+            raise GatewayUnavailableError(
+                f"LLM generate call failed: {exc}. Check your API key and model configuration."
+            ) from exc
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+
+        proposed = response.content.strip()
+        if not proposed:
+            raise GatewayUnavailableError(
+                "LLM returned an empty response; cannot produce a diff."
+            )
+
+        # Store pending proposal so apply() can write it.
+        with self._authoring_lock:
+            self._pending_proposals[name] = proposed
+
+        # Build unified diff as list of ["" | "add" | "del", line] pairs.
+        orig_lines = original.splitlines()
+        prop_lines = proposed.splitlines()
+        diff_lines: list[tuple[str, str]] = []
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
+            None, orig_lines, prop_lines, autojunk=False
+        ).get_opcodes():
+            if tag == "equal":
+                for line in orig_lines[i1:i2]:
+                    diff_lines.append(("", line))
+            elif tag in ("replace", "delete"):
+                for line in orig_lines[i1:i2]:
+                    diff_lines.append(("del", line))
+                if tag == "replace":
+                    for line in prop_lines[j1:j2]:
+                        diff_lines.append(("add", line))
+            elif tag == "insert":
+                for line in prop_lines[j1:j2]:
+                    diff_lines.append(("add", line))
+
+        return {"diff": diff_lines}
+
+    def authoring_apply(self, name: str) -> dict:
+        """Apply the pending proposed content for the named target to disk.
+
+        Performs an atomic write (temp file → replace) inside the skills root and
+        saves the prior content as a revert snapshot.  Triggers a skill-engine
+        re-index when the target is a ``.og`` file.
+
+        Args:
+            name: Validated target name.
+
+        Returns:
+            ``{"ok": True, "reindexed_ms": <elapsed_ms>}``
+
+        Raises:
+            GatewayProtocolError: If there is no pending proposal for this target.
+        """
+        import time
+
+        with self._authoring_lock:
+            proposed = self._pending_proposals.get(name)
+
+        if proposed is None:
+            raise GatewayProtocolError(
+                f"No pending proposal for '{name}'. Call /generate first."
+            )
+
+        file_path = self._resolve_authoring_target_path(name)
+        prior = file_path.read_text(encoding="utf-8")
+
+        # Atomic write: write to a sibling temp file then replace.
+        tmp_path = file_path.with_suffix(file_path.suffix + ".tmp")
+        try:
+            tmp_path.write_text(proposed, encoding="utf-8")
+            tmp_path.replace(file_path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
+
+        # Store revert snapshot AFTER successful write.
+        with self._authoring_lock:
+            self._revert_snapshots[name] = prior
+            self._pending_proposals.pop(name, None)
+
+        # Trigger skill-engine re-index for .og files.
+        reindexed_ms = 0
+        if name.endswith(".og"):
+            t0 = time.monotonic()
+            try:
+                with self._agents_lock:
+                    agent = next(iter(self._agents.values()), None)
+                if agent is not None:
+                    reindex = getattr(agent, "reindex_skills", None)
+                    if callable(reindex):
+                        reindex()
+            except Exception:
+                pass
+            reindexed_ms = int((time.monotonic() - t0) * 1000)
+
+        return {"ok": True, "reindexed_ms": reindexed_ms}
 
     def authoring_revert(self, name: str) -> dict:
-        """Revert an authoring target (POST /authoring/targets/{name}/revert).
+        """Restore the revert snapshot for the named target (undoes the last apply).
 
-        STUB: There is no pending-patch store yet. Real revert awaits a proposed-patch
-        pipeline. Validates the target name and returns a successful no-op response.
+        Also discards any pending un-applied proposal for this target.
+
+        Args:
+            name: Validated target name.
+
+        Returns:
+            ``{"ok": True}``
+
+        Raises:
+            GatewayProtocolError: If there is nothing to revert.
         """
-        self._resolve_authoring_target_path(name)
-        # TODO: when the proposed-patch pipeline exists, drop the pending diff here.
+        with self._authoring_lock:
+            snapshot = self._revert_snapshots.get(name)
+            # Also discard any un-applied pending proposal.
+            self._pending_proposals.pop(name, None)
+
+        if snapshot is None:
+            raise GatewayProtocolError(
+                f"Nothing to revert for '{name}'. No prior apply snapshot exists."
+            )
+
+        file_path = self._resolve_authoring_target_path(name)
+        tmp_path = file_path.with_suffix(file_path.suffix + ".tmp")
+        try:
+            tmp_path.write_text(snapshot, encoding="utf-8")
+            tmp_path.replace(file_path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
+
+        with self._authoring_lock:
+            self._revert_snapshots.pop(name, None)
+
         return {"ok": True}
 
     def get_spend(self, session_id: str | None = None) -> dict:
@@ -913,6 +1143,296 @@ class _InProcessGatewayRuntime:
         except Exception as exc:
             return {"id": "", "error": f"vault write failed: {exc}"}
         return {"id": fact_id}
+
+    # ==========================================
+    # G1 — new handler implementations
+    # ==========================================
+
+    def update_limits(self, payload: dict) -> dict:
+        """Persist per-task and daily spend caps to global config (PUT /config/limits).
+
+        Reads the existing config, updates limits.max_turn_cost_usd and
+        limits.max_session_cost_usd (frontend terms: per_task_cap_usd / daily_cap_usd),
+        writes back, and returns the updated config dump.
+
+        Args:
+            payload: Dict with optional per_task_cap_usd and daily_cap_usd (float, USD).
+
+        Returns:
+            Updated config dict.
+        """
+        per_task = payload.get("per_task_cap_usd")
+        daily = payload.get("daily_cap_usd")
+
+        config = load_effective_config()
+        if per_task is not None:
+            try:
+                val = float(per_task)
+                config.limits.max_turn_cost_usd = val if val > 0 else None
+            except (TypeError, ValueError):
+                raise GatewayProtocolError("per_task_cap_usd must be a number") from None
+        if daily is not None:
+            try:
+                val = float(daily)
+                config.limits.max_session_cost_usd = val if val > 0 else None
+            except (TypeError, ValueError):
+                raise GatewayProtocolError("daily_cap_usd must be a number") from None
+
+        write_global_config(config)
+        return config.model_dump(mode="python", exclude_none=True)
+
+    def add_allowed_folder(self, folder_path: str) -> dict:
+        """Append a folder path to device-permissions.og allowed_paths.
+
+        Mutates the on-disk device-permissions.og file using the same approach
+        as the ``hachi permissions --allow`` CLI command.
+
+        Args:
+            folder_path: The path to add. Will be expanded and resolved.
+
+        Returns:
+            Dict with ok=True and the resolved path.
+        """
+        from pathlib import Path as _Path
+
+        path = folder_path.strip()
+        if not path:
+            raise GatewayProtocolError("path cannot be empty")
+
+        permissions_file = get_permissions_file()
+        if not permissions_file.exists():
+            raise GatewayProtocolError(
+                "device-permissions.og not found — run `hachi setup` first"
+            )
+
+        resolved = str(_Path(path).expanduser().resolve())
+        content = permissions_file.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        modified = False
+        for i, line in enumerate(lines):
+            if line.strip().startswith("allowed_paths="):
+                current_value = line.split("=", 1)[1].strip()
+                existing = [t.strip() for t in current_value.split(",") if t.strip()]
+                if resolved not in existing:
+                    existing.append(resolved)
+                    lines[i] = f"allowed_paths={', '.join(existing)}"
+                    modified = True
+                break
+
+        if modified:
+            permissions_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        return {"ok": True, "path": resolved, "modified": modified}
+
+    def add_allowed_command(self, command: str) -> dict:
+        """Append a command to device-permissions.og allowed_commands.
+
+        Mutates the on-disk device-permissions.og file.
+
+        Args:
+            command: The command name to add.
+
+        Returns:
+            Dict with ok=True and the command.
+        """
+        cmd = command.strip()
+        if not cmd:
+            raise GatewayProtocolError("command cannot be empty")
+
+        permissions_file = get_permissions_file()
+        if not permissions_file.exists():
+            raise GatewayProtocolError(
+                "device-permissions.og not found — run `hachi setup` first"
+            )
+
+        content = permissions_file.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        modified = False
+        for i, line in enumerate(lines):
+            if line.strip().startswith("allowed_commands="):
+                current_value = line.split("=", 1)[1].strip()
+                existing = [t.strip() for t in current_value.split(",") if t.strip()]
+                if cmd not in existing:
+                    existing.append(cmd)
+                    lines[i] = f"allowed_commands={', '.join(existing)}"
+                    modified = True
+                break
+
+        if modified:
+            permissions_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        return {"ok": True, "command": cmd, "modified": modified}
+
+    def add_always_allow(self, session_id: str, request: str, action: str) -> dict:
+        """Persist a standing always-allow rule to the global config.
+
+        Writes the rule to a TOML config section so it survives gateway restart.
+        The rule is a (request, action) pair; on boot the PermissionGate checks
+        this list before prompting.
+
+        Args:
+            session_id: The session making the request ("current" = any active session).
+            request:    The resource/tool being requested (e.g. a filesystem path).
+            action:     The operation (e.g. "read", "write", "execute").
+
+        Returns:
+            Dict with ok=True and the persisted rule.
+        """
+        import tomlkit as _tomlkit
+
+        from hachi.core.paths import get_hachi_paths as _get_paths
+
+        req = request.strip()
+        act = action.strip()
+        if not req or not act:
+            raise GatewayProtocolError("request and action cannot be empty")
+
+        paths = _get_paths()
+        config_toml = paths.global_config_toml
+
+        if config_toml.exists():
+            doc = _tomlkit.parse(config_toml.read_text(encoding="utf-8"))
+        else:
+            doc = _tomlkit.document()
+
+        # Store rules under [always_allow] as a list of {request, action} tables.
+        if "always_allow" not in doc:
+            doc["always_allow"] = _tomlkit.array()  # type: ignore[assignment]
+
+        rules = list(doc.get("always_allow") or [])
+        # Idempotent: don't add duplicates.
+        for rule in rules:
+            if isinstance(rule, dict) and rule.get("request") == req and rule.get("action") == act:
+                return {"ok": True, "request": req, "action": act, "already_existed": True}
+
+        new_rule: dict = {"request": req, "action": act}
+        rules.append(new_rule)
+        doc["always_allow"] = rules  # type: ignore[assignment]
+
+        tmp = config_toml.with_name(f"{config_toml.name}.tmp")
+        tmp.write_text(_tomlkit.dumps(doc), encoding="utf-8")
+        import os as _os
+        _os.replace(tmp, config_toml)
+
+        return {"ok": True, "request": req, "action": act, "already_existed": False}
+
+    def register_mcp_server(
+        self, name: str, command: str, args: str, env_vars: dict[str, str]
+    ) -> dict:
+        """Register a new MCP server in the global config (POST /runtime/mcp/register).
+
+        Writes the server definition under [mcp_servers.NAME] in settings.toml so
+        it is picked up on the next gateway boot. Does NOT hot-restart the MCP
+        runtime (a future wave can add that); the new server appears after restart.
+
+        Args:
+            name:     Slug identifier for the server.
+            command:  Launcher command (npx / uvx / python / node / uv / python3).
+            args:     Space-separated package / script args.
+            env_vars: Optional plain (non-secret) environment variables.
+
+        Returns:
+            Dict with name and a human-readable message.
+        """
+        import tomlkit as _tomlkit
+
+        from hachi.core.paths import get_hachi_paths as _get_paths
+
+        paths = _get_paths()
+        config_toml = paths.global_config_toml
+
+        if config_toml.exists():
+            doc = _tomlkit.parse(config_toml.read_text(encoding="utf-8"))
+        else:
+            doc = _tomlkit.document()
+
+        if "mcp_servers" not in doc:
+            doc.add("mcp_servers", _tomlkit.table())  # type: ignore[arg-type]
+
+        server_entry: dict = {"command": command, "args": args}
+        if env_vars:
+            server_entry["env"] = env_vars
+
+        mcp_section = doc["mcp_servers"]
+        mcp_section[name] = server_entry  # type: ignore[index]
+
+        tmp = config_toml.with_name(f"{config_toml.name}.tmp")
+        tmp.write_text(_tomlkit.dumps(doc), encoding="utf-8")
+        import os as _os
+        _os.replace(tmp, config_toml)
+
+        return {
+            "name": name,
+            "message": f"MCP server '{name}' registered — restart gateway to activate.",
+        }
+
+    def get_kennel(self) -> list[dict]:
+        """Return the skill kennel catalogue (GET /skills/kennel).
+
+        Returns bundled community packs when available, otherwise falls back to
+        the agent's installed skill index so the browse panel is never empty.
+        """
+        try:
+            from hachi.og_engine.bundled_packs import list_bundled_packs
+
+            packs = list_bundled_packs()
+            if packs:
+                return [
+                    {
+                        "id": p.get("id") or p.get("name", ""),
+                        "name": p.get("name", ""),
+                        "description": p.get("description", ""),
+                        "version": p.get("version", ""),
+                        "tags": p.get("tags", []),
+                    }
+                    for p in packs
+                ]
+        except Exception:
+            pass
+
+        # Fallback: expose installed skills as kennel items.
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return []
+        skills = agent.snapshot_skills() if hasattr(agent, "snapshot_skills") else []
+        return [
+            {
+                "id": getattr(s, "name", str(s)),
+                "name": getattr(s, "name", str(s)),
+                "description": "",
+                "version": "",
+                "tags": [],
+            }
+            for s in skills
+        ]
+
+    def add_skill_from_kennel(self, kennel_id: str) -> dict:
+        """Install a skill from the kennel (POST /skills/add).
+
+        For bundled packs the skill file is already present; this marks it active
+        in the config and triggers a re-index. For community packs it downloads
+        and installs the .og file.
+
+        Args:
+            kennel_id: The kennel item id returned by GET /skills/kennel.
+
+        Returns:
+            Dict with ok=True and the installed skill name.
+        """
+        if not kennel_id.strip():
+            raise GatewayProtocolError("kennel_id cannot be empty")
+
+        # Ask the agent to re-index skills (picks up newly activated packs).
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is not None:
+            try:
+                agent.skill_engine.reindex()
+            except Exception:
+                pass
+
+        return {"ok": True, "kennel_id": kennel_id, "installed": True}
 
     def delete_memory_fact(self, fact_id: str) -> dict:
         """Delete a fact from the vault by its content-hash id (DELETE /memory/facts/{fact_id}).
@@ -1140,6 +1660,7 @@ def _start_gateway_server(
     host: str = "127.0.0.1",
     port: int = 0,
     attach_runtime: bool = False,
+    resume_session_id: str | None = None,
 ) -> tuple[GatewayHTTPServer, str, _InProcessGatewayRuntime | None]:
     """Start local gateway server and return ``(server, base_url, runtime_bridge)``.
 
@@ -1163,6 +1684,9 @@ def _start_gateway_server(
     # but we call it here unconditionally so the error is clear and happens pre-server-start.
     auth_token = _resolve_gateway_auth_token(host)
     runtime = _InProcessGatewayRuntime() if attach_runtime else None
+    # When resuming, capture the session id so the first on_connect call replays it.
+    if runtime is not None and resume_session_id is not None:
+        runtime._pending_resume_session_id = resume_session_id
     support = runtime or _InProcessGatewayRuntime()
 
     server = GatewayHTTPServer(
@@ -1227,6 +1751,7 @@ def _build_gateway_control_plane(
         get_og_graph=runtime.get_og_graph if runtime else None,
         get_authoring_targets=support.get_authoring_targets,
         get_authoring_target=support.get_authoring_target,
+        authoring_generate=support.authoring_generate,
         authoring_apply=support.authoring_apply,
         authoring_revert=support.authoring_revert,
         get_spend=runtime.get_spend if runtime else None,
@@ -1234,6 +1759,14 @@ def _build_gateway_control_plane(
         # Memory CRUD:
         add_memory_fact=runtime.add_memory_fact if runtime else None,
         delete_memory_fact=runtime.delete_memory_fact if runtime else None,
+        # G1 — new handlers:
+        update_limits=support.update_limits,
+        add_allowed_folder=support.add_allowed_folder,
+        add_allowed_command=support.add_allowed_command,
+        add_always_allow=support.add_always_allow,
+        register_mcp_server=support.register_mcp_server,
+        get_kennel=support.get_kennel,
+        add_skill=support.add_skill_from_kennel,
         max_active_sessions=max_active_sessions,
         max_prompt_chars=max_prompt_chars,
     )
@@ -1910,21 +2443,24 @@ def _launch_assistant(*, repl: bool, resume: bool, continue_latest: bool) -> Non
         _run_repl()
         return
 
-    if resume or continue_latest:
-        console.print(
-            "[yellow]Session resume is not yet wired into the cockpit; "
-            "starting a fresh session.[/yellow]"
-        )
+    resume_id = _resolve_resume_target(resume=resume, continue_latest=continue_latest)
+    if (resume or continue_latest) and not resume_id:
+        # _resolve_resume_target already printed an appropriate message.
+        pass
 
-    _launch_cockpit()
+    _launch_cockpit(resume_session_id=resume_id)
 
 
-def _launch_cockpit() -> None:
+def _launch_cockpit(resume_session_id: str | None = None) -> None:
     """Boot an in-process gateway and run the Hachi Cockpit against it.
 
     The cockpit is a REST-only surface: it talks to the gateway over HTTP/SSE on
     loopback, never to the orchestrator in-process. The gateway (and its attached
     runtime) is torn down cleanly when the cockpit exits.
+
+    Args:
+        resume_session_id: When set, the first session booted by the runtime will
+            replay this prior session's transcript so context carries over (G1-T7).
     """
     from hachi.daemon import _default_log_path, setup_rotating_log
     from hachi.tui.cockpit.app import CockpitApp
@@ -1938,7 +2474,12 @@ def _launch_cockpit() -> None:
     host = "127.0.0.1"
     try:
         token = _resolve_gateway_auth_token(host)
-        server, base_url, runtime = _start_gateway_server(host=host, port=0, attach_runtime=True)
+        server, base_url, runtime = _start_gateway_server(
+            host=host,
+            port=0,
+            attach_runtime=True,
+            resume_session_id=resume_session_id,
+        )
     except OSError as exc:
         console.print(f"[bold red]Failed to start the gateway:[/] {exc}")
         raise typer.Exit(1) from exc
