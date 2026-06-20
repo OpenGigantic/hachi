@@ -207,6 +207,46 @@ export async function validateProvider(
 }
 
 /**
+ * Add an allowed folder path and persist to the gateway.
+ * Only adds to the UI list on 2xx; shows an error toast on failure.
+ * In mock mode, delegates directly to the store action (no network call).
+ */
+export async function addFolderLive(path: string): Promise<void> {
+  const { addFolderWithPath, showToast } = useStore.getState();
+  if (USE_MOCKS) {
+    addFolderWithPath(path);
+    return;
+  }
+  try {
+    await apiSend<unknown>("POST", "/config/permissions/folders", { path });
+    addFolderWithPath(path);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Failed to add folder — please try again";
+    showToast(msg, "blocked");
+  }
+}
+
+/**
+ * Add an allowed command and persist to the gateway.
+ * Only adds to the UI list on 2xx; shows an error toast on failure.
+ * In mock mode, delegates directly to the store action (no network call).
+ */
+export async function addCommandLive(command: string): Promise<void> {
+  const { addCommandWithText, showToast } = useStore.getState();
+  if (USE_MOCKS) {
+    addCommandWithText(command);
+    return;
+  }
+  try {
+    await apiSend<unknown>("POST", "/config/permissions/commands", { command });
+    addCommandWithText(command);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Failed to add command — please try again";
+    showToast(msg, "blocked");
+  }
+}
+
+/**
  * Toggle memory flags and persist to the gateway.
  */
 export async function setMemoryLive(

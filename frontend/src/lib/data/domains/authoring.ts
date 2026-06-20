@@ -166,47 +166,57 @@ export async function generateAuthoring(
 
 /**
  * Apply the pending patch for the named target.
- * Optimistically marks the target as non-dirty, then POSTs to the gateway.
- * On success refreshes the target list. On error sets reconnecting.
+ * In live mode: POSTs to the gateway first; only marks as applied on 2xx
+ * (uses real reindexed_ms for the toast). On error shows an error toast
+ * and does NOT flip authApplied so the user can retry.
+ * In mock mode: applies optimistically as before.
  */
 export async function applyAuthoring(name: string): Promise<void> {
-  // Optimistic update: mark as non-dirty and set authApplied
-  useStore.getState().applyPatch();
-
-  if (USE_MOCKS) return;
+  if (USE_MOCKS) {
+    useStore.getState().applyPatch();
+    return;
+  }
   try {
-    await apiSend<{ ok: boolean; reindexed_ms: number }>(
+    const resp = await apiSend<{ ok: boolean; reindexed_ms: number }>(
       "POST",
       "/authoring/targets/" + encodeURIComponent(name) + "/apply",
       {}
     );
+    useStore.getState().applyPatch(resp?.reindexed_ms);
     useStore.getState().setReconnecting(false);
     // Refresh the targets list to pick up server-side state
     await loadAuthoring();
-  } catch {
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Apply failed — please try again";
+    useStore.getState().showToast(msg, "blocked");
     useStore.getState().setReconnecting(true);
   }
 }
 
 /**
  * Revert the pending patch for the named target.
- * Optimistically restores dirty state, then POSTs to the gateway.
+ * In live mode: POSTs to the gateway first; only restores dirty state on 2xx.
+ * On error shows an error toast and leaves authApplied true so the user can retry.
+ * In mock mode: reverts optimistically as before.
  */
 export async function revertAuthoring(name: string): Promise<void> {
-  // Optimistic update: mark as dirty and clear authApplied
-  useStore.getState().revertPatch();
-
-  if (USE_MOCKS) return;
+  if (USE_MOCKS) {
+    useStore.getState().revertPatch();
+    return;
+  }
   try {
     await apiSend<{ ok: boolean }>(
       "POST",
       "/authoring/targets/" + encodeURIComponent(name) + "/revert",
       {}
     );
+    useStore.getState().revertPatch();
     useStore.getState().setReconnecting(false);
     // Refresh target list
     await loadAuthoring();
-  } catch {
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Revert failed — please try again";
+    useStore.getState().showToast(msg, "blocked");
     useStore.getState().setReconnecting(true);
   }
 }
