@@ -81,7 +81,12 @@ class MemoryManager:
         - Enqueue background fact-extraction jobs to the durable queue.
     """
 
-    def __init__(self, max_active_messages: int = 30, job_queue: Any | None = None):
+    def __init__(
+        self,
+        max_active_messages: int = 30,
+        job_queue: Any | None = None,
+        llm_client: Any | None = None,
+    ):
         """
         Initialize the memory manager.
 
@@ -92,6 +97,13 @@ class MemoryManager:
             job_queue: Optional durable JobQueue for background work.
                        sync_turn() requires a job queue; without one, memory extraction
                        is disabled and a WARNING is logged.
+            llm_client: Optional shared LLM client (G3-T6 / MED-022).  When provided,
+                        background memory ops (fact extraction, structured summary) reuse
+                        this client's already-open HTTP/TLS connection instead of
+                        constructing a new AnthropicClient.  The client is used as-is
+                        for background ops; callers that need a distinct model (e.g. a
+                        cheaper haiku model) may pass a pre-configured client here.
+                        Falls back to memory_vault._get_llm_client() when None.
             strict_errors: When True (default), memory write errors are surfaced loudly
                            via the job queue failure pipeline instead of being swallowed.
                            Set to False only in tests or debugging scenarios.
@@ -106,6 +118,16 @@ class MemoryManager:
         self.job_queue = job_queue
         self.strict_errors: bool = True
         self._memory_writer: Any = None  # MemoryWriter; set by orchestrator for M1 write path
+        # G3-T6: Optional shared LLM client.  When set, _resolve_llm_client() returns it
+        # instead of constructing a new instance via memory_vault._get_llm_client().
+        self._llm_client: Any | None = llm_client
+        # Guard against double-enqueuing a sliding-window compaction job.
+        # Set to True when a generate_structured_summary job is in flight.
+        # The next call to _sliding_window_compact() skips enqueueing a new job
+        # while this flag is True, so the context can grow by at most one extra
+        # window-size before the background job completes and the flag clears.
+        # The flag is cleared by the background job wrapper _run_and_clear_summary_job().
+        self._compaction_in_flight: bool = False
 
     def set_vault(self, vault):
         """Bind the Long-Term Memory Vault to the manager for auto-flushing."""
@@ -181,7 +203,7 @@ class MemoryManager:
           - user_facts: routed to vault.upsert_user_fact() (bounded profile)
           - workspace_facts: routed to vault.upsert_fact() (unbounded store)
 
-        MED-022: Reuses the shared AnthropicClient from memory_vault._get_llm_client()
+        MED-022 / G3-T6: Reuses the shared LLM client via _resolve_llm_client()
         instead of constructing a new instance on every call.
         """
         import os
@@ -191,9 +213,8 @@ class MemoryManager:
             return
 
         from hachi.core.llm import Message as LLMMessage
-        from hachi.core.memory_vault import _get_llm_client
 
-        client = _get_llm_client()
+        client = self._resolve_llm_client()
         if client is None:
             return
 
@@ -271,7 +292,6 @@ class MemoryManager:
             return
 
         from hachi.core.llm import Message as LLMMessage
-        from hachi.core.memory_vault import _get_llm_client
         from hachi.core.memory_writer import MemoryNode, _slugify
 
         _EXTRACT_TOOL: dict[str, Any] = {
@@ -352,7 +372,7 @@ class MemoryManager:
         }
 
         snippet = combined[:3000]
-        client = _get_llm_client()
+        client = self._resolve_llm_client()
         if client is None:
             return
         response = client.generate(
@@ -647,6 +667,7 @@ class MemoryManager:
         self._active_skill = None
         self._skill_start_index = 0
         self._last_user_query = ""
+        self._compaction_in_flight = False
 
     def prepare_for_turn(self) -> IterationState:
         """Run all per-iteration memory housekeeping; return state for the loop.
@@ -847,18 +868,31 @@ class MemoryManager:
             # only when callers explicitly request it via get_pending_summaries(); in
             # practice the placeholder is sufficient for continuity because the
             # model has seen the full history and carries it in its own context.
-            summary_job = Job(
-                job_id="",
-                name="generate_structured_summary",
-                status=JobStatus.PENDING,
-                func=self._generate_structured_summary,
-                args=(dropped_messages,),
-                job_type="background",
-            )
-            try:
-                self.job_queue.enqueue(summary_job)
-            except Exception as enqueue_err:
-                logger.error("Failed to enqueue summary job: %s", enqueue_err)
+            #
+            # Double-enqueue guard: skip if a compaction job is already in flight.
+            # The context window may grow by up to one additional window-size while
+            # the job is pending — acceptable; we never re-enqueue until the job
+            # clears _compaction_in_flight.
+            if not self._compaction_in_flight:
+                self._compaction_in_flight = True
+                summary_job = Job(
+                    job_id="",
+                    name="generate_structured_summary",
+                    status=JobStatus.PENDING,
+                    func=self._run_and_clear_summary_job,
+                    args=(dropped_messages,),
+                    job_type="background",
+                )
+                try:
+                    self.job_queue.enqueue(summary_job)
+                except Exception as enqueue_err:
+                    logger.error("Failed to enqueue summary job: %s", enqueue_err)
+                    self._compaction_in_flight = False  # allow retry next window
+            else:
+                logger.debug(
+                    "Sliding-window compaction: skipping summary enqueue "
+                    "(compaction job already in flight)"
+                )
 
             summary = (
                 "[Context compacted asynchronously. "
@@ -945,6 +979,46 @@ class MemoryManager:
             cut -= 1
         return cut
 
+    def _resolve_llm_client(self) -> Any:
+        """Return the LLM client to use for background memory operations.
+
+        G3-T6 / MED-022: Prefer the injected shared client (set at construction time
+        by the orchestrator) so all memory ops reuse the same connection pool as the
+        main execution loop.  Falls back to the module-level singleton from
+        memory_vault._get_llm_client() when no client was injected (e.g. in tests or
+        legacy callers).
+
+        Returns:
+            A client with a .generate() method, or None when no API key is available.
+        """
+        if self._llm_client is not None:
+            return self._llm_client
+        from hachi.core.memory_vault import _get_llm_client
+
+        return _get_llm_client()
+
+    def _run_and_clear_summary_job(self, messages: list) -> str:
+        """Background job wrapper: generate a structured summary then clear the in-flight flag.
+
+        This wrapper exists solely so the ``_compaction_in_flight`` flag is cleared
+        when the job completes (success *or* exception propagated to the JobWorker).
+        The summary string is returned for auditing via job.result.output but is not
+        applied back to the live history — the lightweight placeholder inserted by
+        ``_sliding_window_compact`` is sufficient for model continuity.
+
+        Correctness semantics:
+          - The flag is cleared unconditionally in a ``finally`` block so a job
+            failure never permanently blocks future compactions.
+          - While the flag is set, the context window may grow up to one extra
+            ``max_active_messages`` window before the next compaction is permitted.
+            This is intentional: it bounds context growth while preventing duplicate
+            expensive LLM calls.
+        """
+        try:
+            return self._generate_structured_summary(messages)
+        finally:
+            self._compaction_in_flight = False
+
     def _flush_facts_to_vault(self, messages: list) -> None:
         """Extract permanent facts from dropped messages and save to vault.
 
@@ -962,9 +1036,8 @@ class MemoryManager:
             return
 
         from hachi.core.llm import Message as LLMMessage
-        from hachi.core.memory_vault import _get_llm_client
 
-        client = _get_llm_client()
+        client = self._resolve_llm_client()
         if client is None:
             return
         prompt = (
@@ -1052,9 +1125,8 @@ class MemoryManager:
 
         try:
             from hachi.core.llm import Message as LLMMessage
-            from hachi.core.memory_vault import _get_llm_client
 
-            client = _get_llm_client()
+            client = self._resolve_llm_client()
             if client is None:
                 return "[Context compacted. Relevant facts were flushed to Long-Term Memory.]"
             response = client.generate(

@@ -457,6 +457,9 @@ class SessionStore:
         Used to resume a prior conversation: the returned user/assistant turns are
         replayed into the new session's active memory so context carries over.
 
+        Flushes any pending (uncommitted) writes first so callers always see the
+        full set of logged messages, even when called shortly after ``log_message``.
+
         Args:
             session_id: The session whose transcript to load.
             limit: Cap on the number of most-recent messages returned (kept in
@@ -465,6 +468,7 @@ class SessionStore:
         Returns:
             List of dicts with role, content, tool_name, timestamp — oldest first.
         """
+        self.flush_sync()
         with self._lock:
             rows = self._conn.execute(
                 "SELECT role, content, tool_name, timestamp FROM messages "
@@ -529,6 +533,32 @@ class SessionStore:
             )
             self._conn.commit()
         return len(ids)
+
+    def backup(self, dest: Path) -> None:
+        """Create an online hot-backup of the database to *dest*.
+
+        Uses sqlite3's built-in ``Connection.backup()`` API, which works safely
+        even while other connections are reading or writing (no exclusive lock is
+        held for the full duration — the backup proceeds page-by-page).
+
+        Pending (uncommitted) writes are flushed first so the backup reflects the
+        most recent state.  The destination file is created or overwritten.
+
+        To restore: close this ``SessionStore``, then copy *dest* over the original
+        DB path (e.g. ``shutil.copy2(dest, original_path)``), and re-open.
+
+        Args:
+            dest: Filesystem path for the output backup file.  The parent directory
+                must already exist.
+
+        Raises:
+            sqlite3.Error: If the backup operation fails (e.g. disk full).
+        """
+        self.flush_sync()
+        dest = Path(dest)
+        with self._lock, sqlite3.connect(str(dest)) as backup_conn:
+            self._conn.backup(backup_conn)
+        logger.debug("SessionStore backup written to %s", dest)
 
     def shutdown(self) -> None:
         """Flush pending writes and close the database connection."""
