@@ -22,9 +22,9 @@ permission-scoped `.og` file you can diff and audit.  Every token has a budget t
 enforces mid-turn.  Every shell command, path, URL, and memory write passes a guard that
 exists in source code, not in a system prompt.
 
-The category's two defining failures of 2026 — OpenClaw's marketplace poisoning crisis and
-Hermes' agent that rewrites its own brain unsupervised — are the two things this architecture
-was built to prevent.
+The architecture exists because two failure modes recur in 2026-era personal agents: marketplace
+poisoning of third-party extensions, and learning loops that rewrite the agent's behavior without
+supervision.  Hachi is built to make both structurally impossible.
 
 | Problem | How Hachi solves it |
 |---------|-----------------------|
@@ -213,7 +213,8 @@ OpenCode users can point tools at.
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
-- An [Anthropic API key](https://console.anthropic.com/)
+- An API key for your chosen provider (Anthropic, OpenAI-compatible, Groq, DeepSeek, OpenRouter,
+  Gemini) — or a local [Ollama](https://ollama.com/) install (no key needed)
 - Node.js 20+ (optional, for `frontend/` local development)
 
 ### Installation

@@ -1,12 +1,16 @@
 """
 Hachi Ephemeral Sandbox Execution Engine
 
-WARNING:
-    This is a development convenience backend that provides process isolation only.
-    It is not a hardened security boundary and must not be treated as production sandboxing.
+WARNING — defence-in-depth only, NOT a hardened security boundary:
+    * Working-directory confinement: the subprocess ``cwd`` is set to the per-execution
+      directory inside ``sandbox_root``, and the minimal environment prevents accidental
+      credential exposure via ``PATH``-style variables.
+    * AST scan: blocks explicit ``~/.hachi/`` references before execution.
+    * Env-gate: tool is only registered when ``HACHI_SANDBOX_PRODUCTION=1`` is set.
 
-For production-grade isolation, use a dedicated container backend with explicit
-resource and egress policy enforcement.
+    True isolation (Linux namespaces / seccomp / gVisor / container) is TODO.
+    Until that is in place this layer is defence-in-depth and must not be used
+    to execute untrusted third-party code in a multi-tenant context.
 """
 
 import hashlib
@@ -158,8 +162,10 @@ class SandboxExecutor:
                 cmd.extend(["--with", dep])
             cmd.append(str(script_path))
 
-            # We explicitly do not use capture_output=True so we can stream if necessary in future,
-            # but for now we wait() and capture standard pipes.
+            # G4-T4 (CRIT-005): cwd is explicitly set to the per-execution directory inside
+            # sandbox_root, providing working-directory confinement.  Relative file access
+            # by the script stays within execution_dir.  True namespace/seccomp isolation
+            # is TODO (see module docstring).
             process = subprocess.run(
                 cmd,
                 cwd=str(execution_dir),

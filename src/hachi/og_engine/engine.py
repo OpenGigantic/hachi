@@ -747,21 +747,22 @@ class SkillEngine:
         # prefix-match (e.g. "deployment" → "deploy") so stemming-style recall works.
         # HIGH-014: prefix search uses bisect on _sorted_tokens for O(log V) lookup
         # instead of the prior O(V) full dict-key scan.
+        #
+        # PERF-11: build prefix_qids_per_token in the same pass so _prefix_matched_qids
+        # is called exactly once per query token (was called twice: once here for
+        # candidate collection and again below for the BM25 scoring dict).
         candidate_qids: set[str] = set()
+        prefix_qids_per_token: dict[str, set[str]] = {}
         for qt in query_tokens:
             for qid in self._token_index.get(qt, []):
                 candidate_qids.add(qid)
             # Prefix match: index token is a prefix of the query token (O(log V))
-            candidate_qids.update(self._prefix_matched_qids(qt))
+            pqids = self._prefix_matched_qids(qt)
+            prefix_qids_per_token[qt] = pqids
+            candidate_qids.update(pqids)
 
         if not candidate_qids:
             return []
-
-        # Pre-compute per-query-token prefix sets once so the BM25 scoring loop
-        # does not repeat the bisect scan per candidate document.
-        prefix_qids_per_token: dict[str, set[str]] = {
-            qt: self._prefix_matched_qids(qt) for qt in query_tokens
-        }
 
         # BM25 scoring — binary TF (presence) per token per doc
         scores: dict[str, float] = {}

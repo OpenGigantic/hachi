@@ -387,11 +387,15 @@ class OnboardingService:
         if normalized_tier not in TIER_STEP_PLANS:
             normalized_tier = "lightning"
 
+        # M7 (MED-029/UX-14): memory is core to the product — enable it on ALL tiers,
+        # including lightning.  The lightning tier stays fast and minimal (no memory
+        # *setup step* in its flow) but the resulting config now activates memory so
+        # users who choose the fastest path still benefit from retention.
         return SetupPlan(
             tier=normalized_tier,  # type: ignore[arg-type]
             steps=TIER_STEP_PLANS[normalized_tier],
             answers=dict(answers),
-            enable_memory=normalized_tier in {"recommended", "enhanced", "power"},
+            enable_memory=True,
             show_integrations=normalized_tier in {"enhanced", "power"},
             show_advanced=normalized_tier == "power",
         ).model_dump(mode="python")
