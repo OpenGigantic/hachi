@@ -179,6 +179,55 @@ class CapabilityToggleRequest(BaseModel):
     enabled: bool
 
 
+# G1 — new request models
+
+class LimitsRequest(BaseModel):
+    """Body for PUT /config/limits (G1-T3)."""
+
+    per_task_cap_usd: float | None = None
+    daily_cap_usd: float | None = None
+
+
+class AllowedFolderRequest(BaseModel):
+    """Body for POST /config/permissions/folders (G1-T3)."""
+
+    path: str
+
+
+class AllowedCommandRequest(BaseModel):
+    """Body for POST /config/permissions/commands (G1-T3)."""
+
+    command: str
+
+
+class AlwaysAllowRequest(BaseModel):
+    """Body for POST /sessions/{id}/permissions/always-allow (G1-T4)."""
+
+    request: str
+    action: str
+
+
+class McpRegisterRequest(BaseModel):
+    """Body for POST /runtime/mcp/register (G1-T5)."""
+
+    name: str
+    command: str
+    args: str
+    env_vars: dict[str, str] = Field(default_factory=dict)
+
+
+class SkillAddRequest(BaseModel):
+    """Body for POST /skills/add (G1-T6)."""
+
+    kennel_id: str
+
+
+class AuthoringGenerateRequest(BaseModel):
+    """Body for POST /authoring/targets/{name}/generate (G1-T2 / CRIT-002)."""
+
+    prompt: str
+
+
 def _last_user_text(messages: list[OpenAIMessage]) -> str:
     """Extract the latest user message text from an OpenAI-style message list."""
     for message in reversed(messages):
@@ -541,6 +590,29 @@ def create_gateway_app(
         _check_session_ownership(session_id, _require_auth(request))
         return control_plane.close_session(session_id)
 
+    # G1-T4 — POST /sessions/{session_id}/permissions/always-allow
+    # The frontend posts to /sessions/current/permissions/always-allow — "current" is a
+    # sentinel that the server resolves to the most-recently-booted session (or ignores
+    # ownership when running no-auth).  When the literal session_id exists in the connection
+    # map the ownership check applies; for the "current" sentinel we skip it (no session to
+    # own) and delegate resolution to the handler.
+    @sessions.post("/{session_id}/permissions/always-allow")
+    async def post_always_allow(
+        session_id: str, payload: AlwaysAllowRequest, request: Request
+    ) -> Any:
+        """Persist a standing always-allow rule for the given request+action pair.
+
+        The frontend sends ``session_id = "current"`` as a sentinel; the backend
+        resolves it to the active session or persists the rule globally.
+
+        Body: ``{"request": "<tool/path>", "action": "<operation>"}``
+        """
+        caller_hash = _require_auth(request)
+        # Only enforce ownership for real (non-sentinel) session ids.
+        if session_id != "current":
+            _check_session_ownership(session_id, caller_hash)
+        return control_plane.add_always_allow(session_id, payload.request, payload.action)
+
     @sessions.get("/{session_id}/events", response_model=SessionEventsResponse)
     async def get_session_events(
         session_id: str,
@@ -646,6 +718,54 @@ def create_gateway_app(
     async def get_mcp_inventory() -> Any:
         return control_plane.mcp_inventory()
 
+    # G1-T5 — POST /runtime/mcp/register
+    @runtime_ops.post("/runtime/mcp/register")
+    async def post_mcp_register(payload: McpRegisterRequest) -> Any:
+        """Register a new MCP server and add it to the runtime configuration.
+
+        Body: ``{"name": "...", "command": "npx", "args": "...", "env_vars": {}}``
+        """
+        _ALLOWED_COMMANDS = {"npx", "uvx", "python", "python3", "node", "uv"}
+        import re
+
+        name = payload.name.strip()
+        command = payload.command.strip()
+        args = payload.args.strip()
+
+        if not name or not re.match(r"^[\w-]+$", name):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "name must be non-empty and contain only "
+                    "letters, digits, hyphens, underscores"
+                ),
+            )
+        if command not in _ALLOWED_COMMANDS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"command must be one of: {', '.join(sorted(_ALLOWED_COMMANDS))}",
+            )
+        if not args:
+            raise HTTPException(status_code=422, detail="args is required")
+        if re.search(r"[;&|><`]|\$[({]|&&|\|\|", args):
+            raise HTTPException(
+                status_code=422,
+                detail="args must not contain shell metacharacters",
+            )
+        # Reject secret-looking env var keys (mirrors frontend validation).
+        _SECRET_PATTERNS = {
+            "key", "token", "secret", "password", "passwd", "credential",
+            "private", "auth", "bearer", "apikey", "api_key",
+        }
+        for env_key in payload.env_vars:
+            lower = env_key.lower()
+            if any(p in lower for p in _SECRET_PATTERNS):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"env_vars key '{env_key}' looks like a secret; use SecretStore instead",
+                )
+        return control_plane.register_mcp_server(name, command, args, dict(payload.env_vars))
+
     @runtime_ops.get("/jobs/active")
     async def get_active_jobs() -> Any:
         return control_plane.active_jobs()
@@ -698,6 +818,27 @@ def create_gateway_app(
     @config.put("/memory")
     async def put_memory(payload: MemoryRequest) -> Any:
         return control_plane.update_memory(payload.model_dump(mode="python"))
+
+    # G1-T3 — PUT /config/limits (spend caps)
+    @config.put("/limits")
+    async def put_limits(payload: LimitsRequest) -> Any:
+        """Persist per-task and daily spend caps.
+
+        Body: ``{"per_task_cap_usd": 1.0, "daily_cap_usd": 5.0}``
+        """
+        return control_plane.update_limits(payload.model_dump(mode="python"))
+
+    # G1-T3 — POST /config/permissions/folders (add allowed folder)
+    @config.post("/permissions/folders")
+    async def post_allowed_folder(payload: AllowedFolderRequest) -> Any:
+        """Append a folder path to the allowed_paths list and persist to device-permissions.og."""
+        return control_plane.add_allowed_folder(payload.path)
+
+    # G1-T3 — POST /config/permissions/commands (add allowed command)
+    @config.post("/permissions/commands")
+    async def post_allowed_command(payload: AllowedCommandRequest) -> Any:
+        """Append a command to the allowed_commands list and persist to device-permissions.og."""
+        return control_plane.add_allowed_command(payload.command)
 
     @setup.get("")
     async def get_setup() -> Any:
@@ -1019,6 +1160,21 @@ def create_gateway_app(
         """Return the .og skill inventory list."""
         return control_plane.skills()
 
+    # G1-T6 — GET /skills/kennel (available skills to install)
+    @skills_router.get("/skills/kennel")
+    async def get_kennel() -> Any:
+        """Return the available skills catalogue (kennel) for browsing and installation."""
+        return control_plane.kennel()
+
+    # G1-T6 — POST /skills/add (install a skill)
+    @skills_router.post("/skills/add")
+    async def post_skill_add(payload: SkillAddRequest) -> Any:
+        """Install a skill from the kennel by id.
+
+        Body: ``{"kennel_id": "..."}``
+        """
+        return control_plane.add_skill(payload.kennel_id)
+
     @memory_router.get("")
     async def get_memory() -> Any:
         """Return grouped memory facts, blocked items, and proposed changes."""
@@ -1064,15 +1220,35 @@ def create_gateway_app(
         """Return the source text for a single editable target."""
         return control_plane.authoring_target(name)
 
+    @authoring_router.post("/targets/{name}/generate")
+    async def post_authoring_generate(name: str, payload: AuthoringGenerateRequest) -> Any:
+        """Generate a proposed patch for the named target via the LLM (G1-T2 / CRIT-002).
+
+        Runs the blocking LLM call off the event loop via anyio.to_thread.run_sync.
+        Returns a real unified diff (old vs proposed) and the proposed content.
+        Pending content is stored server-side so /apply can write it without
+        the client having to re-send the full body.
+
+        Body: ``{"prompt": "describe the change you want"}``
+        Response: ``{"diff": [["" | "add" | "del", "<line>"], ...]}``
+        """
+        prompt = payload.prompt.strip()
+        if not prompt:
+            raise HTTPException(status_code=422, detail="prompt is required")
+        result = await anyio.to_thread.run_sync(
+            lambda: control_plane.authoring_generate(name, prompt)
+        )
+        return result
+
     @authoring_router.post("/targets/{name}/apply")
     async def post_authoring_apply(name: str) -> Any:
-        """Apply a pending patch to the target (stub — no patch pipeline yet)."""
-        return control_plane.authoring_apply(name)
+        """Apply the pending patch to the target and trigger a skill-engine re-index."""
+        return await anyio.to_thread.run_sync(lambda: control_plane.authoring_apply(name))
 
     @authoring_router.post("/targets/{name}/revert")
     async def post_authoring_revert(name: str) -> Any:
-        """Revert a pending patch on the target (stub — no patch pipeline yet)."""
-        return control_plane.authoring_revert(name)
+        """Revert the most recently applied patch for the target."""
+        return await anyio.to_thread.run_sync(lambda: control_plane.authoring_revert(name))
 
     @spend_router.get("/spend")
     async def get_spend(session_id: str | None = Query(default=None)) -> Any:

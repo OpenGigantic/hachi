@@ -265,7 +265,7 @@ interface Actions {
   // authoring
   selectAuthTarget: (name: string) => void;
   setAuthMode: (m: "diff" | "source") => void;
-  applyPatch: () => void;
+  applyPatch: (reindexed_ms?: number) => void;
   revertPatch: () => void;
   rejectPatch: () => void;
   // integrations
@@ -871,6 +871,17 @@ export const useStore = create<State & Actions>()(
         confirmKennel: () => {
           const k = get().kennelConsent;
           if (!k) return;
+
+          if (!USE_MOCKS) {
+            // Live mode: delegate to the domain function which POSTs /skills/add,
+            // refreshes from gateway, and shows the success/error toast.
+            void import("../data/domains/skills").then(({ addSkillLive }) => {
+              void addSkillLive(k.id);
+            });
+            return;
+          }
+
+          // Mock mode: local-only add
           set((s) => ({
             kennelConsent: null,
             skills: [
@@ -906,7 +917,7 @@ export const useStore = create<State & Actions>()(
         // authoring
         selectAuthTarget: (name) => set({ authSel: name }),
         setAuthMode: (m) => set({ authMode: m }),
-        applyPatch: () => {
+        applyPatch: (reindexed_ms?: number) => {
           const sel = get().authSel;
           set((s) => ({
             authApplied: true,
@@ -914,7 +925,11 @@ export const useStore = create<State & Actions>()(
               t.name === sel ? { ...t, dirty: false } : t
             ),
           }));
-          toast("Patch applied — re-indexed in 0.3s", "success");
+          const reindexStr =
+            reindexed_ms !== undefined
+              ? `re-indexed in ${(reindexed_ms / 1000).toFixed(1)}s`
+              : "re-indexed";
+          toast(`Patch applied — ${reindexStr}`, "success");
         },
         revertPatch: () => {
           const sel = get().authSel;
@@ -1215,12 +1230,8 @@ export const useStore = create<State & Actions>()(
           const _ic = get().inContext;
           if (!_ic) return;
 
-          // Best-effort persist — degrade gracefully if the endpoint is not yet available (404).
           if (get().dataMode === "live") {
-            void import("../data/domains/chat").then(({ allowLeashLive }) => {
-              void allowLeashLive();
-            });
-            // Also fire always-allow endpoint; ignore 404
+            // Persist always-allow rule to the gateway; surface failure honestly.
             void (async () => {
               try {
                 const { apiSend: _apiSend } = await import("../data/client");
@@ -1228,8 +1239,13 @@ export const useStore = create<State & Actions>()(
                   request: _ic.request,
                   action: _ic.action,
                 });
+                // On success, let the live stream continue as "allow once" would
+                const { allowLeashLive } = await import("../data/domains/chat");
+                void allowLeashLive();
+                toast("Always allowed — Hachi won't ask again for this", "success");
               } catch {
-                // 404 = endpoint not yet deployed; any other error is soft-ignored
+                // Endpoint returned an error — tell the user, don't silently proceed
+                toast("Could not save always-allow rule — please try again", "blocked");
               }
             })();
             return;
@@ -1445,27 +1461,37 @@ export const useStore = create<State & Actions>()(
 
         runAlwaysAllow: () => {
           const rl = get().runLeash;
-          // Best-effort persist to always-allow endpoint; ignore 404
           if (get().dataMode === "live") {
             if (rl) {
+              // Persist the always-allow rule; surface failure honestly
               void (async () => {
                 try {
                   await apiSend("POST", `/sessions/current/permissions/always-allow`, {
                     request: rl.request,
                     action: rl.action,
                   });
+                  set((s) => ({
+                    runLeash: null,
+                    runStreaming: true,
+                    runLines: [...s.runLines, { text: "✓ always allowed — continuing", tone: "success" }],
+                  }));
+                  void import("../data/domains/chat").then((m) => void m.allowLeashLive());
+                  toast("Saved — Hachi won't ask again for this", "success");
                 } catch {
-                  // 404 = endpoint not yet deployed
+                  // Endpoint returned an error — tell the user
+                  toast("Could not save always-allow rule — please try again", "blocked");
                 }
               })();
+            } else {
+              // No leash context — just allow
+              set((s) => ({
+                runLeash: null,
+                runStreaming: true,
+                runLines: [...s.runLines, { text: "✓ always allowed — continuing", tone: "success" }],
+              }));
+              void import("../data/domains/chat").then((m) => void m.allowLeashLive());
+              toast("Saved — Hachi won't ask again for this", "success");
             }
-            set((s) => ({
-              runLeash: null,
-              runStreaming: true,
-              runLines: [...s.runLines, { text: "✓ always allowed — continuing", tone: "success" }],
-            }));
-            void import("../data/domains/chat").then((m) => void m.allowLeashLive());
-            toast("Saved — Hachi won't ask again for this", "success");
             return;
           }
 

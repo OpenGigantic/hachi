@@ -76,7 +76,7 @@ class _StoreBackedAgent:
         return self._read_models.read_events_since(after, limit=limit)
 
 
-def _fake_boot_agent(on_event=None, on_permission_request=None):
+def _fake_boot_agent(on_event=None, on_permission_request=None, resume_session_id=None):
     return _StoreBackedAgent()
 
 
