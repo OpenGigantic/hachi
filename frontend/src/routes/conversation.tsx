@@ -882,6 +882,7 @@ function Conversation() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* ---- header ---- */}
       <div
+        className="hachi-conv-header"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -981,6 +982,7 @@ function Conversation() {
         style={{ flex: 1, overflow: 'auto', padding: '28px 0' }}
       >
         <div
+          className="hachi-transcript-inner"
           style={{
             maxWidth: 760,
             margin: '0 auto',
@@ -1075,6 +1077,7 @@ function Conversation() {
 
       {/* ---- composer ---- */}
       <div
+        className="hachi-composer-wrap"
         style={{
           flexShrink: 0,
           borderTop: '0.5px solid var(--hachi-line)',
