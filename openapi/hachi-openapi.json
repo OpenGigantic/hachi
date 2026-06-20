@@ -469,6 +469,67 @@
         ]
       }
     },
+    "/sessions/{session_id}/permissions/always-allow": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Post Always Allow",
+        "description": "Persist a standing always-allow rule for the given request+action pair.\n\nThe frontend sends ``session_id = \"current\"`` as a sentinel; the backend\nresolves it to the active session or persists the rule globally.\n\nBody: ``{\"request\": \"<tool/path>\", \"action\": \"<operation>\"}``",
+        "operationId": "post_always_allow_sessions__session_id__permissions_always_allow_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlwaysAllowRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Always Allow Sessions  Session Id  Permissions Always Allow Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/sessions/{session_id}/events": {
       "get": {
         "tags": [
@@ -709,6 +770,56 @@
               "application/json": {
                 "schema": {
                   "title": "Response Get Mcp Inventory Runtime Mcp Inventory Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/runtime/mcp/register": {
+      "post": {
+        "tags": [
+          "runtime"
+        ],
+        "summary": "Post Mcp Register",
+        "description": "Register a new MCP server and add it to the runtime configuration.\n\nBody: ``{\"name\": \"...\", \"command\": \"npx\", \"args\": \"...\", \"env_vars\": {}}``",
+        "operationId": "post_mcp_register_runtime_mcp_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpRegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Mcp Register Runtime Mcp Register Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -1286,6 +1397,156 @@
         ]
       }
     },
+    "/config/limits": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Put Limits",
+        "description": "Persist per-task and daily spend caps.\n\nBody: ``{\"per_task_cap_usd\": 1.0, \"daily_cap_usd\": 5.0}``",
+        "operationId": "put_limits_config_limits_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LimitsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Put Limits Config Limits Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/config/permissions/folders": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Post Allowed Folder",
+        "description": "Append a folder path to the allowed_paths list and persist to device-permissions.og.",
+        "operationId": "post_allowed_folder_config_permissions_folders_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AllowedFolderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Allowed Folder Config Permissions Folders Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/config/permissions/commands": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Post Allowed Command",
+        "description": "Append a command to the allowed_commands list and persist to device-permissions.og.",
+        "operationId": "post_allowed_command_config_permissions_commands_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AllowedCommandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Allowed Command Config Permissions Commands Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/setup": {
       "get": {
         "tags": [
@@ -1608,6 +1869,86 @@
               "application/json": {
                 "schema": {
                   "title": "Response Get Skills Skills Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/skills/kennel": {
+      "get": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Get Kennel",
+        "description": "Return the available skills catalogue (kennel) for browsing and installation.",
+        "operationId": "get_kennel_skills_kennel_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Kennel Skills Kennel Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/skills/add": {
+      "post": {
+        "tags": [
+          "skills"
+        ],
+        "summary": "Post Skill Add",
+        "description": "Install a skill from the kennel by id.\n\nBody: ``{\"kennel_id\": \"...\"}``",
+        "operationId": "post_skill_add_skills_add_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillAddRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Skill Add Skills Add Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -2092,6 +2433,53 @@
   },
   "components": {
     "schemas": {
+      "AllowedCommandRequest": {
+        "properties": {
+          "command": {
+            "type": "string",
+            "title": "Command"
+          }
+        },
+        "type": "object",
+        "required": [
+          "command"
+        ],
+        "title": "AllowedCommandRequest",
+        "description": "Body for POST /config/permissions/commands (G1-T3)."
+      },
+      "AllowedFolderRequest": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "AllowedFolderRequest",
+        "description": "Body for POST /config/permissions/folders (G1-T3)."
+      },
+      "AlwaysAllowRequest": {
+        "properties": {
+          "request": {
+            "type": "string",
+            "title": "Request"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request",
+          "action"
+        ],
+        "title": "AlwaysAllowRequest",
+        "description": "Body for POST /sessions/{id}/permissions/always-allow (G1-T4)."
+      },
       "ApprovalActionRequest": {
         "properties": {
           "action": {
@@ -2217,6 +2605,66 @@
           "time"
         ],
         "title": "HealthResponse"
+      },
+      "LimitsRequest": {
+        "properties": {
+          "per_task_cap_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Per Task Cap Usd"
+          },
+          "daily_cap_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Cap Usd"
+          }
+        },
+        "type": "object",
+        "title": "LimitsRequest",
+        "description": "Body for PUT /config/limits (G1-T3)."
+      },
+      "McpRegisterRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "command": {
+            "type": "string",
+            "title": "Command"
+          },
+          "args": {
+            "type": "string",
+            "title": "Args"
+          },
+          "env_vars": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Env Vars"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "command",
+          "args"
+        ],
+        "title": "McpRegisterRequest",
+        "description": "Body for POST /runtime/mcp/register (G1-T5)."
       },
       "MemoryFactAddRequest": {
         "properties": {
@@ -2527,6 +2975,20 @@
           "plan"
         ],
         "title": "SetupApplyRequest"
+      },
+      "SkillAddRequest": {
+        "properties": {
+          "kennel_id": {
+            "type": "string",
+            "title": "Kennel Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kennel_id"
+        ],
+        "title": "SkillAddRequest",
+        "description": "Body for POST /skills/add (G1-T6)."
       },
       "ValidationError": {
         "properties": {

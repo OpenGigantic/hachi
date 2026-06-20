@@ -104,6 +104,16 @@ class GatewayControlPlane:
         set_capability_enabled: Callable[[str, bool], dict[str, Any]] | None = None,
         add_memory_fact: Callable[[str, str], dict[str, Any]] | None = None,
         delete_memory_fact: Callable[[str], dict[str, Any]] | None = None,
+        # G1 — new handlers
+        update_limits: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        add_allowed_folder: Callable[[str], dict[str, Any]] | None = None,
+        add_allowed_command: Callable[[str], dict[str, Any]] | None = None,
+        add_always_allow: Callable[[str, str, str], dict[str, Any]] | None = None,
+        register_mcp_server: (
+            Callable[[str, str, str, dict[str, str]], dict[str, Any]] | None
+        ) = None,
+        get_kennel: Callable[[], list[dict[str, Any]]] | None = None,
+        add_skill: Callable[[str], dict[str, Any]] | None = None,
         max_active_sessions: int = 100,
         max_prompt_chars: int = 100_000,
     ) -> None:
@@ -144,6 +154,14 @@ class GatewayControlPlane:
         self._set_capability_enabled = set_capability_enabled
         self._add_memory_fact = add_memory_fact
         self._delete_memory_fact = delete_memory_fact
+        # G1 — new handlers
+        self._update_limits = update_limits
+        self._add_allowed_folder = add_allowed_folder
+        self._add_allowed_command = add_allowed_command
+        self._add_always_allow = add_always_allow
+        self._register_mcp_server = register_mcp_server
+        self._get_kennel = get_kennel
+        self._add_skill = add_skill
         self._connections: dict[str, dict[str, Any]] = {}
         self._api_sessions: dict[str, str] = {}  # session_key -> session_id (facade sessions)
         self._connections_lock = threading.Lock()
@@ -565,6 +583,48 @@ class GatewayControlPlane:
         if self._delete_memory_fact is None:
             return {"ok": False, "error": "memory vault not available"}
         return self._delete_memory_fact(fact_id)
+
+    # ==========================================
+    # G1 — new gateway handlers
+    # ==========================================
+
+    def update_limits(self, payload: dict[str, Any]) -> Any:
+        """Persist spend caps (PUT /config/limits)."""
+        handler = self._require_handler(self._update_limits, "limits update")
+        return handler(payload)
+
+    def add_allowed_folder(self, folder_path: str) -> Any:
+        """Append a folder to the allowed_paths list (POST /config/permissions/folders)."""
+        handler = self._require_handler(self._add_allowed_folder, "add allowed folder")
+        return handler(folder_path)
+
+    def add_allowed_command(self, command: str) -> Any:
+        """Append a command to the allowed_commands list (POST /config/permissions/commands)."""
+        handler = self._require_handler(self._add_allowed_command, "add allowed command")
+        return handler(command)
+
+    def add_always_allow(self, session_id: str, request: str, action: str) -> Any:
+        """Persist a standing always-allow rule (POST /sessions/{id}/permissions/always-allow)."""
+        handler = self._require_handler(self._add_always_allow, "always-allow")
+        return handler(session_id, request, action)
+
+    def register_mcp_server(
+        self, name: str, command: str, args: str, env_vars: dict[str, str]
+    ) -> Any:
+        """Register a new MCP server (POST /runtime/mcp/register)."""
+        handler = self._require_handler(self._register_mcp_server, "MCP server registration")
+        return handler(name, command, args, env_vars)
+
+    def kennel(self) -> Any:
+        """Return the available skills kennel listing (GET /skills/kennel)."""
+        if self._get_kennel is None:
+            return []
+        return self._get_kennel()
+
+    def add_skill(self, kennel_id: str) -> Any:
+        """Install a skill from the kennel (POST /skills/add)."""
+        handler = self._require_handler(self._add_skill, "skill install")
+        return handler(kennel_id)
 
     # Backward-compatible aliases for previous envelope methods.
     def connect(self, payload: dict[str, Any]) -> dict[str, Any]:

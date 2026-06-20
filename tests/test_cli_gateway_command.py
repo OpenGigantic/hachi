@@ -153,7 +153,7 @@ def test_run_command_launches_tui_in_local_mode(monkeypatch) -> None:
         "cockpit_launched": False,
     }
 
-    def _fake_launch_cockpit() -> None:
+    def _fake_launch_cockpit(**kwargs) -> None:  # noqa: ANN003
         state["cockpit_launched"] = True
 
     monkeypatch.setattr("hachi.cli.main.ensure_workspace", lambda: None)
@@ -171,7 +171,7 @@ def test_run_command_launches_tui_in_local_mode(monkeypatch) -> None:
 def test_bare_invocation_launches_tui(monkeypatch) -> None:
     state: dict[str, object] = {"cockpit_launched": False}
 
-    def _fake_launch_cockpit() -> None:
+    def _fake_launch_cockpit(**kwargs) -> None:  # noqa: ANN003
         state["cockpit_launched"] = True
 
     monkeypatch.setattr("hachi.cli.main.ensure_workspace", lambda: None)
