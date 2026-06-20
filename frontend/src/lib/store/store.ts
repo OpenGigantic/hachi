@@ -307,6 +307,9 @@ interface Actions {
   addCommandWithText: (cmd: string) => void;
   setTaskCap: (v: number) => void;
   setDailyCap: (v: number) => void;
+  // session switching (M8 MED-020)
+  switchSession: (sessionId: string) => void;
+  newSession: () => void;
   // reconnect
   simulateReconnect: () => void;
 }
@@ -1591,6 +1594,39 @@ export const useStore = create<State & Actions>()(
             })),
           });
           toast("Stopped — Hachi is resting", "success");
+        },
+
+        // session switching (M8 MED-020)
+        switchSession: (sessionId) => {
+          if (get().dataMode === "live") {
+            void import("../data/domains/chat").then(({ switchSessionLive }) => {
+              void switchSessionLive(sessionId);
+            });
+            return;
+          }
+          // Mock mode: just flip the active flag
+          set((s) => ({
+            messages: [],
+            sessions: s.sessions.map((sess) =>
+              sess.id === sessionId
+                ? { ...sess, active: true }
+                : { ...sess, active: false }
+            ),
+          }));
+        },
+
+        newSession: () => {
+          if (get().dataMode === "live") {
+            void import("../data/domains/chat").then(({ newSessionLive }) => {
+              newSessionLive();
+            });
+            return;
+          }
+          // Mock mode: clear messages and deactivate all sessions
+          set((s) => ({
+            messages: [],
+            sessions: s.sessions.map((sess) => ({ ...sess, active: false })),
+          }));
         },
 
         simulateReconnect: () => {
