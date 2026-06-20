@@ -8,7 +8,7 @@ import { useStore } from '../lib/store/store';
 import { Icon } from '../components/icons/Icon';
 import { Switch } from '../components/ui/Switch';
 import type { SafetyLevel } from '../lib/data/types';
-import { loadConfig, setSafetyLive, setProviderLive } from '../lib/data/domains/config';
+import { loadConfig, setSafetyLive, setProviderLive, addFolderLive, addCommandLive } from '../lib/data/domains/config';
 import { apiSend } from '../lib/data/client';
 
 // ---- Safety level definitions (mirror prototype renderVals lines 2337–2342) ----
@@ -244,8 +244,6 @@ function Settings() {
     toggleAskRule,
     removeFolder,
     removeCommand,
-    addFolderWithPath,
-    addCommandWithText,
     toggleOpTool,
     toggleTheme,
     toggleOperator,
@@ -321,18 +319,18 @@ function Settings() {
     markUnsaved();
   }
   function handleAddFolder(path: string) {
-    addFolderWithPath(path);
     setAddingFolder(false);
     markUnsaved();
+    void addFolderLive(path);
   }
   function handleRemoveCommand(c: string) {
     removeCommand(c);
     markUnsaved();
   }
   function handleAddCommand(cmd: string) {
-    addCommandWithText(cmd);
     setAddingCommand(false);
     markUnsaved();
+    void addCommandLive(cmd);
   }
   function handleToggleOpTool(id: string) {
     toggleOpTool(id);

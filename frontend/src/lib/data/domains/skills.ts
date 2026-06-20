@@ -1,14 +1,26 @@
 // ============================================================
 // Hachi Web App — Skills domain loader
-// Endpoint: GET /skills → GatewaySkill[] → Skill[]
+// Endpoints:
+//   GET  /skills          → GatewaySkill[]  → Skill[]
+//   GET  /skills/kennel   → GatewayKennelItem[] → KennelItem[]
+//   POST /skills/add      → install a kennel skill
 // ============================================================
 
-import { apiGet, USE_MOCKS } from "../client";
+import { apiGet, apiSend, USE_MOCKS } from "../client";
 import { registerLoader } from "../live";
 import { useStore } from "../../store/store";
-import type { Skill } from "../types";
+import type { Skill, KennelItem } from "../types";
 
-// ---- Gateway shape ----
+// ---- Gateway shapes ----
+
+/** Raw kennel entry from GET /skills/kennel */
+interface GatewayKennelItem {
+  id?: string;
+  name?: string;
+  description?: string;
+  icon?: string;
+  tags?: string[];
+}
 
 interface GatewaySkill {
   name: string;
@@ -94,3 +106,74 @@ export async function loadSkills(): Promise<void> {
 }
 
 registerLoader("skills", loadSkills);
+
+// ---- Kennel loader ----
+
+/** Adapt a raw kennel entry to the UI KennelItem shape. */
+function adaptKennelItem(raw: GatewayKennelItem): KennelItem {
+  return {
+    id: raw.id ?? raw.name ?? "unknown",
+    icon: raw.icon ?? "sparkles",
+    name: raw.name ?? raw.id ?? "Unknown skill",
+    desc: raw.description ?? "",
+  };
+}
+
+// Tracks whether kennel data has ever been fetched successfully.
+let _kennelEverSucceeded = false;
+
+/**
+ * Load the kennel catalogue from GET /skills/kennel and hydrate the store.
+ * In mock mode keeps seeded fixtures. In live mode, clears fixtures on first
+ * failure so fabricated kennel items are never presented as real.
+ */
+export async function loadKennel(): Promise<void> {
+  if (USE_MOCKS) return; // keep seeded fixtures
+  try {
+    const raw = await apiGet<GatewayKennelItem[]>("/skills/kennel");
+    useStore.getState().hydrate({ kennel: (raw ?? []).map(adaptKennelItem) });
+    useStore.getState().setReconnecting(false);
+    _kennelEverSucceeded = true;
+  } catch {
+    if (!_kennelEverSucceeded) {
+      useStore.getState().hydrate({ kennel: [] });
+    }
+    useStore.getState().setReconnecting(true);
+  }
+}
+
+registerLoader("kennel", loadKennel);
+
+// ---- Skill add (kennel install) ----
+
+/**
+ * Install a skill from the kennel via POST /skills/add, then refresh both
+ * the installed skills list and the kennel (gateway may remove it from kennel
+ * once installed). On success shows a toast; on failure shows an error toast
+ * and does NOT add the skill to the local list.
+ *
+ * In mock mode, delegates to the store's existing confirmKennel action.
+ */
+export async function addSkillLive(kennelId: string): Promise<void> {
+  const { showToast, kennel, confirmKennel } = useStore.getState();
+
+  if (USE_MOCKS) {
+    confirmKennel();
+    return;
+  }
+
+  const item = kennel.find((k) => k.id === kennelId);
+  const label = item?.name ?? kennelId;
+
+  try {
+    await apiSend<unknown>("POST", "/skills/add", { kennel_id: kennelId });
+    // Refresh installed skills + kennel from gateway
+    await Promise.all([loadSkills(), loadKennel()]);
+    showToast(`Added ${label} — it's ready to use`, "success");
+    // Close consent overlay
+    useStore.getState().hydrate({ kennelConsent: null, kennelBrowseOpen: false });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : `Failed to install ${label} — please try again`;
+    showToast(msg, "blocked");
+  }
+}

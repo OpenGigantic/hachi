@@ -686,12 +686,13 @@ function AddMcpDialog({ onClose }: AddMcpDialogProps) {
 
     try {
       await addMcpServer(input)
+      useStore.getState().showToast(`MCP server "${input.name}" registered`, 'success')
       onClose()
     } catch (err: unknown) {
       const msg =
         err instanceof Error
           ? err.message
-          : 'Failed to register MCP server. The gateway may not yet support this endpoint.'
+          : 'Failed to register MCP server — check the server name and args, then try again.'
       dispatch({ type: 'set_submit_error', value: msg })
       dispatch({ type: 'set_submitting', value: false })
     }
