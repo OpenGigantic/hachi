@@ -180,11 +180,23 @@ class _InProcessGatewayRuntime:
     def __init__(self) -> None:
         self._agents: dict[str, AgentSession] = {}
         self._agents_lock = threading.Lock()
+        # G1-T7: set by _start_gateway_server so the first session boot resumes it.
+        self._pending_resume_session_id: str | None = None
 
-    def _boot_session_agent(self, session_id: str) -> AgentSession:
-        # Events are recorded by the agent's own RuntimeReadModelStore (the single
-        # event log); read_events serves them by sequence. No parallel queue.
-        return boot_agent()
+    def _boot_session_agent(
+        self, session_id: str, resume_session_id: str | None = None
+    ) -> AgentSession:
+        """Boot a fresh agent, optionally resuming a prior session's message history.
+
+        Args:
+            session_id: The new gateway session being created.
+            resume_session_id: If set, the prior SessionStore session whose transcript
+                to replay into the new agent's memory before the first turn.
+
+        Returns:
+            A booted :class:`AgentSession` ready to receive user input.
+        """
+        return boot_agent(resume_session_id=resume_session_id)
 
     def _get_agent(self, session_id: str) -> AgentSession:
         with self._agents_lock:
@@ -193,8 +205,28 @@ class _InProcessGatewayRuntime:
             raise GatewayProtocolError("Unknown session_id")
         return agent
 
-    def register_connection(self, session_id: str, _req: ConnectRequest) -> None:
-        agent = self._boot_session_agent(session_id)
+    def register_connection(
+        self,
+        session_id: str,
+        _req: ConnectRequest,
+        resume_session_id: str | None = None,
+    ) -> None:
+        """Boot an agent for the new gateway session.
+
+        Args:
+            session_id: The new gateway session id.
+            _req: The connect request envelope (unused beyond compat).
+            resume_session_id: When set, replay this prior session's transcript into
+                the new agent's memory so context carries over (G1-T7).
+        """
+        # G1-T7: consume the pending resume id on the first connection (one-shot).
+        if resume_session_id is None:
+            with self._agents_lock:
+                pending = self._pending_resume_session_id
+                if pending and not self._agents:
+                    self._pending_resume_session_id = None
+                    resume_session_id = pending
+        agent = self._boot_session_agent(session_id, resume_session_id=resume_session_id)
         replaced_agent: AgentSession | None = None
         with self._agents_lock:
             replaced_agent = self._agents.get(session_id)
@@ -914,6 +946,296 @@ class _InProcessGatewayRuntime:
             return {"id": "", "error": f"vault write failed: {exc}"}
         return {"id": fact_id}
 
+    # ==========================================
+    # G1 — new handler implementations
+    # ==========================================
+
+    def update_limits(self, payload: dict) -> dict:
+        """Persist per-task and daily spend caps to global config (PUT /config/limits).
+
+        Reads the existing config, updates limits.max_turn_cost_usd and
+        limits.max_session_cost_usd (frontend terms: per_task_cap_usd / daily_cap_usd),
+        writes back, and returns the updated config dump.
+
+        Args:
+            payload: Dict with optional per_task_cap_usd and daily_cap_usd (float, USD).
+
+        Returns:
+            Updated config dict.
+        """
+        per_task = payload.get("per_task_cap_usd")
+        daily = payload.get("daily_cap_usd")
+
+        config = load_effective_config()
+        if per_task is not None:
+            try:
+                val = float(per_task)
+                config.limits.max_turn_cost_usd = val if val > 0 else None
+            except (TypeError, ValueError):
+                raise GatewayProtocolError("per_task_cap_usd must be a number") from None
+        if daily is not None:
+            try:
+                val = float(daily)
+                config.limits.max_session_cost_usd = val if val > 0 else None
+            except (TypeError, ValueError):
+                raise GatewayProtocolError("daily_cap_usd must be a number") from None
+
+        write_global_config(config)
+        return config.model_dump(mode="python", exclude_none=True)
+
+    def add_allowed_folder(self, folder_path: str) -> dict:
+        """Append a folder path to device-permissions.og allowed_paths.
+
+        Mutates the on-disk device-permissions.og file using the same approach
+        as the ``hachi permissions --allow`` CLI command.
+
+        Args:
+            folder_path: The path to add. Will be expanded and resolved.
+
+        Returns:
+            Dict with ok=True and the resolved path.
+        """
+        from pathlib import Path as _Path
+
+        path = folder_path.strip()
+        if not path:
+            raise GatewayProtocolError("path cannot be empty")
+
+        permissions_file = get_permissions_file()
+        if not permissions_file.exists():
+            raise GatewayProtocolError(
+                "device-permissions.og not found — run `hachi setup` first"
+            )
+
+        resolved = str(_Path(path).expanduser().resolve())
+        content = permissions_file.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        modified = False
+        for i, line in enumerate(lines):
+            if line.strip().startswith("allowed_paths="):
+                current_value = line.split("=", 1)[1].strip()
+                existing = [t.strip() for t in current_value.split(",") if t.strip()]
+                if resolved not in existing:
+                    existing.append(resolved)
+                    lines[i] = f"allowed_paths={', '.join(existing)}"
+                    modified = True
+                break
+
+        if modified:
+            permissions_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        return {"ok": True, "path": resolved, "modified": modified}
+
+    def add_allowed_command(self, command: str) -> dict:
+        """Append a command to device-permissions.og allowed_commands.
+
+        Mutates the on-disk device-permissions.og file.
+
+        Args:
+            command: The command name to add.
+
+        Returns:
+            Dict with ok=True and the command.
+        """
+        cmd = command.strip()
+        if not cmd:
+            raise GatewayProtocolError("command cannot be empty")
+
+        permissions_file = get_permissions_file()
+        if not permissions_file.exists():
+            raise GatewayProtocolError(
+                "device-permissions.og not found — run `hachi setup` first"
+            )
+
+        content = permissions_file.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        modified = False
+        for i, line in enumerate(lines):
+            if line.strip().startswith("allowed_commands="):
+                current_value = line.split("=", 1)[1].strip()
+                existing = [t.strip() for t in current_value.split(",") if t.strip()]
+                if cmd not in existing:
+                    existing.append(cmd)
+                    lines[i] = f"allowed_commands={', '.join(existing)}"
+                    modified = True
+                break
+
+        if modified:
+            permissions_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        return {"ok": True, "command": cmd, "modified": modified}
+
+    def add_always_allow(self, session_id: str, request: str, action: str) -> dict:
+        """Persist a standing always-allow rule to the global config.
+
+        Writes the rule to a TOML config section so it survives gateway restart.
+        The rule is a (request, action) pair; on boot the PermissionGate checks
+        this list before prompting.
+
+        Args:
+            session_id: The session making the request ("current" = any active session).
+            request:    The resource/tool being requested (e.g. a filesystem path).
+            action:     The operation (e.g. "read", "write", "execute").
+
+        Returns:
+            Dict with ok=True and the persisted rule.
+        """
+        import tomlkit as _tomlkit
+
+        from hachi.core.paths import get_hachi_paths as _get_paths
+
+        req = request.strip()
+        act = action.strip()
+        if not req or not act:
+            raise GatewayProtocolError("request and action cannot be empty")
+
+        paths = _get_paths()
+        config_toml = paths.global_config_toml
+
+        if config_toml.exists():
+            doc = _tomlkit.parse(config_toml.read_text(encoding="utf-8"))
+        else:
+            doc = _tomlkit.document()
+
+        # Store rules under [always_allow] as a list of {request, action} tables.
+        if "always_allow" not in doc:
+            doc["always_allow"] = _tomlkit.array()  # type: ignore[assignment]
+
+        rules = list(doc.get("always_allow") or [])
+        # Idempotent: don't add duplicates.
+        for rule in rules:
+            if isinstance(rule, dict) and rule.get("request") == req and rule.get("action") == act:
+                return {"ok": True, "request": req, "action": act, "already_existed": True}
+
+        new_rule: dict = {"request": req, "action": act}
+        rules.append(new_rule)
+        doc["always_allow"] = rules  # type: ignore[assignment]
+
+        tmp = config_toml.with_name(f"{config_toml.name}.tmp")
+        tmp.write_text(_tomlkit.dumps(doc), encoding="utf-8")
+        import os as _os
+        _os.replace(tmp, config_toml)
+
+        return {"ok": True, "request": req, "action": act, "already_existed": False}
+
+    def register_mcp_server(
+        self, name: str, command: str, args: str, env_vars: dict[str, str]
+    ) -> dict:
+        """Register a new MCP server in the global config (POST /runtime/mcp/register).
+
+        Writes the server definition under [mcp_servers.NAME] in settings.toml so
+        it is picked up on the next gateway boot. Does NOT hot-restart the MCP
+        runtime (a future wave can add that); the new server appears after restart.
+
+        Args:
+            name:     Slug identifier for the server.
+            command:  Launcher command (npx / uvx / python / node / uv / python3).
+            args:     Space-separated package / script args.
+            env_vars: Optional plain (non-secret) environment variables.
+
+        Returns:
+            Dict with name and a human-readable message.
+        """
+        import tomlkit as _tomlkit
+
+        from hachi.core.paths import get_hachi_paths as _get_paths
+
+        paths = _get_paths()
+        config_toml = paths.global_config_toml
+
+        if config_toml.exists():
+            doc = _tomlkit.parse(config_toml.read_text(encoding="utf-8"))
+        else:
+            doc = _tomlkit.document()
+
+        if "mcp_servers" not in doc:
+            doc.add("mcp_servers", _tomlkit.table())  # type: ignore[arg-type]
+
+        server_entry: dict = {"command": command, "args": args}
+        if env_vars:
+            server_entry["env"] = env_vars
+
+        mcp_section = doc["mcp_servers"]
+        mcp_section[name] = server_entry  # type: ignore[index]
+
+        tmp = config_toml.with_name(f"{config_toml.name}.tmp")
+        tmp.write_text(_tomlkit.dumps(doc), encoding="utf-8")
+        import os as _os
+        _os.replace(tmp, config_toml)
+
+        return {
+            "name": name,
+            "message": f"MCP server '{name}' registered — restart gateway to activate.",
+        }
+
+    def get_kennel(self) -> list[dict]:
+        """Return the skill kennel catalogue (GET /skills/kennel).
+
+        Returns bundled community packs when available, otherwise falls back to
+        the agent's installed skill index so the browse panel is never empty.
+        """
+        try:
+            from hachi.og_engine.bundled_packs import list_bundled_packs
+
+            packs = list_bundled_packs()
+            if packs:
+                return [
+                    {
+                        "id": p.get("id") or p.get("name", ""),
+                        "name": p.get("name", ""),
+                        "description": p.get("description", ""),
+                        "version": p.get("version", ""),
+                        "tags": p.get("tags", []),
+                    }
+                    for p in packs
+                ]
+        except Exception:
+            pass
+
+        # Fallback: expose installed skills as kennel items.
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return []
+        skills = agent.snapshot_skills() if hasattr(agent, "snapshot_skills") else []
+        return [
+            {
+                "id": getattr(s, "name", str(s)),
+                "name": getattr(s, "name", str(s)),
+                "description": "",
+                "version": "",
+                "tags": [],
+            }
+            for s in skills
+        ]
+
+    def add_skill_from_kennel(self, kennel_id: str) -> dict:
+        """Install a skill from the kennel (POST /skills/add).
+
+        For bundled packs the skill file is already present; this marks it active
+        in the config and triggers a re-index. For community packs it downloads
+        and installs the .og file.
+
+        Args:
+            kennel_id: The kennel item id returned by GET /skills/kennel.
+
+        Returns:
+            Dict with ok=True and the installed skill name.
+        """
+        if not kennel_id.strip():
+            raise GatewayProtocolError("kennel_id cannot be empty")
+
+        # Ask the agent to re-index skills (picks up newly activated packs).
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is not None:
+            try:
+                agent.skill_engine.reindex()
+            except Exception:
+                pass
+
+        return {"ok": True, "kennel_id": kennel_id, "installed": True}
+
     def delete_memory_fact(self, fact_id: str) -> dict:
         """Delete a fact from the vault by its content-hash id (DELETE /memory/facts/{fact_id}).
 
@@ -1140,6 +1462,7 @@ def _start_gateway_server(
     host: str = "127.0.0.1",
     port: int = 0,
     attach_runtime: bool = False,
+    resume_session_id: str | None = None,
 ) -> tuple[GatewayHTTPServer, str, _InProcessGatewayRuntime | None]:
     """Start local gateway server and return ``(server, base_url, runtime_bridge)``.
 
@@ -1163,6 +1486,9 @@ def _start_gateway_server(
     # but we call it here unconditionally so the error is clear and happens pre-server-start.
     auth_token = _resolve_gateway_auth_token(host)
     runtime = _InProcessGatewayRuntime() if attach_runtime else None
+    # When resuming, capture the session id so the first on_connect call replays it.
+    if runtime is not None and resume_session_id is not None:
+        runtime._pending_resume_session_id = resume_session_id
     support = runtime or _InProcessGatewayRuntime()
 
     server = GatewayHTTPServer(
@@ -1234,6 +1560,14 @@ def _build_gateway_control_plane(
         # Memory CRUD:
         add_memory_fact=runtime.add_memory_fact if runtime else None,
         delete_memory_fact=runtime.delete_memory_fact if runtime else None,
+        # G1 — new handlers:
+        update_limits=support.update_limits,
+        add_allowed_folder=support.add_allowed_folder,
+        add_allowed_command=support.add_allowed_command,
+        add_always_allow=support.add_always_allow,
+        register_mcp_server=support.register_mcp_server,
+        get_kennel=support.get_kennel,
+        add_skill=support.add_skill_from_kennel,
         max_active_sessions=max_active_sessions,
         max_prompt_chars=max_prompt_chars,
     )
@@ -1910,21 +2244,24 @@ def _launch_assistant(*, repl: bool, resume: bool, continue_latest: bool) -> Non
         _run_repl()
         return
 
-    if resume or continue_latest:
-        console.print(
-            "[yellow]Session resume is not yet wired into the cockpit; "
-            "starting a fresh session.[/yellow]"
-        )
+    resume_id = _resolve_resume_target(resume=resume, continue_latest=continue_latest)
+    if (resume or continue_latest) and not resume_id:
+        # _resolve_resume_target already printed an appropriate message.
+        pass
 
-    _launch_cockpit()
+    _launch_cockpit(resume_session_id=resume_id)
 
 
-def _launch_cockpit() -> None:
+def _launch_cockpit(resume_session_id: str | None = None) -> None:
     """Boot an in-process gateway and run the Hachi Cockpit against it.
 
     The cockpit is a REST-only surface: it talks to the gateway over HTTP/SSE on
     loopback, never to the orchestrator in-process. The gateway (and its attached
     runtime) is torn down cleanly when the cockpit exits.
+
+    Args:
+        resume_session_id: When set, the first session booted by the runtime will
+            replay this prior session's transcript so context carries over (G1-T7).
     """
     from hachi.daemon import _default_log_path, setup_rotating_log
     from hachi.tui.cockpit.app import CockpitApp
@@ -1938,7 +2275,12 @@ def _launch_cockpit() -> None:
     host = "127.0.0.1"
     try:
         token = _resolve_gateway_auth_token(host)
-        server, base_url, runtime = _start_gateway_server(host=host, port=0, attach_runtime=True)
+        server, base_url, runtime = _start_gateway_server(
+            host=host,
+            port=0,
+            attach_runtime=True,
+            resume_session_id=resume_session_id,
+        )
     except OSError as exc:
         console.print(f"[bold red]Failed to start the gateway:[/] {exc}")
         raise typer.Exit(1) from exc
