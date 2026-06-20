@@ -18,7 +18,7 @@ Account namespacing (ADV-023):
   The default account key ``"default"`` maps to the legacy unnamespaced paths so
   existing data continues to resolve without migration.
 
-Performance & concurrency improvements (BE-4):
+Performance & concurrency improvements (BE-4 / G3-T2 / PERF-05):
   HIGH-021: A threading.RLock guards all collection-access paths and close().
             _server.stop() is wrapped in try/except AttributeError.
   MED-022:  A single shared AnthropicClient is created lazily and reused across
@@ -27,7 +27,18 @@ Performance & concurrency improvements (BE-4):
             get_or_create_collection calls run in parallel, cutting cold-start time.
   MED-009:  semantic_search and search_user_profile redact secrets in results
             before returning them to callers.
+  PERF-05 (G3-T2): Lazy ChromaDB import and lazy per-collection creation.
+    - ``import chromadb`` is deferred until the first collection access — importing
+      the module does NOT trigger the heavyweight ChromaDB machinery.
+    - Collections are created on first access via ``_get_collection(attr)`` rather
+      than eagerly in ``__init__``.  Most sessions touch only 1-2 of the 5 collections,
+      so unused ones are never initialised.
+    - The ChromaDB ``PersistentClient`` itself is also constructed lazily on first
+      access (``_get_client()``), eliminating the blocking SQLite/hnswlib open from
+      the session boot path.
 """
+
+from __future__ import annotations
 
 import datetime
 import hashlib
@@ -36,11 +47,13 @@ import logging
 import os
 import re as _re
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hachi.core.memory_guard import scan as guard_scan
 from hachi.core.paths import get_hachi_paths
+
+if TYPE_CHECKING:
+    import chromadb as _chromadb_types  # noqa: F401 — type-hints only, never imported at runtime
 
 logger = logging.getLogger(__name__)
 
@@ -188,14 +201,42 @@ class MemoryVault:
         (an RLock) before operating.  ``close()`` acquires the same lock so it
         cannot race with an in-flight tool call.  RLock is used (over Lock) so
         that methods that call other methods on self do not deadlock.
+
+    Lazy initialisation (PERF-05 / G3-T2):
+        ``__init__`` does NOT import chromadb or open any collections.  The ChromaDB
+        ``PersistentClient`` is constructed on first collection access via
+        ``_get_client()``.  Individual collections are created on demand via
+        ``_get_collection(attr)`` and memoised — subsequent calls return the cached
+        instance without re-locking ChromaDB.  This makes session boot instantaneous
+        for clients that do not touch the vault.
     """
+
+    # Mapping from attribute name → (collection_name_suffix, description).
+    # The collection names are assembled with the per-account prefix at runtime.
+    _COLLECTION_SPECS: dict[str, tuple[str, str]] = {
+        "collection": ("core_memory", "Hachi Long-Term Semantic Memory"),
+        "user_collection": ("user_profile", "Bounded user identity and preferences"),
+        "agent_profile": ("agent_profile", "Bounded agent personality and instructions"),
+        "delegation_collection": (
+            "delegation_log",
+            "Sub-agent delegation history for pattern learning",
+        ),
+        "quarantine_collection": (
+            "memory_quarantine",
+            "Blocked memory writes with threat metadata for review",
+        ),
+    }
 
     def __init__(
         self,
         brain_dir: str | None = None,
         account_id: str | None = None,
     ):
-        """Initialize the embedded ChromaDB client with dual collections.
+        """Record vault configuration but defer all ChromaDB I/O.
+
+        No ChromaDB import occurs here — the heavy ``import chromadb`` and the
+        blocking ``PersistentClient`` construction are both deferred until the
+        first call that actually needs a collection.
 
         Args:
             brain_dir:  Physical location of the vault root.  Defaults to the
@@ -236,61 +277,17 @@ class MemoryVault:
         # Collection-name prefix: "default" → no prefix (backward compat).
         # Other accounts get "<safe_account>_" prepended.
         if resolved_account == _DEFAULT_ACCOUNT:
-            _pfx = ""
+            self._coll_prefix: str = ""
         else:
             _safe = _re.sub(r"[^a-zA-Z0-9_\-]", "_", resolved_account)[:64]
-            _pfx = f"{_safe}_"
+            self._coll_prefix = f"{_safe}_"
 
-        import chromadb
-        from chromadb.config import Settings
+        # PERF-05: ChromaDB client is None until first access — deferred via _get_client().
+        self._chroma_client: Any = None
 
-        self.client = chromadb.PersistentClient(
-            path=self.db_path, settings=Settings(anonymized_telemetry=False)
-        )
-
-        # MED-023: Parallelise the 5 serial get_or_create_collection calls so
-        # ChromaDB cold-start does not block session creation for the full
-        # sequential sum of per-call overhead.  A scoped ThreadPoolExecutor
-        # runs all 5 creates concurrently and is torn down before __init__
-        # returns — no threads outlive construction.
-        _collection_specs: list[tuple[str, str, str]] = [
-            (f"{_pfx}core_memory", "Hachi Long-Term Semantic Memory", "collection"),
-            (f"{_pfx}user_profile", "Bounded user identity and preferences", "user_collection"),
-            (f"{_pfx}agent_profile", "Bounded agent personality and instructions", "agent_profile"),
-            (
-                f"{_pfx}delegation_log",
-                "Sub-agent delegation history for pattern learning",
-                "delegation_collection",
-            ),
-            (
-                f"{_pfx}memory_quarantine",
-                "Blocked memory writes with threat metadata for review",
-                "quarantine_collection",
-            ),
-        ]
-
-        def _create_coll(name: str, desc: str, attr: str) -> tuple[str, Any]:
-            coll = self.client.get_or_create_collection(
-                name=name,
-                metadata={"description": desc},
-            )
-            return attr, coll
-
-        _results_map: dict[str, Any] = {}
-        with ThreadPoolExecutor(max_workers=len(_collection_specs)) as _pool:
-            _futures = {
-                _pool.submit(_create_coll, name, desc, attr): attr
-                for name, desc, attr in _collection_specs
-            }
-            for _future in as_completed(_futures):
-                _attr, _coll = _future.result()
-                _results_map[_attr] = _coll
-
-        self.collection = _results_map["collection"]
-        self.user_collection = _results_map["user_collection"]
-        self.agent_profile = _results_map["agent_profile"]
-        self.delegation_collection = _results_map["delegation_collection"]
-        self.quarantine_collection = _results_map["quarantine_collection"]
+        # PERF-05: Per-collection cache — populated lazily via _get_collection(attr).
+        # Each entry is None until the collection is first accessed.
+        self._collections: dict[str, Any] = {attr: None for attr in self._COLLECTION_SPECS}
 
         # P2-04: optional FTS5 graph index; set via attach_graph_index()
         self._graph_index: Any = None
@@ -299,6 +296,101 @@ class MemoryVault:
         # subsequent collection-access calls raise RuntimeError rather than
         # crashing with AttributeError on a nulled collection ref.
         self._closed: bool = False
+
+    # ==========================================
+    # PERF-05: Lazy ChromaDB client + collection helpers
+    # ==========================================
+
+    def _get_client(self) -> Any:
+        """Return the ChromaDB PersistentClient, constructing it on first call.
+
+        Must be called under ``_vault_lock``.  Defers the heavyweight
+        ``import chromadb`` and ``PersistentClient(...)`` until the first
+        collection access so that session boot is not blocked by ChromaDB I/O.
+
+        Returns:
+            The shared ``chromadb.PersistentClient`` for this vault.
+        """
+        if self._chroma_client is not None:
+            return self._chroma_client
+
+        import chromadb  # noqa: PLC0415 — intentional lazy import
+        from chromadb.config import Settings  # noqa: PLC0415
+
+        self._chroma_client = chromadb.PersistentClient(
+            path=self.db_path, settings=Settings(anonymized_telemetry=False)
+        )
+        return self._chroma_client
+
+    def _get_collection(self, attr: str) -> Any:
+        """Return the ChromaDB collection for ``attr``, creating it on first access.
+
+        Must be called under ``_vault_lock`` and after ``_assert_open()``.
+        Collections are memoised in ``_collections`` so that only the first
+        caller pays the ``get_or_create_collection`` cost (disk I/O); all
+        subsequent callers get the cached instance.
+
+        Args:
+            attr: One of the attribute names in ``_COLLECTION_SPECS``
+                  (``"collection"``, ``"user_collection"``, etc.).
+
+        Returns:
+            The live ChromaDB collection object.
+
+        Raises:
+            KeyError: If ``attr`` is not a known collection attribute.
+        """
+        cached = self._collections[attr]  # KeyError propagates — intentional
+        if cached is not None:
+            return cached
+
+        suffix, description = self._COLLECTION_SPECS[attr]
+        name = f"{self._coll_prefix}{suffix}"
+        client = self._get_client()
+        coll = client.get_or_create_collection(
+            name=name,
+            metadata={"description": description},
+        )
+        self._collections[attr] = coll
+        return coll
+
+    # ------------------------------------------------------------------
+    # Backward-compatible lazy collection accessors (G3-T2).
+    #
+    # External callers (cli/commands/memory.py, gateway/orchestrator.py,
+    # tools/memory_tools.py and their tests) reference the collections as
+    # plain attributes (``vault.collection``, ``vault.user_collection`` …).
+    # These properties preserve that surface while keeping lazy creation:
+    # the collection is created on first access, not in ``__init__``.  They
+    # mirror the historical close() semantics — returning ``None`` once the
+    # vault is closed — so existing ``if vault.agent_profile`` guards keep
+    # working instead of raising.
+    # ------------------------------------------------------------------
+    def _lazy_collection(self, attr: str) -> Any:
+        with self._vault_lock:
+            if self._closed:
+                return None
+            return self._get_collection(attr)
+
+    @property
+    def collection(self) -> Any:
+        return self._lazy_collection("collection")
+
+    @property
+    def user_collection(self) -> Any:
+        return self._lazy_collection("user_collection")
+
+    @property
+    def agent_profile(self) -> Any:
+        return self._lazy_collection("agent_profile")
+
+    @property
+    def delegation_collection(self) -> Any:
+        return self._lazy_collection("delegation_collection")
+
+    @property
+    def quarantine_collection(self) -> Any:
+        return self._lazy_collection("quarantine_collection")
 
     # ==========================================
     # Lifecycle
@@ -319,37 +411,38 @@ class MemoryVault:
         H12: Sets ``_closed = True`` under the lock so that any subsequent
         collection-access call raises ``RuntimeError("MemoryVault is closed")``
         instead of crashing with ``AttributeError`` on a nulled collection ref.
+
+        PERF-05: If the ChromaDB client was never initialised (vault was closed
+        before any collection was touched) this is a cheap no-op.
         """
         with self._vault_lock:
             if self._closed:
                 # Already closed — idempotent, nothing to do.
                 return
             try:
-                server = getattr(self.client, "_server", None)
-                # PersistentClient exposes no explicit close(); stopping the internal
-                # sqlite/hnswlib layers is achieved by deleting the reference so the
-                # GC finalizer fires, but we can also call the undocumented _server
-                # stop if it exists (Chroma ≥ 0.5).
-                if server is not None:
-                    _stop_fn = getattr(server, "stop", None)
-                    if callable(_stop_fn):
-                        try:
-                            _stop_fn()
-                        except AttributeError:
-                            # _server.stop() may not exist on all Chroma versions.
-                            logger.warning(
-                                "MemoryVault.close: _server.stop() raised AttributeError"
-                            )
-                # Always release the collection references so GC can finalise.
-                for attr in (
-                    "collection",
-                    "user_collection",
-                    "agent_profile",
-                    "delegation_collection",
-                    "quarantine_collection",
-                ):
-                    if hasattr(self, attr):
-                        setattr(self, attr, None)
+                client = self._chroma_client  # None if never initialised
+                if client is not None:
+                    server = getattr(client, "_server", None)
+                    # PersistentClient exposes no explicit close(); stopping the internal
+                    # sqlite/hnswlib layers is achieved by deleting the reference so the
+                    # GC finalizer fires, but we can also call the undocumented _server
+                    # stop if it exists (Chroma ≥ 0.5).
+                    if server is not None:
+                        _stop_fn = getattr(server, "stop", None)
+                        if callable(_stop_fn):
+                            try:
+                                _stop_fn()
+                            except AttributeError:
+                                # _server.stop() may not exist on all Chroma versions.
+                                logger.warning(
+                                    "MemoryVault.close: _server.stop() raised AttributeError"
+                                )
+                # Release the cached collection references and the client so GC can finalise.
+                _coll_cache = getattr(self, "_collections", None)
+                if isinstance(_coll_cache, dict):
+                    for _attr in list(_coll_cache):
+                        _coll_cache[_attr] = None
+                self._chroma_client = None
             except Exception:
                 pass
             finally:
@@ -427,11 +520,19 @@ class MemoryVault:
         """UTC timestamp in ISO format."""
         return datetime.datetime.now(datetime.UTC).isoformat()
 
-    def _guarded_write(self, collection: Any, content: str, category: str) -> str:
+    def _guarded_write(self, collection_attr: str, content: str, category: str) -> str:
         """Scan content through MemoryGuard, then upsert into the target collection.
 
         HIGH-021: acquires _vault_lock around the ChromaDB write.
         H12: raises RuntimeError if the vault has been closed.
+        PERF-05: accepts a collection attribute name (str) instead of a live
+        collection object so that lazy initialisation is deferred until the lock
+        is held.
+
+        Args:
+            collection_attr: Key into ``_COLLECTION_SPECS`` / ``_collections``.
+            content: Text to store.
+            category: Metadata tag.
 
         Returns:
             The fact ID on success, or a 'BLOCKED:<threat>' string on rejection.
@@ -445,7 +546,8 @@ class MemoryVault:
         fact_id = self._generate_id(content)
         with self._vault_lock:
             self._assert_open()
-            collection.upsert(
+            coll = self._get_collection(collection_attr)
+            coll.upsert(
                 ids=[fact_id],
                 documents=[content],
                 metadatas=[
@@ -481,7 +583,8 @@ class MemoryVault:
 
         with self._vault_lock:
             self._assert_open()
-            self.quarantine_collection.upsert(
+            coll = self._get_collection("quarantine_collection")
+            coll.upsert(
                 ids=[quarantine_id],
                 documents=[wrapped],
                 metadatas=[
@@ -502,9 +605,10 @@ class MemoryVault:
         """Return recent quarantined memory entries for audit/review flows."""
         with self._vault_lock:
             self._assert_open()
-            if self.quarantine_collection.count() == 0:
+            qcoll = self._get_collection("quarantine_collection")
+            if qcoll.count() == 0:
                 return []
-            rows = self.quarantine_collection.get(limit=max(1, top_k))
+            rows = qcoll.get(limit=max(1, top_k))
 
         ids = rows.get("ids", [])
         docs = rows.get("documents", [])
@@ -530,15 +634,24 @@ class MemoryVault:
         results.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
         return results[:top_k]
 
-    def _query_collection(self, collection: Any, query: str, top_k: int) -> list[dict[str, Any]]:
-        """Shared semantic search logic for both collections.
+    def _query_collection(
+        self, collection_attr: str, query: str, top_k: int
+    ) -> list[dict[str, Any]]:
+        """Shared semantic search logic for all collections.
 
         Returns a clean list of fact dicts ready for LLM injection.
         HIGH-021: acquires _vault_lock around the ChromaDB query.
         H12: raises RuntimeError if the vault has been closed.
+        PERF-05: accepts collection attribute name so lazy init happens under lock.
+
+        Args:
+            collection_attr: Key into ``_COLLECTION_SPECS`` / ``_collections``.
+            query: Natural language query string.
+            top_k: Maximum number of results.
         """
         with self._vault_lock:
             self._assert_open()
+            collection = self._get_collection(collection_attr)
             if collection.count() == 0:
                 return []
             results = collection.query(query_texts=[query], n_results=top_k)
@@ -583,7 +696,7 @@ class MemoryVault:
         Returns:
             The fact ID, or 'BLOCKED:<threat>' if rejected by the guard.
         """
-        return self._guarded_write(self.collection, content, category)
+        return self._guarded_write("collection", content, category)
 
     def delete_fact(self, fact_id: str) -> bool:
         """Remove a fact from ALL backends: Chroma core_memory + FTS5 index.
@@ -602,7 +715,7 @@ class MemoryVault:
         try:
             with self._vault_lock:
                 self._assert_open()
-                self.collection.delete(ids=[fact_id])
+                self._get_collection("collection").delete(ids=[fact_id])
         except Exception as exc:
             logger.warning("delete_fact: Chroma deletion failed for %s: %s", fact_id, exc)
             chroma_ok = False
@@ -633,7 +746,7 @@ class MemoryVault:
         Returns:
             Ranked list of fact dicts with id, content, category, timestamp, raw_content.
         """
-        chroma_results = self._query_collection(self.collection, query, top_k)
+        chroma_results = self._query_collection("collection", query, top_k)
         if self._graph_index is None:
             return _redact_results(chroma_results)
 
@@ -672,14 +785,15 @@ class MemoryVault:
         existing_id = self._generate_id(content)
         with self._vault_lock:
             self._assert_open()
-            existing = self.user_collection.get(ids=[existing_id])
+            ucoll = self._get_collection("user_collection")
+            existing = ucoll.get(ids=[existing_id])
             is_update = bool(existing and existing.get("ids"))
-            count = self.user_collection.count()
+            count = ucoll.count()
 
         if not is_update and count >= USER_PROFILE_MAX_ENTRIES:
             return "LIMIT_REACHED"
 
-        return self._guarded_write(self.user_collection, content, category)
+        return self._guarded_write("user_collection", content, category)
 
     def delete_user_fact(self, fact_id: str) -> bool:
         """Remove a user profile fact by ID.
@@ -693,7 +807,7 @@ class MemoryVault:
         try:
             with self._vault_lock:
                 self._assert_open()
-                self.user_collection.delete(ids=[fact_id])
+                self._get_collection("user_collection").delete(ids=[fact_id])
             return True
         except Exception:
             return False
@@ -710,7 +824,7 @@ class MemoryVault:
         Returns:
             Ranked list of user profile fact dicts.
         """
-        return _redact_results(self._query_collection(self.user_collection, query, top_k))
+        return _redact_results(self._query_collection("user_collection", query, top_k))
 
     def get_user_snapshot(self) -> str:
         """Return all user profile facts as a frozen text block.
@@ -720,7 +834,7 @@ class MemoryVault:
         """
         with self._vault_lock:
             self._assert_open()
-            results = self.user_collection.get()
+            results = self._get_collection("user_collection").get()
 
         if not results or not results.get("documents"):
             return ""
@@ -741,7 +855,7 @@ class MemoryVault:
         """
         with self._vault_lock:
             self._assert_open()
-            count = self.user_collection.count()
+            count = self._get_collection("user_collection").count()
         return {
             "entries": count,
             "max_entries": USER_PROFILE_MAX_ENTRIES,
@@ -757,7 +871,7 @@ class MemoryVault:
         try:
             with self._vault_lock:
                 self._assert_open()
-                count = self.agent_profile.count()
+                count = self._get_collection("agent_profile").count()
             if count >= USER_PROFILE_MAX_ENTRIES:
                 return (
                     f"ERROR: Agent Profile Vault is full "
@@ -768,14 +882,14 @@ class MemoryVault:
         except Exception:
             pass
 
-        return self._guarded_write(self.agent_profile, content, category)
+        return self._guarded_write("agent_profile", content, category)
 
     def delete_agent_fact(self, fact_id: str) -> bool:
         """Remove a fact from the agent_profile by ID."""
         try:
             with self._vault_lock:
                 self._assert_open()
-                self.agent_profile.delete(ids=[fact_id])
+                self._get_collection("agent_profile").delete(ids=[fact_id])
             return True
         except Exception:
             return False
@@ -785,7 +899,7 @@ class MemoryVault:
         try:
             with self._vault_lock:
                 self._assert_open()
-                results = self.agent_profile.get()
+                results = self._get_collection("agent_profile").get()
             if not results or not results["ids"]:
                 return ""
 
@@ -841,7 +955,7 @@ class MemoryVault:
 
         with self._vault_lock:
             self._assert_open()
-            self.delegation_collection.upsert(
+            self._get_collection("delegation_collection").upsert(
                 ids=[entry_id],
                 documents=[document],
                 metadatas=[
@@ -883,12 +997,13 @@ class MemoryVault:
         """
         with self._vault_lock:
             self._assert_open()
-            if self.delegation_collection.count() == 0:
+            dcoll = self._get_collection("delegation_collection")
+            if dcoll.count() == 0:
                 return []
 
             where_filter = {"role": role} if role else None
 
-            results = self.delegation_collection.query(
+            results = dcoll.query(
                 query_texts=[query],
                 n_results=top_k,
                 where=where_filter,
@@ -927,11 +1042,12 @@ class MemoryVault:
         """
         with self._vault_lock:
             self._assert_open()
-            total = self.delegation_collection.count()
+            dcoll = self._get_collection("delegation_collection")
+            total = dcoll.count()
             if total == 0:
                 return {"total": 0, "message": "No delegations recorded yet."}
             # Fetch all metadata to compute stats
-            all_entries = self.delegation_collection.get()
+            all_entries = dcoll.get()
 
         metadatas = all_entries.get("metadatas", [])
 
