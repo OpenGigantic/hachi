@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from hachi.core.approvals import get_approval_registry
 from hachi.core.permissions import PermissionDecision
 from hachi.core.rate_limit import RateLimiter
+from hachi.core.untrusted_content import guard_untrusted
 from hachi.gateway.control_plane import (
     PROTOCOL_VERSION,
     GatewayControlPlane,
@@ -352,9 +354,10 @@ def create_gateway_app(
         here ``auth_token=None`` means no enforcement (e.g. pure unit tests).
 
         Returns:
-            The caller's token string (stripped of the ``Bearer `` prefix) when auth
-            is enforced and the credential is valid.  Returns ``None`` in no-auth mode
-            or when running as a test helper without a configured token.
+            sha256 hex-digest of the caller's raw bearer token when auth is enforced
+            and the credential is valid.  Returns ``None`` in no-auth mode or when
+            running as a test helper without a configured token.  The digest is used
+            for session-ownership checks (C1) without exposing the raw token in memory.
         """
         if not _auth_enabled:
             return None
@@ -368,7 +371,10 @@ def create_gateway_app(
         received = request.headers.get("Authorization", "")
         if not secrets.compare_digest(received.strip(), expected):
             raise _AuthRequired()
-        return received.strip()[len("Bearer ") :].strip()
+        raw_token = received.strip()[len("Bearer ") :].strip()
+        # C1: return the sha256 digest so routes can compare ownership without
+        # storing or comparing the raw bearer value.
+        return hashlib.sha256(raw_token.encode()).hexdigest()
 
     @app.exception_handler(GatewayProtocolError)
     async def _protocol_error_handler(_request: Request, exc: GatewayProtocolError) -> JSONResponse:
@@ -454,11 +460,38 @@ def create_gateway_app(
     async def get_models() -> Any:
         return control_plane.models()
 
+    def _check_session_ownership(session_id: str, caller_hash: str | None) -> None:
+        """Enforce C1 session-ownership policy.
+
+        If the session has an owner set, the caller's token-hash must match.
+        Legacy sessions (NULL owner) are accessible by any authenticated caller
+        for backward compatibility.  In no-auth mode (caller_hash is None) all
+        sessions are accessible.
+
+        Args:
+            session_id: The session being accessed.
+            caller_hash: sha256 hex-digest returned by ``_require_auth``, or None
+                in no-auth / test-helper mode.
+
+        Raises:
+            HTTPException: 403 if the caller does not own the session.
+        """
+        if caller_hash is None:
+            # No-auth mode or unconfigured token: skip ownership check.
+            return
+        owner = control_plane.get_session_owner(session_id)
+        if owner is not None and not secrets.compare_digest(owner, caller_hash):
+            raise HTTPException(
+                status_code=403,
+                detail="access denied: session is owned by another caller",
+            )
+
     @sessions.post("", response_model=SessionCreateResponse)
-    async def create_session(payload: SessionCreateRequest) -> Any:
+    async def create_session(payload: SessionCreateRequest, request: Request) -> Any:
         # boot_agent runs MCP subprocess spawns — move off the event loop so
         # SSE keepalives and health checks stay responsive during boot.
-        return await anyio.to_thread.run_sync(
+        caller_hash = _require_auth(request)
+        result = await anyio.to_thread.run_sync(
             lambda: control_plane.create_session(
                 client_id=payload.client_id,
                 surface=payload.surface,
@@ -466,29 +499,56 @@ def create_gateway_app(
                 protocol_version=payload.protocol_version,
             )
         )
+        # C1: stamp ownership immediately after creation so subsequent accesses
+        # are gated.  When auth is disabled caller_hash is None — skip stamping.
+        if caller_hash is not None:
+            control_plane.set_session_owner(result["session_id"], caller_hash)
+        return result
 
     @sessions.get("")
-    async def list_sessions(limit: int = Query(default=10, ge=1, le=100)) -> Any:
-        return control_plane.recent_sessions(limit)
+    async def list_sessions(request: Request, limit: int = Query(default=10, ge=1, le=100)) -> Any:
+        # C1: filter sessions so a caller only sees sessions they own.
+        # Legacy sessions (NULL owner) are always returned for backward compat.
+        caller_hash = _require_auth(request)
+        all_sessions = control_plane.recent_sessions(limit)
+        if caller_hash is None:
+            # No-auth mode: return everything.
+            return all_sessions
+        # Filter: include the session if the owner is NULL (legacy) or matches caller.
+        def _owned(s: dict[str, Any]) -> bool:
+            sid = s.get("session_id") or s.get("id") or ""
+            if not sid:
+                return True  # can't tell — include it
+            owner = control_plane.get_session_owner(sid)
+            return owner is None or secrets.compare_digest(owner, caller_hash)
+
+        if isinstance(all_sessions, list):
+            return [s for s in all_sessions if _owned(s)]
+        return all_sessions
 
     @sessions.get("/{session_id}")
-    async def get_session(session_id: str) -> Any:
+    async def get_session(session_id: str, request: Request) -> Any:
+        _check_session_ownership(session_id, _require_auth(request))
         return control_plane.session_state(session_id)
 
     @sessions.post("/{session_id}/messages", response_model=SessionMessageResponse)
-    def post_message(session_id: str, payload: SessionMessageRequest) -> Any:
+    def post_message(session_id: str, payload: SessionMessageRequest, request: Request) -> Any:
+        _check_session_ownership(session_id, _require_auth(request))
         return control_plane.send_message(session_id=session_id, prompt=payload.prompt)
 
     @sessions.delete("/{session_id}", response_model=SessionCloseResponse)
-    async def delete_session(session_id: str) -> Any:
+    async def delete_session(session_id: str, request: Request) -> Any:
+        _check_session_ownership(session_id, _require_auth(request))
         return control_plane.close_session(session_id)
 
     @sessions.get("/{session_id}/events", response_model=SessionEventsResponse)
     async def get_session_events(
         session_id: str,
+        request: Request,
         after: int = Query(default=0, ge=0),
         limit: int = Query(default=100, ge=1, le=500),
     ) -> Any:
+        _check_session_ownership(session_id, _require_auth(request))
         return control_plane.read_session_events(session_id=session_id, after=after, limit=limit)
 
     @sessions.get("/{session_id}/stream")
@@ -505,6 +565,8 @@ def create_gateway_app(
         polls (an EventSource auto-reconnects, so this stays cheap and robust).
         Clients resume with the last ``id`` they saw via the ``after`` query param.
         """
+        # C1: ownership check before any streaming starts.
+        _check_session_ownership(session_id, _require_auth(request))
         # Validate up front so unknown-session / unattached-stream surface as proper
         # HTTP errors instead of mid-stream failures.
         control_plane.read_session_events(session_id=session_id, after=after, limit=1)
@@ -849,9 +911,15 @@ def create_gateway_app(
         rate_key = f"{channel}:{client_ip}"
         if not channel_limiter.allow(rate_key):
             raise HTTPException(status_code=429, detail="rate limit exceeded; slow down")
+        # H10: wrap inbound webhook text in the untrusted-content data envelope,
+        # matching the treatment applied by the polling ChannelRouter (channels/router.py).
+        # guard_untrusted is unconditional per SEC-002 — it always frames the content
+        # as data even when no injection is detected.
+        source_label = f"channel:{channel} sender:{sender}"
+        guarded_text, _flagged = guard_untrusted(payload.text, source=source_label)
         # Full agent turn is synchronous — run in a thread so the event loop stays free.
         result = await anyio.to_thread.run_sync(
-            lambda: control_plane.complete_chat(payload.text, session_key=session_key)
+            lambda: control_plane.complete_chat(guarded_text, session_key=session_key)
         )
         return {
             "channel": channel,

@@ -4,14 +4,12 @@
 // Logic: lines 1927–2012, 2452–2471 (openRun, runTick, runAllowLeash,
 //         runDenyLeash, stopRun, closeRun, _finishRun, renderVals run block)
 //
-// T4.5 decision: Option B (honest, no fabricated simulation).
-// The gateway has no dedicated run/jobs streaming endpoint — only
-// GET /sessions/{id}/stream which serves conversation turns. Driving the
-// run screen from that would misrepresent conversation events as sub-agent
-// orchestration output. Instead, in live mode we show an honest redirect
-// card: the user is told that live run streaming is available in the
-// conversation view and is offered a button to go there.
-// Mock mode preserves the full simulation so offline dev/demos still work.
+// HIGH-007: live-run streaming wired.
+// RunSurface is the shared presentational layer, driven from the store run
+// slice in both mock and live modes.  MockRunSimulation keeps its mock-only
+// bootstrapping useEffects.  LiveRun renders RunSurface when runView is set
+// (populated by startTaskLive → driveRunSlice in chat.ts), or an honest
+// empty-state card otherwise.
 // ============================================================
 
 import React, { useEffect, useRef } from "react";
@@ -76,153 +74,16 @@ function packMeta(status: string): { dot: string; text: string; fg: string } {
 }
 
 // ============================================================
-// Honest live-mode placeholder
+// Shared presentational surface — reads from the store run slice.
+// Used by both MockRunSimulation and the live RunSurface.
 // ============================================================
 
-function LiveRunHonest() {
-  const navigate = useNavigate();
-
-  const containerStyle: CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    height: "100%",
-    padding: 32,
-    gap: 0,
-  };
-
-  const cardStyle: CSSProperties = {
-    background: "var(--hachi-surface)",
-    border: "0.5px solid var(--hachi-line)",
-    borderRadius: 16,
-    padding: "36px 40px",
-    maxWidth: 520,
-    width: "100%",
-    display: "flex",
-    flexDirection: "column",
-    gap: 20,
-  };
-
-  const iconRowStyle: CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    gap: 12,
-  };
-
-  const titleStyle: CSSProperties = {
-    margin: 0,
-    fontFamily: "var(--font-display)",
-    fontWeight: 500,
-    fontSize: 20,
-    color: "var(--hachi-ink)",
-  };
-
-  const bodyStyle: CSSProperties = {
-    fontSize: 14,
-    color: "var(--hachi-muted)",
-    lineHeight: "22px",
-    margin: 0,
-  };
-
-  const chatBtnStyle: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    height: 40,
-    padding: "0 18px",
-    borderRadius: 10,
-    background: "var(--hachi-trust)",
-    color: "#fff",
-    font: "500 14px var(--font-body)",
-    border: "none",
-    cursor: "pointer",
-    alignSelf: "flex-start",
-    transition: "opacity var(--dur-fast) var(--ease)",
-  };
-
-  const backBtnStyle: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 8,
-    height: 40,
-    padding: "0 18px",
-    borderRadius: 10,
-    background: "transparent",
-    color: "var(--hachi-muted)",
-    font: "500 14px var(--font-body)",
-    border: "0.5px solid var(--hachi-line)",
-    cursor: "pointer",
-    alignSelf: "flex-start",
-    transition: "background var(--dur-fast) var(--ease)",
-  };
-
-  const btnRowStyle: CSSProperties = {
-    display: "flex",
-    gap: 10,
-    flexWrap: "wrap",
-  };
-
-  return (
-    <div style={containerStyle}>
-      <div style={cardStyle}>
-        <div style={iconRowStyle}>
-          <span style={{ color: "var(--hachi-working)", display: "inline-flex" }}>
-            <Icon name="terminal" size={22} />
-          </span>
-          <h1 style={titleStyle}>Live run streaming</h1>
-        </div>
-
-        <p style={bodyStyle}>
-          Live run streaming — with real sub-agent output, pack progress, and
-          step-by-step planning — is available in the conversation view.
-        </p>
-        <p style={bodyStyle}>
-          Start a task in the chat and Hachi will show you exactly what it's
-          doing as it happens. The live output panel here is only available
-          when a backend run-streaming endpoint is connected.
-        </p>
-
-        <div style={btnRowStyle}>
-          <button
-            style={chatBtnStyle}
-            onClick={() => void navigate({ to: "/conversation" })}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.opacity = "0.85";
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.opacity = "1";
-            }}
-          >
-            <Icon name="message-square" size={15} />
-            Open conversation
-          </button>
-          <button
-            style={backBtnStyle}
-            onClick={() => void navigate({ to: "/" })}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background =
-                "var(--hachi-cream)";
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background =
-                "transparent";
-            }}
-          >
-            <Icon name="chevron-left" size={15} />
-            Back
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+interface RunSurfaceProps {
+  /** Called by the back-button click handler */
+  onBack: () => void;
 }
 
-// ---- Mock simulation component (mock mode only) ----
-
-function MockRunSimulation() {
-  const navigate = useNavigate();
-
+function RunSurface({ onBack }: RunSurfaceProps) {
   // Store slices
   const runView = useStore((s) => s.runView);
   const runLines = useStore((s) => s.runLines);
@@ -233,12 +94,10 @@ function MockRunSimulation() {
   const runSteps = useStore((s) => s.runSteps);
 
   // Store actions
-  const closeRun = useStore((s) => s.closeRun);
   const stopRun = useStore((s) => s.stopRun);
   const runAllowLeash = useStore((s) => s.runAllowLeash);
   const runAlwaysAllow = useStore((s) => s.runAlwaysAllow);
   const runDenyLeash = useStore((s) => s.runDenyLeash);
-  const openRun = useStore((s) => s.openRun);
 
   // Auto-scroll ref for the terminal output wrapper
   const outputRef = useRef<HTMLDivElement>(null);
@@ -248,28 +107,6 @@ function MockRunSimulation() {
       el.scrollTop = el.scrollHeight;
     }
   }, [runLines]);
-
-  // If there is no active run, boot one from the first available run in the
-  // store (mirrors prototype behaviour when navigating to /run directly).
-  useEffect(() => {
-    if (!runView) {
-      openRun(undefined, "run");
-    }
-  }, []); // run once on mount only
-
-  // Navigate back on closeRun (runView becomes null after close).
-  // We do NOT fire this on initial mount (before the useEffect above kicks in).
-  const didMountRef = useRef(false);
-  useEffect(() => {
-    if (!didMountRef.current) {
-      didMountRef.current = true;
-      return;
-    }
-    // runView cleared by closeRun → go back
-    if (!runView) {
-      navigate({ to: "/" });
-    }
-  }, [runView]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- derived renderVals (mirror dc.html lines 2452–2471) ----
   const runPhase: "working" | "done" | "blocked" = runDone
@@ -328,12 +165,8 @@ function MockRunSimulation() {
   });
 
   const hasLeash = !!runLeash;
-
-  // ---- handlers ----
-  const handleBack = () => {
-    closeRun();
-    // Navigation is handled by the runView→null effect above.
-  };
+  // Hide the Plan section when no steps exist (live mode emits no plan events)
+  const hasPlan = steps.length > 0;
 
   // ---- styles ----
   const headerStyle: CSSProperties = {
@@ -418,7 +251,7 @@ function MockRunSimulation() {
       <div style={headerStyle}>
         {/* back button */}
         <button
-          onClick={handleBack}
+          onClick={onBack}
           style={backBtnStyle}
           aria-label="Back"
           onMouseEnter={(e) => {
@@ -510,41 +343,43 @@ function MockRunSimulation() {
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         {/* ==== left panel: plan + the pack ==== */}
         <div className="hachi-scroll" style={leftPanelStyle}>
-          {/* Plan section */}
-          <div>
-            <div style={sectionLabelStyle}>Plan</div>
-            <div style={{ display: "flex", flexDirection: "column" }}>
-              {steps.map((stp, i) => (
-                <div
-                  key={i}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 11,
-                    padding: "9px 0",
-                    borderBottom: "0.5px solid var(--hachi-line)",
-                  }}
-                >
-                  <span
+          {/* Plan section — hidden in live mode when no steps are emitted */}
+          {hasPlan && (
+            <div>
+              <div style={sectionLabelStyle}>Plan</div>
+              <div style={{ display: "flex", flexDirection: "column" }}>
+                {steps.map((stp, i) => (
+                  <div
+                    key={i}
                     style={{
-                      color: stp.color,
-                      display: "inline-flex",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 11,
+                      padding: "9px 0",
+                      borderBottom: "0.5px solid var(--hachi-line)",
                     }}
                   >
-                    <Icon name={stp.icon} size={16} />
-                  </span>
-                  <span
-                    style={{
-                      fontSize: 14,
-                      color: stp.textColor,
-                    }}
-                  >
-                    {stp.label}
-                  </span>
-                </div>
-              ))}
+                    <span
+                      style={{
+                        color: stp.color,
+                        display: "inline-flex",
+                      }}
+                    >
+                      <Icon name={stp.icon} size={16} />
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 14,
+                        color: stp.textColor,
+                      }}
+                    >
+                      {stp.label}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* The pack section */}
           <div>
@@ -741,16 +576,157 @@ function MockRunSimulation() {
   );
 }
 
-// ---- Top-level route component ----
-// Delegates to the honest placeholder in live mode;
-// keeps the mock simulation in mock mode.
+// ---- Mock simulation component (mock mode only) ----
+
+function MockRunSimulation() {
+  const navigate = useNavigate();
+
+  const runView = useStore((s) => s.runView);
+  const openRun = useStore((s) => s.openRun);
+  const closeRun = useStore((s) => s.closeRun);
+
+  // If there is no active run, boot one from the first available run in the
+  // store (mirrors prototype behaviour when navigating to /run directly).
+  useEffect(() => {
+    if (!runView) {
+      openRun(undefined, "run");
+    }
+  }, []); // run once on mount only
+
+  // Navigate back on closeRun (runView becomes null after close).
+  // We do NOT fire this on initial mount (before the useEffect above kicks in).
+  const didMountRef = useRef(false);
+  useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
+    // runView cleared by closeRun → go back
+    if (!runView) {
+      navigate({ to: "/" });
+    }
+  }, [runView]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleBack = () => {
+    closeRun();
+    // Navigation is handled by the runView→null effect above.
+  };
+
+  return <RunSurface onBack={handleBack} />;
+}
+
+// ---- Live mode component ----
 
 function LiveRun() {
+  const navigate = useNavigate();
   const dataMode = useStore((s) => s.dataMode);
-  if (dataMode === "live") {
-    return <LiveRunHonest />;
+  const runView = useStore((s) => s.runView);
+  const closeRun = useStore((s) => s.closeRun);
+
+  if (dataMode !== "live") {
+    return <MockRunSimulation />;
   }
-  return <MockRunSimulation />;
+
+  // Live mode: show RunSurface when a run is active/recent, else empty state.
+  if (runView) {
+    const handleBack = () => {
+      closeRun();
+      void navigate({ to: "/" });
+    };
+    return <RunSurface onBack={handleBack} />;
+  }
+
+  // Honest empty state — no mock bootstrapping
+  const containerStyle: CSSProperties = {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    height: "100%",
+    padding: 32,
+    gap: 0,
+  };
+
+  const cardStyle: CSSProperties = {
+    background: "var(--hachi-surface)",
+    border: "0.5px solid var(--hachi-line)",
+    borderRadius: 16,
+    padding: "36px 40px",
+    maxWidth: 520,
+    width: "100%",
+    display: "flex",
+    flexDirection: "column",
+    gap: 20,
+  };
+
+  const iconRowStyle: CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+  };
+
+  const titleStyle: CSSProperties = {
+    margin: 0,
+    fontFamily: "var(--font-display)",
+    fontWeight: 500,
+    fontSize: 20,
+    color: "var(--hachi-ink)",
+  };
+
+  const bodyStyle: CSSProperties = {
+    fontSize: 14,
+    color: "var(--hachi-muted)",
+    lineHeight: "22px",
+    margin: 0,
+  };
+
+  const chatBtnStyle: CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    height: 40,
+    padding: "0 18px",
+    borderRadius: 10,
+    background: "var(--hachi-trust)",
+    color: "#fff",
+    font: "500 14px var(--font-body)",
+    border: "none",
+    cursor: "pointer",
+    alignSelf: "flex-start",
+    transition: "opacity var(--dur-fast) var(--ease)",
+  };
+
+  return (
+    <div style={containerStyle}>
+      <div style={cardStyle}>
+        <div style={iconRowStyle}>
+          <span style={{ color: "var(--hachi-working)", display: "inline-flex" }}>
+            <Icon name="terminal" size={22} />
+          </span>
+          <h1 style={titleStyle}>No active run</h1>
+        </div>
+
+        <p style={bodyStyle}>
+          Start a task in the conversation and watch Hachi work here — live
+          sub-agent output, the pack, and budget as it happens.
+        </p>
+
+        <button
+          style={chatBtnStyle}
+          onClick={() => void navigate({ to: "/conversation" })}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLButtonElement).style.opacity = "0.85";
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLButtonElement).style.opacity = "1";
+          }}
+        >
+          <Icon name="message-square" size={15} />
+          Open conversation
+        </button>
+      </div>
+    </div>
+  );
 }
 
 export const Route = createFileRoute("/run")({

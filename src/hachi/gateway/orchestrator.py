@@ -610,6 +610,7 @@ class AgentSession:
         try:
             return list(lister())
         except Exception:
+            logger.warning("Failed to list provider models", exc_info=True)
             return []
 
     def query_recent_sessions(self, limit: int = 10) -> tuple[dict[str, Any], ...]:
