@@ -558,6 +558,12 @@ class SQLiteJobQueue(JobQueue):
             str(self._db_path), timeout=10, check_same_thread=False
         )
         self._db_conn.row_factory = sqlite3.Row
+        # WAL mode: allows readers to run concurrently with a writer, which
+        # matters because the resident worker thread and the main thread both
+        # access the queue.  SET HERE before _init_db so the pragma takes effect
+        # before any schema writes.  Safe to call on an existing DB — WAL is
+        # sticky and survives restarts.
+        self._db_conn.execute("PRAGMA journal_mode=WAL")
         # In-process side-table for callable (``func``) jobs. SQLite cannot persist a
         # live callable, so func-based jobs are dispatched in-process only — the same
         # model InMemoryJobQueue already uses. The SQLite row still records the job for

@@ -1620,7 +1620,10 @@ def boot_agent(
     )
 
     # 7. Initialize the Memory Manager (Moved up so Vault can bind to it)
-    memory = MemoryManager(max_active_messages=30, job_queue=job_queue)
+    # G3-T6: pass the shared LLM client so background memory ops (fact extraction,
+    # sliding-window summary) reuse the already-open HTTP/TLS connection pool
+    # instead of constructing a new AnthropicClient on every background job.
+    memory = MemoryManager(max_active_messages=30, job_queue=job_queue, llm_client=client)
 
     emit_runtime_event(
         BOOT_PROGRESS,

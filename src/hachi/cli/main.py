@@ -180,6 +180,12 @@ class _InProcessGatewayRuntime:
     def __init__(self) -> None:
         self._agents: dict[str, AgentSession] = {}
         self._agents_lock = threading.Lock()
+        # G3-T3 / REL-01 / HIGH-003: per-session chat serialization.
+        # Concurrent chat() calls for the SAME session race on shared agent state
+        # and ChromaDB writes.  A per-session lock serializes them while leaving
+        # DIFFERENT sessions fully concurrent.
+        # _chat_locks is guarded by _agents_lock for creation/deletion.
+        self._chat_locks: dict[str, threading.Lock] = {}
         # G1-T7: set by _start_gateway_server so the first session boot resumes it.
         self._pending_resume_session_id: str | None = None
         # G1-T2 / CRIT-002: authoring pending-patch state (per-instance).
@@ -235,6 +241,9 @@ class _InProcessGatewayRuntime:
         with self._agents_lock:
             replaced_agent = self._agents.get(session_id)
             self._agents[session_id] = agent
+            # Ensure a per-session chat lock exists (idempotent for re-registrations).
+            if session_id not in self._chat_locks:
+                self._chat_locks[session_id] = threading.Lock()
 
         if replaced_agent is not None:
             try:
@@ -245,6 +254,8 @@ class _InProcessGatewayRuntime:
     def close_connection(self, session_id: str) -> None:
         with self._agents_lock:
             agent = self._agents.pop(session_id, None)
+            # Drop the per-session chat lock to avoid an unbounded leak.
+            self._chat_locks.pop(session_id, None)
         if agent is not None:
             try:
                 agent.shutdown()
@@ -278,8 +289,22 @@ class _InProcessGatewayRuntime:
                     pass
 
     def chat(self, session_id: str, prompt: str) -> str:
+        """Send *prompt* to the session's agent and return the reply.
+
+        Concurrent calls for the **same** session are serialized via a per-session
+        lock so agent state and ChromaDB writes are never interleaved.  Calls for
+        **different** sessions proceed concurrently (each session has its own lock).
+        """
         agent = self._get_agent(session_id)
-        return agent.chat(prompt)
+        with self._agents_lock:
+            session_lock = self._chat_locks.get(session_id)
+        if session_lock is None:
+            # Defensive: lock was never created (e.g. agent registered via a code
+            # path that predates this change).  Fall through without serialization
+            # rather than raising — behaviour is unchanged from before this fix.
+            return agent.chat(prompt)
+        with session_lock:
+            return agent.chat(prompt)
 
     def read_events(self, session_id: str, after: int, limit: int) -> list[GatewayEvent]:
         snapshots = self._get_agent(session_id).snapshot_events_since(after, limit)
