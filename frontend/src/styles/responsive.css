@@ -1,0 +1,162 @@
+/* responsive.css — mobile-first overrides for the Hachi shell and approval-monitoring screens.
+   Breakpoint: 768px (phones). Desktop layout is completely unchanged above this threshold.
+   All tokens are var(--hachi-*) to match the existing styling approach. */
+
+/* ── Shell: mobile top-bar and drawer overlay ── */
+
+@media (max-width: 767px) {
+  /* The drawer backdrop — covers the page when the drawer is open */
+  .hachi-drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 199;
+  }
+
+  /* The drawer itself slides in from the left */
+  .hachi-sidebar-drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 280px;
+    z-index: 200;
+    overflow-y: auto;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.15);
+    transform: translateX(0);
+    transition: transform 0.22s var(--ease, cubic-bezier(0.4, 0, 0.2, 1));
+  }
+
+  /* Mobile top-bar: always visible, holds hamburger + brand title */
+  .hachi-topbar {
+    display: flex;
+    align-items: center;
+    height: 52px;
+    padding: 0 16px;
+    background: var(--hachi-surface);
+    border-bottom: 0.5px solid var(--hachi-line);
+    flex-shrink: 0;
+    gap: 12px;
+    position: relative;
+    z-index: 10;
+  }
+
+  .hachi-topbar-title {
+    font-family: var(--font-display);
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--hachi-ink);
+    flex: 1;
+  }
+
+  /* Hamburger button */
+  .hachi-hamburger {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    border: none;
+    background: transparent;
+    color: var(--hachi-ink);
+    cursor: pointer;
+    flex-shrink: 0;
+    padding: 0;
+  }
+
+  .hachi-hamburger:hover {
+    background: var(--hachi-cream);
+  }
+
+  /* GovernanceBar: wrap items on narrow widths */
+  .hachi-governance-bar {
+    height: auto !important;
+    min-height: 28px;
+    flex-wrap: wrap;
+    padding: 4px 12px !important;
+    gap: 8px !important;
+    row-gap: 4px;
+  }
+
+  /* Home: reduce padding */
+  .hachi-home-header {
+    padding: 0 16px !important;
+    flex-wrap: wrap;
+    height: auto !important;
+    min-height: 56px;
+    padding-top: 10px !important;
+    padding-bottom: 10px !important;
+    gap: 8px !important;
+  }
+
+  .hachi-home-body {
+    padding: 16px 16px 64px !important;
+  }
+
+  /* Run cards grid: single column on mobile */
+  .hachi-run-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* On-watch / Finished recently: stack instead of 2-col */
+  .hachi-two-col {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Approvals header */
+  .hachi-approvals-header {
+    padding: 0 16px !important;
+    flex-wrap: wrap;
+    height: auto !important;
+    min-height: 56px;
+    padding-top: 10px !important;
+    padding-bottom: 10px !important;
+    gap: 8px !important;
+  }
+
+  .hachi-approvals-body {
+    padding: 16px 16px 64px !important;
+  }
+
+  /* Approval card action buttons: stack on very narrow */
+  .hachi-approval-actions {
+    flex-wrap: wrap;
+  }
+
+  .hachi-approval-actions button {
+    min-height: 44px;
+  }
+
+  /* Conversation header */
+  .hachi-conv-header {
+    padding: 0 16px !important;
+    height: auto !important;
+    min-height: 56px;
+    flex-wrap: wrap;
+    padding-top: 10px !important;
+    padding-bottom: 10px !important;
+    gap: 8px !important;
+  }
+
+  /* Conversation composer */
+  .hachi-composer-wrap {
+    padding: 12px 16px 18px !important;
+  }
+
+  /* Conversation transcript padding */
+  .hachi-transcript-inner {
+    padding: 0 16px !important;
+  }
+}
+
+/* Hide top-bar on desktop */
+@media (min-width: 768px) {
+  .hachi-topbar {
+    display: none;
+  }
+
+  .hachi-drawer-backdrop {
+    display: none;
+  }
+}

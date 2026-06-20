@@ -5,10 +5,12 @@ import { GovernanceBar } from '../components/shell/GovernanceBar'
 import { GlobalOverlays } from '../components/overlays'
 import { useStore } from '../lib/store/store'
 import { bootstrapLiveData } from '../lib/data/bootstrap'
+import { useIsMobile } from '../lib/hooks/useMediaQuery'
 
 function RootLayout() {
   const theme = useStore((s) => s.theme)
   const dataMode = useStore((s) => s.dataMode)
+  const isMobile = useIsMobile()
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
@@ -25,6 +27,9 @@ function RootLayout() {
       data-theme={theme}
       style={{
         display: 'flex',
+        // On mobile the sidebar becomes an off-canvas drawer; the root
+        // switches to column layout so the top-bar sits above <main>.
+        flexDirection: isMobile ? 'column' : 'row',
         height: '100vh',
         width: '100%',
         overflow: 'hidden',
@@ -34,11 +39,15 @@ function RootLayout() {
         fontSize: '14px',
       }}
     >
+      {/* On mobile: Sidebar renders only the top-bar + drawer overlay.
+          On desktop: Sidebar renders the fixed left panel. */}
       <Sidebar />
       <main
         style={{
           flex: 1,
           minWidth: 0,
+          // On mobile full height minus the 52px top-bar rendered inside Sidebar
+          minHeight: 0,
           position: 'relative',
           display: 'flex',
           flexDirection: 'column',

@@ -14,6 +14,142 @@ import type { ChatMessage, ActionCard, Integration } from '../lib/data/types'
 import { loadSessions } from '../lib/data/domains/chat'
 import { Markdown } from '../components/ui/Markdown'
 
+// ---- SessionPicker (M8 MED-020) -----------------------------------
+
+interface SessionPickerProps {
+  sessions: import('../lib/data/types').Session[]
+  activeId: string | null
+  onSwitch: (id: string) => void
+  onNew: () => void
+  onClose: () => void
+}
+
+function SessionPicker({ sessions, activeId, onSwitch, onNew, onClose }: SessionPickerProps) {
+  const ref = useRef<HTMLDivElement>(null)
+
+  // Close on outside click
+  useEffect(() => {
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [onClose])
+
+  // Close on Escape
+  useEffect(() => {
+    function handler(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      aria-label="Recent sessions"
+      style={{
+        position: 'absolute',
+        top: 'calc(100% + 6px)',
+        left: 0,
+        minWidth: 260,
+        maxWidth: 340,
+        background: 'var(--hachi-surface)',
+        border: '0.5px solid var(--hachi-line)',
+        borderRadius: 12,
+        boxShadow: '0 8px 24px rgba(28,26,32,.10)',
+        zIndex: 50,
+        overflow: 'hidden',
+      }}
+    >
+      {/* New conversation row */}
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => { onNew(); onClose() }}
+        style={{
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          padding: '11px 14px',
+          border: 'none',
+          borderBottom: '0.5px solid var(--hachi-line)',
+          background: 'transparent',
+          cursor: 'pointer',
+          textAlign: 'left',
+          font: 'inherit',
+          color: 'var(--hachi-brand)',
+          fontSize: 13,
+          fontWeight: 500,
+        }}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)' }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
+      >
+        <Icon name="plus" size={14} />
+        New conversation
+      </button>
+
+      {/* Session list */}
+      {sessions.length === 0 && (
+        <div style={{ padding: '12px 14px', fontSize: 13, color: 'var(--hachi-muted)' }}>
+          No recent sessions
+        </div>
+      )}
+      {sessions.map((s) => {
+        const isActive = s.id === activeId
+        return (
+          <button
+            key={s.id}
+            type="button"
+            role="menuitem"
+            aria-current={isActive ? 'true' : undefined}
+            onClick={() => { onSwitch(s.id); onClose() }}
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '10px 14px',
+              border: 'none',
+              borderBottom: '0.5px solid var(--hachi-line)',
+              background: isActive ? 'var(--hachi-cream)' : 'transparent',
+              cursor: 'pointer',
+              textAlign: 'left',
+              font: 'inherit',
+            }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)' }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = isActive ? 'var(--hachi-cream)' : 'transparent' }}
+          >
+            <span style={{ color: isActive ? 'var(--hachi-brand)' : 'var(--hachi-muted)', display: 'inline-flex', flexShrink: 0 }}>
+              <Icon name={isActive ? 'circle-check' : 'message-square'} size={14} />
+            </span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: isActive ? 500 : 400,
+                  color: 'var(--hachi-ink)',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {s.title}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--hachi-muted)', marginTop: 1 }}>
+                {s.date}{s.turns ? ` · ${s.turns} turn${s.turns !== 1 ? 's' : ''}` : ''}
+              </div>
+            </div>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 // ---- helpers --------------------------------------------------------
 
 function fmtDollar(n: number): string {
@@ -632,10 +768,15 @@ function Conversation() {
   const icAlwaysAllow = useStore((s) => s.icAlwaysAllow)
   const icDeny = useStore((s) => s.icDeny)
 
+  const switchSession = useStore((s) => s.switchSession)
+  const newSession = useStore((s) => s.newSession)
+
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   // E6-T5: slash command keyboard navigation index (-1 = none selected)
   const [slashIdx, setSlashIdx] = useState(-1)
+  // M8: session picker open state
+  const [pickerOpen, setPickerOpen] = useState(false)
 
   // Refresh recent sessions list on navigate-to (idempotent loader)
   useEffect(() => { void loadSessions() }, [])
@@ -718,6 +859,13 @@ function Conversation() {
   }
 
   function handleSlashPick(cmd: string) {
+    if (cmd === '/sessions') {
+      // M8: open the session picker instead of inserting text
+      setComposer('')
+      setSlashIdx(-1)
+      setPickerOpen(true)
+      return
+    }
     setComposer(cmd + ' ')
     setSlashIdx(-1)
   }
@@ -734,6 +882,7 @@ function Conversation() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* ---- header ---- */}
       <div
+        className="hachi-conv-header"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -755,20 +904,54 @@ function Conversation() {
         >
           Conversation
         </h1>
-        {/* LOW-020: session title */}
-        <span
-          style={{
-            fontSize: 13,
-            color: 'var(--hachi-muted)',
-            maxWidth: 200,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-          title={sessionLabel}
-        >
-          {sessionLabel}
-        </span>
+        {/* M8 MED-020: session title — clickable to open session picker */}
+        <div style={{ position: 'relative' }}>
+          <button
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded={pickerOpen}
+            onClick={() => setPickerOpen((v) => !v)}
+            title={sessionLabel}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+              maxWidth: 200,
+              padding: '4px 8px',
+              borderRadius: 8,
+              border: '0.5px solid transparent',
+              background: pickerOpen ? 'var(--hachi-cream)' : 'transparent',
+              cursor: 'pointer',
+              font: 'inherit',
+              fontSize: 13,
+              color: 'var(--hachi-muted)',
+            }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)' }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = pickerOpen ? 'var(--hachi-cream)' : 'transparent' }}
+          >
+            <span
+              style={{
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {sessionLabel}
+            </span>
+            <span style={{ display: 'inline-flex', flexShrink: 0, transform: pickerOpen ? 'rotate(180deg)' : 'none', transition: 'transform var(--dur) var(--ease)' }}>
+              <Icon name="chevron-down" size={12} />
+            </span>
+          </button>
+          {pickerOpen && (
+            <SessionPicker
+              sessions={sessions}
+              activeId={activeSession?.id ?? null}
+              onSwitch={(id) => switchSession(id)}
+              onNew={() => newSession()}
+              onClose={() => setPickerOpen(false)}
+            />
+          )}
+        </div>
         <div
           style={{
             display: 'flex',
@@ -799,6 +982,7 @@ function Conversation() {
         style={{ flex: 1, overflow: 'auto', padding: '28px 0' }}
       >
         <div
+          className="hachi-transcript-inner"
           style={{
             maxWidth: 760,
             margin: '0 auto',
@@ -893,6 +1077,7 @@ function Conversation() {
 
       {/* ---- composer ---- */}
       <div
+        className="hachi-composer-wrap"
         style={{
           flexShrink: 0,
           borderTop: '0.5px solid var(--hachi-line)',

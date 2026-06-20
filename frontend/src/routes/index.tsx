@@ -142,7 +142,7 @@ function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps) {
       </div>
 
       {/* actions */}
-      <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+      <div style={{ display: 'flex', gap: '8px', flexShrink: 0, flexWrap: 'wrap' }}>
         <button
           onClick={onDecline}
           onMouseEnter={() => setHoverDecline(true)}
@@ -394,6 +394,7 @@ function Home() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* header */}
       <div
+        className="hachi-home-header"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -434,7 +435,7 @@ function Home() {
 
       {/* scrollable body */}
       <div
-        className="hachi-scroll"
+        className="hachi-scroll hachi-home-body"
         style={{ flex: 1, overflow: 'auto', padding: '28px 32px 64px' }}
       >
         <div
@@ -641,9 +642,10 @@ function Home() {
 
             {hasDoing && (
               <div
+                className="hachi-run-grid"
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(420px, 1fr))',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(min(420px, 100%), 1fr))',
                   gap: '14px',
                 }}
               >
@@ -684,6 +686,7 @@ function Home() {
 
           {/* ---- On watch + Finished recently : two columns ---- */}
           <div
+            className="hachi-two-col"
             style={{
               display: 'grid',
               gridTemplateColumns: '1fr 1fr',

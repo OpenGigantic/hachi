@@ -391,7 +391,7 @@ function ApprovalCard({
       )}
 
       {/* Action buttons */}
-      <div style={{ display: "flex", gap: 9 }}>
+      <div className="hachi-approval-actions" style={{ display: "flex", gap: 9 }}>
         <button
           type="button"
           onClick={onDecline}
@@ -598,6 +598,7 @@ function Approvals() {
     >
       {/* Header */}
       <div
+        className="hachi-approvals-header"
         style={{
           display: "flex",
           alignItems: "center",
@@ -650,7 +651,7 @@ function Approvals() {
 
       {/* Scrollable content */}
       <div
-        className="hachi-scroll"
+        className="hachi-scroll hachi-approvals-body"
         style={{ flex: 1, overflow: "auto", padding: "28px 32px 64px" }}
       >
         <div
