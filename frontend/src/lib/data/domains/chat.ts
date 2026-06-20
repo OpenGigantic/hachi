@@ -15,6 +15,7 @@ import { streamSSE } from "../sse";
 import { registerLoader } from "../live";
 import { useStore } from "../../store/store";
 import { approveFirstMatching, denyFirstMatching } from "./approvals";
+import { ensureNotificationPermission, notifyApprovalPending } from "../../notifications";
 import type { Session, ActionCard } from "../types";
 
 // ============================================================
@@ -378,6 +379,8 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
       store.hydrate({
         inContext: { msgId, request, action, why },
       });
+      // M10: notify the user if they've switched to another tab
+      notifyApprovalPending(request);
       if (isLive) {
         // Also surface on the run view
         store.hydrate({ runLeash: { request, action, why }, runStreaming: false });
@@ -447,6 +450,9 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
 export async function startTaskLive(text: string, hachiMsgId: number): Promise<void> {
   // Cancel any in-flight stream first
   abortSse();
+
+  // M10: lazily request notification permission on first task (fire-and-forget)
+  void ensureNotificationPermission();
 
   _hachiMsgId = hachiMsgId;
 
@@ -627,7 +633,211 @@ export async function denyLeashLive(): Promise<void> {
 }
 
 // ============================================================
-// 10. Loader: GET /sessions?limit=10 → UI Session[]
+// 10. Live action: switch to an existing session (M8 MED-020)
+// ============================================================
+
+// Shape of each event returned by GET /sessions/{id}/events
+interface GatewayEventRecord {
+  sequence?: number;
+  event_type?: string;
+  payload?: Record<string, unknown>;
+  time?: string;
+  // Some backends wrap user input as role/content instead
+  role?: "user" | "assistant";
+  content?: string;
+}
+
+/**
+ * Switch the live session to `sessionId`:
+ *  1. Abort the current SSE stream.
+ *  2. Update module-level session id + reset cursor.
+ *  3. Fetch the session's event history and reconstruct turns into
+ *     store.messages from the SSE event types already understood by
+ *     handleSseMessage (text.stream.delta, tool.call.* etc.).
+ *  4. Mark that session active in the sessions slice.
+ *
+ * History reconstruction note:
+ *   The gateway's GET /sessions/{id}/events endpoint returns the same
+ *   event envelopes that the SSE stream emits in real-time (confirmed by
+ *   inspecting runtime_events.py). We replay them through the same handler
+ *   with a synthetic _hachiMsgId so they land in the right message object.
+ *   User turns are reconstructed from the `session.turn.started` payload
+ *   (field: `user_text`) or, if absent, labelled "(resumed)".
+ *   The cursor is advanced to the last sequence number seen, so the NEXT
+ *   live turn only streams new events.
+ */
+export async function switchSessionLive(sessionId: string): Promise<void> {
+  // 1. Abort any in-flight stream
+  abortSse();
+  _hachiMsgId = null;
+  _textLineActive = false;
+
+  // 2. Switch session id and reset cursor
+  _liveSessionId = sessionId;
+  _cursor = 0;
+  _lastKnownCumCost = 0;
+  _costCumAtTurnStart = 0;
+  _spentAtTurnStart = 0;
+
+  // Optimistically mark this session active in the store before the fetch
+  const store = useStore.getState();
+  store.hydrate({
+    messages: [],
+    streaming: false,
+    inContext: null,
+    sessions: store.sessions.map((s) =>
+      s.id === sessionId ? { ...s, active: true } : { ...s, active: false }
+    ),
+  });
+
+  // 3. Fetch history
+  let events: GatewayEventRecord[] = [];
+  try {
+    const raw = await apiGet<GatewayEventRecord[]>(`/sessions/${sessionId}/events`);
+    events = Array.isArray(raw) ? raw : [];
+  } catch {
+    // History unavailable — show an honest "resumed" placeholder
+    const resumed: import("../types").ChatMessage = {
+      id: Date.now(),
+      role: "hachi" as const,
+      text: "(session resumed — history unavailable)",
+      cards: [],
+      routine: null,
+    };
+    useStore.getState().hydrate({ messages: [resumed] });
+    return;
+  }
+
+  // 4. Replay events to reconstruct messages
+  // We walk the event list in order, grouping by turns.
+  // A turn is: one user message followed by one hachi message.
+  // `session.turn.started` opens a new turn; `session.chat.completed` closes it.
+  const reconstructed: import("../types").ChatMessage[] = [];
+  let currentHachiId: number | null = null;
+  let lastSeq = 0;
+
+  for (const ev of events) {
+    const seq = ev.sequence ?? 0;
+    if (seq > lastSeq) lastSeq = seq;
+
+    const eventType = ev.event_type ?? "";
+    const payload = ev.payload ?? {};
+
+    switch (eventType) {
+      case "session.turn.started": {
+        // Open a new user + hachi message pair
+        const userText =
+          typeof payload.user_text === "string" && payload.user_text
+            ? payload.user_text
+            : "(message)";
+        const youId = Date.now() + reconstructed.length;
+        const hachiId = youId + 1;
+        currentHachiId = hachiId;
+        reconstructed.push(
+          { id: youId, role: "you" as const, text: userText, cards: [], routine: null },
+          { id: hachiId, role: "hachi" as const, text: "", cards: [], routine: null }
+        );
+        break;
+      }
+
+      case "text.stream.delta": {
+        if (currentHachiId == null) break;
+        const text = typeof payload.text === "string" ? payload.text : "";
+        const idx = reconstructed.findIndex((m) => m.id === currentHachiId);
+        if (idx >= 0) reconstructed[idx] = { ...reconstructed[idx], text: reconstructed[idx].text + text };
+        break;
+      }
+
+      case "tool.call.started": {
+        if (currentHachiId == null) break;
+        const name = typeof payload.name === "string" ? payload.name : "tool";
+        const key = "tool-" + name;
+        const idx = reconstructed.findIndex((m) => m.id === currentHachiId);
+        if (idx >= 0) {
+          const msg = reconstructed[idx];
+          const hasCard = msg.cards.some((c) => c.key === key);
+          if (!hasCard) {
+            reconstructed[idx] = {
+              ...msg,
+              cards: [...msg.cards, { key, icon: "play", title: name, status: "working" as const, cost: 0, tool: name, detail: "", expanded: false }],
+            };
+          }
+        }
+        break;
+      }
+
+      case "tool.call.completed": {
+        if (currentHachiId == null) break;
+        const name = typeof payload.name === "string" ? payload.name : "tool";
+        const key = "tool-" + name;
+        const preview = typeof payload.result_preview === "string" ? payload.result_preview : "";
+        const idx = reconstructed.findIndex((m) => m.id === currentHachiId);
+        if (idx >= 0) {
+          const msg = reconstructed[idx];
+          const exists = msg.cards.some((c) => c.key === key);
+          reconstructed[idx] = {
+            ...msg,
+            cards: exists
+              ? msg.cards.map((c) => c.key === key ? { ...c, status: "done" as const, icon: "circle-check", detail: preview } : c)
+              : [...msg.cards, { key, icon: "circle-check", title: name, status: "done" as const, cost: 0, tool: name, detail: preview, expanded: false }],
+          };
+        }
+        break;
+      }
+
+      case "session.chat.completed": {
+        currentHachiId = null;
+        break;
+      }
+
+      default:
+        break;
+    }
+  }
+
+  // Advance cursor so the next live turn only sees new events
+  _cursor = lastSeq;
+
+  // Hydrate the reconstructed history; if nothing was reconstructed, show a
+  // "resumed" note so the user sees honest state rather than a blank screen.
+  if (reconstructed.length === 0) {
+    useStore.getState().hydrate({
+      messages: [{
+        id: Date.now(),
+        role: "hachi" as const,
+        text: "(session resumed — no message history found)",
+        cards: [],
+        routine: null,
+      }],
+    });
+  } else {
+    useStore.getState().hydrate({ messages: reconstructed });
+  }
+}
+
+/**
+ * Start a brand-new session (clears in-flight state and defers session
+ * creation until the next startTaskLive call).
+ */
+export function newSessionLive(): void {
+  abortSse();
+  _liveSessionId = null;
+  _cursor = 0;
+  _hachiMsgId = null;
+  _textLineActive = false;
+  _lastKnownCumCost = 0;
+  _costCumAtTurnStart = 0;
+  _spentAtTurnStart = 0;
+  useStore.getState().hydrate({
+    messages: [],
+    streaming: false,
+    inContext: null,
+    sessions: useStore.getState().sessions.map((s) => ({ ...s, active: false })),
+  });
+}
+
+// ============================================================
+// 11. Loader: GET /sessions?limit=10 → UI Session[]
 // ============================================================
 
 export async function loadSessions(): Promise<void> {
