@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { useNavigate, useLocation } from '@tanstack/react-router'
 import { Icon } from '../icons/Icon'
 import { HachiMascot } from '../brand/HachiMascot'
@@ -6,6 +6,7 @@ import { Switch } from '../ui/Switch'
 import { NavItem } from './NavItem'
 import { BudgetWidget } from './BudgetWidget'
 import { useStore } from '../../lib/store/store'
+import { useIsMobile } from '../../lib/hooks/useMediaQuery'
 import type { Run } from '../../lib/data/types'
 
 interface NavEntry {
@@ -28,7 +29,8 @@ const NAV_ITEMS: NavEntry[] = [
   { key: 'settings',     route: '/settings',     label: 'Settings',     icon: 'settings'  },
 ]
 
-export function Sidebar() {
+/** Inner sidebar contents — shared between desktop fixed sidebar and mobile drawer. */
+function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
   const navigate = useNavigate()
   const location = useLocation()
   const [searchHovered, setSearchHovered] = useState(false)
@@ -41,9 +43,7 @@ export function Sidebar() {
   const budget = useStore((s) => s.budget)
   const approvals = useStore((s) => s.approvals)
 
-  // Derive mascot state from store runs / approvals
   const runs = useStore((s) => s.runs)
-  // All items in `approvals` are pending (undecided); decided ones move to history
   const pendingApprovals = (approvals as unknown[]).length
   const activeRun = (runs as Run[]).find((r) => r.status === 'working')
   const blockedRun = (runs as Run[]).find((r) => r.status === 'blocked')
@@ -60,21 +60,11 @@ export function Sidebar() {
   const handleBudgetClick = () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     navigate({ to: '/work' as any })
+    onNavClick?.()
   }
 
   return (
-    <aside
-      style={{
-        width: '248px',
-        flexShrink: 0,
-        background: 'var(--hachi-surface)',
-        borderRight: '0.5px solid var(--hachi-line)',
-        height: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-        padding: '16px',
-      }}
-    >
+    <>
       {/* Mascot */}
       <div
         style={{
@@ -91,7 +81,7 @@ export function Sidebar() {
       <button
         type="button"
         aria-label="Open command palette (Ctrl+K)"
-        onClick={openPalette}
+        onClick={() => { openPalette(); onNavClick?.() }}
         onMouseEnter={() => setSearchHovered(true)}
         onMouseLeave={() => setSearchHovered(false)}
         style={{
@@ -99,7 +89,7 @@ export function Sidebar() {
           alignItems: 'center',
           gap: '9px',
           width: '100%',
-          height: '36px',
+          height: '44px',
           padding: '0 11px',
           marginBottom: '14px',
           borderRadius: '10px',
@@ -139,8 +129,11 @@ export function Sidebar() {
               icon={item.icon}
               active={isActive}
               badge={badge}
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              onClick={() => navigate({ to: item.route as any })}
+              onClick={() => {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                navigate({ to: item.route as any })
+                onNavClick?.()
+              }}
             />
           )
         })}
@@ -162,6 +155,7 @@ export function Sidebar() {
           cursor: 'pointer',
           background: operatorHovered ? 'var(--hachi-cream)' : 'transparent',
           transition: 'background var(--dur) var(--ease)',
+          minHeight: '44px',
         }}
       >
         <span style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}>
@@ -178,6 +172,122 @@ export function Sidebar() {
 
       {/* Budget widget */}
       <BudgetWidget spent={spent} budget={budget} onClick={handleBudgetClick} />
+    </>
+  )
+}
+
+export function Sidebar() {
+  const isMobile = useIsMobile()
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const location = useLocation()
+
+  // Close drawer on route change
+  useEffect(() => {
+    setDrawerOpen(false)
+  }, [location.pathname])
+
+  // Close drawer on Escape
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (e.key === 'Escape' && drawerOpen) setDrawerOpen(false)
+  }, [drawerOpen])
+
+  useEffect(() => {
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [handleKeyDown])
+
+  // Prevent body scroll when drawer is open
+  useEffect(() => {
+    if (isMobile && drawerOpen) {
+      document.body.style.overflow = 'hidden'
+      return () => { document.body.style.overflow = '' }
+    }
+  }, [isMobile, drawerOpen])
+
+  if (isMobile) {
+    return (
+      <>
+        {/* Top bar — always visible on mobile */}
+        <div className="hachi-topbar" role="banner">
+          <button
+            type="button"
+            className="hachi-hamburger"
+            aria-label={drawerOpen ? 'Close navigation' : 'Open navigation'}
+            aria-expanded={drawerOpen}
+            aria-controls="hachi-drawer"
+            onClick={() => setDrawerOpen((v) => !v)}
+          >
+            <Icon name={drawerOpen ? 'x' : 'menu'} size={22} />
+          </button>
+          <span className="hachi-topbar-title">hachi</span>
+        </div>
+
+        {/* Backdrop */}
+        {drawerOpen && (
+          <div
+            className="hachi-drawer-backdrop"
+            aria-hidden="true"
+            onClick={() => setDrawerOpen(false)}
+          />
+        )}
+
+        {/* Drawer */}
+        <aside
+          id="hachi-drawer"
+          className="hachi-sidebar-drawer"
+          aria-label="Navigation"
+          role="navigation"
+          style={{
+            background: 'var(--hachi-surface)',
+            borderRight: '0.5px solid var(--hachi-line)',
+            display: drawerOpen ? 'flex' : 'none',
+            flexDirection: 'column',
+            padding: '16px',
+          }}
+        >
+          {/* Close button inside drawer */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
+            <button
+              type="button"
+              aria-label="Close navigation"
+              onClick={() => setDrawerOpen(false)}
+              style={{
+                width: '44px',
+                height: '44px',
+                borderRadius: '10px',
+                border: 'none',
+                background: 'transparent',
+                color: 'var(--hachi-muted)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Icon name="x" size={18} />
+            </button>
+          </div>
+          <SidebarContents onNavClick={() => setDrawerOpen(false)} />
+        </aside>
+      </>
+    )
+  }
+
+  // Desktop: original fixed sidebar — unchanged
+  return (
+    <aside
+      style={{
+        width: '248px',
+        flexShrink: 0,
+        background: 'var(--hachi-surface)',
+        borderRight: '0.5px solid var(--hachi-line)',
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        padding: '16px',
+      }}
+    >
+      <SidebarContents />
     </aside>
   )
 }

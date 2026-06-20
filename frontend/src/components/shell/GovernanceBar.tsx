@@ -57,6 +57,7 @@ export function GovernanceBar() {
 
   return (
     <div
+      className="hachi-governance-bar"
       style={{
         flexShrink: 0,
         height: "28px",
