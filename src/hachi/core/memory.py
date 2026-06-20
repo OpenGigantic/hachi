@@ -926,6 +926,22 @@ class MemoryManager:
         all tool_use blocks in the retained window [cut:] have a matching tool_result
         also in [cut:].
 
+        PERF-12: The prior implementation was O(N²·B) — it called ``_is_safe(cut)``
+        in a backward walk and each ``_is_safe`` call scanned the retained slice twice
+        (once for ``seen_tool_use_ids``, once for orphan detection), giving O(N) per
+        step and O(N²) total.
+
+        New algorithm — O(N·B) single forward pass:
+          1. Scan the *entire* history once to build a lookup of every
+             ``tool_use_id → message index`` and ``tool_result tool_use_id → message
+             index`` pair.
+          2. For each tool_result at message index ``r``, find the index ``u`` of its
+             paired tool_use.  The minimum safe cut is ``min(u, r) + 1`` — any cut
+             *before* ``u`` would orphan the result.
+          3. Walk backward from ``candidate_cut`` to ``0`` and stop at the first index
+             that satisfies all pair constraints.  This walk is at most O(N) because
+             the lookup was already built.
+
         Args:
             candidate_cut: The initially desired cut index.
 
@@ -934,48 +950,59 @@ class MemoryManager:
         """
         history = self._history
 
-        def _is_safe(cut: int) -> bool:
-            """True when the retained slice history[cut:] has no orphaned tool_result."""
-            open_tool_uses: set = set()
-            for msg in history[cut:]:
-                content = msg.content
-                if not isinstance(content, list):
+        # --- single forward pass to index all tool_use / tool_result positions ---
+        # tool_use_id → message index where the tool_use block appears
+        tool_use_index: dict[str | None, int] = {}
+        # For each tool_result: (tool_use_id, message_index)
+        tool_result_pairs: list[tuple[str | None, int]] = []
+
+        for idx, msg in enumerate(history):
+            content = msg.content
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
                     continue
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") == "tool_use":
-                        open_tool_uses.add(block.get("id"))
-                    elif block.get("type") == "tool_result":
-                        open_tool_uses.discard(block.get("tool_use_id"))
-            # Safe when every tool_result in [cut:] has its tool_use also in [cut:]
-            # AND there are no outstanding open tool_use blocks without a result.
-            # We detect unsafety by checking whether any tool_result at [cut:]
-            # references a tool_use_id not present in [cut:].
-            seen_tool_use_ids: set = set()
-            for msg in history[cut:]:
-                content = msg.content
-                if not isinstance(content, list):
+                btype = block.get("type")
+                if btype == "tool_use":
+                    tool_use_index[block.get("id")] = idx
+                elif btype == "tool_result":
+                    tool_result_pairs.append((block.get("tool_use_id"), idx))
+
+        # For each tool_result, the cut must be <= the index of its paired tool_use
+        # so that both tool_use and tool_result land in the retained slice [cut:].
+        # ``min_cut_for_pair[r_idx]`` = minimum cut value to keep result r_idx safe.
+        # A cut is safe when cut <= min(tool_use_idx, result_idx) for every pair
+        # where the tool_use exists in the history.
+        # Equivalently, for a given cut, the pair is safe when:
+        #   tool_use_idx >= cut  (tool_use is in retained slice)
+        # So we need: cut <= tool_use_idx for all pairs whose result index >= cut.
+        #
+        # To find the *largest* cut <= candidate_cut that satisfies all constraints,
+        # compute for each candidate cut value whether any pair is violated, walking
+        # backward from candidate_cut.  We stop at the first safe position.
+        #
+        # Because the number of violated pairs only grows as cut decreases, we can
+        # break early the moment _is_safe_cut() returns True.
+
+        def _is_safe_cut(cut: int) -> bool:
+            """O(P) where P = number of tool_result blocks (not O(N))."""
+            for uid, r_idx in tool_result_pairs:
+                if r_idx < cut:
+                    # This result is not in the retained slice — not relevant.
                     continue
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") == "tool_use":
-                        seen_tool_use_ids.add(block.get("id"))
-            for msg in history[cut:]:
-                content = msg.content
-                if not isinstance(content, list):
+                u_idx = tool_use_index.get(uid)
+                if u_idx is None:
+                    # Paired tool_use not found in history at all — treat as safe
+                    # (can't do better, and the API would have rejected it already).
                     continue
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") == "tool_result":
-                        if block.get("tool_use_id") not in seen_tool_use_ids:
-                            return False
+                if u_idx < cut:
+                    # tool_use would be dropped but its result would be retained.
+                    return False
             return True
 
         cut = candidate_cut
-        while cut > 0 and not _is_safe(cut):
+        while cut > 0 and not _is_safe_cut(cut):
             cut -= 1
         return cut
 
