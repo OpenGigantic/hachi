@@ -98,6 +98,7 @@ class GatewayControlPlane:
         get_og_graph: Callable[[], dict[str, Any]] | None = None,
         get_authoring_targets: Callable[[], list[dict[str, Any]]] | None = None,
         get_authoring_target: Callable[[str], dict[str, Any]] | None = None,
+        authoring_generate: Callable[[str, str], dict[str, Any]] | None = None,
         authoring_apply: Callable[[str], dict[str, Any]] | None = None,
         authoring_revert: Callable[[str], dict[str, Any]] | None = None,
         get_spend: Callable[[str | None], dict[str, Any]] | None = None,
@@ -148,6 +149,7 @@ class GatewayControlPlane:
         self._get_og_graph = get_og_graph
         self._get_authoring_targets = get_authoring_targets
         self._get_authoring_target = get_authoring_target
+        self._authoring_generate = authoring_generate
         self._authoring_apply = authoring_apply
         self._authoring_revert = authoring_revert
         self._get_spend = get_spend
@@ -551,8 +553,13 @@ class GatewayControlPlane:
         handler = self._require_handler(self._get_authoring_target, "authoring target")
         return handler(name)
 
+    def authoring_generate(self, name: str, prompt: str) -> Any:
+        """Generate a proposed patch for a target (POST /authoring/targets/{name}/generate)."""
+        handler = self._require_handler(self._authoring_generate, "authoring generate")
+        return handler(name, prompt)
+
     def authoring_apply(self, name: str) -> Any:
-        """Apply (no-op stub) to an authoring target (POST /authoring/targets/{name}/apply)."""
+        """Apply a pending patch to an authoring target (POST /authoring/targets/{name}/apply)."""
         handler = self._require_handler(self._authoring_apply, "authoring apply")
         return handler(name)
 

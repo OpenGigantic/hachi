@@ -2270,13 +2270,74 @@
         ]
       }
     },
+    "/authoring/targets/{name}/generate": {
+      "post": {
+        "tags": [
+          "authoring"
+        ],
+        "summary": "Post Authoring Generate",
+        "description": "Generate a proposed patch for the named target via the LLM (G1-T2 / CRIT-002).\n\nRuns the blocking LLM call off the event loop via anyio.to_thread.run_sync.\nReturns a real unified diff (old vs proposed) and the proposed content.\nPending content is stored server-side so /apply can write it without\nthe client having to re-send the full body.\n\nBody: ``{\"prompt\": \"describe the change you want\"}``\nResponse: ``{\"diff\": [[\"\" | \"add\" | \"del\", \"<line>\"], ...]}``",
+        "operationId": "post_authoring_generate_authoring_targets__name__generate_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthoringGenerateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Authoring Generate Authoring Targets  Name  Generate Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/authoring/targets/{name}/apply": {
       "post": {
         "tags": [
           "authoring"
         ],
         "summary": "Post Authoring Apply",
-        "description": "Apply a pending patch to the target (stub \u2014 no patch pipeline yet).",
+        "description": "Apply the pending patch to the target and trigger a skill-engine re-index.",
         "operationId": "post_authoring_apply_authoring_targets__name__apply_post",
         "parameters": [
           {
@@ -2327,7 +2388,7 @@
           "authoring"
         ],
         "summary": "Post Authoring Revert",
-        "description": "Revert a pending patch on the target (stub \u2014 no patch pipeline yet).",
+        "description": "Revert the most recently applied patch for the target.",
         "operationId": "post_authoring_revert_authoring_targets__name__revert_post",
         "parameters": [
           {
@@ -2498,6 +2559,20 @@
         ],
         "title": "ApprovalActionRequest",
         "description": "Body for POST /approvals/{request_id} (UC-PERM-006)."
+      },
+      "AuthoringGenerateRequest": {
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "title": "Prompt"
+          }
+        },
+        "type": "object",
+        "required": [
+          "prompt"
+        ],
+        "title": "AuthoringGenerateRequest",
+        "description": "Body for POST /authoring/targets/{name}/generate (G1-T2 / CRIT-002)."
       },
       "CapabilityToggleRequest": {
         "properties": {

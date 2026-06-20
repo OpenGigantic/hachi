@@ -222,6 +222,12 @@ class SkillAddRequest(BaseModel):
     kennel_id: str
 
 
+class AuthoringGenerateRequest(BaseModel):
+    """Body for POST /authoring/targets/{name}/generate (G1-T2 / CRIT-002)."""
+
+    prompt: str
+
+
 def _last_user_text(messages: list[OpenAIMessage]) -> str:
     """Extract the latest user message text from an OpenAI-style message list."""
     for message in reversed(messages):
@@ -1214,15 +1220,35 @@ def create_gateway_app(
         """Return the source text for a single editable target."""
         return control_plane.authoring_target(name)
 
+    @authoring_router.post("/targets/{name}/generate")
+    async def post_authoring_generate(name: str, payload: AuthoringGenerateRequest) -> Any:
+        """Generate a proposed patch for the named target via the LLM (G1-T2 / CRIT-002).
+
+        Runs the blocking LLM call off the event loop via anyio.to_thread.run_sync.
+        Returns a real unified diff (old vs proposed) and the proposed content.
+        Pending content is stored server-side so /apply can write it without
+        the client having to re-send the full body.
+
+        Body: ``{"prompt": "describe the change you want"}``
+        Response: ``{"diff": [["" | "add" | "del", "<line>"], ...]}``
+        """
+        prompt = payload.prompt.strip()
+        if not prompt:
+            raise HTTPException(status_code=422, detail="prompt is required")
+        result = await anyio.to_thread.run_sync(
+            lambda: control_plane.authoring_generate(name, prompt)
+        )
+        return result
+
     @authoring_router.post("/targets/{name}/apply")
     async def post_authoring_apply(name: str) -> Any:
-        """Apply a pending patch to the target (stub — no patch pipeline yet)."""
-        return control_plane.authoring_apply(name)
+        """Apply the pending patch to the target and trigger a skill-engine re-index."""
+        return await anyio.to_thread.run_sync(lambda: control_plane.authoring_apply(name))
 
     @authoring_router.post("/targets/{name}/revert")
     async def post_authoring_revert(name: str) -> Any:
-        """Revert a pending patch on the target (stub — no patch pipeline yet)."""
-        return control_plane.authoring_revert(name)
+        """Revert the most recently applied patch for the target."""
+        return await anyio.to_thread.run_sync(lambda: control_plane.authoring_revert(name))
 
     @spend_router.get("/spend")
     async def get_spend(session_id: str | None = Query(default=None)) -> Any:

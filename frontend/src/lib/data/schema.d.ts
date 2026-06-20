@@ -899,6 +899,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/authoring/targets/{name}/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Authoring Generate
+         * @description Generate a proposed patch for the named target via the LLM (G1-T2 / CRIT-002).
+         *
+         *     Runs the blocking LLM call off the event loop via anyio.to_thread.run_sync.
+         *     Returns a real unified diff (old vs proposed) and the proposed content.
+         *     Pending content is stored server-side so /apply can write it without
+         *     the client having to re-send the full body.
+         *
+         *     Body: ``{"prompt": "describe the change you want"}``
+         *     Response: ``{"diff": [["" | "add" | "del", "<line>"], ...]}``
+         */
+        post: operations["post_authoring_generate_authoring_targets__name__generate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/authoring/targets/{name}/apply": {
         parameters: {
             query?: never;
@@ -910,7 +938,7 @@ export interface paths {
         put?: never;
         /**
          * Post Authoring Apply
-         * @description Apply a pending patch to the target (stub — no patch pipeline yet).
+         * @description Apply the pending patch to the target and trigger a skill-engine re-index.
          */
         post: operations["post_authoring_apply_authoring_targets__name__apply_post"];
         delete?: never;
@@ -930,7 +958,7 @@ export interface paths {
         put?: never;
         /**
          * Post Authoring Revert
-         * @description Revert a pending patch on the target (stub — no patch pipeline yet).
+         * @description Revert the most recently applied patch for the target.
          */
         post: operations["post_authoring_revert_authoring_targets__name__revert_post"];
         delete?: never;
@@ -1001,6 +1029,14 @@ export interface components {
              * @default
              */
             rationale: string;
+        };
+        /**
+         * AuthoringGenerateRequest
+         * @description Body for POST /authoring/targets/{name}/generate (G1-T2 / CRIT-002).
+         */
+        AuthoringGenerateRequest: {
+            /** Prompt */
+            prompt: string;
         };
         /**
          * CapabilityToggleRequest
@@ -2946,6 +2982,48 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_authoring_generate_authoring_targets__name__generate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuthoringGenerateRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
