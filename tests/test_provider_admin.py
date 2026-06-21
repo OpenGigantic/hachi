@@ -76,9 +76,7 @@ class TestListProviders:
 
     def test_includes_named_providers(self) -> None:
         cfg = _make_config()
-        cfg.providers = {
-            "openrouter": ProviderSettings(kind="openrouter", model="openai/gpt-4o")
-        }
+        cfg.providers = {"openrouter": ProviderSettings(kind="openrouter", model="openai/gpt-4o")}
         ctx_load, ctx_write, _ = _patch_config(cfg)
         with ctx_load, ctx_write:
             result = list_providers()
@@ -365,3 +363,136 @@ class TestListAllModels:
         primary_models = result["__primary__"]
         # The bundled defaults contain at least one Anthropic model
         assert any("claude" in m for m in primary_models)
+
+
+# ---------------------------------------------------------------------------
+# Security hardening tests (adversarial review fixes)
+# ---------------------------------------------------------------------------
+
+
+class TestProviderNameInjectionRejected:
+    """Provider names with path/vault-key traversal chars must be rejected."""
+
+    def test_path_traversal_rejected_add(self) -> None:
+        cfg = _make_config()
+        ctx_load, ctx_write, _ = _patch_config(cfg)
+        with ctx_load, ctx_write, pytest.raises(ValueError, match="alphanumeric"):
+            add_or_update_provider("../evil", {"kind": "anthropic", "model": "x"})
+
+    def test_slash_rejected_add(self) -> None:
+        cfg = _make_config()
+        ctx_load, ctx_write, _ = _patch_config(cfg)
+        with ctx_load, ctx_write, pytest.raises(ValueError, match="alphanumeric"):
+            add_or_update_provider("my/provider", {"kind": "anthropic", "model": "x"})
+
+    def test_dotdot_rejected_remove(self) -> None:
+        cfg = _make_config()
+        cfg.providers = {}
+        ctx_load, ctx_write, _ = _patch_config(cfg)
+        with ctx_load, ctx_write, pytest.raises(ValueError, match="alphanumeric"):
+            remove_provider("../../etc/passwd")
+
+    def test_valid_names_accepted(self) -> None:
+        """Hyphens, underscores, alphanumerics must all pass validation."""
+        for valid_name in ("my-provider", "my_provider", "Provider1", "abc123"):
+            cfg = _make_config()
+            ctx_load, ctx_write, _ = _patch_config(cfg)
+            with (
+                ctx_load,
+                ctx_write,
+                patch("hachi.gateway.provider_admin.CredentialVault"),
+                patch("hachi.gateway.provider_admin.create_default_secret_store"),
+            ):
+                result = add_or_update_provider(valid_name, {"kind": "anthropic", "model": "x"})
+            assert result["name"] == valid_name
+
+
+class TestHeadersMasked:
+    """_mask_provider must mask header values, never echo them."""
+
+    def test_header_values_masked(self) -> None:
+        from hachi.gateway.provider_admin import _mask_provider
+
+        ps = ProviderSettings(kind="openai-compatible", model="gpt-4o")
+        ps.headers = {"Authorization": "Bearer sk-supersecret", "X-Custom": "my-value"}
+
+        masked = _mask_provider("myp", ps)
+        assert masked["headers"] == {"Authorization": "***", "X-Custom": "***"}
+
+    def test_header_keys_preserved(self) -> None:
+        from hachi.gateway.provider_admin import _mask_provider
+
+        ps = ProviderSettings(kind="openai-compatible", model="gpt-4o")
+        ps.headers = {"X-Key": "v"}
+        masked = _mask_provider("p", ps)
+        assert "X-Key" in masked["headers"]
+
+    def test_no_raw_values_in_list_providers(self) -> None:
+        cfg = _make_config()
+        secret_ps = ProviderSettings(kind="openai-compatible", model="gpt-4o")
+        secret_ps.headers = {"Authorization": "Bearer sk-1234"}
+        cfg.providers = {"my-openai": secret_ps}
+        ctx_load, ctx_write, _ = _patch_config(cfg)
+        with ctx_load, ctx_write:
+            result = list_providers()
+        for p in result["providers"]:
+            for v in p.get("headers", {}).values():
+                assert v == "***", f"Header value was not masked: {v!r}"
+
+
+class TestNetGuard:
+    """is_safe_outbound_url must block private/metadata addresses."""
+
+    def test_metadata_endpoint_blocked(self) -> None:
+        from hachi.gateway._net_guard import is_safe_outbound_url
+
+        # AWS/GCP/Azure metadata service
+        assert is_safe_outbound_url("http://169.254.169.254/latest/meta-data") is False
+
+    def test_localhost_blocked_by_default(self) -> None:
+        from hachi.gateway._net_guard import is_safe_outbound_url
+
+        assert is_safe_outbound_url("http://localhost:11434") is False
+
+    def test_localhost_allowed_when_allow_loopback(self) -> None:
+        from hachi.gateway._net_guard import is_safe_outbound_url
+
+        assert is_safe_outbound_url("http://localhost:11434", allow_loopback=True) is True
+
+    def test_file_scheme_blocked(self) -> None:
+        from hachi.gateway._net_guard import is_safe_outbound_url
+
+        assert is_safe_outbound_url("file:///etc/passwd") is False
+
+    def test_public_url_allowed(self) -> None:
+        from hachi.gateway._net_guard import is_safe_outbound_url
+
+        # api.openai.com is a real public endpoint; test may need network
+        # Skip gracefully if DNS is unavailable in the test environment
+        try:
+            result = is_safe_outbound_url("https://api.openai.com/v1/models")
+        except Exception:
+            pytest.skip("DNS not available in test environment")
+        assert result is True
+
+    def test_api_key_not_in_env_after_add(self) -> None:
+        """Adding a provider must NOT leak the raw API key to os.environ."""
+        cfg = _make_config()
+        ctx_load, ctx_write, _ = _patch_config(cfg)
+        raw_key = "sk-leak-test-999"
+        vault_key = "provider.leak-test.api_key"
+
+        with (
+            ctx_load,
+            ctx_write,
+            patch("hachi.gateway.provider_admin.CredentialVault"),
+            patch("hachi.gateway.provider_admin.create_default_secret_store"),
+            patch.dict(os.environ, {}, clear=False),
+        ):
+            add_or_update_provider(
+                "leak-test",
+                {"kind": "anthropic", "model": "x", "api_key": raw_key},
+            )
+
+        # The raw key must NOT appear in os.environ under the vault key name
+        assert os.environ.get(vault_key) != raw_key, "API key was leaked into os.environ"

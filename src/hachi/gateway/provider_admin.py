@@ -9,6 +9,8 @@ config file.
 from __future__ import annotations
 
 import logging
+import re
+import threading
 from typing import Any, get_args
 
 from hachi.core.config_loader import load_effective_config, write_global_config
@@ -20,6 +22,10 @@ from hachi.core.secret_store import create_default_secret_store
 from hachi.core.settings import ProviderKind, ProviderSettings, RoutingSettings
 
 logger = logging.getLogger(__name__)
+
+# Lock protecting all load→mutate→write critical sections to prevent lost-update
+# races between concurrent callers (e.g. two simultaneous PUT /config/providers).
+_CONFIG_LOCK = threading.Lock()
 
 # All valid provider kinds (derived from the Literal type so settings.py stays canonical)
 _VALID_KINDS: frozenset[str] = frozenset(get_args(ProviderKind))
@@ -45,14 +51,20 @@ CAPABILITY_ORDER: list[str] = list(CAPABILITY_LABELS.keys())
 
 
 def _mask_provider(name: str, ps: ProviderSettings) -> dict[str, Any]:
-    """Serialize a ProviderSettings to a safe dict — secrets masked."""
+    """Serialize a ProviderSettings to a safe dict — secrets masked.
+
+    Header keys are preserved (they are not sensitive) but all header *values*
+    are replaced with ``"***"`` — values may contain Authorization tokens or
+    other credentials that must never be echoed back to the client.
+    """
+    masked_headers = {k: "***" for k in (ps.headers or {})}
     return {
         "name": name,
         "kind": ps.kind,
         "model": ps.model,
         "base_url": ps.base_url,
         "allowed_models": list(ps.allowed_models),
-        "headers": dict(ps.headers),
+        "headers": masked_headers,
         "configured": bool(ps.api_key_ref or ps.api_key_env),
         # Never expose raw keys or ref strings — only the configured boolean
     }
@@ -105,6 +117,8 @@ def add_or_update_provider(name: str, spec: dict[str, Any]) -> dict[str, Any]:
     name = name.strip()
     if not name:
         raise ValueError("provider name must be non-empty")
+    if not re.match(r"^[A-Za-z0-9_-]+$", name) and name != "__primary__":
+        raise ValueError("provider name must be alphanumeric/_/- only")
 
     kind = str(spec.get("kind") or "anthropic").strip().lower()
     if kind not in _VALID_KINDS:
@@ -120,49 +134,48 @@ def add_or_update_provider(name: str, spec: dict[str, Any]) -> dict[str, Any]:
     headers: dict[str, str] = {str(k): str(v) for k, v in (spec.get("headers") or {}).items()}
     raw_api_key: str = str(spec.get("api_key") or "").strip()
 
-    config = load_effective_config()
+    with _CONFIG_LOCK:
+        config = load_effective_config()
 
-    # Determine the vault key name for this provider's secret
-    vault_key = f"provider.{name}.api_key"
-    api_key_ref: str | None = None
+        # Determine the vault key name for this provider's secret
+        vault_key = f"provider.{name}.api_key"
+        api_key_ref: str | None = None
 
-    if raw_api_key:
-        # Store secret in vault + set as env var for the running process
-        vault = CredentialVault(secret_store=create_default_secret_store())
-        vault.set_token(vault_key, raw_api_key)
-        import os
+        if raw_api_key:
+            # Store secret in vault only — never write raw key to os.environ
+            # (env leaks the secret to all child processes)
+            vault = CredentialVault(secret_store=create_default_secret_store())
+            vault.set_token(vault_key, raw_api_key)
+            api_key_ref = vault_key
 
-        os.environ[vault_key] = raw_api_key
-        api_key_ref = vault_key
+        # Build the new ProviderSettings
+        ps = ProviderSettings(
+            kind=kind,
+            model=model or _default_model_for_kind(kind),
+            base_url=base_url,
+            allowed_models=allowed_models,
+            headers=headers,
+        )
+        if api_key_ref is not None:
+            ps.api_key_ref = api_key_ref
+        elif name != "__primary__" and (config.providers or {}).get(name) is not None:
+            # Preserve existing api_key_ref when no new key supplied
+            existing = (config.providers or {})[name]
+            ps.api_key_ref = existing.api_key_ref
+            ps.api_key_env = existing.api_key_env
+        elif name == "__primary__":
+            if not api_key_ref:
+                ps.api_key_ref = config.provider.api_key_ref
+                ps.api_key_env = config.provider.api_key_env
 
-    # Build the new ProviderSettings
-    ps = ProviderSettings(
-        kind=kind,
-        model=model or _default_model_for_kind(kind),
-        base_url=base_url,
-        allowed_models=allowed_models,
-        headers=headers,
-    )
-    if api_key_ref is not None:
-        ps.api_key_ref = api_key_ref
-    elif name != "__primary__" and config.providers.get(name) is not None:
-        # Preserve existing api_key_ref when no new key supplied
-        existing = config.providers[name]
-        ps.api_key_ref = existing.api_key_ref
-        ps.api_key_env = existing.api_key_env
-    elif name == "__primary__":
-        if not api_key_ref:
-            ps.api_key_ref = config.provider.api_key_ref
-            ps.api_key_env = config.provider.api_key_env
+        if name == "__primary__":
+            config.provider = ps
+        else:
+            if config.providers is None:
+                config.providers = {}
+            config.providers[name] = ps
 
-    if name == "__primary__":
-        config.provider = ps
-    else:
-        if config.providers is None:
-            config.providers = {}
-        config.providers[name] = ps
-
-    write_global_config(config)
+        write_global_config(config)
     return _mask_provider(name, ps)
 
 
@@ -186,23 +199,26 @@ def remove_provider(name: str) -> dict[str, Any]:
     name = name.strip()
     if name == "__primary__":
         raise ValueError("the primary provider cannot be removed")
+    if not re.match(r"^[A-Za-z0-9_-]+$", name):
+        raise ValueError("provider name must be alphanumeric/_/- only")
 
-    config = load_effective_config()
-    if name not in (config.providers or {}):
-        raise ValueError(f"provider {name!r} not found")
+    with _CONFIG_LOCK:
+        config = load_effective_config()
+        if name not in (config.providers or {}):
+            raise ValueError(f"provider {name!r} not found")
 
-    ps = config.providers.pop(name)
+        ps = config.providers.pop(name)
 
-    # Best-effort vault cleanup
-    vault_key = f"provider.{name}.api_key"
-    try:
-        vault = CredentialVault(secret_store=create_default_secret_store())
-        if ps.api_key_ref == vault_key:
-            vault.delete_token(vault_key)
-    except Exception:
-        pass
+        # Best-effort vault cleanup
+        vault_key = f"provider.{name}.api_key"
+        try:
+            vault = CredentialVault(secret_store=create_default_secret_store())
+            if ps.api_key_ref == vault_key:
+                vault.delete_token(vault_key)
+        except Exception:
+            pass
 
-    write_global_config(config)
+        write_global_config(config)
     return {"ok": True, "name": name}
 
 
@@ -258,24 +274,25 @@ def set_routing(default_model: str, capabilities: dict[str, list[str]]) -> dict[
     Returns:
         The new get_routing() snapshot.
     """
-    config = load_effective_config()
+    with _CONFIG_LOCK:
+        config = load_effective_config()
 
-    # Validate capability keys
-    valid_cap_names = {c.value for c in Capability}
-    filtered: dict[str, list[str]] = {}
-    for cap_name, models in (capabilities or {}).items():
-        if cap_name not in valid_cap_names:
-            logger.warning("set_routing: unknown capability %r — skipped", cap_name)
-            continue
-        filtered[cap_name] = [str(m).strip() for m in models if str(m).strip()]
+        # Validate capability keys
+        valid_cap_names = {c.value for c in Capability}
+        filtered: dict[str, list[str]] = {}
+        for cap_name, models in (capabilities or {}).items():
+            if cap_name not in valid_cap_names:
+                logger.warning("set_routing: unknown capability %r — skipped", cap_name)
+                continue
+            filtered[cap_name] = [str(m).strip() for m in models if str(m).strip()]
 
-    if config.routing is None:
-        config.routing = RoutingSettings()
+        if config.routing is None:
+            config.routing = RoutingSettings()
 
-    config.routing.default_model = str(default_model).strip() or config.routing.default_model
-    config.routing.capabilities = filtered
+        config.routing.default_model = str(default_model).strip() or config.routing.default_model
+        config.routing.capabilities = filtered
 
-    write_global_config(config)
+        write_global_config(config)
     return get_routing()
 
 
@@ -346,11 +363,18 @@ def test_connection(name: str) -> dict[str, Any]:
     kind = str(ps.kind).lower()
     base_url = ps.base_url or ""
 
+    from hachi.gateway._net_guard import is_safe_outbound_url
+
     try:
         import urllib.request
 
         if kind == "ollama":
             url = (base_url.rstrip("/") or "http://localhost:11434") + "/api/tags"
+            if not is_safe_outbound_url(url, allow_loopback=True):
+                return {
+                    "ok": False,
+                    "detail": "blocked: base_url resolves to a private or loopback address",
+                }
             req = urllib.request.Request(url, method="GET")
             with urllib.request.urlopen(req, timeout=5) as resp:
                 status = resp.status
@@ -362,6 +386,7 @@ def test_connection(name: str) -> dict[str, Any]:
             if not api_key:
                 return {"ok": False, "detail": "no API key configured"}
             url = "https://api.anthropic.com/v1/models"
+            # anthropic.com is a well-known public endpoint — no SSRF risk.
             req = urllib.request.Request(
                 url,
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
@@ -377,6 +402,11 @@ def test_connection(name: str) -> dict[str, Any]:
             if not api_key and kind not in {"ollama"}:
                 return {"ok": False, "detail": "no API key configured"}
             endpoint = (base_url.rstrip("/") or "https://api.openai.com/v1") + "/models"
+            if not is_safe_outbound_url(endpoint, allow_loopback=False):
+                return {
+                    "ok": False,
+                    "detail": "blocked: base_url resolves to a private or loopback address",
+                }
             headers: dict[str, str] = {}
             if api_key:
                 headers["Authorization"] = f"Bearer {api_key}"

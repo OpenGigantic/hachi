@@ -1880,7 +1880,7 @@ export interface components {
              */
             format: string;
             /** Provider */
-            provider?: string | null;
+            provider?: ("openai" | "elevenlabs") | null;
         };
     };
     responses: never;

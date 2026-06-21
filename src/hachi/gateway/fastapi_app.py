@@ -11,7 +11,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import anyio
 from fastapi import (
@@ -173,11 +173,11 @@ class VoiceSpeakBody(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    text: str
+    text: str = Field(max_length=8000)
     voice: str | None = None
     model: str | None = None
     format: str = "mp3"
-    provider: str | None = None
+    provider: Literal["openai", "elevenlabs"] | None = None
 
 
 class PermissionsRequest(BaseModel):
@@ -1097,7 +1097,7 @@ def create_gateway_app(
     @config.get("/providers")
     async def get_providers() -> Any:
         """Return all configured providers (secrets masked)."""
-        return control_plane.list_providers()
+        return await anyio.to_thread.run_sync(lambda: control_plane.list_providers())
 
     @config.post("/providers")
     async def post_provider(payload: ProviderUpsertRequest) -> Any:
@@ -1105,39 +1105,61 @@ def create_gateway_app(
         name = (payload.name or "").strip()
         if not name:
             raise HTTPException(status_code=422, detail="name is required")
+        import re as _re
+
+        if not _re.match(r"^[A-Za-z0-9_-]+$", name):
+            raise HTTPException(status_code=422, detail="invalid provider name")
         spec = payload.model_dump(mode="python", exclude={"name"}, exclude_none=True)
-        return control_plane.add_or_update_provider(name, spec)
+        return await anyio.to_thread.run_sync(
+            lambda: control_plane.add_or_update_provider(name, spec)
+        )
 
     @config.put("/providers/{name}")
     async def put_provider_named(name: str, payload: ProviderUpsertRequest) -> Any:
         """Update (or create) a named provider."""
+        import re as _re
+
+        if not _re.match(r"^[A-Za-z0-9_-]+$", name):
+            raise HTTPException(status_code=422, detail="invalid provider name")
         spec = payload.model_dump(mode="python", exclude={"name"}, exclude_none=True)
-        return control_plane.add_or_update_provider(name, spec)
+        return await anyio.to_thread.run_sync(
+            lambda: control_plane.add_or_update_provider(name, spec)
+        )
 
     @config.delete("/providers/{name}")
     async def delete_provider(name: str) -> Any:
         """Remove a named provider."""
-        return control_plane.remove_provider(name)
+        import re as _re
+
+        if not _re.match(r"^[A-Za-z0-9_-]+$", name):
+            raise HTTPException(status_code=422, detail="invalid provider name")
+        return await anyio.to_thread.run_sync(lambda: control_plane.remove_provider(name))
 
     @config.post("/providers/{name}/test-connection")
     async def post_provider_test(name: str) -> Any:
         """Best-effort connectivity test for a provider."""
-        return control_plane.test_provider_connection(name)
+        import re as _re
+
+        if not _re.match(r"^[A-Za-z0-9_-]+$", name):
+            raise HTTPException(status_code=422, detail="invalid provider name")
+        return await anyio.to_thread.run_sync(lambda: control_plane.test_provider_connection(name))
 
     @config.get("/routing")
     async def get_routing() -> Any:
         """Return the capability routing matrix (synthesized when absent)."""
-        return control_plane.get_routing()
+        return await anyio.to_thread.run_sync(lambda: control_plane.get_routing())
 
     @config.put("/routing")
     async def put_routing(payload: RoutingUpdateRequest) -> Any:
         """Persist the capability routing matrix."""
-        return control_plane.set_routing(payload.default_model, payload.capabilities)
+        return await anyio.to_thread.run_sync(
+            lambda: control_plane.set_routing(payload.default_model, payload.capabilities)
+        )
 
     @config.get("/models/all")
     async def get_models_all() -> Any:
         """Return model ids per configured provider."""
-        return control_plane.list_all_models()
+        return await anyio.to_thread.run_sync(lambda: control_plane.list_all_models())
 
     @setup.get("")
     async def get_setup() -> Any:
@@ -2119,12 +2141,17 @@ def create_gateway_app(
 
     voice_router = APIRouter(prefix="/voice", tags=["voice"], dependencies=protected_dependencies)
 
+    _MAX_AUDIO_BYTES = 25 * 1024 * 1024  # 25 MB hard ceiling for audio uploads
+
     @voice_router.post("/transcribe", summary="Transcribe audio via STT provider")
     async def route_voice_transcribe(audio: UploadFile = File(...)) -> Any:  # noqa: B008
         """Transcribe a multipart audio upload to text via the configured STT backend."""
         if audio.filename is None:
             raise HTTPException(status_code=400, detail="Filename is required")
-        raw = await audio.read()
+        # Bounded read — prevents memory exhaustion from oversized uploads.
+        raw = await audio.read(_MAX_AUDIO_BYTES + 1)
+        if len(raw) > _MAX_AUDIO_BYTES:
+            raise HTTPException(status_code=413, detail="Audio exceeds 25 MB limit")
         content_type = audio.content_type or "audio/webm"
         try:
             result = await anyio.to_thread.run_sync(
@@ -2134,7 +2161,11 @@ def create_gateway_app(
             return _error_response(503, "voice_not_configured", str(exc))
         except Exception as exc:  # noqa: BLE001
             _log.warning("STT transcription failed: %s", exc)
-            return _error_response(500, "transcription_error", str(exc))
+            return _error_response(
+                500,
+                "transcription_error",
+                "Transcription failed, check voice provider configuration",
+            )
         return result
 
     @voice_router.post("/speak", summary="Synthesize text via TTS provider")
@@ -2156,13 +2187,15 @@ def create_gateway_app(
             return _error_response(503, "voice_not_configured", str(exc))
         except Exception as exc:  # noqa: BLE001
             _log.warning("TTS synthesis failed: %s", exc)
-            return _error_response(500, "synthesis_error", str(exc))
+            return _error_response(
+                500, "synthesis_error", "Synthesis failed, check voice provider configuration"
+            )
         return StreamingResponse(io.BytesIO(audio_bytes), media_type=media_type)
 
     @voice_router.get("/config", summary="Get voice configuration")
     async def route_voice_config() -> Any:
         """Return the current voice provider config summary for the UI."""
-        return _voice_config()
+        return await anyio.to_thread.run_sync(_voice_config)
 
     @voice_router.put("/config", summary="Update voice configuration")
     async def route_voice_set_config(patch: dict[str, Any]) -> Any:
