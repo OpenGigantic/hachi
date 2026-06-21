@@ -39,6 +39,10 @@ class ProviderSettings(BaseModel):
     # `/model` / `--model`. Empty (default) = no restriction (any model the
     # provider exposes is allowed).
     allowed_models: list[str] = Field(default_factory=list)
+    # Custom HTTP headers for OpenAI-compatible / self-hosted endpoints (e.g. an
+    # ``Authorization`` bearer for a gateway placed in front of the model, or a
+    # tenant header). Empty (default) = none. Applied by the OpenAI-compat provider.
+    headers: dict[str, str] = Field(default_factory=dict)
 
 
 class AskBeforeSettings(BaseModel):
@@ -237,6 +241,14 @@ class VoiceSettings(BaseModel):
     tts_base_url: str | None = None
     tts_api_key_env: str | None = None
     tts_voice: str | None = None
+    # Provider selection. "openai" = OpenAI-compatible /audio endpoints (default,
+    # back-compat — covers OpenAI Whisper/TTS and self-hosted compatible servers);
+    # "elevenlabs" = ElevenLabs TTS.
+    stt_provider: Literal["openai"] = "openai"
+    tts_provider: Literal["openai", "elevenlabs"] = "openai"
+    # ElevenLabs (TTS only) — used when ``tts_provider == "elevenlabs"``.
+    elevenlabs_api_key_env: str | None = None
+    elevenlabs_voice_id: str | None = None
 
 
 class RoutingSettings(BaseModel):
