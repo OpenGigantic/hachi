@@ -25,13 +25,47 @@ The ``redirect_uri`` registered in the provider's OAuth app must be:
 from __future__ import annotations
 
 import os
-from typing import Literal
+from typing import Any, Literal
 
 # ---------------------------------------------------------------------------
 # Types
 # ---------------------------------------------------------------------------
 
 AuthType = Literal["oauth2", "apikey", "none"]
+
+
+class CredentialFieldSpec(dict[str, Any]):
+    """A single credential field descriptor for apikey connectors.
+
+    Keys:
+        key: Storage key used in the vault (e.g. ``"telegram_bot_token"``).
+        label: Human-readable label for the form field.
+        secret: When ``True`` the UI renders a password input.
+        placeholder: Example value shown as placeholder text.
+        optional: When ``True`` the field is not required for ``configured`` status.
+        help_text: Optional short description shown below the field.
+    """
+
+
+def _field(
+    key: str,
+    label: str,
+    *,
+    secret: bool = False,
+    placeholder: str = "",
+    optional: bool = False,
+    help_text: str = "",
+) -> CredentialFieldSpec:
+    """Build a :class:`CredentialFieldSpec` dict."""
+    spec: CredentialFieldSpec = CredentialFieldSpec(
+        key=key,
+        label=label,
+        secret=secret,
+        placeholder=placeholder,
+        optional=optional,
+        help_text=help_text,
+    )
+    return spec
 
 
 class ConnectorDef:
@@ -52,6 +86,9 @@ class ConnectorDef:
             Defaults to ``True`` for oauth2 connectors.
         extra_auth_params: Optional extra query params for the authorize URL
             (e.g. ``{"prompt": "select_account"}``).
+        credential_fields: For ``apikey`` connectors — ordered list of field specs
+            describing which credentials must be submitted via the UI / vault.
+            Empty for ``oauth2`` / ``none`` connectors.
     """
 
     def __init__(
@@ -69,6 +106,7 @@ class ConnectorDef:
         client_secret_env: str = "",
         needs_offline: bool = True,
         extra_auth_params: dict[str, str] | None = None,
+        credential_fields: list[CredentialFieldSpec] | None = None,
     ) -> None:
         self.id = id
         self.name = name
@@ -82,6 +120,7 @@ class ConnectorDef:
         self.client_secret_env = client_secret_env
         self.needs_offline = needs_offline
         self.extra_auth_params: dict[str, str] = extra_auth_params or {}
+        self.credential_fields: list[CredentialFieldSpec] = credential_fields or []
 
     def client_id(self) -> str | None:
         """Return the OAuth2 client ID from env, or None if not configured."""
@@ -101,10 +140,23 @@ class ConnectorDef:
         For oauth2 connectors the client_id is the minimum requirement
         (some providers allow public clients without a secret).
         For non-oauth2 connectors always returns False (not applicable via OAuth flow).
+        Apikey connectors use :func:`is_apikey_connector_configured` in ``oauth_flow``
+        which checks the vault; this method only checks env for OAuth2.
         """
         if self.auth_type != "oauth2":
             return False
         return bool(self.client_id())
+
+    def required_credential_keys(self) -> list[str]:
+        """Return vault keys for all non-optional credential fields."""
+        return [f["key"] for f in self.credential_fields if not f.get("optional", False)]
+
+    def env_var_for_key(self, key: str) -> str | None:
+        """Return the conventional env var name for a credential field key.
+
+        Convention: field key uppercased.  E.g. ``telegram_bot_token`` → ``TELEGRAM_BOT_TOKEN``.
+        """
+        return key.upper() if key else None
 
 
 # ---------------------------------------------------------------------------
@@ -200,12 +252,78 @@ CONNECTORS: list[ConnectorDef] = [
     # --- WhatsApp (Meta Business API) — not standard OAuth2; listed as apikey ---
     # Users must provision a permanent token via Meta Business Suite.
     # No OAuth2 flow is available for WhatsApp Business API.
+    # Supports both Meta Cloud API (recommended) and Twilio sandbox paths.
     ConnectorDef(
         id="whatsapp",
         name="WhatsApp",
         category="messaging",
         auth_type="apikey",
-        # No OAuth fields — apikey auth is not handled by this flow
+        credential_fields=[
+            # Meta Cloud API (recommended — permanent system-user token)
+            _field(
+                "META_WHATSAPP_TOKEN",
+                "Meta Access Token",
+                secret=True,
+                placeholder="EAAxxxxxxxxxxxxxx",
+                optional=False,
+                help_text="System-user token from Meta Business Suite. Required for Meta Cloud API.",  # noqa: E501
+            ),
+            _field(
+                "META_WHATSAPP_PHONE_ID",
+                "Phone Number ID",
+                secret=False,
+                placeholder="123456789012345",
+                optional=False,
+                help_text="Sender phone-number ID from Meta for Developers dashboard.",
+            ),
+            # Twilio Sandbox path (optional — only needed if using Twilio instead of Meta)
+            _field(
+                "TWILIO_ACCOUNT_SID",
+                "Twilio Account SID",
+                secret=False,
+                placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                optional=True,
+                help_text="Only required if routing through Twilio instead of Meta Cloud API.",
+            ),
+            _field(
+                "TWILIO_AUTH_TOKEN",
+                "Twilio Auth Token",
+                secret=True,
+                placeholder="",
+                optional=True,
+                help_text="Twilio auth token. Only required for Twilio routing.",
+            ),
+            _field(
+                "TWILIO_WHATSAPP_FROM",
+                "Twilio WhatsApp From",
+                secret=False,
+                placeholder="whatsapp:+14155238886",
+                optional=True,
+                help_text="Twilio sandbox/production sender number, prefixed with 'whatsapp:'.",
+            ),
+        ],
+    ),
+    # --- Telegram (Bot API — long-polling, no public URL required) ---
+    # Users create a bot via @BotFather and paste the bot token here.
+    # The token is stored in the credential vault; the channel reads it at startup.
+    ConnectorDef(
+        id="telegram",
+        name="Telegram",
+        category="messaging",
+        auth_type="apikey",
+        credential_fields=[
+            _field(
+                "telegram_bot_token",
+                "Bot Token",
+                secret=True,
+                placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+                optional=False,
+                help_text=(
+                    "Create a bot with @BotFather on Telegram, then paste the token here. "
+                    "Format: <digits>:<alphanumeric-string>"
+                ),
+            ),
+        ],
     ),
 ]
 
