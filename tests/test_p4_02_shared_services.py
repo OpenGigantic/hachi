@@ -163,3 +163,69 @@ def test_force_reinit_creates_new_instance() -> None:
         assert inst1 is not inst2, "force_reinit=True must produce a new instance"
     finally:
         ProcessSharedServices.clear()
+
+
+# ---------------------------------------------------------------------------
+# 8. load_directory (not index_directory) populates the shared skill engine
+#    with the bundled default_skills — confirming the fix for the OG Explorer
+#    showing zero nodes.
+# ---------------------------------------------------------------------------
+
+
+def test_skill_engine_loads_default_skills() -> None:
+    """SkillEngine.load_directory() on the bundled default_skills must yield >0 nodes.
+
+    This is the critical regression guard for the fix in shared_services.py:
+    the old code called ``skill_engine.index_directory()`` (non-existent method,
+    silently swallowed by except-Exception), leaving the engine empty.  The fix
+    replaces it with ``skill_engine.load_directory()``.
+    """
+    from pathlib import Path
+
+    from hachi.og_engine.engine import SkillEngine
+
+    engine = SkillEngine(agent_role="orchestrator")
+    default_skills_dir = Path(__file__).parent.parent / "src" / "hachi" / "default_skills"
+    assert default_skills_dir.exists(), f"default_skills not found at {default_skills_dir}"
+
+    engine.load_directory(default_skills_dir)
+    nodes = engine.get_all_nodes()
+    assert len(nodes) > 0, (
+        f"Expected >0 nodes after load_directory on {default_skills_dir}, got 0. "
+        "Check that .og files exist and that load_directory is the correct method name."
+    )
+
+
+# ---------------------------------------------------------------------------
+# 9. og_graph_from_engine returns non-empty nodes and count when engine is loaded
+#    — confirming the pre-session fallback path in get_og_graph().
+# ---------------------------------------------------------------------------
+
+
+def test_og_graph_from_engine_returns_nodes() -> None:
+    """og_graph_from_engine() must return a dict with nodes>0 and matching count.
+
+    This guards the pre-session fallback added to _InProcessGatewayRuntime.get_og_graph():
+    when no active agent session exists, the shared skill engine is used via
+    og_graph_from_engine(), so the OG Explorer shows default-skill nodes immediately.
+    """
+    from pathlib import Path
+
+    from hachi.gateway.orchestrator import og_graph_from_engine
+    from hachi.og_engine.engine import SkillEngine
+
+    engine = SkillEngine(agent_role="orchestrator")
+    default_skills_dir = Path(__file__).parent.parent / "src" / "hachi" / "default_skills"
+    engine.load_directory(default_skills_dir)
+
+    result = og_graph_from_engine(engine)
+
+    assert "nodes" in result, "Result must contain 'nodes' key"
+    assert "count" in result, "Result must contain 'count' key"
+    assert len(result["nodes"]) > 0, (
+        "og_graph_from_engine must return >0 nodes when engine is loaded "
+        "with default_skills"
+    )
+    assert result["count"] == len(result["nodes"]), (
+        "'count' must equal len(nodes)"
+    )

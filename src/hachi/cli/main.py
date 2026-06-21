@@ -785,12 +785,31 @@ class _InProcessGatewayRuntime:
         return results
 
     def get_og_graph(self) -> dict:
-        """Return the ObjectGraph node graph (route: GET /og/graph)."""
+        """Return the ObjectGraph node graph (route: GET /og/graph).
+
+        When an active agent session exists, its skill engine (which includes
+        workspace skills) is used.  Before any session is started, falls back to
+        the process-shared skill engine populated by
+        :class:`~hachi.gateway.shared_services.ProcessSharedServices`, which
+        loads the bundled default skills at gateway boot time.  This ensures the
+        OG Explorer shows data even before the first conversation is opened.
+        """
+        from hachi.gateway.orchestrator import og_graph_from_engine
+
         with self._agents_lock:
             agent = next(iter(self._agents.values()), None)
-        if agent is None:
-            return {"nodes": []}
-        return agent.snapshot_og_graph()
+        if agent is not None:
+            return agent.snapshot_og_graph()
+
+        # No active session — fall back to the shared skill engine so the OG
+        # Explorer is populated from the default skills loaded at startup.
+        from hachi.gateway.shared_services import ProcessSharedServices
+
+        shared = ProcessSharedServices.instance()
+        if shared is not None and shared.skill_engine is not None:
+            return og_graph_from_engine(shared.skill_engine)
+
+        return {"nodes": [], "count": 0}
 
     def get_authoring_targets(self) -> list[dict]:
         """List editable .og and config targets from the workspace (route: GET /authoring/targets).
