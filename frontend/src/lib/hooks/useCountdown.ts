@@ -4,7 +4,7 @@
 // Expired approvals auto-decline via the store tickApprovals.
 // ============================================================
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useStore } from "../store/store";
 
 interface CountdownResult {
@@ -30,27 +30,45 @@ function fmt(ms: number): string {
  * auto-decline; this hook only drives per-card display.
  */
 export function useCountdown(expiresAt: number): CountdownResult {
-  const tickApprovals = useStore((s) => s.tickApprovals);
-  const tickRef = useRef(tickApprovals);
-  tickRef.current = tickApprovals;
-
-  const [ms, setMs] = useState<number>(() =>
-    Math.max(0, expiresAt - Date.now())
-  );
+  const [now, setNow] = useState<number>(() => Date.now());
 
   useEffect(() => {
-    // Immediately sync on mount / when expiresAt changes
-    setMs(Math.max(0, expiresAt - Date.now()));
+    return subscribeNow(setNow);
+  }, []);
 
-    const id = setInterval(() => {
-      const remaining = Math.max(0, expiresAt - Date.now());
-      setMs(remaining);
-      // Trigger global auto-decline check on every tick
-      tickRef.current();
-    }, 1000);
-
-    return () => clearInterval(id);
-  }, [expiresAt]);
+  const ms = Math.max(0, expiresAt - now);
 
   return { ms, label: fmt(ms) };
+}
+
+type NowListener = (now: number) => void;
+
+const nowListeners = new Set<NowListener>();
+let nowTickInterval: ReturnType<typeof setInterval> | null = null;
+
+function stopNowTickerIfIdle(): void {
+  if (nowListeners.size === 0 && nowTickInterval) {
+    clearInterval(nowTickInterval);
+    nowTickInterval = null;
+  }
+}
+
+function startNowTickerIfNeeded(): void {
+  if (nowTickInterval) return;
+  nowTickInterval = setInterval(() => {
+    const next = Date.now();
+    // One global auto-decline pass per second for all approval cards.
+    useStore.getState().tickApprovals();
+    nowListeners.forEach((listener) => listener(next));
+  }, 1000);
+}
+
+function subscribeNow(listener: NowListener): () => void {
+  nowListeners.add(listener);
+  startNowTickerIfNeeded();
+  listener(Date.now());
+  return () => {
+    nowListeners.delete(listener);
+    stopNowTickerIfIdle();
+  };
 }

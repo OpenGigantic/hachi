@@ -593,8 +593,8 @@ function Authoring() {
                             background: isSaving
                               ? 'var(--hachi-muted)'
                               : hoverSave
-                              ? 'var(--hachi-brand-hover)'
-                              : 'var(--hachi-brand)',
+                              ? 'var(--hachi-brand-active)'
+                              : 'var(--hachi-brand-hover)',
                             color: 'var(--hachi-canvas)',
                             transition: 'background var(--dur-fast) var(--ease)',
                             opacity: isSaving ? 0.6 : 1,
@@ -850,8 +850,8 @@ function Authoring() {
                           isGenerating || !authSel || !prompt.trim()
                             ? 'var(--hachi-muted)'
                             : hoverGenerate
-                            ? 'var(--hachi-brand-hover)'
-                            : 'var(--hachi-brand)',
+                            ? 'var(--hachi-brand-active)'
+                            : 'var(--hachi-brand-hover)',
                         color: 'var(--hachi-canvas)',
                         font: '500 13px var(--font-body)',
                         cursor:
@@ -1022,8 +1022,8 @@ function Authoring() {
                                 borderRadius: 10,
                                 border: '0.5px solid transparent',
                                 background: hoverApply
-                                  ? 'var(--hachi-brand-hover)'
-                                  : 'var(--hachi-brand)',
+                                  ? 'var(--hachi-brand-active)'
+                                  : 'var(--hachi-brand-hover)',
                                 color: 'var(--hachi-canvas)',
                                 font: '500 13px var(--font-body)',
                                 cursor: 'pointer',

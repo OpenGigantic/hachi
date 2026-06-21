@@ -3,8 +3,9 @@
  * Cream/bone carry the warmth; ink carries the words. Flat, warm, premium. */
 :root {
   /* — brand — */
-  --hachi-brand:        #D64933;  /* torii red — mark, primary buttons, key accents */
-  --hachi-brand-hover:  #C23E2C;
+  --hachi-brand:        #D64933;  /* torii red — mark, key accents, icons */
+  --hachi-brand-hover:  #C23E2C;  /* primary button default bg (passes WCAG AA 4.84:1 on canvas) */
+  --hachi-brand-active: #A8351E;  /* primary button hover/pressed bg */
   --hachi-brand-tint:   #FBE7E0;  /* subtle red bg / focus ring */
 
   /* — ink + neutrals — */
@@ -21,7 +22,8 @@
   --hachi-trust:        #2F4B7C;  /* navy — links, secondary, idle "listening" */
   --hachi-working:      #E0922E;  /* amber — in progress */
   --hachi-success:      #3F9D6B;  /* green — done */
-  --hachi-danger:       #C0392B;  /* destructive — distinct from brand red */
+  --hachi-danger:       #C0392B;  /* destructive dot/border — distinct from brand red */
+  --hachi-danger-fg:    #922B21;  /* danger text on --hachi-danger-tint bg (passes WCAG AA) */
 
   /* — status pill tints (tinted bg / same-family text) — */
   --hachi-working-tint: #FBEBD6;
@@ -50,6 +52,7 @@
   :root {
     --hachi-brand:        #E25A44;  /* red lifts on dark */
     --hachi-brand-hover:  #D64933;
+    --hachi-brand-active: #C23E2C;
     --hachi-brand-tint:   #3A211C;
 
     --hachi-ink:          #FBF7EF;  /* ink becomes bone */
@@ -64,6 +67,7 @@
     --hachi-trust-tint:   #1E2735;
     --hachi-success-tint: #182A22;
     --hachi-danger-tint:  #321E1C;
+    --hachi-danger-fg:    #E07068;  /* danger text on dark danger-tint bg */
 
     color-scheme: dark;
   }
@@ -71,16 +75,18 @@
 
 /* — explicit theme scopes (override the media query when set on an ancestor) — */
 [data-theme="light"] {
-  --hachi-brand: #D64933; --hachi-brand-hover: #C23E2C; --hachi-brand-tint: #FBE7E0;
+  --hachi-brand: #D64933; --hachi-brand-hover: #C23E2C; --hachi-brand-active: #A8351E; --hachi-brand-tint: #FBE7E0;
   --hachi-ink: #1C1A20; --hachi-muted: #696460; --hachi-line: #E2D9C9;
   --hachi-canvas: #FBF7EF; --hachi-surface: #FFFDF8; --hachi-cream: #F3E9D2;
   --hachi-working-tint:#FBEBD6; --hachi-trust-tint:#E4EAF3; --hachi-success-tint:#DEF0E6; --hachi-danger-tint:#F6DEDB;
+  --hachi-danger-fg: #922B21;
   color-scheme: light;
 }
 [data-theme="dark"] {
-  --hachi-brand: #E25A44; --hachi-brand-hover: #D64933; --hachi-brand-tint: #3A211C;
+  --hachi-brand: #E25A44; --hachi-brand-hover: #D64933; --hachi-brand-active: #C23E2C; --hachi-brand-tint: #3A211C;
   --hachi-ink: #FBF7EF; --hachi-muted: #9C968C; --hachi-line: #322F38;
   --hachi-canvas: #16151A; --hachi-surface: #201E25; --hachi-cream: #2A2730;
   --hachi-working-tint:#34281A; --hachi-trust-tint:#1E2735; --hachi-success-tint:#182A22; --hachi-danger-tint:#321E1C;
+  --hachi-danger-fg: #E07068;
   color-scheme: dark;
 }

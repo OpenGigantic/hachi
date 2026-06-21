@@ -86,13 +86,13 @@ export async function streamSSE(
   // Default 3 minutes — long enough for slow tasks but prevents zombie streams.
   const idleMs = opts?.idleTimeoutMs ?? 3 * 60 * 1000;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  // We create a separate AbortController to cancel the reader on idle timeout.
-  const idleAbort = new AbortController();
-
   function resetIdleTimer() {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      idleAbort.abort();
+      // ReadableStreamDefaultReader.read() has no AbortSignal overload. Cancel
+      // the reader directly so the pending read resolves without retaining one
+      // abort listener per received chunk.
+      void reader.cancel("SSE idle timeout").catch(() => { /* already closed */ });
     }, idleMs);
   }
 
@@ -119,34 +119,15 @@ export async function streamSSE(
   // If the caller aborts, we also want to cancel the reader (not just the
   // fetch) so the loop exits cleanly without waiting for the next chunk.
   const callerSignal = opts?.signal;
-  const onCallerAbort = () => { idleAbort.abort(); };
+  const onCallerAbort = () => {
+    void reader.cancel("SSE caller aborted").catch(() => { /* already closed */ });
+  };
   callerSignal?.addEventListener("abort", onCallerAbort);
 
   try {
     resetIdleTimer();
     for (;;) {
-      // Race between the actual read and an idle/caller abort.
-      const readPromise = reader.read();
-      // If the idle controller has been aborted, throw an AbortError to exit.
-      if (idleAbort.signal.aborted) {
-        const abortErr = new DOMException("SSE idle timeout", "AbortError");
-        throw abortErr;
-      }
-
-      // We can't pass a signal to reader.read(), so we race it with a rejection
-      // that fires when idleAbort triggers.
-      const { value, done } = await Promise.race([
-        readPromise,
-        new Promise<never>((_, reject) => {
-          if (idleAbort.signal.aborted) {
-            reject(new DOMException("SSE idle timeout", "AbortError"));
-          } else {
-            idleAbort.signal.addEventListener("abort", () => {
-              reject(new DOMException("SSE idle timeout", "AbortError"));
-            }, { once: true });
-          }
-        }),
-      ]);
+      const { value, done } = await reader.read();
 
       resetIdleTimer(); // chunk arrived — reset the idle window
       if (done) break;

@@ -68,7 +68,7 @@ export function GovernanceBar() {
         gap: "16px",
         padding: "0 16px",
         fontFamily: "var(--font-mono)",
-        fontSize: "11px",
+        fontSize: "12px",
         color: "var(--hachi-muted)",
         userSelect: "none",
       }}
@@ -120,7 +120,7 @@ export function GovernanceBar() {
             fontWeight: overBudget ? 600 : 400,
           }}
         >
-          ${spent.toFixed(3)}
+          ${spent.toFixed(2)}
         </span>
         {budget > 0 && (
           <>
