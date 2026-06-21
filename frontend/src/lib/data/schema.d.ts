@@ -1541,6 +1541,11 @@ export interface components {
         SessionMessageRequest: {
             /** Prompt */
             prompt: string;
+            /**
+             * Attachment Ids
+             * @default []
+             */
+            attachment_ids: string[];
         };
         /** SessionMessageResponse */
         SessionMessageResponse: {

@@ -3760,6 +3760,14 @@
           "prompt": {
             "type": "string",
             "title": "Prompt"
+          },
+          "attachment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Attachment Ids",
+            "default": []
           }
         },
         "type": "object",

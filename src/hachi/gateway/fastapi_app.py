@@ -102,6 +102,7 @@ class SessionCreateResponse(BaseModel):
 
 class SessionMessageRequest(BaseModel):
     prompt: str
+    attachment_ids: list[str] = []
 
 
 class SessionMessageResponse(BaseModel):
@@ -623,6 +624,50 @@ def create_gateway_app(
         "  /help  — Show this help text"
     )
 
+    def _build_augmented_prompt(prompt: str, attachment_ids: list[str]) -> str:
+        """Append file-attachment context blocks to *prompt* (graceful: errors skipped)."""
+        if not attachment_ids:
+            return prompt
+        try:
+            from hachi.core.files.store import FileMetaStore, LocalStorageProvider
+            from hachi.core.paths import get_hachi_paths
+
+            paths = get_hachi_paths()
+            meta_store = FileMetaStore(paths.files_db)
+            storage = LocalStorageProvider(paths.blobs_dir)
+
+            parts: list[str] = []
+            for file_id in attachment_ids[:5]:  # cap at 5 attachments per turn
+                try:
+                    meta = meta_store.get(file_id)
+                    if meta is None:
+                        continue
+                    if meta.media_type.startswith("image/"):
+                        blob_path = str(paths.blobs_dir / file_id)
+                        parts.append(
+                            f"[Attached image: {meta.name}]\n"
+                            f"(Use the view_image tool with path: {blob_path})"
+                        )
+                    elif meta.extracted_text_ref:
+                        try:
+                            with storage.open(meta.extracted_text_ref) as f:
+                                text = f.read(4096).decode("utf-8", errors="replace")
+                            parts.append(f"[Attached file: {meta.name}]\n{text}")
+                        except Exception:
+                            parts.append(f"[Attached file: {meta.name} — extraction pending]")
+                    else:
+                        parts.append(
+                            f"[Attached file: {meta.name} ({meta.media_type})]"
+                            " — no extracted text yet"
+                        )
+                except Exception:
+                    continue
+            if not parts:
+                return prompt
+            return prompt.rstrip() + "\n\n" + "\n\n".join(parts)
+        except Exception:
+            return prompt
+
     def _handle_slash_command(session_id: str, prompt: str) -> dict[str, Any] | None:
         """Return a synthetic assistant response for leading-slash commands, or None.
 
@@ -668,7 +713,8 @@ def create_gateway_app(
         slash_result = _handle_slash_command(session_id, payload.prompt)
         if slash_result is not None:
             return slash_result
-        return control_plane.send_message(session_id=session_id, prompt=payload.prompt)
+        augmented = _build_augmented_prompt(payload.prompt, payload.attachment_ids)
+        return control_plane.send_message(session_id=session_id, prompt=augmented)
 
     @sessions.delete("/{session_id}", response_model=SessionCloseResponse)
     async def delete_session(session_id: str, request: Request) -> Any:
