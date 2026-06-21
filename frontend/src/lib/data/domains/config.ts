@@ -19,6 +19,7 @@ import { apiGet, apiSend, USE_MOCKS } from "../client";
 import { registerLoader } from "../live";
 import { dedupe } from "../dedupe";
 import { useStore } from "../../store/store";
+import { loadDailySpend } from "./spend";
 import type { SafetyLevel, Provider, AskRule } from "../types";
 
 // ---- Local types mirroring the gateway Python dataclasses ----
@@ -182,6 +183,12 @@ async function _loadConfigImpl(): Promise<void> {
     useStore
       .getState()
       .hydrate({ safety, askRules, provider, taskCap, dailyCap, budget: dailyCap, configLoaded: true });
+
+    // Restore today's real accumulated spend from the daily ledger so the
+    // spend bar reflects the correct value on every page load (not just during
+    // active streaming turns where SSE bumps it in real time).
+    await loadDailySpend();
+
     _hasEverSucceeded = true;
   } catch {
     if (!_hasEverSucceeded) {

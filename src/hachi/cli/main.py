@@ -16,6 +16,7 @@ import os
 import sys
 import threading
 from dataclasses import asdict
+from datetime import date as _date
 from pathlib import Path
 
 import typer
@@ -458,13 +459,13 @@ class _InProcessGatewayRuntime:
     def get_config(self) -> dict:
         config = load_effective_config()
         raw = config.model_dump(mode="python", exclude_none=True)
-        # Step 1: Ensure GET /config always includes a ``limits`` block with the
-        # frontend-facing keys ``per_task_cap_usd`` / ``daily_cap_usd`` so that
-        # caps saved via PUT /config/limits round-trip on reload.
-        # Internally the model stores max_turn_cost_usd / max_session_cost_usd.
+        # Ensure GET /config always includes a ``limits`` block with the frontend-facing
+        # keys ``per_task_cap_usd`` / ``daily_cap_usd`` so caps saved via PUT /config/limits
+        # round-trip on reload.
+        # Internally: max_turn_cost_usd = per-task cap, max_daily_cost_usd = daily cap.
         limits_block = raw.setdefault("limits", {})
-        limits_block["per_task_cap_usd"] = config.limits.max_turn_cost_usd
-        limits_block["daily_cap_usd"] = config.limits.max_session_cost_usd
+        limits_block["per_task_cap_usd"] = getattr(config.limits, "max_turn_cost_usd", None)
+        limits_block["daily_cap_usd"] = getattr(config.limits, "max_daily_cost_usd", None)
         return raw
 
     def update_provider(self, payload: dict) -> dict:
@@ -598,9 +599,7 @@ class _InProcessGatewayRuntime:
                         f"permissions.ask_before.{key} is not a recognised rule"
                     )
                 if not isinstance(value, bool):
-                    raise GatewayProtocolError(
-                        f"permissions.ask_before.{key} must be a boolean"
-                    )
+                    raise GatewayProtocolError(f"permissions.ask_before.{key} must be a boolean")
                 setattr(config.permissions.ask_before, key, value)
 
         write_global_config(config)
@@ -663,9 +662,7 @@ class _InProcessGatewayRuntime:
                 "api_key_env": getattr(config.provider, "api_key_env", None),
                 "base_url": getattr(config.provider, "base_url", None),
             }
-            client = create_llm_client(
-                provider_config, secret_store=create_default_secret_store()
-            )
+            client = create_llm_client(provider_config, secret_store=create_default_secret_store())
             try:
                 discovered = client.list_models()
             finally:
@@ -945,9 +942,7 @@ class _InProcessGatewayRuntime:
         }
 
         try:
-            client = create_llm_client(
-                provider_config, secret_store=create_default_secret_store()
-            )
+            client = create_llm_client(provider_config, secret_store=create_default_secret_store())
         except ValueError as exc:
             raise GatewayUnavailableError(
                 f"Cannot generate patch: LLM client unavailable — {exc}. "
@@ -984,9 +979,7 @@ class _InProcessGatewayRuntime:
 
         proposed = response.content.strip()
         if not proposed:
-            raise GatewayUnavailableError(
-                "LLM returned an empty response; cannot produce a diff."
-            )
+            raise GatewayUnavailableError("LLM returned an empty response; cannot produce a diff.")
 
         # Store pending proposal so apply() can write it.
         with self._authoring_lock:
@@ -1036,9 +1029,7 @@ class _InProcessGatewayRuntime:
             proposed = self._pending_proposals.get(name)
 
         if proposed is None:
-            raise GatewayProtocolError(
-                f"No pending proposal for '{name}'. Call /generate first."
-            )
+            raise GatewayProtocolError(f"No pending proposal for '{name}'. Call /generate first.")
 
         file_path = self._resolve_authoring_target_path(name)
         prior = file_path.read_text(encoding="utf-8")
@@ -1275,6 +1266,33 @@ class _InProcessGatewayRuntime:
 
         return {"turns": turns, "tidies": tidies, "models": models}
 
+    def get_spend_daily(self) -> dict:
+        """Return today's accumulated spend plus configured caps (GET /spend/daily).
+
+        Reads the daily_spend ledger from SQLite directly — no live agent needed.
+        Works immediately after a restart so the frontend can hydrate ``spent`` on load.
+
+        Returns:
+            Dict with:
+                ``spent_usd``     — cumulative spend for today (local calendar date).
+                ``daily_cap_usd`` — configured daily cap or ``None`` if unlimited.
+                ``task_cap_usd``  — configured per-task (turn) cap or ``None`` if unlimited.
+                ``date``          — today's ISO date string (e.g. ``"2026-06-22"``).
+        """
+        today = _date.today().isoformat()
+        store = SessionStore()
+        try:
+            spent = store.get_daily_spend(today)
+        finally:
+            store.shutdown()
+        config = load_effective_config()
+        return {
+            "spent_usd": spent,
+            "daily_cap_usd": config.limits.max_daily_cost_usd,
+            "task_cap_usd": config.limits.max_turn_cost_usd,
+            "date": today,
+        }
+
     def set_capability_enabled(self, cap_id: str, enabled: bool) -> dict:
         """Toggle a capability on/off and persist to global config (PUT /capabilities/{id}/enabled).
 
@@ -1342,12 +1360,12 @@ class _InProcessGatewayRuntime:
     def update_limits(self, payload: dict) -> dict:
         """Persist per-task and daily spend caps to global config (PUT /config/limits).
 
-        Reads the existing config, updates limits.max_turn_cost_usd and
-        limits.max_session_cost_usd (frontend terms: per_task_cap_usd / daily_cap_usd),
+        Reads the existing config, updates limits.max_turn_cost_usd (frontend:
+        ``per_task_cap_usd``) and limits.max_daily_cost_usd (frontend: ``daily_cap_usd``),
         writes back, and returns the updated config dump.
 
         Args:
-            payload: Dict with optional per_task_cap_usd and daily_cap_usd (float, USD).
+            payload: Dict with optional ``per_task_cap_usd`` and ``daily_cap_usd`` (float, USD).
 
         Returns:
             Updated config dict.
@@ -1365,7 +1383,9 @@ class _InProcessGatewayRuntime:
         if daily is not None:
             try:
                 val = float(daily)
-                config.limits.max_session_cost_usd = val if val > 0 else None
+                # max_daily_cost_usd is the rolling calendar-day cap; distinct from
+                # max_session_cost_usd which caps a single conversation session.
+                config.limits.max_daily_cost_usd = val if val > 0 else None
             except (TypeError, ValueError):
                 raise GatewayProtocolError("daily_cap_usd must be a number") from None
 
@@ -1392,9 +1412,7 @@ class _InProcessGatewayRuntime:
 
         permissions_file = get_permissions_file()
         if not permissions_file.exists():
-            raise GatewayProtocolError(
-                "device-permissions.og not found — run `hachi setup` first"
-            )
+            raise GatewayProtocolError("device-permissions.og not found — run `hachi setup` first")
 
         resolved = str(_Path(path).expanduser().resolve())
         content = permissions_file.read_text(encoding="utf-8")
@@ -1432,9 +1450,7 @@ class _InProcessGatewayRuntime:
 
         permissions_file = get_permissions_file()
         if not permissions_file.exists():
-            raise GatewayProtocolError(
-                "device-permissions.og not found — run `hachi setup` first"
-            )
+            raise GatewayProtocolError("device-permissions.og not found — run `hachi setup` first")
 
         content = permissions_file.read_text(encoding="utf-8")
         lines = content.splitlines()
@@ -1503,6 +1519,7 @@ class _InProcessGatewayRuntime:
         tmp = config_toml.with_name(f"{config_toml.name}.tmp")
         tmp.write_text(_tomlkit.dumps(doc), encoding="utf-8")
         import os as _os
+
         _os.replace(tmp, config_toml)
 
         return {"ok": True, "request": req, "action": act, "already_existed": False}
@@ -2008,6 +2025,7 @@ def _build_gateway_control_plane(
         authoring_revert=support.authoring_revert,
         authoring_save_source=support.authoring_save_source,
         get_spend=runtime.get_spend if runtime else None,
+        get_spend_daily=support.get_spend_daily,
         set_capability_enabled=support.set_capability_enabled,
         # Memory CRUD:
         add_memory_fact=runtime.add_memory_fact if runtime else None,

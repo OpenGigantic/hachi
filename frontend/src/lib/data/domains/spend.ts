@@ -118,3 +118,53 @@ async function _loadSpendImpl(): Promise<void> {
 }
 
 registerLoader("spend", loadSpend);
+
+// ============================================================
+// Daily spend ledger — GET /spend/daily
+// ============================================================
+
+interface GatewayDailySpend {
+  spent_usd: number;
+  daily_cap_usd: number | null;
+  task_cap_usd: number | null;
+  date: string;
+}
+
+/**
+ * Fetch today's accumulated spend from the gateway daily ledger and hydrate
+ * the store's ``spent``, ``dailyCap``, ``budget``, and ``taskCap`` slices.
+ *
+ * Called from {@link loadConfig} on every page load so ``spent`` survives a
+ * browser refresh.  The live SSE ``usage.updated`` path continues to bump
+ * ``spent`` in real time during an active session; this is the persistent
+ * restore path for between-session and post-reload state.
+ *
+ * Never throws — a network failure leaves the store at its prior value.
+ */
+export async function loadDailySpend(): Promise<void> {
+  if (USE_MOCKS) return; // mock mode: fixtures are already seeded
+
+  try {
+    const data = await apiGet<GatewayDailySpend>("/spend/daily");
+
+    const patch: Record<string, number> = {};
+
+    if (typeof data.spent_usd === "number") {
+      patch.spent = data.spent_usd;
+    }
+    if (typeof data.daily_cap_usd === "number" && data.daily_cap_usd > 0) {
+      patch.dailyCap = data.daily_cap_usd;
+      patch.budget = data.daily_cap_usd;
+    }
+    if (typeof data.task_cap_usd === "number" && data.task_cap_usd > 0) {
+      patch.taskCap = data.task_cap_usd;
+    }
+
+    if (Object.keys(patch).length > 0) {
+      useStore.getState().hydrate(patch);
+    }
+  } catch {
+    // Network errors surface the reconnecting banner via client.ts callback.
+    // Silently leave the store at its current value.
+  }
+}

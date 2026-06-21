@@ -49,7 +49,7 @@ class _FakeResolvedConfig:
     def __init__(self, per_task: float | None = None, daily: float | None = None) -> None:
         self.limits = SimpleNamespace(
             max_turn_cost_usd=per_task,
-            max_session_cost_usd=daily,
+            max_daily_cost_usd=daily,
         )
         self.provider = SimpleNamespace(
             kind="anthropic",
