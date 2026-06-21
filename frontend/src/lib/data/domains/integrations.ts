@@ -18,6 +18,25 @@ import type { Integration, McpServer, McpTool } from "../types";
 // 1. Raw gateway shapes (mirror Python dicts exactly)
 // ============================================================
 
+/**
+ * A single credential field descriptor from the connector registry.
+ * Returned by GET /integrations so the UI can render the correct form.
+ */
+export interface CredentialFieldSpec {
+  /** Storage key used in the vault (e.g. "telegram_bot_token"). */
+  key: string;
+  /** Human-readable label for the form field. */
+  label: string;
+  /** When true the UI should use a password input. */
+  secret: boolean;
+  /** Example value shown as placeholder text. */
+  placeholder: string;
+  /** When true the field is not required for configured=true status. */
+  optional: boolean;
+  /** Short description shown below the field. */
+  help_text?: string;
+}
+
 /** Raw capability entry from GET /capabilities */
 interface GatewayCapability {
   id: string;
@@ -27,6 +46,18 @@ interface GatewayCapability {
   connected?: boolean;     // real OAuth token present
   auth_type?: "oauth2" | "apikey" | "none";
   secret_ref?: string | null;
+}
+
+/** Raw connector status entry from GET /integrations */
+interface GatewayIntegrationStatus {
+  id: string;
+  name?: string;
+  category?: string;
+  auth_type?: "oauth2" | "apikey" | "none";
+  configured?: boolean;
+  connected?: boolean;
+  status?: string;
+  credential_fields?: CredentialFieldSpec[];
 }
 
 /** Raw MCP server entry inside GET /runtime/mcp/inventory */
@@ -60,6 +91,11 @@ interface GatewayDisconnectResponse {
   message?: string;
 }
 
+/** Response from POST/DELETE /integrations/{id}/credentials */
+interface GatewayCredentialResponse extends GatewayIntegrationStatus {
+  id: string;
+}
+
 // ============================================================
 // 2. Extended Integration type with OAuth fields
 // ============================================================
@@ -72,8 +108,14 @@ export interface IntegrationExtended extends Integration {
   auth_type: "oauth2" | "apikey" | "none";
   /** True when a real token is stored for this connector. */
   connected: boolean;
-  /** True when the admin has configured client credentials for OAuth. */
+  /** True when the admin has configured client credentials for OAuth, or when
+   * all required apikey credential fields are present in the vault / env. */
   configured: boolean;
+  /**
+   * Field descriptors for apikey connectors.  Empty array for OAuth2 / none connectors.
+   * Returned by GET /integrations so the UI can render a dynamic credential form.
+   */
+  credential_fields: CredentialFieldSpec[];
 }
 
 // ============================================================
@@ -145,8 +187,9 @@ function iconFromId(id: string): string {
  * Adapt a raw GatewayCapability → UI IntegrationExtended.
  *
  * Status mapping:
- *   If auth_type === "oauth2": use `connected` field for real token presence
- *   Otherwise: configured && enabled → "connected", configured && !enabled → "degraded"
+ *   If auth_type === "oauth2": use `connected` field for real token presence.
+ *   If auth_type === "apikey": use `configured` field (vault/env creds present).
+ *   Otherwise: configured && enabled → "connected", configured && !enabled → "degraded".
  */
 function adaptCapability(raw: GatewayCapability): IntegrationExtended {
   const enabled = Boolean(raw.enabled);
@@ -157,6 +200,9 @@ function adaptCapability(raw: GatewayCapability): IntegrationExtended {
   let status: Integration["status"];
   if (authType === "oauth2") {
     status = connected ? "connected" : "none";
+  } else if (authType === "apikey") {
+    // For apikey connectors, configured = all required creds present.
+    status = configured ? "connected" : "none";
   } else {
     status = configured && enabled
       ? "connected"
@@ -175,6 +221,40 @@ function adaptCapability(raw: GatewayCapability): IntegrationExtended {
     auth_type: authType,
     connected,
     configured,
+    credential_fields: [],  // capabilities endpoint doesn't return these
+  };
+}
+
+/**
+ * Adapt a raw GatewayIntegrationStatus → UI IntegrationExtended.
+ *
+ * Used for the GET /integrations response which includes credential_fields.
+ */
+function adaptIntegrationStatus(raw: GatewayIntegrationStatus): IntegrationExtended {
+  const configured = Boolean(raw.configured);
+  const connected = Boolean(raw.connected);
+  const authType: IntegrationExtended["auth_type"] = raw.auth_type ?? "none";
+
+  let status: Integration["status"];
+  if (authType === "oauth2") {
+    status = connected ? "connected" : "none";
+  } else if (authType === "apikey") {
+    status = configured ? "connected" : "none";
+  } else {
+    status = "none";
+  }
+
+  return {
+    id: raw.id ?? "unknown",
+    icon: iconFromId(raw.id ?? ""),
+    name: raw.name ? (prettyName(raw.id ?? raw.name)) : prettyName(raw.id ?? "unknown"),
+    can: capabilityDescription(raw.id ?? ""),
+    status,
+    risky: isRisky(raw.id ?? ""),
+    auth_type: authType,
+    connected,
+    configured,
+    credential_fields: Array.isArray(raw.credential_fields) ? raw.credential_fields : [],
   };
 }
 
@@ -227,8 +307,13 @@ function adaptMcpTools(raw: GatewayMcpServer): McpTool[] {
 let _hasEverSucceeded = false;
 
 /**
- * Load native integrations (GET /capabilities) and MCP inventory
- * (GET /runtime/mcp/inventory), then hydrate the store.
+ * Load native integrations and MCP inventory, then hydrate the store.
+ *
+ * Strategy:
+ *   1. Try GET /integrations (connector registry — includes credential_fields).
+ *      Falls back to GET /capabilities (legacy — no credential_fields) if that
+ *      endpoint is unavailable (older gateway versions).
+ *   2. GET /runtime/mcp/inventory for MCP server list.
  */
 export async function loadIntegrations(): Promise<void> {
   if (USE_MOCKS) return; // keep seeded fixtures
@@ -236,14 +321,23 @@ export async function loadIntegrations(): Promise<void> {
   const { hydrate } = useStore.getState();
 
   try {
-    const [capabilities, mcpInventory] = await Promise.all([
-      apiGet<GatewayCapability[]>("/capabilities"),
+    const [integrationStatuses, mcpInventory] = await Promise.all([
+      // Prefer /integrations (has credential_fields); fall back to /capabilities.
+      apiGet<GatewayIntegrationStatus[]>("/integrations").catch(() =>
+        apiGet<GatewayCapability[]>("/capabilities").then((caps) =>
+          (Array.isArray(caps) ? caps : []) as GatewayIntegrationStatus[]
+        )
+      ),
       apiGet<GatewayMcpInventory>("/runtime/mcp/inventory"),
     ]);
 
-    const rawCaps = Array.isArray(capabilities) ? capabilities : [];
-    // We adapt to IntegrationExtended but store as Integration (extends it).
-    const integrations: Integration[] = rawCaps.map(adaptCapability);
+    const rawStatuses = Array.isArray(integrationStatuses) ? integrationStatuses : [];
+    // Prefer adaptIntegrationStatus (has credential_fields awareness).
+    const integrations: Integration[] = rawStatuses.map((raw) =>
+      "credential_fields" in raw
+        ? adaptIntegrationStatus(raw as GatewayIntegrationStatus)
+        : adaptCapability(raw as GatewayCapability)
+    );
 
     const rawServers: GatewayMcpServer[] = mcpInventory?.servers ?? [];
     const mcpServers: McpServer[] = rawServers.map(adaptMcpServer);
@@ -371,20 +465,72 @@ export async function startIntegrationOAuth(id: string): Promise<void> {
 }
 
 /**
+ * Submit apikey credentials for a connector.
+ *
+ * Contract (CONTRACT-APIKEY-CREDS):
+ *   POST /integrations/{id}/credentials
+ *   Body: { fields: { [key]: value } }
+ *   Response: updated connector status with configured/connected flags.
+ *
+ * On success, reloads the integrations list.
+ *
+ * @throws ApiError on network failure or backend validation error.
+ */
+export async function submitCredentials(
+  id: string,
+  fields: Record<string, string>,
+): Promise<void> {
+  if (USE_MOCKS) return;
+  await apiSend<GatewayCredentialResponse>("POST", `/integrations/${id}/credentials`, { fields });
+  await loadIntegrations();
+}
+
+/**
+ * Clear stored apikey credentials for a connector.
+ *
+ * Contract (CONTRACT-APIKEY-CREDS):
+ *   DELETE /integrations/{id}/credentials
+ *   Response: updated connector status with configured=false.
+ *
+ * On success, reloads the integrations list.
+ *
+ * @throws ApiError on network failure or backend error.
+ */
+export async function clearCredentials(id: string): Promise<void> {
+  if (USE_MOCKS) return;
+  await apiSend<GatewayCredentialResponse>("DELETE", `/integrations/${id}/credentials`);
+  await loadIntegrations();
+}
+
+/**
  * "Connect" an integration.
  *
  * - For oauth2 connectors: calls startIntegrationOAuth().
- * - For apikey/"none" connectors: calls PUT /capabilities/{id}/enabled with { enabled: true }
- *   (optimistic update).
+ * - For apikey connectors WITH credential_fields: caller should open a CredentialDialog
+ *   (this function signals that by returning "needs_credentials"). The integration list
+ *   item in the store carries the credential_fields schema.
+ * - For apikey/"none" connectors without credential_fields: calls PUT /capabilities/{id}/enabled
+ *   with { enabled: true } (optimistic update).
  *
  * Returns false if already in-flight (prevents double-click duplicates).
+ * Returns "needs_credentials" when the connector needs a credential dialog.
  */
-export async function connectIntegration(id: string, authType?: "oauth2" | "apikey" | "none"): Promise<boolean> {
+export async function connectIntegration(
+  id: string,
+  authType?: "oauth2" | "apikey" | "none",
+  credentialFields?: CredentialFieldSpec[],
+): Promise<boolean | "needs_credentials"> {
   if (_connectStatus.get(id) === "loading") return false;
 
   if (USE_MOCKS) {
     useStore.getState().connectIntegration(id);
     return true;
+  }
+
+  // Apikey connectors with declared credential fields need a credential dialog.
+  // Signal the caller to open the dialog instead of making a network call here.
+  if (authType === "apikey" && credentialFields && credentialFields.length > 0) {
+    return "needs_credentials";
   }
 
   _connectStatus.set(id, "loading");
@@ -416,11 +562,17 @@ export async function connectIntegration(id: string, authType?: "oauth2" | "apik
  * "Disconnect" an integration.
  *
  * - For oauth2 connectors: calls POST /integrations/{id}/disconnect to remove the token.
- * - For apikey/"none" connectors: calls PUT /capabilities/{id}/enabled with { enabled: false }.
+ * - For apikey connectors WITH credential_fields: calls DELETE /integrations/{id}/credentials.
+ * - For apikey/"none" connectors without credential_fields: calls
+ *   PUT /capabilities/{id}/enabled with { enabled: false }.
  *
  * Returns false if already in-flight.
  */
-export async function disconnectIntegration(id: string, authType?: "oauth2" | "apikey" | "none"): Promise<boolean> {
+export async function disconnectIntegration(
+  id: string,
+  authType?: "oauth2" | "apikey" | "none",
+  credentialFields?: CredentialFieldSpec[],
+): Promise<boolean> {
   if (_disconnectStatus.get(id) === "loading") return false;
 
   if (USE_MOCKS) {
@@ -438,6 +590,8 @@ export async function disconnectIntegration(id: string, authType?: "oauth2" | "a
         `/integrations/${id}/disconnect`,
       );
       await loadIntegrations();
+    } else if (authType === "apikey" && credentialFields && credentialFields.length > 0) {
+      await clearCredentials(id);  // calls DELETE /integrations/{id}/credentials + reload
     } else {
       useStore.getState().disconnectIntegration(id);
       await apiSend<{ id: string; enabled: boolean; configured: boolean }>(
