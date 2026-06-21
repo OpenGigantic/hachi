@@ -38,6 +38,72 @@ let _cursor = 0;
 // arrives we clear the flag so the next text event opens a fresh line.
 let _textLineActive = false;
 
+// ── Run-lines flush batching ──────────────────────────────────────────────────
+// During conversation streaming (_deltaTargetId is set), text.stream.delta
+// events ALSO drive driveRunSlice which calls store.hydrate({ runLines })
+// synchronously on every token — bypassing the 48ms flush throttle and causing
+// redundant re-renders in any subscriber to runLines.  We buffer the pending
+// runLines text delta here and flush it on the same cadence as flushDeltaBuffer.
+// Non-text run events (tool.call.*, thinking.step, etc.) still write synchronously
+// since they are infrequent and carry structural information.
+let _pendingRunLineText = "";
+let _runLineRafHandle: number | null = null;
+let _runLineLastFlushTs = 0;
+
+function flushRunLineBuffer(): void {
+  _runLineRafHandle = null;
+  _runLineLastFlushTs = nowMs();
+  if (!_pendingRunLineText) return;
+  const text = _pendingRunLineText;
+  _pendingRunLineText = "";
+  const store = useStore.getState();
+  if (_textLineActive && store.runLines.length > 0) {
+    const lines = [...store.runLines];
+    const last = lines[lines.length - 1];
+    lines[lines.length - 1] = { ...last, text: last.text + text };
+    store.hydrate({ runLines: lines.length > RUN_LINES_MAX ? lines.slice(-RUN_LINES_MAX) : lines });
+  } else {
+    _textLineActive = true;
+    const next = [...store.runLines, { text }];
+    store.hydrate({ runLines: next.length > RUN_LINES_MAX ? next.slice(-RUN_LINES_MAX) : next });
+  }
+}
+
+function scheduleRunLineFlush(): void {
+  if (_runLineRafHandle != null) return;
+  const elapsed = nowMs() - _runLineLastFlushTs;
+  if (elapsed >= FLUSH_MIN_INTERVAL_MS && typeof requestAnimationFrame !== "undefined") {
+    _runLineRafHandle = requestAnimationFrame(flushRunLineBuffer);
+  } else {
+    const wait = Math.max(0, FLUSH_MIN_INTERVAL_MS - elapsed);
+    _runLineRafHandle = setTimeout(flushRunLineBuffer, wait) as unknown as number;
+  }
+}
+
+function flushRunLineBufferSync(): void {
+  if (_runLineRafHandle != null) {
+    if (typeof cancelAnimationFrame !== "undefined") {
+      cancelAnimationFrame(_runLineRafHandle);
+    } else {
+      clearTimeout(_runLineRafHandle as unknown as ReturnType<typeof setTimeout>);
+    }
+    _runLineRafHandle = null;
+  }
+  flushRunLineBuffer();
+}
+
+function resetRunLineBuffer(): void {
+  if (_runLineRafHandle != null) {
+    if (typeof cancelAnimationFrame !== "undefined") {
+      cancelAnimationFrame(_runLineRafHandle);
+    } else {
+      clearTimeout(_runLineRafHandle as unknown as ReturnType<typeof setTimeout>);
+    }
+    _runLineRafHandle = null;
+  }
+  _pendingRunLineText = "";
+}
+
 // ── Run-buffer hard cap ───────────────────────────────────────────────────────
 // Defence-in-depth: pathological runs can't grow runLines without bound.
 const RUN_LINES_MAX = 400;
@@ -111,6 +177,8 @@ function flushDeltaBufferSync(): void {
     _rafHandle = null;
   }
   flushDeltaBuffer();
+  // Also flush any pending run-line text so the Work view is up to date.
+  flushRunLineBufferSync();
 }
 
 /** Reset the delta buffer between turns. */
@@ -125,6 +193,8 @@ function resetDeltaBuffer(): void {
   }
   _deltaBuffer = "";
   _deltaTargetId = null;
+  // Also reset the run-line buffer so stale text doesn't bleed into the next turn.
+  resetRunLineBuffer();
 }
 
 // ── Cost baseline tracking ────────────────────────────────────────────────────
@@ -311,17 +381,28 @@ function driveRunSlice(eventType: string, payload: Record<string, unknown>): voi
     case "text.stream.delta": {
       const text = typeof payload.text === "string" ? payload.text : "";
       if (!text) break;
-      if (_textLineActive && store.runLines.length > 0) {
-        // Append to the last line in-place
-        const lines = [...store.runLines];
-        const last = lines[lines.length - 1];
-        lines[lines.length - 1] = { ...last, text: last.text + text };
-        // Hard-cap: keep only the last RUN_LINES_MAX entries
-        store.hydrate({ runLines: lines.length > RUN_LINES_MAX ? lines.slice(-RUN_LINES_MAX) : lines });
+      // When a conversation delta target is active, the text is already being
+      // rendered via the throttled appendTextDelta/flushDeltaBuffer path.
+      // Coalesce the runLines text update onto the same ~48ms cadence so we
+      // don't call store.hydrate({ runLines }) synchronously on every token
+      // (which would bypass the flush throttle and re-render all runLines
+      // subscribers at full token rate — ~20-50/s).
+      if (_deltaTargetId != null) {
+        _pendingRunLineText += text;
+        scheduleRunLineFlush();
       } else {
-        _textLineActive = true;
-        const next = [...store.runLines, { text }];
-        store.hydrate({ runLines: next.length > RUN_LINES_MAX ? next.slice(-RUN_LINES_MAX) : next });
+        // No active conversation stream (run-only view): write synchronously
+        // so the Work/Run view sees text immediately without a delta target.
+        if (_textLineActive && store.runLines.length > 0) {
+          const lines = [...store.runLines];
+          const last = lines[lines.length - 1];
+          lines[lines.length - 1] = { ...last, text: last.text + text };
+          store.hydrate({ runLines: lines.length > RUN_LINES_MAX ? lines.slice(-RUN_LINES_MAX) : lines });
+        } else {
+          _textLineActive = true;
+          const next = [...store.runLines, { text }];
+          store.hydrate({ runLines: next.length > RUN_LINES_MAX ? next.slice(-RUN_LINES_MAX) : next });
+        }
       }
       break;
     }
@@ -405,6 +486,8 @@ function driveRunSlice(eventType: string, payload: Record<string, unknown>): voi
 
     case "session.chat.completed": {
       _textLineActive = false;
+      // Flush any pending buffered run-line text so it appears before "✓ done"
+      flushRunLineBufferSync();
       const doneLines = [...store.runLines, { text: "✓ done", tone: "success" }];
       const donePack = store.runPack.map((p) => ({ ...p, status: "done" as const }));
       store.hydrate({

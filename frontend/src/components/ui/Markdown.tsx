@@ -9,6 +9,7 @@
 // Streaming-safe: never throws on partial/unterminated input.
 // Unclosed markers render as literal text until the closing marker arrives.
 
+import { memo, useMemo } from 'react'
 import type { ReactNode, CSSProperties } from 'react'
 
 // ---- URL sanitizer --------------------------------------------------
@@ -353,13 +354,20 @@ function renderBlock(block: BlockNode, blockIdx: number): ReactNode {
 }
 
 // ---- Public component -----------------------------------------------
+//
+// Wrapped in React.memo so that parent re-renders (e.g. store flushes that only
+// change the streaming message) do NOT re-render completed message bubbles.
+// parseBlocks is additionally memoized on `text` so re-parsing only happens when
+// the text prop actually changes — not on every store flush that re-creates the
+// parent component's subtree.
 
-export function Markdown({ text }: { text: string }): JSX.Element {
+export const Markdown = memo(function Markdown({ text }: { text: string }): JSX.Element {
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- memo wrapper is a function component
+  const blocks = useMemo(() => parseBlocks(text), [text])
+
   if (text === '') {
     return <span />
   }
-
-  const blocks = parseBlocks(text)
 
   return (
     <div
@@ -371,4 +379,4 @@ export function Markdown({ text }: { text: string }): JSX.Element {
       {blocks.map((block, i) => renderBlock(block, i))}
     </div>
   )
-}
+})
