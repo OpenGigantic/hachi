@@ -1075,6 +1075,7 @@ function OgExplorer() {
     >
       {/* header */}
       <div
+        className="hachi-og-header"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -1105,7 +1106,7 @@ function OgExplorer() {
 
       {/* scrollable body */}
       <div
-        className="hachi-scroll"
+        className="hachi-scroll hachi-og-body"
         style={{ flex: 1, overflow: 'auto', padding: '24px 32px 64px' }}
       >
         <div
@@ -1136,6 +1137,7 @@ function OgExplorer() {
 
           {/* stat cards */}
           <div
+            className="hachi-og-stat-grid"
             style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(4, 1fr)',
@@ -1168,6 +1170,7 @@ function OgExplorer() {
 
           {/* main two-column area */}
           <div
+            className="hachi-og-panels"
             style={{
               display: 'flex',
               flexWrap: 'wrap',
@@ -1233,24 +1236,53 @@ function OgExplorer() {
                 </div>
               </div>
 
-              {/* graph view */}
-              {isGraph && (
-                <GraphPanel
-                  nodes={ogNodes}
-                  ogSel={ogSel}
-                  ogHover={ogHover}
-                  setOgSel={setOgSel}
-                  setOgHover={setOgHover}
-                />
-              )}
+              {/* empty state — shown while gateway hasn't returned nodes yet */}
+              {ogNodes.length === 0 ? (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 10,
+                    padding: '56px 32px',
+                    color: 'var(--hachi-muted)',
+                    textAlign: 'center',
+                  }}
+                >
+                  <span style={{ opacity: 0.4 }}>
+                    <Icon name="network" size={32} />
+                  </span>
+                  <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--hachi-ink)' }}>
+                    No graph data yet
+                  </div>
+                  <div style={{ fontSize: 13, maxWidth: 320, lineHeight: '20px' }}>
+                    Connect to a running Hachi gateway — the .og graph populates
+                    once the skill index is built.
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* graph view */}
+                  {isGraph && (
+                    <GraphPanel
+                      nodes={ogNodes}
+                      ogSel={ogSel}
+                      ogHover={ogHover}
+                      setOgSel={setOgSel}
+                      setOgHover={setOgHover}
+                    />
+                  )}
 
-              {/* tree view */}
-              {isTree && (
-                <TreePanel
-                  nodes={ogNodes}
-                  ogSel={ogSel}
-                  setOgSel={setOgSel}
-                />
+                  {/* tree view */}
+                  {isTree && (
+                    <TreePanel
+                      nodes={ogNodes}
+                      ogSel={ogSel}
+                      setOgSel={setOgSel}
+                    />
+                  )}
+                </>
               )}
             </div>
 

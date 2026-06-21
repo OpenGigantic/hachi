@@ -68,6 +68,7 @@ class MCPServerSnapshot:
     status: str
     tool_count: int
     tools: tuple[str, ...]
+    transport: str = "stdio"
 
 
 @dataclass(frozen=True, slots=True)

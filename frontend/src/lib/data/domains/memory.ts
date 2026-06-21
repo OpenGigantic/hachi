@@ -119,7 +119,6 @@ export async function loadMemory(): Promise<void> {
       blocked: (raw.blocked ?? []).map(adaptBlockedItem),
       proposed: adaptProposed(raw.proposed),
     });
-    useStore.getState().setReconnecting(false);
     _hasEverSucceeded = true;
   } catch {
     if (!_hasEverSucceeded) {
@@ -127,10 +126,8 @@ export async function loadMemory(): Promise<void> {
       // fabricated memory as if it were real gateway data.
       useStore.getState().hydrate({ memGroups: [], blocked: [], proposed: null });
     }
-    // Whether or not this is the first load, flag reconnecting so the UI
-    // shows the reconnecting indicator. Last-known-good real data is
-    // preserved after the first success.
-    useStore.getState().setReconnecting(true);
+    // Reconnecting flag is now managed centrally by client.ts via the
+    // registered callback — no per-domain setReconnecting calls needed here.
   }
 }
 
@@ -153,7 +150,7 @@ export async function recallMemory(query: string): Promise<void> {
       // First-load failure: clear fixture recall hits so they don't appear real.
       useStore.getState().hydrate({ recall: [] });
     }
-    useStore.getState().setReconnecting(true);
+    // Reconnecting flag managed centrally by client.ts.
   }
 }
 
@@ -179,28 +176,30 @@ interface GatewayFactDeleteResponse {
 }
 
 /**
- * Add a new fact to the given group. Optimistically inserts an empty fact in
- * the store and opens it for editing; on success the server returns the real
- * content-hash id and we re-hydrate from GET /memory so ids are accurate.
+ * Add a new fact to the given vault group.
  *
- * In MOCK mode: delegates entirely to the store action (optimistic-only).
+ * Valid groups: "core_memory" | "user_profile" | "agent_profile"
+ *
+ * Unlike the old optimistic-only approach, this function POSTs immediately with
+ * the real text (non-empty) so the backend can validate and persist it before
+ * we re-hydrate the list. Throws an Error with a user-readable message on
+ * failure so callers can surface it in the UI.
+ *
+ * In MOCK mode: skips the network call and resolves immediately.
  */
-export async function addFact(groupId: string, tempFactId: string): Promise<void> {
-  if (USE_MOCKS) return; // store action already ran optimistically
-  try {
-    await apiSend<GatewayFactAddResponse>("POST", "/memory/facts", {
-      group: groupId,
-      text: "",
-    });
-    // Re-hydrate so the temp id is replaced with the real content-hash id
-    await loadMemory();
-    useStore.getState().setReconnecting(false);
-  } catch {
-    // Optimistic state is already in place; re-fetch to revert if we can,
-    // otherwise leave it and flag reconnecting.
-    useStore.getState().setReconnecting(true);
-    void loadMemory(); // best-effort revert
+export async function addFact(groupId: string, text: string): Promise<void> {
+  if (!text.trim()) throw new Error("Fact text cannot be empty");
+  if (USE_MOCKS) return; // keep seeded fixtures, nothing to POST
+  const raw = await apiSend<GatewayFactAddResponse>("POST", "/memory/facts", {
+    group: groupId,
+    text: text.trim(),
+  });
+  // Surface backend-level errors (e.g. BLOCKED: or LIMIT_REACHED ids)
+  if (raw?.id && (raw.id.startsWith("BLOCKED:") || raw.id === "LIMIT_REACHED")) {
+    throw new Error(raw.id === "LIMIT_REACHED" ? "Memory limit reached" : `Blocked: ${raw.id.slice(8)}`);
   }
+  // Re-hydrate so the new content-hash id appears in the list
+  await loadMemory();
 }
 
 /**
@@ -235,9 +234,8 @@ export async function saveFact(
     }
     // Re-hydrate so the new content-hash id is accurate
     await loadMemory();
-    useStore.getState().setReconnecting(false);
   } catch {
-    useStore.getState().setReconnecting(true);
+    // Network errors surface the reconnecting banner via client.ts callback.
     void loadMemory(); // best-effort revert to server state
   }
 }
@@ -252,11 +250,10 @@ export async function delFact(groupId: string, factId: string): Promise<void> {
   if (USE_MOCKS) return; // store action already ran optimistically
   try {
     await apiSend<GatewayFactDeleteResponse>("DELETE", `/memory/facts/${factId}`);
-    useStore.getState().setReconnecting(false);
     // Re-hydrate for consistency (server may have recomputed group structure)
     await loadMemory();
   } catch {
-    useStore.getState().setReconnecting(true);
+    // Network errors surface the reconnecting banner via client.ts callback.
     void loadMemory(); // best-effort revert — puts the fact back if it still exists
   }
 }

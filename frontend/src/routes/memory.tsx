@@ -14,11 +14,21 @@ import { useStore } from '../lib/store/store'
 import {
   loadMemory,
   recallMemory,
+  addFact as addFactRemote,
   saveFact as saveFactRemote,
   delFact as delFactRemote,
 } from '../lib/data/domains/memory'
 import { Icon } from '../components/icons/Icon'
 import type { MemGroup, Fact, BlockedItem, RecallHit, Session, SkillUsage } from '../lib/data/types'
+
+// ============================================================
+// Valid vault collection names accepted by POST /memory/facts
+// ============================================================
+const VAULT_GROUPS: { id: string; label: string }[] = [
+  { id: 'user_profile', label: 'About me' },
+  { id: 'core_memory', label: 'Core memory' },
+  { id: 'agent_profile', label: 'Agent profile' },
+]
 
 // ============================================================
 // Small hover-aware button helpers (screen-local, no css class needed)
@@ -278,7 +288,6 @@ function Memory() {
   const editingFactId = useStore((s) => s.editingFactId)
   const editingText = useStore((s) => s.editingText)
 
-  const addFact = useStore((s) => s.addFact)
   const startEditFact = useStore((s) => s.startEditFact)
   const delFact = useStore((s) => s.delFact)
   const setEditText = useStore((s) => s.setEditText)
@@ -301,6 +310,16 @@ function Memory() {
   const [recallLoading, setRecallLoading] = useState(false)
   // MED-019: sub-view tabs — "Recall" vs "Audit & History"
   const [activeTab, setActiveTab] = useState<MemTab>('recall')
+
+  // --- inline add-fact form state ---
+  // addFormOpen: whether the inline form is visible
+  const [addFormOpen, setAddFormOpen] = useState(false)
+  // addFactText: text the user is typing for the new fact
+  const [addFactText, setAddFactText] = useState('')
+  // addFactGroup: which vault collection to write to (must match backend's _VAULT_GROUP_MAP)
+  const [addFactGroup, setAddFactGroup] = useState('user_profile')
+  // addFactSaving: true while the POST is in-flight (disables submit button)
+  const [addFactSaving, setAddFactSaving] = useState(false)
 
   // --- computed ---
   const q = memSearch.trim().toLowerCase()
@@ -344,6 +363,7 @@ function Memory() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* ---- header ---- */}
       <div
+        className="hachi-mem-header"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -373,9 +393,9 @@ function Memory() {
         {activeTab === 'recall' && (
           <TextBtn
             onClick={() => {
-              // Optimistic only: insert a temp fact in the store and open edit mode.
-              // The actual POST to /memory/facts fires when the user saves (saveFact).
-              addFact('you')
+              setAddFormOpen((v) => !v)
+              setAddFactText('')
+              setAddFactGroup('user_profile')
             }}
             style={{
               display: 'inline-flex',
@@ -398,6 +418,7 @@ function Memory() {
         )}
         {/* search */}
         <div
+          className="hachi-mem-search"
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -431,7 +452,7 @@ function Memory() {
 
       {/* ---- scrollable body ---- */}
       <div
-        className="hachi-scroll"
+        className="hachi-scroll hachi-mem-body"
         style={{ flex: 1, overflow: 'auto', padding: '24px 32px 64px' }}
       >
         <div
@@ -678,6 +699,143 @@ function Memory() {
                 </div>
               )}
 
+              {/* ---- inline add-fact form ---- */}
+              {addFormOpen && (
+                <div
+                  style={{
+                    background: 'var(--hachi-surface)',
+                    border: '0.5px solid var(--hachi-brand)',
+                    borderRadius: '16px',
+                    padding: '18px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '12px',
+                  }}
+                >
+                  <div style={{ fontWeight: 500, fontSize: '15px' }}>Add a fact</div>
+
+                  {/* Group selector */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                    <label
+                      htmlFor="add-fact-group"
+                      style={{ fontSize: '12px', color: 'var(--hachi-muted)', fontWeight: 500 }}
+                    >
+                      Collection
+                    </label>
+                    <select
+                      id="add-fact-group"
+                      value={addFactGroup}
+                      onChange={(e) => setAddFactGroup(e.target.value)}
+                      style={{
+                        height: '36px',
+                        padding: '0 10px',
+                        borderRadius: '8px',
+                        border: '0.5px solid var(--hachi-line)',
+                        background: 'var(--hachi-canvas)',
+                        font: 'inherit',
+                        fontSize: '13px',
+                        color: 'var(--hachi-ink)',
+                        cursor: 'pointer',
+                        outline: 'none',
+                      }}
+                    >
+                      {VAULT_GROUPS.map((vg) => (
+                        <option key={vg.id} value={vg.id}>
+                          {vg.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Fact text input */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                    <label
+                      htmlFor="add-fact-text"
+                      style={{ fontSize: '12px', color: 'var(--hachi-muted)', fontWeight: 500 }}
+                    >
+                      Fact
+                    </label>
+                    <textarea
+                      id="add-fact-text"
+                      value={addFactText}
+                      onChange={(e) => setAddFactText(e.target.value)}
+                      rows={3}
+                      placeholder="What should Hachi remember?"
+                      style={{
+                        width: '100%',
+                        resize: 'vertical',
+                        border: '0.5px solid var(--hachi-line)',
+                        borderRadius: '8px',
+                        background: 'var(--hachi-canvas)',
+                        font: 'inherit',
+                        fontSize: '14px',
+                        lineHeight: '21px',
+                        color: 'var(--hachi-ink)',
+                        outline: 'none',
+                        padding: '9px 11px',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </div>
+
+                  {/* Actions */}
+                  <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                    <TextBtn
+                      onClick={() => {
+                        setAddFormOpen(false)
+                        setAddFactText('')
+                      }}
+                      style={{
+                        height: '32px',
+                        padding: '0 13px',
+                        borderRadius: '8px',
+                        border: 'none',
+                        background: 'transparent',
+                        color: 'var(--hachi-muted)',
+                        font: '500 13px var(--font-body)',
+                        cursor: 'pointer',
+                      }}
+                      hoverStyle={{ background: 'var(--hachi-cream)' }}
+                    >
+                      Cancel
+                    </TextBtn>
+                    <TextBtn
+                      disabled={addFactSaving || !addFactText.trim()}
+                      onClick={() => {
+                        if (addFactSaving || !addFactText.trim()) return
+                        setAddFactSaving(true)
+                        void addFactRemote(addFactGroup, addFactText)
+                          .then(() => {
+                            setAddFormOpen(false)
+                            setAddFactText('')
+                            showToast('Saved — Hachi remembers it', 'success')
+                          })
+                          .catch((err: unknown) => {
+                            const msg = err instanceof Error ? err.message : 'Failed to save fact'
+                            showToast(msg, 'blocked')
+                          })
+                          .finally(() => {
+                            setAddFactSaving(false)
+                          })
+                      }}
+                      style={{
+                        height: '32px',
+                        padding: '0 14px',
+                        borderRadius: '8px',
+                        border: '0.5px solid transparent',
+                        background: 'var(--hachi-brand)',
+                        color: 'var(--hachi-canvas)',
+                        font: '500 13px var(--font-body)',
+                        cursor: addFactSaving || !addFactText.trim() ? 'not-allowed' : 'pointer',
+                      }}
+                      hoverStyle={{ background: 'var(--hachi-brand-hover)' }}
+                    >
+                      {addFactSaving ? 'Saving…' : 'Save fact'}
+                    </TextBtn>
+                  </div>
+                </div>
+              )}
+
               {/* ---- memory groups ---- */}
               {filteredGroups.map((g: MemGroup) => (
                 <div key={g.id}>
@@ -694,6 +852,7 @@ function Memory() {
                     {g.title}
                   </h2>
                   <div
+                    className="hachi-fact-grid"
                     style={{
                       display: 'grid',
                       gridTemplateColumns: '1fr 1fr',
@@ -712,8 +871,12 @@ function Memory() {
                           // 1. Optimistic: remove from store immediately
                           delFact(g.id, fact.id)
                           // 2. Network: DELETE /memory/facts/{fact_id}
-                          //    On failure, loadMemory() inside delFactRemote reverts
-                          void delFactRemote(g.id, fact.id)
+                          //    On failure, loadMemory() inside delFactRemote reverts and
+                          //    we show the error to the user.
+                          void delFactRemote(g.id, fact.id).catch((err: unknown) => {
+                            const msg = err instanceof Error ? err.message : 'Failed to delete fact'
+                            showToast(msg, 'blocked')
+                          })
                         }}
                         onSetEditText={setEditText}
                         onCancelEdit={cancelEdit}
@@ -722,8 +885,12 @@ function Memory() {
                           // 1. Optimistic: persist text in store immediately
                           saveFact(g.id, fact.id)
                           // 2. Network: DELETE old + POST new (or just POST for temp ids)
-                          //    On failure, loadMemory() inside saveFactRemote reverts
-                          void saveFactRemote(g.id, fact.id, text)
+                          //    On failure, loadMemory() inside saveFactRemote reverts and
+                          //    we show the error to the user.
+                          void saveFactRemote(g.id, fact.id, text).catch((err: unknown) => {
+                            const msg = err instanceof Error ? err.message : 'Failed to save fact'
+                            showToast(msg, 'blocked')
+                          })
                         }}
                       />
                     ))}

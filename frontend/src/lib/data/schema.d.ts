@@ -4,6 +4,105 @@
  */
 
 export interface paths {
+    "/integrations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Integrations
+         * @description List all connectors with their auth_type, configured, connected, and status fields.
+         */
+        get: operations["get_integrations_integrations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/{connector_id}/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Oauth Start
+         * @description Begin the OAuth2 flow for the given connector.
+         *
+         *     Returns ``{"authorization_url": "<provider-authorize-url>"}`` so the
+         *     frontend can open it in a popup window.
+         *
+         *     Returns HTTP 404 for unknown connectors, HTTP 409 when the connector's
+         *     client credentials (env vars) are not configured on this machine.
+         */
+        post: operations["post_oauth_start_integrations__connector_id__oauth_start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/{connector_id}/disconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Disconnect
+         * @description Revoke and delete stored OAuth2 tokens for a connector.
+         *
+         *     Returns ``{"connected": false, "connector_id": "<id>", ...status...}``.
+         *     Returns HTTP 404 for unknown connectors.
+         */
+        post: operations["post_disconnect_integrations__connector_id__disconnect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Oauth Callback
+         * @description OAuth2 callback — provider redirects the user's browser popup here.
+         *
+         *     Validates the CSRF state, exchanges the code for tokens, stores them,
+         *     then returns a small HTML page that:
+         *     - postMessages ``{type: "hachi_oauth_done", id: "<id>", ok: true/false}``
+         *       to the opener (the Hachi frontend).
+         *     - Closes the popup window.
+         *
+         *     This route is intentionally NOT protected by the Bearer auth dependency
+         *     because the provider redirects the user's browser here directly.
+         *     CSRF protection is provided by the ``state`` parameter.
+         */
+        get: operations["get_oauth_callback_integrations_oauth_callback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/": {
         parameters: {
             query?: never;
@@ -273,9 +372,13 @@ export interface paths {
         put?: never;
         /**
          * Post Mcp Register
-         * @description Register a new MCP server and add it to the runtime configuration.
+         * @description Register a new MCP server and bring it online without a gateway restart.
          *
-         *     Body: ``{"name": "...", "command": "npx", "args": "...", "env_vars": {}}``
+         *     Body (stdio transport):
+         *         ``{"name": "...", "command": "npx", "args": "...", "env_vars": {}}``
+         *
+         *     Body (sse / http transport):
+         *         ``{"name": "...", "transport": "sse"|"http", "url": "https://...", "headers": {}}``
          */
         post: operations["post_mcp_register_runtime_mcp_register_post"];
         delete?: never;
@@ -967,6 +1070,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/authoring/targets/{name}/source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Authoring Save Source
+         * @description Persist manually edited .og content for the named target.
+         *
+         *     Validates the target name (path-traversal guard), parses the content as a
+         *     valid ObjectGraph for .og files (returns 4xx on parse failure without overwriting),
+         *     and writes atomically.
+         *
+         *     Body: ``{"content": "<full .og text>"}``
+         *     Response: ``{"ok": true, "name": "<target-name>"}``
+         */
+        post: operations["post_authoring_save_source_authoring_targets__name__source_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/spend": {
         parameters: {
             query?: never;
@@ -1039,6 +1169,14 @@ export interface components {
             prompt: string;
         };
         /**
+         * AuthoringSourceSaveRequest
+         * @description Body for POST /authoring/targets/{name}/source (CONTRACT-AUTHORING-SAVE).
+         */
+        AuthoringSourceSaveRequest: {
+            /** Content */
+            content: string;
+        };
+        /**
          * CapabilityToggleRequest
          * @description Body for PUT /capabilities/{id}/enabled.
          */
@@ -1099,17 +1237,42 @@ export interface components {
         };
         /**
          * McpRegisterRequest
-         * @description Body for POST /runtime/mcp/register (G1-T5).
+         * @description Body for POST /runtime/mcp/register (G1-T5 / CONTRACT-MCP).
+         *
+         *     Supports three transport kinds:
+         *       - ``stdio`` (default): requires ``command`` + optional ``args`` / ``env_vars``.
+         *       - ``sse``:             requires ``url`` + optional ``headers`` / ``env_vars``.
+         *       - ``http``:            requires ``url`` + optional ``headers`` / ``env_vars``.
          */
         McpRegisterRequest: {
             /** Name */
             name: string;
-            /** Command */
+            /**
+             * Transport
+             * @default stdio
+             */
+            transport: string;
+            /**
+             * Command
+             * @default
+             */
             command: string;
-            /** Args */
+            /**
+             * Args
+             * @default
+             */
             args: string;
             /** Env Vars */
             env_vars?: {
+                [key: string]: string;
+            };
+            /**
+             * Url
+             * @default
+             */
+            url: string;
+            /** Headers */
+            headers?: {
                 [key: string]: string;
             };
         };
@@ -1233,10 +1396,10 @@ export interface components {
         };
         /** SessionMessageResponse */
         SessionMessageResponse: {
-            /** Session Id */
-            session_id: string;
             /** Response */
             response: string;
+            /** Session Id */
+            session_id?: string | null;
         };
         /** SetupApplyRequest */
         SetupApplyRequest: {
@@ -1275,6 +1438,149 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    get_integrations_integrations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    post_oauth_start_integrations__connector_id__oauth_start_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_disconnect_integrations__connector_id__disconnect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_oauth_callback_integrations_oauth_callback_get: {
+        parameters: {
+            query?: {
+                code?: string | null;
+                state?: string | null;
+                error?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_root__get: {
         parameters: {
             query?: never;
@@ -3100,6 +3406,48 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_authoring_save_source_authoring_targets__name__source_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuthoringSourceSaveRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

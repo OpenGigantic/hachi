@@ -17,8 +17,9 @@
 
 import { apiGet, apiSend, USE_MOCKS } from "../client";
 import { registerLoader } from "../live";
+import { dedupe } from "../dedupe";
 import { useStore } from "../../store/store";
-import type { SafetyLevel, Provider } from "../types";
+import type { SafetyLevel, Provider, AskRule } from "../types";
 
 // ---- Local types mirroring the gateway Python dataclasses ----
 
@@ -30,8 +31,15 @@ interface GatewayProviderSettings {
   api_key_env?: string | null;
 }
 
+interface GatewayAskBeforeSettings {
+  spend_over_threshold?: boolean;
+  network_egress?: boolean;
+  delete_files?: boolean;
+}
+
 interface GatewayPermissionsSettings {
   tier?: "sandbox" | "guided" | "unrestricted";
+  ask_before?: GatewayAskBeforeSettings;
 }
 
 interface GatewayMemorySettings {
@@ -39,10 +47,16 @@ interface GatewayMemorySettings {
   enable_semantic_memory?: boolean;
 }
 
+interface GatewayLimitsSettings {
+  per_task_cap_usd?: number | null;
+  daily_cap_usd?: number | null;
+}
+
 interface GatewayConfig {
   provider?: GatewayProviderSettings;
   permissions?: GatewayPermissionsSettings;
   memory?: GatewayMemorySettings;
+  limits?: GatewayLimitsSettings;
   // other keys exist (meta, agent, capabilities, channels) but are not mapped
   [key: string]: unknown;
 }
@@ -89,6 +103,24 @@ function safetyToTier(level: SafetyLevel): "sandbox" | "guided" | "unrestricted"
   return "guided"; // "standard"
 }
 
+// "Ask before…" rules. The gateway stores booleans keyed by rule id
+// (permissions.ask_before); the human-readable labels live here on the client.
+// Order here is the display order in Settings → Permissions & safety.
+const ASK_RULE_LABELS: { id: keyof GatewayAskBeforeSettings; label: string }[] = [
+  { id: "spend_over_threshold", label: "Before spending over the per-task cap on one task" },
+  { id: "network_egress", label: "Before sending anything outside your machine" },
+  { id: "delete_files", label: "Before deleting files" },
+];
+
+/** gateway permissions.ask_before → UI AskRule[] (defaults to "on" when absent) */
+function adaptAskRules(raw?: GatewayAskBeforeSettings): AskRule[] {
+  return ASK_RULE_LABELS.map(({ id, label }) => ({
+    id,
+    label,
+    on: raw?.[id] ?? true,
+  }));
+}
+
 /** gateway provider → UI Provider (never surface secrets) */
 function adaptProvider(raw?: GatewayProviderSettings): Provider {
   return {
@@ -105,7 +137,15 @@ function adaptProvider(raw?: GatewayProviderSettings): Provider {
  * Never throws. On error: setReconnecting(true) and leave existing fixtures.
  */
 export async function loadConfig(): Promise<void> {
-  if (USE_MOCKS) return; // keep seeded fixtures
+  return dedupe("config", _loadConfigImpl);
+}
+
+async function _loadConfigImpl(): Promise<void> {
+  if (USE_MOCKS) {
+    // In mock mode, fixtures are already seeded — just mark config as loaded.
+    useStore.getState().hydrate({ configLoaded: true });
+    return;
+  }
 
   try {
     // Fetch config and models concurrently
@@ -119,10 +159,25 @@ export async function loadConfig(): Promise<void> {
 
     // Map config → store slice
     const safety = adaptTier(rawConfig?.permissions?.tier);
+    const askRules = adaptAskRules(rawConfig?.permissions?.ask_before);
     const provider = adaptProvider(rawConfig?.provider);
 
-    useStore.getState().hydrate({ safety, provider });
-    useStore.getState().setReconnecting(false);
+    // Hydrate spend caps from gateway limits — fall back to current store values
+    // when fields are absent/null so we never overwrite user-edited in-session values.
+    const currentState = useStore.getState();
+    const limitsRaw = rawConfig?.limits;
+    const taskCap =
+      typeof limitsRaw?.per_task_cap_usd === 'number' && limitsRaw.per_task_cap_usd > 0
+        ? limitsRaw.per_task_cap_usd
+        : currentState.taskCap;
+    const dailyCap =
+      typeof limitsRaw?.daily_cap_usd === 'number' && limitsRaw.daily_cap_usd > 0
+        ? limitsRaw.daily_cap_usd
+        : currentState.dailyCap;
+
+    useStore
+      .getState()
+      .hydrate({ safety, askRules, provider, taskCap, dailyCap, configLoaded: true });
     _hasEverSucceeded = true;
   } catch {
     if (!_hasEverSucceeded) {
@@ -131,12 +186,11 @@ export async function loadConfig(): Promise<void> {
       useStore.getState().hydrate({
         safety: "standard",
         provider: { name: "anthropic", model: "claude-haiku-4-5", key: "" },
+        configLoaded: true,
       });
     }
-    // Whether or not this is the first load, flag reconnecting so the UI
-    // shows the reconnecting indicator. Last-known-good real data is
-    // preserved after the first success.
-    useStore.getState().setReconnecting(true);
+    // Reconnecting flag is now managed centrally by client.ts via the
+    // registered callback — no per-domain setReconnecting calls needed here.
   }
 }
 
@@ -158,7 +212,29 @@ export async function setSafetyLive(level: SafetyLevel): Promise<void> {
       permissions: { tier: safetyToTier(level) },
     });
   } catch {
-    useStore.getState().setReconnecting(true);
+    // Network errors surface the reconnecting banner via client.ts callback.
+  }
+}
+
+/**
+ * Toggle an "Ask before…" rule optimistically, then persist to the gateway.
+ * The rule id IS the gateway ask_before key (see ASK_RULE_LABELS), so we send
+ * only the single changed flag. Persisted to settings.toml so it survives reload.
+ */
+export async function setAskRuleLive(id: string, on: boolean): Promise<void> {
+  // Optimistic update — flip just this rule in the store.
+  useStore.getState().hydrate({
+    askRules: useStore
+      .getState()
+      .askRules.map((r) => (r.id === id ? { ...r, on } : r)),
+  });
+  if (USE_MOCKS) return;
+  try {
+    await apiSend<GatewayConfig>("PUT", "/config/permissions", {
+      permissions: { ask_before: { [id]: on } },
+    });
+  } catch {
+    // Network errors surface the reconnecting banner via client.ts callback.
   }
 }
 
@@ -179,7 +255,7 @@ export async function setProviderLive(patch: Partial<Provider>): Promise<void> {
       provider: gwPatch,
     });
   } catch {
-    useStore.getState().setReconnecting(true);
+    // Network errors surface the reconnecting banner via client.ts callback.
   }
 }
 
@@ -201,7 +277,7 @@ export async function validateProvider(
       { provider: gwPatch }
     );
   } catch {
-    useStore.getState().setReconnecting(true);
+    // Network errors surface the reconnecting banner via client.ts callback.
     return { ok: false, errors: ["Could not reach gateway"], warnings: [] };
   }
 }
@@ -256,6 +332,6 @@ export async function setMemoryLive(
   try {
     await apiSend<GatewayConfig>("PUT", "/config/memory", { memory: patch });
   } catch {
-    useStore.getState().setReconnecting(true);
+    // Network errors surface the reconnecting banner via client.ts callback.
   }
 }

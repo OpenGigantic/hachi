@@ -95,8 +95,13 @@ class SessionMessageRequest(BaseModel):
 
 
 class SessionMessageResponse(BaseModel):
-    session_id: str
     response: str
+    # Optional: the normal chat path returns the resolved session_id, but
+    # synthetic slash-command replies (e.g. /model, /help) omit it — the client
+    # already knows which session it posted to, so echoing it back (and risking a
+    # literal "None") is noise. Excluded from the payload when None via the
+    # route's response_model_exclude_none.
+    session_id: str | None = None
 
 
 class GatewayEventPayload(BaseModel):
@@ -208,12 +213,23 @@ class AlwaysAllowRequest(BaseModel):
 
 
 class McpRegisterRequest(BaseModel):
-    """Body for POST /runtime/mcp/register (G1-T5)."""
+    """Body for POST /runtime/mcp/register (G1-T5 / CONTRACT-MCP).
+
+    Supports three transport kinds:
+      - ``stdio`` (default): requires ``command`` + optional ``args`` / ``env_vars``.
+      - ``sse``:             requires ``url`` + optional ``headers`` / ``env_vars``.
+      - ``http``:            requires ``url`` + optional ``headers`` / ``env_vars``.
+    """
 
     name: str
-    command: str
-    args: str
+    transport: str = "stdio"
+    # stdio fields
+    command: str = ""
+    args: str = ""
     env_vars: dict[str, str] = Field(default_factory=dict)
+    # sse / http fields
+    url: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
 
 
 class SkillAddRequest(BaseModel):
@@ -226,6 +242,12 @@ class AuthoringGenerateRequest(BaseModel):
     """Body for POST /authoring/targets/{name}/generate (G1-T2 / CRIT-002)."""
 
     prompt: str
+
+
+class AuthoringSourceSaveRequest(BaseModel):
+    """Body for POST /authoring/targets/{name}/source (CONTRACT-AUTHORING-SAVE)."""
+
+    content: str
 
 
 def _last_user_text(messages: list[OpenAIMessage]) -> str:
@@ -580,9 +602,63 @@ def create_gateway_app(
         _check_session_ownership(session_id, _require_auth(request))
         return control_plane.session_state(session_id)
 
-    @sessions.post("/{session_id}/messages", response_model=SessionMessageResponse)
+    # Step 7 — Minimal slash-command handler.
+    # Intercepts messages whose text starts with '/' BEFORE the LLM sees them
+    # so that simple meta-commands work even when no agent is booted yet.
+    _SLASH_HELP_TEXT = (
+        "Available slash commands:\n"
+        "  /model — Show the current model and how to change it\n"
+        "  /help  — Show this help text"
+    )
+
+    def _handle_slash_command(session_id: str, prompt: str) -> dict[str, Any] | None:
+        """Return a synthetic assistant response for leading-slash commands, or None.
+
+        Returns None when ``prompt`` is NOT a slash command so the caller can
+        fall through to the normal LLM path unaffected.
+        """
+        stripped = prompt.strip()
+        if not stripped.startswith("/"):
+            return None
+        # Extract the command word (everything up to first whitespace).
+        word = stripped[1:].split()[0].lower() if stripped[1:].strip() else ""
+
+        if word == "model":
+            try:
+                from hachi.core.config_loader import load_effective_config as _load_cfg
+
+                cfg = _load_cfg()
+                model_name = cfg.provider.model
+                provider_kind = cfg.provider.kind
+            except Exception:
+                model_name = "unknown"
+                provider_kind = "unknown"
+            reply = (
+                f"Current model: **{model_name}** (provider: {provider_kind})\n\n"
+                "To change the model, go to **Settings → Provider** in the web UI, "
+                "or run `hachi setup --tier lightning` and select a different model."
+            )
+        elif word == "help":
+            reply = _SLASH_HELP_TEXT
+        else:
+            reply = (
+                f"Unknown command `/{word}`. "
+                f"Try /help to see available commands."
+            )
+
+        return {"response": reply}
+
+    @sessions.post(
+        "/{session_id}/messages",
+        response_model=SessionMessageResponse,
+        response_model_exclude_none=True,
+    )
     def post_message(session_id: str, payload: SessionMessageRequest, request: Request) -> Any:
         _check_session_ownership(session_id, _require_auth(request))
+        # Step 7: intercept slash commands before the LLM.
+        slash_result = _handle_slash_command(session_id, payload.prompt)
+        if slash_result is not None:
+            return slash_result
         return control_plane.send_message(session_id=session_id, prompt=payload.prompt)
 
     @sessions.delete("/{session_id}", response_model=SessionCloseResponse)
@@ -718,19 +794,27 @@ def create_gateway_app(
     async def get_mcp_inventory() -> Any:
         return control_plane.mcp_inventory()
 
-    # G1-T5 — POST /runtime/mcp/register
+    # G1-T5 / CONTRACT-MCP — POST /runtime/mcp/register
     @runtime_ops.post("/runtime/mcp/register")
     async def post_mcp_register(payload: McpRegisterRequest) -> Any:
-        """Register a new MCP server and add it to the runtime configuration.
+        """Register a new MCP server and bring it online without a gateway restart.
 
-        Body: ``{"name": "...", "command": "npx", "args": "...", "env_vars": {}}``
+        Body (stdio transport):
+            ``{"name": "...", "command": "npx", "args": "...", "env_vars": {}}``
+
+        Body (sse / http transport):
+            ``{"name": "...", "transport": "sse"|"http", "url": "https://...", "headers": {}}``
         """
         _ALLOWED_COMMANDS = {"npx", "uvx", "python", "python3", "node", "uv"}
+        _ALLOWED_TRANSPORTS = {"stdio", "sse", "http"}
+        _SECRET_PATTERNS = {
+            "key", "token", "secret", "password", "passwd", "credential",
+            "private", "auth", "bearer", "apikey", "api_key",
+        }
         import re
 
         name = payload.name.strip()
-        command = payload.command.strip()
-        args = payload.args.strip()
+        transport = payload.transport.strip().lower()
 
         if not name or not re.match(r"^[\w-]+$", name):
             raise HTTPException(
@@ -740,31 +824,59 @@ def create_gateway_app(
                     "letters, digits, hyphens, underscores"
                 ),
             )
-        if command not in _ALLOWED_COMMANDS:
+        if transport not in _ALLOWED_TRANSPORTS:
             raise HTTPException(
                 status_code=422,
-                detail=f"command must be one of: {', '.join(sorted(_ALLOWED_COMMANDS))}",
+                detail=f"transport must be one of: {', '.join(sorted(_ALLOWED_TRANSPORTS))}",
             )
-        if not args:
-            raise HTTPException(status_code=422, detail="args is required")
-        if re.search(r"[;&|><`]|\$[({]|&&|\|\|", args):
-            raise HTTPException(
-                status_code=422,
-                detail="args must not contain shell metacharacters",
-            )
-        # Reject secret-looking env var keys (mirrors frontend validation).
-        _SECRET_PATTERNS = {
-            "key", "token", "secret", "password", "passwd", "credential",
-            "private", "auth", "bearer", "apikey", "api_key",
-        }
-        for env_key in payload.env_vars:
+
+        if transport == "stdio":
+            command = payload.command.strip()
+            args = payload.args.strip()
+            if command not in _ALLOWED_COMMANDS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"command must be one of: {', '.join(sorted(_ALLOWED_COMMANDS))}",
+                )
+            if not args:
+                raise HTTPException(status_code=422, detail="args is required for stdio transport")
+            if re.search(r"[;&|><`]|\$[({]|&&|\|\|", args):
+                raise HTTPException(
+                    status_code=422,
+                    detail="args must not contain shell metacharacters",
+                )
+        else:
+            # sse / http
+            url = payload.url.strip()
+            if not url or not re.match(r"^https?://", url):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"url is required and must be an http/https URL "
+                        f"for {transport} transport"
+                    ),
+                )
+
+        # Reject secret-looking env var and header keys (mirrors frontend validation).
+        for env_key in list(payload.env_vars) + list(payload.headers):
             lower = env_key.lower()
             if any(p in lower for p in _SECRET_PATTERNS):
                 raise HTTPException(
                     status_code=422,
-                    detail=f"env_vars key '{env_key}' looks like a secret; use SecretStore instead",
+                    detail=(
+                        f"key '{env_key}' looks like a secret; use SecretStore instead"
+                    ),
                 )
-        return control_plane.register_mcp_server(name, command, args, dict(payload.env_vars))
+
+        return control_plane.register_mcp_server(
+            name=name,
+            transport=transport,
+            command=payload.command.strip(),
+            args=payload.args.strip(),
+            env_vars=dict(payload.env_vars),
+            url=payload.url.strip(),
+            headers=dict(payload.headers),
+        )
 
     @runtime_ops.get("/jobs/active")
     async def get_active_jobs() -> Any:
@@ -1250,6 +1362,25 @@ def create_gateway_app(
         """Revert the most recently applied patch for the target."""
         return await anyio.to_thread.run_sync(lambda: control_plane.authoring_revert(name))
 
+    # CONTRACT-AUTHORING-SAVE — POST /authoring/targets/{name}/source
+    @authoring_router.post("/targets/{name}/source")
+    async def post_authoring_save_source(name: str, payload: AuthoringSourceSaveRequest) -> Any:
+        """Persist manually edited .og content for the named target.
+
+        Validates the target name (path-traversal guard), parses the content as a
+        valid ObjectGraph for .og files (returns 4xx on parse failure without overwriting),
+        and writes atomically.
+
+        Body: ``{"content": "<full .og text>"}``
+        Response: ``{"ok": true, "name": "<target-name>"}``
+        """
+        content = payload.content
+        if not content.strip():
+            raise HTTPException(status_code=422, detail="content cannot be empty")
+        return await anyio.to_thread.run_sync(
+            lambda: control_plane.authoring_save_source(name, content)
+        )
+
     @spend_router.get("/spend")
     async def get_spend(session_id: str | None = Query(default=None)) -> Any:
         """Return per-turn token/cost rows, compaction events, and model totals."""
@@ -1264,6 +1395,129 @@ def create_gateway_app(
         """Toggle a capability on/off and persist to global config."""
         return control_plane.set_capability_enabled(cap_id, payload.enabled)
 
+    # ==========================================
+    # OAuth 2.0 integration routes
+    # ==========================================
+
+    integrations_router = APIRouter(
+        prefix="/integrations", tags=["integrations"], dependencies=protected_dependencies
+    )
+    # Callback does NOT carry the auth dependency — the browser popup calls it directly
+    # and does not have the Bearer token.  State validation provides CSRF protection.
+    integrations_callback_router = APIRouter(prefix="/integrations", tags=["integrations"])
+
+    @integrations_router.get("")
+    async def get_integrations() -> Any:
+        """List all connectors with their auth_type, configured, connected, and status fields."""
+        from hachi.integrations.oauth_flow import all_connector_statuses
+
+        return all_connector_statuses()
+
+    @integrations_router.post("/{connector_id}/oauth/start")
+    async def post_oauth_start(connector_id: str) -> Any:
+        """Begin the OAuth2 flow for the given connector.
+
+        Returns ``{"authorization_url": "<provider-authorize-url>"}`` so the
+        frontend can open it in a popup window.
+
+        Returns HTTP 404 for unknown connectors, HTTP 409 when the connector's
+        client credentials (env vars) are not configured on this machine.
+        """
+        import re
+
+        from hachi.integrations.oauth_flow import oauth_start
+
+        if not re.match(r"^[a-z0-9_-]+$", connector_id):
+            return _error_response(400, "invalid_connector_id", "Connector id is not valid")
+
+        try:
+            result = oauth_start(connector_id)
+        except ValueError as exc:
+            return _error_response(404, "unknown_connector", str(exc))
+        except LookupError as exc:
+            return _error_response(
+                409,
+                "credentials_not_configured",
+                str(exc),
+            )
+        return result
+
+    @integrations_callback_router.get("/oauth/callback")
+    async def get_oauth_callback(
+        code: str | None = None,
+        state: str | None = None,
+        error: str | None = None,
+    ) -> Any:
+        """OAuth2 callback — provider redirects the user's browser popup here.
+
+        Validates the CSRF state, exchanges the code for tokens, stores them,
+        then returns a small HTML page that:
+        - postMessages ``{type: "hachi_oauth_done", id: "<id>", ok: true/false}``
+          to the opener (the Hachi frontend).
+        - Closes the popup window.
+
+        This route is intentionally NOT protected by the Bearer auth dependency
+        because the provider redirects the user's browser here directly.
+        CSRF protection is provided by the ``state`` parameter.
+        """
+        from fastapi.responses import HTMLResponse
+
+        from hachi.integrations.oauth_flow import (
+            _callback_html_error,
+            _callback_html_ok,
+            oauth_callback,
+        )
+
+        if error:
+            # Provider signalled an error (e.g. user denied consent).
+            safe_error = str(error)[:200]
+            html = _callback_html_error(
+                "",
+                f"The provider returned an error: {safe_error}. Please try again.",
+            )
+            return HTMLResponse(content=html, status_code=400)
+
+        if not code or not state:
+            html = _callback_html_error(
+                "", "Missing code or state parameter. Please start the OAuth flow again."
+            )
+            return HTMLResponse(content=html, status_code=400)
+
+        connector_id, ok, err_msg = await anyio.to_thread.run_sync(
+            lambda: oauth_callback(str(code), str(state))
+        )
+        if ok:
+            html = _callback_html_ok(connector_id)
+            return HTMLResponse(content=html, status_code=200)
+        else:
+            html = _callback_html_error(connector_id, err_msg)
+            return HTMLResponse(content=html, status_code=400)
+
+    @integrations_router.post("/{connector_id}/disconnect")
+    async def post_disconnect(connector_id: str) -> Any:
+        """Revoke and delete stored OAuth2 tokens for a connector.
+
+        Returns ``{"connected": false, "connector_id": "<id>", ...status...}``.
+        Returns HTTP 404 for unknown connectors.
+        """
+        import re
+
+        from hachi.integrations.connector_registry import get_connector
+        from hachi.integrations.oauth_flow import connector_status, oauth_disconnect
+
+        if not re.match(r"^[a-z0-9_-]+$", connector_id):
+            return _error_response(400, "invalid_connector_id", "Connector id is not valid")
+
+        connector = get_connector(connector_id)
+        if connector is None:
+            return _error_response(404, "unknown_connector", f"Unknown connector: {connector_id!r}")
+
+        result = await anyio.to_thread.run_sync(lambda: oauth_disconnect(connector_id))
+        status_info = connector_status(connector_id)
+        return {**result, **status_info}
+
+    app.include_router(integrations_router)
+    app.include_router(integrations_callback_router)
     app.include_router(system)
     app.include_router(sessions)
     app.include_router(runtime_ops)

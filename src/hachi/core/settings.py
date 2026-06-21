@@ -41,10 +41,33 @@ class ProviderSettings(BaseModel):
     allowed_models: list[str] = Field(default_factory=list)
 
 
+class AskBeforeSettings(BaseModel):
+    """User-facing "Ask before…" confirmation preferences.
+
+    Each flag controls whether the agent must pause and ask for confirmation
+    before a class of sensitive action. These are surfaced in the web UI
+    (Settings → Permissions & safety) and persisted to ``settings.toml`` so they
+    survive a reload. ``True`` = ask first (safer); ``False`` = proceed silently.
+
+    The keys mirror the toggle ids the frontend sends, so a single
+    ``PUT /config/permissions`` round-trips the panel state.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    # Ask before a single task spends over the per-task cost cap.
+    spend_over_threshold: bool = True
+    # Ask before any tool sends data off the local machine (network egress).
+    network_egress: bool = True
+    # Ask before deleting files.
+    delete_files: bool = True
+
+
 class PermissionsSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     tier: PermissionTier = "guided"
+    ask_before: AskBeforeSettings = Field(default_factory=AskBeforeSettings)
 
 
 MemoryBackend = Literal["chroma", "in_memory", "fts5_only"]

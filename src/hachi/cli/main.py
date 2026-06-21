@@ -404,21 +404,52 @@ class _InProcessGatewayRuntime:
 
     def capabilities(self) -> list[dict]:
         config = load_effective_config()
+        # Pull OAuth status for each capability from the connector registry.
+        # Import is deferred to avoid circular imports at module load time.
+        try:
+            from hachi.integrations.oauth_flow import connector_status as _connector_status
+        except Exception:
+            _connector_status = None  # noqa: F841
+
         items: list[dict] = []
         for capability_id, state in config.capabilities.items():
-            items.append(
-                {
-                    "id": capability_id,
-                    "kind": "native_integration",
-                    "enabled": bool(state.enabled),
-                    "configured": bool(state.configured),
-                    "secret_ref": state.secret_ref,
-                }
-            )
+            entry: dict = {
+                "id": capability_id,
+                "kind": "native_integration",
+                "enabled": bool(state.enabled),
+                "configured": bool(state.configured),
+                "secret_ref": state.secret_ref,
+                # OAuth status fields — present when the connector is in the registry
+                "auth_type": "none",
+                "connected": False,
+                "status": "disconnected",
+            }
+            if _connector_status is not None:
+                try:
+                    oauth = _connector_status(capability_id)
+                    entry["auth_type"] = oauth["auth_type"]
+                    entry["connected"] = oauth["connected"]
+                    # Override "configured" with the registry's view (env var present)
+                    # only when the connector is OAuth2; otherwise keep the config value.
+                    if oauth["auth_type"] == "oauth2":
+                        entry["configured"] = oauth["configured"]
+                    entry["status"] = oauth["status"]
+                except Exception:
+                    pass
+            items.append(entry)
         return items
 
     def get_config(self) -> dict:
-        return load_effective_config().model_dump(mode="python", exclude_none=True)
+        config = load_effective_config()
+        raw = config.model_dump(mode="python", exclude_none=True)
+        # Step 1: Ensure GET /config always includes a ``limits`` block with the
+        # frontend-facing keys ``per_task_cap_usd`` / ``daily_cap_usd`` so that
+        # caps saved via PUT /config/limits round-trip on reload.
+        # Internally the model stores max_turn_cost_usd / max_session_cost_usd.
+        limits_block = raw.setdefault("limits", {})
+        limits_block["per_task_cap_usd"] = config.limits.max_turn_cost_usd
+        limits_block["daily_cap_usd"] = config.limits.max_session_cost_usd
+        return raw
 
     def update_provider(self, payload: dict) -> dict:
         provider = payload.get("provider", payload)
@@ -533,9 +564,28 @@ class _InProcessGatewayRuntime:
         if tier and tier not in {"sandbox", "guided", "unrestricted"}:
             raise GatewayProtocolError("permissions.tier must be sandbox, guided, or unrestricted")
 
+        ask_before = permissions.get("ask_before")
+        if ask_before is not None and not isinstance(ask_before, dict):
+            raise GatewayProtocolError("permissions.ask_before must be an object")
+
         config = load_effective_config()
         if tier:
             config.permissions.tier = tier  # type: ignore[assignment]
+        if isinstance(ask_before, dict):
+            # Only the recognised "Ask before…" rule keys may be set; each value
+            # must be a boolean. This persists the Settings panel toggles so they
+            # survive a reload (the rule labels live in the frontend).
+            valid_keys = set(config.permissions.ask_before.model_dump().keys())
+            for key, value in ask_before.items():
+                if key not in valid_keys:
+                    raise GatewayProtocolError(
+                        f"permissions.ask_before.{key} is not a recognised rule"
+                    )
+                if not isinstance(value, bool):
+                    raise GatewayProtocolError(
+                        f"permissions.ask_before.{key} must be a boolean"
+                    )
+                setattr(config.permissions.ask_before, key, value)
 
         write_global_config(config)
         return config.model_dump(mode="python", exclude_none=True)
@@ -989,6 +1039,81 @@ class _InProcessGatewayRuntime:
 
         return {"ok": True, "reindexed_ms": reindexed_ms}
 
+    def authoring_save_source(self, name: str, content: str) -> dict:
+        """Persist manually edited .og content for the named target (CONTRACT-AUTHORING-SAVE).
+
+        Validates ``name`` (path-traversal guard), optionally parses the content as
+        a valid ObjectGraph (.og files only), and writes it atomically.
+
+        Args:
+            name:    Validated target name (e.g. ``"brain-core.og"``).
+            content: Full file content to persist.
+
+        Returns:
+            ``{"ok": True, "name": name}``
+
+        Raises:
+            GatewayProtocolError: When the name is invalid/unknown, or the content
+                is empty.
+            GatewayUnavailableError: When the content fails OG parsing for .og files.
+        """
+        if not content.strip():
+            raise GatewayProtocolError("content cannot be empty")
+
+        file_path = self._resolve_authoring_target_path(name)
+
+        # For .og files, validate that the content parses before overwriting.
+        if name.endswith(".og"):
+            import tempfile as _tempfile
+
+            from hachi.gateway.control_plane import GatewayUnavailableError as _Unavail
+            from hachi.og_engine.parser import parse_og_file as _parse_og
+
+            _tmp_path: str | None = None
+            try:
+                with _tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".og", delete=False, encoding="utf-8"
+                ) as _tmp:
+                    _tmp_path = _tmp.name
+                    _tmp.write(content)
+                _parse_og(_tmp_path)
+            except _Unavail:
+                raise  # re-raise without wrapping
+            except Exception as exc:
+                raise _Unavail(
+                    f"Content does not parse as a valid ObjectGraph (.og) file: {exc}. "
+                    "Fix the syntax and try again."
+                ) from exc
+            finally:
+                if _tmp_path is not None:
+                    try:
+                        Path(_tmp_path).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+        # Atomic write: write to sibling temp file then replace.
+        tmp_path = file_path.with_suffix(file_path.suffix + ".tmp")
+        try:
+            tmp_path.write_text(content, encoding="utf-8")
+            tmp_path.replace(file_path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
+
+        # Trigger skill-engine re-index for .og files.
+        if name.endswith(".og"):
+            try:
+                with self._agents_lock:
+                    agent = next(iter(self._agents.values()), None)
+                if agent is not None:
+                    reindex = getattr(agent, "reindex_skills", None)
+                    if callable(reindex):
+                        reindex()
+            except Exception:
+                pass
+
+        return {"ok": True, "name": name}
+
     def authoring_revert(self, name: str) -> dict:
         """Restore the revert snapshot for the named target (undoes the last apply).
 
@@ -1348,27 +1473,43 @@ class _InProcessGatewayRuntime:
         return {"ok": True, "request": req, "action": act, "already_existed": False}
 
     def register_mcp_server(
-        self, name: str, command: str, args: str, env_vars: dict[str, str]
+        self,
+        name: str,
+        transport: str = "stdio",
+        command: str = "",
+        args: str = "",
+        env_vars: dict[str, str] | None = None,
+        url: str = "",
+        headers: dict[str, str] | None = None,
     ) -> dict:
-        """Register a new MCP server in the global config (POST /runtime/mcp/register).
+        """Register a new MCP server and bring it online live (POST /runtime/mcp/register).
 
-        Writes the server definition under [mcp_servers.NAME] in settings.toml so
-        it is picked up on the next gateway boot. Does NOT hot-restart the MCP
-        runtime (a future wave can add that); the new server appears after restart.
+        Persists the server definition under ``[mcp_servers.NAME]`` in settings.toml
+        (so it survives gateway restarts) and then attempts a hot-reload: the server
+        is connected immediately and its tools are added to the live ToolRegistry so
+        that ``GET /runtime/mcp/inventory`` reflects the new server without a restart.
 
         Args:
-            name:     Slug identifier for the server.
-            command:  Launcher command (npx / uvx / python / node / uv / python3).
-            args:     Space-separated package / script args.
-            env_vars: Optional plain (non-secret) environment variables.
+            name:      Slug identifier for the server.
+            transport: ``"stdio"``, ``"sse"``, or ``"http"``.
+            command:   Launcher command (npx / uvx / python / node / uv / python3); stdio only.
+            args:      Space-separated package / script args; stdio only.
+            env_vars:  Optional plain (non-secret) environment variables.
+            url:       Remote server URL; sse / http only.
+            headers:   Optional HTTP request headers; sse / http only.
 
         Returns:
-            Dict with name and a human-readable message.
+            Dict with name, transport, message, and live_status.
         """
         import tomlkit as _tomlkit
 
+        from hachi.core.mcp_client import MCPServerConfig as _MCPServerConfig
         from hachi.core.paths import get_hachi_paths as _get_paths
 
+        env_vars = env_vars or {}
+        headers = headers or {}
+
+        # --- 1. Persist to settings.toml ---
         paths = _get_paths()
         config_toml = paths.global_config_toml
 
@@ -1380,21 +1521,64 @@ class _InProcessGatewayRuntime:
         if "mcp_servers" not in doc:
             doc.add("mcp_servers", _tomlkit.table())  # type: ignore[arg-type]
 
-        server_entry: dict = {"command": command, "args": args}
-        if env_vars:
-            server_entry["env"] = env_vars
+        cfg = _MCPServerConfig(
+            name=name,
+            transport=transport,  # type: ignore[arg-type]
+            command=command,
+            args=[a for a in args.split() if a] if args.strip() else [],
+            env=env_vars,
+            url=url,
+            headers=headers,
+        )
+        server_entry = cfg.to_toml_entry()
 
         mcp_section = doc["mcp_servers"]
         mcp_section[name] = server_entry  # type: ignore[index]
 
+        import os as _os
+
         tmp = config_toml.with_name(f"{config_toml.name}.tmp")
         tmp.write_text(_tomlkit.dumps(doc), encoding="utf-8")
-        import os as _os
         _os.replace(tmp, config_toml)
+
+        # --- 2. Hot-reload: connect the server live in the running agent ---
+        live_status = "pending_restart"
+        live_tool_count = 0
+        live_error: str | None = None
+
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+
+        if agent is not None:
+            try:
+                result = agent.add_mcp_server_live(cfg, agent.loop.registry)
+                if result.get("ok"):
+                    live_status = "ready"
+                    live_tool_count = int(result.get("tool_count", 0))
+                else:
+                    live_status = "failed"
+                    live_error = str(result.get("error", "startup failed"))
+            except Exception as exc:
+                live_status = "failed"
+                live_error = str(exc)
+
+        base_msg = f"MCP server '{name}' registered (transport={transport})."
+        if live_status == "ready":
+            msg = f"{base_msg} Connected live — {live_tool_count} tool(s) available immediately."
+        elif live_status == "failed":
+            msg = (
+                f"{base_msg} Live connect failed ({live_error}); "
+                "server will be retried on next gateway restart."
+            )
+        else:
+            msg = f"{base_msg} Restart gateway to activate (no active agent session)."
 
         return {
             "name": name,
-            "message": f"MCP server '{name}' registered — restart gateway to activate.",
+            "transport": transport,
+            "message": msg,
+            "live_status": live_status,
+            "tool_count": live_tool_count,
         }
 
     def get_kennel(self) -> list[dict]:
@@ -1785,6 +1969,7 @@ def _build_gateway_control_plane(
         authoring_generate=support.authoring_generate,
         authoring_apply=support.authoring_apply,
         authoring_revert=support.authoring_revert,
+        authoring_save_source=support.authoring_save_source,
         get_spend=runtime.get_spend if runtime else None,
         set_capability_enabled=support.set_capability_enabled,
         # Memory CRUD:

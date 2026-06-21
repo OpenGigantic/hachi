@@ -1,5 +1,5 @@
 // ============================================================
-// SetupWizard — 5-step onboarding modal
+// SetupWizard — 5-step onboarding modal + edit-provider mode
 // Prototype markup: Hachi Web App.dc.html lines 1337–1426
 // Logic: lines 2139–2158 (setup actions), 2434–2449 (setup renderVals)
 // ============================================================
@@ -11,6 +11,27 @@ import { Icon } from '../icons/Icon';
 import { Switch } from '../ui/Switch';
 import { loadSetup, applySetup, validateKey, type KeyValidationResult } from '../../lib/data/domains/setup';
 import { useFocusTrap } from '../../lib/hooks/useFocusTrap';
+
+/**
+ * Start the OAuth flow for an integration.
+ * Delegates to startIntegrationOAuth from domains/integrations when available
+ * (another agent is adding that function). Falls back gracefully if not yet shipped.
+ */
+async function startIntegrationOAuth(id: string): Promise<void> {
+  try {
+    // Dynamic import so this compiles even before the other agent adds the export.
+    const mod = await import('../../lib/data/domains/integrations') as Record<string, unknown>;
+    const fn = mod['startIntegrationOAuth'];
+    if (typeof fn === 'function') {
+      await (fn as (id: string) => Promise<void>)(id);
+    } else {
+      // Function not yet implemented — open integrations tab as fallback.
+      throw new Error(`startIntegrationOAuth not yet exported from integrations.ts (id=${id})`);
+    }
+  } catch (err: unknown) {
+    throw err;
+  }
+}
 
 const SAFETY_LEVELS = [
   {
@@ -32,13 +53,12 @@ const SAFETY_LEVELS = [
 
 export function SetupWizard() {
   const setup            = useStore((s) => s.setup);
+  const integrations     = useStore((s) => s.integrations);
   const closeSetup       = useStore((s) => s.closeSetup);
   const setupBack        = useStore((s) => s.setupBack);
   const setupNext        = useStore((s) => s.setupNext);
   const setSetupKey      = useStore((s) => s.setSetupKey);
   const toggleSetupRoutine  = useStore((s) => s.toggleSetupRoutine);
-  const toggleSetupGoogle   = useStore((s) => s.toggleSetupGoogle);
-  const toggleSetupChannel  = useStore((s) => s.toggleSetupChannel);
   const setSetupField    = useStore((s) => s.setSetupField);
 
   // Transient validation state — local only, not in store.
@@ -84,6 +104,7 @@ export function SetupWizard() {
 
   if (!setup.open) return null;
 
+  const isEditProvider = setup.mode === 'edit-provider';
   const step = setup.step;
 
   // Key border colour derived from validation state.
@@ -96,22 +117,25 @@ export function SetupWizard() {
     }
   })();
 
-  const setupDots = [0, 1, 2, 3, 4].map((i) =>
-    i === step
-      ? 'var(--hachi-brand)'
-      : i < step
-      ? 'var(--hachi-brand-tint)'
-      : 'var(--hachi-line)'
-  );
+  // In onboard mode: show 5 progress dots. In edit-provider: just one dot.
+  const setupDots = isEditProvider
+    ? ['var(--hachi-brand)']
+    : [0, 1, 2, 3, 4].map((i) =>
+        i === step
+          ? 'var(--hachi-brand)'
+          : i < step
+          ? 'var(--hachi-brand-tint)'
+          : 'var(--hachi-line)'
+      );
 
-  const nextLabel = step >= 4 ? 'Finish' : step === 0 ? 'Get started' : 'Next';
-  const skipLabel = step >= 4 ? '' : 'Skip';
-  const canBack   = step > 0;
+  const nextLabel = isEditProvider ? 'Save' : step >= 4 ? 'Finish' : step === 0 ? 'Get started' : 'Next';
+  const skipLabel = isEditProvider ? '' : step >= 4 ? '' : 'Skip';
+  const canBack   = !isEditProvider && step > 0;
 
   // On the final step, also fire the live gateway apply call (additive to the
   // existing optimistic store flow in setupNext which closes the wizard).
   const handleNext = () => {
-    if (step >= 4) {
+    if (!isEditProvider && step >= 4) {
       // Fire-and-forget: errors are handled inside applySetup (setReconnecting).
       void applySetup({
         key:     setup.key,
@@ -166,12 +190,13 @@ export function SetupWizard() {
   };
 
   return (
-    <div style={backdropStyle} aria-hidden="false">
+    <div className="hachi-setup-backdrop" style={backdropStyle} aria-hidden="false">
       <div
         ref={trapRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="setup-wizard-title"
+        className="hachi-setup-panel"
         style={panelStyle}
         onClick={(e) => e.stopPropagation()}
       >
@@ -179,7 +204,7 @@ export function SetupWizard() {
         <div style={headerStyle}>
           <HachiMark size={26} />
           <span id="setup-wizard-title" style={{ fontFamily: 'var(--font-display)', fontWeight: 500, fontSize: 18, flex: 1 }}>
-            Set up Hachi
+            {isEditProvider ? 'Change provider' : 'Set up Hachi'}
           </span>
           <div style={{ display: 'flex', gap: 5 }}>
             {setupDots.map((color, i) => (
@@ -193,12 +218,35 @@ export function SetupWizard() {
         </div>
 
         {/* Body — step-specific content */}
-        <div style={bodyStyle}>
-          {step === 0 && <Step0 />}
-          {step === 1 && <Step1 setupKey={setup.key} keyBorder={keyBorder} keyValidation={keyValidation} onKeyChange={handleKeyChange} onValidate={() => { void handleValidateKey(); }} />}
-          {step === 2 && <Step2 currentSafety={setup.safety} onPick={(v) => setSetupField('safety', v)} />}
-          {step === 3 && <Step3 google={setup.google} channel={setup.channel} onToggleGoogle={toggleSetupGoogle} onToggleChannel={toggleSetupChannel} />}
-          {step === 4 && <Step4 routine={setup.routine} onToggle={toggleSetupRoutine} />}
+        <div className="hachi-setup-body" style={bodyStyle}>
+          {isEditProvider ? (
+            /* Edit-provider mode: always show only the provider/key step */
+            <Step1
+              setupKey={setup.key}
+              keyBorder={keyBorder}
+              keyValidation={keyValidation}
+              onKeyChange={handleKeyChange}
+              onValidate={() => { void handleValidateKey(); }}
+              keyAlreadySet={setup.keyAlreadySet}
+            />
+          ) : (
+            <>
+              {step === 0 && <Step0 />}
+              {step === 1 && (
+                <Step1
+                  setupKey={setup.key}
+                  keyBorder={keyBorder}
+                  keyValidation={keyValidation}
+                  onKeyChange={handleKeyChange}
+                  onValidate={() => { void handleValidateKey(); }}
+                  keyAlreadySet={setup.keyAlreadySet}
+                />
+              )}
+              {step === 2 && <Step2 currentSafety={setup.safety} onPick={(v) => setSetupField('safety', v)} />}
+              {step === 3 && <Step3 integrations={integrations} />}
+              {step === 4 && <Step4 routine={setup.routine} onToggle={toggleSetupRoutine} />}
+            </>
+          )}
         </div>
 
         {/* Footer */}
@@ -241,19 +289,21 @@ function Step1({
   keyValidation,
   onKeyChange,
   onValidate,
+  keyAlreadySet,
 }: {
   setupKey: string;
   keyBorder: string;
   keyValidation: KeyValidationResult;
   onKeyChange: (v: string) => void;
   onValidate: () => void;
+  keyAlreadySet: boolean;
 }) {
   const isChecking = keyValidation.status === 'checking';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ fontFamily: 'var(--font-display)', fontWeight: 500, fontSize: 18 }}>Connect an AI provider</div>
-      <div style={{ fontSize: 13, color: 'var(--hachi-muted)' }}>Hachi uses your own key. It's stored masked and never shown back.</div>
+      <div style={{ fontSize: 13, color: 'var(--hachi-muted)' }}>Hachi uses your own key. It is stored securely and never shown back to you.</div>
       <div>
         <div style={{ fontSize: 13, color: 'var(--hachi-muted)', marginBottom: 6 }}>Provider</div>
         <div style={{ display: 'flex', alignItems: 'center', height: 44, padding: '0 14px', borderRadius: 10, border: '0.5px solid var(--hachi-line)', background: 'var(--hachi-canvas)', fontSize: 14 }}>
@@ -262,13 +312,32 @@ function Step1({
       </div>
       <div>
         <div style={{ fontSize: 13, color: 'var(--hachi-muted)', marginBottom: 6 }}>API key</div>
+        {/* Show a "key already configured" indicator when the env boolean is true and user hasn't started typing */}
+        {keyAlreadySet && !setupKey && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            height: 44,
+            padding: '0 14px',
+            borderRadius: 10,
+            border: '0.5px solid var(--hachi-success)',
+            background: 'var(--hachi-success-tint)',
+            fontSize: 14,
+            color: 'var(--hachi-muted)',
+            marginBottom: 6,
+          }}>
+            <Icon name="check" size={15} />
+            <span>••••••••  (key configured — stored securely)</span>
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <input
             value={setupKey}
             onChange={(e) => onKeyChange(e.target.value)}
             onBlur={onValidate}
             type="password"
-            placeholder="sk-ant-…"
+            placeholder={keyAlreadySet ? 'Enter a new key to replace the existing one' : 'Paste your API key here'}
             disabled={isChecking}
             style={{
               flex: 1,
@@ -425,45 +494,80 @@ function SafetyOption({ name, desc, selected, onClick }: {
   );
 }
 
-function Step3({
-  google,
-  channel,
-  onToggleGoogle,
-  onToggleChannel,
-}: {
-  google: boolean;
-  channel: boolean;
-  onToggleGoogle: () => void;
-  onToggleChannel: () => void;
-}) {
+// ---- Step 3: Connect accounts (real OAuth via integrations list) ----
+
+function Step3({ integrations }: { integrations: { id: string; icon: string; name: string; can: string; status: string }[] }) {
+  const showToast = useStore((s) => s.showToast);
+
+  // Track per-integration in-flight OAuth state locally.
+  const [pending, setPending] = useState<Set<string>>(new Set());
+
+  // Filter to integrations that make sense to connect during onboarding.
+  // Show all configured/available integrations from the backend, not a hardcoded list.
+  // If integrations list is empty (not yet loaded or backend returned none), show a note.
+  const connectables = integrations.filter((i) => i.status !== undefined);
+
+  async function handleConnect(id: string) {
+    if (pending.has(id)) return;
+    setPending((prev) => new Set([...prev, id]));
+    try {
+      await startIntegrationOAuth(id);
+      // startIntegrationOAuth opens the provider OAuth flow and refreshes status;
+      // the integrations store will update when the flow completes.
+    } catch {
+      showToast(`Could not start OAuth for ${id} — try again in Integrations`, 'blocked');
+    } finally {
+      setPending((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ fontFamily: 'var(--font-display)', fontWeight: 500, fontSize: 18 }}>Connect your accounts</div>
       <div style={{ fontSize: 13, color: 'var(--hachi-muted)' }}>
         Optional — you can do this any time in Integrations. Hachi only ever uses what you connect.
       </div>
-      <ConnectRow
-        icon="mail"
-        title="Google"
-        sub="Gmail · Calendar · Drive"
-        connected={google}
-        onToggle={onToggleGoogle}
-      />
-      <ConnectRow
-        icon="hash"
-        title="A chat channel"
-        sub="Slack or WhatsApp — where Hachi reaches you"
-        connected={channel}
-        onToggle={onToggleChannel}
-      />
+
+      {connectables.length === 0 ? (
+        <div style={{
+          padding: 16,
+          borderRadius: 12,
+          border: '0.5px solid var(--hachi-line)',
+          background: 'var(--hachi-canvas)',
+          fontSize: 13,
+          color: 'var(--hachi-muted)',
+        }}>
+          No integrations available yet — configure them any time in the Integrations tab.
+        </div>
+      ) : (
+        connectables.map((integration) => {
+          const isConnected = integration.status === 'connected';
+          const isPending = pending.has(integration.id);
+          return (
+            <ConnectRow
+              key={integration.id}
+              icon={integration.icon}
+              title={integration.name}
+              sub={integration.can}
+              connected={isConnected}
+              pending={isPending}
+              onConnect={() => void handleConnect(integration.id)}
+            />
+          );
+        })
+      )}
     </div>
   );
 }
 
 function ConnectRow({
-  icon, title, sub, connected, onToggle,
+  icon, title, sub, connected, pending, onConnect,
 }: {
-  icon: string; title: string; sub: string; connected: boolean; onToggle: () => void;
+  icon: string; title: string; sub: string; connected: boolean; pending: boolean; onConnect: () => void;
 }) {
   const [hovered, setHovered] = React.useState(false);
 
@@ -471,12 +575,9 @@ function ConnectRow({
   const bg     = connected ? 'var(--hachi-success-tint)' : 'var(--hachi-canvas)';
 
   return (
-    <button
-      type="button"
-      onClick={onToggle}
+    <div
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      aria-pressed={connected}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -486,8 +587,6 @@ function ConnectRow({
         borderRadius: 12,
         border: `1px solid ${border}`,
         background: bg,
-        cursor: 'pointer',
-        font: 'inherit',
         transition: 'border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease)',
       }}
     >
@@ -498,6 +597,7 @@ function ConnectRow({
         background: 'var(--hachi-cream)',
         display: 'grid',
         placeItems: 'center',
+        flexShrink: 0,
       }}>
         <Icon name={icon} size={20} />
       </div>
@@ -505,13 +605,33 @@ function ConnectRow({
         <div style={{ fontWeight: 500, fontSize: 14 }}>{title}</div>
         <div style={{ fontSize: 13, color: 'var(--hachi-muted)', marginTop: 1 }}>{sub}</div>
       </div>
-      {connected && (
+      {connected ? (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#2C7A50', fontWeight: 500 }}>
           <Icon name="check" size={15} />
           connected
         </span>
+      ) : (
+        <button
+          type="button"
+          onClick={onConnect}
+          disabled={pending}
+          style={{
+            height: 32,
+            padding: '0 12px',
+            borderRadius: 8,
+            border: '0.5px solid var(--hachi-trust)',
+            background: 'transparent',
+            color: 'var(--hachi-trust)',
+            font: '500 12px var(--font-body)',
+            cursor: pending ? 'default' : 'pointer',
+            opacity: pending ? 0.6 : 1,
+            flexShrink: 0,
+          }}
+        >
+          {pending ? 'Opening…' : 'Connect'}
+        </button>
       )}
-    </button>
+    </div>
   );
 }
 

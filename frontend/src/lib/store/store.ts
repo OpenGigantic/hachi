@@ -6,7 +6,7 @@
 
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import { USE_MOCKS } from "../data/client";
+import { USE_MOCKS, registerReconnectCallback } from "../data/client";
 import {
   initApprovals,
   history,
@@ -147,6 +147,8 @@ interface State {
   allowedCommands: string[];
   opTools: OpTool[];
   provider: Provider;
+  /** True once loadConfig has received a real response (success or error-with-defaults). */
+  configLoaded: boolean;
   reconnecting: boolean;
   // toast
   toast: Toast | null;
@@ -161,6 +163,10 @@ interface State {
     routine: boolean;
     google: boolean;
     channel: boolean;
+    /** 'onboard' = full wizard; 'edit-provider' = provider/key step only */
+    mode: 'onboard' | 'edit-provider';
+    /** True when the backend reports an API key is already configured in the environment */
+    keyAlreadySet: boolean;
   };
   // kennel consent overlay
   kennelConsent: KennelConsentItem | null;
@@ -216,6 +222,7 @@ interface Actions {
   setPaletteQuery: (q: string) => void;
   // setup
   openSetup: () => void;
+  openSetupEditProvider: () => void;
   closeSetup: () => void;
   setSetupStep: (n: number) => void;
   setSetupField: (k: string, v: unknown) => void;
@@ -380,10 +387,11 @@ const domainDefaults = (): Omit<State, "operator" | "theme"> => ({
   allowedCommands: USE_MOCKS ? allowedCommands : [],
   opTools: USE_MOCKS ? opTools : [],
   provider: { name: "anthropic", model: "claude-sonnet-4-5", key: "" },
+  configLoaded: false,
   reconnecting: false,
   toast: null,
   palette: { open: false, query: "" },
-  setup: { open: false, step: 0, key: "", safety: "standard", routine: true, google: false, channel: false },
+  setup: { open: false, step: 0, key: "", safety: "standard", routine: true, google: false, channel: false, mode: 'onboard' as const, keyAlreadySet: false },
   kennelConsent: null,
   kennelBrowseOpen: false,
   taskCap: 1.0,
@@ -638,7 +646,9 @@ export const useStore = create<State & Actions>()(
 
         // setup
         openSetup: () =>
-          set((s) => ({ setup: { ...s.setup, open: true, step: 0 } })),
+          set((s) => ({ setup: { ...s.setup, open: true, step: 0, mode: 'onboard' as const } })),
+        openSetupEditProvider: () =>
+          set((s) => ({ setup: { ...s.setup, open: true, step: 1, mode: 'edit-provider' as const } })),
         closeSetup: () =>
           set((s) => ({ setup: { ...s.setup, open: false } })),
         setSetupStep: (n) =>
@@ -658,9 +668,15 @@ export const useStore = create<State & Actions>()(
             setup: { ...s.setup, step: Math.max(0, s.setup.step - 1) },
           })),
         setupNext: () => {
-          const step = get().setup.step;
+          const su = get().setup;
+          // edit-provider mode: step 1 is the only step; Save closes the wizard.
+          if (su.mode === 'edit-provider') {
+            set((s) => ({ setup: { ...s.setup, open: false } }));
+            toast("Provider updated — Hachi will use it on next restart", "success");
+            return;
+          }
+          const step = su.step;
           if (step >= 4) {
-            const su = get().setup;
             set((s) => {
               const hasBriefing = s.routines.some((r) => r.title === "Morning briefing");
               const newRoutines =
@@ -1649,3 +1665,8 @@ export const useStore = create<State & Actions>()(
     }
   )
 );
+
+// Wire the client's reconnect callback to the store's setReconnecting action.
+// This runs once when the store module loads (module scope), avoiding a circular
+// import (client.ts ← store.ts ← client.ts) by using a callback injection pattern.
+registerReconnectCallback((v) => useStore.getState().setReconnecting(v));

@@ -56,6 +56,15 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Returns true when the error is a genuine network failure (fetch() rejected —
+ * connection refused, DNS, offline, CORS). A non-2xx HTTP response does NOT
+ * count as a network error because the server was reachable.
+ */
+export function isNetworkError(err: unknown): boolean {
+  return err instanceof ApiError && err.code === "network_error" && err.status === 0;
+}
+
 function buildUrl(path: string, params?: Record<string, unknown>): string {
   const base = path.startsWith("/") ? API_BASE + path : `${API_BASE}/${path}`;
   if (!params) return base;
@@ -97,6 +106,21 @@ async function parseError(res: Response, method: string, path: string): Promise<
   return new ApiError(message, res.status, code, details);
 }
 
+// Module-level callback registered by the store to avoid a circular import.
+// client.ts → store.ts → client.ts would be a cycle; instead the store
+// calls registerReconnectCallback() at startup to inject setReconnecting.
+type ReconnectCallback = (v: boolean) => void;
+let _setReconnecting: ReconnectCallback | null = null;
+
+/**
+ * Register the store's setReconnecting action so the HTTP client can flip the
+ * reconnecting flag centrally. Called once at app startup (from bootstrap or
+ * __root.tsx). If never called, the flag is simply not updated from here.
+ */
+export function registerReconnectCallback(cb: ReconnectCallback): void {
+  _setReconnecting = cb;
+}
+
 async function request<T>(
   method: string,
   path: string,
@@ -105,12 +129,26 @@ async function request<T>(
   const headers = authHeaders(
     opts?.body !== undefined ? { "Content-Type": "application/json" } : undefined
   );
-  const res = await fetch(buildUrl(path, opts?.params), {
-    method,
-    headers,
-    body: opts?.body !== undefined ? JSON.stringify(opts.body) : undefined,
-    signal: opts?.signal,
-  });
+
+  let res: Response;
+  try {
+    res = await fetch(buildUrl(path, opts?.params), {
+      method,
+      headers,
+      body: opts?.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      signal: opts?.signal,
+    });
+  } catch (fetchErr) {
+    // fetch() rejected — server is genuinely unreachable (connection refused,
+    // DNS failure, offline, CORS preflight rejection). Signal reconnecting.
+    _setReconnecting?.(true);
+    const msg = fetchErr instanceof Error ? fetchErr.message : "Network error";
+    throw new ApiError(msg, 0, "network_error");
+  }
+
+  // We reached the server (any HTTP response, including 5xx) — clear reconnecting.
+  _setReconnecting?.(false);
+
   if (!res.ok) throw await parseError(res, method, path);
   if (res.status === 204) return undefined as T;
   const text = await res.text();

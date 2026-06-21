@@ -5,6 +5,7 @@ import { GovernanceBar } from '../components/shell/GovernanceBar'
 import { GlobalOverlays } from '../components/overlays'
 import { useStore } from '../lib/store/store'
 import { bootstrapLiveData } from '../lib/data/bootstrap'
+import { useRouteLoaders } from '../lib/data/useRouteLoaders'
 import { useIsMobile } from '../lib/hooks/useMediaQuery'
 
 function RootLayout() {
@@ -16,11 +17,14 @@ function RootLayout() {
     document.documentElement.setAttribute('data-theme', theme)
   }, [theme])
 
-  // Hydrate every wired domain from the gateway once on mount. Each loader
-  // degrades to seeded fixtures on failure, so this never blanks the UI.
+  // Hydrate eager domains (config, sessions, spend) from the gateway on mount.
+  // Each loader degrades to seeded fixtures on failure, so this never blanks the UI.
   useEffect(() => {
     if (dataMode === 'live') void bootstrapLiveData()
   }, [dataMode])
+
+  // Lazy-load non-critical domains when their route is first visited.
+  useRouteLoaders()
 
   return (
     <div

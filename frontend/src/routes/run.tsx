@@ -248,7 +248,7 @@ function RunSurface({ onBack }: RunSurfaceProps) {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* ---- header ---- */}
-      <div style={headerStyle}>
+      <div className="hachi-run-header" style={headerStyle}>
         {/* back button */}
         <button
           onClick={onBack}
@@ -340,9 +340,9 @@ function RunSurface({ onBack }: RunSurfaceProps) {
       </div>
 
       {/* ---- body ---- */}
-      <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+      <div className="hachi-run-body" style={{ flex: 1, minHeight: 0, display: "flex" }}>
         {/* ==== left panel: plan + the pack ==== */}
-        <div className="hachi-scroll" style={leftPanelStyle}>
+        <div className="hachi-scroll hachi-run-left" style={leftPanelStyle}>
           {/* Plan section — hidden in live mode when no steps are emitted */}
           {hasPlan && (
             <div>

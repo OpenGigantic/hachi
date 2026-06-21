@@ -2,7 +2,7 @@
 // Faithfully ports prototype markup lines 212–336 and logic handlers.
 // Screen-local view state only in useState; all domain mutations go through useStore.
 
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useRef, useState, useCallback, memo } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
@@ -11,7 +11,7 @@ import { LeashPrompt } from '../components/brand/LeashPrompt'
 import type { ChatMessage, ActionCard, Integration } from '../lib/data/types'
 // Side-effect import: registers the "chat" loader with bootstrapLiveData()
 // and makes loadSessions available for the per-route refresh below.
-import { loadSessions } from '../lib/data/domains/chat'
+import { loadSessions, loadConversationHistory, abortSseLive } from '../lib/data/domains/chat'
 import { Markdown } from '../components/ui/Markdown'
 
 // ---- SessionPicker (M8 MED-020) -----------------------------------
@@ -602,6 +602,26 @@ function RoutineCard({ routine, msgId }: RoutineCardProps) {
   )
 }
 
+// ---- StreamingCursor -----------------------------------------------
+// Isolated so its CSS animation doesn't force the whole message list to
+// re-render on every animation frame. Only renders when isStreaming=true.
+
+const StreamingCursor = memo(function StreamingCursor() {
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        width: 8,
+        height: 17,
+        background: 'var(--hachi-brand)',
+        marginLeft: 2,
+        verticalAlign: 'text-bottom',
+        animation: 'hachiBlink 1s steps(1) infinite',
+      }}
+    />
+  )
+})
+
 // ---- MessageItem ---------------------------------------------------
 
 interface MessageItemProps {
@@ -612,7 +632,9 @@ interface MessageItemProps {
   onRetry?: () => void
 }
 
-function MessageItem({ msg, isLast, isStreaming, operator, onRetry }: MessageItemProps) {
+// Wrapped in React.memo so that updating the last streaming message text does
+// NOT re-render every prior (stable) message in the list.
+const MessageItem = memo(function MessageItem({ msg, isLast, isStreaming, operator, onRetry }: MessageItemProps) {
   const isYou = msg.role === 'you'
   const isHachi = msg.role === 'hachi'
   const showCursor = isStreaming && isHachi && isLast
@@ -671,7 +693,7 @@ function MessageItem({ msg, isLast, isStreaming, operator, onRetry }: MessageIte
             paddingTop: 4,
           }}
         >
-          {/* text + blinking cursor */}
+          {/* text + blinking cursor (cursor is isolated to avoid re-rendering siblings) */}
           <div
             style={{
               fontSize: 15,
@@ -680,19 +702,7 @@ function MessageItem({ msg, isLast, isStreaming, operator, onRetry }: MessageIte
             }}
           >
             <Markdown text={msg.text} />
-            {showCursor && (
-              <span
-                style={{
-                  display: 'inline-block',
-                  width: 8,
-                  height: 17,
-                  background: 'var(--hachi-brand)',
-                  marginLeft: 2,
-                  verticalAlign: 'text-bottom',
-                  animation: 'hachiBlink 1s steps(1) infinite',
-                }}
-              />
-            )}
+            {showCursor && <StreamingCursor />}
           </div>
 
           {/* retry button on error */}
@@ -746,7 +756,7 @@ function MessageItem({ msg, isLast, isStreaming, operator, onRetry }: MessageIte
   }
 
   return null
-}
+})
 
 // ---- Conversation component ----------------------------------------
 
@@ -780,6 +790,24 @@ function Conversation() {
 
   // Refresh recent sessions list on navigate-to (idempotent loader)
   useEffect(() => { void loadSessions() }, [])
+
+  // Restore conversation history on mount and when the active session changes.
+  // Guards: skipped in mock mode, skipped if a stream is in-flight.
+  const activeSessionId = sessions.find((s) => s.active)?.id ?? null
+  useEffect(() => {
+    void loadConversationHistory()
+  // Re-run whenever the active session id changes (e.g. user switches sessions
+  // or the sessions list loads for the first time on a refresh).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionId])
+
+  // Abort the SSE stream when the conversation screen unmounts so the reader
+  // is released and the idle timeout doesn't keep it alive in the background.
+  useEffect(() => {
+    return () => {
+      abortSseLive()
+    }
+  }, [])
 
   // Reset slash index when menu opens/closes
   useEffect(() => {

@@ -33,6 +33,8 @@ export interface SSEHandlers {
 export interface SSEOptions {
   params?: Record<string, unknown>;
   signal?: AbortSignal;
+  /** Max ms to wait between chunks before aborting the stream. Default 3 minutes. */
+  idleTimeoutMs?: number;
 }
 
 function buildSseUrl(path: string, params?: Record<string, unknown>): string {
@@ -80,6 +82,27 @@ export async function streamSSE(
   const decoder = new TextDecoder();
   let buffer = "";
 
+  // Idle timeout: if no chunk arrives within idleTimeoutMs, cancel the stream.
+  // Default 3 minutes — long enough for slow tasks but prevents zombie streams.
+  const idleMs = opts?.idleTimeoutMs ?? 3 * 60 * 1000;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  // We create a separate AbortController to cancel the reader on idle timeout.
+  const idleAbort = new AbortController();
+
+  function resetIdleTimer() {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleAbort.abort();
+    }, idleMs);
+  }
+
+  function clearIdleTimer() {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  }
+
   // Accumulators for the in-flight event frame.
   let evId: string | undefined;
   let evName = "message";
@@ -93,9 +116,39 @@ export async function streamSSE(
     evData = [];
   };
 
+  // If the caller aborts, we also want to cancel the reader (not just the
+  // fetch) so the loop exits cleanly without waiting for the next chunk.
+  const callerSignal = opts?.signal;
+  const onCallerAbort = () => { idleAbort.abort(); };
+  callerSignal?.addEventListener("abort", onCallerAbort);
+
   try {
+    resetIdleTimer();
     for (;;) {
-      const { value, done } = await reader.read();
+      // Race between the actual read and an idle/caller abort.
+      const readPromise = reader.read();
+      // If the idle controller has been aborted, throw an AbortError to exit.
+      if (idleAbort.signal.aborted) {
+        const abortErr = new DOMException("SSE idle timeout", "AbortError");
+        throw abortErr;
+      }
+
+      // We can't pass a signal to reader.read(), so we race it with a rejection
+      // that fires when idleAbort triggers.
+      const { value, done } = await Promise.race([
+        readPromise,
+        new Promise<never>((_, reject) => {
+          if (idleAbort.signal.aborted) {
+            reject(new DOMException("SSE idle timeout", "AbortError"));
+          } else {
+            idleAbort.signal.addEventListener("abort", () => {
+              reject(new DOMException("SSE idle timeout", "AbortError"));
+            }, { once: true });
+          }
+        }),
+      ]);
+
+      resetIdleTimer(); // chunk arrived — reset the idle window
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
 
@@ -134,13 +187,17 @@ export async function streamSSE(
     }
     dispatch(); // flush any trailing frame
   } catch (err) {
-    // AbortError is the normal "caller cancelled" path — not a real error.
+    // AbortError covers: caller cancelled (opts.signal), idle timeout,
+    // and the race's own reject path. None of these are real stream errors.
     if (!(err instanceof DOMException && err.name === "AbortError")) {
       handlers.onError?.(err);
     }
   } finally {
+    clearIdleTimer();
+    callerSignal?.removeEventListener("abort", onCallerAbort);
     handlers.onClose?.();
     try {
+      reader.cancel().catch(() => { /* ignore cancel errors */ });
       reader.releaseLock();
     } catch {
       /* already released */

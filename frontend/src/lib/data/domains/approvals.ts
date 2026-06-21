@@ -177,16 +177,14 @@ export async function loadApprovals(): Promise<void> {
     const auditLog: AuditEntry[] = (Array.isArray(auditRes) ? auditRes : []).map(adaptAuditEntry);
 
     useStore.getState().hydrate({ approvals, auditLog });
-    useStore.getState().setReconnecting(false);
     _hasEverSucceeded = true;
   } catch {
     if (!_hasEverSucceeded) {
       // First-load failure: clear fixtures so we never show fabricated data as real.
       useStore.getState().hydrate({ approvals: [], auditLog: [] });
     }
-    // Whether or not this is the first load, flag reconnecting so the UI degrades
-    // gracefully. Last-known-good real data is preserved after the first success.
-    useStore.getState().setReconnecting(true);
+    // Reconnecting flag is now managed centrally by client.ts via the
+    // registered callback — no per-domain setReconnecting calls needed here.
   }
 }
 
@@ -214,7 +212,7 @@ async function postDecision(
           { action, rationale: rationale ?? "" }
         );
       } catch {
-        useStore.getState().setReconnecting(true);
+        // Network errors are surfaced centrally via client.ts reconnect callback.
       }
     }
     // If requestId is unknown (e.g. fixture item), skip the POST — the

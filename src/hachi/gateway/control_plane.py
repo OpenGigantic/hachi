@@ -101,6 +101,7 @@ class GatewayControlPlane:
         authoring_generate: Callable[[str, str], dict[str, Any]] | None = None,
         authoring_apply: Callable[[str], dict[str, Any]] | None = None,
         authoring_revert: Callable[[str], dict[str, Any]] | None = None,
+        authoring_save_source: Callable[[str, str], dict[str, Any]] | None = None,
         get_spend: Callable[[str | None], dict[str, Any]] | None = None,
         set_capability_enabled: Callable[[str, bool], dict[str, Any]] | None = None,
         add_memory_fact: Callable[[str, str], dict[str, Any]] | None = None,
@@ -111,7 +112,7 @@ class GatewayControlPlane:
         add_allowed_command: Callable[[str], dict[str, Any]] | None = None,
         add_always_allow: Callable[[str, str, str], dict[str, Any]] | None = None,
         register_mcp_server: (
-            Callable[[str, str, str, dict[str, str]], dict[str, Any]] | None
+            Callable[..., dict[str, Any]] | None
         ) = None,
         get_kennel: Callable[[], list[dict[str, Any]]] | None = None,
         add_skill: Callable[[str], dict[str, Any]] | None = None,
@@ -152,6 +153,7 @@ class GatewayControlPlane:
         self._authoring_generate = authoring_generate
         self._authoring_apply = authoring_apply
         self._authoring_revert = authoring_revert
+        self._authoring_save_source = authoring_save_source
         self._get_spend = get_spend
         self._set_capability_enabled = set_capability_enabled
         self._add_memory_fact = add_memory_fact
@@ -568,6 +570,15 @@ class GatewayControlPlane:
         handler = self._require_handler(self._authoring_revert, "authoring revert")
         return handler(name)
 
+    def authoring_save_source(self, name: str, content: str) -> Any:
+        """Persist manually edited content to a target file (POST /authoring/targets/{name}/source).
+
+        CONTRACT-AUTHORING-SAVE: validates the target name, validates parse for .og files,
+        and writes atomically.  Returns ``{"ok": True, "name": name}`` on success.
+        """
+        handler = self._require_handler(self._authoring_save_source, "authoring save source")
+        return handler(name, content)
+
     def spend(self, session_id: str | None = None) -> Any:
         """Return spend analytics for the current or specified session (GET /spend)."""
         if self._get_spend is None:
@@ -616,11 +627,26 @@ class GatewayControlPlane:
         return handler(session_id, request, action)
 
     def register_mcp_server(
-        self, name: str, command: str, args: str, env_vars: dict[str, str]
+        self,
+        name: str,
+        transport: str = "stdio",
+        command: str = "",
+        args: str = "",
+        env_vars: dict[str, str] | None = None,
+        url: str = "",
+        headers: dict[str, str] | None = None,
     ) -> Any:
         """Register a new MCP server (POST /runtime/mcp/register)."""
         handler = self._require_handler(self._register_mcp_server, "MCP server registration")
-        return handler(name, command, args, env_vars)
+        return handler(
+            name=name,
+            transport=transport,
+            command=command,
+            args=args,
+            env_vars=env_vars or {},
+            url=url,
+            headers=headers or {},
+        )
 
     def kennel(self) -> Any:
         """Return the available skills kennel listing (GET /skills/kennel)."""
