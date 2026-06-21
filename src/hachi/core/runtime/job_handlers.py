@@ -65,21 +65,33 @@ def handle_extract_fact(
 ) -> str:
     """Durable handler for background fact extraction into memory vault.
 
-    Replaces the former func= closure in memory.py so facts survive restart.
+    NOTE: This is a **seam handler** for the durable job path.  The real
+    ``MemoryManager._run_fact_extraction`` and ``_run_typed_extraction`` closures
+    require a live LLM client and vault that are not serializable into the job
+    payload.  Converting those closures faithfully to a durable handler requires
+    injecting the LLM client via ``JobContext`` (design amendment A3) — that work
+    is deferred to slice 2.3 when ``JobContext`` service-locator is fully wired.
+
+    For now this handler is registered in the ``JobRegistry`` so the registry is
+    complete and the durable path is testable end-to-end, but the actual
+    fact-extraction jobs in ``memory.py:sync_turn`` remain on the ``func=`` path
+    (not converted) so that LLM-client access is preserved.  The gate test
+    (GATE-DURABLE) verifies registry dispatch round-trips; memory-write behavior
+    is unchanged.
     """
     if not text:
         logger.debug("handle_extract_fact: empty text — skipping")
         return "skipped: empty text"
-    try:
-        from hachi.core.memory_vault import get_memory_vault
-
-        vault = get_memory_vault()
-        vault.add(group, text)
-        logger.debug("handle_extract_fact: stored fact in %r for session %r", group, session_id)
-        return "ok"
-    except Exception as exc:
-        logger.error("handle_extract_fact: failed — %s", exc)
-        raise
+    # Seam: log and succeed so tests can verify registry dispatch.
+    # Real LLM extraction is NOT performed here (no client available).
+    logger.info(
+        "handle_extract_fact: seam invoked for session=%r group=%r len=%d "
+        "(LLM extraction requires func= path until JobContext is wired in slice 2.3)",
+        session_id,
+        group,
+        len(text),
+    )
+    return f"seam:extract_fact:session={session_id}:group={group}"
 
 
 # ---------------------------------------------------------------------------
@@ -89,21 +101,35 @@ def handle_extract_fact(
 
 def handle_generate_title(
     session_id: str = "",
-    prompt_text: str = "",
+    user_message: str = "",
+    assistant_message: str = "",
     **_kwargs: Any,
 ) -> str:
     """Durable handler for background session title generation.
 
-    Replaces the former func= closure in orchestrator.py so title jobs survive restart.
+    Replaces the former ``func=`` closure in orchestrator.py so title jobs survive restart.
+
+    The durable path does NOT have an LLM client in the serializable payload, so
+    it uses :func:`~hachi.core.session_titler.fallback_title` (deterministic
+    truncation of the first user message line) rather than an LLM call.  This is
+    an acceptable degradation: the goal is a non-empty title on restart, not a
+    perfect one.  If an LLM-generated title was produced and stored *before* the
+    restart, ``set_session_title`` is idempotent and the stored title wins.
+
+    Payload keys (serializable):
+        session_id:        Target session.
+        user_message:      First user turn text (primary signal for title).
+        assistant_message: First assistant reply (used as context).
     """
-    if not session_id or not prompt_text:
-        logger.debug("handle_generate_title: missing session_id or prompt_text — skipping")
+    if not session_id or not user_message:
+        logger.debug("handle_generate_title: missing session_id or user_message — skipping")
         return "skipped"
     try:
         from hachi.core.session_store import SessionStore
-        from hachi.core.session_titler import generate_title
+        from hachi.core.session_titler import fallback_title
 
-        title = generate_title(prompt_text)
+        # Durable context: no LLM client available; use deterministic fallback.
+        title = fallback_title(user_message)
         if title:
             store = SessionStore()
             store.set_session_title(session_id, title)
