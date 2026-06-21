@@ -780,17 +780,32 @@ class ExecutionLoop:
                     _llm_model = getattr(self.llm_client, "model", "unknown")
                     with span("llm.generate", model=_llm_model):
                         response = self._stream_generate(on_delta=_on_delta, **gen_kwargs)
+                        if response is None:
+                            # Defence-in-depth: a resilient/streaming provider path can
+                            # complete with a None value instead of raising when the
+                            # upstream call fails (commonly: out of API credits, invalid
+                            # key, or model unavailable). Surface a clear, logged error
+                            # instead of crashing below on `response.usage` with an opaque
+                            # AttributeError that masks the real cause.
+                            raise RuntimeError(
+                                "LLM returned no response — the AI provider call failed "
+                                "(check API credits, key, and model configuration)."
+                            )
                         # Enrich the span with token/cost telemetry while still inside
                         # the span context so attributes land on the correct span.
                         from hachi.core.tracing import add_span_attributes
 
-                        add_span_attributes(
-                            llm_input_tokens=response.usage.input_tokens,
-                            llm_output_tokens=response.usage.output_tokens,
-                            llm_cache_read_tokens=response.usage.cache_read_tokens,
-                            llm_cache_creation_tokens=response.usage.cache_creation_tokens,
-                            llm_model=_llm_model,
-                        )
+                        # ``usage`` can be absent on a degraded/empty provider response
+                        # (e.g. a swallowed upstream failure); guard so telemetry never
+                        # crashes the turn with an opaque AttributeError.
+                        if response.usage is not None:
+                            add_span_attributes(
+                                llm_input_tokens=response.usage.input_tokens,
+                                llm_output_tokens=response.usage.output_tokens,
+                                llm_cache_read_tokens=response.usage.cache_read_tokens,
+                                llm_cache_creation_tokens=response.usage.cache_creation_tokens,
+                                llm_model=_llm_model,
+                            )
                 except _StreamCancelled as exc:
                     # Mid-stream cancel: partial text is in exc.partial_text plus whatever
                     # was already flushed into _partial_text from prior iterations.

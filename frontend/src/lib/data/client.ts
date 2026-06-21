@@ -57,12 +57,26 @@ export class ApiError extends Error {
 }
 
 /**
- * Returns true when the error is a genuine network failure (fetch() rejected —
- * connection refused, DNS, offline, CORS). A non-2xx HTTP response does NOT
- * count as a network error because the server was reachable.
+ * Returns true when the error is a genuine network failure or a gateway-down
+ * proxy error.
+ *
+ * Two cases:
+ *  1. fetch() itself rejected (status 0, code "network_error") — connection
+ *     refused, DNS failure, offline, or CORS preflight rejection.
+ *  2. In dev the Vite proxy sits between the browser and the gateway. When
+ *     the gateway process is DOWN the proxy returns 502/503/504 — the server
+ *     was technically reachable (the proxy) but the real backend is absent.
+ *     We treat these proxy error codes as connectivity loss so the reconnecting
+ *     indicator fires correctly. A 500 from a live gateway with a JSON error
+ *     body is NOT caught here (it has a readable ApiError message instead).
  */
 export function isNetworkError(err: unknown): boolean {
-  return err instanceof ApiError && err.code === "network_error" && err.status === 0;
+  if (!(err instanceof ApiError)) return false;
+  if (err.status === 0 && err.code === "network_error") return true;
+  // Vite-proxy-down heuristic: 502 Bad Gateway, 503 Service Unavailable,
+  // 504 Gateway Timeout all indicate the upstream gateway is unreachable.
+  if (err.status === 502 || err.status === 503 || err.status === 504) return true;
+  return false;
 }
 
 function buildUrl(path: string, params?: Record<string, unknown>): string {

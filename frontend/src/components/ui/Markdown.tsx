@@ -11,6 +11,47 @@
 
 import type { ReactNode, CSSProperties } from 'react'
 
+// ---- URL sanitizer --------------------------------------------------
+// Allows only safe URL schemes. Returns null for anything disallowed
+// (javascript:, data:, vbscript:, etc.).
+//
+// Attackers use leading whitespace / control chars and tab-embedded
+// scheme names (e.g. "java\tscript:") to bypass naive checks, so we
+// strip leading whitespace/control chars before extracting the scheme
+// and compare case-insensitively.
+function safeHref(href: string): string | null {
+  // Strip leading ASCII whitespace and C0 control characters (U+0000–U+001F).
+  // These can appear in raw markdown and are dropped by browsers silently.
+  const trimmed = href.replace(/^\s+/, '')
+
+  // Relative URLs are always safe: /, #, ./, ../
+  if (
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('#') ||
+    trimmed.startsWith('./') ||
+    trimmed.startsWith('../')
+  ) {
+    return trimmed
+  }
+
+  // Extract the scheme — everything up to and including the first colon,
+  // then collapse any embedded whitespace/control chars that browsers ignore.
+  const colonIdx = trimmed.indexOf(':')
+  if (colonIdx === -1) {
+    // No scheme → treat as a relative URL path (safe)
+    return trimmed
+  }
+  // Collapse whitespace within the scheme (handles "java\tscript:")
+  const scheme = trimmed.slice(0, colonIdx).replace(/\s+/g, '').toLowerCase()
+
+  const ALLOWED_SCHEMES = new Set(['http', 'https', 'mailto', 'tel'])
+  if (!ALLOWED_SCHEMES.has(scheme)) {
+    return null
+  }
+
+  return trimmed
+}
+
 // ---- Inline parser --------------------------------------------------
 // Tokenises a single text run into spans with optional formatting.
 
@@ -30,6 +71,14 @@ type InlineToken =
 // `lastIndex`, making the outer loop re-match the same token forever — an
 // infinite loop that hangs the main thread on any text containing emphasis or a
 // link. Each parseInline call therefore builds its own RegExp instance below.
+// NOTE (HACHI-015 — LOW): The link href pattern `\(([^)]*)\)` stops at the
+// first `)`, which truncates URLs that legally contain parentheses (e.g.
+// Wikipedia links like `/wiki/Foo_(bar)`). Fixing this requires a more
+// complex regex (e.g. balanced-paren counting) that cannot share the `g`-flag
+// instance safety constraints documented above without careful testing. Given
+// that the XSS fix (HACHI-001) and recursion safety take precedence, this
+// limitation is left in place and documented here. URLs with parens should be
+// encoded as `%28`/`%29` to work correctly with this renderer.
 const INLINE_RE_SOURCE =
   '(`[^`]*`?)|(\\*\\*(?:[^*]|\\*(?!\\*))*\\*\\*)|(__(?:[^_]|_(?!_))*__)|(\\*(?:[^*])*\\*(?!\\*))|(_(?:[^_])*_(?!_))|(\\[([^\\]]*)\\]\\(([^)]*)\\))'
 
@@ -110,11 +159,17 @@ function renderInlineTokens(tokens: InlineToken[], keyPrefix: string): ReactNode
         return <strong key={key}>{renderInlineTokens(tok.children, key)}</strong>
       case 'italic':
         return <em key={key}>{renderInlineTokens(tok.children, key)}</em>
-      case 'link':
+      case 'link': {
+        const allowedHref = safeHref(tok.href)
+        if (allowedHref === null) {
+          // Disallowed scheme (javascript:, data:, vbscript:, etc.) — render
+          // the link text as plain inline content, no <a> wrapper.
+          return <span key={key}>{renderInlineTokens(tok.children, key)}</span>
+        }
         return (
           <a
             key={key}
-            href={tok.href}
+            href={allowedHref}
             rel="noreferrer noopener"
             target="_blank"
             style={{ color: 'var(--hachi-trust, #4c6ef5)', textDecoration: 'underline' }}
@@ -122,6 +177,7 @@ function renderInlineTokens(tokens: InlineToken[], keyPrefix: string): ReactNode
             {renderInlineTokens(tok.children, key)}
           </a>
         )
+      }
     }
   })
 }

@@ -14,6 +14,7 @@
 
 import { apiGet, apiSend, USE_MOCKS } from "../client";
 import { registerLoader } from "../live";
+import { dedupe } from "../dedupe";
 import { useStore } from "../../store/store";
 import type { SafetyLevel } from "../types";
 
@@ -148,7 +149,11 @@ let _hasEverSucceeded = false;
  * structural defaults (no content from fixtures). After a successful first
  * fetch, subsequent failures preserve the last known real gateway state.
  */
-export async function loadSetup(): Promise<void> {
+export function loadSetup(): Promise<void> {
+  return dedupe("setup", _loadSetupImpl);
+}
+
+async function _loadSetupImpl(): Promise<void> {
   if (USE_MOCKS) return;
 
   try {

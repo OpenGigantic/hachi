@@ -69,10 +69,14 @@ export function SetupWizard() {
   // Focus trap: keeps focus inside the modal while open; restores on close.
   const trapRef = useFocusTrap<HTMLDivElement>(setup.open);
 
-  // Load real onboarding state on mount (idempotent; mock-safe via USE_MOCKS check inside).
+  // Load real onboarding state only when the wizard is open.
+  // SetupWizard is always mounted in GlobalOverlays, so an unconditional effect
+  // would fire even while closed. Gating on setup.open avoids redundant fetches;
+  // the dedupe("setup") wrapper in loadSetup handles concurrent callers.
   useEffect(() => {
+    if (!setup.open) return;
     void loadSetup();
-  }, []);
+  }, [setup.open]);
 
   // Close on Escape.
   useEffect(() => {

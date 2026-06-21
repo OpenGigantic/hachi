@@ -387,7 +387,11 @@ class ResilientClient(BaseLLMClient):  # type: ignore[misc]
         # for streaming and fall back to generate() on failure.
         t0 = time.monotonic()
         try:
-            yield from self._inner.generate_stream(
+            # Capture and RETURN the inner generator's value (the final LLMResponse).
+            # `yield from` evaluates to the delegated generator's return value; dropping
+            # it makes this generator return None, so callers that read the streamed
+            # response (loop.run → response.usage) crash on a successful stream.
+            response = yield from self._inner.generate_stream(
                 messages=messages,
                 system_prompt=system_prompt,
                 tools=tools,
@@ -395,6 +399,7 @@ class ResilientClient(BaseLLMClient):  # type: ignore[misc]
             )
             latency_ms = (time.monotonic() - t0) * 1000
             self._recorder.record_success(latency_ms)
+            return response
         except Exception as exc:
             self._recorder.record_failure()
             if self._fallbacks:

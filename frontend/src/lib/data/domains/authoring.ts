@@ -91,16 +91,33 @@ registerLoader("authoring", loadAuthoring);
 /**
  * Fetch the source text for a named target, convert to DiffLine[], and return it.
  * Also hydrates the store's authSource so the editor reflects the loaded content.
- * Never throws — on error returns empty content and sets reconnecting.
+ * Never throws — on error returns empty content and a non-null error message.
+ *
+ * HACHI-019: returns a `fetchError` field so callers can surface inline errors
+ * rather than silently falling back to a generic placeholder.
  */
 export async function loadAuthoringSource(
   name: string
-): Promise<{ source: string; diff: DiffLine[] }> {
+): Promise<{ source: string; diff: DiffLine[]; fetchError?: string }> {
   if (USE_MOCKS) {
     // In mock mode return the existing store state so fixtures are untouched
     const existing = useStore.getState().authSource;
     return { source: existing.map((l) => l[1]).join("\n"), diff: [] };
   }
+
+  // HACHI-019: only fetch when the name is in the live targets set.
+  // This prevents 400 errors for stale/fixture targets like deep_research.og.
+  const liveTargets = useStore.getState().authTargets;
+  if (liveTargets.length > 0 && !liveTargets.some((t) => t.name === name)) {
+    // Target is not in the live set — clear source and signal the caller.
+    useStore.getState().hydrate({ authSource: [] });
+    return {
+      source: "",
+      diff: [],
+      fetchError: `"${name}" is not in the allowed target set.`,
+    };
+  }
+
   try {
     const raw = await apiGet<GatewayTargetSource>(
       "/authoring/targets/" + encodeURIComponent(name)
@@ -111,9 +128,11 @@ export async function loadAuthoringSource(
     // diff is always [] (no pending-patch pipeline yet); authSource holds source lines.
     useStore.getState().hydrate({ authSource: diff });
     return { source, diff: [] };
-  } catch {
+  } catch (err: unknown) {
     // Network errors surface the reconnecting banner via client.ts callback.
-    return { source: "", diff: [] };
+    const fetchError =
+      err instanceof Error ? err.message : "Failed to load target source.";
+    return { source: "", diff: [], fetchError };
   }
 }
 

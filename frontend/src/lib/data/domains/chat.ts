@@ -10,7 +10,7 @@
 //   because store.ts never statically imports chat.ts).
 // ============================================================
 
-import { apiGet, apiSend, USE_MOCKS, isNetworkError } from "../client";
+import { apiGet, apiSend, USE_MOCKS, isNetworkError, ApiError } from "../client";
 import { streamSSE } from "../sse";
 import { registerLoader } from "../live";
 import { useStore } from "../../store/store";
@@ -653,13 +653,40 @@ export async function startTaskLive(
         _hachiMsgId = null;
       }
     }
-  }).catch(() => {
-    // POST failed — end streaming gracefully
+  }).catch((err: unknown) => {
+    // POST failed — surface the error to the user and clean up.
     const store = useStore.getState();
     if (store.streaming && _hachiMsgId === hachiMsgId) {
-      store.hydrate({ streaming: false });
+      // HACHI-010: abort the SSE reader so it doesn't linger until idle timeout.
+      abortSse();
+
+      // HACHI-002: set the error sentinel on the assistant bubble so the Retry
+      // button in conversation.tsx renders. The store's outer .catch is dead code
+      // (startTaskLive resolves even on POST failure), so we must set it here.
+      const msgs = store.messages;
+      store.hydrate({
+        streaming: false,
+        messages: msgs.map((m) =>
+          m.id === hachiMsgId && m.text === ""
+            ? { ...m, text: "Something went wrong — please try again." }
+            : m
+        ),
+      });
       _hachiMsgId = null;
-      store.setReconnecting(true);
+
+      // HACHI-003: only flag reconnecting for genuine connectivity loss
+      // (fetch rejected / proxy-down 502-504), not ordinary gateway 5xx.
+      if (isNetworkError(err)) {
+        store.setReconnecting(true);
+      } else {
+        // HACHI-012: surface the gateway error message via toast so the user
+        // gets actionable feedback instead of a silent failure.
+        const msg =
+          err instanceof ApiError && err.message
+            ? err.message
+            : "Send failed — please try again";
+        store.showToast(msg, "blocked");
+      }
     }
   });
 
@@ -802,6 +829,12 @@ const HISTORY_EVENTS_PAGE_SIZE = 500;
 const HISTORY_EVENTS_MAX = 5000;
 const HISTORY_PAGE_FETCH_MAX = 40;
 
+// HACHI-020: session ids whose events endpoint returned 4xx (e.g. 400
+// "Unknown session_id").  We record them here and skip re-fetching on
+// subsequent calls to prevent the ~8 repeated 400s observed in the audit.
+// The Set is module-level so it persists for the page lifetime.
+const _eventsUnavailable = new Set<string>();
+
 function getHighestSequence(events: GatewayEventRecord[]): number {
   let highest = 0;
   for (const event of events) {
@@ -831,19 +864,34 @@ function normalizeSessionEventsResponse(
 async function loadSessionEventsWindow(
   sessionId: string
 ): Promise<{ events: GatewayEventRecord[]; lastSeq: number }> {
+  // HACHI-020: skip sessions whose events endpoint previously returned 4xx
+  // to prevent repeated 400 spam observed in the audit (~8 calls per switch).
+  if (_eventsUnavailable.has(sessionId)) {
+    throw new Error("events-unavailable");
+  }
+
   let after = 0;
   let pageCount = 0;
   let lastSeq = 0;
   let boundedEvents: GatewayEventRecord[] = [];
 
   while (pageCount < HISTORY_PAGE_FETCH_MAX) {
-    const raw = await apiGet<SessionEventsResponse | GatewayEventRecord[]>(
-      `/sessions/${sessionId}/events`,
-      {
-        after,
-        limit: HISTORY_EVENTS_PAGE_SIZE,
+    let raw: SessionEventsResponse | GatewayEventRecord[];
+    try {
+      raw = await apiGet<SessionEventsResponse | GatewayEventRecord[]>(
+        `/sessions/${sessionId}/events`,
+        {
+          after,
+          limit: HISTORY_EVENTS_PAGE_SIZE,
+        }
+      );
+    } catch (err) {
+      // HACHI-020: record 4xx failures so we don't re-fetch the same session.
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+        _eventsUnavailable.add(sessionId);
       }
-    );
+      throw err;
+    }
     const { events, nextSequence } = normalizeSessionEventsResponse(raw);
     if (events.length === 0) break;
 

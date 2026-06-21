@@ -469,6 +469,48 @@ def create_gateway_app(
     ) -> JSONResponse:
         return _error_response(status_code=503, code="service_unavailable", message=str(exc))
 
+    # Provider (LLM) errors — surface the upstream provider's actionable message
+    # (e.g. "credit balance too low", auth failure, rate limit) instead of masking
+    # it as an opaque 500 internal_error. Only the provider's user-facing message
+    # is exposed — never the stack trace or API key. Registered against
+    # anthropic.APIStatusError; its subclasses (BadRequestError / AuthenticationError
+    # / RateLimitError / ...) are matched via the exception MRO. Guarded import so
+    # the gateway still starts if the SDK is absent (e.g. non-runtime mode).
+    try:
+        import anthropic as _anthropic
+    except Exception:  # pragma: no cover - anthropic is present in runtime mode
+        _anthropic = None
+
+    if _anthropic is not None:
+
+        @app.exception_handler(_anthropic.APIStatusError)
+        async def _provider_error_handler(_request: Request, exc: Any) -> JSONResponse:
+            status = getattr(exc, "status_code", None) or 400
+            message: str | None = None
+            body = getattr(exc, "body", None)
+            if isinstance(body, dict):
+                err = body.get("error")
+                if isinstance(err, dict) and isinstance(err.get("message"), str):
+                    message = err["message"]
+            if not message:
+                message = getattr(exc, "message", None) or "AI provider request failed."
+            # Upstream 5xx / overloaded → transient: report as unavailable so clients
+            # may retry. Upstream 4xx (billing / auth / validation / rate-limit) →
+            # surface the actionable message under a stable provider_error code so the
+            # UI can show it (and the user can fix billing / key / model).
+            if status in (500, 502, 503, 504, 529):
+                return _error_response(
+                    status_code=503,
+                    code="provider_unavailable",
+                    message=f"AI provider temporarily unavailable: {message}",
+                )
+            client_status = status if status in (400, 401, 403, 404, 409, 422, 429) else 400
+            return _error_response(
+                status_code=client_status,
+                code="provider_error",
+                message=message,
+            )
+
     @app.exception_handler(RequestValidationError)
     async def _validation_error_handler(
         _request: Request, exc: RequestValidationError

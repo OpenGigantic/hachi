@@ -1026,6 +1026,8 @@ function OgExplorer() {
   const ogView = useStore((s) => s.ogView)
   const setOgSel = useStore((s) => s.setOgSel)
   const setOgView = useStore((s) => s.setOgView)
+  // HACHI-016: distinguish disconnected vs. connected-but-empty skill index
+  const reconnecting = useStore((s) => s.reconnecting)
 
   // fetch live data on mount (idempotent; bootstrapLiveData also fires on app mount)
   useEffect(() => { void loadOg() }, [])
@@ -1236,7 +1238,7 @@ function OgExplorer() {
                 </div>
               </div>
 
-              {/* empty state — shown while gateway hasn't returned nodes yet */}
+              {/* HACHI-016: branch empty state copy — disconnected vs. connected-but-empty index */}
               {ogNodes.length === 0 ? (
                 <div
                   style={{
@@ -1253,13 +1255,27 @@ function OgExplorer() {
                   <span style={{ opacity: 0.4 }}>
                     <Icon name="network" size={32} />
                   </span>
-                  <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--hachi-ink)' }}>
-                    No graph data yet
-                  </div>
-                  <div style={{ fontSize: 13, maxWidth: 320, lineHeight: '20px' }}>
-                    Connect to a running Hachi gateway — the .og graph populates
-                    once the skill index is built.
-                  </div>
+                  {reconnecting ? (
+                    <>
+                      <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--hachi-ink)' }}>
+                        Not connected
+                      </div>
+                      <div style={{ fontSize: 13, maxWidth: 320, lineHeight: '20px' }}>
+                        Connect to a running Hachi gateway — the .og graph will
+                        populate once the gateway is reachable.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--hachi-ink)' }}>
+                        Skill index is empty
+                      </div>
+                      <div style={{ fontSize: 13, maxWidth: 320, lineHeight: '20px' }}>
+                        The gateway is connected but no .og skills have been indexed yet.
+                        Run a task or trigger a skill index build to populate the graph.
+                      </div>
+                    </>
+                  )}
                 </div>
               ) : (
                 <>
