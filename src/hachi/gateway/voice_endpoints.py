@@ -275,6 +275,33 @@ def set_voice_config(patch: dict[str, Any]) -> dict[str, Any]:
     """
     from hachi.core.config_loader import load_effective_config, write_global_config
     from hachi.core.settings import VoiceSettings
+    from hachi.gateway._net_guard import is_safe_outbound_url
+
+    # Validate base URLs if provided.
+    for url_field in ("stt_base_url", "tts_base_url"):
+        url_val = patch.get(url_field)
+        if url_val:
+            if not is_safe_outbound_url(str(url_val), allow_loopback=False):
+                raise VoiceConfigError(
+                    f"{url_field} resolves to a private or loopback address — "
+                    "only public endpoints are allowed"
+                )
+
+    # Validate provider names if provided.
+    _VALID_STT_PROVIDERS = {"openai"}
+    _VALID_TTS_PROVIDERS = {"openai", "elevenlabs"}
+    stt_provider_val = patch.get("stt_provider")
+    if stt_provider_val is not None and str(stt_provider_val) not in _VALID_STT_PROVIDERS:
+        raise VoiceConfigError(
+            f"stt_provider {stt_provider_val!r} is not supported; "
+            f"must be one of: {', '.join(sorted(_VALID_STT_PROVIDERS))}"
+        )
+    tts_provider_val = patch.get("tts_provider")
+    if tts_provider_val is not None and str(tts_provider_val) not in _VALID_TTS_PROVIDERS:
+        raise VoiceConfigError(
+            f"tts_provider {tts_provider_val!r} is not supported; "
+            f"must be one of: {', '.join(sorted(_VALID_TTS_PROVIDERS))}"
+        )
 
     current = load_effective_config()
     current_voice = current.voice or VoiceSettings()

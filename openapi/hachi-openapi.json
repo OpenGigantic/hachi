@@ -4643,6 +4643,7 @@
         "properties": {
           "text": {
             "type": "string",
+            "maxLength": 8000,
             "title": "Text"
           },
           "voice": {
@@ -4675,7 +4676,11 @@
           "provider": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "enum": [
+                  "openai",
+                  "elevenlabs"
+                ]
               },
               {
                 "type": "null"

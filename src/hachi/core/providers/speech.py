@@ -150,6 +150,12 @@ class OpenAICompatibleSpeechProvider:
         fmt: str = opts.get("fmt", "mp3")
         _tts = self._tts  # narrowed local for closure
 
+        # NOTE: TextToSpeech.synthesize (core/voice.py) infers the output format
+        # from the file extension of ``out_path`` via ``path.suffix.lstrip(".")``,
+        # and passes it as ``response_format`` in the OpenAI API payload.
+        # Using ``suffix=f".{fmt}"`` here therefore propagates the requested format
+        # all the way to the provider so the returned bytes ARE encoded in the
+        # requested format — no media_type mismatch occurs.
         def _call() -> bytes:
             with tempfile.NamedTemporaryFile(suffix=f".{fmt}", delete=False) as tmp:
                 tmp_path = Path(tmp.name)
