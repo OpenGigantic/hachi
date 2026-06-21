@@ -42,6 +42,9 @@ interface VoiceModeProps {
 const SILENCE_THRESHOLD = 12
 // How many consecutive silent frames before we consider the utterance done.
 const SILENCE_HANGOVER_FRAMES = 40  // ~1s at 25 fps analyser poll
+// Absolute max utterance length (ms) — force-stops the recorder regardless of
+// silence detection so a silent user can never stay stuck in 'listening' forever.
+const MAX_UTTERANCE_MS = 15_000
 
 // ---- VoiceMode component ----
 
@@ -59,6 +62,7 @@ export default function VoiceMode({
 
   // Refs that survive re-renders without causing them.
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)          // fix 2a: mic stream ownership
   const audioContextRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const silenceCountRef = useRef(0)
@@ -68,6 +72,8 @@ export default function VoiceMode({
   const currentObjUrlRef = useRef<string | null>(null)
   const phaseRef = useRef<VoicePhase>('idle')
   const isSpeakingByUserRef = useRef(false)  // barge-in detection
+  const isAcquiringRef = useRef(false)        // fix 2d: prevent concurrent capture
+  const maxUtteranceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)  // fix 2c
 
   // Keep phaseRef in sync so closures always see current phase.
   useEffect(() => { phaseRef.current = phase }, [phase])
@@ -75,18 +81,39 @@ export default function VoiceMode({
   // ---- Close / cleanup ----
 
   const cleanup = useCallback(() => {
+    // fix 2c: cancel absolute max-utterance timer
+    if (maxUtteranceTimerRef.current !== null) {
+      clearTimeout(maxUtteranceTimerRef.current)
+      maxUtteranceTimerRef.current = null
+    }
+
+    // fix 2b: cancel RAF silence-detection loop
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current)
       rafRef.current = null
     }
+
+    // Stop the recorder (will fire onstop if recording)
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try { mediaRecorderRef.current.stop() } catch { /* ignore */ }
     }
+    mediaRecorderRef.current = null
+
+    // fix 2a: UNCONDITIONALLY stop all mic tracks — not just inside onstop.
+    // This ensures the mic indicator goes off on every exit path (error, close, unmount).
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop())
+      streamRef.current = null
+    }
+
+    // fix 2e: close AudioContext
     if (audioContextRef.current) {
       try { audioContextRef.current.close() } catch { /* ignore */ }
       audioContextRef.current = null
       analyserRef.current = null
     }
+
+    // fix 2b: stop any playing TTS audio and revoke its object URL
     if (currentAudioRef.current) {
       currentAudioRef.current.pause()
       currentAudioRef.current = null
@@ -95,6 +122,9 @@ export default function VoiceMode({
       URL.revokeObjectURL(currentObjUrlRef.current)
       currentObjUrlRef.current = null
     }
+
+    // fix 2d: reset acquisition guard so the next open() can start fresh
+    isAcquiringRef.current = false
   }, [])
 
   // Cleanup when overlay closes.
@@ -158,6 +188,7 @@ export default function VoiceMode({
         return
       }
       setErrorText(msg)
+      // fix 2e: always reset to idle on error — never leave stuck in 'transcribing'
       setPhase('idle')
       setStatusText('Tap the mic to start')
     }
@@ -187,7 +218,11 @@ export default function VoiceMode({
     }
 
     if (silenceCountRef.current >= SILENCE_HANGOVER_FRAMES && isSpeakingByUserRef.current) {
-      // Utterance ended — stop recorder; handleRecordingStop fires via ondataavailable.
+      // Utterance ended — cancel absolute timer and stop recorder.
+      if (maxUtteranceTimerRef.current !== null) {
+        clearTimeout(maxUtteranceTimerRef.current)
+        maxUtteranceTimerRef.current = null
+      }
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
         mediaRecorderRef.current.stop()
       }
@@ -200,6 +235,10 @@ export default function VoiceMode({
   // ---- Start recording ----
 
   const startListening = useCallback(async () => {
+    // fix 2d: guard against concurrent getUserMedia calls (rapid double-tap / barge-in race)
+    if (isAcquiringRef.current || phaseRef.current === 'listening') return
+    isAcquiringRef.current = true
+
     stopAssistantAudio()
     setErrorText(null)
     chunksRef.current = []
@@ -211,8 +250,12 @@ export default function VoiceMode({
       stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     } catch {
       setErrorText('Microphone access denied')
+      isAcquiringRef.current = false
       return
     }
+
+    // fix 2a: store stream so cleanup() can stop tracks on ANY exit path
+    streamRef.current = stream
 
     // Set up analyser for silence detection.
     const ctx = new AudioContext()
@@ -236,15 +279,24 @@ export default function VoiceMode({
     recorder.ondataavailable = (e) => {
       if (e.data.size > 0) chunksRef.current.push(e.data)
     }
+    // onstop: mic tracks are now stopped unconditionally by cleanup(); just transcribe.
     recorder.onstop = () => {
-      // Release mic tracks.
-      stream.getTracks().forEach((t) => t.stop())
       void handleRecordingStop()
     }
 
     recorder.start(200)  // Collect data every 200ms.
+    isAcquiringRef.current = false
     setPhase('listening')
     setStatusText('Listening…  (speak, then pause)')
+
+    // fix 2c: absolute max-utterance timer — force-stop so silence can never trap the user
+    if (maxUtteranceTimerRef.current !== null) clearTimeout(maxUtteranceTimerRef.current)
+    maxUtteranceTimerRef.current = setTimeout(() => {
+      maxUtteranceTimerRef.current = null
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop()
+      }
+    }, MAX_UTTERANCE_MS)
 
     // Start silence poll.
     rafRef.current = requestAnimationFrame(pollSilence)
@@ -253,6 +305,11 @@ export default function VoiceMode({
   // ---- Stop recording (push-to-talk release) ----
 
   const stopListening = useCallback(() => {
+    // Cancel absolute max-utterance timer when the user manually stops.
+    if (maxUtteranceTimerRef.current !== null) {
+      clearTimeout(maxUtteranceTimerRef.current)
+      maxUtteranceTimerRef.current = null
+    }
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current)
       rafRef.current = null
@@ -269,13 +326,27 @@ export default function VoiceMode({
     // Only auto-speak when we're in 'waiting' or 'idle' phases.
     if (phaseRef.current !== 'waiting' && phaseRef.current !== 'idle') return
 
+    // fix 2b: track cancellation so we never set state after unmount/close,
+    // and always revoke object URLs even when unmounted mid-flight.
+    let cancelled = false
+    let localAudio: HTMLAudioElement | null = null
+    let localObjUrl: string | null = null
+
     async function playAssistant() {
+      if (cancelled) return
       setPhase('speaking')
       setStatusText('Hachi is speaking…')
       try {
         const objUrl = await speakText(assistantText!, { format: 'mp3' })
+        localObjUrl = objUrl
+        // If cancelled while awaiting speakText, revoke immediately and bail.
+        if (cancelled) {
+          URL.revokeObjectURL(objUrl)
+          return
+        }
         currentObjUrlRef.current = objUrl
         const audio = new Audio(objUrl)
+        localAudio = audio
         currentAudioRef.current = audio
 
         await new Promise<void>((resolve) => {
@@ -286,17 +357,37 @@ export default function VoiceMode({
       } catch {
         // TTS failure is non-fatal — fall through to idle.
       } finally {
-        if (currentObjUrlRef.current) {
-          URL.revokeObjectURL(currentObjUrlRef.current)
-          currentObjUrlRef.current = null
+        // Always revoke the blob URL whether cancelled or not.
+        if (localObjUrl) {
+          URL.revokeObjectURL(localObjUrl)
+          localObjUrl = null
         }
+        currentObjUrlRef.current = null
         currentAudioRef.current = null
-        setPhase('idle')
-        setStatusText('Tap the mic to continue')
+        // Only update React state when still mounted/open.
+        if (!cancelled) {
+          setPhase('idle')
+          setStatusText('Tap the mic to continue')
+        }
       }
     }
 
     void playAssistant()
+
+    return () => {
+      cancelled = true
+      // Stop any in-progress audio immediately.
+      if (localAudio) {
+        localAudio.pause()
+        localAudio = null
+      }
+      // Revoke the URL if playAssistant already created it but the finally block
+      // hasn't run yet (e.g. awaiting play()).
+      if (localObjUrl) {
+        URL.revokeObjectURL(localObjUrl)
+        localObjUrl = null
+      }
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assistantText, open])
 

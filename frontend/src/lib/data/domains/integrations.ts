@@ -429,17 +429,21 @@ export async function startIntegrationOAuth(id: string): Promise<void> {
 
     // Listen for a postMessage from the callback page (backend renders a tiny
     // HTML page that calls window.opener.postMessage({ type: "hachi_oauth_done" }, ...)).
+    // SECURITY: reject any message whose origin differs from this app's own origin
+    // so a malicious third-party popup cannot spoof the "hachi_oauth_done" signal.
     function onMessage(ev: MessageEvent) {
       if (
-        ev.source === openedPopup &&
-        ev.data &&
-        typeof ev.data === "object" &&
-        (ev.data as Record<string, unknown>).type === "hachi_oauth_done"
+        ev.origin !== window.location.origin ||
+        ev.source !== openedPopup ||
+        !ev.data ||
+        typeof ev.data !== "object" ||
+        (ev.data as Record<string, unknown>).type !== "hachi_oauth_done"
       ) {
-        cleanup();
-        openedPopup.close();
-        resolve();
+        return;
       }
+      cleanup();
+      openedPopup.close();
+      resolve();
     }
 
     // Fallback: poll for popup close (handles cases where the callback page

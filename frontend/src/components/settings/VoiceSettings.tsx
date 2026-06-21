@@ -291,7 +291,7 @@ export default function VoiceSettings() {
             label="TTS provider"
             value={ttsProvider}
             onChange={setTtsProvider}
-            options={config?.available.tts_providers ?? ['openai', 'elevenlabs']}
+            options={config?.available?.tts_providers ?? ['openai', 'elevenlabs']}
           />
 
           {ttsProvider === 'openai' && (
@@ -300,7 +300,7 @@ export default function VoiceSettings() {
                 label="Voice"
                 value={ttsVoice}
                 onChange={setTtsVoice}
-                options={config?.available.voices ?? ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']}
+                options={config?.available?.voices ?? ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']}
               />
               <Field
                 label="TTS API key env var"
