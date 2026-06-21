@@ -38,6 +38,12 @@ class BootDeps:
     tool_registry: Any  # ToolRegistry — passed so specs can access it
     # P4-01: write-target lease manager (None when delegation is disabled)
     lease_manager: Any = None
+    # P4-G: ModelRouter for capability-based routing (None when routing is unconfigured).
+    router: Any = None
+    # P4-G: ProviderRegistry for speech/search provider resolution (None when unavailable).
+    provider_registry: Any = None
+    # P4-G: Session LLM client (raw, pre-routing); used to check supports_vision for vision tools.
+    session_llm: Any = None
 
 
 @dataclass

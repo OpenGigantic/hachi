@@ -201,6 +201,35 @@ class JobsSettings(BaseModel):
     worker_count: int = 1
 
 
+class VoiceSettings(BaseModel):
+    """Optional ``[voice]`` config section (Initiative F — Voice Platform).
+
+    Provides STT/TTS configuration with the established HACHI_STT_* / HACHI_TTS_*
+    env-var precedence as the fallback.  All fields are optional; when absent the
+    :class:`~hachi.core.providers.speech.OpenAICompatibleSpeechProvider` reads
+    directly from the env vars (same precedence order, back-compat guaranteed).
+
+    Attributes:
+        stt_model: Whisper model name (e.g. ``"whisper-1"``).
+        stt_base_url: Base URL for the STT endpoint (OpenAI-compat).
+        stt_api_key_env: Name of the env var that holds the STT API key.
+        tts_model: TTS model name (e.g. ``"tts-1"``).
+        tts_base_url: Base URL for the TTS endpoint (OpenAI-compat).
+        tts_api_key_env: Name of the env var that holds the TTS API key.
+        tts_voice: Default TTS voice name (e.g. ``"alloy"``).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    stt_model: str | None = None
+    stt_base_url: str | None = None
+    stt_api_key_env: str | None = None
+    tts_model: str | None = None
+    tts_base_url: str | None = None
+    tts_api_key_env: str | None = None
+    tts_voice: str | None = None
+
+
 class RoutingSettings(BaseModel):
     """Optional ``[routing]`` config section.
 
@@ -241,6 +270,8 @@ class ResolvedConfig(BaseModel):
     channels: ChannelSettings = Field(default_factory=ChannelSettings)
     # Optional [routing] section — absent = back-compat (one model for everything).
     routing: RoutingSettings | None = None
+    # Optional [voice] section — absent = fall back to HACHI_STT_* / HACHI_TTS_* env vars.
+    voice: VoiceSettings | None = None
     # Optional [events] section — absent = old direct-call funnel (back-compat).
     events: EventsSettings = Field(default_factory=EventsSettings)
     # Optional [jobs] section — absent = func= closures (back-compat).

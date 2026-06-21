@@ -156,7 +156,8 @@ def test_view_image_unsupported_provider_returns_text(tmp_path: Path) -> None:
     view = _make_view_image(_Gate("guided"), provider_kind="ollama")
     out = view(str(img))
     assert isinstance(out, str)
-    assert "not supported by the ollama provider" in out
+    # New graceful fallback message (doc 20 §3 step 4).
+    assert "no vision-capable" in out or "configure a vision model" in out.lower()
 
 
 def test_view_image_jpeg_media_type(tmp_path: Path) -> None:

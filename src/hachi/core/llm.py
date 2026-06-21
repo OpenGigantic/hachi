@@ -180,6 +180,18 @@ class BaseLLMClient(abc.ABC):
         """
         return []
 
+    @property
+    def supports_vision(self) -> bool:
+        """Return ``True`` when this client's model has the VISION capability.
+
+        Derived from the model descriptor when available; defaults to ``False``
+        on the base class so callers can check without string-matching the
+        provider kind.  Concrete subclasses (or :class:`~hachi.core.resilience.ResilientClient`)
+        override this by inspecting the resolved
+        :class:`~hachi.core.routing.descriptor.ModelDescriptor`.
+        """
+        return False
+
 
 def drain_stream(
     stream: "Generator[str, None, LLMResponse]",

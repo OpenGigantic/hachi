@@ -91,6 +91,7 @@ def _resize_if_needed(raw: bytes, media_type: str) -> tuple[bytes, str]:
         resized.save(buf, format=pil_fmt)
         return buf.getvalue(), out_media
 
+
 # Browsing/vision is meaningless (and disabled) in the read-only sandbox tier.
 _BLOCKED_TIERS = {"sandbox"}
 
@@ -203,10 +204,105 @@ def _fetch_url_image(url: str) -> tuple[bytes, str, str] | str:
     return raw, media_type, url
 
 
+def _model_has_vision(model_id: str) -> bool:
+    """Return ``True`` when *model_id* is in the bundled registry with VISION capability.
+
+    Used as a fallback when the client's ``supports_vision`` property returns ``False``
+    (i.e. the concrete client class hasn't overridden it yet).  This keeps the inline
+    path working for existing Anthropic/OpenAI clients whose model supports vision.
+    """
+    if not model_id:
+        return False
+    try:
+        from hachi.core.routing.capability import Capability
+        from hachi.core.routing.descriptor import BUNDLED_MODEL_DEFAULTS
+
+        for desc in BUNDLED_MODEL_DEFAULTS:
+            if desc.id == model_id and Capability.VISION in desc.capabilities:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+_OPENAI_COMPAT_KINDS: frozenset[str] = frozenset(
+    {
+        "openai",
+        "openai-compatible",
+        "openrouter",
+        "groq",
+        "together",
+        "deepseek",
+        "gemini",
+    }
+)
+
+
+def _provider_is_anthropic(provider_kind: str) -> bool:
+    return provider_kind.lower() == "anthropic"
+
+
+def _provider_is_openai_compat(provider_kind: str) -> bool:
+    return provider_kind.lower() in _OPENAI_COMPAT_KINDS
+
+
+def _build_image_blocks(
+    raw: bytes, media_type: str, label: str, focus: str, is_anthropic: bool
+) -> list[dict[str, Any]]:
+    """Build provider-aware image content blocks.
+
+    Returns Anthropic image blocks when *is_anthropic* is True; otherwise
+    builds OpenAI-compatible ``image_url`` data-URL blocks.
+    """
+    data = base64.b64encode(raw).decode("ascii")
+    size_kb = max(1, len(raw) // 1024)
+    caption = f"Loaded image '{label}' ({size_kb} KB, {media_type}). {focus}"
+
+    if is_anthropic:
+        return [
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": data},
+            },
+            {"type": "text", "text": caption},
+        ]
+    else:
+        data_url = f"data:{media_type};base64,{data}"
+        return [
+            {"type": "image_url", "image_url": {"url": data_url}},
+            {"type": "text", "text": caption},
+        ]
+
+
 def _make_view_image(
-    gate: Any | None, provider_kind: str
+    gate: Any | None,
+    provider_kind: str,
+    *,
+    session_client: Any | None = None,
+    router: Any | None = None,
 ) -> Callable[..., ToolResultBlocks | str]:
-    """Build the ``view_image`` callable bound to a permission gate and provider kind."""
+    """Build the ``view_image`` callable.
+
+    Implements the 3-way capability gate (Design doc 20 §3):
+
+    1. Session model HAS Capability.VISION → inline (today's fast path, no extra call).
+    2. Session model LACKS vision AND a vision candidate is configured →
+       ``router.select(VISION)`` routes to the vision model; its textual analysis
+       is folded back as the tool result string.
+    3. No vision model configured anywhere → graceful text fallback with a clear hint.
+
+    The ``provider_kind`` string is retained for image-block format selection
+    (Anthropic vs OpenAI-compat wire format) per the RESOLVED provider.
+
+    Args:
+        gate: Optional PermissionGate (path checks + tier gating).
+        provider_kind: Primary session provider kind string; used as format fallback
+            when routing is unavailable.
+        session_client: Optional BaseLLMClient for the session model.  When it
+            exposes ``supports_vision=True`` the inline path is taken.
+        router: Optional ModelRouter (from Slice 2.1).  Used to resolve a vision
+            client when the session model lacks vision.
+    """
 
     def view_image(path: str, prompt: str = "") -> ToolResultBlocks | str:
         tier = _tier_blocked(gate)
@@ -219,79 +315,114 @@ def _make_view_image(
             return loaded  # error message
         raw, media_type, label = loaded
 
-        is_anthropic = str(provider_kind).lower() == "anthropic"
-        is_openai_compat = str(provider_kind).lower() in (
-            "openai-compatible",
-            "openrouter",
-            "groq",
-            "together",
-            "deepseek",
-            "gemini",
-        )
-
-        if not (is_anthropic or is_openai_compat):
-            # Provider doesn't support vision (e.g., local-models without vision capability).
-            size_kb = max(1, len(raw) // 1024)
-            return (
-                f"Image '{label}' ({size_kb} KB, {media_type}) was loaded, but inline "
-                f"image analysis is not supported by the {provider_kind} provider."
-            )
-
-        # Resize to meet dimension constraints.
-        raw, media_type = _resize_if_needed(raw, media_type)
-
-        size_kb = max(1, len(raw) // 1024)
         focus = prompt.strip() or "Describe what you see and use it to answer the user's request."
 
-        data = base64.b64encode(raw).decode("ascii")
+        # ------------------------------------------------------------------
+        # 3-way routing gate (doc 20 §3)
+        # ------------------------------------------------------------------
 
-        if is_anthropic:
-            # Anthropic format
-            blocks: list[dict[str, Any]] = [
-                {
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": media_type, "data": data},
-                },
-                {
-                    "type": "text",
-                    "text": f"Loaded image '{label}' ({size_kb} KB, {media_type}). {focus}",
-                },
-            ]
-        else:
-            # OpenAI-compatible format: data URL
-            data_url = f"data:{media_type};base64,{data}"
-            blocks = [
-                {
-                    "type": "image_url",
-                    "image_url": {"url": data_url},
-                },
-                {
-                    "type": "text",
-                    "text": f"Loaded image '{label}' ({size_kb} KB, {media_type}). {focus}",
-                },
-            ]
+        # Step 1: does the session client itself support vision?
+        # Check the client's supports_vision property (base class returns False;
+        # ResilientClient delegates to inner).  If unavailable, fall back to a
+        # bundled-registry lookup by model name so existing clients that haven't
+        # overridden the property still benefit from the inline path.
+        session_has_vision = bool(getattr(session_client, "supports_vision", False))
+        if not session_has_vision and session_client is not None:
+            session_has_vision = _model_has_vision(getattr(session_client, "model", ""))
 
-        return ToolResultBlocks(
-            blocks=blocks, summary=f"Loaded image {label} ({media_type}, {size_kb} KB)"
+        if session_has_vision:
+            # Fast path: inline — no extra call.
+            raw, media_type = _resize_if_needed(raw, media_type)
+            size_kb = max(1, len(raw) // 1024)
+            is_anth = _provider_is_anthropic(provider_kind)
+            blocks = _build_image_blocks(raw, media_type, label, focus, is_anthropic=is_anth)
+            return ToolResultBlocks(
+                blocks=blocks, summary=f"Loaded image {label} ({media_type}, {size_kb} KB)"
+            )
+
+        # Step 2: try to route to a vision-capable model.
+        if router is not None:
+            try:
+                from hachi.core.llm import Message
+                from hachi.core.routing.capability import Capability
+                from hachi.core.routing.router import NoRouteError, RouteConstraints
+
+                resolved = router.select(Capability.VISION, RouteConstraints(needs_vision=True))
+                vision_client = resolved.client
+                vision_provider = resolved.descriptor.provider
+
+                # Resize before encoding.
+                raw, media_type = _resize_if_needed(raw, media_type)
+                size_kb = max(1, len(raw) // 1024)
+                is_anth = _provider_is_anthropic(vision_provider)
+                image_blocks = _build_image_blocks(
+                    raw, media_type, label, focus, is_anthropic=is_anth
+                )
+
+                # Build a minimal one-turn conversation for the vision model.
+                vision_messages = [Message(role="user", content=image_blocks)]
+                _vision_sys = (
+                    "You are a vision analysis assistant. "
+                    "Describe the image and answer the user's question concisely."
+                )
+                vision_resp = vision_client.generate(
+                    vision_messages,
+                    system_prompt=_vision_sys,
+                )
+                analysis = (vision_resp.content or "").strip() or "(no analysis returned)"
+                return f"[Vision analysis of '{label}' via {vision_provider}] {analysis}"
+            except NoRouteError:
+                # Fall through to graceful fallback (Step 3).
+                pass
+            except Exception:
+                # Routing error — fall through gracefully.
+                pass
+
+        # Step 3: no vision capability anywhere.
+        size_kb = max(1, len(raw) // 1024)
+
+        # For known vision providers (inline path was skipped only because
+        # session_client is None/unknown) still send the image block.
+        if _provider_is_anthropic(provider_kind) or _provider_is_openai_compat(provider_kind):
+            raw, media_type = _resize_if_needed(raw, media_type)
+            size_kb = max(1, len(raw) // 1024)
+            is_anth = _provider_is_anthropic(provider_kind)
+            blocks = _build_image_blocks(raw, media_type, label, focus, is_anthropic=is_anth)
+            return ToolResultBlocks(
+                blocks=blocks, summary=f"Loaded image {label} ({media_type}, {size_kb} KB)"
+            )
+
+        return (
+            f"Image '{label}' ({size_kb} KB, {media_type}) was loaded, but no vision-capable "
+            f"model is available. Configure a vision model (e.g. claude-opus-4 or gpt-4o) "
+            f"under [routing.capabilities].vision in settings.toml to enable image analysis."
         )
 
     return view_image
 
 
 def register_vision_tools(
-    registry: Any, gate: Any | None = None, provider_kind: str = "anthropic"
+    registry: Any,
+    gate: Any | None = None,
+    provider_kind: str = "anthropic",
+    *,
+    session_client: Any | None = None,
+    router: Any | None = None,
 ) -> None:
     """Register the ``view_image`` tool under the lazy ``vision`` group.
 
     Args:
         registry: The ToolRegistry to register into.
         gate: Optional PermissionGate (path checks + tier gating).
-        provider_kind: Active provider kind (e.g., 'anthropic', 'openai-compatible', 'ollama').
-            Anthropic and OpenAI-compatible providers support vision. Emits the correct
-            image block format per provider.
+        provider_kind: Active provider kind string (e.g. ``"anthropic"``). Used
+            for image-block format selection when the inline path is taken.
+        session_client: Optional BaseLLMClient for the session model.  When its
+            ``supports_vision`` property returns ``True`` the inline path is used.
+        router: Optional ModelRouter.  When provided and the session model lacks
+            vision, the router selects a vision-capable model for the analysis call.
     """
     registry.register(
         VIEW_IMAGE_SCHEMA,
-        _make_view_image(gate, provider_kind),
+        _make_view_image(gate, provider_kind, session_client=session_client, router=router),
         group="vision",
     )
