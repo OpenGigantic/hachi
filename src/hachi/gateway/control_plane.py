@@ -105,6 +105,7 @@ class GatewayControlPlane:
         authoring_revert: Callable[[str], dict[str, Any]] | None = None,
         authoring_save_source: Callable[[str, str], dict[str, Any]] | None = None,
         get_spend: Callable[[str | None], dict[str, Any]] | None = None,
+        get_spend_daily: Callable[[], dict[str, Any]] | None = None,
         set_capability_enabled: Callable[[str, bool], dict[str, Any]] | None = None,
         add_memory_fact: Callable[[str, str], dict[str, Any]] | None = None,
         delete_memory_fact: Callable[[str], dict[str, Any]] | None = None,
@@ -113,9 +114,7 @@ class GatewayControlPlane:
         add_allowed_folder: Callable[[str], dict[str, Any]] | None = None,
         add_allowed_command: Callable[[str], dict[str, Any]] | None = None,
         add_always_allow: Callable[[str, str, str], dict[str, Any]] | None = None,
-        register_mcp_server: (
-            Callable[..., dict[str, Any]] | None
-        ) = None,
+        register_mcp_server: (Callable[..., dict[str, Any]] | None) = None,
         get_kennel: Callable[[], list[dict[str, Any]]] | None = None,
         add_skill: Callable[[str], dict[str, Any]] | None = None,
         max_active_sessions: int = 100,
@@ -159,6 +158,7 @@ class GatewayControlPlane:
         self._authoring_revert = authoring_revert
         self._authoring_save_source = authoring_save_source
         self._get_spend = get_spend
+        self._get_spend_daily = get_spend_daily
         self._set_capability_enabled = set_capability_enabled
         self._add_memory_fact = add_memory_fact
         self._delete_memory_fact = delete_memory_fact
@@ -681,6 +681,22 @@ class GatewayControlPlane:
         if self._get_spend is None:
             return {"turns": [], "tidies": [], "models": []}
         return self._get_spend(session_id)
+
+    def spend_daily(self) -> Any:
+        """Return today's accumulated daily spend plus configured caps (GET /spend/daily).
+
+        Always returns a safe dict even when no handler is wired, so callers can
+        rely on the ``spent_usd`` / ``daily_cap_usd`` / ``task_cap_usd`` keys being
+        present without a None-guard.
+        """
+        if self._get_spend_daily is None:
+            return {
+                "spent_usd": 0.0,
+                "daily_cap_usd": None,
+                "task_cap_usd": None,
+                "date": datetime.now(UTC).date().isoformat(),
+            }
+        return self._get_spend_daily()
 
     def set_capability_enabled(self, cap_id: str, enabled: bool) -> Any:
         """Toggle a capability on/off (PUT /capabilities/{id}/enabled)."""

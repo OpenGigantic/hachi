@@ -21,6 +21,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import date as _date
 from typing import Any
 
 from hachi.core.approvals import (
@@ -512,6 +513,9 @@ class AgentSession:
         self._session_id: str | None = None
         # Auto-title is generated once, from the first turn's exchange.
         self._title_generated: bool = False
+        # Tracks the cumulative cost after the previous turn so we can compute the
+        # per-turn delta for the daily spend ledger (CostTracker is cumulative).
+        self._last_recorded_cost_usd: float = 0.0
 
         # Resume support: prior-session turns replayed for TUI transcript rendering.
         # (role, content) pairs, oldest first; empty unless booted with resume.
@@ -1304,7 +1308,8 @@ class AgentSession:
                     "_chat_impl: failed to log turn %s to session store", turn_id, exc_info=True
                 )
 
-            # Persist cumulative cost/token totals for this session.
+            # Persist cumulative cost/token totals for this session and update the
+            # rolling daily spend ledger with the per-turn delta.
             try:
                 tracker = getattr(self.loop, "cost_tracker", None)
                 if tracker is not None:
@@ -1314,6 +1319,12 @@ class AgentSession:
                         snap.total_tokens,
                         snap.estimated_cost_usd,
                     )
+                    # Compute the per-turn delta from the cumulative snapshot so the
+                    # daily ledger accumulates exactly what this turn spent.
+                    turn_delta = snap.estimated_cost_usd - self._last_recorded_cost_usd
+                    self._last_recorded_cost_usd = snap.estimated_cost_usd
+                    if turn_delta > 0:
+                        self._session_store.record_daily_cost(_date.today().isoformat(), turn_delta)
             except Exception:
                 # HIGH-012: cost persistence failures must be visible.
                 logger.warning(

@@ -84,16 +84,25 @@ class MemorySettings(BaseModel):
 
 
 class LimitsSettings(BaseModel):
-    """Per-session / per-turn safety caps (None = unlimited).
+    """Per-session / per-turn / per-day safety caps (None = unlimited).
 
     Mirrors the optional ``[limits]`` TOML section that the gateway orchestrator
     reads and the execution loop enforces, so a cap set via
     ``hachi config-set session_cost_cap_usd`` is actually honoured at runtime
     (rather than written to a key nothing reads).
+
+    Field semantics:
+        max_daily_cost_usd:   Rolling calendar-day total spend cap (local date).
+                              Exposed to the frontend as ``daily_cap_usd``.
+        max_session_cost_usd: Per-individual-session cumulative cap.
+        max_turn_cost_usd:    Per-turn cap (frontend: ``per_task_cap_usd``).
+        max_session_tokens:   Per-session token limit.
+        max_turn_tokens:      Per-turn token limit.
     """
 
     model_config = ConfigDict(extra="ignore")
 
+    max_daily_cost_usd: float | None = None
     max_session_cost_usd: float | None = None
     max_session_tokens: int | None = None
     max_turn_cost_usd: float | None = None
