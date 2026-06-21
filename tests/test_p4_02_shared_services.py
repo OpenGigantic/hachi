@@ -229,3 +229,31 @@ def test_og_graph_from_engine_returns_nodes() -> None:
     assert result["count"] == len(result["nodes"]), (
         "'count' must equal len(nodes)"
     )
+
+
+# ---------------------------------------------------------------------------
+# 10. get_og_graph() on the in-process runtime returns nodes BEFORE any session.
+#     The shared services are created lazily on first session boot, so the
+#     runtime must build a standalone engine for the OG Explorer.  Regression:
+#     it returned 0 nodes live until a conversation was opened, and the loader
+#     used the non-existent ``paths.workspace_dir`` attribute (AttributeError).
+# ---------------------------------------------------------------------------
+
+
+def test_get_og_graph_runtime_populated_without_session() -> None:
+    """_InProcessGatewayRuntime.get_og_graph() returns nodes with no active session.
+
+    ``ProcessSharedServices.instance()`` is ``None`` until the first session
+    boots, so get_og_graph must fall back to a standalone SkillEngine built from
+    the bundled default skills (loaded via ``skills_dir``, not the non-existent
+    ``paths.workspace_dir``).
+    """
+    from hachi.cli.main import _InProcessGatewayRuntime
+
+    runtime = _InProcessGatewayRuntime()
+    graph = runtime.get_og_graph()
+
+    assert graph.get("count", 0) > 0, (
+        "OG Explorer must show skill nodes before any conversation is started"
+    )
+    assert len(graph.get("nodes", [])) == graph["count"]

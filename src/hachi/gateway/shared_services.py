@@ -274,7 +274,7 @@ class ProcessSharedServices:
         skill_engine = SkillEngine(agent_role="orchestrator")
         default_skills_dir = Path(__file__).parent.parent / "default_skills"
         try:
-            skill_engine.load_directory(paths.workspace_dir)
+            skill_engine.load_directory(paths.skills_dir)
         except OSError:
             logger.warning(
                 "ProcessSharedServices: workspace skill indexing failed", exc_info=True

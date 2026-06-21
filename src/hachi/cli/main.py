@@ -808,15 +808,56 @@ class _InProcessGatewayRuntime:
         if agent is not None:
             return agent.snapshot_og_graph()
 
-        # No active session — fall back to the shared skill engine so the OG
-        # Explorer is populated from the default skills loaded at startup.
+        # No active session yet. Prefer the process-shared engine if a prior
+        # session already initialised it; otherwise build a standalone engine
+        # from the bundled default skills so the OG Explorer is populated before
+        # the first conversation is opened (the shared services are created
+        # lazily on first session boot, not at gateway startup).
         from hachi.gateway.shared_services import ProcessSharedServices
 
         shared = ProcessSharedServices.instance()
         if shared is not None and shared.skill_engine is not None:
-            return og_graph_from_engine(shared.skill_engine)
+            graph = og_graph_from_engine(shared.skill_engine)
+            if graph.get("count"):
+                return graph
 
+        engine = self._standalone_og_engine()
+        if engine is not None:
+            return og_graph_from_engine(engine)
         return {"nodes": [], "count": 0}
+
+    def _standalone_og_engine(self) -> object | None:
+        """Build (once, cached) a SkillEngine from the bundled default skills.
+
+        The process-shared services are initialised lazily on first session
+        boot, so before any conversation exists ``ProcessSharedServices.instance``
+        is ``None``. This standalone engine lets the OG Explorer show the skill
+        graph immediately after gateway startup.
+        """
+        cached = getattr(self, "_og_engine_cache", None)
+        if cached is not None:
+            return cached
+        try:
+            from hachi.core.paths import get_hachi_paths
+            from hachi.og_engine.engine import SkillEngine
+
+            engine = SkillEngine(agent_role="orchestrator")
+            default_skills_dir = Path(__file__).parent.parent / "default_skills"
+            if default_skills_dir.exists():
+                engine.load_directory(default_skills_dir)
+            try:
+                engine.load_directory(get_hachi_paths().skills_dir)
+            except OSError:
+                logging.getLogger(__name__).debug(
+                    "standalone OG engine: workspace load skipped", exc_info=True
+                )
+            self._og_engine_cache = engine
+            return engine
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "standalone OG engine build failed", exc_info=True
+            )
+            return None
 
     def get_authoring_targets(self) -> list[dict]:
         """List editable .og and config targets from the workspace (route: GET /authoring/targets).
