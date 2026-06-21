@@ -250,6 +250,19 @@ function Settings() {
   const setTaskCap = useStore((s) => s.setTaskCap);
   const setDailyCap = useStore((s) => s.setDailyCap);
 
+  // HACHI-017: local pending safety — prevents the radio from briefly reverting to the
+  // old store value while setSafetyLive + loadConfig re-hydration races are in flight.
+  // We track the user's chosen value locally and use it for rendering; it is cleared
+  // once the store value catches up (or after a short guard timeout).
+  const [pendingSafety, setPendingSafety] = useState<SafetyLevel | null>(null);
+  const pendingSafetyRef = useRef<SafetyLevel | null>(null);
+  useEffect(() => {
+    if (pendingSafety !== null && safety === pendingSafety) {
+      setPendingSafety(null);
+      pendingSafetyRef.current = null;
+    }
+  }, [safety, pendingSafety]);
+
   // ---- Inline provider editor state ----
   // When the user clicks "Change provider", open an inline editor instead of the wizard.
   const [editingProvider, setEditingProvider] = useState(false);
@@ -343,6 +356,10 @@ function Settings() {
 
   // Wrap actions to set unsaved flag
   function handleSetSafety(v: SafetyLevel) {
+    // HACHI-017: pin the radio to the user's choice immediately so a concurrent
+    // loadConfig re-hydration cannot overwrite it while the PUT is in flight.
+    setPendingSafety(v);
+    pendingSafetyRef.current = v;
     void setSafetyLive(v);
     markUnsaved('safety level');
   }
@@ -553,7 +570,9 @@ function Settings() {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
                 {SAFETY_LEVELS.map((lvl) => {
-                  const sel = safety === lvl.k;
+                  // HACHI-017: prefer local pending choice to avoid re-hydration flicker
+                  const effectiveSafety = pendingSafety ?? safety;
+                  const sel = effectiveSafety === lvl.k;
                   return (
                     <button
                       key={lvl.k}
@@ -594,8 +613,8 @@ function Settings() {
               </div>
             )}
 
-            {/* Open warning */}
-            {safety === 'open' && (
+            {/* Open warning — use pendingSafety if set to avoid flicker (HACHI-017) */}
+            {(pendingSafety ?? safety) === 'open' && (
               <div
                 style={{
                   display: 'flex',

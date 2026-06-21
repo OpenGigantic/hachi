@@ -73,10 +73,17 @@ export interface IconProps {
   size?: number
   style?: React.CSSProperties
   className?: string
+  /** Accessibility label. When provided the SVG is announced as an image with
+   *  this label (role="img" + aria-label). Omit for decorative icons — they are
+   *  hidden from screen readers by default (aria-hidden="true"). */
+  label?: string
 }
 
-export function Icon({ name, size = 18, style, className }: IconProps) {
+export function Icon({ name, size = 18, style, className, label }: IconProps) {
   const inner = registry[name] ?? ''
+  const a11yProps = label
+    ? { role: 'img' as const, 'aria-label': label }
+    : { 'aria-hidden': true as const, focusable: 'false' as const }
   return (
     <svg
       viewBox="0 0 24 24"
@@ -89,6 +96,7 @@ export function Icon({ name, size = 18, style, className }: IconProps) {
       strokeLinejoin="round"
       style={{ display: 'block', flexShrink: 0, ...style }}
       className={className}
+      {...a11yProps}
       dangerouslySetInnerHTML={{ __html: inner }}
     />
   )

@@ -1000,8 +1000,11 @@ function Conversation() {
 
   const chatEmpty = messages.length === 0
 
-  // Computed state text for header (prototype logic line 2187)
-  const working = streaming || messages.some((m) => m.role === 'hachi' && m.text === '')
+  // Computed state text for header (prototype logic line 2187).
+  // HACHI-002: derive `working` from `streaming` alone — the old empty-bubble
+  // clause ( m.text === '' ) pinned "Hachi is working" forever when a POST
+  // failed and left an empty, non-streaming assistant bubble.
+  const working = streaming
   const chatState = working ? 'Hachi is working' : 'Hachi is on watch'
 
   // LOW-020: active session title (most recent session)
@@ -1600,6 +1603,7 @@ const ConversationComposer = memo(function ConversationComposer({ onOpenSessions
           {streaming && (
             <button
               type="button"
+              aria-label="Stop generating"
               onClick={stopStreaming}
               style={{
                 flexShrink: 0,
@@ -1628,6 +1632,7 @@ const ConversationComposer = memo(function ConversationComposer({ onOpenSessions
           {canSend && (
             <button
               type="button"
+              aria-label="Send message"
               onClick={handleSend}
               style={{
                 flexShrink: 0,
