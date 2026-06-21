@@ -942,73 +942,13 @@ class AgentSession:
     def snapshot_og_graph(self) -> dict:
         """Return ObjectGraph node graph for the OG Explorer web screen.
 
-        Iterates all parsed OGNode objects from the skill engine, computing
-        per-pass token estimates (index/dense/full) and classifying each node
-        as ``root``, ``skill``, or ``leaf``.
+        Delegates to :func:`og_graph_from_engine` using this session's skill engine.
 
         Returns:
-            Dict with key ``nodes`` containing a list of node dicts.
+            Dict with key ``nodes`` containing a list of node dicts and ``count``
+            with the number of nodes.
         """
-        from hachi.og_engine.engine import estimate_tokens
-
-        all_nodes = self.skill_engine.get_all_nodes()
-
-        # Precompute the set of all node names that are referenced by other nodes'
-        # ``requires`` lists — used for leaf classification below.
-        referenced_names: set[str] = set()
-        for node in all_nodes:
-            for dep in node.requires:
-                referenced_names.add(dep)
-
-        result_nodes: list[dict] = []
-        for node in all_nodes:
-            # Pass-1 (index) token estimate: name + keywords.
-            index_tokens = estimate_tokens(node.name + " " + ", ".join(node.keywords))
-
-            # Pass-2 (dense) token estimate: dense summary block.
-            dense_tokens = estimate_tokens(node.dense or node.summary or "")
-
-            # Pass-3 (full) token estimate: sum all heavy content blocks.
-            heavy_parts: list[str] = []
-            if node.full:
-                heavy_parts.append(node.full)
-            if node.steps:
-                heavy_parts.append("\n".join(node.steps))
-            if node.code_blocks:
-                heavy_parts.append("\n".join(node.code_blocks.values()))
-            if node.table:
-                heavy_parts.append(node.table)
-            if node.list_items:
-                heavy_parts.append("\n".join(node.list_items))
-            if node.example:
-                heavy_parts.append(node.example)
-            if node.assertions:
-                heavy_parts.append("\n".join(node.assertions))
-            if node.note:
-                heavy_parts.append(node.note)
-            full_tokens = estimate_tokens("\n".join(heavy_parts))
-
-            # Node kind classification.
-            if node.role in {"root", "brain"} or node.name == "brain":
-                kind = "root"
-            elif not node.requires and node.name not in referenced_names:
-                kind = "leaf"
-            else:
-                kind = "skill"
-
-            result_nodes.append(
-                {
-                    "id": node.name,
-                    "name": node.name,
-                    "kind": kind,
-                    "index": index_tokens,
-                    "dense": dense_tokens,
-                    "full": full_tokens,
-                    "deps": list(node.requires),
-                }
-            )
-
-        return {"nodes": result_nodes}
+        return og_graph_from_engine(self.skill_engine)
 
     # ==========================================
     # Session Memory Snapshot
@@ -1790,6 +1730,92 @@ def _sweep_once(
         logger.debug("_sweep_once: store read failed", exc_info=True)
 
     return swept
+
+
+# ==========================================
+# OG Graph helper (used by AgentSession.snapshot_og_graph and the pre-session fallback)
+# ==========================================
+
+
+def og_graph_from_engine(skill_engine: Any) -> dict[str, Any]:
+    """Build the ObjectGraph node-graph dict from a :class:`SkillEngine` instance.
+
+    Iterates all parsed OGNode objects from *skill_engine*, computing per-pass
+    token estimates (index/dense/full) and classifying each node as ``root``,
+    ``skill``, or ``leaf``.
+
+    This is a module-level helper so it can be used both by
+    :meth:`AgentSession.snapshot_og_graph` (active session) and by
+    :meth:`_InProcessGatewayRuntime.get_og_graph` (pre-session fallback via the
+    process-shared services skill engine).
+
+    Args:
+        skill_engine: A :class:`~hachi.og_engine.engine.SkillEngine` instance whose
+            nodes have already been loaded.
+
+    Returns:
+        Dict with key ``nodes`` (list of node dicts) and ``count`` (int).
+    """
+    from hachi.og_engine.engine import estimate_tokens
+
+    all_nodes = skill_engine.get_all_nodes()
+
+    # Precompute the set of all node names that are referenced by other nodes'
+    # ``requires`` lists — used for leaf classification below.
+    referenced_names: set[str] = set()
+    for node in all_nodes:
+        for dep in node.requires:
+            referenced_names.add(dep)
+
+    result_nodes: list[dict[str, Any]] = []
+    for node in all_nodes:
+        # Pass-1 (index) token estimate: name + keywords.
+        index_tokens = estimate_tokens(node.name + " " + ", ".join(node.keywords))
+
+        # Pass-2 (dense) token estimate: dense summary block.
+        dense_tokens = estimate_tokens(node.dense or node.summary or "")
+
+        # Pass-3 (full) token estimate: sum all heavy content blocks.
+        heavy_parts: list[str] = []
+        if node.full:
+            heavy_parts.append(node.full)
+        if node.steps:
+            heavy_parts.append("\n".join(node.steps))
+        if node.code_blocks:
+            heavy_parts.append("\n".join(node.code_blocks.values()))
+        if node.table:
+            heavy_parts.append(node.table)
+        if node.list_items:
+            heavy_parts.append("\n".join(node.list_items))
+        if node.example:
+            heavy_parts.append(node.example)
+        if node.assertions:
+            heavy_parts.append("\n".join(node.assertions))
+        if node.note:
+            heavy_parts.append(node.note)
+        full_tokens = estimate_tokens("\n".join(heavy_parts))
+
+        # Node kind classification.
+        if node.role in {"root", "brain"} or node.name == "brain":
+            kind = "root"
+        elif not node.requires and node.name not in referenced_names:
+            kind = "leaf"
+        else:
+            kind = "skill"
+
+        result_nodes.append(
+            {
+                "id": node.name,
+                "name": node.name,
+                "kind": kind,
+                "index": index_tokens,
+                "dense": dense_tokens,
+                "full": full_tokens,
+                "deps": list(node.requires),
+            }
+        )
+
+    return {"nodes": result_nodes, "count": len(result_nodes)}
 
 
 # ==========================================
