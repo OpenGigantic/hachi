@@ -28,6 +28,7 @@ Performance & concurrency improvements (BE-4):
 """
 
 import concurrent.futures
+import contextlib
 import logging
 import threading
 import time
@@ -35,6 +36,12 @@ from collections.abc import Callable
 from typing import Any
 
 from hachi.core.llm import BaseLLMClient, LLMResponse, Message, ToolCall
+from hachi.core.obs.trace import (
+    TraceContext,
+    attach_otel_context,
+    copy_otel_context,
+    detach_otel_context,
+)
 from hachi.core.runtime_events import SESSION_ITERATION_LIMIT, TOOL_RESULT_PREVIEW_MAX
 from hachi.core.tool_results import ToolResultBlocks
 from hachi.core.tracing import span
@@ -357,22 +364,44 @@ class ExecutionLoop:
         self._wall_deadline: float | None = None
 
     def _execute_single_tool(
-        self, tool_call: ToolCall
+        self,
+        tool_call: ToolCall,
+        _otel_ctx: Any = None,
+        _trace_ctx: "TraceContext | None" = None,
     ) -> tuple[Any, bool, "SuspendWorkflow | None"]:
         """Execute one tool call and return (result, is_error, suspend_exc_or_None).
 
         Designed to run inside the thread pool.  ``SuspendWorkflow`` is returned
         as a value (not re-raised) so the caller can collect all futures before
         deciding whether to suspend.
+
+        Args:
+            tool_call:   The tool invocation to execute.
+            _otel_ctx:   OTel context captured on the calling thread (before
+                         submit) so ``tool.call`` spans nest UNDER ``agent.turn``
+                         across the thread boundary — the critical propagation fix.
+            _trace_ctx:  :class:`~hachi.core.obs.trace.TraceContext` to re-bind
+                         inside the worker so correlated logging and event-stamping
+                         work even after the hand-off.
         """
+        # Re-attach the OTel context captured on the submitting thread so spans
+        # opened inside the pool are children of the agent.turn root span.
+        otel_token = attach_otel_context(_otel_ctx)
+        # Re-bind the TraceContext so contextvar-backed lookups work in the worker.
+        from hachi.core.obs.trace import bind as _bind_trace
+
         try:
-            with span("tool.call", tool=tool_call.name):
-                result = self.registry.execute(tool_call)
-            return (result, False, None)
-        except SuspendWorkflow as exc:
-            return (None, False, exc)
-        except Exception as exc:
-            return (f"Tool Execution Error: {str(exc)}", True, None)
+            with _bind_trace(_trace_ctx) if _trace_ctx is not None else contextlib.nullcontext():
+                try:
+                    with span("tool.call", tool=tool_call.name):
+                        result = self.registry.execute(tool_call)
+                    return (result, False, None)
+                except SuspendWorkflow as exc:
+                    return (None, False, exc)
+                except Exception as exc:
+                    return (f"Tool Execution Error: {str(exc)}", True, None)
+        finally:
+            detach_otel_context(otel_token)
 
     def add_user_message(self, text: str):
         """Add a user query to the active session history via the MemoryManager."""
@@ -748,8 +777,20 @@ class ExecutionLoop:
                     self.on_event("text_delta", {"text": chunk})
 
                 try:
-                    with span("llm.generate", model=getattr(self.llm_client, "model", "unknown")):
+                    _llm_model = getattr(self.llm_client, "model", "unknown")
+                    with span("llm.generate", model=_llm_model):
                         response = self._stream_generate(on_delta=_on_delta, **gen_kwargs)
+                        # Enrich the span with token/cost telemetry while still inside
+                        # the span context so attributes land on the correct span.
+                        from hachi.core.tracing import add_span_attributes
+
+                        add_span_attributes(
+                            llm_input_tokens=response.usage.input_tokens,
+                            llm_output_tokens=response.usage.output_tokens,
+                            llm_cache_read_tokens=response.usage.cache_read_tokens,
+                            llm_cache_creation_tokens=response.usage.cache_creation_tokens,
+                            llm_model=_llm_model,
+                        )
                 except _StreamCancelled as exc:
                     # Mid-stream cancel: partial text is in exc.partial_text plus whatever
                     # was already flushed into _partial_text from prior iterations.
@@ -867,10 +908,21 @@ class ExecutionLoop:
                 # P4-03: Submit all tool calls to the thread pool concurrently.
                 # Results are collected in original order so the API receives a
                 # well-ordered tool_result block list (Anthropic requires it).
+                #
+                # OTel context propagation (the critical fix, 21-observability.md §3):
+                # The OTel context and TraceContext are captured HERE (on the turn
+                # thread, inside the agent.turn root span) and forwarded into each
+                # worker so tool.call spans are children of agent.turn across the
+                # thread boundary.  Without this capture the pool workers start with a
+                # fresh empty context and spans cannot be correlated.
+                from hachi.core.obs.trace import current as _current_trace_ctx
+
+                _otel_ctx = copy_otel_context()
+                _trace_ctx = _current_trace_ctx()
                 _futures: dict[str, concurrent.futures.Future] = {}
                 for tool_call in response.tool_calls:
                     _futures[tool_call.id] = self._tool_pool.submit(
-                        self._execute_single_tool, tool_call
+                        self._execute_single_tool, tool_call, _otel_ctx, _trace_ctx
                     )
 
                 for tool_call in response.tool_calls:

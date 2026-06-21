@@ -155,6 +155,29 @@ class EventsSettings(BaseModel):
     bus_funnel: bool = False
 
 
+class ObservabilitySettings(BaseModel):
+    """Optional ``[observability]`` config section (Slice 2.3 — tracing / metrics).
+
+    When ``enabled=True`` the gateway calls :func:`~hachi.core.tracing.setup_from_config`
+    at boot, selecting the exporter via :attr:`exporter`.
+
+    Attributes:
+        enabled:           Master switch.  Default ``False`` so default runtime is
+                           unchanged (tracing stays dormant unless opted in).
+        exporter:          One of ``"console"`` (default), ``"otlp"``, ``"langfuse"``.
+        endpoint:          OTLP endpoint URL (optional; falls back to
+                           ``OTEL_EXPORTER_OTLP_ENDPOINT`` env var).
+        metrics_enabled:   When ``True``, also initialise the metrics facade.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    exporter: str = "console"
+    endpoint: str | None = None
+    metrics_enabled: bool = False
+
+
 class JobsSettings(BaseModel):
     """Optional ``[jobs]`` config section (Slice 2.2 — durable job handlers).
 
@@ -222,6 +245,8 @@ class ResolvedConfig(BaseModel):
     events: EventsSettings = Field(default_factory=EventsSettings)
     # Optional [jobs] section — absent = func= closures (back-compat).
     jobs: JobsSettings = Field(default_factory=JobsSettings)
+    # Optional [observability] section — absent = tracing off (back-compat).
+    observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
 
 
 def default_config() -> ResolvedConfig:

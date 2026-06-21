@@ -109,7 +109,19 @@ def now_iso() -> str:
 
 
 def _event(name: str, payload: dict[str, Any] | None = None) -> RuntimeEvent:
-    return RuntimeEvent(name=name, payload=payload or {}, timestamp=now_iso())
+    base = dict(payload) if payload else {}
+    # Stamp trace_id / session_id from the active TraceContext (if any).
+    # Import is deferred to avoid a circular-import at module load time.
+    try:
+        from hachi.core.obs.trace import current as _current_trace
+
+        tc = _current_trace()
+        if tc is not None:
+            base.setdefault("trace_id", tc.trace_id)
+            base.setdefault("session_id", tc.session_id)
+    except Exception:  # pragma: no cover — obs module not yet available
+        pass
+    return RuntimeEvent(name=name, payload=base, timestamp=now_iso())
 
 
 def adapt_event(event_type: str, data: dict[str, Any] | None = None) -> list[RuntimeEventEnvelope]:

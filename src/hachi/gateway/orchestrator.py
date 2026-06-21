@@ -40,6 +40,8 @@ from hachi.core.mcp_client import MCPManager, MCPServerConfig
 from hachi.core.memory import MemoryManager
 from hachi.core.memory_provider import ChromaMemoryProvider, resolve_provider
 from hachi.core.memory_vault import MemoryVault
+from hachi.core.obs.trace import TraceContext
+from hachi.core.obs.trace import bind as _bind_trace_ctx
 from hachi.core.paths import get_hachi_paths
 from hachi.core.permissions import (
     InteractivePermissionGate,
@@ -85,7 +87,7 @@ from hachi.core.secret_store import create_default_secret_store
 from hachi.core.session_store import SessionStore
 from hachi.core.session_titler import generate_title
 from hachi.core.sub_agent import DEFAULT_SUB_AGENT_MODEL
-from hachi.core.tracing import configure_from_env
+from hachi.core.tracing import configure_from_env, span
 from hachi.core.turn_context import TurnContext
 from hachi.gateway.tool_registration import BootDeps, ToolRegistrar, ToolSpec
 from hachi.gateway.workspace import (
@@ -1182,6 +1184,27 @@ class AgentSession:
         """Internal single-turn implementation; must only be called while _chat_lock is held."""
         # 1. Refresh memory snapshot at turn start
         turn_id = str(uuid.uuid4())[:8]
+
+        # Build the TraceContext and open the agent.turn ROOT span.  All child spans
+        # (llm.generate, tool.call) will nest under this root via OTel context
+        # propagation (thread pool fix in loop.py).  The trace_id == turn_id per ADR-0005.
+        _trace_ctx = TraceContext(
+            trace_id=turn_id,
+            session_id=self._session_id or "unknown",
+            principal="session",  # placeholder; real user id when auth grows
+            surface=surface,
+        )
+
+        with _bind_trace_ctx(_trace_ctx), span(
+            "agent.turn",
+            turn_id=turn_id,
+            session_id=self._session_id or "unknown",
+            surface=surface,
+        ):
+            return self._chat_impl_inner(user_input, turn_id=turn_id, surface=surface)
+
+    def _chat_impl_inner(self, user_input: str, *, turn_id: str, surface: str) -> str:
+        """Inner implementation body (runs inside the agent.turn root span)."""
         self._emit_event(
             SESSION_CHAT_STARTED,
             {
@@ -1203,7 +1226,7 @@ class AgentSession:
             except Exception:
                 # HIGH-012: synchronous recall failures should be visible.
                 logger.warning(
-                    "_chat_impl: synchronous vault recall failed for turn %s",
+                    "_chat_impl_inner: synchronous vault recall failed for turn %s",
                     turn_id,
                     exc_info=True,
                 )
