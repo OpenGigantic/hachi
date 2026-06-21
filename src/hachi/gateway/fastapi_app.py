@@ -511,10 +511,13 @@ def create_gateway_app(
     # anthropic.APIStatusError; its subclasses (BadRequestError / AuthenticationError
     # / RateLimitError / ...) are matched via the exception MRO. Guarded import so
     # the gateway still starts if the SDK is absent (e.g. non-runtime mode).
+    _anthropic: Any = None
     try:
-        import anthropic as _anthropic
+        import anthropic
+
+        _anthropic = anthropic
     except Exception:  # pragma: no cover - anthropic is present in runtime mode
-        _anthropic = None
+        pass
 
     if _anthropic is not None:
 

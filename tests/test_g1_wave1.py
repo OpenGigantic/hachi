@@ -355,7 +355,7 @@ def test_pending_resume_not_consumed_when_agents_already_exist() -> None:
 def test_update_limits_runtime_writes_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """update_limits writes max_turn_cost_usd and max_session_cost_usd to config."""
+    """update_limits writes max_turn_cost_usd (per-task) and max_daily_cost_usd (daily)."""
     from types import SimpleNamespace
 
     from hachi.cli.main import _InProcessGatewayRuntime
@@ -363,6 +363,7 @@ def test_update_limits_runtime_writes_config(
     class _FakeLimits:
         max_turn_cost_usd: float | None = None
         max_session_cost_usd: float | None = None
+        max_daily_cost_usd: float | None = None
 
     class _FakeConfig:
         limits = _FakeLimits()
@@ -378,6 +379,7 @@ def test_update_limits_runtime_writes_config(
                 "limits": {
                     "max_turn_cost_usd": self.limits.max_turn_cost_usd,
                     "max_session_cost_usd": self.limits.max_session_cost_usd,
+                    "max_daily_cost_usd": self.limits.max_daily_cost_usd,
                 }
             }
 
@@ -390,7 +392,7 @@ def test_update_limits_runtime_writes_config(
     runtime.update_limits({"per_task_cap_usd": 2.0, "daily_cap_usd": 10.0})
 
     assert cfg.limits.max_turn_cost_usd == 2.0
-    assert cfg.limits.max_session_cost_usd == 10.0
+    assert cfg.limits.max_daily_cost_usd == 10.0
     assert len(written) == 1
 
 
