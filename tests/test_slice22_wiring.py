@@ -404,7 +404,10 @@ class TestHandlerCorrections:
         result = handle_extract_fact(session_id="s3", text="")
         assert result == "skipped: empty text"
 
-    def test_auto_extract_is_seam(self) -> None:
+    def test_auto_extract_is_real_and_degrades_gracefully(self) -> None:
+        # Slice 2.4 (Files) made handle_auto_extract a real extractor; with no
+        # extractor for an empty media_type it must degrade gracefully (status
+        # string, never crash, never the old "seam:" placeholder).
         from hachi.core.runtime.job_handlers import handle_auto_extract
 
         result = handle_auto_extract(
@@ -412,4 +415,6 @@ class TestHandlerCorrections:
             event_payload={"file_id": "f42"},
             event_sequence=1,
         )
-        assert "seam:auto_extract:f42" in result
+        assert isinstance(result, str)
+        assert "f42" in result
+        assert not result.startswith("seam:")

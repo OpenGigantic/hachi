@@ -152,20 +152,192 @@ def handle_auto_extract(
     event_sequence: int = 0,
     **_kwargs: Any,
 ) -> str:
-    """Reactive stub handler for file.uploaded events (A8 — seam for slice 2.4).
+    """Reactive handler for ``file.uploaded`` events (Initiative E, Slice 2.4).
 
-    When the file platform is built (slice 2.4), this handler will trigger
-    the extract→index pipeline.  For now it logs and returns so the reactive
-    seam is testable end-to-end.
+    Runs the ContentExtractor pipeline on the uploaded file:
+      1. Resolve FileMetaStore + LocalStorageProvider from paths.
+      2. Find the first ContentExtractor that supports the file's media_type.
+      3. Extract text, guard_untrusted-wrap it, store as a sidecar (.txt) blob.
+      4. Update FileMeta status → ``extracted`` (or ``stored`` on degradation).
+      5. Emit ``file.extracted`` via a fresh EventBus publish (no queue to avoid
+         recursion).
+      6. Optionally index extracted chunks into the ``attachments`` Chroma
+         collection when ``[files] index_on_extract = true`` in settings.
+
+    Failures in any step are logged; the handler always returns a status string
+    so the JobRegistry marks the job completed (not failed), preventing spurious
+    retries on configuration-level mismatches (e.g. extractor unavailable).
     """
-    file_id = (event_payload or {}).get("file_id", "unknown")
+    payload = event_payload or {}
+    file_id: str = payload.get("file_id", "")
+    media_type: str = payload.get("media_type", "")
+    name: str = payload.get("name", "")
+
+    if not file_id:
+        logger.warning("handle_auto_extract: missing file_id in payload — skipping")
+        return "skipped: missing file_id"
+
     logger.info(
-        "handle_auto_extract: received %r (file_id=%r seq=%d) — pipeline not yet built (slice 2.4 seam)",  # noqa: E501
-        event_name,
+        "handle_auto_extract: processing file_id=%r name=%r media_type=%r seq=%d",
         file_id,
+        name,
+        media_type,
         event_sequence,
     )
-    return f"seam:auto_extract:{file_id}"
+
+    try:
+        from hachi.core.files.store import (
+            FileMetaStore,
+            LocalStorageProvider,
+            _build_extractor_chain,
+            find_extractor,
+        )
+        from hachi.core.paths import get_hachi_paths
+        from hachi.core.untrusted_content import guard_untrusted
+
+        paths = get_hachi_paths()
+        meta_store = FileMetaStore(paths.files_db)
+        storage = LocalStorageProvider(paths.blobs_dir)
+        chain = _build_extractor_chain()
+        extractor = find_extractor(chain, media_type)
+
+        if extractor is None:
+            logger.info(
+                "handle_auto_extract: no extractor for media_type=%r (file_id=%r) "
+                "— file stays at 'stored'",
+                media_type,
+                file_id,
+            )
+            return f"degraded:no_extractor:{file_id}"
+
+        # Open the blob for extraction.
+        with storage.open(file_id) as blob_stream:
+            raw_text = extractor.extract(blob_stream, media_type)
+
+        # Wrap extracted text with guard_untrusted before it can reach the model.
+        guarded_text, flagged = guard_untrusted(raw_text, source=f"file:{name or file_id}")
+        if flagged:
+            logger.warning(
+                "handle_auto_extract: guard_untrusted flagged possible injection in %r",
+                file_id,
+            )
+
+        # Store guarded text as a sidecar blob under "<file_id>.txt".
+        import io as _io
+
+        sidecar_id = f"{file_id}.txt"
+        storage.put(sidecar_id, _io.BytesIO(guarded_text.encode("utf-8")))
+        meta_store.update_status(file_id, "extracted", extracted_text_ref=sidecar_id)
+
+        logger.info(
+            "handle_auto_extract: extracted %d chars from %r → sidecar %r",
+            len(guarded_text),
+            file_id,
+            sidecar_id,
+        )
+
+        # Optionally index into 'attachments' Chroma collection (RAG seam).
+        _try_index_attachment(file_id, name, raw_text, guarded_text)
+
+        # Emit file.extracted event.
+        _emit_file_extracted(file_id, name, media_type, sidecar_id)
+
+        return f"extracted:{file_id}"
+
+    except Exception as exc:
+        logger.error(
+            "handle_auto_extract: failed for file_id=%r — %s", file_id, exc, exc_info=True
+        )
+        # Mark as failed in the meta store (best-effort).
+        try:
+            from hachi.core.files.store import FileMetaStore
+            from hachi.core.paths import get_hachi_paths
+
+            FileMetaStore(get_hachi_paths().files_db).update_status(file_id, "failed")
+        except Exception:
+            pass
+        return f"error:{file_id}:{exc}"
+
+
+def _try_index_attachment(
+    file_id: str, name: str, raw_text: str, guarded_text: str
+) -> None:
+    """Index extracted text chunks into the ``attachments`` Chroma collection.
+
+    Uses the RRF fusion seam (memory_vault.py:785) — inserted into a
+    separate ``attachments`` collection so ``semantic_search`` can merge it
+    without any caller changes.  Skipped gracefully when chromadb is
+    unavailable or ``[files] index_on_extract = false``.
+    """
+    try:
+        from hachi.core.config_loader import load_effective_config
+
+        cfg = load_effective_config()
+        if not getattr(cfg.files, "index_on_extract", True):
+            return
+    except Exception:
+        pass  # Default: index when we can
+
+    try:
+        import chromadb  # type: ignore[import-untyped]
+
+        from hachi.core.paths import get_hachi_paths
+
+        paths = get_hachi_paths()
+        client = chromadb.PersistentClient(path=str(paths.chroma_dir / "attachments"))
+        coll = client.get_or_create_collection(
+            "attachments",
+            metadata={"description": "File attachment extracted text chunks"},
+        )
+        # Simple whole-doc chunk (chunking at scale is deferred per §8).
+        chunk_id = f"{file_id}:0"
+        coll.upsert(
+            ids=[chunk_id],
+            documents=[raw_text[:8000]],  # Chroma default embedding window
+            metadatas=[{"file_id": file_id, "name": name, "chunk": 0}],
+        )
+        logger.debug("handle_auto_extract: indexed chunk %r into attachments collection", chunk_id)
+    except ImportError:
+        logger.debug("handle_auto_extract: chromadb not available — skipping index")
+    except Exception:
+        logger.debug("handle_auto_extract: index failed (non-fatal)", exc_info=True)
+
+
+def _emit_file_extracted(
+    file_id: str, name: str, media_type: str, sidecar_id: str
+) -> None:
+    """Publish ``file.extracted`` via a fresh in-process EventBus call."""
+    try:
+        from hachi.core.event_bus import EventBus
+        from hachi.core.runtime_events import FILE_EXTRACTED, RuntimeEvent, now_iso
+
+        # Fresh bus with no subscribers — publish propagates to any wired bus
+        # only if it was injected.  We re-use the shared _shared bus when
+        # available (best-effort; not required for correctness).
+        bus: Any = None
+        try:
+            from hachi.gateway.orchestrator import _shared  # type: ignore[attr-defined]
+
+            bus = getattr(_shared, "event_bus", None)
+        except Exception:
+            pass
+
+        if bus is None:
+            bus = EventBus()
+
+        event = RuntimeEvent(
+            name=FILE_EXTRACTED,
+            payload={
+                "file_id": file_id,
+                "name": name,
+                "media_type": media_type,
+                "sidecar_id": sidecar_id,
+            },
+            timestamp=now_iso(),
+        )
+        bus.publish(event)
+    except Exception:
+        logger.debug("_emit_file_extracted: publish failed (non-fatal)", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

@@ -254,6 +254,36 @@ class RoutingSettings(BaseModel):
     resilience: ResilienceSettings = Field(default_factory=ResilienceSettings)
 
 
+class FileSettings(BaseModel):
+    """Optional ``[files]`` config section (Initiative E — File Attachment Platform).
+
+    Controls the file ingest pipeline: size cap, allowed MIME types, storage
+    backend, scan hook, and whether extracted text is indexed into the
+    ``attachments`` Chroma collection for RAG.
+
+    Attributes:
+        max_size_bytes:  Hard upload ceiling in bytes.  Default 50 MB.
+        allowed_types:   Explicit allowlist of MIME base types (e.g. ``["text/plain",
+                         "application/pdf"]``).  Empty (default) = allow everything.
+        storage_backend: ``"local"`` (default).  ``"s3"`` / ``"gcs"`` are seams for
+                         future :class:`~hachi.core.files.store.StorageProvider`
+                         implementations.
+        scan_hook:       ``"noop"`` (default).  ``"clamav"`` / ``"cloudmersive"`` are
+                         future :class:`~hachi.core.files.store.VirusScanHook` impls.
+        index_on_extract: When ``True``, extracted text chunks are indexed into the
+                         ``attachments`` Chroma collection via the RRF fusion seam
+                         so ``search_attachments`` merges through ``semantic_search``.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    max_size_bytes: int = 50 * 1024 * 1024  # 50 MB
+    allowed_types: list[str] = Field(default_factory=list)
+    storage_backend: str = "local"
+    scan_hook: str = "noop"
+    index_on_extract: bool = True
+
+
 class SearchSettings(BaseModel):
     """Optional ``[search]`` config section (Initiative A — Search Platform).
 
@@ -307,6 +337,8 @@ class ResolvedConfig(BaseModel):
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     # Optional [search] section — absent = search tools not registered.
     search: SearchSettings = Field(default_factory=SearchSettings)
+    # Optional [files] section — absent = default 50 MB cap, all types allowed.
+    files: FileSettings = Field(default_factory=FileSettings)
 
 
 def default_config() -> ResolvedConfig:

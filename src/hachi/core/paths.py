@@ -82,6 +82,16 @@ class HachiPaths:
         """SQLite FTS5 index for the OG memory graph."""
         return self.state_dir / "memory_index.db"
 
+    @property
+    def blobs_dir(self) -> Path:
+        """Root directory for raw file blobs (Initiative E — file attachment platform)."""
+        return self.data_dir / "blobs"
+
+    @property
+    def files_db(self) -> Path:
+        """SQLite database for file metadata (Initiative E — file attachment platform)."""
+        return self.state_dir / "files.db"
+
     def journal_shard_path(self, device_id: str | None = None) -> Path:
         """Per-device journal file path for conflict-free git sync.
 
