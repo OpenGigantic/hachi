@@ -213,4 +213,25 @@ class ProviderRegistry:
                     exc_info=True,
                 )
 
+        # Speech provider (Initiative F): build from [voice] config with HACHI_STT_*/HACHI_TTS_*
+        # env fallback.  Registered only when at least one backend is configured (api key present).
+        try:
+            from hachi.core.providers.speech import OpenAICompatibleSpeechProvider
+            from hachi.core.resilience import RetryPolicy
+
+            _retry = RetryPolicy.from_config(config)
+            _voice_cfg = getattr(config, "voice", None)
+            _speech = OpenAICompatibleSpeechProvider.from_config(_voice_cfg, retry_policy=_retry)
+            if _speech.capabilities():
+                reg.register(_speech)
+                logger.debug(
+                    "ProviderRegistry: registered speech provider with caps=%s",
+                    _speech.capabilities(),
+                )
+        except Exception:
+            logger.debug(
+                "ProviderRegistry.from_config: speech provider init skipped (no key or error)",
+                exc_info=False,
+            )
+
         return reg

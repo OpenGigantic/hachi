@@ -114,4 +114,5 @@ def test_url_non_openai_compat_returns_text(monkeypatch) -> None:
     _patch_response(monkeypatch, _resp(200))
     out = _make_view_image(_Gate(), provider_kind="ollama")(_URL)
     assert isinstance(out, str)
-    assert "not supported by the ollama provider" in out
+    # New graceful fallback message (doc 20 §3 step 4).
+    assert "no vision-capable" in out or "configure a vision model" in out.lower()

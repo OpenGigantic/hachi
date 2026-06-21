@@ -347,14 +347,61 @@ def _make_transcribe_and_summarize(
     return transcribe_and_summarize
 
 
+def _resolve_stt_from_registry(provider_registry: Any | None) -> SpeechToText | None:
+    """Resolve an STT backend from the ProviderRegistry, or ``None`` to fall back to env."""
+    if provider_registry is None:
+        return None
+    try:
+        from hachi.core.routing.capability import Capability
+
+        speech = provider_registry.get_speech(Capability.SPEECH_TO_TEXT)
+        if speech is None:
+            return None
+        # The OpenAICompatibleSpeechProvider wraps a SpeechToText; extract it.
+        inner_stt = getattr(speech, "_stt", None)
+        if isinstance(inner_stt, SpeechToText):
+            return inner_stt
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_tts_from_registry(provider_registry: Any | None) -> TextToSpeech | None:
+    """Resolve a TTS backend from the ProviderRegistry, or ``None`` to fall back to env."""
+    if provider_registry is None:
+        return None
+    try:
+        from hachi.core.routing.capability import Capability
+
+        speech = provider_registry.get_speech(Capability.TEXT_TO_SPEECH)
+        if speech is None:
+            return None
+        inner_tts = getattr(speech, "_tts", None)
+        if isinstance(inner_tts, TextToSpeech):
+            return inner_tts
+    except Exception:
+        pass
+    return None
+
+
 def register_voice_tools(
     registry: Any,
     gate: Any | None = None,
     stt: SpeechToText | None = None,
     tts: TextToSpeech | None = None,
     player: AudioPlayer | None = None,
+    *,
+    provider_registry: Any | None = None,
 ) -> None:
     """Register the voice tools under the ``voice`` lazy tool group.
+
+    When *provider_registry* is provided, STT/TTS backends are resolved via
+    :meth:`~hachi.core.providers.registry.ProviderRegistry.get_speech`, gaining
+    resilience and capability-routing for free.  Explicit *stt* / *tts* arguments
+    take precedence (back-compat: existing callers that pre-build the backends are
+    unchanged).  When neither is provided, the tools fall back to
+    :meth:`~hachi.core.voice.SpeechToText.from_env` / ``TextToSpeech.from_env``
+    at call time (today's behaviour — unchanged).
 
     Registers:
     - ``transcribe_audio``         — STT, requires an API key
@@ -363,19 +410,23 @@ def register_voice_tools(
     - ``play_audio``               — keyless playback via platform-native binary
     - ``get_audio_info``           — keyless metadata probe (stdlib ``wave`` for WAV)
     """
+    # Prefer explicit args; fall back to registry resolution.
+    resolved_stt = stt or _resolve_stt_from_registry(provider_registry)
+    resolved_tts = tts or _resolve_tts_from_registry(provider_registry)
+
     registry.register(
         TRANSCRIBE_AUDIO_SCHEMA,
-        _make_transcribe_audio(gate, stt),
+        _make_transcribe_audio(gate, resolved_stt),
         group="voice",
     )
     registry.register(
         TRANSCRIBE_AND_SUMMARIZE_SCHEMA,
-        _make_transcribe_and_summarize(gate, stt),
+        _make_transcribe_and_summarize(gate, resolved_stt),
         group="voice",
     )
     registry.register(
         SPEAK_TEXT_SCHEMA,
-        _make_speak_text(gate, tts),
+        _make_speak_text(gate, resolved_tts),
         group="voice",
     )
     registry.register(

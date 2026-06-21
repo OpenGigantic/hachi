@@ -1195,11 +1195,14 @@ class AgentSession:
             surface=surface,
         )
 
-        with _bind_trace_ctx(_trace_ctx), span(
-            "agent.turn",
-            turn_id=turn_id,
-            session_id=self._session_id or "unknown",
-            surface=surface,
+        with (
+            _bind_trace_ctx(_trace_ctx),
+            span(
+                "agent.turn",
+                turn_id=turn_id,
+                session_id=self._session_id or "unknown",
+                surface=surface,
+            ),
         ):
             return self._chat_impl_inner(user_input, turn_id=turn_id, surface=surface)
 
@@ -2014,6 +2017,7 @@ def boot_agent(
     # When [routing] is absent, the policy synthesises a single-model-for-all-caps
     # mapping and default_client() returns the existing `client` unchanged.
     _model_router = None
+    _provider_registry = None
     try:
         from hachi.core.providers.registry import ProviderRegistry
         from hachi.core.resilience import RetryPolicy
@@ -2211,6 +2215,9 @@ def boot_agent(
             secret_store=secret_store,
             tool_registry=tool_registry,
             lease_manager=_lease_manager,
+            router=_model_router,
+            provider_registry=_provider_registry,
+            session_llm=client,
         )
 
     TOOL_SPECS: list[ToolSpec] = [
@@ -2257,18 +2264,26 @@ def boot_agent(
             register_fn=lambda d: register_notification_tools(d.tool_registry),
         ),
         ToolSpec(
-            # Vision input — view local images. Image blocks only flow to the Anthropic
-            # provider, so the tool is provider-aware (it reports instead of analyzing on others).
+            # Vision input — view local images.  Capability-routed (doc 20 §3):
+            # session model with VISION → inline; else router.select(VISION) → routed;
+            # else graceful text fallback.
             name="vision",
             register_fn=lambda d: register_vision_tools(
-                d.tool_registry, d.gate, provider_kind=d.provider_kind
+                d.tool_registry,
+                d.gate,
+                provider_kind=d.provider_kind,
+                session_client=d.session_llm,
+                router=d.router,
             ),
         ),
         ToolSpec(
-            # Voice input — transcribe local audio files. Credentials (OpenAI/compatible
-            # Whisper) resolve lazily; the tool degrades to a "not configured" hint until set.
+            # Voice input — transcribe/synthesize audio.  Provider resolved via
+            # ProviderRegistry.get_speech() (doc 19 §3); falls back to SpeechToText.from_env()
+            # when registry is unavailable (back-compat).
             name="voice",
-            register_fn=lambda d: register_voice_tools(d.tool_registry, d.gate),
+            register_fn=lambda d: register_voice_tools(
+                d.tool_registry, d.gate, provider_registry=d.provider_registry
+            ),
         ),
         ToolSpec(
             # Google Workspace (Gmail, Calendar, Drive, Docs, Sheets, Contacts, Meet, Tasks).

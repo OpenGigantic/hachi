@@ -426,6 +426,15 @@ class ResilientClient(BaseLLMClient):  # type: ignore[misc]
             return []
 
     @property
+    def supports_vision(self) -> bool:
+        """Return ``True`` when the primary inner client's model has the VISION capability.
+
+        Delegates to the inner client's ``supports_vision`` property so callers
+        need not unwrap the resilience layer.
+        """
+        return bool(getattr(self._inner, "supports_vision", False))
+
+    @property
     def _health(self) -> ProviderHealth:
         """Current health snapshot (convenience attribute)."""
         return self._recorder.snapshot()
