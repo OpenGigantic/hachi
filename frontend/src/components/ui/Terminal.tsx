@@ -1,4 +1,4 @@
-import { CSSProperties, ReactNode, useEffect, useRef } from 'react';
+import { CSSProperties, ReactNode, UIEvent, useEffect, useRef } from 'react';
 
 export type TerminalLineTone = 'default' | 'muted' | 'brand' | 'working' | 'success' | 'danger';
 
@@ -25,11 +25,40 @@ const TONE_COLOR: Record<TerminalLineTone, string> = {
 };
 
 export function Terminal({ lines = [], prompt, children, style }: TerminalProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const outputRef = useRef<HTMLDivElement>(null);
+  const followOutputRef = useRef(true);
+  const scrollRafRef = useRef<number | null>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!followOutputRef.current) return;
+    if (scrollRafRef.current != null) return;
+    const schedule =
+      typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame
+        : ((cb: FrameRequestCallback) => setTimeout(cb, 16) as unknown as number);
+    scrollRafRef.current = schedule(() => {
+      const el = outputRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+      scrollRafRef.current = null;
+    });
   }, [lines]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current != null) {
+        if (typeof cancelAnimationFrame === 'function') {
+          cancelAnimationFrame(scrollRafRef.current);
+        } else {
+          clearTimeout(scrollRafRef.current as unknown as ReturnType<typeof setTimeout>);
+        }
+      }
+    };
+  }, []);
+
+  const handleOutputScroll = (event: UIEvent<HTMLDivElement>) => {
+    const el = event.currentTarget;
+    followOutputRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+  };
 
   const surfaceStyle: CSSProperties = {
     background: '#16151A',
@@ -80,7 +109,7 @@ export function Terminal({ lines = [], prompt, children, style }: TerminalProps)
   return (
     <div style={surfaceStyle}>
       {/* output lines */}
-      <div style={outputStyle}>
+      <div ref={outputRef} onScroll={handleOutputScroll} style={outputStyle}>
         {lines.map((line, i) => (
           <div
             key={i}
@@ -94,7 +123,6 @@ export function Terminal({ lines = [], prompt, children, style }: TerminalProps)
           </div>
         ))}
         {children}
-        <div ref={bottomRef} />
       </div>
 
       {/* prompt bar */}

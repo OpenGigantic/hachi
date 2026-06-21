@@ -23,16 +23,31 @@ type InlineToken =
 
 // Marker table: order matters — longer markers must come before sub-matches.
 // We check ** before * so ** isn't accidentally consumed as two * tokens.
-const INLINE_RE =
-  /(`[^`]*`?)|(\*\*(?:[^*]|\*(?!\*))*\*\*)|(__(?:[^_]|_(?!_))*__)|(\*(?:[^*])*\*(?!\*))|(_(?:[^_])*_(?!_))|(\[([^\]]*)\]\(([^)]*)\))/g
+//
+// IMPORTANT: this is only the PATTERN SOURCE. `parseInline` is recursive (bold/
+// italic/link children are parsed by recursing), so it MUST NOT share a single
+// stateful (`g`-flag) RegExp across calls: a nested call would reset the shared
+// `lastIndex`, making the outer loop re-match the same token forever — an
+// infinite loop that hangs the main thread on any text containing emphasis or a
+// link. Each parseInline call therefore builds its own RegExp instance below.
+const INLINE_RE_SOURCE =
+  '(`[^`]*`?)|(\\*\\*(?:[^*]|\\*(?!\\*))*\\*\\*)|(__(?:[^_]|_(?!_))*__)|(\\*(?:[^*])*\\*(?!\\*))|(_(?:[^_])*_(?!_))|(\\[([^\\]]*)\\]\\(([^)]*)\\))'
 
 function parseInline(text: string): InlineToken[] {
+  // Local, per-call regex instance — recursion-safe (see INLINE_RE_SOURCE note).
+  const re = new RegExp(INLINE_RE_SOURCE, 'g')
   const tokens: InlineToken[] = []
   let lastIndex = 0
-  INLINE_RE.lastIndex = 0
 
   let m: RegExpExecArray | null
-  while ((m = INLINE_RE.exec(text)) !== null) {
+  while ((m = re.exec(text)) !== null) {
+    // Defensive: a zero-width match would never advance lastIndex → infinite
+    // loop. Skip a char and continue. (Not expected with the current pattern.)
+    if (m.index === re.lastIndex) {
+      re.lastIndex += 1
+      continue
+    }
+
     // Push any literal text before this match
     if (m.index > lastIndex) {
       tokens.push({ kind: 'text', value: text.slice(lastIndex, m.index) })
@@ -59,7 +74,7 @@ function parseInline(text: string): InlineToken[] {
       tokens.push({ kind: 'text', value: full })
     }
 
-    lastIndex = INLINE_RE.lastIndex
+    lastIndex = re.lastIndex
   }
 
   // Remaining literal text

@@ -42,18 +42,32 @@ let _textLineActive = false;
 // Defence-in-depth: pathological runs can't grow runLines without bound.
 const RUN_LINES_MAX = 400;
 
-// ── Text-delta RAF batching ───────────────────────────────────────────────────
+// ── Text-delta flush batching ─────────────────────────────────────────────────
 // Instead of writing to the store (and triggering a re-render) on every token,
-// we accumulate deltas in a module-level buffer and flush once per animation
-// frame. This cuts renders from O(tokens) to O(frames) and eliminates O(n²)
-// string concat per response.
+// we accumulate deltas in a module-level buffer and flush on a throttled cadence.
+//
+// IMPORTANT (perf): re-rendering the streaming message re-lays-out its ENTIRE
+// growing text on every flush, so streaming cost is ~O(size) per flush and
+// O(size²) over the whole response. Flushing once per animation frame (~60/s)
+// makes that quadratic term saturate the main thread for long responses
+// (RESULT_CODE_HUNG). We therefore throttle flushes to FLUSH_MIN_INTERVAL_MS
+// (~20/s), which cuts the re-layout count ~3× and guarantees the thread yields
+// between flushes. (The conversation view further caps cost by rendering the
+// in-progress message outside the virtualizer — see conversation.tsx.)
+const FLUSH_MIN_INTERVAL_MS = 48;
 let _deltaBuffer = "";
 let _deltaTargetId: number | null = null; // hachiMsgId the buffered text belongs to
 let _rafHandle: number | null = null;
+let _lastFlushTs = 0;
+
+function nowMs(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
 
 /** Flush the pending delta buffer to the store in one update. */
 function flushDeltaBuffer(): void {
   _rafHandle = null;
+  _lastFlushTs = nowMs();
   if (!_deltaBuffer || _deltaTargetId == null) return;
   const text = _deltaBuffer;
   const targetId = _deltaTargetId;
@@ -71,15 +85,18 @@ function flushDeltaBuffer(): void {
 }
 
 /**
- * Schedule a flush on the next animation frame if one isn't already queued.
- * Falls back to a 40 ms timeout in environments without rAF (e.g. SSR/tests).
+ * Schedule a throttled flush. If the last flush was longer ago than
+ * FLUSH_MIN_INTERVAL_MS, flush on the next animation frame; otherwise defer with
+ * a timeout so we never exceed ~20 flushes/second during fast streaming.
  */
 function scheduleFlush(): void {
   if (_rafHandle != null) return;
-  if (typeof requestAnimationFrame !== "undefined") {
+  const elapsed = nowMs() - _lastFlushTs;
+  if (elapsed >= FLUSH_MIN_INTERVAL_MS && typeof requestAnimationFrame !== "undefined") {
     _rafHandle = requestAnimationFrame(flushDeltaBuffer);
   } else {
-    _rafHandle = setTimeout(flushDeltaBuffer, 40) as unknown as number;
+    const wait = Math.max(0, FLUSH_MIN_INTERVAL_MS - elapsed);
+    _rafHandle = setTimeout(flushDeltaBuffer, wait) as unknown as number;
   }
 }
 
@@ -543,7 +560,11 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
  *
  * We receive the hachiMsgId so we can append text deltas to it.
  */
-export async function startTaskLive(text: string, hachiMsgId: number): Promise<void> {
+export async function startTaskLive(
+  text: string,
+  hachiMsgId: number,
+  attachmentIds: string[] = []
+): Promise<void> {
   // Cancel any in-flight stream first
   abortSse();
 
@@ -611,7 +632,7 @@ export async function startTaskLive(text: string, hachiMsgId: number): Promise<v
   const postPromise = apiSend<{ session_id: string; response: string }>(
     "POST",
     `/sessions/${sessionId}/messages`,
-    { prompt: text },
+    { prompt: text, attachment_ids: attachmentIds },
     signal
   ).then((res) => {
     // If SSE didn't deliver a completed event (e.g. gateway closed stream early),
@@ -772,6 +793,77 @@ interface GatewayEventRecord {
   content?: string;
 }
 
+interface SessionEventsResponse {
+  events?: GatewayEventRecord[];
+  next_sequence?: number;
+}
+
+const HISTORY_EVENTS_PAGE_SIZE = 500;
+const HISTORY_EVENTS_MAX = 5000;
+const HISTORY_PAGE_FETCH_MAX = 40;
+
+function getHighestSequence(events: GatewayEventRecord[]): number {
+  let highest = 0;
+  for (const event of events) {
+    const seq = event.sequence ?? 0;
+    if (seq > highest) highest = seq;
+  }
+  return highest;
+}
+
+function normalizeSessionEventsResponse(
+  raw: SessionEventsResponse | GatewayEventRecord[]
+): { events: GatewayEventRecord[]; nextSequence: number } {
+  if (Array.isArray(raw)) {
+    const highest = getHighestSequence(raw);
+    return { events: raw, nextSequence: highest + 1 };
+  }
+
+  const events = Array.isArray(raw.events) ? raw.events : [];
+  const highest = getHighestSequence(events);
+  const nextSequence =
+    typeof raw.next_sequence === "number" && Number.isFinite(raw.next_sequence)
+      ? raw.next_sequence
+      : highest + 1;
+  return { events, nextSequence };
+}
+
+async function loadSessionEventsWindow(
+  sessionId: string
+): Promise<{ events: GatewayEventRecord[]; lastSeq: number }> {
+  let after = 0;
+  let pageCount = 0;
+  let lastSeq = 0;
+  let boundedEvents: GatewayEventRecord[] = [];
+
+  while (pageCount < HISTORY_PAGE_FETCH_MAX) {
+    const raw = await apiGet<SessionEventsResponse | GatewayEventRecord[]>(
+      `/sessions/${sessionId}/events`,
+      {
+        after,
+        limit: HISTORY_EVENTS_PAGE_SIZE,
+      }
+    );
+    const { events, nextSequence } = normalizeSessionEventsResponse(raw);
+    if (events.length === 0) break;
+
+    const pageHighest = getHighestSequence(events);
+    if (pageHighest > lastSeq) lastSeq = pageHighest;
+
+    boundedEvents = [...boundedEvents, ...events];
+    if (boundedEvents.length > HISTORY_EVENTS_MAX) {
+      boundedEvents = boundedEvents.slice(-HISTORY_EVENTS_MAX);
+    }
+
+    pageCount += 1;
+    if (nextSequence <= after) break;
+    after = nextSequence;
+    if (events.length < HISTORY_EVENTS_PAGE_SIZE) break;
+  }
+
+  return { events: boundedEvents, lastSeq };
+}
+
 /**
  * Replay an ordered list of gateway event records into a ChatMessage array.
  *
@@ -792,7 +884,7 @@ export function reconstructMessagesFromEvents(events: GatewayEventRecord[]): {
   lastSeq: number;
 } {
   const reconstructed: import("../types").ChatMessage[] = [];
-  let currentHachiId: number | null = null;
+  let currentHachiIndex: number | null = null;
   let lastSeq = 0;
 
   for (const ev of events) {
@@ -811,61 +903,55 @@ export function reconstructMessagesFromEvents(events: GatewayEventRecord[]): {
             : "(message)";
         const youId = Date.now() + reconstructed.length;
         const hachiId = youId + 1;
-        currentHachiId = hachiId;
         reconstructed.push(
           { id: youId, role: "you" as const, text: userText, cards: [], routine: null },
           { id: hachiId, role: "hachi" as const, text: "", cards: [], routine: null }
         );
+        currentHachiIndex = reconstructed.length - 1;
         break;
       }
 
       case "text.stream.delta": {
-        if (currentHachiId == null) break;
+        if (currentHachiIndex == null) break;
         const text = typeof payload.text === "string" ? payload.text : "";
-        const idx = reconstructed.findIndex((m) => m.id === currentHachiId);
-        if (idx >= 0) reconstructed[idx] = { ...reconstructed[idx], text: reconstructed[idx].text + text };
+        const message = reconstructed[currentHachiIndex];
+        reconstructed[currentHachiIndex] = { ...message, text: message.text + text };
         break;
       }
 
       case "tool.call.started": {
-        if (currentHachiId == null) break;
+        if (currentHachiIndex == null) break;
         const name = typeof payload.name === "string" ? payload.name : "tool";
         const key = "tool-" + name;
-        const idx = reconstructed.findIndex((m) => m.id === currentHachiId);
-        if (idx >= 0) {
-          const msg = reconstructed[idx];
-          const hasCard = msg.cards.some((c) => c.key === key);
-          if (!hasCard) {
-            reconstructed[idx] = {
-              ...msg,
-              cards: [...msg.cards, { key, icon: "play", title: name, status: "working" as const, cost: 0, tool: name, detail: "", expanded: false }],
-            };
-          }
-        }
-        break;
-      }
-
-      case "tool.call.completed": {
-        if (currentHachiId == null) break;
-        const name = typeof payload.name === "string" ? payload.name : "tool";
-        const key = "tool-" + name;
-        const preview = typeof payload.result_preview === "string" ? payload.result_preview : "";
-        const idx = reconstructed.findIndex((m) => m.id === currentHachiId);
-        if (idx >= 0) {
-          const msg = reconstructed[idx];
-          const exists = msg.cards.some((c) => c.key === key);
-          reconstructed[idx] = {
+        const msg = reconstructed[currentHachiIndex];
+        const hasCard = msg.cards.some((c) => c.key === key);
+        if (!hasCard) {
+          reconstructed[currentHachiIndex] = {
             ...msg,
-            cards: exists
-              ? msg.cards.map((c) => c.key === key ? { ...c, status: "done" as const, icon: "circle-check", detail: preview } : c)
-              : [...msg.cards, { key, icon: "circle-check", title: name, status: "done" as const, cost: 0, tool: name, detail: preview, expanded: false }],
+            cards: [...msg.cards, { key, icon: "play", title: name, status: "working" as const, cost: 0, tool: name, detail: "", expanded: false }],
           };
         }
         break;
       }
 
+      case "tool.call.completed": {
+        if (currentHachiIndex == null) break;
+        const name = typeof payload.name === "string" ? payload.name : "tool";
+        const key = "tool-" + name;
+        const preview = typeof payload.result_preview === "string" ? payload.result_preview : "";
+        const msg = reconstructed[currentHachiIndex];
+        const exists = msg.cards.some((c) => c.key === key);
+        reconstructed[currentHachiIndex] = {
+          ...msg,
+          cards: exists
+            ? msg.cards.map((c) => c.key === key ? { ...c, status: "done" as const, icon: "circle-check", detail: preview } : c)
+            : [...msg.cards, { key, icon: "circle-check", title: name, status: "done" as const, cost: 0, tool: name, detail: preview, expanded: false }],
+        };
+        break;
+      }
+
       case "session.chat.completed": {
-        currentHachiId = null;
+        currentHachiIndex = null;
         break;
       }
 
@@ -898,10 +984,9 @@ export async function loadConversationHistory(): Promise<void> {
   const sessionId = activeSess?.id ?? _liveSessionId;
   if (!sessionId) return;
 
-  let events: GatewayEventRecord[] = [];
+  let history: { events: GatewayEventRecord[]; lastSeq: number };
   try {
-    const raw = await apiGet<GatewayEventRecord[]>(`/sessions/${sessionId}/events`);
-    events = Array.isArray(raw) ? raw : [];
+    history = await loadSessionEventsWindow(sessionId);
   } catch {
     // History unavailable — leave existing messages intact (don't blank the screen)
     return;
@@ -910,7 +995,9 @@ export async function loadConversationHistory(): Promise<void> {
   // Guard again: a stream may have started while we were fetching
   if (useStore.getState().streaming) return;
 
-  const { messages: reconstructed, lastSeq } = reconstructMessagesFromEvents(events);
+  const { messages: reconstructed, lastSeq: reconstructedLastSeq } =
+    reconstructMessagesFromEvents(history.events);
+  const lastSeq = Math.max(reconstructedLastSeq, history.lastSeq);
 
   // Advance cursor so the next live turn only streams new events
   if (lastSeq > _cursor) _cursor = lastSeq;
@@ -958,10 +1045,9 @@ export async function switchSessionLive(sessionId: string): Promise<void> {
   });
 
   // 3. Fetch history
-  let events: GatewayEventRecord[] = [];
+  let history: { events: GatewayEventRecord[]; lastSeq: number };
   try {
-    const raw = await apiGet<GatewayEventRecord[]>(`/sessions/${sessionId}/events`);
-    events = Array.isArray(raw) ? raw : [];
+    history = await loadSessionEventsWindow(sessionId);
   } catch {
     // History unavailable — show an honest "resumed" placeholder
     const resumed: import("../types").ChatMessage = {
@@ -976,7 +1062,9 @@ export async function switchSessionLive(sessionId: string): Promise<void> {
   }
 
   // 4. Replay events using the shared helper
-  const { messages: reconstructed, lastSeq } = reconstructMessagesFromEvents(events);
+  const { messages: reconstructed, lastSeq: reconstructedLastSeq } =
+    reconstructMessagesFromEvents(history.events);
+  const lastSeq = Math.max(reconstructedLastSeq, history.lastSeq);
 
   // Advance cursor so the next live turn only sees new events
   _cursor = lastSeq;
@@ -996,6 +1084,41 @@ export async function switchSessionLive(sessionId: string): Promise<void> {
   } else {
     useStore.getState().hydrate({ messages: reconstructed });
   }
+}
+
+/**
+ * Delete a session via DELETE /sessions/{id} and refresh recent sessions.
+ * If the deleted session is currently active, clear the in-memory live pointer.
+ */
+export async function deleteSessionLive(sessionId: string): Promise<boolean> {
+  if (USE_MOCKS) return false;
+
+  const encoded = encodeURIComponent(sessionId);
+  try {
+    await apiSend<unknown>("DELETE", `/sessions/${encoded}`);
+  } catch {
+    return false;
+  }
+
+  if (_liveSessionId === sessionId) {
+    abortSse();
+    resetDeltaBuffer();
+    _liveSessionId = null;
+    _cursor = 0;
+    _hachiMsgId = null;
+    _textLineActive = false;
+    _lastKnownCumCost = 0;
+    _costCumAtTurnStart = 0;
+    _spentAtTurnStart = 0;
+    useStore.getState().hydrate({
+      messages: [],
+      streaming: false,
+      inContext: null,
+    });
+  }
+
+  await loadSessions();
+  return true;
 }
 
 /**

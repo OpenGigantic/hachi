@@ -123,18 +123,22 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
           const isActive = currentPath === item.route
           const badge = item.key === 'approvals' ? pendingApprovals : undefined
           return (
-            <NavItem
-              key={item.key}
-              label={item.label}
-              icon={item.icon}
-              active={isActive}
-              badge={badge}
-              onClick={() => {
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                navigate({ to: item.route as any })
-                onNavClick?.()
-              }}
-            />
+            <React.Fragment key={item.key}>
+              {item.key === 'skills' && (
+                <hr style={{ border: 'none', borderTop: '0.5px solid var(--hachi-line)', margin: '6px 0' }} />
+              )}
+              <NavItem
+                label={item.label}
+                icon={item.icon}
+                active={isActive}
+                badge={badge}
+                onClick={() => {
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  navigate({ to: item.route as any })
+                  onNavClick?.()
+                }}
+              />
+            </React.Fragment>
           )
         })}
       </div>
@@ -280,7 +284,7 @@ export function Sidebar() {
         width: '248px',
         flexShrink: 0,
         background: 'var(--hachi-surface)',
-        borderRight: '0.5px solid var(--hachi-line)',
+        borderRight: '1px solid var(--hachi-line)',
         height: '100%',
         display: 'flex',
         flexDirection: 'column',

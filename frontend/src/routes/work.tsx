@@ -8,7 +8,14 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
 import type { Run, Routine, FinishedTask, FailedTask, RunStep, RoutineRun } from '../lib/data/types'
-import { loadWork, pauseRoutineLive, deleteRoutineLive } from '../lib/data/domains/work'
+import {
+  loadWork,
+  pauseRoutineLive,
+  deleteRoutineLive,
+  isDurableRun,
+  wakeDurableRunLive,
+  cancelDurableRunLive,
+} from '../lib/data/domains/work'
 import { loadSpend } from '../lib/data/domains/spend'
 import { loadOperator } from '../lib/data/domains/operator'
 import { useFocusTrap } from '../lib/hooks/useFocusTrap'
@@ -192,13 +199,15 @@ interface WorkDetailProps {
   }[]
   onClose: () => void
   onRetry: (id: number) => void
+  onCancelRun: (id: number) => void
   onRunNow: () => void
   onTogglePause: (id: number) => void
   onDelete: (id: number) => void
   onWatchLive: (id: number) => void
+  canCancelRun: boolean
 }
 
-function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePause, onDelete, onWatchLive }: WorkDetailProps) {
+function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow, onTogglePause, onDelete, onWatchLive, canCancelRun }: WorkDetailProps) {
   const sm = statusMeta(item.status)
   const isFailed = item.kind === 'failed'
   const isRoutine = item.kind === 'routine'
@@ -477,28 +486,53 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePaus
         {/* action buttons */}
         <div style={{ display: 'flex', gap: '9px', flexWrap: 'wrap' }}>
           {isFailed && (
-            <button
-              onClick={() => onRetry(item.id)}
-              style={{
-                flex: 1,
-                height: '40px',
-                borderRadius: '10px',
-                border: '0.5px solid transparent',
-                background: 'var(--hachi-brand)',
-                color: 'var(--hachi-canvas)',
-                font: '500 14px var(--font-body)',
-                cursor: 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '7px',
-              }}
-              onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand)')}
-            >
-              <Icon name="refresh" size={15} />
-              Retry
-            </button>
+            <>
+              <button
+                onClick={() => onRetry(item.id)}
+                style={{
+                  flex: 1,
+                  height: '40px',
+                  borderRadius: '10px',
+                  border: '0.5px solid transparent',
+                  background: 'var(--hachi-brand-hover)',
+                  color: 'var(--hachi-canvas)',
+                  font: '500 14px var(--font-body)',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '7px',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-active)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
+              >
+                <Icon name="refresh" size={15} />
+                Retry
+              </button>
+              {canCancelRun && (
+                <button
+                  onClick={() => onCancelRun(item.id)}
+                  style={{
+                    height: '40px',
+                    padding: '0 14px',
+                    borderRadius: '10px',
+                    border: '0.5px solid var(--hachi-line)',
+                    background: 'var(--hachi-canvas)',
+                    color: 'var(--hachi-danger)',
+                    font: '500 14px var(--font-body)',
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-danger-tint)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-canvas)')}
+                >
+                  <Icon name="stop" size={14} />
+                  Cancel run
+                </button>
+              )}
+            </>
           )}
           {isRoutine && (
             <>
@@ -615,7 +649,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePaus
                 height: '40px',
                 borderRadius: '10px',
                 border: '0.5px solid transparent',
-                background: 'var(--hachi-brand)',
+                background: 'var(--hachi-brand-hover)',
                 color: 'var(--hachi-canvas)',
                 font: '500 14px var(--font-body)',
                 cursor: 'pointer',
@@ -624,8 +658,8 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePaus
                 justifyContent: 'center',
                 gap: '7px',
               }}
-              onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand)')}
+              onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-active)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
             >
               <Icon name="eye" size={15} />
               Watch live
@@ -930,6 +964,7 @@ function Work() {
 
   // store state
   const operator = useStore(s => s.operator)
+  const dataMode = useStore(s => s.dataMode)
   const workFilter = useStore(s => s.workFilter)
   const runs = useStore(s => s.runs)
   const routines = useStore(s => s.routines)
@@ -945,6 +980,7 @@ function Work() {
   const retryFailed = useStore(s => s.retryFailed)
   const runRoutineNow = useStore(s => s.runRoutineNow)
   const openRun = useStore(s => s.openRun)
+  const showToast = useStore(s => s.showToast)
 
   // load live data on mount (idempotent — bootstrapLiveData also runs on app mount)
   useEffect(() => {
@@ -1072,6 +1108,42 @@ function Work() {
     navigate({ to: '/run' })
   }
 
+  const handleRetry = (id: number) => {
+    if (dataMode !== 'live' || !isDurableRun(id)) {
+      retryFailed(id)
+      return
+    }
+
+    void (async () => {
+      const woke = await wakeDurableRunLive(id)
+      if (woke) {
+        showToast('Waking durable run — resuming in background', 'working')
+        closeWork()
+        void loadWork()
+        return
+      }
+      showToast('Run is not in waiting state — cannot wake', 'blocked')
+    })()
+  }
+
+  const handleCancelRun = (id: number) => {
+    if (dataMode !== 'live' || !isDurableRun(id)) {
+      showToast('Only durable runs can be cancelled from here', 'blocked')
+      return
+    }
+
+    void (async () => {
+      const cancelled = await cancelDurableRunLive(id)
+      if (cancelled) {
+        showToast('Run cancelled', 'success')
+        closeWork()
+        void loadWork()
+        return
+      }
+      showToast('Could not cancel run — please try again', 'blocked')
+    })()
+  }
+
   return (
     <div
       style={{
@@ -1105,13 +1177,13 @@ function Work() {
             padding: '0 14px',
             borderRadius: '10px',
             border: '0.5px solid transparent',
-            background: 'var(--hachi-brand)',
+            background: 'var(--hachi-brand-hover)',
             color: 'var(--hachi-canvas)',
             font: '500 13px var(--font-body)',
             cursor: 'pointer',
           }}
-          onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
-          onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand)')}
+          onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-active)')}
+          onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
         >
           <Icon name="plus" size={15} />
           New task
@@ -1315,11 +1387,13 @@ function Work() {
           item={selectedWork as WorkItem}
           packRoster={packRoster}
           onClose={closeWork}
-          onRetry={id => { retryFailed(id) }}
+          onRetry={handleRetry}
+          onCancelRun={handleCancelRun}
           onRunNow={runRoutineNow}
           onTogglePause={handleTogglePause}
           onDelete={handleDelete}
           onWatchLive={handleWatchLive}
+          canCancelRun={isDurableRun((selectedWork as WorkItem).id)}
         />
       )}
     </div>

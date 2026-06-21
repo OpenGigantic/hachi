@@ -28,7 +28,7 @@ export function Button({
     switch (variant) {
       case 'primary':
         return {
-          background: 'var(--hachi-brand)',
+          background: 'var(--hachi-brand-hover)',
           color: 'var(--hachi-canvas)',
           border: 'none',
         };
@@ -81,7 +81,7 @@ export function Button({
   function handleMouseEnter(e: React.MouseEvent<HTMLButtonElement>) {
     if (disabled) return;
     const el = e.currentTarget;
-    if (variant === 'primary') el.style.background = 'var(--hachi-brand-hover)';
+    if (variant === 'primary') el.style.background = 'var(--hachi-brand-active)';
     if (variant === 'danger') el.style.background = '#a83226';
     if (variant === 'secondary') el.style.background = 'var(--hachi-trust-tint)';
     if (variant === 'ghost') el.style.color = 'var(--text-default)';
@@ -90,7 +90,7 @@ export function Button({
   function handleMouseLeave(e: React.MouseEvent<HTMLButtonElement>) {
     if (disabled) return;
     const el = e.currentTarget;
-    if (variant === 'primary') el.style.background = 'var(--hachi-brand)';
+    if (variant === 'primary') el.style.background = 'var(--hachi-brand-hover)';
     if (variant === 'danger') el.style.background = 'var(--hachi-danger)';
     if (variant === 'secondary') el.style.background = 'transparent';
     if (variant === 'ghost') el.style.color = 'var(--text-muted)';

@@ -5,7 +5,6 @@ import { GovernanceBar } from '../components/shell/GovernanceBar'
 import { GlobalOverlays } from '../components/overlays'
 import { useStore } from '../lib/store/store'
 import { bootstrapLiveData } from '../lib/data/bootstrap'
-import { useRouteLoaders } from '../lib/data/useRouteLoaders'
 import { useIsMobile } from '../lib/hooks/useMediaQuery'
 
 function RootLayout() {
@@ -14,7 +13,11 @@ function RootLayout() {
   const isMobile = useIsMobile()
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme)
+    if (theme === 'auto') {
+      document.documentElement.removeAttribute('data-theme')
+    } else {
+      document.documentElement.setAttribute('data-theme', theme)
+    }
   }, [theme])
 
   // Hydrate eager domains (config, sessions, spend) from the gateway on mount.
@@ -23,12 +26,9 @@ function RootLayout() {
     if (dataMode === 'live') void bootstrapLiveData()
   }, [dataMode])
 
-  // Lazy-load non-critical domains when their route is first visited.
-  useRouteLoaders()
-
   return (
     <div
-      data-theme={theme}
+      data-theme={theme !== 'auto' ? theme : undefined}
       style={{
         display: 'flex',
         // On mobile the sidebar becomes an off-canvas drawer; the root
