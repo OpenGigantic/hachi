@@ -254,6 +254,33 @@ class RoutingSettings(BaseModel):
     resilience: ResilienceSettings = Field(default_factory=ResilienceSettings)
 
 
+class SearchSettings(BaseModel):
+    """Optional ``[search]`` config section (Initiative A — Search Platform).
+
+    When ``provider`` is set to a known provider name (e.g. ``"tavily"``) and
+    the corresponding API key is available (env var or SecretStore), the search
+    tools (``web_search``, ``extract_url``) are registered automatically.
+
+    Attributes:
+        provider:          Provider name.  ``"tavily"`` is the only built-in.
+                           ``None`` (default) = search tools not registered.
+        max_calls_per_turn: Hard cap on outbound search/extract calls per agent turn.
+                           ``0`` = disabled (no per-turn cap).
+        cache_ttl_seconds: TTL for the in-session search cache in seconds.
+                           ``0`` = cache disabled.
+        window_max_calls:  Maximum calls within ``window_seconds`` (sliding window).
+        window_seconds:    Duration of the sliding-window rate limit in seconds.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    provider: str | None = None
+    max_calls_per_turn: int = 10
+    cache_ttl_seconds: float = 300.0
+    window_max_calls: int = 60
+    window_seconds: float = 3600.0
+
+
 class ResolvedConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -278,6 +305,8 @@ class ResolvedConfig(BaseModel):
     jobs: JobsSettings = Field(default_factory=JobsSettings)
     # Optional [observability] section — absent = tracing off (back-compat).
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
+    # Optional [search] section — absent = search tools not registered.
+    search: SearchSettings = Field(default_factory=SearchSettings)
 
 
 def default_config() -> ResolvedConfig:

@@ -73,6 +73,9 @@ memory = [
 local-models = [
     "httpx>=0.28.0",
 ]
+search = [
+    "tavily-python>=0.3.0",
+]
 browser = [
     "playwright>=1.48.0",
 ]

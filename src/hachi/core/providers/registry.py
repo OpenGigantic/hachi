@@ -234,4 +234,28 @@ class ProviderRegistry:
                 exc_info=False,
             )
 
+        # Search provider (Initiative A): build from [search] config.
+        # Registered only when provider name is set and the API key is available.
+        try:
+            _search_cfg = getattr(config, "search", None)
+            _search_provider_name = (
+                getattr(_search_cfg, "provider", None) if _search_cfg is not None else None
+            )
+            if _search_provider_name and str(_search_provider_name).lower() == "tavily":
+                from hachi.core.providers.tavily_provider import TavilySearchProvider
+                from hachi.core.resilience import RetryPolicy as _RetryPolicy
+
+                _search_retry = _RetryPolicy.from_config(config)
+                _tavily = TavilySearchProvider(
+                    secret_store=secret_store,
+                    retry_policy=_search_retry,
+                )
+                reg.register(_tavily)
+                logger.debug("ProviderRegistry: registered Tavily search provider")
+        except Exception:
+            logger.debug(
+                "ProviderRegistry.from_config: search provider init skipped (no key or error)",
+                exc_info=False,
+            )
+
         return reg

@@ -126,6 +126,7 @@ from hachi.tools.os_tools import register_os_tools
 from hachi.tools.presentation_tools import register_presentation_tools
 from hachi.tools.sandbox_tools import register_sandbox_tools
 from hachi.tools.schedule_tools import register_schedule_tools
+from hachi.tools.search_tools import register_search_tools
 from hachi.tools.vision_tools import register_vision_tools
 from hachi.tools.voice_tools import register_voice_tools
 from hachi.tools.workflow_tools import register_workflow_tools
@@ -357,6 +358,68 @@ def _build_capability_registry(config: dict[str, Any]) -> CapabilityRegistry:
             ),
         ]
     )
+
+
+def _register_search_if_available(deps: Any) -> None:
+    """Register search tools when a SearchProvider is present in the ProviderRegistry.
+
+    Resolves the provider, builds a cache and rate limiter from ``[search]``
+    config, then delegates to :func:`~hachi.tools.search_tools.register_search_tools`.
+    When no provider is configured this is a silent no-op (graceful degradation).
+
+    Args:
+        deps: :class:`~hachi.gateway.tool_registration.BootDeps` bundle.
+    """
+    registry = deps.provider_registry
+    if registry is None:
+        return
+
+    provider = registry.get_search()
+    if provider is None:
+        logger.debug("search: no SearchProvider in registry — tools not registered")
+        return
+
+    from hachi.core.rate_limit import OutboundRateLimiter
+    from hachi.core.search_cache import SearchCache
+    from hachi.core.settings import SearchSettings
+
+    # Read [search] config for limits — tolerate missing section gracefully.
+    _raw_cfg = None
+    try:
+        _raw_cfg = getattr(deps, "_config", None)
+    except Exception:
+        pass
+
+    _search_settings = SearchSettings()
+    try:
+        # deps doesn't carry _config directly; read from process-level shared
+        # config if available (same pattern as voice/vision feature flags).
+        import hachi.core.settings as _settings_mod  # noqa: PLC0415
+
+        if hasattr(_settings_mod, "_current_config"):
+            _raw_cfg = getattr(_settings_mod, "_current_config", None)
+        if _raw_cfg is not None and hasattr(_raw_cfg, "search"):
+            _s = _raw_cfg.search
+            if _s is not None:
+                _search_settings = _s
+    except Exception:
+        pass
+
+    cache = SearchCache(ttl_seconds=_search_settings.cache_ttl_seconds)
+    limiter = OutboundRateLimiter(
+        max_per_window=_search_settings.window_max_calls,
+        window_seconds=_search_settings.window_seconds,
+        max_per_turn=_search_settings.max_calls_per_turn,
+    )
+
+    register_search_tools(
+        deps.tool_registry,
+        provider,
+        cache=cache,
+        limiter=limiter,
+        gate=deps.gate,
+    )
+    logger.info("search: registered web_search + extract_url via provider=%r", provider.name)
 
 
 def _register_capability_setup_stub(
@@ -2284,6 +2347,13 @@ def boot_agent(
             register_fn=lambda d: register_voice_tools(
                 d.tool_registry, d.gate, provider_registry=d.provider_registry
             ),
+        ),
+        ToolSpec(
+            # Web search + URL extraction (Initiative A — Search Platform, doc 17).
+            # Registered only when a SearchProvider is available in the ProviderRegistry.
+            # Degrades gracefully to a no-op when no provider / key is configured.
+            name="search",
+            register_fn=lambda d: _register_search_if_available(d),
         ),
         ToolSpec(
             # Google Workspace (Gmail, Calendar, Drive, Docs, Sheets, Contacts, Meet, Tasks).
