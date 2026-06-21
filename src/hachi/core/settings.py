@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -122,6 +122,47 @@ class ChannelSettings(BaseModel):
     telegram: TelegramChannelSettings = Field(default_factory=TelegramChannelSettings)
 
 
+class ResilienceSettings(BaseModel):
+    """Retry and circuit-breaker parameters for the routing resilience layer.
+
+    Maps to ``[routing.resilience]`` in ``settings.toml``.  All fields are
+    optional — absent section uses the :class:`~hachi.core.resilience.RetryPolicy`
+    defaults.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    max_attempts: int = 3
+    backoff_base_s: float = 0.5
+    timeout_s: float = 60.0
+    breaker_threshold: int = 5
+    breaker_cooldown_s: float = 30.0
+
+
+class RoutingSettings(BaseModel):
+    """Optional ``[routing]`` config section.
+
+    When absent from ``settings.toml``, :class:`~hachi.core.routing.policy.RoutingPolicy`
+    synthesises back-compat behaviour (single model for every capability).
+
+    Attributes:
+        default_model: The fallback / session model id.
+        auto: When ``True``, derive smart-default policy from the registry (A1).
+        capabilities: Explicit ordered candidate list per capability name.
+        model_overrides: Extra :class:`~hachi.core.routing.descriptor.ModelDescriptor`
+            dicts to register (highest precedence in the registry).
+        resilience: Retry / circuit-breaker settings.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    default_model: str = "claude-haiku-4-5"
+    auto: bool = False
+    capabilities: dict[str, list[str]] = Field(default_factory=dict)
+    model_overrides: list[Any] = Field(default_factory=list)
+    resilience: ResilienceSettings = Field(default_factory=ResilienceSettings)
+
+
 class ResolvedConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -136,6 +177,8 @@ class ResolvedConfig(BaseModel):
     memory: MemorySettings = Field(default_factory=MemorySettings)
     capabilities: dict[str, CapabilityState] = Field(default_factory=dict)
     channels: ChannelSettings = Field(default_factory=ChannelSettings)
+    # Optional [routing] section — absent = back-compat (one model for everything).
+    routing: RoutingSettings | None = None
 
 
 def default_config() -> ResolvedConfig:

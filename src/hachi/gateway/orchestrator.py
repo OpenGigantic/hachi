@@ -598,11 +598,23 @@ class AgentSession:
         }
 
     def list_provider_models(self) -> list[str]:
-        """Best-effort live model discovery from the active provider.
+        """Return model ids — registry-backed when available, else live discovery.
 
-        Delegates to the LLM client's ``list_models`` (network-bound); returns
-        ``[]`` on any failure so callers fall back to a curated/configured list.
+        Tries the :class:`~hachi.core.routing.registry.ModelRegistry` first
+        (populated from bundled defaults + provider discovery at boot).  Falls back
+        to a live ``list_models()`` call when no registry is wired in.
         """
+        # Registry-backed path (Slice 2.1).
+        router = getattr(self.loop, "router", None)
+        if router is not None:
+            try:
+                registry = getattr(router, "_registry", None)
+                if registry is not None:
+                    return [d.id for d in registry.all()]
+            except Exception:
+                logger.debug("list_provider_models: registry path failed", exc_info=True)
+
+        # Fallback: live discovery via the client (pre-routing path).
         client = getattr(self.loop, "llm_client", None)
         lister = getattr(client, "list_models", None)
         if not callable(lister):
@@ -743,9 +755,7 @@ class AgentSession:
             # Vault closed (e.g. a process-teardown race) — degrade to runtime-only
             # reports instead of surfacing a 500. The shared-vault lifecycle fix makes
             # this rare, but the endpoint must never crash on a closed vault.
-            logger.warning(
-                "query_subagent_reports: vault closed; returning runtime reports only"
-            )
+            logger.warning("query_subagent_reports: vault closed; returning runtime reports only")
             return tuple(runtime_reports)
         for row in vault_rows:
             runtime_reports.append(
@@ -1673,9 +1683,56 @@ def boot_agent(
         sub_agent_provider, secret_store=secret_store, max_tokens=4096
     )
 
+    # 6b. Build routing infrastructure (behind [routing] flag; absent = back-compat).
+    # ProviderRegistry → ModelRegistry → RoutingPolicy → ModelRouter.
+    # When [routing] is absent, the policy synthesises a single-model-for-all-caps
+    # mapping and default_client() returns the existing `client` unchanged.
+    _model_router = None
+    try:
+        from hachi.core.providers.registry import ProviderRegistry
+        from hachi.core.resilience import RetryPolicy
+        from hachi.core.routing.policy import RoutingPolicy
+        from hachi.core.routing.registry import ModelRegistry
+        from hachi.core.routing.router import ModelRouter
+        from hachi.core.settings import ResolvedConfig
+
+        _resolved_cfg = ResolvedConfig.model_validate(config)
+        _provider_registry = ProviderRegistry.from_config(_resolved_cfg, secret_store)
+        _model_registry = ModelRegistry.build(_resolved_cfg, _provider_registry)
+        _routing_policy = RoutingPolicy.from_config(_resolved_cfg)
+        # Apply auto-policy if requested (amendment A1).
+        if _routing_policy.auto:
+            _routing_policy = _routing_policy.derive_auto_policy(_model_registry)
+        _retry_policy = RetryPolicy.from_config(_resolved_cfg)
+        _model_router = ModelRouter(
+            registry=_model_registry,
+            policy=_routing_policy,
+            providers=_provider_registry,
+            resilience=_retry_policy,
+        )
+        logger.info(
+            "Routing boot: %d models registered; default=%s; auto=%s",
+            len(_model_registry.all()),
+            _routing_policy.default_model,
+            _routing_policy.auto,
+        )
+    except Exception:
+        logger.debug(
+            "Routing boot: failed to initialise routing layer; falling back to direct client",
+            exc_info=True,
+        )
+        _model_router = None
+
     # Shared per-session token/cost tracker — used by the main loop AND threaded
     # into delegated sub-agents so their spend is included in the session total.
-    cost_tracker = CostTracker()
+    # Pass the model registry so registry-backed pricing is used (registry seeds from
+    # cost.py values, so no drift).
+    _registry_for_cost = (
+        _model_router._registry  # type: ignore[union-attr]
+        if _model_router is not None
+        else None
+    )
+    cost_tracker = CostTracker(registry=_registry_for_cost)
 
     emit_runtime_event(
         BOOT_PROGRESS,
@@ -2046,8 +2103,20 @@ def boot_agent(
     )
 
     # 9. Instantiate the Brain Loop (cost_tracker created earlier, shared with sub-agents)
+    # When the router is available, default_client() returns the configured model's
+    # resilient client; the loop's llm_client is unchanged (back-compat).
+    _loop_client = client
+    if _model_router is not None:
+        try:
+            _loop_client = _model_router.default_client()
+        except Exception:
+            logger.debug(
+                "Routing: default_client() failed; falling back to direct client", exc_info=True
+            )
+            _loop_client = client
+
     loop = ExecutionLoop(
-        llm_client=client,
+        llm_client=_loop_client,
         registry=tool_registry,
         memory=memory,
         base_system_prompt=system_prompt,
@@ -2058,6 +2127,7 @@ def boot_agent(
         max_tokens=max_session_tokens,
         max_cost_per_turn=max_turn_cost_usd,
         max_tokens_per_turn=max_turn_tokens,
+        router=_model_router,
     )
 
     # 10. Create the Session

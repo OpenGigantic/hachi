@@ -278,6 +278,7 @@ class ExecutionLoop:
         max_cost_per_turn: float = 0.0,
         max_tokens_per_turn: int = 0,
         max_wall_seconds: float = 600.0,
+        router=None,
     ):
         """Initialize the execution loop.
 
@@ -301,6 +302,10 @@ class ExecutionLoop:
                 Always on (default 600 s = 10 min). Set to a positive value to cap
                 long-running turns independent of iteration count or token budgets.
                 Set to 0 to disable (not recommended; leaves only the iteration cap).
+            router: Optional :class:`~hachi.core.routing.router.ModelRouter`.  When
+                provided, tools and future slices may call ``router.select(capability)``
+                for capability-aware routing.  When ``None`` (default), the loop behaves
+                exactly as today — ``llm_client`` is the only client used.
         """
         self.llm_client = llm_client
         self.registry = registry
@@ -309,6 +314,8 @@ class ExecutionLoop:
         self.on_event = on_event or (lambda *a, **kw: None)
         self.skill_engine = skill_engine
         self.cost_tracker = cost_tracker
+        # Optional ModelRouter — when None, loop uses llm_client directly (back-compat).
+        self.router = router
         # Per-session safety caps (0 = unlimited). Enforced between iterations so a
         # runaway tool-calling loop can't silently drain the user's API budget.
         self.max_cost_usd = max_cost_usd
