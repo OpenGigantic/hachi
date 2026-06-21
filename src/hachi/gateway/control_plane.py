@@ -117,6 +117,14 @@ class GatewayControlPlane:
         register_mcp_server: (Callable[..., dict[str, Any]] | None) = None,
         get_kennel: Callable[[], list[dict[str, Any]]] | None = None,
         add_skill: Callable[[str], dict[str, Any]] | None = None,
+        # Multi-provider admin handlers
+        list_providers: Callable[[], dict[str, Any]] | None = None,
+        add_or_update_provider: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+        remove_provider: Callable[[str], dict[str, Any]] | None = None,
+        get_routing: Callable[[], dict[str, Any]] | None = None,
+        set_routing: Callable[[str, dict[str, list[str]]], dict[str, Any]] | None = None,
+        test_provider_connection: Callable[[str], dict[str, Any]] | None = None,
+        list_all_models: Callable[[], dict[str, Any]] | None = None,
         max_active_sessions: int = 100,
         max_prompt_chars: int = 100_000,
     ) -> None:
@@ -170,6 +178,14 @@ class GatewayControlPlane:
         self._register_mcp_server = register_mcp_server
         self._get_kennel = get_kennel
         self._add_skill = add_skill
+        # Multi-provider admin handlers
+        self._list_providers = list_providers
+        self._add_or_update_provider = add_or_update_provider
+        self._remove_provider = remove_provider
+        self._get_routing = get_routing
+        self._set_routing = set_routing
+        self._test_provider_connection = test_provider_connection
+        self._list_all_models = list_all_models
         self._connections: dict[str, dict[str, Any]] = {}
         self._api_sessions: dict[str, str] = {}  # session_key -> session_id (facade sessions)
         self._connections_lock = threading.Lock()
@@ -771,6 +787,52 @@ class GatewayControlPlane:
         """Install a skill from the kennel (POST /skills/add)."""
         handler = self._require_handler(self._add_skill, "skill install")
         return handler(kennel_id)
+
+    # ==========================================
+    # Multi-provider admin public methods
+    # ==========================================
+
+    def list_providers(self) -> Any:
+        """Return all configured providers (secrets masked) — GET /config/providers."""
+        if self._list_providers is None:
+            return {"providers": []}
+        return self._list_providers()
+
+    def add_or_update_provider(self, name: str, spec: dict[str, Any]) -> Any:
+        """Upsert a named provider — POST /config/providers or PUT /config/providers/{name}."""
+        handler = self._require_handler(self._add_or_update_provider, "provider upsert")
+        return handler(name, spec)
+
+    def remove_provider(self, name: str) -> Any:
+        """Delete a named provider — DELETE /config/providers/{name}."""
+        handler = self._require_handler(self._remove_provider, "provider removal")
+        return handler(name)
+
+    def get_routing(self) -> Any:
+        """Return the capability routing matrix — GET /config/routing."""
+        if self._get_routing is None:
+            return {"default_model": "claude-haiku-4-5", "capabilities": []}
+        return self._get_routing()
+
+    def set_routing(self, default_model: str, capabilities: dict[str, list[str]]) -> Any:
+        """Persist the routing matrix — PUT /config/routing."""
+        handler = self._require_handler(self._set_routing, "routing update")
+        return handler(default_model, capabilities)
+
+    def test_provider_connection(self, name: str) -> Any:
+        """Test connectivity for a named provider — POST /config/providers/{name}/test-connection.
+
+        Returns ``{"ok": bool, "detail": str}``.
+        """
+        if self._test_provider_connection is None:
+            return {"ok": False, "detail": "test_connection not available"}
+        return self._test_provider_connection(name)
+
+    def list_all_models(self) -> Any:
+        """Return models indexed by provider — GET /config/models/all."""
+        if self._list_all_models is None:
+            return {}
+        return self._list_all_models()
 
     # Backward-compatible aliases for previous envelope methods.
     def connect(self, payload: dict[str, Any]) -> dict[str, Any]:

@@ -484,10 +484,15 @@ class _InProcessGatewayRuntime:
         api_key_env = provider.get("api_key_env")
 
         if kind is not None:
+            from typing import get_args
+
+            from hachi.core.settings import ProviderKind
+
             kind_text = str(kind)
-            if kind_text not in {"anthropic", "openai-compatible", "ollama"}:
+            _valid_kinds = set(get_args(ProviderKind))
+            if kind_text not in _valid_kinds:
                 raise GatewayProtocolError(
-                    "provider.kind must be anthropic, openai-compatible, or ollama"
+                    f"provider.kind must be one of: {', '.join(sorted(_valid_kinds))}"
                 )
             config.provider.kind = kind_text  # type: ignore[assignment]
 
@@ -559,8 +564,13 @@ class _InProcessGatewayRuntime:
         errors: list[str] = []
         warnings: list[str] = []
 
-        if kind not in {"anthropic", "openai-compatible", "ollama"}:
-            errors.append("provider.kind must be anthropic, openai-compatible, or ollama")
+        from typing import get_args
+
+        from hachi.core.settings import ProviderKind
+
+        _valid_kinds = set(get_args(ProviderKind))
+        if kind not in _valid_kinds:
+            errors.append(f"provider.kind must be one of: {', '.join(sorted(_valid_kinds))}")
         if not model:
             errors.append("provider.model is required")
 
@@ -1731,6 +1741,98 @@ class _InProcessGatewayRuntime:
                     results.append(False)
         return {"ok": any(results)}
 
+    # ------------------------------------------------------------------
+    # Multi-provider admin (provider_admin delegates)
+    # ------------------------------------------------------------------
+
+    def list_providers(self) -> dict:
+        """Return all configured providers with secrets masked (GET /config/providers).
+
+        Returns:
+            Dict with ``providers`` list.
+        """
+        from hachi.gateway.provider_admin import list_providers as _list_providers
+
+        return _list_providers()
+
+    def add_or_update_provider(self, name: str, spec: dict) -> dict:
+        """Upsert a named provider in config.providers.
+
+        Args:
+            name: Provider name (``__primary__`` updates the primary provider).
+            spec: Dict with kind, model, base_url, allowed_models, headers, api_key.
+
+        Returns:
+            Masked provider entry after write.
+        """
+        from hachi.gateway.provider_admin import add_or_update_provider as _upsert
+
+        result = _upsert(name, spec)
+        self._reload_agents()
+        return result
+
+    def remove_provider(self, name: str) -> dict:
+        """Remove a named provider from config.
+
+        Args:
+            name: Provider name to remove.
+
+        Returns:
+            ``{"ok": True, "name": name}``.
+        """
+        from hachi.gateway.provider_admin import remove_provider as _remove
+
+        result = _remove(name)
+        self._reload_agents()
+        return result
+
+    def get_routing(self) -> dict:
+        """Return the capability routing matrix (GET /config/routing).
+
+        Returns:
+            Dict with default_model and capabilities list.
+        """
+        from hachi.gateway.provider_admin import get_routing as _get_routing
+
+        return _get_routing()
+
+    def set_routing(self, default_model: str, capabilities: dict) -> dict:
+        """Persist the routing matrix (PUT /config/routing).
+
+        Args:
+            default_model: Default/fallback model id.
+            capabilities: Mapping of capability name → ordered model-id list.
+
+        Returns:
+            New routing snapshot.
+        """
+        from hachi.gateway.provider_admin import set_routing as _set_routing
+
+        return _set_routing(default_model, capabilities)
+
+    def test_provider_connection(self, name: str) -> dict:
+        """Best-effort connectivity test for a provider.
+
+        Args:
+            name: Provider name (``__primary__`` for the primary provider).
+
+        Returns:
+            ``{"ok": bool, "detail": str}``.
+        """
+        from hachi.gateway.provider_admin import test_connection
+
+        return test_connection(name)
+
+    def list_all_models(self) -> dict:
+        """Return model ids per configured provider (GET /config/models/all).
+
+        Returns:
+            Dict keyed by provider name → list of model ids.
+        """
+        from hachi.gateway.provider_admin import list_all_models as _list_all_models
+
+        return _list_all_models()
+
 
 def _gateway_readiness_probe() -> tuple[bool, list[str]]:
     """Derive readiness blockers for local gateway clients."""
@@ -2038,6 +2140,14 @@ def _build_gateway_control_plane(
         register_mcp_server=support.register_mcp_server,
         get_kennel=support.get_kennel,
         add_skill=support.add_skill_from_kennel,
+        # Multi-provider admin:
+        list_providers=support.list_providers,
+        add_or_update_provider=support.add_or_update_provider,
+        remove_provider=support.remove_provider,
+        get_routing=support.get_routing,
+        set_routing=support.set_routing,
+        test_provider_connection=support.test_provider_connection,
+        list_all_models=support.list_all_models,
         max_active_sessions=max_active_sessions,
         max_prompt_chars=max_prompt_chars,
     )
