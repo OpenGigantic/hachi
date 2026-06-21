@@ -145,6 +145,41 @@ class ProviderRequest(BaseModel):
     provider: dict[str, Any]
 
 
+class ProviderUpsertRequest(BaseModel):
+    """Body for POST /config/providers (add) and PUT /config/providers/{name} (update)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str | None = None  # present for POST; absent for PUT (name in path)
+    kind: str = "anthropic"
+    model: str = ""
+    base_url: str | None = None
+    allowed_models: list[str] = Field(default_factory=list)
+    headers: dict[str, str] = Field(default_factory=dict)
+    api_key: str | None = None
+
+
+class RoutingUpdateRequest(BaseModel):
+    """Body for PUT /config/routing."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    default_model: str
+    capabilities: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class VoiceSpeakBody(BaseModel):
+    """Body for POST /voice/speak."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    text: str
+    voice: str | None = None
+    model: str | None = None
+    format: str = "mp3"
+    provider: str | None = None
+
+
 class PermissionsRequest(BaseModel):
     permissions: dict[str, Any]
 
@@ -1053,6 +1088,53 @@ def create_gateway_app(
     async def post_allowed_command(payload: AllowedCommandRequest) -> Any:
         """Append a command to the allowed_commands list and persist to device-permissions.og."""
         return control_plane.add_allowed_command(payload.command)
+
+    # ---- Multi-provider + routing admin routes ----
+
+    @config.get("/providers")
+    async def get_providers() -> Any:
+        """Return all configured providers (secrets masked)."""
+        return control_plane.list_providers()
+
+    @config.post("/providers")
+    async def post_provider(payload: ProviderUpsertRequest) -> Any:
+        """Add a new named provider."""
+        name = (payload.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="name is required")
+        spec = payload.model_dump(mode="python", exclude={"name"}, exclude_none=True)
+        return control_plane.add_or_update_provider(name, spec)
+
+    @config.put("/providers/{name}")
+    async def put_provider_named(name: str, payload: ProviderUpsertRequest) -> Any:
+        """Update (or create) a named provider."""
+        spec = payload.model_dump(mode="python", exclude={"name"}, exclude_none=True)
+        return control_plane.add_or_update_provider(name, spec)
+
+    @config.delete("/providers/{name}")
+    async def delete_provider(name: str) -> Any:
+        """Remove a named provider."""
+        return control_plane.remove_provider(name)
+
+    @config.post("/providers/{name}/test-connection")
+    async def post_provider_test(name: str) -> Any:
+        """Best-effort connectivity test for a provider."""
+        return control_plane.test_provider_connection(name)
+
+    @config.get("/routing")
+    async def get_routing() -> Any:
+        """Return the capability routing matrix (synthesized when absent)."""
+        return control_plane.get_routing()
+
+    @config.put("/routing")
+    async def put_routing(payload: RoutingUpdateRequest) -> Any:
+        """Persist the capability routing matrix."""
+        return control_plane.set_routing(payload.default_model, payload.capabilities)
+
+    @config.get("/models/all")
+    async def get_models_all() -> Any:
+        """Return model ids per configured provider."""
+        return control_plane.list_all_models()
 
     @setup.get("")
     async def get_setup() -> Any:
@@ -2015,6 +2097,78 @@ def create_gateway_app(
             filename=meta.name,
         )
 
+    # ---- Voice router (STT/TTS provider endpoints) ----
+    from hachi.gateway.voice_endpoints import (
+        VoiceConfigError,
+    )
+    from hachi.gateway.voice_endpoints import (
+        set_voice_config as _voice_set_config,
+    )
+    from hachi.gateway.voice_endpoints import (
+        speak as _voice_speak,
+    )
+    from hachi.gateway.voice_endpoints import (
+        transcribe as _voice_transcribe,
+    )
+    from hachi.gateway.voice_endpoints import (
+        voice_config as _voice_config,
+    )
+
+    voice_router = APIRouter(prefix="/voice", tags=["voice"], dependencies=protected_dependencies)
+
+    @voice_router.post("/transcribe", summary="Transcribe audio via STT provider")
+    async def route_voice_transcribe(audio: UploadFile = File(...)) -> Any:  # noqa: B008
+        """Transcribe a multipart audio upload to text via the configured STT backend."""
+        if audio.filename is None:
+            raise HTTPException(status_code=400, detail="Filename is required")
+        raw = await audio.read()
+        content_type = audio.content_type or "audio/webm"
+        try:
+            result = await anyio.to_thread.run_sync(
+                lambda: _voice_transcribe(raw, filename=audio.filename, content_type=content_type)
+            )
+        except VoiceConfigError as exc:
+            return _error_response(503, "voice_not_configured", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("STT transcription failed: %s", exc)
+            return _error_response(500, "transcription_error", str(exc))
+        return result
+
+    @voice_router.post("/speak", summary="Synthesize text via TTS provider")
+    async def route_voice_speak(body: VoiceSpeakBody) -> Any:
+        """Synthesize text to audio via the configured TTS backend."""
+        import io
+
+        try:
+            audio_bytes, media_type = await anyio.to_thread.run_sync(
+                lambda: _voice_speak(
+                    body.text,
+                    voice=body.voice,
+                    model=body.model,
+                    fmt=body.format,
+                    provider=body.provider,
+                )
+            )
+        except VoiceConfigError as exc:
+            return _error_response(503, "voice_not_configured", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("TTS synthesis failed: %s", exc)
+            return _error_response(500, "synthesis_error", str(exc))
+        return StreamingResponse(io.BytesIO(audio_bytes), media_type=media_type)
+
+    @voice_router.get("/config", summary="Get voice configuration")
+    async def route_voice_config() -> Any:
+        """Return the current voice provider config summary for the UI."""
+        return _voice_config()
+
+    @voice_router.put("/config", summary="Update voice configuration")
+    async def route_voice_set_config(patch: dict[str, Any]) -> Any:
+        """Persist voice config fields and return the updated summary."""
+        try:
+            return await anyio.to_thread.run_sync(lambda: _voice_set_config(patch))
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(500, "config_write_error", str(exc))
+
     app.include_router(integrations_router)
     app.include_router(integrations_callback_router)
     app.include_router(system)
@@ -2032,6 +2186,7 @@ def create_gateway_app(
     app.include_router(spend_router)
     app.include_router(runs_router)
     app.include_router(files_router)
+    app.include_router(voice_router)
 
     if _auth_enabled:
         # Inject the bearer security scheme into the exported OpenAPI spec so

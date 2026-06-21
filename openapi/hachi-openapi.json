@@ -1881,6 +1881,353 @@
         ]
       }
     },
+    "/config/providers": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Get Providers",
+        "description": "Return all configured providers (secrets masked).",
+        "operationId": "get_providers_config_providers_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Providers Config Providers Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Post Provider",
+        "description": "Add a new named provider.",
+        "operationId": "post_provider_config_providers_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderUpsertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Provider Config Providers Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/config/providers/{name}": {
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Put Provider Named",
+        "description": "Update (or create) a named provider.",
+        "operationId": "put_provider_named_config_providers__name__put",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderUpsertRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Put Provider Named Config Providers  Name  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Delete Provider",
+        "description": "Remove a named provider.",
+        "operationId": "delete_provider_config_providers__name__delete",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Delete Provider Config Providers  Name  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/config/providers/{name}/test-connection": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Post Provider Test",
+        "description": "Best-effort connectivity test for a provider.",
+        "operationId": "post_provider_test_config_providers__name__test_connection_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Provider Test Config Providers  Name  Test Connection Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/config/routing": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Get Routing",
+        "description": "Return the capability routing matrix (synthesized when absent).",
+        "operationId": "get_routing_config_routing_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Routing Config Routing Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Put Routing",
+        "description": "Persist the capability routing matrix.",
+        "operationId": "put_routing_config_routing_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoutingUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Put Routing Config Routing Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/config/models/all": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Get Models All",
+        "description": "Return model ids per configured provider.",
+        "operationId": "get_models_all_config_models_all_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Models All Config Models All Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/setup": {
       "get": {
         "tags": [
@@ -3336,6 +3683,186 @@
           }
         ]
       }
+    },
+    "/voice/transcribe": {
+      "post": {
+        "tags": [
+          "voice"
+        ],
+        "summary": "Transcribe audio via STT provider",
+        "description": "Transcribe a multipart audio upload to text via the configured STT backend.",
+        "operationId": "route_voice_transcribe_voice_transcribe_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_route_voice_transcribe_voice_transcribe_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Route Voice Transcribe Voice Transcribe Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/voice/speak": {
+      "post": {
+        "tags": [
+          "voice"
+        ],
+        "summary": "Synthesize text via TTS provider",
+        "description": "Synthesize text to audio via the configured TTS backend.",
+        "operationId": "route_voice_speak_voice_speak_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceSpeakBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Route Voice Speak Voice Speak Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/voice/config": {
+      "get": {
+        "tags": [
+          "voice"
+        ],
+        "summary": "Get voice configuration",
+        "description": "Return the current voice provider config summary for the UI.",
+        "operationId": "route_voice_config_voice_config_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Route Voice Config Voice Config Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "voice"
+        ],
+        "summary": "Update voice configuration",
+        "description": "Persist voice config fields and return the updated summary.",
+        "operationId": "route_voice_set_config_voice_config_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Patch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Route Voice Set Config Voice Config Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -3433,6 +3960,20 @@
         ],
         "title": "AuthoringSourceSaveRequest",
         "description": "Body for POST /authoring/targets/{name}/source (CONTRACT-AUTHORING-SAVE)."
+      },
+      "Body_route_voice_transcribe_voice_transcribe_post": {
+        "properties": {
+          "audio": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "Audio"
+          }
+        },
+        "type": "object",
+        "required": [
+          "audio"
+        ],
+        "title": "Body_route_voice_transcribe_voice_transcribe_post"
       },
       "Body_upload_file_files_post": {
         "properties": {
@@ -3743,6 +4284,70 @@
         ],
         "title": "ProviderRequest"
       },
+      "ProviderUpsertRequest": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "default": "anthropic"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "default": ""
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "allowed_models": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Allowed Models"
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Headers"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          }
+        },
+        "type": "object",
+        "title": "ProviderUpsertRequest",
+        "description": "Body for POST /config/providers (add) and PUT /config/providers/{name} (update)."
+      },
       "ReadinessResponse": {
         "properties": {
           "status": {
@@ -3778,6 +4383,30 @@
           "time"
         ],
         "title": "ReadinessResponse"
+      },
+      "RoutingUpdateRequest": {
+        "properties": {
+          "default_model": {
+            "type": "string",
+            "title": "Default Model"
+          },
+          "capabilities": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Capabilities"
+          }
+        },
+        "type": "object",
+        "required": [
+          "default_model"
+        ],
+        "title": "RoutingUpdateRequest",
+        "description": "Body for PUT /config/routing."
       },
       "ScheduleToggleRequest": {
         "properties": {
@@ -4009,6 +4638,58 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "VoiceSpeakBody": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "voice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Voice"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "format": {
+            "type": "string",
+            "title": "Format",
+            "default": "mp3"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "VoiceSpeakBody",
+        "description": "Body for POST /voice/speak."
       }
     },
     "securitySchemes": {
