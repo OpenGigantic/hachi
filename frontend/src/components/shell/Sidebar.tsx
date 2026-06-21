@@ -41,6 +41,7 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
   const openPalette = useStore((s) => s.openPalette)
   const spent = useStore((s) => s.spent)
   const budget = useStore((s) => s.budget)
+  const setWorkFilter = useStore((s) => s.setWorkFilter)
   const approvals = useStore((s) => s.approvals)
 
   const runs = useStore((s) => s.runs)
@@ -58,6 +59,8 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
   const currentPath = location.pathname
 
   const handleBudgetClick = () => {
+    // Land directly on the Spend tab (not the default Active tab).
+    setWorkFilter('spend')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     navigate({ to: '/work' as any })
     onNavClick?.()

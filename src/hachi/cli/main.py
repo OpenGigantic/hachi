@@ -329,6 +329,22 @@ class _InProcessGatewayRuntime:
             return []
         return [dict(item) for item in agent.query_recent_sessions(limit=limit)]
 
+    def session_messages(self, session_id: str, limit: int = 500) -> list[dict]:
+        """Stored transcript for a (possibly historical) session — powers resume."""
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return []
+        return [dict(item) for item in agent.query_session_messages(session_id, limit=limit)]
+
+    def delete_session_record(self, session_id: str) -> bool:
+        """Permanently delete a persisted session from the store. True if it existed."""
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return False
+        return bool(agent.delete_session(session_id))
+
     def runtime_events(self, session_id: str | None, limit: int) -> list[dict]:
         if session_id:
             agent = self._get_agent(session_id)
@@ -1941,6 +1957,8 @@ def _build_gateway_control_plane(
         read_events=runtime.read_events if runtime else None,
         get_session_state=runtime.session_state if runtime else None,
         get_recent_sessions=runtime.recent_sessions if runtime else None,
+        get_session_messages=runtime.session_messages if runtime else None,
+        delete_session=runtime.delete_session_record if runtime else None,
         get_runtime_events=runtime.runtime_events if runtime else None,
         get_mcp_inventory=runtime.mcp_inventory if runtime else None,
         get_active_jobs=runtime.active_jobs if runtime else None,

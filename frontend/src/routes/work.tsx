@@ -26,6 +26,15 @@ function m(n: number): string {
   return '$' + Number(n).toFixed(2)
 }
 
+// Cost formatter for the spend analytics view. Keeps sub-cent amounts visible
+// (a real $0.0012 Haiku turn rendered as "$0.00" with plain toFixed(2), making
+// the Spend tab look broken). Shows 4 decimals when below a cent, 2 otherwise.
+function mc(n: number): string {
+  const v = Number(n) || 0
+  if (v > 0 && v < 0.01) return '$' + v.toFixed(4)
+  return '$' + v.toFixed(2)
+}
+
 type StatusKey = 'working' | 'on-watch' | 'done' | 'blocked'
 
 interface StatusMeta {
@@ -159,19 +168,19 @@ function computeSpend(
   const modelRows = spendModels.map(mm => ({
     name: mm.name,
     color: mm.color,
-    costStr: mm.cost ? '$' + mm.cost.toFixed(2) : 'free',
+    costStr: mm.cost ? mc(mm.cost) : 'free',
     costColor: mm.cost ? 'var(--hachi-ink)' : 'var(--hachi-success)',
   }))
-  const spendTotalCost = '$' + spendModels.reduce((a, mm) => a + mm.cost, 0).toFixed(2)
+  const spendTotalCost = mc(spendModels.reduce((a, mm) => a + mm.cost, 0))
 
   return {
     spendBars,
     linePts,
     areaPts,
-    cumLast: '$' + maxCum.toFixed(2),
+    cumLast: mc(maxCum),
     stats: {
       tokens: tokensSession.toLocaleString(),
-      cost: '$' + costSession.toFixed(2),
+      cost: mc(costSession),
       reclaimed: (reclaimed / 1000).toFixed(0) + 'K',
       effective: (effective / 1000).toFixed(1) + 'K',
     },

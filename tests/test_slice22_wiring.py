@@ -221,7 +221,12 @@ class TestGateDurable:
         assert loaded.status == JobStatus.COMPLETED
 
     def test_func_only_job_discarded_on_restart(self, tmp_path: Path) -> None:
-        """func= only jobs are discarded on recovery (queue.py:614 behavior preserved)."""
+        """func= only jobs do not survive a restart — the callable is in-memory only.
+
+        On graceful ``shutdown()`` an instance drops its own un-drained func rows,
+        and any that leak are swept by ``_recover_running`` once stale. Either way
+        a fresh instance has nothing pending it cannot dispatch.
+        """
         db = tmp_path / "jobs_func.db"
 
         # Enqueue a func= job (no handler_name).
@@ -233,11 +238,10 @@ class TestGateDurable:
             status=JobStatus.PENDING,
         )
         q1.enqueue(job)
-        q1.shutdown()
+        q1.shutdown()  # drops q1's own un-drained func rows
 
-        # Restart: func= job should be discarded (marked FAILED by _recover_running).
+        # Restart: nothing pending for the new instance to (mis)handle.
         q2 = SQLiteJobQueue(db_path=db)
-        # No pending jobs after recovery discards the func= job.
         pending = q2.get_pending(limit=10)
         assert len(pending) == 0, f"Expected 0 pending after discard, got {len(pending)}"
 
