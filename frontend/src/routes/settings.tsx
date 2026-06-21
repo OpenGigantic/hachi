@@ -8,8 +8,8 @@ import { useStore } from '../lib/store/store';
 import { Icon } from '../components/icons/Icon';
 import { Switch } from '../components/ui/Switch';
 import type { SafetyLevel } from '../lib/data/types';
-import { loadConfig, setSafetyLive, setAskRuleLive, setProviderLive, addFolderLive, addCommandLive } from '../lib/data/domains/config';
-import { apiSend, USE_MOCKS } from '../lib/data/client';
+import { loadConfig, setSafetyLive, setAskRuleLive, setProviderLive, addFolderLive, addCommandLive, setLimitsLive } from '../lib/data/domains/config';
+import { applyProviderKey } from '../lib/data/domains/setup';
 
 // ---- Safety level definitions (mirror prototype renderVals lines 2337–2342) ----
 const SAFETY_LEVELS: { k: SafetyLevel; name: string; desc: string }[] = [
@@ -226,33 +226,29 @@ function SpendCapInput({ label, value, onChange, onSave }: SpendCapInputProps) {
 }
 
 function Settings() {
-  const {
-    // state
-    operator,
-    theme,
-    safety,
-    askRules,
-    allowedFolders,
-    allowedCommands,
-    opTools,
-    provider,
-    setup,
-    spent,
-    budget,
-    taskCap,
-    dailyCap,
-    configLoaded,
-    // actions (setSafety/toggleAskRule called indirectly via *Live helpers)
-    removeFolder,
-    removeCommand,
-    toggleOpTool,
-    toggleTheme,
-    toggleOperator,
-    openSetup,
-    showToast,
-    setTaskCap,
-    setDailyCap,
-  } = useStore();
+  const operator = useStore((s) => s.operator);
+  const theme = useStore((s) => s.theme);
+  const safety = useStore((s) => s.safety);
+  const askRules = useStore((s) => s.askRules);
+  const allowedFolders = useStore((s) => s.allowedFolders);
+  const allowedCommands = useStore((s) => s.allowedCommands);
+  const opTools = useStore((s) => s.opTools);
+  const provider = useStore((s) => s.provider);
+  const setup = useStore((s) => s.setup);
+  const spent = useStore((s) => s.spent);
+  const budget = useStore((s) => s.budget);
+  const taskCap = useStore((s) => s.taskCap);
+  const dailyCap = useStore((s) => s.dailyCap);
+  const configLoaded = useStore((s) => s.configLoaded);
+  const removeFolder = useStore((s) => s.removeFolder);
+  const removeCommand = useStore((s) => s.removeCommand);
+  const toggleOpTool = useStore((s) => s.toggleOpTool);
+  const toggleTheme = useStore((s) => s.toggleTheme);
+  const toggleOperator = useStore((s) => s.toggleOperator);
+  const openSetup = useStore((s) => s.openSetup);
+  const showToast = useStore((s) => s.showToast);
+  const setTaskCap = useStore((s) => s.setTaskCap);
+  const setDailyCap = useStore((s) => s.setDailyCap);
 
   // ---- Inline provider editor state ----
   // When the user clicks "Change provider", open an inline editor instead of the wizard.
@@ -307,12 +303,7 @@ function Settings() {
   async function handleSave() {
     // MED-017: persist caps to gateway then clear unsaved indicator on success
     try {
-      if (!USE_MOCKS) {
-        await apiSend('PUT', '/config/limits', {
-          per_task_cap_usd: taskCap,
-          daily_cap_usd: dailyCap,
-        });
-      }
+      await setLimitsLive(taskCap, dailyCap);
       setUnsaved(false);
       setRestartSettings([]);
       showToast('Settings saved', 'success');
@@ -332,26 +323,12 @@ function Settings() {
       // If a new API key was typed, send it via setup/apply (provider step only).
       // setProviderLive handles name+model; key storage goes through the wizard path.
       if (editProviderKey.trim()) {
-        // POST /setup/apply with just the provider key — reuse the setup domain helper.
-        if (!USE_MOCKS) {
-          await apiSend('POST', '/setup/apply', {
-            plan: {
-              tier: 'lightning',
-              steps: ['provider'],
-              answers: {
-                provider: {
-                  kind: patch.name ?? provider.name,
-                  model: patch.model ?? provider.model,
-                  api_key: editProviderKey.trim(),
-                  api_key_env: 'ANTHROPIC_API_KEY',
-                },
-              },
-              enable_memory: false,
-              show_integrations: false,
-              show_advanced: false,
-            },
-          });
-        }
+        // Persist just the provider key via the setup domain helper (provider step only).
+        await applyProviderKey({
+          kind: patch.name ?? provider.name,
+          model: patch.model ?? provider.model,
+          apiKey: editProviderKey.trim(),
+        });
       }
       setEditingProvider(false);
       setEditProviderKey('');
@@ -411,7 +388,8 @@ function Settings() {
   const pct = Math.min(100, Math.round((spent / budget) * 100));
 
   // Theme icon (sun = light → switching to dark; moon = dark → switching to light)
-  const isDark = theme === 'dark';
+  const systemIsDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const isDark = theme === 'dark' || (theme === 'auto' && systemIsDark);
   const themeIcon = isDark ? 'moon' : 'sun';
 
   // Provider display — name/model come from live gateway config. The API key is
@@ -477,16 +455,16 @@ function Settings() {
               padding: '0 16px',
               borderRadius: 10,
               border: 'none',
-              background: 'var(--hachi-brand)',
+              background: 'var(--hachi-brand-hover)',
               color: 'var(--hachi-canvas)',
               font: '500 13px var(--font-body)',
               cursor: 'pointer',
             }}
             onMouseEnter={(e) => {
-              ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-brand-hover)';
+              ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-brand-active)';
             }}
             onMouseLeave={(e) => {
-              ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-brand)';
+              ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-brand-hover)';
             }}
           >
             Save

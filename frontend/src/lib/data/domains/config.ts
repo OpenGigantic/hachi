@@ -260,6 +260,25 @@ export async function setProviderLive(patch: Partial<Provider>): Promise<void> {
 }
 
 /**
+ * Persist the spend caps to the gateway via PUT /config/limits.
+ *
+ * Unlike the optimistic setters above (which swallow network errors), this
+ * PROPAGATES failures: the Settings "Save" button needs to distinguish success
+ * from failure to keep the unsaved indicator and show the right toast. Pass a
+ * non-positive value (or null) to clear a cap. No-ops in mock mode.
+ */
+export async function setLimitsLive(
+  perTaskCapUsd: number | null,
+  dailyCapUsd: number | null
+): Promise<void> {
+  if (USE_MOCKS) return;
+  await apiSend<GatewayConfig>("PUT", "/config/limits", {
+    per_task_cap_usd: perTaskCapUsd,
+    daily_cap_usd: dailyCapUsd,
+  });
+}
+
+/**
  * Validate a proposed provider config without persisting.
  * Returns { ok, errors, warnings } — or a failed-safe fallback on error.
  */
