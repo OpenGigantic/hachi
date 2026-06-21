@@ -11,8 +11,17 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from hachi.core.llm import TokenUsage
+
+
+@runtime_checkable
+class _PricingProvider(Protocol):
+    """Minimal duck-type for ModelRegistry's pricing look-up (avoids circular import)."""
+
+    def pricing_for_model(self, model_id: str) -> object | None:  # noqa: D102
+        ...
 
 # USD per 1,000,000 tokens, as (input, output). Prefix match on the model id so
 # dated variants (e.g. "claude-opus-4-8-20260101") resolve to the family price.
@@ -68,7 +77,15 @@ class CostSnapshot:
 class CostTracker:
     """Accumulate token usage and estimate cost across a session."""
 
-    def __init__(self) -> None:
+    def __init__(self, registry: _PricingProvider | None = None) -> None:
+        """Initialise the tracker.
+
+        Args:
+            registry: Optional :class:`~hachi.core.routing.registry.ModelRegistry`.
+                When provided, pricing is looked up from the registry first (which
+                absorbs the bundled defaults table); the legacy ``MODEL_PRICING``
+                dict is used as a fallback when the registry returns ``None``.
+        """
         self._lock = threading.Lock()
         self._input = 0
         self._output = 0
@@ -76,10 +93,25 @@ class CostTracker:
         self._cache_creation = 0
         self._cost = 0.0
         self._calls = 0
+        self._registry = registry
+
+    def _resolve_pricing(self, model: str) -> tuple[float, float]:
+        """Return (input, output) USD-per-Mtoken, registry-backed with fallback."""
+        if self._registry is not None:
+            try:
+                result = self._registry.pricing_for_model(model)
+                if result is not None:
+                    return (
+                        float(getattr(result, "input_per_mtok", 0.0)),
+                        float(getattr(result, "output_per_mtok", 0.0)),
+                    )
+            except Exception:
+                pass
+        return pricing_for(model)
 
     def record(self, model: str, usage: TokenUsage) -> None:
         """Add one generation's usage, pricing it against ``model``."""
-        in_price, out_price = pricing_for(model)
+        in_price, out_price = self._resolve_pricing(model)
         # The Anthropic API reports input_tokens, cache_read_input_tokens and
         # cache_creation_input_tokens as SEPARATE, mutually-exclusive counters
         # (input_tokens is the fresh, non-cached portion). So they are additive:
