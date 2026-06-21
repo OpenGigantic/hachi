@@ -202,7 +202,6 @@ export async function loadWork(): Promise<void> {
     const routines: Routine[] = (rawSchedules?.schedules ?? []).map(adaptSchedule);
 
     useStore.getState().hydrate({ runs, failed, routines });
-    useStore.getState().setReconnecting(false);
     _hasEverSucceeded = true;
   } catch {
     if (!_hasEverSucceeded) {
@@ -210,10 +209,8 @@ export async function loadWork(): Promise<void> {
       // fabricated data as if it were real gateway data.
       useStore.getState().hydrate({ runs: [], failed: [], routines: [] });
     }
-    // Whether or not this is the first load, flag reconnecting so the UI
-    // shows the reconnecting indicator. Last-known-good real data is
-    // preserved after the first success.
-    useStore.getState().setReconnecting(true);
+    // Reconnecting flag is now managed centrally by client.ts via the
+    // registered callback — no per-domain setReconnecting calls needed here.
   }
 }
 
@@ -240,9 +237,9 @@ export async function pauseRoutineLive(numericId: number): Promise<void> {
   try {
     await apiSend<unknown>("PUT", `/schedules/${scheduleId}/enabled`, { enabled });
   } catch {
-    // Revert the optimistic update on failure
+    // Revert the optimistic update on failure.
+    // Network errors surface the reconnecting banner via client.ts callback.
     useStore.getState().pauseRoutine(numericId);
-    useStore.getState().setReconnecting(true);
   }
 }
 
@@ -272,8 +269,8 @@ export async function deleteRoutineLive(numericId: number): Promise<void> {
   try {
     await apiSend<unknown>("DELETE", `/schedules/${scheduleId}`);
   } catch {
-    // Revert on failure
+    // Revert on failure.
+    // Network errors surface the reconnecting banner via client.ts callback.
     useStore.getState().hydrate({ routines: previousRoutines });
-    useStore.getState().setReconnecting(true);
   }
 }

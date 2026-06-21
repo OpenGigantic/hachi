@@ -245,6 +245,7 @@ function Skills() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* ---- top bar ---- */}
       <div
+        className="hachi-skills-header"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -298,7 +299,7 @@ function Skills() {
 
       {/* ---- scrollable body ---- */}
       <div
-        className="hachi-scroll"
+        className="hachi-scroll hachi-skills-body"
         style={{ flex: 1, overflow: 'auto', padding: '24px 32px 64px' }}
       >
         <div
@@ -344,6 +345,7 @@ function Skills() {
               </div>
             ) : (
               <div
+                className="hachi-skills-installed-grid"
                 style={{
                   display: 'grid',
                   gridTemplateColumns: '1fr 1fr',
@@ -372,6 +374,7 @@ function Skills() {
                 From the kennel
               </h2>
               <div
+                className="hachi-skills-kennel-grid"
                 style={{
                   display: 'grid',
                   gridTemplateColumns: '1fr 1fr 1fr',

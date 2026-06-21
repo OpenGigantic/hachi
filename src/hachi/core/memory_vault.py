@@ -297,6 +297,14 @@ class MemoryVault:
         # crashing with AttributeError on a nulled collection ref.
         self._closed: bool = False
 
+        # Shared-vault guard: ProcessSharedServices marks the process-singleton
+        # vault with is_shared=True. An individual AgentSession must NOT close a
+        # shared vault on its own shutdown (session delete / config reload) —
+        # sibling sessions reuse the same instance and would then hit
+        # "MemoryVault is closed". Shared vaults are closed exactly once at
+        # process exit by ProcessSharedServices.shutdown_all().
+        self.is_shared: bool = False
+
     # ==========================================
     # PERF-05: Lazy ChromaDB client + collection helpers
     # ==========================================
@@ -602,13 +610,33 @@ class MemoryVault:
         return quarantine_id
 
     def get_quarantine_entries(self, top_k: int = 20) -> list[dict[str, Any]]:
-        """Return recent quarantined memory entries for audit/review flows."""
-        with self._vault_lock:
-            self._assert_open()
-            qcoll = self._get_collection("quarantine_collection")
-            if qcoll.count() == 0:
-                return []
-            rows = qcoll.get(limit=max(1, top_k))
+        """Return recent quarantined memory entries for audit/review flows.
+
+        Returns an empty list on ChromaDB error so audit endpoints do not 500.
+
+        Args:
+            top_k: Maximum number of entries to return.
+
+        Returns:
+            List of quarantine entry dicts, or ``[]`` on ChromaDB error.
+        """
+        try:
+            with self._vault_lock:
+                self._assert_open()
+                qcoll = self._get_collection("quarantine_collection")
+                if qcoll.count() == 0:
+                    return []
+                rows = qcoll.get(limit=max(1, top_k))
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "MemoryVault.get_quarantine_entries: ChromaDB read failed; "
+                "returning empty list. Error: %s",
+                exc,
+                exc_info=True,
+            )
+            return []
 
         ids = rows.get("ids", [])
         docs = rows.get("documents", [])
@@ -639,22 +667,46 @@ class MemoryVault:
     ) -> list[dict[str, Any]]:
         """Shared semantic search logic for all collections.
 
-        Returns a clean list of fact dicts ready for LLM injection.
+        Returns a clean list of fact dicts ready for LLM injection.  On any
+        ChromaDB error (lazy-init failure, missing collection, query error) a
+        WARNING is logged and an empty list is returned so callers degrade
+        gracefully instead of propagating a 500.
+
         HIGH-021: acquires _vault_lock around the ChromaDB query.
-        H12: raises RuntimeError if the vault has been closed.
+        H12: raises RuntimeError if the vault has been closed — closed-vault
+             errors are re-raised so callers know the vault is gone, but all
+             other ChromaDB errors are caught and return ``[]``.
         PERF-05: accepts collection attribute name so lazy init happens under lock.
 
         Args:
             collection_attr: Key into ``_COLLECTION_SPECS`` / ``_collections``.
             query: Natural language query string.
             top_k: Maximum number of results.
+
+        Returns:
+            Ranked list of fact dicts, or ``[]`` on ChromaDB error.
         """
-        with self._vault_lock:
-            self._assert_open()
-            collection = self._get_collection(collection_attr)
-            if collection.count() == 0:
-                return []
-            results = collection.query(query_texts=[query], n_results=top_k)
+        try:
+            with self._vault_lock:
+                self._assert_open()
+                collection = self._get_collection(collection_attr)
+                if collection.count() == 0:
+                    return []
+                results = collection.query(query_texts=[query], n_results=top_k)
+        except RuntimeError:
+            # Re-raise closed-vault errors — callers must not silently ignore them.
+            raise
+        except Exception as exc:
+            logger.warning(
+                "MemoryVault._query_collection: ChromaDB read failed for %r "
+                "(collection=%s, top_k=%d); returning empty results. Error: %s",
+                query[:80],
+                collection_attr,
+                top_k,
+                exc,
+                exc_info=True,
+            )
+            return []
 
         formatted = []
         if results and results.get("documents") and results["documents"]:
@@ -830,11 +882,26 @@ class MemoryVault:
         """Return all user profile facts as a frozen text block.
 
         This is the source data for the frozen system prompt snapshot (Phase 2).
-        Returns an empty string if no user facts exist.
+        Returns an empty string if no user facts exist OR if ChromaDB fails during
+        lazy initialisation (so session boot is not broken by vault errors).
+
+        Returns:
+            Formatted user profile block, or ``""`` on error or empty collection.
         """
-        with self._vault_lock:
-            self._assert_open()
-            results = self._get_collection("user_collection").get()
+        try:
+            with self._vault_lock:
+                self._assert_open()
+                results = self._get_collection("user_collection").get()
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "MemoryVault.get_user_snapshot: ChromaDB read failed; "
+                "user profile will be absent this turn. Error: %s",
+                exc,
+                exc_info=True,
+            )
+            return ""
 
         if not results or not results.get("documents"):
             return ""
@@ -852,10 +919,25 @@ class MemoryVault:
         """Return capacity stats for the user profile collection.
 
         Useful for the LLM to decide whether to curate before saving.
+        Returns zeroed stats on ChromaDB error so callers are not blocked.
+
+        Returns:
+            Dict with entries, max_entries, remaining counts.
         """
-        with self._vault_lock:
-            self._assert_open()
-            count = self._get_collection("user_collection").count()
+        try:
+            with self._vault_lock:
+                self._assert_open()
+                count = self._get_collection("user_collection").count()
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "MemoryVault.get_profile_stats: ChromaDB read failed; "
+                "returning zeroed stats. Error: %s",
+                exc,
+                exc_info=True,
+            )
+            count = 0
         return {
             "entries": count,
             "max_entries": USER_PROFILE_MAX_ENTRIES,
@@ -987,27 +1069,46 @@ class MemoryVault:
         Enables the orchestrator to recall how similar tasks were handled
         in the past, including which role was used and whether it succeeded.
 
+        On any ChromaDB error (lazy-init failure, missing collection, query
+        error) a WARNING is logged and ``[]`` is returned so the caller
+        (``GET /api/subagents/reports``) returns an empty list instead of a 500.
+
         Args:
             query:  Natural language query about past delegations.
             top_k:  Maximum number of results.
             role:   Optional filter by role name.
 
         Returns:
-            Ranked list of delegation log entries.
+            Ranked list of delegation log entries, or ``[]`` on ChromaDB error.
         """
-        with self._vault_lock:
-            self._assert_open()
-            dcoll = self._get_collection("delegation_collection")
-            if dcoll.count() == 0:
-                return []
+        try:
+            with self._vault_lock:
+                self._assert_open()
+                dcoll = self._get_collection("delegation_collection")
+                if dcoll.count() == 0:
+                    return []
 
-            where_filter = {"role": role} if role else None
+                where_filter = {"role": role} if role else None
 
-            results = dcoll.query(
-                query_texts=[query],
-                n_results=top_k,
-                where=where_filter,
+                results = dcoll.query(
+                    query_texts=[query],
+                    n_results=top_k,
+                    where=where_filter,
+                )
+        except RuntimeError:
+            # Re-raise closed-vault errors so callers detect shutdown.
+            raise
+        except Exception as exc:
+            logger.warning(
+                "MemoryVault.search_delegations: ChromaDB read failed "
+                "(query=%r, top_k=%d, role=%r); returning empty results. Error: %s",
+                query[:80],
+                top_k,
+                role,
+                exc,
+                exc_info=True,
             )
+            return []
 
         formatted = []
         if results and results.get("documents") and results["documents"]:
@@ -1036,18 +1137,30 @@ class MemoryVault:
         """Return aggregate stats from the delegation log.
 
         Useful for the orchestrator to understand its delegation patterns.
+        Returns a zeroed stats dict on ChromaDB error.
 
         Returns:
             Dict with total delegations, success rate, and per-role counts.
         """
-        with self._vault_lock:
-            self._assert_open()
-            dcoll = self._get_collection("delegation_collection")
-            total = dcoll.count()
-            if total == 0:
-                return {"total": 0, "message": "No delegations recorded yet."}
-            # Fetch all metadata to compute stats
-            all_entries = dcoll.get()
+        try:
+            with self._vault_lock:
+                self._assert_open()
+                dcoll = self._get_collection("delegation_collection")
+                total = dcoll.count()
+                if total == 0:
+                    return {"total": 0, "message": "No delegations recorded yet."}
+                # Fetch all metadata to compute stats
+                all_entries = dcoll.get()
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "MemoryVault.get_delegation_stats: ChromaDB read failed; "
+                "returning empty stats. Error: %s",
+                exc,
+                exc_info=True,
+            )
+            return {"total": 0, "message": "Stats unavailable (vault read error)."}
 
         metadatas = all_entries.get("metadatas", [])
 

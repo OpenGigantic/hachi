@@ -56,7 +56,6 @@ export async function loadOg(): Promise<void> {
     const raw = await apiGet<GatewayOgGraph>("/og/graph");
     const ogNodes: OgNode[] = (raw.nodes ?? []).map(adaptOgNode);
     useStore.getState().hydrate({ ogNodes });
-    useStore.getState().setReconnecting(false);
     _hasEverSucceeded = true;
   } catch {
     if (!_hasEverSucceeded) {
@@ -64,10 +63,8 @@ export async function loadOg(): Promise<void> {
       // fabricated OG graph as if it were real gateway data.
       useStore.getState().hydrate({ ogNodes: [] });
     }
-    // Whether or not this is the first load, flag reconnecting so the UI
-    // shows the reconnecting indicator. Last-known-good real data is
-    // preserved after the first success.
-    useStore.getState().setReconnecting(true);
+    // Reconnecting flag is now managed centrally by client.ts via the
+    // registered callback — no per-domain setReconnecting calls needed.
   }
 }
 

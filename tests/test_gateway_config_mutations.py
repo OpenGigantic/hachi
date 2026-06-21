@@ -6,7 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 from hachi.cli.main import _InProcessGatewayRuntime
+from hachi.core.config_loader import load_effective_config, write_global_config
 from hachi.core.onboarding import looks_like_env_var_name, persist_provider_api_key
+from hachi.core.paths import HachiPaths
+from hachi.core.settings import ResolvedConfig
 from hachi.gateway.control_plane import GatewayProtocolError
 
 
@@ -288,3 +291,93 @@ def test_update_memory_partial_write_preserves_other_fields(monkeypatch) -> None
 
     assert result["memory"]["enable_session_history"] is False
     assert result["memory"]["enable_semantic_memory"] is True
+
+
+# --- "Ask before…" persistence (PUT /config/permissions ask_before) ----------
+
+
+def _real_cfg() -> ResolvedConfig:
+    """A real ResolvedConfig so permissions.ask_before is a true AskBeforeSettings."""
+    return ResolvedConfig()
+
+
+def test_update_permissions_persists_ask_before_rule(monkeypatch) -> None:
+    runtime = _InProcessGatewayRuntime()
+    cfg = _real_cfg()
+    captured: list[ResolvedConfig] = []
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.cli.main.write_global_config", captured.append)
+
+    result = runtime.update_permissions({"permissions": {"ask_before": {"delete_files": False}}})
+
+    assert result["permissions"]["ask_before"]["delete_files"] is False
+    # Untouched rules keep their default (on).
+    assert result["permissions"]["ask_before"]["network_egress"] is True
+    assert result["permissions"]["ask_before"]["spend_over_threshold"] is True
+    # The same config object was handed to write_global_config (persisted).
+    assert captured and captured[0].permissions.ask_before.delete_files is False
+
+
+def test_update_permissions_tier_and_ask_before_together(monkeypatch) -> None:
+    runtime = _InProcessGatewayRuntime()
+    cfg = _real_cfg()
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+
+    result = runtime.update_permissions(
+        {"permissions": {"tier": "sandbox", "ask_before": {"network_egress": False}}}
+    )
+
+    assert result["permissions"]["tier"] == "sandbox"
+    assert result["permissions"]["ask_before"]["network_egress"] is False
+
+
+def test_update_permissions_rejects_unknown_ask_before_key(monkeypatch) -> None:
+    runtime = _InProcessGatewayRuntime()
+    cfg = _real_cfg()
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+
+    with pytest.raises(GatewayProtocolError, match="not a recognised rule"):
+        runtime.update_permissions({"permissions": {"ask_before": {"format_disk": True}}})
+
+
+def test_update_permissions_rejects_non_bool_ask_before_value(monkeypatch) -> None:
+    runtime = _InProcessGatewayRuntime()
+    cfg = _real_cfg()
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+
+    with pytest.raises(GatewayProtocolError, match="must be a boolean"):
+        runtime.update_permissions({"permissions": {"ask_before": {"delete_files": "yes"}}})
+
+
+def test_update_permissions_rejects_non_object_ask_before(monkeypatch) -> None:
+    runtime = _InProcessGatewayRuntime()
+    cfg = _real_cfg()
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+
+    with pytest.raises(GatewayProtocolError, match="ask_before must be an object"):
+        runtime.update_permissions({"permissions": {"ask_before": ["delete_files"]}})
+
+
+def test_ask_before_round_trips_through_settings_toml(tmp_path) -> None:
+    """A toggle written by the handler is read back verbatim after a fresh load."""
+    paths = HachiPaths(
+        config_dir=tmp_path / "config",
+        data_dir=tmp_path / "data",
+        cache_dir=tmp_path / "cache",
+        state_dir=tmp_path / "state",
+    )
+
+    cfg = load_effective_config(paths=paths)
+    cfg.permissions.ask_before.delete_files = False
+    cfg.permissions.tier = "unrestricted"
+    write_global_config(cfg, paths=paths)
+
+    reloaded = load_effective_config(paths=paths)
+    assert reloaded.permissions.ask_before.delete_files is False
+    assert reloaded.permissions.ask_before.network_egress is True
+    assert reloaded.permissions.ask_before.spend_over_threshold is True
+    assert reloaded.permissions.tier == "unrestricted"

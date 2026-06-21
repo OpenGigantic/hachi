@@ -71,7 +71,6 @@ export async function loadAuthoring(): Promise<void> {
   try {
     const raw = await apiGet<GatewayTarget[]>("/authoring/targets");
     useStore.getState().hydrate({ authTargets: (raw ?? []).map(adaptTarget) });
-    useStore.getState().setReconnecting(false);
     _hasEverSucceeded = true;
   } catch {
     if (!_hasEverSucceeded) {
@@ -80,10 +79,8 @@ export async function loadAuthoring(): Promise<void> {
       // Also clear authSource since it was seeded alongside the targets.
       useStore.getState().hydrate({ authTargets: [], authSource: [] });
     }
-    // Whether or not this is the first load, flag reconnecting so the UI
-    // shows the reconnecting indicator. Last-known-good real data is
-    // preserved after the first success.
-    useStore.getState().setReconnecting(true);
+    // Reconnecting flag is now managed centrally by client.ts via the
+    // registered callback — no per-domain setReconnecting calls needed here.
   }
 }
 
@@ -113,10 +110,9 @@ export async function loadAuthoringSource(
     // Hydrate the store so the viewer shows the loaded content immediately.
     // diff is always [] (no pending-patch pipeline yet); authSource holds source lines.
     useStore.getState().hydrate({ authSource: diff });
-    useStore.getState().setReconnecting(false);
     return { source, diff: [] };
   } catch {
-    useStore.getState().setReconnecting(true);
+    // Network errors surface the reconnecting banner via client.ts callback.
     return { source: "", diff: [] };
   }
 }
@@ -183,13 +179,54 @@ export async function applyAuthoring(name: string): Promise<void> {
       {}
     );
     useStore.getState().applyPatch(resp?.reindexed_ms);
-    useStore.getState().setReconnecting(false);
     // Refresh the targets list to pick up server-side state
     await loadAuthoring();
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Apply failed — please try again";
     useStore.getState().showToast(msg, "blocked");
-    useStore.getState().setReconnecting(true);
+    // Network errors surface the reconnecting banner via client.ts callback.
+  }
+}
+
+// ---- Save / manual-edit wrapper ----
+
+interface GatewaySaveSourceResponse {
+  ok: boolean;
+  message?: string;
+}
+
+/**
+ * Save hand-edited source content for a named target.
+ * CONTRACT-AUTHORING-SAVE: POST /authoring/targets/{name}/source  body { content }
+ * Returns { ok: true } on success, or { ok: false, message } on validation failure.
+ * Never throws — network errors are returned as { ok: false, message }.
+ */
+export async function saveAuthoringSource(
+  name: string,
+  content: string
+): Promise<{ ok: boolean; message?: string }> {
+  if (USE_MOCKS) {
+    // In mock mode, update the store so the viewer reflects the edit immediately.
+    const lines = content.split("\n").map((line): DiffLine => ["", line]);
+    useStore.getState().hydrate({ authSource: lines });
+    return { ok: true };
+  }
+  try {
+    const resp = await apiSend<GatewaySaveSourceResponse>(
+      "POST",
+      "/authoring/targets/" + encodeURIComponent(name) + "/source",
+      { content }
+    );
+    if (resp?.ok === false) {
+      return { ok: false, message: resp.message ?? "Save rejected by gateway." };
+    }
+    // Reload the source from gateway so the viewer reflects the saved state.
+    await loadAuthoringSource(name);
+    return { ok: true };
+  } catch (err: unknown) {
+    const message =
+      err instanceof Error ? err.message : "Save failed — please try again.";
+    return { ok: false, message };
   }
 }
 
@@ -211,12 +248,11 @@ export async function revertAuthoring(name: string): Promise<void> {
       {}
     );
     useStore.getState().revertPatch();
-    useStore.getState().setReconnecting(false);
     // Refresh target list
     await loadAuthoring();
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Revert failed — please try again";
     useStore.getState().showToast(msg, "blocked");
-    useStore.getState().setReconnecting(true);
+    // Network errors surface the reconnecting banner via client.ts callback.
   }
 }

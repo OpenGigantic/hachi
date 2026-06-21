@@ -10,7 +10,7 @@
 //   because store.ts never statically imports chat.ts).
 // ============================================================
 
-import { apiGet, apiSend, USE_MOCKS } from "../client";
+import { apiGet, apiSend, USE_MOCKS, isNetworkError } from "../client";
 import { streamSSE } from "../sse";
 import { registerLoader } from "../live";
 import { useStore } from "../../store/store";
@@ -37,6 +37,78 @@ let _cursor = 0;
 // last runLines entry is an in-progress text delta; when a non-text event
 // arrives we clear the flag so the next text event opens a fresh line.
 let _textLineActive = false;
+
+// ── Run-buffer hard cap ───────────────────────────────────────────────────────
+// Defence-in-depth: pathological runs can't grow runLines without bound.
+const RUN_LINES_MAX = 400;
+
+// ── Text-delta RAF batching ───────────────────────────────────────────────────
+// Instead of writing to the store (and triggering a re-render) on every token,
+// we accumulate deltas in a module-level buffer and flush once per animation
+// frame. This cuts renders from O(tokens) to O(frames) and eliminates O(n²)
+// string concat per response.
+let _deltaBuffer = "";
+let _deltaTargetId: number | null = null; // hachiMsgId the buffered text belongs to
+let _rafHandle: number | null = null;
+
+/** Flush the pending delta buffer to the store in one update. */
+function flushDeltaBuffer(): void {
+  _rafHandle = null;
+  if (!_deltaBuffer || _deltaTargetId == null) return;
+  const text = _deltaBuffer;
+  const targetId = _deltaTargetId;
+  _deltaBuffer = "";
+  // Perform the actual store update (same logic as the old per-token appendTextDelta)
+  const store = useStore.getState();
+  const msgs = store.messages;
+  const msg = msgs.find((m) => m.id === targetId);
+  if (!msg) return;
+  store.hydrate({
+    messages: msgs.map((m) =>
+      m.id === targetId ? { ...m, text: m.text + text } : m
+    ),
+  });
+}
+
+/**
+ * Schedule a flush on the next animation frame if one isn't already queued.
+ * Falls back to a 40 ms timeout in environments without rAF (e.g. SSR/tests).
+ */
+function scheduleFlush(): void {
+  if (_rafHandle != null) return;
+  if (typeof requestAnimationFrame !== "undefined") {
+    _rafHandle = requestAnimationFrame(flushDeltaBuffer);
+  } else {
+    _rafHandle = setTimeout(flushDeltaBuffer, 40) as unknown as number;
+  }
+}
+
+/** Cancel any pending RAF and synchronously flush remaining buffered text. */
+function flushDeltaBufferSync(): void {
+  if (_rafHandle != null) {
+    if (typeof cancelAnimationFrame !== "undefined") {
+      cancelAnimationFrame(_rafHandle);
+    } else {
+      clearTimeout(_rafHandle as unknown as ReturnType<typeof setTimeout>);
+    }
+    _rafHandle = null;
+  }
+  flushDeltaBuffer();
+}
+
+/** Reset the delta buffer between turns. */
+function resetDeltaBuffer(): void {
+  if (_rafHandle != null) {
+    if (typeof cancelAnimationFrame !== "undefined") {
+      cancelAnimationFrame(_rafHandle);
+    } else {
+      clearTimeout(_rafHandle as unknown as ReturnType<typeof setTimeout>);
+    }
+    _rafHandle = null;
+  }
+  _deltaBuffer = "";
+  _deltaTargetId = null;
+}
 
 // ── Cost baseline tracking ────────────────────────────────────────────────────
 // The gateway's `usage.updated` payload carries a CUMULATIVE `estimated_cost_usd`
@@ -169,19 +241,22 @@ function abortSse(): void {
 
 let _hachiMsgId: number | null = null;
 
-/** Append a text delta to the current hachi message. */
+/**
+ * Enqueue a text delta for the current hachi message.
+ * The actual store update is batched and happens on the next animation frame
+ * (or at most ~40 ms later), not on every token.
+ */
 function appendTextDelta(delta: string): void {
-  const store = useStore.getState();
-  const msgs = store.messages;
   const id = _hachiMsgId;
   if (id == null) return;
-  const msg = msgs.find((m) => m.id === id);
-  if (!msg) return;
-  store.hydrate({
-    messages: msgs.map((m) =>
-      m.id === id ? { ...m, text: m.text + delta } : m
-    ),
-  });
+  // If the target changed mid-stream (shouldn't happen, but guard anyway),
+  // flush the old buffer first so it lands in the right message.
+  if (_deltaTargetId !== null && _deltaTargetId !== id) {
+    flushDeltaBufferSync();
+  }
+  _deltaTargetId = id;
+  _deltaBuffer += delta;
+  scheduleFlush();
 }
 
 /** Upsert an action card on the current hachi message. */
@@ -224,10 +299,12 @@ function driveRunSlice(eventType: string, payload: Record<string, unknown>): voi
         const lines = [...store.runLines];
         const last = lines[lines.length - 1];
         lines[lines.length - 1] = { ...last, text: last.text + text };
-        store.hydrate({ runLines: lines });
+        // Hard-cap: keep only the last RUN_LINES_MAX entries
+        store.hydrate({ runLines: lines.length > RUN_LINES_MAX ? lines.slice(-RUN_LINES_MAX) : lines });
       } else {
         _textLineActive = true;
-        store.hydrate({ runLines: [...store.runLines, { text }] });
+        const next = [...store.runLines, { text }];
+        store.hydrate({ runLines: next.length > RUN_LINES_MAX ? next.slice(-RUN_LINES_MAX) : next });
       }
       break;
     }
@@ -236,21 +313,24 @@ function driveRunSlice(eventType: string, payload: Record<string, unknown>): voi
       _textLineActive = false;
       const prev = store.runLines;
       if (prev.length > 0 && prev[prev.length - 1].text === "· thinking…") break;
-      store.hydrate({ runLines: [...prev, { text: "· thinking…", tone: "muted" }] });
+      const next = [...prev, { text: "· thinking…", tone: "muted" }];
+      store.hydrate({ runLines: next.length > RUN_LINES_MAX ? next.slice(-RUN_LINES_MAX) : next });
       break;
     }
 
     case "tool.call.started": {
       _textLineActive = false;
       const name = typeof payload.name === "string" ? payload.name : "tool";
-      store.hydrate({ runLines: [...store.runLines, { text: "▸ " + name, tone: "muted" }] });
+      const next = [...store.runLines, { text: "▸ " + name, tone: "muted" }];
+      store.hydrate({ runLines: next.length > RUN_LINES_MAX ? next.slice(-RUN_LINES_MAX) : next });
       break;
     }
 
     case "tool.call.completed": {
       _textLineActive = false;
       const name = typeof payload.name === "string" ? payload.name : "tool";
-      store.hydrate({ runLines: [...store.runLines, { text: "✓ " + name, tone: "success" }] });
+      const next = [...store.runLines, { text: "✓ " + name, tone: "success" }];
+      store.hydrate({ runLines: next.length > RUN_LINES_MAX ? next.slice(-RUN_LINES_MAX) : next });
       break;
     }
 
@@ -274,12 +354,13 @@ function driveRunSlice(eventType: string, payload: Record<string, unknown>): voi
               tokens: 0,
             },
           ];
+      const nextLines = [
+        ...store.runLines,
+        { text: "→ delegated to " + role + ": " + task, tone: "muted" },
+      ];
       store.hydrate({
         runPack: newPack,
-        runLines: [
-          ...store.runLines,
-          { text: "→ delegated to " + role + ": " + task, tone: "muted" },
-        ],
+        runLines: nextLines.length > RUN_LINES_MAX ? nextLines.slice(-RUN_LINES_MAX) : nextLines,
       });
       break;
     }
@@ -294,12 +375,13 @@ function driveRunSlice(eventType: string, payload: Record<string, unknown>): voi
           ? { ...p, status: "done" as const }
           : p
       );
+      const nextLines = [
+        ...store.runLines,
+        { text: "✓ " + role + " " + status, tone },
+      ];
       store.hydrate({
         runPack: updatedPack,
-        runLines: [
-          ...store.runLines,
-          { text: "✓ " + role + " " + status, tone },
-        ],
+        runLines: nextLines.length > RUN_LINES_MAX ? nextLines.slice(-RUN_LINES_MAX) : nextLines,
       });
       break;
     }
@@ -311,7 +393,7 @@ function driveRunSlice(eventType: string, payload: Record<string, unknown>): voi
       store.hydrate({
         runDone: true,
         runStreaming: false,
-        runLines: doneLines,
+        runLines: doneLines.length > RUN_LINES_MAX ? doneLines.slice(-RUN_LINES_MAX) : doneLines,
         runPack: donePack,
       });
       break;
@@ -415,9 +497,23 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
     }
 
     case "session.chat.completed": {
+      // Flush any remaining buffered text BEFORE ending streaming state, so
+      // the final message is complete when the UI transitions out of streaming.
+      flushDeltaBufferSync();
       // Turn is done — end streaming state
       store.hydrate({ streaming: false });
       _hachiMsgId = null;
+      // Clear the run buffers after a short delay (so the user sees "✓ done")
+      // but only if a newer run hasn't started in the meantime.
+      const clearedHachiMsgId = _hachiMsgId; // already null after line above
+      void clearedHachiMsgId; // suppress unused-var lint
+      const sentinelTurnId = _lastKnownCumCost; // use cost as a stable sentinel
+      setTimeout(() => {
+        // If the cost baseline hasn't changed, no new turn started — safe to clear.
+        if (_lastKnownCumCost === sentinelTurnId) {
+          useStore.getState().hydrate({ runLines: [], runPack: [] });
+        }
+      }, 2000);
       break;
     }
 
@@ -451,12 +547,17 @@ export async function startTaskLive(text: string, hachiMsgId: number): Promise<v
   // Cancel any in-flight stream first
   abortSse();
 
+  // Reset the delta buffer for this new turn so stale text from a prior
+  // turn can't bleed into the new hachi message.
+  resetDeltaBuffer();
+
   // M10: lazily request notification permission on first task (fire-and-forget)
   void ensureNotificationPermission();
 
   _hachiMsgId = hachiMsgId;
 
-  // Initialize the run slice for this turn (live mode only)
+  // Initialize the run slice for this turn (live mode only).
+  // Also clears runLines/runPack so the previous turn's entries don't persist.
   {
     const store = useStore.getState();
     if (store.dataMode === "live") {
@@ -562,10 +663,19 @@ export async function startTaskLive(text: string, hachiMsgId: number): Promise<v
           const payload = envelope.payload ?? {};
           handleSseMessage(eventType, payload);
         },
-        onError: () => {
-          useStore.getState().setReconnecting(true);
+        onError: (err) => {
+          // Only treat genuine network failures as "reconnecting".
+          // HTTP-level errors (already decoded as ApiError with status>0) are
+          // surfaced as an error state, not a reconnect spinner.
+          if (isNetworkError(err)) {
+            useStore.getState().setReconnecting(true);
+          }
+          // Flush any remaining buffered delta on stream error
+          flushDeltaBufferSync();
         },
         onClose: () => {
+          // Flush remaining buffered text before marking streaming done.
+          flushDeltaBufferSync();
           // Stream closed — if still "streaming", end it
           const store = useStore.getState();
           if (store.streaming && _hachiMsgId === hachiMsgId) {
@@ -591,8 +701,22 @@ export async function startTaskLive(text: string, hachiMsgId: number): Promise<v
 
 /** Live-mode implementation of stopStreaming. */
 export function stopStreamingLive(): void {
+  // Flush any pending delta before aborting so the partial text is preserved
+  flushDeltaBufferSync();
   abortSse();
   _hachiMsgId = null;
+  resetDeltaBuffer();
+}
+
+/**
+ * Expose the SSE abort so the conversation component can call it on unmount.
+ * This is the same as stopStreamingLive but does not reset streaming state
+ * (the component is unmounting, so state updates are moot).
+ */
+export function abortSseLive(): void {
+  flushDeltaBufferSync();
+  abortSse();
+  resetDeltaBuffer();
 }
 
 // ============================================================
@@ -634,6 +758,7 @@ export async function denyLeashLive(): Promise<void> {
 
 // ============================================================
 // 10. Live action: switch to an existing session (M8 MED-020)
+//     + history replay on page refresh (Step 5)
 // ============================================================
 
 // Shape of each event returned by GET /sessions/{id}/events
@@ -648,70 +773,24 @@ interface GatewayEventRecord {
 }
 
 /**
- * Switch the live session to `sessionId`:
- *  1. Abort the current SSE stream.
- *  2. Update module-level session id + reset cursor.
- *  3. Fetch the session's event history and reconstruct turns into
- *     store.messages from the SSE event types already understood by
- *     handleSseMessage (text.stream.delta, tool.call.* etc.).
- *  4. Mark that session active in the sessions slice.
+ * Replay an ordered list of gateway event records into a ChatMessage array.
  *
- * History reconstruction note:
- *   The gateway's GET /sessions/{id}/events endpoint returns the same
- *   event envelopes that the SSE stream emits in real-time (confirmed by
- *   inspecting runtime_events.py). We replay them through the same handler
- *   with a synthetic _hachiMsgId so they land in the right message object.
- *   User turns are reconstructed from the `session.turn.started` payload
- *   (field: `user_text`) or, if absent, labelled "(resumed)".
- *   The cursor is advanced to the last sequence number seen, so the NEXT
- *   live turn only streams new events.
+ * The gateway's GET /sessions/{id}/events endpoint returns the same event
+ * envelopes that the SSE stream emits in real-time (confirmed by inspecting
+ * runtime_events.py). We walk them in order:
+ *   - `session.turn.started` opens a new user + hachi message pair.
+ *   - `text.stream.delta` appends to the current hachi message text.
+ *   - `tool.call.*` upserts action cards on the current hachi message.
+ *   - `session.chat.completed` closes the current turn.
+ *
+ * Returns { messages, lastSeq } where lastSeq is the highest sequence number
+ * seen (used to advance the SSE cursor so the next live turn only streams new
+ * events).
  */
-export async function switchSessionLive(sessionId: string): Promise<void> {
-  // 1. Abort any in-flight stream
-  abortSse();
-  _hachiMsgId = null;
-  _textLineActive = false;
-
-  // 2. Switch session id and reset cursor
-  _liveSessionId = sessionId;
-  _cursor = 0;
-  _lastKnownCumCost = 0;
-  _costCumAtTurnStart = 0;
-  _spentAtTurnStart = 0;
-
-  // Optimistically mark this session active in the store before the fetch
-  const store = useStore.getState();
-  store.hydrate({
-    messages: [],
-    streaming: false,
-    inContext: null,
-    sessions: store.sessions.map((s) =>
-      s.id === sessionId ? { ...s, active: true } : { ...s, active: false }
-    ),
-  });
-
-  // 3. Fetch history
-  let events: GatewayEventRecord[] = [];
-  try {
-    const raw = await apiGet<GatewayEventRecord[]>(`/sessions/${sessionId}/events`);
-    events = Array.isArray(raw) ? raw : [];
-  } catch {
-    // History unavailable — show an honest "resumed" placeholder
-    const resumed: import("../types").ChatMessage = {
-      id: Date.now(),
-      role: "hachi" as const,
-      text: "(session resumed — history unavailable)",
-      cards: [],
-      routine: null,
-    };
-    useStore.getState().hydrate({ messages: [resumed] });
-    return;
-  }
-
-  // 4. Replay events to reconstruct messages
-  // We walk the event list in order, grouping by turns.
-  // A turn is: one user message followed by one hachi message.
-  // `session.turn.started` opens a new turn; `session.chat.completed` closes it.
+export function reconstructMessagesFromEvents(events: GatewayEventRecord[]): {
+  messages: import("../types").ChatMessage[];
+  lastSeq: number;
+} {
   const reconstructed: import("../types").ChatMessage[] = [];
   let currentHachiId: number | null = null;
   let lastSeq = 0;
@@ -795,6 +874,110 @@ export async function switchSessionLive(sessionId: string): Promise<void> {
     }
   }
 
+  return { messages: reconstructed, lastSeq };
+}
+
+/**
+ * Load (or reload) conversation history for the active session and hydrate
+ * `messages` in the store.
+ *
+ * Safe to call on mount and on active-session change:
+ *  - Skips in mock mode (fixtures are already seeded).
+ *  - Guards against overwriting an in-flight streaming turn.
+ *  - If no active session id is available, does nothing.
+ */
+export async function loadConversationHistory(): Promise<void> {
+  if (USE_MOCKS) return; // keep seeded fixtures
+
+  // Don't overwrite a live in-flight stream
+  const store = useStore.getState();
+  if (store.streaming) return;
+
+  // Find the active session id — prefer the flagged active session, then _liveSessionId.
+  const activeSess = store.sessions.find((s) => s.active);
+  const sessionId = activeSess?.id ?? _liveSessionId;
+  if (!sessionId) return;
+
+  let events: GatewayEventRecord[] = [];
+  try {
+    const raw = await apiGet<GatewayEventRecord[]>(`/sessions/${sessionId}/events`);
+    events = Array.isArray(raw) ? raw : [];
+  } catch {
+    // History unavailable — leave existing messages intact (don't blank the screen)
+    return;
+  }
+
+  // Guard again: a stream may have started while we were fetching
+  if (useStore.getState().streaming) return;
+
+  const { messages: reconstructed, lastSeq } = reconstructMessagesFromEvents(events);
+
+  // Advance cursor so the next live turn only streams new events
+  if (lastSeq > _cursor) _cursor = lastSeq;
+  // Also sync the live session id so the SSE stream uses the right session
+  if (!_liveSessionId) _liveSessionId = sessionId;
+
+  if (reconstructed.length === 0) {
+    // Nothing to restore — leave the store as-is (welcome screen is correct)
+    return;
+  }
+
+  useStore.getState().hydrate({ messages: reconstructed });
+}
+
+/**
+ * Switch the live session to `sessionId`:
+ *  1. Abort the current SSE stream.
+ *  2. Update module-level session id + reset cursor.
+ *  3. Fetch the session's event history via reconstructMessagesFromEvents.
+ *  4. Mark that session active in the sessions slice.
+ */
+export async function switchSessionLive(sessionId: string): Promise<void> {
+  // 1. Abort any in-flight stream
+  abortSse();
+  resetDeltaBuffer();
+  _hachiMsgId = null;
+  _textLineActive = false;
+
+  // 2. Switch session id and reset cursor
+  _liveSessionId = sessionId;
+  _cursor = 0;
+  _lastKnownCumCost = 0;
+  _costCumAtTurnStart = 0;
+  _spentAtTurnStart = 0;
+
+  // Optimistically mark this session active in the store before the fetch
+  const store = useStore.getState();
+  store.hydrate({
+    messages: [],
+    streaming: false,
+    inContext: null,
+    sessions: store.sessions.map((s) =>
+      s.id === sessionId ? { ...s, active: true } : { ...s, active: false }
+    ),
+  });
+
+  // 3. Fetch history
+  let events: GatewayEventRecord[] = [];
+  try {
+    const raw = await apiGet<GatewayEventRecord[]>(`/sessions/${sessionId}/events`);
+    events = Array.isArray(raw) ? raw : [];
+  } catch {
+    // History unavailable — show an honest "resumed" placeholder
+    const resumed: import("../types").ChatMessage = {
+      id: Date.now(),
+      role: "hachi" as const,
+      text: "(session resumed — history unavailable)",
+      cards: [],
+      routine: null,
+    };
+    useStore.getState().hydrate({ messages: [resumed] });
+    return;
+  }
+
+  // 4. Replay events using the shared helper
+  const { messages: reconstructed, lastSeq } = reconstructMessagesFromEvents(events);
+
   // Advance cursor so the next live turn only sees new events
   _cursor = lastSeq;
 
@@ -821,6 +1004,7 @@ export async function switchSessionLive(sessionId: string): Promise<void> {
  */
 export function newSessionLive(): void {
   abortSse();
+  resetDeltaBuffer();
   _liveSessionId = null;
   _cursor = 0;
   _hachiMsgId = null;

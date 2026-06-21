@@ -90,7 +90,6 @@ export async function loadSkills(): Promise<void> {
   try {
     const raw = await apiGet<GatewaySkill[]>("/skills");
     useStore.getState().hydrate({ skills: (raw ?? []).map(adapt) });
-    useStore.getState().setReconnecting(false);
     _hasEverSucceeded = true;
   } catch {
     if (!_hasEverSucceeded) {
@@ -98,10 +97,8 @@ export async function loadSkills(): Promise<void> {
       // fabricated skill list as if it were real gateway data.
       useStore.getState().hydrate({ skills: [] });
     }
-    // Whether or not this is the first load, flag reconnecting so the UI
-    // shows the reconnecting indicator. Last-known-good real data is
-    // preserved after the first success.
-    useStore.getState().setReconnecting(true);
+    // Reconnecting flag is now managed centrally by client.ts via the
+    // registered callback — no per-domain setReconnecting calls needed here.
   }
 }
 
@@ -132,13 +129,12 @@ export async function loadKennel(): Promise<void> {
   try {
     const raw = await apiGet<GatewayKennelItem[]>("/skills/kennel");
     useStore.getState().hydrate({ kennel: (raw ?? []).map(adaptKennelItem) });
-    useStore.getState().setReconnecting(false);
     _kennelEverSucceeded = true;
   } catch {
     if (!_kennelEverSucceeded) {
       useStore.getState().hydrate({ kennel: [] });
     }
-    useStore.getState().setReconnecting(true);
+    // Reconnecting flag managed centrally by client.ts.
   }
 }
 

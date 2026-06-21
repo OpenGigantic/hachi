@@ -36,7 +36,7 @@ from hachi.core.credential_vault import CredentialVault
 from hachi.core.integrations import IntegrationRuntime
 from hachi.core.llm import Message, create_llm_client
 from hachi.core.loop import ExecutionLoop, ToolRegistry
-from hachi.core.mcp_client import MCPManager
+from hachi.core.mcp_client import MCPManager, MCPServerConfig
 from hachi.core.memory import MemoryManager
 from hachi.core.memory_provider import ChromaMemoryProvider, resolve_provider
 from hachi.core.memory_vault import MemoryVault
@@ -665,6 +665,7 @@ class AgentSession:
                 status=row.get("status", "unknown"),
                 tool_count=int(row.get("tool_count", 0)),
                 tools=tuple(row.get("tools", [])),
+                transport=row.get("transport", "stdio"),
             )
             for row in inventory_rows
         )
@@ -673,6 +674,52 @@ class AgentSession:
             total_tool_count=sum(server.tool_count for server in servers),
             servers=servers,
         )
+
+    def add_mcp_server_live(
+        self,
+        cfg: MCPServerConfig,
+        registry: ToolRegistry,
+        emit: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        """Connect a newly-registered MCP server without restarting the gateway.
+
+        Persists and connects the server, then registers its tools in the live
+        ToolRegistry so they are immediately available to the agent.
+
+        Args:
+            cfg:      The transport-aware config for the new server.
+            registry: The live ToolRegistry to mount the new tools onto.
+            emit:     Optional event emitter (same signature as the runtime emitter).
+
+        Returns:
+            A dict with ``ok``, ``tool_count``, and ``status``.
+        """
+        from hachi.core.runtime_events import (
+            MCP_SERVER_FAILED,
+            MCP_SERVER_READY,
+            MCP_SERVER_STARTING,
+        )
+
+        _emit = emit or (lambda *_: None)
+        _emit(MCP_SERVER_STARTING, {"server": cfg.name})
+        try:
+            started = self.mcp_manager.setup_from_config(cfg)
+        except Exception as exc:
+            logger.warning("[mcp] hot-reload of '%s' failed: %s", cfg.name, exc)
+            _emit(MCP_SERVER_FAILED, {"server": cfg.name, "reason": str(exc)})
+            return {"ok": False, "tool_count": 0, "status": "failed", "error": str(exc)}
+
+        if not started:
+            _emit(MCP_SERVER_FAILED, {"server": cfg.name, "reason": "startup failed"})
+            return {"ok": False, "tool_count": 0, "status": "failed"}
+
+        tool_count = self.mcp_manager.get_server_tool_count(cfg.name)
+        # Register the new server's tools into the live tool registry
+        server = self.mcp_manager._servers.get(cfg.name)
+        if server is not None:
+            self.mcp_manager._register_server_tools(cfg.name, server, registry)
+        _emit(MCP_SERVER_READY, {"server": cfg.name, "tool_count": tool_count})
+        return {"ok": True, "tool_count": tool_count, "status": "ready"}
 
     def snapshot_active_jobs(self) -> tuple[JobSnapshot, ...]:
         """Active background jobs (delegations and long-running runtime operations)."""
@@ -690,7 +737,16 @@ class AgentSession:
         if not self.vault:
             return tuple(runtime_reports)
 
-        vault_rows = self.vault.search_delegations(query=query, top_k=top_k)
+        try:
+            vault_rows = self.vault.search_delegations(query=query, top_k=top_k)
+        except RuntimeError:
+            # Vault closed (e.g. a process-teardown race) — degrade to runtime-only
+            # reports instead of surfacing a 500. The shared-vault lifecycle fix makes
+            # this rare, but the endpoint must never crash on a closed vault.
+            logger.warning(
+                "query_subagent_reports: vault closed; returning runtime reports only"
+            )
+            return tuple(runtime_reports)
         for row in vault_rows:
             runtime_reports.append(
                 SubAgentReportSnapshot(
@@ -1262,7 +1318,19 @@ class AgentSession:
                 logger.warning("shutdown: failed to close browser controller", exc_info=True)
 
         # P3-07: explicit Chroma close so WAL is flushed before process exits.
-        if self.memory and hasattr(self.memory, "vault") and self.memory.vault is not None:
+        # H-VAULT: the vault is normally a PROCESS-SHARED singleton
+        # (ProcessSharedServices) reused by every session. An individual session
+        # MUST NOT close it on its own shutdown (session delete or config-driven
+        # _reload_agents) — sibling/replacement sessions reuse the same instance
+        # and would then raise "MemoryVault is closed". Shared vaults are closed
+        # exactly once at process exit by ProcessSharedServices.shutdown_all()
+        # (atexit). Only a session-OWNED (non-shared) vault is closed here.
+        if (
+            self.memory
+            and hasattr(self.memory, "vault")
+            and self.memory.vault is not None
+            and not getattr(self.memory.vault, "is_shared", False)
+        ):
             try:
                 self.memory.vault.close()
             except Exception:

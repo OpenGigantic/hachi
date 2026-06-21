@@ -3,12 +3,10 @@
 // Wires:
 //   GET /capabilities  → Integration[] (native integrations only)
 //   GET /runtime/mcp/inventory → McpServer[] + McpTool[]
-//   PUT /capabilities/{id}/enabled → connect/disconnect toggle
-//   POST /runtime/mcp/register → register new MCP server
-//     NOTE: /runtime/mcp/register does NOT yet exist in the gateway.
-//     The endpoint is wired optimistically; callers receive a clear error
-//     message so the UI can surface it without crashing. When the backend
-//     adds this route the frontend will work automatically.
+//   PUT /capabilities/{id}/enabled → connect/disconnect toggle (apikey/"none" connectors)
+//   POST /integrations/{id}/oauth/start → { authorization_url } (OAuth2 connectors)
+//   POST /integrations/{id}/disconnect → disconnect OAuth token
+//   POST /runtime/mcp/register → register new MCP server (stdio/sse/http)
 // ============================================================
 
 import { apiGet, apiSend, USE_MOCKS } from "../client";
@@ -23,9 +21,11 @@ import type { Integration, McpServer, McpTool } from "../types";
 /** Raw capability entry from GET /capabilities */
 interface GatewayCapability {
   id: string;
-  kind?: string; // always "native_integration", but tolerate omission
+  kind?: string;           // always "native_integration", but tolerate omission
   enabled?: boolean;
   configured?: boolean;
+  connected?: boolean;     // real OAuth token present
+  auth_type?: "oauth2" | "apikey" | "none";
   secret_ref?: string | null;
 }
 
@@ -35,6 +35,9 @@ interface GatewayMcpServer {
   status?: string;
   tool_count?: number;
   tools?: string[];
+  transport?: string;      // "stdio" | "sse" | "http"
+  uptime?: string;
+  err?: string;
 }
 
 /** Raw response from GET /runtime/mcp/inventory */
@@ -44,8 +47,37 @@ interface GatewayMcpInventory {
   servers?: GatewayMcpServer[];
 }
 
+/** Response from POST /integrations/{id}/oauth/start */
+interface GatewayOAuthStartResponse {
+  authorization_url: string;
+  message?: string;
+}
+
+/** Response from POST /integrations/{id}/disconnect */
+interface GatewayDisconnectResponse {
+  id: string;
+  connected: boolean;
+  message?: string;
+}
+
 // ============================================================
-// 2. Pure adapters: gateway shape → UI types
+// 2. Extended Integration type with OAuth fields
+// ============================================================
+
+/**
+ * Integration shape extended with OAuth/auth fields.
+ * These are inline types (not touching schema.d.ts).
+ */
+export interface IntegrationExtended extends Integration {
+  auth_type: "oauth2" | "apikey" | "none";
+  /** True when a real token is stored for this connector. */
+  connected: boolean;
+  /** True when the admin has configured client credentials for OAuth. */
+  configured: boolean;
+}
+
+// ============================================================
+// 3. Pure adapters: gateway shape → UI types
 // ============================================================
 
 /**
@@ -110,21 +142,28 @@ function iconFromId(id: string): string {
 }
 
 /**
- * Adapt a raw GatewayCapability → UI Integration.
+ * Adapt a raw GatewayCapability → UI IntegrationExtended.
  *
- * Status mapping (from README contract):
- *   configured && enabled  → "connected"
- *   configured && !enabled → "degraded"
- *   else                   → "none"
+ * Status mapping:
+ *   If auth_type === "oauth2": use `connected` field for real token presence
+ *   Otherwise: configured && enabled → "connected", configured && !enabled → "degraded"
  */
-function adaptCapability(raw: GatewayCapability): Integration {
+function adaptCapability(raw: GatewayCapability): IntegrationExtended {
   const enabled = Boolean(raw.enabled);
   const configured = Boolean(raw.configured);
-  const status: Integration["status"] = configured && enabled
-    ? "connected"
-    : configured && !enabled
-    ? "degraded"
-    : "none";
+  const connected = Boolean(raw.connected);
+  const authType: IntegrationExtended["auth_type"] = raw.auth_type ?? "none";
+
+  let status: Integration["status"];
+  if (authType === "oauth2") {
+    status = connected ? "connected" : "none";
+  } else {
+    status = configured && enabled
+      ? "connected"
+      : configured && !enabled
+      ? "degraded"
+      : "none";
+  }
 
   return {
     id: raw.id ?? "unknown",
@@ -133,6 +172,9 @@ function adaptCapability(raw: GatewayCapability): Integration {
     can: capabilityDescription(raw.id ?? ""),
     status,
     risky: isRisky(raw.id ?? ""),
+    auth_type: authType,
+    connected,
+    configured,
   };
 }
 
@@ -158,11 +200,9 @@ function adaptMcpServer(raw: GatewayMcpServer): McpServer {
     name: raw.name ?? "unknown",
     status,
     tools: raw.tool_count ?? 0,
-    // Gateway doesn't expose transport or uptime; show dashes so the table columns
-    // still render gracefully.
-    transport: "—",
-    uptime: "—",
-    // No error field in the current gateway shape.
+    transport: raw.transport ?? "—",
+    uptime: raw.uptime ?? "—",
+    err: raw.err,
   };
 }
 
@@ -175,62 +215,46 @@ function adaptMcpTools(raw: GatewayMcpServer): McpTool[] {
   return (raw.tools ?? []).map((toolName) => ({
     name: toolName,
     server: serverName,
-    // Gateway gives tool names only — args can be [] per contract.
     args: [] as [string, string][],
   }));
 }
 
 // ============================================================
-// 3. Loader: fetch → adapt → hydrate (NEVER throws)
+// 4. Loader: fetch → adapt → hydrate (NEVER throws)
 // ============================================================
 
 // Tracks whether this domain has ever received real data from the gateway.
-// In live mode: until the first successful fetch, seeded fixtures must NOT be
-// shown, so on failure we clear the slices instead of leaving them in place.
 let _hasEverSucceeded = false;
 
 /**
  * Load native integrations (GET /capabilities) and MCP inventory
  * (GET /runtime/mcp/inventory), then hydrate the store.
- *
- * On first-load failure (live mode): clears slices so seeded fixtures are never
- * shown as real data. On subsequent failures: keeps last-known-good real data
- * and sets reconnecting. On success: sets reconnecting(false).
  */
 export async function loadIntegrations(): Promise<void> {
   if (USE_MOCKS) return; // keep seeded fixtures
 
-  const { hydrate, setReconnecting } = useStore.getState();
+  const { hydrate } = useStore.getState();
 
   try {
-    // Fetch both endpoints concurrently.
     const [capabilities, mcpInventory] = await Promise.all([
       apiGet<GatewayCapability[]>("/capabilities"),
       apiGet<GatewayMcpInventory>("/runtime/mcp/inventory"),
     ]);
 
-    // Adapt capabilities → integrations
     const rawCaps = Array.isArray(capabilities) ? capabilities : [];
+    // We adapt to IntegrationExtended but store as Integration (extends it).
     const integrations: Integration[] = rawCaps.map(adaptCapability);
 
-    // Adapt MCP inventory → servers + tools
     const rawServers: GatewayMcpServer[] = mcpInventory?.servers ?? [];
     const mcpServers: McpServer[] = rawServers.map(adaptMcpServer);
     const mcpTools: McpTool[] = rawServers.flatMap(adaptMcpTools);
 
     hydrate({ integrations, mcpServers, mcpTools });
-    setReconnecting(false);
     _hasEverSucceeded = true;
   } catch {
     if (!_hasEverSucceeded) {
-      // First-load failure: clear seeded fixtures so we never present
-      // fabricated integration data as if it were real gateway data.
       hydrate({ integrations: [], mcpServers: [], mcpTools: [] });
     }
-    // Whether or not this is the first load, flag reconnecting so the UI
-    // shows the reconnecting indicator. Last-known-good real data is
-    // preserved after the first success.
-    setReconnecting(true);
   }
 }
 
@@ -238,21 +262,12 @@ export async function loadIntegrations(): Promise<void> {
 registerLoader("integrations", loadIntegrations);
 
 // ============================================================
-// 4. Mutation wrappers
+// 5. Mutation wrappers — OAuth connect / disconnect
 // ============================================================
-
-/** Raw response shape from PUT /capabilities/{id}/enabled */
-interface GatewayCapabilityToggleResponse {
-  id: string;
-  enabled: boolean;
-  configured: boolean;
-}
 
 /** Status tracked per-integration to prevent double-submission. */
 export type ActionStatus = "idle" | "loading" | "error";
 
-// Per-integration in-flight tracking. Keyed by integration id.
-// Using a Map (module-level) so state is shared across callers without store coupling.
 const _connectStatus = new Map<string, ActionStatus>();
 const _disconnectStatus = new Map<string, ActionStatus>();
 const _statusListeners = new Set<() => void>();
@@ -278,39 +293,119 @@ export function getDisconnectStatus(id: string): ActionStatus {
 }
 
 /**
- * "Connect" an integration — optimistic store update + gateway call.
+ * Start an OAuth2 flow for the given connector.
  *
- * Applies the optimistic update instantly for snappy UI, then calls
- * PUT /capabilities/{id}/enabled with { enabled: true }. On error,
- * signals setReconnecting(true) and re-runs the loader to restore
- * the last known gateway truth.
+ * Contract (CONTRACT-OAUTH):
+ *   POST /integrations/{id}/oauth/start → { authorization_url: string }
+ *   May return 400/409 with { message } if client credentials aren't configured.
+ *
+ * Opens `authorization_url` in a popup window, waits for the popup to signal
+ * completion (via a postMessage from the callback page, or popup close), then
+ * re-runs the integrations loader to refresh real status from the gateway.
+ *
+ * @throws Error if the backend returns 400/409 (not configured) or on network error.
+ */
+export async function startIntegrationOAuth(id: string): Promise<void> {
+  if (USE_MOCKS) return;
+
+  const { authorization_url } = await apiSend<GatewayOAuthStartResponse>(
+    "POST",
+    `/integrations/${id}/oauth/start`,
+  );
+
+  await new Promise<void>((resolve, reject) => {
+    // Open the OAuth provider page in a 600×700 popup.
+    const width = 600;
+    const height = 700;
+    const left = Math.round(window.screenX + (window.outerWidth - width) / 2);
+    const top = Math.round(window.screenY + (window.outerHeight - height) / 2);
+    const popup = window.open(
+      authorization_url,
+      `hachi_oauth_${id}`,
+      `width=${width},height=${height},left=${left},top=${top},toolbar=no,menubar=no`,
+    );
+
+    if (!popup) {
+      reject(new Error("Popup was blocked. Allow popups for this site and try again."));
+      return;
+    }
+
+    // Capture as non-null reference so closures below can use it safely.
+    const openedPopup: Window = popup;
+
+    // Listen for a postMessage from the callback page (backend renders a tiny
+    // HTML page that calls window.opener.postMessage({ type: "hachi_oauth_done" }, ...)).
+    function onMessage(ev: MessageEvent) {
+      if (
+        ev.source === openedPopup &&
+        ev.data &&
+        typeof ev.data === "object" &&
+        (ev.data as Record<string, unknown>).type === "hachi_oauth_done"
+      ) {
+        cleanup();
+        openedPopup.close();
+        resolve();
+      }
+    }
+
+    // Fallback: poll for popup close (handles cases where the callback page
+    // doesn't postMessage back, e.g. same-origin redirects).
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
+    pollInterval = setInterval(() => {
+      if (openedPopup.closed) {
+        cleanup();
+        resolve();
+      }
+    }, 500);
+
+    function cleanup() {
+      window.removeEventListener("message", onMessage);
+      if (pollInterval !== null) clearInterval(pollInterval);
+    }
+
+    window.addEventListener("message", onMessage);
+  });
+
+  // Refresh the integrations list so the new connected=true status shows.
+  await loadIntegrations();
+}
+
+/**
+ * "Connect" an integration.
+ *
+ * - For oauth2 connectors: calls startIntegrationOAuth().
+ * - For apikey/"none" connectors: calls PUT /capabilities/{id}/enabled with { enabled: true }
+ *   (optimistic update).
  *
  * Returns false if already in-flight (prevents double-click duplicates).
  */
-export async function connectIntegration(id: string): Promise<boolean> {
+export async function connectIntegration(id: string, authType?: "oauth2" | "apikey" | "none"): Promise<boolean> {
   if (_connectStatus.get(id) === "loading") return false;
 
-  useStore.getState().connectIntegration(id);
-  if (USE_MOCKS) return true;
-
-  const { setReconnecting } = useStore.getState();
+  if (USE_MOCKS) {
+    useStore.getState().connectIntegration(id);
+    return true;
+  }
 
   _connectStatus.set(id, "loading");
   _notifyListeners();
 
   try {
-    await apiSend<GatewayCapabilityToggleResponse>(
-      "PUT",
-      `/capabilities/${id}/enabled`,
-      { enabled: true },
-    );
-    // Re-run the loader so derived status reflects gateway truth.
-    await loadIntegrations();
+    if (authType === "oauth2") {
+      await startIntegrationOAuth(id);
+    } else {
+      useStore.getState().connectIntegration(id);
+      await apiSend<{ id: string; enabled: boolean; configured: boolean }>(
+        "PUT",
+        `/capabilities/${id}/enabled`,
+        { enabled: true },
+      );
+      await loadIntegrations();
+    }
     _connectStatus.set(id, "idle");
     _notifyListeners();
     return true;
   } catch {
-    setReconnecting(true);
     _connectStatus.set(id, "error");
     _notifyListeners();
     return false;
@@ -318,39 +413,44 @@ export async function connectIntegration(id: string): Promise<boolean> {
 }
 
 /**
- * "Disconnect" an integration — optimistic store update + gateway call.
+ * "Disconnect" an integration.
  *
- * Applies the optimistic update instantly for snappy UI, then calls
- * PUT /capabilities/{id}/enabled with { enabled: false }. On error,
- * signals setReconnecting(true) and re-runs the loader to restore
- * the last known gateway truth.
+ * - For oauth2 connectors: calls POST /integrations/{id}/disconnect to remove the token.
+ * - For apikey/"none" connectors: calls PUT /capabilities/{id}/enabled with { enabled: false }.
  *
- * Returns false if already in-flight (prevents double-click duplicates).
+ * Returns false if already in-flight.
  */
-export async function disconnectIntegration(id: string): Promise<boolean> {
+export async function disconnectIntegration(id: string, authType?: "oauth2" | "apikey" | "none"): Promise<boolean> {
   if (_disconnectStatus.get(id) === "loading") return false;
 
-  useStore.getState().disconnectIntegration(id);
-  if (USE_MOCKS) return true;
-
-  const { setReconnecting } = useStore.getState();
+  if (USE_MOCKS) {
+    useStore.getState().disconnectIntegration(id);
+    return true;
+  }
 
   _disconnectStatus.set(id, "loading");
   _notifyListeners();
 
   try {
-    await apiSend<GatewayCapabilityToggleResponse>(
-      "PUT",
-      `/capabilities/${id}/enabled`,
-      { enabled: false },
-    );
-    // Re-run the loader so derived status reflects gateway truth.
-    await loadIntegrations();
+    if (authType === "oauth2") {
+      await apiSend<GatewayDisconnectResponse>(
+        "POST",
+        `/integrations/${id}/disconnect`,
+      );
+      await loadIntegrations();
+    } else {
+      useStore.getState().disconnectIntegration(id);
+      await apiSend<{ id: string; enabled: boolean; configured: boolean }>(
+        "PUT",
+        `/capabilities/${id}/enabled`,
+        { enabled: false },
+      );
+      await loadIntegrations();
+    }
     _disconnectStatus.set(id, "idle");
     _notifyListeners();
     return true;
   } catch {
-    setReconnecting(true);
     _disconnectStatus.set(id, "error");
     _notifyListeners();
     return false;
@@ -358,23 +458,39 @@ export async function disconnectIntegration(id: string): Promise<boolean> {
 }
 
 // ============================================================
-// 5. MCP server registration
+// 6. MCP server registration — stdio + sse + http transports
 // ============================================================
 
-/** Allowed launcher commands (mirrors Python ALLOWED_MCP_COMMANDS). */
+/** Allowed launcher commands for stdio transport (mirrors Python ALLOWED_MCP_COMMANDS). */
 export const ALLOWED_MCP_COMMANDS = ["npx", "uvx", "python", "python3", "node", "uv"] as const;
 export type McpCommand = (typeof ALLOWED_MCP_COMMANDS)[number];
 
-/** Input shape for adding a new MCP server. */
+/** MCP transport types supported by the register endpoint. */
+export type McpTransport = "stdio" | "sse" | "http";
+
+/**
+ * Input shape for adding a new MCP server.
+ * Transport determines which fields are required:
+ *   - stdio: command + args (env_vars optional)
+ *   - sse / http: url (headers optional)
+ */
 export interface AddMcpServerInput {
   /** Slug identifier, e.g. "github". Letters, digits, hyphens, underscores only. */
   name: string;
-  /** Launcher command. Must be one of ALLOWED_MCP_COMMANDS. */
-  command: McpCommand;
-  /** Package / script arguments, e.g. "-y @modelcontextprotocol/server-github". */
-  args: string;
+  /** Transport type. Defaults to "stdio". */
+  transport: McpTransport;
+  // --- stdio fields ---
+  /** Launcher command. Required when transport === "stdio". */
+  command?: McpCommand;
+  /** Package / script arguments. Required when transport === "stdio". */
+  args?: string;
   /** Optional plain (non-secret) env vars. Keys must not look like secrets. */
   envVars?: Record<string, string>;
+  // --- sse / http fields ---
+  /** Endpoint URL. Required when transport === "sse" or "http". */
+  url?: string;
+  /** Optional request headers (key → value). */
+  headers?: Record<string, string>;
 }
 
 /** Validation result returned before hitting the network. */
@@ -394,43 +510,56 @@ export function validateMcpServerInput(input: AddMcpServerInput): McpValidationR
       message: "Use letters, digits, hyphens, and underscores only.",
     };
   }
-  if (!ALLOWED_MCP_COMMANDS.includes(input.command)) {
-    return {
-      ok: false,
-      field: "command",
-      message: `Command must be one of: ${ALLOWED_MCP_COMMANDS.join(", ")}.`,
-    };
-  }
-  if (!input.args.trim()) {
-    return { ok: false, field: "args", message: "Args are required." };
-  }
-  // Reject shell metacharacters (mirrors _SHELL_META_RE in Python)
-  if (/[;&|><`]|\$[({]|&&|\|\|/.test(input.args)) {
-    return {
-      ok: false,
-      field: "args",
-      message: "Args must not contain shell metacharacters (; & | > < ` ${ $(  && ||).",
-    };
-  }
-  const secretPatterns = [
-    "key", "token", "secret", "password", "passwd", "credential",
-    "private", "auth", "bearer", "apikey", "api_key",
-  ];
-  for (const k of Object.keys(input.envVars ?? {})) {
-    const lower = k.toLowerCase();
-    const isSecret = secretPatterns.some((p) => lower.includes(p));
-    if (isSecret) {
+
+  if (input.transport === "stdio") {
+    if (!input.command || !ALLOWED_MCP_COMMANDS.includes(input.command)) {
       return {
         ok: false,
-        field: "envVars",
-        message: `Env var key "${k}" looks like a secret. Use SecretStore instead.`,
+        field: "command",
+        message: `Command must be one of: ${ALLOWED_MCP_COMMANDS.join(", ")}.`,
       };
     }
+    if (!input.args?.trim()) {
+      return { ok: false, field: "args", message: "Args are required for stdio transport." };
+    }
+    if (/[;&|><`]|\$[({]|&&|\|\|/.test(input.args)) {
+      return {
+        ok: false,
+        field: "args",
+        message: "Args must not contain shell metacharacters (; & | > < ` ${ $(  && ||).",
+      };
+    }
+    const secretPatterns = [
+      "key", "token", "secret", "password", "passwd", "credential",
+      "private", "auth", "bearer", "apikey", "api_key",
+    ];
+    for (const k of Object.keys(input.envVars ?? {})) {
+      const lower = k.toLowerCase();
+      const isSecret = secretPatterns.some((p) => lower.includes(p));
+      if (isSecret) {
+        return {
+          ok: false,
+          field: "envVars",
+          message: `Env var key "${k}" looks like a secret. Use SecretStore instead.`,
+        };
+      }
+    }
+  } else {
+    // sse or http
+    if (!input.url?.trim()) {
+      return { ok: false, field: "url", message: "URL is required for SSE / HTTP transport." };
+    }
+    try {
+      new URL(input.url.trim());
+    } catch {
+      return { ok: false, field: "url", message: "Enter a valid URL (e.g. https://example.com/mcp)." };
+    }
   }
+
   return { ok: true };
 }
 
-/** Raw response from POST /runtime/mcp/register (endpoint not yet in gateway). */
+/** Raw response from POST /runtime/mcp/register */
 interface GatewayMcpRegisterResponse {
   name: string;
   message?: string;
@@ -439,32 +568,39 @@ interface GatewayMcpRegisterResponse {
 /**
  * Register a new MCP server via POST /runtime/mcp/register.
  *
- * NOTE: This endpoint does not yet exist in the Hachi gateway. The call is
- * wired so that when the backend adds the route, it will work automatically.
- * Until then, callers will receive an ApiError with status 404/405 which the
- * UI surfaces as an error message rather than crashing.
+ * Payload (CONTRACT-MCP):
+ * {
+ *   name, transport: "stdio"|"sse"|"http",
+ *   command?, args?, env_vars?,   // stdio only
+ *   url?, headers?                // sse/http only
+ * }
  *
- * On success, reloads the MCP inventory so the new server appears in the list.
+ * On success, reloads the MCP inventory so the new server appears in the list
+ * immediately (the backend hot-reloads on register).
  *
  * @throws ApiError on network failure or backend error.
  */
 export async function addMcpServer(input: AddMcpServerInput): Promise<void> {
-  if (USE_MOCKS) {
-    // In mock mode, simulate success without a network call.
-    return;
+  if (USE_MOCKS) return;
+
+  const payload: Record<string, unknown> = {
+    name: input.name,
+    transport: input.transport,
+  };
+
+  if (input.transport === "stdio") {
+    payload.command = input.command;
+    payload.args = input.args;
+    payload.env_vars = input.envVars ?? {};
+  } else {
+    payload.url = input.url;
+    if (input.headers && Object.keys(input.headers).length > 0) {
+      payload.headers = input.headers;
+    }
   }
 
-  await apiSend<GatewayMcpRegisterResponse>(
-    "POST",
-    "/runtime/mcp/register",
-    {
-      name: input.name,
-      command: input.command,
-      args: input.args,
-      env_vars: input.envVars ?? {},
-    },
-  );
+  await apiSend<GatewayMcpRegisterResponse>("POST", "/runtime/mcp/register", payload);
 
-  // Reload inventory so the newly registered server appears.
+  // Reload inventory so the newly registered server appears (backend hot-reloads).
   await loadIntegrations();
 }

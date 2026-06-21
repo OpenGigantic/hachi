@@ -30,6 +30,7 @@ Usage::
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import logging
 import threading
@@ -43,6 +44,9 @@ logger = logging.getLogger(__name__)
 _LOCK = threading.Lock()
 # ADV-024: keyed by config fingerprint so distinct configs get distinct instances.
 _INSTANCES: dict[str, ProcessSharedServices] = {}
+# Registered once (lazily, under _LOCK) so the shared vault's Chroma WAL is flushed
+# at process exit without any individual session closing the shared vault.
+_ATEXIT_REGISTERED = False
 
 
 def _config_fingerprint(config: dict[str, Any], brain_dir: str) -> str:
@@ -112,7 +116,7 @@ class ProcessSharedServices:
                           and create a fresh one.  Pass this in tests that need a
                           clean slate.
         """
-        global _INSTANCES
+        global _INSTANCES, _ATEXIT_REGISTERED
         fp = _config_fingerprint(config, brain_dir)
 
         # Fast-path: check without the lock first (double-checked locking).
@@ -145,6 +149,11 @@ class ProcessSharedServices:
 
             new_instance = cls._init(config, brain_dir, fingerprint=fp)
             _INSTANCES[fp] = new_instance
+            if not _ATEXIT_REGISTERED:
+                # Flush the shared Chroma WAL on process exit (P3-07) without letting
+                # any single AgentSession.shutdown() close the shared vault.
+                atexit.register(cls.shutdown_all)
+                _ATEXIT_REGISTERED = True
 
         return new_instance
 
@@ -183,6 +192,34 @@ class ProcessSharedServices:
         fp = _config_fingerprint(config, brain_dir)
         with _LOCK:
             _INSTANCES.pop(fp, None)
+
+    @classmethod
+    def shutdown_all(cls) -> None:
+        """Close shared resources for every cached singleton (process exit).
+
+        Closes each instance's MemoryVault exactly once so the Chroma WAL is
+        flushed (P3-07), then clears the instance cache. Registered as an
+        ``atexit`` handler the first time a singleton is created, so the shared
+        vault is flushed on process exit without any individual AgentSession
+        closing it (which would break sibling sessions — see ``is_shared``).
+        Idempotent and exception-safe.
+        """
+        global _INSTANCES
+        with _LOCK:
+            instances = list(_INSTANCES.values())
+            _INSTANCES.clear()
+        for inst in instances:
+            vault = getattr(inst, "vault", None)
+            close = getattr(vault, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.warning(
+                        "ProcessSharedServices.shutdown_all: vault close failed "
+                        "(WAL may not be flushed)",
+                        exc_info=True,
+                    )
 
     def uptime_seconds(self) -> float:
         """How long (seconds) since this singleton was first created."""
@@ -226,6 +263,10 @@ class ProcessSharedServices:
         _provider.initialize(brain_dir=brain_dir)
         if isinstance(_provider, ChromaMemoryProvider):
             vault = _provider.vault
+            # Mark as the process-shared vault so an individual AgentSession never
+            # closes it on shutdown — only shutdown_all() (atexit) closes it once.
+            if vault is not None:
+                vault.is_shared = True
 
         # --- MemoryIndex / MemoryWriter (when memory.graph=true) ---
         graph_index: Any = None

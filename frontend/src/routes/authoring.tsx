@@ -9,6 +9,7 @@ import {
   applyAuthoring,
   revertAuthoring,
   generateAuthoring,
+  saveAuthoringSource,
 } from '../lib/data/domains/authoring'
 
 // ---- syntax-highlight tokeniser (ported from prototype _ogTokens) ----
@@ -163,10 +164,54 @@ function Authoring() {
   const [hoverDismissExplainer, setHoverDismissExplainer] = useState(false)
   const [showWhyTooltip, setShowWhyTooltip] = useState(false)
 
+  // Edit mode state (Step 3 — CONTRACT-AUTHORING-SAVE)
+  const [editMode, setEditMode] = useState(false)
+  const [editContent, setEditContent] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [hoverEdit, setHoverEdit] = useState(false)
+  const [hoverSave, setHoverSave] = useState(false)
+  const [hoverCancelEdit, setHoverCancelEdit] = useState(false)
+
+  // Derive plain-text source from authSource for the editor seed.
+  // authSource holds DiffLine[] (neutral "" rows when not in diff state).
+  const plainSource = authSource.map((l) => l[1]).join('\n')
+
+  function enterEditMode() {
+    setEditContent(plainSource)
+    setSaveError(null)
+    setEditMode(true)
+  }
+
+  function cancelEditMode() {
+    setEditMode(false)
+    setSaveError(null)
+  }
+
+  async function handleSave() {
+    if (!authSel || isSaving) return
+    setIsSaving(true)
+    setSaveError(null)
+    const result = await saveAuthoringSource(authSel, editContent)
+    setIsSaving(false)
+    if (result.ok) {
+      setEditMode(false)
+    } else {
+      setSaveError(result.message ?? 'Save failed.')
+    }
+  }
+
+  // Exit edit mode when the selected target changes
+  useEffect(() => {
+    setEditMode(false)
+    setSaveError(null)
+  }, [authSel])
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Header */}
       <div
+        className="hachi-auth-header"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -195,7 +240,7 @@ function Authoring() {
 
       {/* Scrollable body */}
       <div
-        className="hachi-scroll"
+        className="hachi-scroll hachi-auth-body"
         style={{ flex: 1, overflow: 'auto', padding: '24px 32px 64px' }}
       >
         <div style={{ maxWidth: 1000, margin: '0 auto' }}>
@@ -246,9 +291,9 @@ function Authoring() {
                     <div
                       style={{
                         position: 'absolute',
-                        bottom: '100%',
+                        top: '100%',
                         left: 0,
-                        marginBottom: 6,
+                        marginTop: 6,
                         padding: '8px 12px',
                         background: 'var(--hachi-surface)',
                         border: '0.5px solid var(--hachi-line)',
@@ -258,7 +303,7 @@ function Authoring() {
                         lineHeight: '18px',
                         color: 'var(--hachi-ink)',
                         boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                        zIndex: 10,
+                        zIndex: 200,
                         pointerEvents: 'none',
                       }}
                     >
@@ -337,6 +382,7 @@ function Authoring() {
           ) : (
             /* Two-column layout */
             <div
+              className="hachi-auth-grid"
               style={{
                 display: 'grid',
                 gridTemplateColumns: '260px minmax(0,1fr)',
@@ -462,7 +508,8 @@ function Authoring() {
                       {authSel}
                     </span>
 
-                    {/* Diff / Source toggle */}
+                    {/* Diff / Source toggle (hidden in edit mode) */}
+                    {!editMode && (
                     <div
                       style={{
                         display: 'inline-flex',
@@ -473,6 +520,7 @@ function Authoring() {
                     >
                       <button
                         onClick={() => setAuthMode('diff')}
+                        title="Show unified diff — added lines (+) and removed lines (−) against the current saved state"
                         style={{
                           height: 28,
                           padding: '0 13px',
@@ -489,6 +537,7 @@ function Authoring() {
                       </button>
                       <button
                         onClick={() => setAuthMode('source')}
+                        title="Show the resulting file after the patch is applied — deleted lines are hidden"
                         style={{
                           height: 28,
                           padding: '0 13px',
@@ -504,13 +553,116 @@ function Authoring() {
                         Source
                       </button>
                     </div>
+                    )}
+
+                    {/* Edit / Save / Cancel buttons */}
+                    {editMode ? (
+                      <div style={{ display: 'inline-flex', gap: 6 }}>
+                        <button
+                          onClick={cancelEditMode}
+                          onMouseEnter={() => setHoverCancelEdit(true)}
+                          onMouseLeave={() => setHoverCancelEdit(false)}
+                          title="Discard edits and return to read-only view"
+                          style={{
+                            height: 28,
+                            padding: '0 12px',
+                            border: '0.5px solid var(--hachi-line)',
+                            borderRadius: 6,
+                            font: '500 12px var(--font-body)',
+                            cursor: 'pointer',
+                            background: hoverCancelEdit ? 'var(--hachi-cream)' : 'transparent',
+                            color: 'var(--hachi-muted)',
+                            transition: 'background var(--dur-fast) var(--ease)',
+                          }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => void handleSave()}
+                          onMouseEnter={() => setHoverSave(true)}
+                          onMouseLeave={() => setHoverSave(false)}
+                          disabled={isSaving}
+                          title="Save edited content to the gateway (POST /authoring/targets/{name}/source)"
+                          style={{
+                            height: 28,
+                            padding: '0 13px',
+                            border: 'none',
+                            borderRadius: 6,
+                            font: '500 12px var(--font-body)',
+                            cursor: isSaving ? 'not-allowed' : 'pointer',
+                            background: isSaving
+                              ? 'var(--hachi-muted)'
+                              : hoverSave
+                              ? 'var(--hachi-brand-hover)'
+                              : 'var(--hachi-brand)',
+                            color: 'var(--hachi-canvas)',
+                            transition: 'background var(--dur-fast) var(--ease)',
+                            opacity: isSaving ? 0.6 : 1,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                          }}
+                        >
+                          <Icon name="check" size={12} />
+                          {isSaving ? 'Saving…' : 'Save'}
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={enterEditMode}
+                        onMouseEnter={() => setHoverEdit(true)}
+                        onMouseLeave={() => setHoverEdit(false)}
+                        disabled={!authSel}
+                        title="Switch to manual edit mode — type directly and save to the gateway"
+                        style={{
+                          height: 28,
+                          padding: '0 12px',
+                          border: '0.5px solid var(--hachi-line)',
+                          borderRadius: 6,
+                          font: '500 12px var(--font-body)',
+                          cursor: authSel ? 'pointer' : 'not-allowed',
+                          background: hoverEdit ? 'var(--hachi-cream)' : 'transparent',
+                          color: 'var(--hachi-muted)',
+                          transition: 'background var(--dur-fast) var(--ease)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          opacity: authSel ? 1 : 0.4,
+                        }}
+                      >
+                        <Icon name="file-code" size={12} />
+                        Edit
+                      </button>
+                    )}
                   </div>
 
-                  {/* Code viewer */}
+                  {/* Code viewer / edit textarea */}
+                  {editMode ? (
+                    <textarea
+                      value={editContent}
+                      onChange={(e) => setEditContent(e.target.value)}
+                      spellCheck={false}
+                      style={{
+                        display: 'block',
+                        width: '100%',
+                        minHeight: 380,
+                        padding: '12px 16px',
+                        background: 'var(--hachi-canvas)',
+                        color: 'var(--hachi-ink)',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 12.5,
+                        lineHeight: '22px',
+                        border: 'none',
+                        outline: 'none',
+                        resize: 'vertical',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  ) : (
                   <div
                     className="hachi-scroll"
                     style={{
-                      background: '#16151A',
+                      background: 'var(--hachi-canvas)',
                       maxHeight: 380,
                       overflow: 'auto',
                       padding: '12px 0',
@@ -522,7 +674,7 @@ function Authoring() {
                           padding: '32px 24px',
                           textAlign: 'center',
                           fontSize: 12.5,
-                          color: 'rgba(251,247,239,0.3)',
+                          color: 'var(--hachi-muted)',
                           fontFamily: 'var(--font-mono)',
                         }}
                       >
@@ -583,7 +735,7 @@ function Authoring() {
                                 fontFamily: 'var(--font-mono)',
                                 fontSize: 12.5,
                                 lineHeight: '22px',
-                                color: '#FBF7EF',
+                                color: 'var(--hachi-ink)',
                                 whiteSpace: 'pre',
                                 overflow: 'hidden',
                               }}
@@ -599,7 +751,42 @@ function Authoring() {
                       })
                     )}
                   </div>
+                  )}
                 </div>
+
+                {/* Save error banner (edit mode) */}
+                {saveError && (
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '10px 14px',
+                      background: 'rgba(192,57,43,0.10)',
+                      border: '0.5px solid var(--hachi-danger)',
+                      borderRadius: 10,
+                      fontSize: 13,
+                      color: 'var(--hachi-danger)',
+                    }}
+                  >
+                    <Icon name="x" size={14} />
+                    <span style={{ flex: 1 }}>{saveError}</span>
+                    <button
+                      onClick={() => setSaveError(null)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        padding: 0,
+                        cursor: 'pointer',
+                        color: 'var(--hachi-danger)',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <Icon name="x" size={12} />
+                    </button>
+                  </div>
+                )}
 
                 {/* Generate patch panel */}
                 <div

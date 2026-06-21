@@ -7,8 +7,10 @@ import React, { CSSProperties, useEffect, useReducer, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
+import { ConnectorLogo } from '../components/icons/ConnectorLogo'
 import { useFocusTrap } from '../lib/hooks/useFocusTrap'
 import type { Integration, McpServer, McpTool } from '../lib/data/types'
+import type { IntegrationExtended } from '../lib/data/domains/integrations'
 import {
   loadIntegrations,
   connectIntegration,
@@ -20,7 +22,7 @@ import {
   getDisconnectStatus,
   ALLOWED_MCP_COMMANDS,
 } from '../lib/data/domains/integrations'
-import type { McpCommand } from '../lib/data/domains/integrations'
+import type { McpCommand, McpTransport } from '../lib/data/domains/integrations'
 
 // ---- status meta --------------------------------------------------------
 
@@ -155,20 +157,36 @@ function IntCard({
   disconnectLoading,
   disconnectError,
 }: IntCardProps) {
+  // Cast to extended to access OAuth-specific fields gracefully.
+  const ext = i as Partial<IntegrationExtended>
+  const authType = ext.auth_type ?? 'none'
+  const configured = ext.configured ?? true  // default true for backwards compat
+  const isOAuth = authType === 'oauth2'
+  const isUnconfigured = isOAuth && !configured
+
   const sm = getIntMeta(i.status)
   const connected = i.status === 'connected'
-  const primaryLabel =
-    connectLoading
-      ? 'Connecting…'
-      : connectError
-      ? 'Retry'
-      : i.status === 'connected'
-      ? 'Re-authorise'
-      : i.status === 'degraded'
-      ? 'Fix access'
-      : 'Connect'
+
+  // Determine primary button label and colour.
+  let primaryLabel: string
+  if (isUnconfigured) {
+    primaryLabel = 'Needs setup'
+  } else if (connectLoading) {
+    primaryLabel = 'Connecting…'
+  } else if (connectError) {
+    primaryLabel = 'Retry'
+  } else if (i.status === 'connected') {
+    primaryLabel = isOAuth ? 'Re-authorise' : 'Re-authorise'
+  } else if (i.status === 'degraded') {
+    primaryLabel = 'Fix access'
+  } else {
+    primaryLabel = isOAuth ? 'Connect with OAuth' : 'Connect'
+  }
+
   const primaryFg =
-    connectError
+    isUnconfigured
+      ? 'var(--hachi-muted)'
+      : connectError
       ? 'var(--hachi-danger)'
       : i.status === 'none'
       ? 'var(--hachi-trust)'
@@ -202,7 +220,7 @@ function IntCard({
             flexShrink: 0,
           }}
         >
-          <Icon name={i.icon} size={20} />
+          <ConnectorLogo id={i.id} size={22} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 500, fontSize: 15 }}>{i.name}</div>
@@ -220,6 +238,26 @@ function IntCard({
           fontSize={12}
         />
       </div>
+
+      {/* unconfigured OAuth warning */}
+      {isUnconfigured && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 7,
+            fontSize: 12,
+            color: 'var(--hachi-muted)',
+            background: 'var(--hachi-cream)',
+            padding: '7px 10px',
+            borderRadius: 8,
+          }}
+          title="An admin must configure the OAuth client ID and secret for this connector before users can connect."
+        >
+          <Icon name="key" size={13} style={{ marginTop: 1, flexShrink: 0 }} />
+          Admin needs to set OAuth client credentials before this can be connected.
+        </div>
+      )}
 
       {/* risky warning */}
       {i.risky && (
@@ -256,7 +294,9 @@ function IntCard({
           role="alert"
         >
           <Icon name="alert" size={14} />
-          Connection failed. Check your gateway and try again.
+          {isOAuth
+            ? 'OAuth flow failed. Check popup permissions and try again.'
+            : 'Connection failed. Check your gateway and try again.'}
         </div>
       )}
 
@@ -283,11 +323,12 @@ function IntCard({
       {/* action buttons */}
       <div style={{ display: 'flex', gap: 8 }}>
         <button
-          onClick={onConnect}
-          disabled={connectLoading || disconnectLoading}
+          onClick={isUnconfigured ? undefined : onConnect}
+          disabled={isUnconfigured || connectLoading || disconnectLoading}
           onMouseEnter={() => setPrimaryHover(true)}
           onMouseLeave={() => setPrimaryHover(false)}
           aria-busy={connectLoading}
+          title={isUnconfigured ? 'An admin must configure OAuth client credentials first.' : undefined}
           style={{
             flex: 1,
             height: 34,
@@ -295,13 +336,13 @@ function IntCard({
             border: connectError
               ? '0.5px solid var(--hachi-danger)'
               : '0.5px solid var(--hachi-line)',
-            background: primaryHover && !connectLoading && !disconnectLoading
+            background: primaryHover && !connectLoading && !disconnectLoading && !isUnconfigured
               ? 'var(--hachi-cream)'
               : 'var(--hachi-canvas)',
             color: primaryFg,
             font: '500 13px var(--font-body)',
-            cursor: connectLoading || disconnectLoading ? 'not-allowed' : 'pointer',
-            opacity: connectLoading || disconnectLoading ? 0.65 : 1,
+            cursor: connectLoading || disconnectLoading || isUnconfigured ? 'not-allowed' : 'pointer',
+            opacity: connectLoading || disconnectLoading || isUnconfigured ? 0.65 : 1,
             transition: 'background var(--dur-fast) var(--ease)',
           }}
         >
@@ -349,6 +390,7 @@ function McpServerRow({ server: s, isLast }: McpServerRowProps) {
   const toolCount = s.tools === 0 ? '—' : s.tools
   return (
     <div
+      className="hachi-mcp-server-row"
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -554,7 +596,7 @@ function NoMcpServers() {
   )
 }
 
-// ---- Add MCP dialog -----------------------------------------------------
+// ---- Add MCP dialog — extended with transport selector ------------------
 
 interface AddMcpDialogProps {
   onClose: () => void
@@ -562,33 +604,49 @@ interface AddMcpDialogProps {
 
 interface FormState {
   name: string
+  transport: McpTransport
+  // stdio fields
   command: McpCommand
   args: string
   envKey: string
   envVal: string
   envVars: Record<string, string>
+  // sse/http fields
+  url: string
+  headerKey: string
+  headerVal: string
+  headers: Record<string, string>
+  // submit state
   submitting: boolean
   submitError: string | null
-  fieldErrors: Partial<Record<'name' | 'args' | 'envVars', string>>
+  fieldErrors: Partial<Record<'name' | 'args' | 'envVars' | 'url' | 'command', string>>
 }
 
 type FormAction =
   | { type: 'set_name'; value: string }
+  | { type: 'set_transport'; value: McpTransport }
   | { type: 'set_command'; value: McpCommand }
   | { type: 'set_args'; value: string }
   | { type: 'set_env_key'; value: string }
   | { type: 'set_env_val'; value: string }
   | { type: 'add_env' }
   | { type: 'remove_env'; key: string }
+  | { type: 'set_url'; value: string }
+  | { type: 'set_header_key'; value: string }
+  | { type: 'set_header_val'; value: string }
+  | { type: 'add_header' }
+  | { type: 'remove_header'; key: string }
   | { type: 'set_submitting'; value: boolean }
   | { type: 'set_submit_error'; value: string | null }
-  | { type: 'set_field_error'; field: 'name' | 'args' | 'envVars'; value: string | null }
-  | { type: 'clear_field_error'; field: 'name' | 'args' | 'envVars' }
+  | { type: 'set_field_error'; field: keyof FormState['fieldErrors']; value: string | null }
+  | { type: 'clear_field_error'; field: keyof FormState['fieldErrors'] }
 
 function formReducer(state: FormState, action: FormAction): FormState {
   switch (action.type) {
     case 'set_name':
       return { ...state, name: action.value, fieldErrors: { ...state.fieldErrors, name: undefined } }
+    case 'set_transport':
+      return { ...state, transport: action.value, fieldErrors: {} }
     case 'set_command':
       return { ...state, command: action.value }
     case 'set_args':
@@ -611,6 +669,26 @@ function formReducer(state: FormState, action: FormAction): FormState {
       const next = { ...state.envVars }
       delete next[action.key]
       return { ...state, envVars: next }
+    }
+    case 'set_url':
+      return { ...state, url: action.value, fieldErrors: { ...state.fieldErrors, url: undefined } }
+    case 'set_header_key':
+      return { ...state, headerKey: action.value }
+    case 'set_header_val':
+      return { ...state, headerVal: action.value }
+    case 'add_header': {
+      if (!state.headerKey.trim()) return state
+      return {
+        ...state,
+        headers: { ...state.headers, [state.headerKey.trim()]: state.headerVal },
+        headerKey: '',
+        headerVal: '',
+      }
+    }
+    case 'remove_header': {
+      const next = { ...state.headers }
+      delete next[action.key]
+      return { ...state, headers: next }
     }
     case 'set_submitting':
       return { ...state, submitting: action.value }
@@ -636,11 +714,16 @@ function formReducer(state: FormState, action: FormAction): FormState {
 
 const initialFormState: FormState = {
   name: '',
+  transport: 'stdio',
   command: 'npx',
   args: '',
   envKey: '',
   envVal: '',
   envVars: {},
+  url: '',
+  headerKey: '',
+  headerVal: '',
+  headers: {},
   submitting: false,
   submitError: null,
   fieldErrors: {},
@@ -650,7 +733,6 @@ function AddMcpDialog({ onClose }: AddMcpDialogProps) {
   const [state, dispatch] = useReducer(formReducer, initialFormState)
   const trapRef = useFocusTrap<HTMLDivElement>(true)
 
-  // Close on Escape
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape' && !state.submitting) onClose()
@@ -665,15 +747,20 @@ function AddMcpDialog({ onClose }: AddMcpDialogProps) {
 
     const input = {
       name: state.name.trim(),
+      transport: state.transport,
+      // stdio
       command: state.command,
       args: state.args.trim(),
       envVars: state.envVars,
+      // sse/http
+      url: state.url.trim(),
+      headers: state.headers,
     }
 
     const result = validateMcpServerInput(input)
     if (!result.ok) {
-      const field = result.field
-      if (field === 'name' || field === 'args' || field === 'envVars') {
+      const field = result.field as keyof FormState['fieldErrors']
+      if (field === 'name' || field === 'args' || field === 'envVars' || field === 'url') {
         dispatch({ type: 'set_field_error', field, value: result.message })
       } else {
         dispatch({ type: 'set_submit_error', value: result.message })
@@ -753,6 +840,8 @@ function AddMcpDialog({ onClose }: AddMcpDialogProps) {
   }
 
   const hasEnvPairs = Object.keys(state.envVars).length > 0
+  const hasHeaderPairs = Object.keys(state.headers).length > 0
+  const isStdio = state.transport === 'stdio'
 
   return (
     <div style={backdropStyle} onClick={state.submitting ? undefined : onClose}>
@@ -842,214 +931,411 @@ function AddMcpDialog({ onClose }: AddMcpDialogProps) {
               </span>
             </div>
 
-            {/* Command */}
+            {/* Transport selector */}
             <div style={fieldWrapStyle}>
-              <label htmlFor="mcp-command" style={labelStyle}>
-                Command <span aria-hidden="true" style={{ color: 'var(--hachi-danger)' }}>*</span>
-              </label>
-              <select
-                id="mcp-command"
-                value={state.command}
-                onChange={(e) =>
-                  dispatch({ type: 'set_command', value: e.target.value as McpCommand })
-                }
-                disabled={state.submitting}
-                style={{
-                  ...fieldInputStyle(false),
-                  appearance: 'auto',
-                  cursor: 'pointer',
-                }}
-              >
-                {ALLOWED_MCP_COMMANDS.map((cmd) => (
-                  <option key={cmd} value={cmd}>
-                    {cmd}
-                  </option>
-                ))}
-              </select>
-              <span style={{ fontSize: 11, color: 'var(--hachi-muted)' }}>
-                Launcher executable. Only these commands are permitted for security.
+              <span style={labelStyle}>
+                Transport <span aria-hidden="true" style={{ color: 'var(--hachi-danger)' }}>*</span>
               </span>
-            </div>
-
-            {/* Args */}
-            <div style={fieldWrapStyle}>
-              <label htmlFor="mcp-args" style={labelStyle}>
-                Args <span aria-hidden="true" style={{ color: 'var(--hachi-danger)' }}>*</span>
-              </label>
-              <input
-                id="mcp-args"
-                type="text"
-                value={state.args}
-                onChange={(e) => dispatch({ type: 'set_args', value: e.target.value })}
-                placeholder="e.g. -y @modelcontextprotocol/server-github"
-                disabled={state.submitting}
-                aria-invalid={!!state.fieldErrors.args}
-                aria-describedby={state.fieldErrors.args ? 'mcp-args-error' : undefined}
-                style={{
-                  ...fieldInputStyle(!!state.fieldErrors.args),
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: 12,
-                }}
-                autoComplete="off"
-                spellCheck={false}
-              />
-              {state.fieldErrors.args && (
-                <span id="mcp-args-error" style={errorTextStyle} role="alert">
-                  {state.fieldErrors.args}
-                </span>
-              )}
-              <span style={{ fontSize: 11, color: 'var(--hachi-muted)' }}>
-                Shell metacharacters are not allowed.
-              </span>
-            </div>
-
-            {/* Env vars (optional) */}
-            <div style={fieldWrapStyle}>
-              <span style={labelStyle}>Environment variables (optional)</span>
-              <span style={{ fontSize: 11, color: 'var(--hachi-muted)', marginTop: -4 }}>
-                Plain config only — secret/token/key/auth names are rejected. Use SecretStore for credentials.
-              </span>
-
-              {/* Existing env var pairs */}
-              {hasEnvPairs && (
-                <div
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 4,
-                    background: 'var(--hachi-canvas)',
-                    border: '0.5px solid var(--hachi-line)',
-                    borderRadius: 8,
-                    padding: '6px 10px',
-                  }}
-                >
-                  {Object.entries(state.envVars).map(([k, v]) => (
-                    <div
-                      key={k}
+              <div style={{ display: 'flex', gap: 8 }}>
+                {(['stdio', 'sse', 'http'] as McpTransport[]).map((t) => {
+                  const active = state.transport === t
+                  return (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => dispatch({ type: 'set_transport', value: t })}
+                      disabled={state.submitting}
                       style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 8,
-                        fontSize: 12,
-                        fontFamily: 'var(--font-mono)',
+                        flex: 1,
+                        height: 34,
+                        borderRadius: 8,
+                        border: active
+                          ? '1.5px solid var(--hachi-trust)'
+                          : '0.5px solid var(--hachi-line)',
+                        background: active ? 'var(--hachi-trust-tint)' : 'var(--hachi-canvas)',
+                        color: active ? 'var(--hachi-trust)' : 'var(--hachi-muted)',
+                        font: `${active ? 600 : 400} 13px var(--font-mono)`,
+                        cursor: state.submitting ? 'not-allowed' : 'pointer',
+                        transition: 'all var(--dur-fast) var(--ease)',
                       }}
                     >
-                      <span style={{ flex: 1, color: 'var(--hachi-ink)' }}>
-                        {k}={v}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => dispatch({ type: 'remove_env', key: k })}
-                        disabled={state.submitting}
-                        aria-label={`Remove env var ${k}`}
-                        style={{
-                          border: 'none',
-                          background: 'transparent',
-                          color: 'var(--hachi-muted)',
-                          cursor: 'pointer',
-                          padding: '2px 4px',
-                          borderRadius: 4,
-                          lineHeight: 1,
-                          fontSize: 14,
-                        }}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {state.fieldErrors.envVars && (
-                <span style={errorTextStyle} role="alert">
-                  {state.fieldErrors.envVars}
-                </span>
-              )}
-
-              {/* Add env var row */}
-              <div style={{ display: 'flex', gap: 6 }}>
-                <input
-                  type="text"
-                  value={state.envKey}
-                  onChange={(e) => dispatch({ type: 'set_env_key', value: e.target.value })}
-                  placeholder="KEY"
-                  disabled={state.submitting}
-                  aria-label="Environment variable key"
-                  style={{
-                    ...fieldInputStyle(false),
-                    flex: 1,
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 12,
-                  }}
-                  autoComplete="off"
-                  spellCheck={false}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      const result = validateMcpServerInput({
-                        name: state.name,
-                        command: state.command,
-                        args: state.args,
-                        envVars: { ...state.envVars, [state.envKey]: state.envVal },
-                      })
-                      if (!result.ok && result.field === 'envVars') {
-                        dispatch({ type: 'set_field_error', field: 'envVars', value: result.message })
-                      } else {
-                        dispatch({ type: 'add_env' })
-                      }
-                    }
-                  }}
-                />
-                <input
-                  type="text"
-                  value={state.envVal}
-                  onChange={(e) => dispatch({ type: 'set_env_val', value: e.target.value })}
-                  placeholder="value"
-                  disabled={state.submitting}
-                  aria-label="Environment variable value"
-                  style={{
-                    ...fieldInputStyle(false),
-                    flex: 2,
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 12,
-                  }}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    const result = validateMcpServerInput({
-                      name: state.name,
-                      command: state.command,
-                      args: state.args,
-                      envVars: { ...state.envVars, [state.envKey]: state.envVal },
-                    })
-                    if (!result.ok && result.field === 'envVars') {
-                      dispatch({ type: 'set_field_error', field: 'envVars', value: result.message })
-                    } else {
-                      dispatch({ type: 'add_env' })
-                    }
-                  }}
-                  disabled={state.submitting || !state.envKey.trim()}
-                  aria-label="Add environment variable"
-                  style={{
-                    height: 36,
-                    padding: '0 12px',
-                    borderRadius: 8,
-                    border: '0.5px solid var(--hachi-line)',
-                    background: 'var(--hachi-canvas)',
-                    color: 'var(--hachi-trust)',
-                    font: '500 12px var(--font-body)',
-                    cursor: state.submitting || !state.envKey.trim() ? 'not-allowed' : 'pointer',
-                    opacity: !state.envKey.trim() ? 0.5 : 1,
-                    flexShrink: 0,
-                  }}
-                >
-                  Add
-                </button>
+                      {t}
+                    </button>
+                  )
+                })}
               </div>
+              <span style={{ fontSize: 11, color: 'var(--hachi-muted)' }}>
+                {isStdio
+                  ? 'stdio — launches a local process via command + args.'
+                  : state.transport === 'sse'
+                  ? 'SSE — connects to a server-sent events endpoint.'
+                  : 'HTTP — connects to a streamable HTTP endpoint.'}
+              </span>
             </div>
+
+            {/* ---- stdio-only fields ---- */}
+            {isStdio && (
+              <>
+                {/* Command */}
+                <div style={fieldWrapStyle}>
+                  <label htmlFor="mcp-command" style={labelStyle}>
+                    Command <span aria-hidden="true" style={{ color: 'var(--hachi-danger)' }}>*</span>
+                  </label>
+                  <select
+                    id="mcp-command"
+                    value={state.command}
+                    onChange={(e) =>
+                      dispatch({ type: 'set_command', value: e.target.value as McpCommand })
+                    }
+                    disabled={state.submitting}
+                    style={{
+                      ...fieldInputStyle(false),
+                      appearance: 'auto',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {ALLOWED_MCP_COMMANDS.map((cmd) => (
+                      <option key={cmd} value={cmd}>
+                        {cmd}
+                      </option>
+                    ))}
+                  </select>
+                  <span style={{ fontSize: 11, color: 'var(--hachi-muted)' }}>
+                    Launcher executable. Only these commands are permitted for security.
+                  </span>
+                </div>
+
+                {/* Args */}
+                <div style={fieldWrapStyle}>
+                  <label htmlFor="mcp-args" style={labelStyle}>
+                    Args <span aria-hidden="true" style={{ color: 'var(--hachi-danger)' }}>*</span>
+                  </label>
+                  <input
+                    id="mcp-args"
+                    type="text"
+                    value={state.args}
+                    onChange={(e) => dispatch({ type: 'set_args', value: e.target.value })}
+                    placeholder="e.g. -y @modelcontextprotocol/server-github"
+                    disabled={state.submitting}
+                    aria-invalid={!!state.fieldErrors.args}
+                    aria-describedby={state.fieldErrors.args ? 'mcp-args-error' : undefined}
+                    style={{
+                      ...fieldInputStyle(!!state.fieldErrors.args),
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 12,
+                    }}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  {state.fieldErrors.args && (
+                    <span id="mcp-args-error" style={errorTextStyle} role="alert">
+                      {state.fieldErrors.args}
+                    </span>
+                  )}
+                  <span style={{ fontSize: 11, color: 'var(--hachi-muted)' }}>
+                    Shell metacharacters are not allowed.
+                  </span>
+                </div>
+
+                {/* Env vars (optional) */}
+                <div style={fieldWrapStyle}>
+                  <span style={labelStyle}>Environment variables (optional)</span>
+                  <span style={{ fontSize: 11, color: 'var(--hachi-muted)', marginTop: -4 }}>
+                    Plain config only — secret/token/key/auth names are rejected. Use SecretStore for credentials.
+                  </span>
+
+                  {hasEnvPairs && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 4,
+                        background: 'var(--hachi-canvas)',
+                        border: '0.5px solid var(--hachi-line)',
+                        borderRadius: 8,
+                        padding: '6px 10px',
+                      }}
+                    >
+                      {Object.entries(state.envVars).map(([k, v]) => (
+                        <div
+                          key={k}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            fontSize: 12,
+                            fontFamily: 'var(--font-mono)',
+                          }}
+                        >
+                          <span style={{ flex: 1, color: 'var(--hachi-ink)' }}>
+                            {k}={v}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => dispatch({ type: 'remove_env', key: k })}
+                            disabled={state.submitting}
+                            aria-label={`Remove env var ${k}`}
+                            style={{
+                              border: 'none',
+                              background: 'transparent',
+                              color: 'var(--hachi-muted)',
+                              cursor: 'pointer',
+                              padding: '2px 4px',
+                              borderRadius: 4,
+                              lineHeight: 1,
+                              fontSize: 14,
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {state.fieldErrors.envVars && (
+                    <span style={errorTextStyle} role="alert">
+                      {state.fieldErrors.envVars}
+                    </span>
+                  )}
+
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input
+                      type="text"
+                      value={state.envKey}
+                      onChange={(e) => dispatch({ type: 'set_env_key', value: e.target.value })}
+                      placeholder="KEY"
+                      disabled={state.submitting}
+                      aria-label="Environment variable key"
+                      style={{
+                        ...fieldInputStyle(false),
+                        flex: 1,
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 12,
+                      }}
+                      autoComplete="off"
+                      spellCheck={false}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          const result = validateMcpServerInput({
+                            name: state.name,
+                            transport: state.transport,
+                            command: state.command,
+                            args: state.args,
+                            envVars: { ...state.envVars, [state.envKey]: state.envVal },
+                          })
+                          if (!result.ok && result.field === 'envVars') {
+                            dispatch({ type: 'set_field_error', field: 'envVars', value: result.message })
+                          } else {
+                            dispatch({ type: 'add_env' })
+                          }
+                        }
+                      }}
+                    />
+                    <input
+                      type="text"
+                      value={state.envVal}
+                      onChange={(e) => dispatch({ type: 'set_env_val', value: e.target.value })}
+                      placeholder="value"
+                      disabled={state.submitting}
+                      aria-label="Environment variable value"
+                      style={{
+                        ...fieldInputStyle(false),
+                        flex: 2,
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 12,
+                      }}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const result = validateMcpServerInput({
+                          name: state.name,
+                          transport: state.transport,
+                          command: state.command,
+                          args: state.args,
+                          envVars: { ...state.envVars, [state.envKey]: state.envVal },
+                        })
+                        if (!result.ok && result.field === 'envVars') {
+                          dispatch({ type: 'set_field_error', field: 'envVars', value: result.message })
+                        } else {
+                          dispatch({ type: 'add_env' })
+                        }
+                      }}
+                      disabled={state.submitting || !state.envKey.trim()}
+                      aria-label="Add environment variable"
+                      style={{
+                        height: 36,
+                        padding: '0 12px',
+                        borderRadius: 8,
+                        border: '0.5px solid var(--hachi-line)',
+                        background: 'var(--hachi-canvas)',
+                        color: 'var(--hachi-trust)',
+                        font: '500 12px var(--font-body)',
+                        cursor: state.submitting || !state.envKey.trim() ? 'not-allowed' : 'pointer',
+                        opacity: !state.envKey.trim() ? 0.5 : 1,
+                        flexShrink: 0,
+                      }}
+                    >
+                      Add
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* ---- sse/http-only fields ---- */}
+            {!isStdio && (
+              <>
+                {/* URL */}
+                <div style={fieldWrapStyle}>
+                  <label htmlFor="mcp-url" style={labelStyle}>
+                    URL <span aria-hidden="true" style={{ color: 'var(--hachi-danger)' }}>*</span>
+                  </label>
+                  <input
+                    id="mcp-url"
+                    type="url"
+                    value={state.url}
+                    onChange={(e) => dispatch({ type: 'set_url', value: e.target.value })}
+                    placeholder={
+                      state.transport === 'sse'
+                        ? 'e.g. https://mcp.example.com/sse'
+                        : 'e.g. https://mcp.example.com/mcp'
+                    }
+                    disabled={state.submitting}
+                    aria-invalid={!!state.fieldErrors.url}
+                    aria-describedby={state.fieldErrors.url ? 'mcp-url-error' : undefined}
+                    style={{
+                      ...fieldInputStyle(!!state.fieldErrors.url),
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 12,
+                    }}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  {state.fieldErrors.url && (
+                    <span id="mcp-url-error" style={errorTextStyle} role="alert">
+                      {state.fieldErrors.url}
+                    </span>
+                  )}
+                </div>
+
+                {/* Optional headers */}
+                <div style={fieldWrapStyle}>
+                  <span style={labelStyle}>Request headers (optional)</span>
+                  <span style={{ fontSize: 11, color: 'var(--hachi-muted)', marginTop: -4 }}>
+                    e.g. Authorization header for private endpoints.
+                  </span>
+
+                  {hasHeaderPairs && (
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 4,
+                        background: 'var(--hachi-canvas)',
+                        border: '0.5px solid var(--hachi-line)',
+                        borderRadius: 8,
+                        padding: '6px 10px',
+                      }}
+                    >
+                      {Object.entries(state.headers).map(([k, v]) => (
+                        <div
+                          key={k}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            fontSize: 12,
+                            fontFamily: 'var(--font-mono)',
+                          }}
+                        >
+                          <span style={{ flex: 1, color: 'var(--hachi-ink)' }}>
+                            {k}: {v}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => dispatch({ type: 'remove_header', key: k })}
+                            disabled={state.submitting}
+                            aria-label={`Remove header ${k}`}
+                            style={{
+                              border: 'none',
+                              background: 'transparent',
+                              color: 'var(--hachi-muted)',
+                              cursor: 'pointer',
+                              padding: '2px 4px',
+                              borderRadius: 4,
+                              lineHeight: 1,
+                              fontSize: 14,
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input
+                      type="text"
+                      value={state.headerKey}
+                      onChange={(e) => dispatch({ type: 'set_header_key', value: e.target.value })}
+                      placeholder="Header-Name"
+                      disabled={state.submitting}
+                      aria-label="Request header name"
+                      style={{
+                        ...fieldInputStyle(false),
+                        flex: 1,
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 12,
+                      }}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <input
+                      type="text"
+                      value={state.headerVal}
+                      onChange={(e) => dispatch({ type: 'set_header_val', value: e.target.value })}
+                      placeholder="value"
+                      disabled={state.submitting}
+                      aria-label="Request header value"
+                      style={{
+                        ...fieldInputStyle(false),
+                        flex: 2,
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 12,
+                      }}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => dispatch({ type: 'add_header' })}
+                      disabled={state.submitting || !state.headerKey.trim()}
+                      aria-label="Add header"
+                      style={{
+                        height: 36,
+                        padding: '0 12px',
+                        borderRadius: 8,
+                        border: '0.5px solid var(--hachi-line)',
+                        background: 'var(--hachi-canvas)',
+                        color: 'var(--hachi-trust)',
+                        font: '500 12px var(--font-body)',
+                        cursor: state.submitting || !state.headerKey.trim() ? 'not-allowed' : 'pointer',
+                        opacity: !state.headerKey.trim() ? 0.5 : 1,
+                        flexShrink: 0,
+                      }}
+                    >
+                      Add
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
 
             {/* Submit error */}
             {state.submitError && (
@@ -1188,7 +1474,6 @@ interface IntCardWithStatusProps {
 }
 
 function IntCardWithStatus({ integration: i }: IntCardWithStatusProps) {
-  // useReducer(count) as a cheap re-render trigger when module-level status maps change.
   const [, forceUpdate] = useReducer((x: number) => x + 1, 0)
 
   useEffect(() => {
@@ -1198,12 +1483,16 @@ function IntCardWithStatus({ integration: i }: IntCardWithStatusProps) {
   const connectStatus = getConnectStatus(i.id)
   const disconnectStatus = getDisconnectStatus(i.id)
 
+  // Extract auth_type from the extended shape if present.
+  const ext = i as Partial<IntegrationExtended>
+  const authType = ext.auth_type
+
   async function handleConnect() {
-    await connectIntegration(i.id)
+    await connectIntegration(i.id, authType)
   }
 
   async function handleDisconnect() {
-    await disconnectIntegration(i.id)
+    await disconnectIntegration(i.id, authType)
   }
 
   return (
@@ -1228,9 +1517,6 @@ function Integrations() {
   const operator = useStore((s) => s.operator)
   const [showAddMcp, setShowAddMcp] = useState(false)
 
-  // Refresh integrations + MCP inventory whenever this route is visited.
-  // bootstrapLiveData() in __root.tsx runs loadIntegrations() on first app mount;
-  // this useEffect handles subsequent navigations (loaders are idempotent).
   useEffect(() => {
     void loadIntegrations()
   }, [])
@@ -1239,6 +1525,7 @@ function Integrations() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* page header */}
       <div
+        className="hachi-int-header"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -1267,7 +1554,7 @@ function Integrations() {
 
       {/* scrollable body */}
       <div
-        className="hachi-scroll"
+        className="hachi-scroll hachi-int-body"
         style={{ flex: 1, overflow: 'auto', padding: '24px 32px 64px' }}
       >
         <div
@@ -1304,6 +1591,7 @@ function Integrations() {
               </div>
             ) : (
               <div
+                className="hachi-int-grid"
                 style={{
                   display: 'grid',
                   gridTemplateColumns: '1fr 1fr',
@@ -1340,6 +1628,7 @@ function Integrations() {
             >
               {/* table header */}
               <div
+                className="hachi-mcp-table-header"
                 style={{
                   display: 'flex',
                   alignItems: 'center',

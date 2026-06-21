@@ -8,7 +8,8 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
 import type { Run, Routine, FinishedTask, FailedTask, RunStep, RoutineRun } from '../lib/data/types'
-import { loadWork, pauseRoutineLive } from '../lib/data/domains/work'
+import { loadWork, pauseRoutineLive, deleteRoutineLive } from '../lib/data/domains/work'
+import { loadSpend } from '../lib/data/domains/spend'
 import { loadOperator } from '../lib/data/domains/operator'
 import { useFocusTrap } from '../lib/hooks/useFocusTrap'
 
@@ -193,15 +194,19 @@ interface WorkDetailProps {
   onRetry: (id: number) => void
   onRunNow: () => void
   onTogglePause: (id: number) => void
+  onDelete: (id: number) => void
   onWatchLive: (id: number) => void
 }
 
-function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePause, onWatchLive }: WorkDetailProps) {
+function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePause, onDelete, onWatchLive }: WorkDetailProps) {
   const sm = statusMeta(item.status)
   const isFailed = item.kind === 'failed'
   const isRoutine = item.kind === 'routine'
   const isTask = item.kind === 'task'
   const hasPack = item.kind === 'task' || item.kind === 'finished'
+
+  // Delete confirmation state
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   // MED-013: focus trap (Tab cycling + return-focus) via shared hook.
   // Escape-to-close is wired separately so it doesn't duplicate the hook.
@@ -531,6 +536,75 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePaus
               >
                 {item.paused ? 'Resume' : 'Pause'}
               </button>
+              {/* Delete routine — two-step confirmation */}
+              {!confirmDelete ? (
+                <button
+                  onClick={() => setConfirmDelete(true)}
+                  style={{
+                    height: '40px',
+                    padding: '0 14px',
+                    borderRadius: '10px',
+                    border: '0.5px solid var(--hachi-line)',
+                    background: 'var(--hachi-canvas)',
+                    color: 'var(--hachi-danger)',
+                    font: '500 14px var(--font-body)',
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-danger-tint)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-canvas)')}
+                >
+                  <Icon name="x" size={14} />
+                  Delete
+                </button>
+              ) : (
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '8px 12px',
+                  background: 'var(--hachi-danger-tint)',
+                  border: '0.5px solid var(--hachi-danger)',
+                  borderRadius: '10px',
+                  flexShrink: 0,
+                }}>
+                  <span style={{ fontSize: '13px', color: '#9E2D21', whiteSpace: 'nowrap' }}>
+                    Delete this routine?
+                  </span>
+                  <button
+                    onClick={() => onDelete(item.id)}
+                    style={{
+                      height: '30px',
+                      padding: '0 11px',
+                      borderRadius: '8px',
+                      border: 'none',
+                      background: 'var(--hachi-danger)',
+                      color: '#fff',
+                      font: '500 13px var(--font-body)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Yes, delete
+                  </button>
+                  <button
+                    onClick={() => setConfirmDelete(false)}
+                    style={{
+                      height: '30px',
+                      padding: '0 11px',
+                      borderRadius: '8px',
+                      border: '0.5px solid var(--hachi-line)',
+                      background: 'var(--hachi-canvas)',
+                      color: 'var(--hachi-ink)',
+                      font: '500 13px var(--font-body)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
             </>
           )}
           {isTask && (
@@ -875,6 +949,7 @@ function Work() {
   // load live data on mount (idempotent — bootstrapLiveData also runs on app mount)
   useEffect(() => {
     void loadWork()
+    void loadSpend()
     void loadOperator()
   }, [])
 
@@ -983,6 +1058,12 @@ function Work() {
     void pauseRoutineLive(id) // calls pauseRoutine optimistically + gateway PUT
     // close the detail panel so the updated paused state is visible in the list
     closeWork()
+  }
+
+  const handleDelete = (id: number) => {
+    void deleteRoutineLive(id) // optimistic removal + DELETE /schedules/{id}
+    closeWork()
+    void loadWork() // refresh the list after deletion
   }
 
   const handleWatchLive = (id: number) => {
@@ -1144,22 +1225,78 @@ function Work() {
             })}
 
             {workEmpty && (
-              <div style={{ textAlign: 'center', padding: '48px 0', color: 'var(--hachi-muted)' }}>
-                Nothing here yet.{' '}
-                <button
-                  onClick={goChat}
-                  style={{
-                    border: 'none',
-                    background: 'transparent',
-                    color: 'var(--hachi-trust)',
-                    font: '500 14px var(--font-body)',
-                    cursor: 'pointer',
-                    padding: 0,
-                  }}
-                >
-                  Start a task
-                </button>
-                {' '}or set up a routine.
+              <div style={{
+                textAlign: 'center',
+                padding: '48px 24px',
+                color: 'var(--hachi-muted)',
+                background: 'var(--hachi-surface)',
+                border: '0.5px solid var(--hachi-line)',
+                borderRadius: '14px',
+                fontSize: '14px',
+                lineHeight: '22px',
+              }}>
+                {workFilter === 'active' && (
+                  <>
+                    No tasks running right now — Hachi is on watch.{' '}
+                    <button
+                      onClick={goChat}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: 'var(--hachi-trust)',
+                        font: '500 14px var(--font-body)',
+                        cursor: 'pointer',
+                        padding: 0,
+                      }}
+                    >
+                      Start a task
+                    </button>
+                    {' '}to see it here.
+                  </>
+                )}
+                {workFilter === 'routines' && (
+                  <>
+                    No routines set up yet.{' '}
+                    <button
+                      onClick={goChat}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: 'var(--hachi-trust)',
+                        font: '500 14px var(--font-body)',
+                        cursor: 'pointer',
+                        padding: 0,
+                      }}
+                    >
+                      Ask Hachi
+                    </button>
+                    {' '}to run something on a schedule.
+                  </>
+                )}
+                {workFilter === 'history' && (
+                  <>
+                    No finished tasks yet.{' '}
+                    <button
+                      onClick={goChat}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: 'var(--hachi-trust)',
+                        font: '500 14px var(--font-body)',
+                        cursor: 'pointer',
+                        padding: 0,
+                      }}
+                    >
+                      Start a task
+                    </button>
+                    {' '}and completed runs will appear here.
+                  </>
+                )}
+                {workFilter === 'needs' && (
+                  <>
+                    Nothing needs your attention right now — everything is running smoothly.
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -1181,6 +1318,7 @@ function Work() {
           onRetry={id => { retryFailed(id) }}
           onRunNow={runRoutineNow}
           onTogglePause={handleTogglePause}
+          onDelete={handleDelete}
           onWatchLive={handleWatchLive}
         />
       )}

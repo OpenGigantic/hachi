@@ -172,9 +172,9 @@ def test_always_allow_missing_fields_returns_422() -> None:
 def test_mcp_register_valid_server_returns_200() -> None:
     received: list[dict] = []
 
-    def _stub(name: str, command: str, args: str, env_vars: dict) -> dict:
-        received.append({"name": name, "command": command, "args": args, "env": env_vars})
-        return {"name": name, "message": f"MCP server '{name}' registered."}
+    def _stub(**kwargs) -> dict:  # type: ignore[no-untyped-def]
+        received.append(kwargs)
+        return {"name": kwargs["name"], "message": f"MCP server '{kwargs['name']}' registered."}
 
     client = _app(register_mcp_server=_stub)
     resp = client.post(

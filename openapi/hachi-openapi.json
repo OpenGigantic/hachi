@@ -5,6 +5,228 @@
     "version": "1.0.0"
   },
   "paths": {
+    "/integrations": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Get Integrations",
+        "description": "List all connectors with their auth_type, configured, connected, and status fields.",
+        "operationId": "get_integrations_integrations_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Integrations Integrations Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/integrations/{connector_id}/oauth/start": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Post Oauth Start",
+        "description": "Begin the OAuth2 flow for the given connector.\n\nReturns ``{\"authorization_url\": \"<provider-authorize-url>\"}`` so the\nfrontend can open it in a popup window.\n\nReturns HTTP 404 for unknown connectors, HTTP 409 when the connector's\nclient credentials (env vars) are not configured on this machine.",
+        "operationId": "post_oauth_start_integrations__connector_id__oauth_start_post",
+        "parameters": [
+          {
+            "name": "connector_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Connector Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Oauth Start Integrations  Connector Id  Oauth Start Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/integrations/{connector_id}/disconnect": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Post Disconnect",
+        "description": "Revoke and delete stored OAuth2 tokens for a connector.\n\nReturns ``{\"connected\": false, \"connector_id\": \"<id>\", ...status...}``.\nReturns HTTP 404 for unknown connectors.",
+        "operationId": "post_disconnect_integrations__connector_id__disconnect_post",
+        "parameters": [
+          {
+            "name": "connector_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Connector Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Disconnect Integrations  Connector Id  Disconnect Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/integrations/oauth/callback": {
+      "get": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Get Oauth Callback",
+        "description": "OAuth2 callback \u2014 provider redirects the user's browser popup here.\n\nValidates the CSRF state, exchanges the code for tokens, stores them,\nthen returns a small HTML page that:\n- postMessages ``{type: \"hachi_oauth_done\", id: \"<id>\", ok: true/false}``\n  to the opener (the Hachi frontend).\n- Closes the popup window.\n\nThis route is intentionally NOT protected by the Bearer auth dependency\nbecause the provider redirects the user's browser here directly.\nCSRF protection is provided by the ``state`` parameter.",
+        "operationId": "get_oauth_callback_integrations_oauth_callback_get",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Oauth Callback Integrations Oauth Callback Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/": {
       "get": {
         "tags": [
@@ -791,7 +1013,7 @@
           "runtime"
         ],
         "summary": "Post Mcp Register",
-        "description": "Register a new MCP server and add it to the runtime configuration.\n\nBody: ``{\"name\": \"...\", \"command\": \"npx\", \"args\": \"...\", \"env_vars\": {}}``",
+        "description": "Register a new MCP server and bring it online without a gateway restart.\n\nBody (stdio transport):\n    ``{\"name\": \"...\", \"command\": \"npx\", \"args\": \"...\", \"env_vars\": {}}``\n\nBody (sse / http transport):\n    ``{\"name\": \"...\", \"transport\": \"sse\"|\"http\", \"url\": \"https://...\", \"headers\": {}}``",
         "operationId": "post_mcp_register_runtime_mcp_register_post",
         "requestBody": {
           "content": {
@@ -2433,6 +2655,67 @@
         ]
       }
     },
+    "/authoring/targets/{name}/source": {
+      "post": {
+        "tags": [
+          "authoring"
+        ],
+        "summary": "Post Authoring Save Source",
+        "description": "Persist manually edited .og content for the named target.\n\nValidates the target name (path-traversal guard), parses the content as a\nvalid ObjectGraph for .og files (returns 4xx on parse failure without overwriting),\nand writes atomically.\n\nBody: ``{\"content\": \"<full .og text>\"}``\nResponse: ``{\"ok\": true, \"name\": \"<target-name>\"}``",
+        "operationId": "post_authoring_save_source_authoring_targets__name__source_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthoringSourceSaveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Authoring Save Source Authoring Targets  Name  Source Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/spend": {
       "get": {
         "tags": [
@@ -2573,6 +2856,20 @@
         ],
         "title": "AuthoringGenerateRequest",
         "description": "Body for POST /authoring/targets/{name}/generate (G1-T2 / CRIT-002)."
+      },
+      "AuthoringSourceSaveRequest": {
+        "properties": {
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "AuthoringSourceSaveRequest",
+        "description": "Body for POST /authoring/targets/{name}/source (CONTRACT-AUTHORING-SAVE)."
       },
       "CapabilityToggleRequest": {
         "properties": {
@@ -2716,13 +3013,20 @@
             "type": "string",
             "title": "Name"
           },
+          "transport": {
+            "type": "string",
+            "title": "Transport",
+            "default": "stdio"
+          },
           "command": {
             "type": "string",
-            "title": "Command"
+            "title": "Command",
+            "default": ""
           },
           "args": {
             "type": "string",
-            "title": "Args"
+            "title": "Args",
+            "default": ""
           },
           "env_vars": {
             "additionalProperties": {
@@ -2730,16 +3034,26 @@
             },
             "type": "object",
             "title": "Env Vars"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "default": ""
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Headers"
           }
         },
         "type": "object",
         "required": [
-          "name",
-          "command",
-          "args"
+          "name"
         ],
         "title": "McpRegisterRequest",
-        "description": "Body for POST /runtime/mcp/register (G1-T5)."
+        "description": "Body for POST /runtime/mcp/register (G1-T5 / CONTRACT-MCP).\n\nSupports three transport kinds:\n  - ``stdio`` (default): requires ``command`` + optional ``args`` / ``env_vars``.\n  - ``sse``:             requires ``url`` + optional ``headers`` / ``env_vars``.\n  - ``http``:            requires ``url`` + optional ``headers`` / ``env_vars``."
       },
       "MemoryFactAddRequest": {
         "properties": {
@@ -3021,18 +3335,24 @@
       },
       "SessionMessageResponse": {
         "properties": {
-          "session_id": {
-            "type": "string",
-            "title": "Session Id"
-          },
           "response": {
             "type": "string",
             "title": "Response"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
           }
         },
         "type": "object",
         "required": [
-          "session_id",
           "response"
         ],
         "title": "SessionMessageResponse"

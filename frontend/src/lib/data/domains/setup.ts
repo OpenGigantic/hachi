@@ -178,19 +178,20 @@ export async function loadSetup(): Promise<void> {
     // the user hasn't touched it in this session).
     const shouldPatch = !currentSetup.key;
 
-    const patchedSetup = shouldPatch
-      ? {
-          ...currentSetup,
-          // Pre-set safety from what the gateway reports, if available.
-          safety: safetyFromGateway ?? currentSetup.safety,
-        }
-      : currentSetup;
+    // Determine if an API key is already set in the environment.
+    const keyAlreadySet = Boolean(raw.environment?.anthropic_env);
+
+    const patchedSetup = {
+      ...currentSetup,
+      keyAlreadySet,
+      // Pre-set safety from what the gateway reports, only when wizard hasn't been touched.
+      ...(shouldPatch && safetyFromGateway ? { safety: safetyFromGateway } : {}),
+    };
 
     store.hydrate({
       setup: patchedSetup,
     });
 
-    store.setReconnecting(false);
     _hasEverSucceeded = true;
   } catch {
     // The setup slice has no data arrays to clear — it's a wizard form shape.
@@ -198,8 +199,7 @@ export async function loadSetup(): Promise<void> {
     // (open: false, step: 0, key: "", safety: "standard", …) which were set
     // by domainDefaults() and are benign empty-form values, not misleading
     // fixture data. After first success, last-known-good gateway state is kept.
-    // In all failure cases: flag reconnecting so the UI shows the indicator.
-    useStore.getState().setReconnecting(true);
+    // Reconnecting flag is managed centrally by client.ts via the registered callback.
   }
 }
 
@@ -313,13 +313,10 @@ export async function applySetup(answers: WizardAnswers): Promise<GatewayApplyRe
 
   try {
     const result = await apiSend<GatewayApplyResponse>("POST", "/setup/apply", { plan });
-    // Clear reconnecting flag if it was set.
-    useStore.getState().setReconnecting(false);
     return result;
   } catch {
     // Non-fatal: the wizard already optimistically updated the store.
-    // Flag offline so the reconnect banner appears, but don't block the UI.
-    useStore.getState().setReconnecting(true);
+    // Network errors surface the reconnecting banner via client.ts callback.
     return null;
   }
 }

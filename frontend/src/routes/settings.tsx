@@ -8,8 +8,8 @@ import { useStore } from '../lib/store/store';
 import { Icon } from '../components/icons/Icon';
 import { Switch } from '../components/ui/Switch';
 import type { SafetyLevel } from '../lib/data/types';
-import { loadConfig, setSafetyLive, setProviderLive, addFolderLive, addCommandLive } from '../lib/data/domains/config';
-import { apiSend } from '../lib/data/client';
+import { loadConfig, setSafetyLive, setAskRuleLive, setProviderLive, addFolderLive, addCommandLive } from '../lib/data/domains/config';
+import { apiSend, USE_MOCKS } from '../lib/data/client';
 
 // ---- Safety level definitions (mirror prototype renderVals lines 2337–2342) ----
 const SAFETY_LEVELS: { k: SafetyLevel; name: string; desc: string }[] = [
@@ -236,12 +236,13 @@ function Settings() {
     allowedCommands,
     opTools,
     provider,
+    setup,
     spent,
     budget,
     taskCap,
     dailyCap,
-    // actions (setSafety is called indirectly via setSafetyLive)
-    toggleAskRule,
+    configLoaded,
+    // actions (setSafety/toggleAskRule called indirectly via *Live helpers)
     removeFolder,
     removeCommand,
     toggleOpTool,
@@ -252,6 +253,22 @@ function Settings() {
     setTaskCap,
     setDailyCap,
   } = useStore();
+
+  // ---- Inline provider editor state ----
+  // When the user clicks "Change provider", open an inline editor instead of the wizard.
+  const [editingProvider, setEditingProvider] = useState(false);
+  const [editProviderName, setEditProviderName] = useState(provider.name);
+  const [editProviderModel, setEditProviderModel] = useState(provider.model);
+  const [editProviderKey, setEditProviderKey] = useState('');
+  const [providerSaving, setProviderSaving] = useState(false);
+
+  // Keep the inline form in sync if the store's provider changes externally.
+  useEffect(() => {
+    if (!editingProvider) {
+      setEditProviderName(provider.name);
+      setEditProviderModel(provider.model);
+    }
+  }, [provider.name, provider.model, editingProvider]);
 
   // Load config from gateway on mount (idempotent — also runs on app boot via live.ts)
   useEffect(() => { void loadConfig(); }, []);
@@ -290,7 +307,7 @@ function Settings() {
   async function handleSave() {
     // MED-017: persist caps to gateway then clear unsaved indicator on success
     try {
-      if (useStore.getState().dataMode === 'live') {
+      if (!USE_MOCKS) {
         await apiSend('PUT', '/config/limits', {
           per_task_cap_usd: taskCap,
           daily_cap_usd: dailyCap,
@@ -305,13 +322,57 @@ function Settings() {
     }
   }
 
+  async function handleSaveProvider() {
+    setProviderSaving(true);
+    try {
+      const patch: { name?: string; model?: string } = {};
+      if (editProviderName.trim()) patch.name = editProviderName.trim();
+      if (editProviderModel.trim()) patch.model = editProviderModel.trim();
+      await setProviderLive(patch);
+      // If a new API key was typed, send it via setup/apply (provider step only).
+      // setProviderLive handles name+model; key storage goes through the wizard path.
+      if (editProviderKey.trim()) {
+        // POST /setup/apply with just the provider key — reuse the setup domain helper.
+        if (!USE_MOCKS) {
+          await apiSend('POST', '/setup/apply', {
+            plan: {
+              tier: 'lightning',
+              steps: ['provider'],
+              answers: {
+                provider: {
+                  kind: patch.name ?? provider.name,
+                  model: patch.model ?? provider.model,
+                  api_key: editProviderKey.trim(),
+                  api_key_env: 'ANTHROPIC_API_KEY',
+                },
+              },
+              enable_memory: false,
+              show_integrations: false,
+              show_advanced: false,
+            },
+          });
+        }
+      }
+      setEditingProvider(false);
+      setEditProviderKey('');
+      markUnsaved('provider');
+      showToast('Provider updated — applies on next restart', 'success');
+    } catch {
+      showToast('Could not save provider — please try again', 'blocked');
+    } finally {
+      setProviderSaving(false);
+    }
+  }
+
   // Wrap actions to set unsaved flag
   function handleSetSafety(v: SafetyLevel) {
     void setSafetyLive(v);
     markUnsaved('safety level');
   }
   function handleToggleAskRule(id: string) {
-    toggleAskRule(id);
+    // Persist via the gateway (optimistic). The current value is flipped.
+    const current = askRules.find((r) => r.id === id);
+    void setAskRuleLive(id, !(current?.on ?? true));
     markUnsaved();
   }
   function handleRemoveFolder(f: string) {
@@ -354,10 +415,10 @@ function Settings() {
   const themeIcon = isDark ? 'moon' : 'sun';
 
   // Provider display — name/model come from live gateway config. The API key is
-  // never surfaced to the browser, so show a neutral hidden state rather than a
-  // fabricated last-4 or an unverified "validated" claim.
+  // never surfaced to the browser; we derive its display from the env boolean
+  // returned by GET /setup (keyAlreadySet) — never from the key value itself.
   const providerLabel = [provider.name, provider.model].filter(Boolean).join(' · ');
-  const keyDisplay = 'stored securely · hidden';
+  const keyDisplay = setup.keyAlreadySet ? '•••••••• (configured)' : 'not set';
 
   // Card container style (shared)
   const cardStyle: React.CSSProperties = {
@@ -378,6 +439,7 @@ function Settings() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Header */}
       <div
+        className="hachi-settings-header"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -434,7 +496,7 @@ function Settings() {
 
       {/* Scrollable body */}
       <div
-        className="hachi-scroll"
+        className="hachi-scroll hachi-settings-body"
         style={{ flex: 1, overflow: 'auto', padding: '28px 32px 64px' }}
       >
         <div
@@ -494,47 +556,65 @@ function Settings() {
               How much Hachi can do before it asks you.
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
-              {SAFETY_LEVELS.map((lvl) => {
-                const sel = safety === lvl.k;
-                return (
-                  <button
-                    key={lvl.k}
-                    onClick={() => handleSetSafety(lvl.k)}
-                    style={{
-                      display: 'flex',
-                      gap: '13px',
-                      alignItems: 'flex-start',
-                      textAlign: 'left',
-                      padding: '14px',
-                      borderRadius: '12px',
-                      border: `1px solid ${sel ? 'var(--hachi-brand)' : 'var(--hachi-line)'}`,
-                      background: sel ? 'var(--hachi-brand-tint)' : 'var(--hachi-canvas)',
-                      cursor: 'pointer',
-                      font: 'inherit',
-                    }}
-                  >
-                    <span
+            {!configLoaded ? (
+              /* Gate render until config is loaded — prevents "Standard" flash before real value arrives */
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                fontSize: '13px',
+                color: 'var(--hachi-muted)',
+                padding: '14px',
+                borderRadius: '12px',
+                border: '0.5px solid var(--hachi-line)',
+                background: 'var(--hachi-canvas)',
+              }}>
+                <Icon name="clock" size={14} />
+                Loading…
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
+                {SAFETY_LEVELS.map((lvl) => {
+                  const sel = safety === lvl.k;
+                  return (
+                    <button
+                      key={lvl.k}
+                      onClick={() => handleSetSafety(lvl.k)}
                       style={{
-                        flexShrink: 0,
-                        width: '18px',
-                        height: '18px',
-                        borderRadius: '50%',
-                        border: `2px solid ${sel ? 'var(--hachi-brand)' : 'var(--hachi-line)'}`,
-                        background: sel ? 'var(--hachi-brand)' : 'transparent',
-                        marginTop: '2px',
+                        display: 'flex',
+                        gap: '13px',
+                        alignItems: 'flex-start',
+                        textAlign: 'left',
+                        padding: '14px',
+                        borderRadius: '12px',
+                        border: `1px solid ${sel ? 'var(--hachi-brand)' : 'var(--hachi-line)'}`,
+                        background: sel ? 'var(--hachi-brand-tint)' : 'var(--hachi-canvas)',
+                        cursor: 'pointer',
+                        font: 'inherit',
                       }}
-                    />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 500, fontSize: '14px' }}>{lvl.name}</div>
-                      <div style={{ fontSize: '13px', color: 'var(--hachi-muted)', marginTop: '2px' }}>
-                        {lvl.desc}
+                    >
+                      <span
+                        style={{
+                          flexShrink: 0,
+                          width: '18px',
+                          height: '18px',
+                          borderRadius: '50%',
+                          border: `2px solid ${sel ? 'var(--hachi-brand)' : 'var(--hachi-line)'}`,
+                          background: sel ? 'var(--hachi-brand)' : 'transparent',
+                          marginTop: '2px',
+                        }}
+                      />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 500, fontSize: '14px' }}>{lvl.name}</div>
+                        <div style={{ fontSize: '13px', color: 'var(--hachi-muted)', marginTop: '2px' }}>
+                          {lvl.desc}
+                        </div>
                       </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
             {/* Open warning */}
             {safety === 'open' && (
@@ -591,30 +671,41 @@ function Settings() {
           </div>
 
           {/* ---- Ask before… ---- */}
+          {/* Persisted to settings.toml via PUT /config/permissions (ask_before).
+              Toggles survive a reload — loaded by loadConfig(), saved by
+              setAskRuleLive() in domains/config.ts. */}
           <div style={cardStyle}>
-            <h2 style={{ ...sectionHeadingStyle, margin: '0 0 16px' }}>
-              Ask before…
-            </h2>
-            {askRules.map((rule, idx) => (
-              <div
-                key={rule.id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '14px',
-                  padding: '11px 0',
-                  borderBottom: idx < askRules.length - 1 ? '0.5px solid var(--hachi-line)' : 'none',
-                }}
-              >
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: '14px' }}>{rule.label}</div>
-                </div>
-                <Switch
-                  checked={rule.on}
-                  onChange={() => handleToggleAskRule(rule.id)}
-                />
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', marginBottom: '16px' }}>
+              <h2 style={sectionHeadingStyle}>
+                Ask before…
+              </h2>
+            </div>
+            {askRules.length === 0 ? (
+              <div style={{ fontSize: '13px', color: 'var(--hachi-muted)' }}>
+                No rules loaded.
               </div>
-            ))}
+            ) : (
+              askRules.map((rule, idx) => (
+                <div
+                  key={rule.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '14px',
+                    padding: '11px 0',
+                    borderBottom: idx < askRules.length - 1 ? '0.5px solid var(--hachi-line)' : 'none',
+                  }}
+                >
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '14px' }}>{rule.label}</div>
+                  </div>
+                  <Switch
+                    checked={rule.on}
+                    onChange={() => handleToggleAskRule(rule.id)}
+                  />
+                </div>
+              ))
+            )}
           </div>
 
           {/* ---- Operator: folders, commands & tools ---- */}
@@ -857,7 +948,7 @@ function Settings() {
             </div>
 
             {/* MED-018: editable spend cap inputs */}
-            <div style={{ display: 'flex', gap: '14px', marginBottom: '18px' }}>
+            <div className="hachi-spend-cap-row" style={{ display: 'flex', gap: '14px', marginBottom: '18px' }}>
               <SpendCapInput
                 label="Per-task cap"
                 value={taskCap}
@@ -905,24 +996,121 @@ function Settings() {
             <h2 style={{ ...sectionHeadingStyle, margin: '0 0 16px' }}>
               AI provider &amp; model
             </h2>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '14px',
-                marginBottom: '14px',
-              }}
-            >
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '14px', fontWeight: 500 }}>
-                  {providerLabel}
+
+            {editingProvider ? (
+              /* Inline provider editor — no wizard; calls PUT /config/provider directly */
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div>
+                  <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '6px' }}>Provider</div>
+                  <input
+                    type="text"
+                    value={editProviderName}
+                    onChange={(e) => setEditProviderName(e.target.value)}
+                    placeholder="anthropic"
+                    style={{
+                      width: '100%',
+                      height: '40px',
+                      padding: '0 12px',
+                      borderRadius: '10px',
+                      border: '0.5px solid var(--hachi-line)',
+                      background: 'var(--hachi-canvas)',
+                      font: '14px var(--font-mono)',
+                      color: 'var(--hachi-ink)',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
                 </div>
-                <div style={{ fontSize: '13px', color: 'var(--hachi-muted)', marginTop: '2px' }}>
-                  API key {keyDisplay}
+                <div>
+                  <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '6px' }}>Model</div>
+                  <input
+                    type="text"
+                    value={editProviderModel}
+                    onChange={(e) => setEditProviderModel(e.target.value)}
+                    placeholder="claude-haiku-4-5"
+                    style={{
+                      width: '100%',
+                      height: '40px',
+                      padding: '0 12px',
+                      borderRadius: '10px',
+                      border: '0.5px solid var(--hachi-line)',
+                      background: 'var(--hachi-canvas)',
+                      font: '14px var(--font-mono)',
+                      color: 'var(--hachi-ink)',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                </div>
+                <div>
+                  <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '6px' }}>API key</div>
+                  <input
+                    type="password"
+                    value={editProviderKey}
+                    onChange={(e) => setEditProviderKey(e.target.value)}
+                    placeholder="Leave blank to keep existing key"
+                    style={{
+                      width: '100%',
+                      height: '40px',
+                      padding: '0 12px',
+                      borderRadius: '10px',
+                      border: '0.5px solid var(--hachi-line)',
+                      background: 'var(--hachi-canvas)',
+                      font: '14px var(--font-mono)',
+                      color: 'var(--hachi-ink)',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                  <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginTop: '5px' }}>
+                    Your key is stored securely and never shown. Leave blank to keep the current key.
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                  <ProviderButton onClick={() => void handleSaveProvider()}>
+                    {providerSaving ? 'Saving…' : 'Save'}
+                  </ProviderButton>
+                  <button
+                    type="button"
+                    onClick={() => { setEditingProvider(false); setEditProviderKey(''); }}
+                    style={{
+                      height: '36px',
+                      padding: '0 14px',
+                      borderRadius: '10px',
+                      border: '0.5px solid var(--hachi-line)',
+                      background: 'transparent',
+                      color: 'var(--hachi-muted)',
+                      font: `500 13px var(--font-body)`,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Cancel
+                  </button>
                 </div>
               </div>
-            </div>
-            <ProviderButton onClick={() => { openSetup(); markUnsaved('provider'); }}>Change provider</ProviderButton>
+            ) : (
+              /* Read-only view */
+              <div>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '14px',
+                    marginBottom: '14px',
+                  }}
+                >
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '14px', fontWeight: 500 }}>
+                      {providerLabel}
+                    </div>
+                    <div style={{ fontSize: '13px', color: 'var(--hachi-muted)', marginTop: '2px' }}>
+                      API key {keyDisplay}
+                    </div>
+                  </div>
+                </div>
+                <ProviderButton onClick={() => setEditingProvider(true)}>Change provider</ProviderButton>
+              </div>
+            )}
           </div>
 
           {/* ---- Appearance & account ---- */}
