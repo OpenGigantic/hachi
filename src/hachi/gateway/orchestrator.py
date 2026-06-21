@@ -1779,7 +1779,17 @@ def og_graph_from_engine(skill_engine: Any) -> dict[str, Any]:
             referenced_names.add(dep)
 
     result_nodes: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
     for node in all_nodes:
+        # Multiple skill files can each define a node with the same bare name
+        # (e.g. every role brain has an "identity" node). The graph is keyed by
+        # bare name and edges reference bare names via ``requires``, so collapse
+        # duplicate names to keep node ids unique for the OG Explorer (otherwise
+        # the diagram overlaps nodes and React warns about duplicate keys).
+        if node.name in seen_names:
+            continue
+        seen_names.add(node.name)
+
         # Pass-1 (index) token estimate: name + keywords.
         index_tokens = estimate_tokens(node.name + " " + ", ".join(node.keywords))
 

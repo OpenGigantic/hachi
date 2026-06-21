@@ -257,3 +257,7 @@ def test_get_og_graph_runtime_populated_without_session() -> None:
         "OG Explorer must show skill nodes before any conversation is started"
     )
     assert len(graph.get("nodes", [])) == graph["count"]
+    # Node ids must be unique — the OG Explorer keys the SVG diagram by id, and
+    # multiple skill files define same-named nodes (e.g. "identity").
+    ids = [n["id"] for n in graph["nodes"]]
+    assert len(ids) == len(set(ids)), "OG graph node ids must be unique"
