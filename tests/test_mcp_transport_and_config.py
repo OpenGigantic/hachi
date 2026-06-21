@@ -9,13 +9,10 @@ Covers:
 
 from __future__ import annotations
 
-import json
-import threading
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -128,7 +125,9 @@ class TestTransportInterface:
         t._client = mock_client
         t._alive = True
 
-        result = t.send_and_receive({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+        result = t.send_and_receive(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+        )
         assert result is not None
         assert result.get("id") == 1
 
@@ -149,7 +148,9 @@ class TestTransportInterface:
         t._client = mock_client
         t._alive = True
 
-        result = t.send_and_receive({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+        result = t.send_and_receive(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+        )
         assert result is not None
         assert "result" in result
         assert result["result"]["tools"][0]["name"] == "calc"
@@ -319,7 +320,13 @@ class TestMcpRegisterRequestValidation:
         from hachi.gateway.fastapi_app import create_gateway_app
 
         def _fake_register(**kwargs):
-            return {"name": kwargs["name"], "transport": kwargs["transport"], "live_status": "pending_restart", "tool_count": 0, "message": "ok"}
+            return {
+                "name": kwargs["name"],
+                "transport": kwargs["transport"],
+                "live_status": "pending_restart",
+                "tool_count": 0,
+                "message": "ok",
+            }
 
         cp = GatewayControlPlane(register_mcp_server=_fake_register)
         return create_gateway_app(cp)
@@ -567,7 +574,7 @@ class TestHotReload:
         assert "new-server" in names
 
     def test_hot_reload_includes_transport_in_inventory(self) -> None:
-        from hachi.core.mcp_client import MCPServerConfig, MCPManager
+        from hachi.core.mcp_client import MCPManager
 
         manager = MCPManager()
         # Inject a stub server with transport_kind
