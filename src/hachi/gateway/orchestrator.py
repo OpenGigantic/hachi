@@ -98,6 +98,7 @@ from hachi.gateway.workspace import (
 from hachi.jobs import (
     Job,
     JobQueue,
+    JobRegistry,
     JobStatus,
     JobWorker,
     ResidentWorkerThread,
@@ -452,6 +453,11 @@ class AgentSession:
 
         # P4-05: scheduler reference — set by boot_agent after ScheduleRunner starts.
         self._scheduler: Any = None
+
+        # Slice 2.2: when True, _enqueue_title_job uses handler_name= instead of
+        # func= so the job survives a restart.  Set by boot_agent when
+        # [jobs] durable_handlers=true.
+        self._durable_title: bool = False
 
     @property
     def resumed_transcript(self) -> list[tuple[str, str]]:
@@ -1070,20 +1076,47 @@ class AgentSession:
         return title
 
     def _enqueue_title_job(self, session_id: str, user_input: str, response: str) -> None:
-        """Queue first-turn title generation, or run it inline if no queue exists."""
+        """Queue first-turn title generation, or run it inline if no queue exists.
+
+        Slice 2.2: when ``_durable_title=True`` (set by boot_agent when
+        ``[jobs] durable_handlers=true``), the job is enqueued with
+        ``handler_name="generate_title"`` + serializable payload so it survives a
+        process restart.  The durable path uses a deterministic fallback title
+        (no LLM call) — see ``handle_generate_title`` in runtime/job_handlers.py.
+
+        When ``_durable_title=False`` (default), the original ``func=`` path runs
+        unchanged, preserving LLM-generated titles.
+        """
         if not self._job_queue:
             self._run_title_job(session_id, user_input, response)
             return
 
-        job = Job(
-            job_id="",
-            name="session_title",
-            status=JobStatus.PENDING,
-            func=self._run_title_job,
-            args=(session_id, user_input, response),
-            job_type="background",
-            session_id=session_id,
-        )
+        if self._durable_title:
+            # Durable path: serializable payload, survives restart.
+            job = Job(
+                job_id="",
+                name="session_title",
+                status=JobStatus.PENDING,
+                handler_name="generate_title",
+                payload={
+                    "session_id": session_id,
+                    "user_message": user_input,
+                    "assistant_message": response,
+                },
+                job_type="background",
+                session_id=session_id,
+            )
+        else:
+            # Default path: func= closure with LLM client access.
+            job = Job(
+                job_id="",
+                name="session_title",
+                status=JobStatus.PENDING,
+                func=self._run_title_job,
+                args=(session_id, user_input, response),
+                job_type="background",
+                session_id=session_id,
+            )
         try:
             self._job_queue.enqueue(job)
         except Exception:
@@ -1456,6 +1489,206 @@ def _configure_mcp_servers(
 
 
 # ==========================================
+# Slice 2.2 — Durable execution helpers (A4 / §6)
+# ==========================================
+
+_SWEEP_INTERVAL_SECONDS = 30  # how often to check for timed-out WAITING runs
+
+
+def _boot_recover_runs(
+    job_queue: "JobQueue",
+    registry: "JobRegistry",
+    wait_registry: Any,
+    emit: Any,
+) -> None:
+    """Restart-recovery pass for durable runs (design §6).
+
+    Scans the RunStateStore on boot and:
+    - **WAITING** runs: re-arm each WaitCondition in the in-process registry so
+      EVENT/TIME/USER wakes can still fire.
+    - **RUNNING** runs left by a crash: if a ``resume_cursor`` exists, enqueue a
+      ``resume_run`` job to replay from the last turn; otherwise mark as FAILED
+      with a clear message so the operator knows work was lost.
+
+    This is best-effort: any exception per run is logged and skipped so one
+    corrupt record never blocks a whole boot.
+    """
+    try:
+        from hachi.core.runtime.state import RunStatus
+        from hachi.core.runtime.store import RunStateStore
+        from hachi.core.runtime_events import now_iso
+        from hachi.jobs import Job, JobStatus
+
+        store = RunStateStore()
+        waiting_runs = store.waiting()
+        for run in waiting_runs:
+            try:
+                if run.wait is not None:
+                    wait_registry.arm(run.run_id, run.wait)
+                    logger.info(
+                        "_boot_recover_runs: re-armed WAITING run %r (kind=%s key=%s)",
+                        run.run_id,
+                        run.wait.kind.value if run.wait else "?",
+                        run.wait.key if run.wait else "?",
+                    )
+            except Exception:
+                logger.warning(
+                    "_boot_recover_runs: failed to re-arm run %r", run.run_id, exc_info=True
+                )
+
+        # Recover RUNNING runs (crashed mid-turn).
+        all_runs = store.list_all(limit=500)
+        for run in all_runs:
+            if run.status != RunStatus.RUNNING:
+                continue
+            try:
+                if run.resume_cursor and run.resume_cursor > 0:
+                    # Cursor exists → re-enqueue resume so the run can finish.
+                    job = Job(
+                        job_id="",
+                        name="resume_run_recovery",
+                        handler_name="resume_run",
+                        payload={"run_id": run.run_id, "result": {"reason": "crash_recovery"}},
+                        status=JobStatus.PENDING,
+                        session_id=run.session_id,
+                    )
+                    job_queue.enqueue(job)
+                    logger.info(
+                        "_boot_recover_runs: re-enqueued resume for crashed run %r", run.run_id
+                    )
+                else:
+                    # No cursor — cannot resume cleanly; mark FAILED.
+                    run = run.model_copy(
+                        update={
+                            "status": RunStatus.FAILED,
+                            "payload": {
+                                **run.payload,
+                                "error": "Process crashed while RUNNING; no resume cursor",
+                            },
+                            "updated_at": now_iso(),
+                        }
+                    )
+                    store.upsert(run)
+                    logger.info(
+                        "_boot_recover_runs: marked crashed run %r as FAILED (no cursor)",
+                        run.run_id,
+                    )
+            except Exception:
+                logger.warning(
+                    "_boot_recover_runs: failed to recover RUNNING run %r",
+                    run.run_id,
+                    exc_info=True,
+                )
+    except Exception:
+        logger.warning("_boot_recover_runs: recovery pass failed", exc_info=True)
+
+
+def _start_timeout_sweep(
+    job_queue: "JobQueue",
+    registry: "JobRegistry | None",
+    emit: Any,
+) -> None:
+    """Start a background thread that sweeps WAITING runs past their timeout_at (A4).
+
+    The sweep runs every ``_SWEEP_INTERVAL_SECONDS`` seconds.  For each WAITING
+    run with ``wait.timeout_at`` in the past, it enqueues a ``resume_run`` job
+    with ``result={"reason": "timeout"}`` so the run wakes and can fail/complete
+    gracefully rather than hanging forever.
+
+    The thread is daemonized so it does not prevent process exit.
+    """
+    import threading as _threading
+    import time as _time
+
+    def _sweep_loop() -> None:
+        while True:
+            _time.sleep(_SWEEP_INTERVAL_SECONDS)
+            try:
+                _sweep_once(job_queue)
+            except Exception:
+                logger.debug("_start_timeout_sweep: sweep tick failed", exc_info=True)
+
+    t = _threading.Thread(target=_sweep_loop, name="hachi-timeout-sweep", daemon=True)
+    t.start()
+    logger.info("_start_timeout_sweep: started (interval=%ds)", _SWEEP_INTERVAL_SECONDS)
+
+
+def _sweep_once(
+    job_queue: "JobQueue",
+    now: "Any | None" = None,
+    store: "Any | None" = None,
+) -> list[str]:
+    """Sweep WAITING runs whose timeout_at is in the past.
+
+    Args:
+        job_queue: Queue to enqueue ``resume_run`` wake jobs.
+        now:       Override "current time" as a ``datetime.datetime`` (for
+                   deterministic tests). When ``None``, uses ``datetime.UTC`` now.
+        store:     Optional ``RunStateStore`` override (for testing). When ``None``,
+                   uses the default store (platform data dir).
+
+    Returns:
+        List of run_ids that were swept (woken with timeout result).
+    """
+    import datetime
+
+    from hachi.core.runtime.store import RunStateStore
+    from hachi.jobs import Job, JobStatus
+
+    _now = now or datetime.datetime.now(datetime.UTC)
+    swept: list[str] = []
+
+    try:
+        store = store or RunStateStore()
+        waiting = store.waiting()
+        for run in waiting:
+            if run.wait is None or run.wait.timeout_at is None:
+                continue
+            try:
+                timeout_dt = datetime.datetime.fromisoformat(run.wait.timeout_at)
+                # Ensure both are offset-aware for comparison.
+                if timeout_dt.tzinfo is None:
+                    timeout_dt = timeout_dt.replace(tzinfo=datetime.UTC)
+            except Exception:
+                continue  # malformed timeout_at — skip
+
+            if _now >= timeout_dt:
+                try:
+                    job = Job(
+                        job_id="",
+                        name=f"timeout_sweep:{run.run_id[:8]}",
+                        handler_name="resume_run",
+                        payload={
+                            "run_id": run.run_id,
+                            "result": {
+                                "reason": "timeout",
+                                "wait_kind": run.wait.kind.value if run.wait else "unknown",
+                                "timeout_at": run.wait.timeout_at if run.wait else None,
+                            },
+                        },
+                        status=JobStatus.PENDING,
+                        session_id=run.session_id,
+                    )
+                    job_queue.enqueue(job)
+                    swept.append(run.run_id)
+                    logger.info(
+                        "_sweep_once: timed-out WAITING run %r swept (timeout_at=%s)",
+                        run.run_id,
+                        run.wait.timeout_at if run.wait else "?",
+                    )
+                except Exception:
+                    logger.warning(
+                        "_sweep_once: failed to enqueue timeout wake for run %r",
+                        run.run_id,
+                        exc_info=True,
+                    )
+    except Exception:
+        logger.debug("_sweep_once: store read failed", exc_info=True)
+
+    return swept
+
+
+# ==========================================
 # Boot Sequence
 # ==========================================
 
@@ -1490,6 +1723,19 @@ def boot_agent(
 
     read_models = RuntimeReadModelStore()
     job_queue: JobQueue = SQLiteJobQueue()
+
+    # ------------------------------------------------------------------
+    # Slice 2.2 — EventBus funnel (gated behind [events] bus_funnel=true)
+    #
+    # When the flag is OFF (default): the two closures below are used exactly
+    # as before — byte-identical output, zero behavior change.
+    #
+    # When the flag is ON: an EventBus is instantiated; the same two consumers
+    # (read-models append + SSE/TUI surface) are registered as sync subscribers
+    # in the same order, so publish() produces identical output by construction.
+    # emit_runtime_event / relay_event are then re-bound to publish through the bus.
+    # ------------------------------------------------------------------
+    _event_bus: Any = None  # EventBus | None; exposed on ProcessSharedServices below
 
     def emit_runtime_event(name: str, payload: dict[str, Any] | None = None) -> None:
         event = RuntimeEvent(name=name, payload=payload or {}, timestamp=now_iso())
@@ -1565,6 +1811,58 @@ def boot_agent(
     )
     max_tokens = config.get("agent", {}).get("max_tokens", 8192)
 
+    # ------------------------------------------------------------------
+    # Slice 2.2 — EventBus funnel: rebind emit/relay through the bus when
+    # [events] bus_funnel=true.  Back-compat: the two sync subscribers below
+    # are identical to the original direct-call code path, registered in the
+    # same order, so SSE/TUI output is byte-identical by construction.
+    # ------------------------------------------------------------------
+    from hachi.core.settings import EventsSettings, JobsSettings
+
+    _events_cfg = EventsSettings.model_validate(config.get("events", {}))
+    _jobs_cfg = JobsSettings.model_validate(config.get("jobs", {}))
+
+    if _events_cfg.bus_funnel:
+        from hachi.core.event_bus import EventBus
+
+        _event_bus = EventBus(job_queue=job_queue)
+
+        def _read_models_sink(event: RuntimeEvent) -> None:
+            read_models.append_event(event)
+
+        def _surface_sink(event: RuntimeEvent) -> None:
+            if on_event:
+                on_event(event.name, event.payload)
+
+        _event_bus.subscribe("*", _read_models_sink, mode="sync", name="read-models")
+        _event_bus.subscribe("*", _surface_sink, mode="sync", name="surface")
+
+        # Rebind emit_runtime_event to publish through the bus.
+        def emit_runtime_event(  # type: ignore[misc]  # noqa: F811
+            name: str, payload: dict[str, Any] | None = None
+        ) -> None:
+            event = RuntimeEvent(name=name, payload=payload or {}, timestamp=now_iso())
+            _event_bus.publish(event)
+
+        # Rebind relay_event: publish primary events through the bus (so all
+        # subscribers see them) and call on_event directly for legacy aliases
+        # (aliases are NOT appended to read_models, matching the original behavior).
+        def relay_event(  # type: ignore[misc]  # noqa: F811
+            event_type: str, payload: dict[str, Any] | None = None
+        ) -> None:
+            envelopes = adapt_event(event_type, payload)
+            for envelope in envelopes:
+                _event_bus.publish(envelope.primary)
+                # Aliases: on_event only, never read_models (original behavior preserved).
+                if on_event and envelope.legacy_aliases:
+                    for alias in envelope.legacy_aliases:
+                        on_event(alias, envelope.primary.payload)
+
+        logger.info("boot_agent: EventBus funnel active (bus_funnel=true)")
+    # ------------------------------------------------------------------
+    # End EventBus funnel wiring
+    # ------------------------------------------------------------------
+
     capability_registry = _build_capability_registry(config)
     enabled_capabilities = [item.id for item in capability_registry.iter_enabled()]
     for capability_id in enabled_capabilities:
@@ -1586,6 +1884,11 @@ def boot_agent(
     from hachi.gateway.shared_services import ProcessSharedServices
 
     _shared = ProcessSharedServices.get_or_create(config, str(get_hachi_paths().data_dir))
+    # Slice 2.2: publish the EventBus on the shared singleton so resume.py and
+    # the observability sink (slice 2.3) can find it via ProcessSharedServices.instance().
+    if _event_bus is not None:
+        _shared.event_bus = _event_bus
+
     if _shared.skill_engine is not None:
         skill_engine = _shared.skill_engine
     else:
@@ -2164,10 +2467,52 @@ def boot_agent(
             )
     session._sub_agent_client = sub_agent_client  # closed on shutdown alongside the main client
     session._browser_controller = browser_controller  # closed on shutdown (no-op if never used)
+    # Slice 2.2: activate durable title job path when the flag is on.
+    if _jobs_cfg.durable_handlers:
+        session._durable_title = True
+
+    # ------------------------------------------------------------------
+    # Slice 2.2 — JobRegistry activation (gated behind [jobs] durable_handlers=true)
+    #
+    # When OFF (default): the resident worker runs with registry=None; func= jobs
+    # execute as before; nothing changes.
+    #
+    # When ON: a JobRegistry is built, the four named handlers are registered,
+    # and the registry is passed to the worker so handler_name= jobs are routed
+    # to the correct implementation.  The scheduler tick also sweeps WAITING runs
+    # past their timeout_at (A4 amendment) and restart recovery re-arms them (§6).
+    # ------------------------------------------------------------------
+    _job_registry: JobRegistry | None = None
+    if _jobs_cfg.durable_handlers:
+        from hachi.core.runtime.job_handlers import (
+            handle_auto_extract,
+            handle_extract_fact,
+            handle_generate_title,
+            handle_resume_run,
+        )
+        from hachi.core.runtime.waits import get_wait_registry
+
+        _job_registry = JobRegistry()
+        _job_registry.register("extract_fact", handle_extract_fact)
+        _job_registry.register("generate_title", handle_generate_title)
+        _job_registry.register("resume_run", handle_resume_run)
+        _job_registry.register("auto_extract", handle_auto_extract)
+
+        # Expose the WaitConditionRegistry on the process singleton so the
+        # scheduler sweep and /runs/{id}/wake endpoint share one registry.
+        _wait_registry = get_wait_registry()
+        _shared.wait_registry = _wait_registry
+
+        # A6 (§6): restart recovery — re-arm WAITING runs; transition crash-RUNNING runs.
+        _boot_recover_runs(job_queue, _job_registry, _wait_registry, emit_runtime_event)
+
+        logger.info("boot_agent: JobRegistry active with 4 handlers (durable_handlers=true)")
 
     # Start the resident job worker so background jobs (fact extraction, prefetch,
     # title generation) execute without blocking the turn path.
-    _job_worker_for_session = JobWorker(job_queue, on_job_event=emit_runtime_event)
+    _job_worker_for_session = JobWorker(
+        job_queue, on_job_event=emit_runtime_event, registry=_job_registry
+    )
     _resident_worker = ResidentWorkerThread(_job_worker_for_session)
     _resident_worker.start()
     session.set_resident_worker(_resident_worker)
@@ -2191,6 +2536,18 @@ def boot_agent(
     _schedule_runner.start()
     session._schedule_runner = _schedule_runner  # stopped in shutdown()
     session._scheduler = scheduler  # P4-05: exposed for companion web UI
+
+    # ------------------------------------------------------------------
+    # Slice 2.2 — A4: scheduler timeout sweep for WAITING runs.
+    # When durable_handlers=true, attach a periodic sweep to the existing
+    # ScheduleRunner tick by enqueuing a "sweep_waiting_runs" job on each tick.
+    # The sweep is implemented as a standalone function (not a Schedule entry)
+    # so it runs every ScheduleRunner interval without cluttering the user's
+    # schedule list.  Implementation: a resident helper thread that wakes every
+    # SWEEP_INTERVAL seconds and sweeps timed-out runs.
+    # ------------------------------------------------------------------
+    if _jobs_cfg.durable_handlers:
+        _start_timeout_sweep(job_queue, _job_registry, emit_runtime_event)
 
     emit_runtime_event(
         BOOT_COMPLETE,

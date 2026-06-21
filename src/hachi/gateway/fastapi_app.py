@@ -186,6 +186,7 @@ class CapabilityToggleRequest(BaseModel):
 
 # G1 — new request models
 
+
 class LimitsRequest(BaseModel):
     """Body for PUT /config/limits (G1-T3)."""
 
@@ -585,6 +586,7 @@ def create_gateway_app(
         if caller_hash is None:
             # No-auth mode: return everything.
             return all_sessions
+
         # Filter: include the session if the owner is NULL (legacy) or matches caller.
         def _owned(s: dict[str, Any]) -> bool:
             sid = s.get("session_id") or s.get("id") or ""
@@ -641,10 +643,7 @@ def create_gateway_app(
         elif word == "help":
             reply = _SLASH_HELP_TEXT
         else:
-            reply = (
-                f"Unknown command `/{word}`. "
-                f"Try /help to see available commands."
-            )
+            reply = f"Unknown command `/{word}`. Try /help to see available commands."
 
         return {"response": reply}
 
@@ -808,8 +807,17 @@ def create_gateway_app(
         _ALLOWED_COMMANDS = {"npx", "uvx", "python", "python3", "node", "uv"}
         _ALLOWED_TRANSPORTS = {"stdio", "sse", "http"}
         _SECRET_PATTERNS = {
-            "key", "token", "secret", "password", "passwd", "credential",
-            "private", "auth", "bearer", "apikey", "api_key",
+            "key",
+            "token",
+            "secret",
+            "password",
+            "passwd",
+            "credential",
+            "private",
+            "auth",
+            "bearer",
+            "apikey",
+            "api_key",
         }
         import re
 
@@ -820,8 +828,7 @@ def create_gateway_app(
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "name must be non-empty and contain only "
-                    "letters, digits, hyphens, underscores"
+                    "name must be non-empty and contain only letters, digits, hyphens, underscores"
                 ),
             )
         if transport not in _ALLOWED_TRANSPORTS:
@@ -852,8 +859,7 @@ def create_gateway_app(
                 raise HTTPException(
                     status_code=422,
                     detail=(
-                        f"url is required and must be an http/https URL "
-                        f"for {transport} transport"
+                        f"url is required and must be an http/https URL for {transport} transport"
                     ),
                 )
 
@@ -863,9 +869,7 @@ def create_gateway_app(
             if any(p in lower for p in _SECRET_PATTERNS):
                 raise HTTPException(
                     status_code=422,
-                    detail=(
-                        f"key '{env_key}' looks like a secret; use SecretStore instead"
-                    ),
+                    detail=(f"key '{env_key}' looks like a secret; use SecretStore instead"),
                 )
 
         return control_plane.register_mcp_server(
@@ -1520,9 +1524,7 @@ def create_gateway_app(
     # Durable Runs routes (Initiative D)
     # ==========================================
 
-    runs_router = APIRouter(
-        prefix="/runs", tags=["runs"], dependencies=protected_dependencies
-    )
+    runs_router = APIRouter(prefix="/runs", tags=["runs"], dependencies=protected_dependencies)
 
     @runs_router.get("", summary="List recent durable runs")
     async def get_runs(limit: int = Query(default=100, ge=1, le=500)) -> Any:
@@ -1559,7 +1561,6 @@ def create_gateway_app(
         from hachi.core.runtime.state import RunStatus
         from hachi.core.runtime.store import RunStateStore
         from hachi.core.runtime.waits import get_wait_registry
-        from hachi.core.runtime_events import now_iso
 
         body = body or {}
         result_payload: dict[str, Any] = body.get("result", {}) if isinstance(body, dict) else {}
@@ -1600,7 +1601,7 @@ def create_gateway_app(
             _log.warning("post_run_wake: failed to enqueue resume job for %r: %s", run_id, exc)
             # Fall back to inline attempt
             try:
-                from hachi.core.runtime.resume import HonestResumeError, resume_run
+                from hachi.core.runtime.resume import resume_run
 
                 await anyio.to_thread.run_sync(lambda: resume_run(run_id, result_payload))
             except Exception as resume_exc:
@@ -1633,9 +1634,7 @@ def create_gateway_app(
             return {"run_id": run_id, "status": run.status.value, "note": "already terminal"}
 
         get_wait_registry().disarm(run_id)
-        run = run.model_copy(
-            update={"status": RunStatus.CANCELLED, "updated_at": now_iso()}
-        )
+        run = run.model_copy(update={"status": RunStatus.CANCELLED, "updated_at": now_iso()})
         store.upsert(run)
         return {"run_id": run_id, "status": RunStatus.CANCELLED.value}
 

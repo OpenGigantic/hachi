@@ -139,6 +139,45 @@ class ResilienceSettings(BaseModel):
     breaker_cooldown_s: float = 30.0
 
 
+class EventsSettings(BaseModel):
+    """Optional ``[events]`` config section (Slice 2.2 — EventBus funnel).
+
+    When ``bus_funnel=true``, ``emit_runtime_event`` / ``relay_event`` publish
+    through the ``EventBus`` singleton instead of calling consumers directly.
+    Back-compat: the same two sync subscribers (read-models append + SSE surface)
+    are registered in the same order, so output is byte-identical by construction.
+
+    Default is ``False`` so the old path stays active until the flag is set.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    bus_funnel: bool = False
+
+
+class JobsSettings(BaseModel):
+    """Optional ``[jobs]`` config section (Slice 2.2 — durable job handlers).
+
+    When ``durable_handlers=true``:
+      - A ``JobRegistry`` is built at boot with the four named handlers.
+      - ``_enqueue_title_job`` converts to ``handler_name=`` so titles survive
+        restarts (fact-extraction jobs are converted inside ``MemoryManager``
+        when this flag is in the env; see memory.py comment).
+      - The scheduler sweeps WAITING runs past ``wait.timeout_at`` (A4).
+      - On boot, WAITING runs are re-armed and RUNNING crashes are resolved (§6).
+
+    Default is ``False`` so the old func= path stays active.
+
+    ``worker_count`` is wired but not enforced (single worker pool is sufficient
+    for single-node/single-user; seam for future throughput).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    durable_handlers: bool = False
+    worker_count: int = 1
+
+
 class RoutingSettings(BaseModel):
     """Optional ``[routing]`` config section.
 
@@ -179,6 +218,10 @@ class ResolvedConfig(BaseModel):
     channels: ChannelSettings = Field(default_factory=ChannelSettings)
     # Optional [routing] section — absent = back-compat (one model for everything).
     routing: RoutingSettings | None = None
+    # Optional [events] section — absent = old direct-call funnel (back-compat).
+    events: EventsSettings = Field(default_factory=EventsSettings)
+    # Optional [jobs] section — absent = func= closures (back-compat).
+    jobs: JobsSettings = Field(default_factory=JobsSettings)
 
 
 def default_config() -> ResolvedConfig:
