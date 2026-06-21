@@ -2,7 +2,7 @@
 // Faithfully ports prototype markup lines 212–336 and logic handlers.
 // Screen-local view state only in useState; all domain mutations go through useStore.
 
-import React, { useEffect, useRef, useState, useCallback, memo } from 'react'
+import React, { useEffect, useRef, useState, useCallback, memo, useMemo } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
@@ -936,7 +936,14 @@ const MessageItem = memo(function MessageItem({ msg, isLast, isStreaming, operat
 // ---- Conversation component ----------------------------------------
 
 function Conversation() {
-  const messages = useStore((s) => s.messages)
+  // Narrow the messages subscription to avoid re-running all derived state on
+  // every store flush (which happens ~20×/s during streaming).
+  // We subscribe to the array reference directly but use a stable memoized
+  // list keyed on a cheap signature so React skips reconciling completed bubbles
+  // when only the streaming tail changes.
+  const messagesRaw = useStore((s) => s.messages)
+  const messagesLen = messagesRaw.length
+  const lastMsgId = messagesLen > 0 ? messagesRaw[messagesLen - 1].id : -1
   const streaming = useStore((s) => s.streaming)
   const inContext = useStore((s) => s.inContext)
   const operator = useStore((s) => s.operator)
@@ -954,8 +961,21 @@ function Conversation() {
   const dataMode = useStore((s) => s.dataMode)
   const showToast = useStore((s) => s.showToast)
 
+  // Memoize the messages array passed to the list: re-create only when length,
+  // last id, or streaming flag changes (not on every token flush of the tail).
+  // This means the .map() over the list re-runs only on structural changes, not
+  // on every ~48ms delta flush. MessageItem is already React.memo'd so even
+  // when messages is a new array, unchanged items bail out in reconciliation.
+  const streamingText = streaming && messagesLen > 0 ? messagesRaw[messagesLen - 1].text : ''
+  const messages = useMemo(
+    () => messagesRaw,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [messagesLen, lastMsgId, streaming, streamingText]
+  )
+
   const scrollRef = useRef<HTMLDivElement>(null)
   const followOutputRef = useRef(true)
+  const scrollRafRef = useRef<number | null>(null)
   // M8: session picker open state
   const [pickerOpen, setPickerOpen] = useState(false)
 
@@ -990,15 +1010,25 @@ function Conversation() {
     }
   }, [])
 
-  // Follow output while the user is near the bottom: a single scrollTop write
-  // when the message count changes or the streaming text grows. No measurement
-  // observers, no virtualizer scroll listener — nothing that can feed back.
+  // Follow output while the user is near the bottom.
+  // Use requestAnimationFrame to batch many rapid flush events into at most one
+  // scrollTop write per frame (~60/s cap), avoiding a forced layout reflow on
+  // every ~48ms token flush (~20/s). The rAF is cancelled and re-scheduled on
+  // each effect run so multiple flushes in the same frame coalesce into one write.
   const streamingLen = isStreamingLast ? lastMsg?.text.length ?? 0 : 0
   useEffect(() => {
-    if (followOutputRef.current && scrollRef.current) {
-      const el = scrollRef.current
-      el.scrollTop = el.scrollHeight
+    if (!followOutputRef.current || !scrollRef.current) return
+    const el = scrollRef.current
+    // Cancel any pending rAF from a prior flush in this same frame
+    if (scrollRafRef.current != null) {
+      cancelAnimationFrame(scrollRafRef.current)
     }
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null
+      if (followOutputRef.current && el) {
+        el.scrollTop = el.scrollHeight
+      }
+    })
   }, [messages.length, streamingLen])
 
   const handleTranscriptScroll = useCallback(() => {
