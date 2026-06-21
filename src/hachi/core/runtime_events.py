@@ -55,6 +55,31 @@ MCP_SERVER_READY = "mcp.server.ready"
 MCP_SERVER_FAILED = "mcp.server.failed"
 MCP_SHUTDOWN = "mcp.shutdown"
 
+# File platform events
+FILE_UPLOADED = "file.uploaded"
+FILE_EXTRACTED = "file.extracted"
+
+# Search events
+SEARCH_COMPLETED = "search.completed"
+
+# Messaging events
+MESSAGE_RECEIVED = "message.received"
+WEBHOOK_RECEIVED = "webhook.received"
+
+# Durable run lifecycle
+RUN_SUSPENDED = "run.suspended"
+RUN_RESUMED = "run.resumed"
+
+# Provider / routing events
+PROVIDER_FAILOVER = "provider.failover"
+MODEL_ROUTED = "model.routed"
+
+# Promoted from raw literals in the codebase (closes taxonomy gap)
+JOB_RETRY = "job.retry"
+BUDGET_EXCEEDED = "budget.exceeded"
+LLM_RETRY = "llm.retry"
+SESSION_TIME_LIMIT = "session.time.limit"
+
 # Max chars of a tool result carried in a ``tool.call.completed`` preview.
 # Bounded so the event stream stays light, but large enough that expanding a
 # tool card in the TUI shows the substance of the result, not a stub.

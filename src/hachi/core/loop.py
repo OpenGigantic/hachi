@@ -73,10 +73,17 @@ class AgentException(Exception):
 
 
 class SuspendWorkflow(Exception):
-    """Signal that the agent loop should suspend and wait for an external trigger."""
+    """Signal that the agent loop should suspend and wait for an external trigger.
 
-    def __init__(self, reason: str):
+    The loop catches this exception, ends the current turn cleanly, and surfaces
+    the wait condition to the gateway layer for RunState persistence and registry
+    arming.
+    """
+
+    def __init__(self, reason: str, wait_kind: str = "user", wait_key: str = "") -> None:
         self.reason = reason
+        self.wait_kind = wait_kind
+        self.wait_key = wait_key
         super().__init__(reason)
 
 
@@ -830,7 +837,7 @@ class ExecutionLoop:
                 # (active_groups, active_skill) that downstream tools may rely on, so they
                 # must run before any tool is submitted.
                 tool_results: list[dict[str, Any]] = []
-                suspend_reason = None
+                suspend_exc: SuspendWorkflow | None = None
 
                 for tool_call in response.tool_calls:
                     self.on_event("tool_call", {"name": tool_call.name, "input": tool_call.input})
@@ -867,11 +874,11 @@ class ExecutionLoop:
                     )
 
                 for tool_call in response.tool_calls:
-                    if suspend_reason:
+                    if suspend_exc is not None:
                         break
                     raw_result, tool_error, _suspend = _futures[tool_call.id].result()
                     if _suspend is not None:
-                        suspend_reason = _suspend.reason
+                        suspend_exc = _suspend
                         break
 
                     # Most tools return text (stringified here). A tool that needs
@@ -921,9 +928,11 @@ class ExecutionLoop:
                 if tool_results:
                     self.memory.add_message(Message(role="user", content=tool_results))
 
-                if suspend_reason:
-                    self.memory.complete_task(user_input_for_turn, f"Suspended: {suspend_reason}")
-                    return f"[WORKFLOW SUSPENDED] {suspend_reason}"
+                if suspend_exc is not None:
+                    self.memory.complete_task(
+                        user_input_for_turn, f"Suspended: {suspend_exc.reason}"
+                    )
+                    return f"[WORKFLOW SUSPENDED] {suspend_exc.reason}"
 
             self.on_event(
                 SESSION_ITERATION_LIMIT,
