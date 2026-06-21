@@ -73,6 +73,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/integrations/{connector_id}/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Credentials
+         * @description Store apikey credentials for a connector.
+         *
+         *     Body: ``{"fields": {"<key>": "<value>", ...}}``
+         *
+         *     Only keys declared in the connector's ``credential_fields`` are accepted.
+         *     Returns the updated connector status dict (same shape as ``GET /integrations``
+         *     entries) so the frontend can update the card immediately without re-fetching.
+         *
+         *     Returns HTTP 400 for invalid connector id format.
+         *     Returns HTTP 404 for unknown connectors.
+         *     Returns HTTP 422 for undeclared field keys or empty values.
+         */
+        post: operations["post_credentials_integrations__connector_id__credentials_post"];
+        /**
+         * Delete Credentials
+         * @description Clear all stored apikey credentials for a connector.
+         *
+         *     Returns the updated connector status dict.
+         *
+         *     Returns HTTP 400 for invalid connector id format.
+         *     Returns HTTP 404 for unknown connectors.
+         *     Returns HTTP 422 if the connector is not an apikey connector.
+         */
+        delete: operations["delete_credentials_integrations__connector_id__credentials_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/integrations/oauth/callback": {
         parameters: {
             query?: never;
@@ -1117,6 +1157,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/spend/daily": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Spend Daily
+         * @description Return today's accumulated spend from the daily ledger plus configured caps.
+         */
+        get: operations["get_spend_daily_spend_daily_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs": {
         parameters: {
             query?: never;
@@ -1657,6 +1717,88 @@ export interface operations {
         };
     };
     post_disconnect_integrations__connector_id__disconnect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_credentials_integrations__connector_id__credentials_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_credentials_integrations__connector_id__credentials_delete: {
         parameters: {
             query?: never;
             header?: never;
@@ -3664,6 +3806,33 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    get_spend_daily_spend_daily_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
