@@ -24,6 +24,8 @@ import {
   openFileContent,
 } from '../lib/data/domains/files'
 import { Markdown } from '../components/ui/Markdown'
+import VoiceMode from '../components/voice/VoiceMode'
+import { getVoiceConfig } from '../lib/data/domains/voice'
 
 // ---- SessionPicker (M8 MED-020) -----------------------------------
 
@@ -979,6 +981,13 @@ function Conversation() {
   // M8: session picker open state
   const [pickerOpen, setPickerOpen] = useState(false)
 
+  // Voice mode state
+  const [voiceModeOpen, setVoiceModeOpen] = useState(false)
+  // Track the last completed assistant text so VoiceMode can auto-TTS it.
+  const [lastAssistantText, setLastAssistantText] = useState('')
+  // Track whether gateway voice is configured (for graceful fallback).
+  const [gatewayVoiceReady, setGatewayVoiceReady] = useState<boolean | null>(null)
+
   // The transcript is intentionally NOT virtualized. Messages are hard-capped at
   // 400 (store.capMessages) — a safe DOM size — and a dynamic virtualizer's
   // ResizeObserver measurement of the actively-streaming (continuously-growing)
@@ -991,6 +1000,25 @@ function Conversation() {
 
   // Refresh recent sessions list on navigate-to (idempotent loader)
   useEffect(() => { void loadSessions() }, [])
+
+  // Probe gateway voice config once on mount to decide default mode.
+  useEffect(() => {
+    getVoiceConfig()
+      .then((cfg) => setGatewayVoiceReady(cfg.configured))
+      .catch(() => setGatewayVoiceReady(false))
+  }, [])
+
+  // When voice mode is open, track the last completed (non-streaming) assistant
+  // message so VoiceMode can auto-speak it via gateway TTS.
+  useEffect(() => {
+    if (!voiceModeOpen) return
+    if (streaming) return  // still in-flight; wait for it to finish
+    const last = [...messages].reverse().find((m) => m.role === 'hachi' && m.text.trim())
+    if (last && last.text !== lastAssistantText) {
+      setLastAssistantText(last.text)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming, messages.length, voiceModeOpen])
 
   // Restore conversation history on mount and when the active session changes.
   // Guards: skipped in mock mode, skipped if a stream is in-flight.
@@ -1292,7 +1320,29 @@ function Conversation() {
       </div>
 
       {/* ---- composer ---- */}
-      <ConversationComposer onOpenSessionsPicker={() => setPickerOpen(true)} />
+      <ConversationComposer
+        onOpenSessionsPicker={() => setPickerOpen(true)}
+        onOpenVoiceMode={() => setVoiceModeOpen(true)}
+        gatewayVoiceReady={gatewayVoiceReady ?? false}
+      />
+
+      {/* ---- voice mode overlay ---- */}
+      <VoiceMode
+        open={voiceModeOpen}
+        onClose={() => {
+          setVoiceModeOpen(false)
+          setLastAssistantText('')
+        }}
+        onTranscript={(text) => {
+          // Reuse the same send path as the composer.
+          useStore.getState().startTask(text)
+        }}
+        assistantText={lastAssistantText}
+        onConfigUnavailable={() => {
+          setVoiceModeOpen(false)
+          setGatewayVoiceReady(false)
+        }}
+      />
 
     </div>
   )
@@ -1300,9 +1350,15 @@ function Conversation() {
 
 interface ConversationComposerProps {
   onOpenSessionsPicker: () => void
+  onOpenVoiceMode: () => void
+  gatewayVoiceReady: boolean
 }
 
-const ConversationComposer = memo(function ConversationComposer({ onOpenSessionsPicker }: ConversationComposerProps) {
+const ConversationComposer = memo(function ConversationComposer({
+  onOpenSessionsPicker,
+  onOpenVoiceMode,
+  gatewayVoiceReady,
+}: ConversationComposerProps) {
   const composer = useStore((s) => s.composer)
   const slashOpen = useStore((s) => s.slashOpen)
   const streaming = useStore((s) => s.streaming)
@@ -1578,8 +1634,8 @@ const ConversationComposer = memo(function ConversationComposer({ onOpenSessions
             <Icon name={uploading ? 'refresh' : 'paperclip'} size={16} />
           </button>
 
-          {/* Mic button */}
-          {hasSpeechRecognition && (
+          {/* Mic button — browser Web Speech API (always shown when available) */}
+          {hasSpeechRecognition && !gatewayVoiceReady && (
             <button
               type="button"
               onClick={handleMic}
@@ -1610,6 +1666,39 @@ const ConversationComposer = memo(function ConversationComposer({ onOpenSessions
               }}
             >
               <Icon name={listening ? 'mic-off' : 'mic'} size={16} />
+            </button>
+          )}
+
+          {/* Voice mode button — gateway STT/TTS (shown when gateway voice is configured) */}
+          {gatewayVoiceReady && (
+            <button
+              type="button"
+              onClick={onOpenVoiceMode}
+              disabled={streaming}
+              title="Open voice mode (gateway-powered)"
+              style={{
+                flexShrink: 0,
+                width: 34,
+                height: 34,
+                borderRadius: 8,
+                border: 'none',
+                background: 'transparent',
+                color: 'var(--hachi-brand)',
+                display: 'grid',
+                placeItems: 'center',
+                cursor: streaming ? 'default' : 'pointer',
+                opacity: streaming ? 0.4 : 1,
+              }}
+              onMouseEnter={(e) => {
+                if (!streaming) {
+                  (e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)'
+                }
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+              }}
+            >
+              <Icon name="mic" size={16} />
             </button>
           )}
 
