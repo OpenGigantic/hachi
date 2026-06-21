@@ -235,6 +235,7 @@ def test_desktop_windows_injection_live():
         ],
         shell=False,
         capture_output=True,
+        stdin=subprocess.DEVNULL,
         text=True,
         timeout=20,
         env=env,
