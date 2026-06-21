@@ -4,7 +4,7 @@
 // Mutations via POST/PUT/DELETE /config/providers/* and PUT /config/routing.
 // Matches the inline-style conventions of settings.tsx / VoiceSettings.tsx.
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   getProviders,
   addProvider,
@@ -147,7 +147,15 @@ function ActionButton({
   );
 }
 
-function StatusDot({ ok, testing }: { ok: boolean | null; testing: boolean }) {
+function StatusDot({
+  ok,
+  testing,
+  detail,
+}: {
+  ok: boolean | null;
+  testing: boolean;
+  detail?: string;
+}) {
   if (testing) {
     return (
       <span
@@ -174,7 +182,7 @@ function StatusDot({ ok, testing }: { ok: boolean | null; testing: boolean }) {
         background: ok ? 'var(--hachi-trust)' : 'var(--hachi-danger)',
         flexShrink: 0,
       }}
-      title={ok ? 'Connected' : 'Connection failed'}
+      title={ok ? 'Connected' : detail ? `Connection failed: ${detail}` : 'Connection failed'}
     />
   );
 }
@@ -199,6 +207,12 @@ function ToastBanner({ message, type }: { message: string; type: 'success' | 'er
 
 // ---- Add/Edit Provider Form ----
 
+interface HeaderRow {
+  id: string;
+  key: string;
+  value: string;
+}
+
 interface ProviderFormState {
   name: string;
   kind: string;
@@ -206,7 +220,7 @@ interface ProviderFormState {
   base_url: string;
   api_key: string;
   allowed_models_raw: string; // comma-separated
-  headers: { key: string; value: string }[];
+  headers: HeaderRow[];
 }
 
 const DEFAULT_FORM: ProviderFormState = {
@@ -238,17 +252,24 @@ function ProviderForm({
     setForm((prev) => ({ ...prev, [k]: v }));
   }
 
+  // Stable id counter for header rows — avoids index-key mis-mapping on removal.
+  const headerIdRef = useRef(0);
+
   function addHeader() {
-    setField('headers', [...form.headers, { key: '', value: '' }]);
+    headerIdRef.current += 1;
+    setField('headers', [
+      ...form.headers,
+      { id: String(headerIdRef.current), key: '', value: '' },
+    ]);
   }
 
-  function setHeader(idx: number, field: 'key' | 'value', val: string) {
-    const h = form.headers.map((r, i) => (i === idx ? { ...r, [field]: val } : r));
+  function setHeader(id: string, field: 'key' | 'value', val: string) {
+    const h = form.headers.map((r) => (r.id === id ? { ...r, [field]: val } : r));
     setField('headers', h);
   }
 
-  function removeHeader(idx: number) {
-    setField('headers', form.headers.filter((_, i) => i !== idx));
+  function removeHeader(id: string) {
+    setField('headers', form.headers.filter((r) => r.id !== id));
   }
 
   async function handleSubmit() {
@@ -416,23 +437,23 @@ function ProviderForm({
         <div>
           <label style={labelStyle}>Custom HTTP headers (optional)</label>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {form.headers.map((row, idx) => (
-              <div key={idx} style={{ display: 'flex', gap: 8 }}>
+            {form.headers.map((row) => (
+              <div key={row.id} style={{ display: 'flex', gap: 8 }}>
                 <input
                   style={{ ...inputStyle, flex: 1 }}
                   value={row.key}
-                  onChange={(e) => setHeader(idx, 'key', e.target.value)}
+                  onChange={(e) => setHeader(row.id, 'key', e.target.value)}
                   placeholder="Header name"
                 />
                 <input
                   style={{ ...inputStyle, flex: 2 }}
                   value={row.value}
-                  onChange={(e) => setHeader(idx, 'value', e.target.value)}
+                  onChange={(e) => setHeader(row.id, 'value', e.target.value)}
                   placeholder="Value"
                 />
                 <button
                   type="button"
-                  onClick={() => removeHeader(idx)}
+                  onClick={() => removeHeader(row.id)}
                   style={{
                     height: 40,
                     width: 40,
@@ -493,12 +514,15 @@ function ProviderRow({
   onEdit: (p: ProviderEntry) => void;
 }) {
   const [status, setStatus] = useState<boolean | null>(null);
+  const [testDetail, setTestDetail] = useState<string | undefined>(undefined);
   const [testing, setTesting] = useState(false);
 
   async function handleTest() {
     setTesting(true);
+    setTestDetail(undefined);
     const result = await testConnection(provider.name);
     setStatus(result.ok);
+    if (!result.ok) setTestDetail(result.detail);
     setTesting(false);
   }
 
@@ -515,7 +539,7 @@ function ProviderRow({
         borderBottom: '0.5px solid var(--hachi-line)',
       }}
     >
-      <StatusDot ok={status} testing={testing} />
+      <StatusDot ok={status} testing={testing} detail={testDetail} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontWeight: 500, fontSize: 14 }}>{displayName}</span>
@@ -545,6 +569,21 @@ function ProviderRow({
           {provider.model}
           {provider.base_url && ` · ${provider.base_url}`}
         </div>
+        {/* Inline failure detail so the user can see WHY the test failed. */}
+        {status === false && testDetail && (
+          <div
+            style={{
+              fontSize: 12,
+              color: 'var(--hachi-danger)',
+              marginTop: 3,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {testDetail}
+          </div>
+        )}
       </div>
       <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
         <ActionButton onClick={() => void handleTest()} disabled={testing}>
@@ -720,6 +759,16 @@ export default function ProviderSettings() {
   const [loadError, setLoadError] = useState('');
   const [editState, setEditState] = useState<EditState>({ mode: 'none' });
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear the toast timer on unmount to prevent setState-after-unmount.
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -730,9 +779,14 @@ export default function ProviderSettings() {
         getRouting(),
         listAllModels(),
       ]);
-      setProviders(pResp.providers);
-      setRoutingState(rResp);
-      setAllModels(mResp);
+      // Guard against undefined/non-2xx bodies — any .map must run on a real array.
+      setProviders(pResp?.providers ?? []);
+      setRoutingState(
+        rResp
+          ? { ...rResp, capabilities: rResp.capabilities ?? [] }
+          : null
+      );
+      setAllModels(mResp ?? {});
     } catch (e: unknown) {
       setLoadError(e instanceof Error ? e.message : 'Failed to load provider config');
     } finally {
@@ -745,8 +799,15 @@ export default function ProviderSettings() {
   }, [load]);
 
   function showToast(msg: string, type: 'success' | 'error') {
+    // Cancel any in-flight timer before scheduling a new one.
+    if (toastTimerRef.current !== null) {
+      clearTimeout(toastTimerRef.current);
+    }
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 3500);
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 3500);
   }
 
   async function handleSave(name: string, spec: ProviderSpec) {
@@ -786,6 +847,9 @@ export default function ProviderSettings() {
     setRoutingState(resp);
   }
 
+  // Counter for stable header row ids when populating the edit form.
+  const editHeaderIdRef = useRef(0);
+
   // Build initial form state from a provider entry
   function providerToForm(p: ProviderEntry): Partial<ProviderFormState> {
     return {
@@ -794,8 +858,11 @@ export default function ProviderSettings() {
       model: p.model,
       base_url: p.base_url ?? '',
       api_key: '',
-      allowed_models_raw: p.allowed_models.join(', '),
-      headers: Object.entries(p.headers).map(([key, value]) => ({ key, value })),
+      allowed_models_raw: (p.allowed_models ?? []).join(', '),
+      headers: Object.entries(p.headers ?? {}).map(([key, value]) => {
+        editHeaderIdRef.current += 1;
+        return { id: String(editHeaderIdRef.current), key, value };
+      }),
     };
   }
 
