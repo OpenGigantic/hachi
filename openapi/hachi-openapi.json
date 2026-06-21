@@ -137,6 +137,118 @@
         ]
       }
     },
+    "/integrations/{connector_id}/credentials": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Post Credentials",
+        "description": "Store apikey credentials for a connector.\n\nBody: ``{\"fields\": {\"<key>\": \"<value>\", ...}}``\n\nOnly keys declared in the connector's ``credential_fields`` are accepted.\nReturns the updated connector status dict (same shape as ``GET /integrations``\nentries) so the frontend can update the card immediately without re-fetching.\n\nReturns HTTP 400 for invalid connector id format.\nReturns HTTP 404 for unknown connectors.\nReturns HTTP 422 for undeclared field keys or empty values.",
+        "operationId": "post_credentials_integrations__connector_id__credentials_post",
+        "parameters": [
+          {
+            "name": "connector_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Connector Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Credentials Integrations  Connector Id  Credentials Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Delete Credentials",
+        "description": "Clear all stored apikey credentials for a connector.\n\nReturns the updated connector status dict.\n\nReturns HTTP 400 for invalid connector id format.\nReturns HTTP 404 for unknown connectors.\nReturns HTTP 422 if the connector is not an apikey connector.",
+        "operationId": "delete_credentials_integrations__connector_id__credentials_delete",
+        "parameters": [
+          {
+            "name": "connector_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Connector Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Delete Credentials Integrations  Connector Id  Credentials Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/integrations/oauth/callback": {
       "get": {
         "tags": [
@@ -2759,6 +2871,36 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/spend/daily": {
+      "get": {
+        "tags": [
+          "spend"
+        ],
+        "summary": "Get Spend Daily",
+        "description": "Return today's accumulated spend from the daily ledger plus configured caps.",
+        "operationId": "get_spend_daily_spend_daily_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Spend Daily Spend Daily Get"
                 }
               }
             }

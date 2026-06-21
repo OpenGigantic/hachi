@@ -1488,6 +1488,11 @@ def create_gateway_app(
         """Return per-turn token/cost rows, compaction events, and model totals."""
         return control_plane.spend(session_id=session_id)
 
+    @spend_router.get("/spend/daily")
+    async def get_spend_daily() -> Any:
+        """Return today's accumulated spend from the daily ledger plus configured caps."""
+        return control_plane.spend_daily()
+
     @system.put("/capabilities/{cap_id}/enabled")
     async def put_capability_enabled(
         cap_id: str,
@@ -1618,6 +1623,112 @@ def create_gateway_app(
         status_info = connector_status(connector_id)
         return {**result, **status_info}
 
+    @integrations_router.post("/{connector_id}/credentials")
+    async def post_credentials(connector_id: str, payload: dict[str, Any]) -> Any:
+        """Store apikey credentials for a connector.
+
+        Body: ``{"fields": {"<key>": "<value>", ...}}``
+
+        Only keys declared in the connector's ``credential_fields`` are accepted.
+        Returns the updated connector status dict (same shape as ``GET /integrations``
+        entries) so the frontend can update the card immediately without re-fetching.
+
+        Returns HTTP 400 for invalid connector id format.
+        Returns HTTP 404 for unknown connectors.
+        Returns HTTP 422 for undeclared field keys or empty values.
+        """
+        import re
+
+        from hachi.integrations.connector_registry import get_connector
+        from hachi.integrations.oauth_flow import connector_status, store_apikey_credential
+
+        if not re.match(r"^[a-z0-9_-]+$", connector_id):
+            return _error_response(400, "invalid_connector_id", "Connector id is not valid")
+
+        connector = get_connector(connector_id)
+        if connector is None:
+            return _error_response(404, "unknown_connector", f"Unknown connector: {connector_id!r}")
+
+        if connector.auth_type != "apikey":
+            return _error_response(
+                422,
+                "wrong_auth_type",
+                f"Connector {connector_id!r} uses {connector.auth_type!r} auth, not apikey",
+            )
+
+        fields_payload = payload.get("fields")
+        if not isinstance(fields_payload, dict):
+            return _error_response(422, "invalid_payload", 'Body must be {"fields": {...}}')
+
+        allowed_keys = {f["key"] for f in connector.credential_fields}
+        for key, value in fields_payload.items():
+            if key not in allowed_keys:
+                return _error_response(
+                    422,
+                    "unknown_field",
+                    f"Field key {key!r} is not declared for connector {connector_id!r}. "
+                    f"Allowed keys: {sorted(allowed_keys)}",
+                )
+            if not isinstance(value, str) or not value.strip():
+                return _error_response(
+                    422,
+                    "empty_value",
+                    f"Value for field {key!r} must be a non-empty string",
+                )
+
+        def _store_all() -> None:
+            for key, value in fields_payload.items():
+                store_apikey_credential(connector_id, key, value.strip())
+
+        await anyio.to_thread.run_sync(_store_all)
+
+        status_info = await anyio.to_thread.run_sync(lambda: connector_status(connector_id))
+        return {
+            "id": connector.id,
+            "name": connector.name,
+            "category": connector.category,
+            **status_info,
+        }
+
+    @integrations_router.delete("/{connector_id}/credentials")
+    async def delete_credentials(connector_id: str) -> Any:
+        """Clear all stored apikey credentials for a connector.
+
+        Returns the updated connector status dict.
+
+        Returns HTTP 400 for invalid connector id format.
+        Returns HTTP 404 for unknown connectors.
+        Returns HTTP 422 if the connector is not an apikey connector.
+        """
+        import re
+
+        from hachi.integrations.connector_registry import get_connector
+        from hachi.integrations.oauth_flow import clear_apikey_credentials, connector_status
+
+        if not re.match(r"^[a-z0-9_-]+$", connector_id):
+            return _error_response(400, "invalid_connector_id", "Connector id is not valid")
+
+        connector = get_connector(connector_id)
+        if connector is None:
+            return _error_response(404, "unknown_connector", f"Unknown connector: {connector_id!r}")
+
+        if connector.auth_type != "apikey":
+            return _error_response(
+                422,
+                "wrong_auth_type",
+                f"Connector {connector_id!r} uses {connector.auth_type!r} auth, not apikey",
+            )
+
+        await anyio.to_thread.run_sync(lambda: clear_apikey_credentials(connector_id))
+
+        status_info = await anyio.to_thread.run_sync(lambda: connector_status(connector_id))
+        return {
+            "id": connector.id,
+            "name": connector.name,
+            "category": connector.category,
+            **status_info,
+        }
+
     # ==========================================
     # Durable Runs routes (Initiative D)
     # ==========================================
@@ -1743,9 +1854,7 @@ def create_gateway_app(
     # GET    /files/{id}       — get FileMeta for a single file
     # GET    /files/{id}/content — stream raw bytes (FileResponse)
     # ------------------------------------------------------------------
-    files_router = APIRouter(
-        prefix="/files", tags=["files"], dependencies=protected_dependencies
-    )
+    files_router = APIRouter(prefix="/files", tags=["files"], dependencies=protected_dependencies)
 
     # Max upload size guard — read from [files] settings, fallback 50 MB.
     def _files_max_bytes() -> int:
@@ -1817,11 +1926,7 @@ def create_gateway_app(
             raise HTTPException(status_code=400, detail="Filename is required")
 
         # Infer MIME type: explicit override → content_type header → extension.
-        effective_type = (
-            media_type_override
-            or file.content_type
-            or "application/octet-stream"
-        )
+        effective_type = media_type_override or file.content_type or "application/octet-stream"
 
         # Size pre-check from Content-Length header (not authoritative but fast).
         max_bytes = _files_max_bytes()
