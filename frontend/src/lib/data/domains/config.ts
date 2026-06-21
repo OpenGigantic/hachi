@@ -175,9 +175,13 @@ async function _loadConfigImpl(): Promise<void> {
         ? limitsRaw.daily_cap_usd
         : currentState.dailyCap;
 
+    // `budget` is the denominator shown in the governance bar / home / settings
+    // spend readouts. Keep it in lockstep with the persisted daily cap so the
+    // value survives a refresh (previously only `dailyCap` was hydrated, leaving
+    // `budget` at its 5.0 default → "of $5.00" instead of the saved cap).
     useStore
       .getState()
-      .hydrate({ safety, askRules, provider, taskCap, dailyCap, configLoaded: true });
+      .hydrate({ safety, askRules, provider, taskCap, dailyCap, budget: dailyCap, configLoaded: true });
     _hasEverSucceeded = true;
   } catch {
     if (!_hasEverSucceeded) {

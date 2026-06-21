@@ -1199,8 +1199,23 @@ export async function loadSessions(): Promise<void> {
   if (USE_MOCKS) return; // keep seeded fixtures
   try {
     const raw = await apiGet<GatewaySession[]>("/sessions", { limit: 10 });
-    const adapted = Array.isArray(raw) ? raw.map(adaptSession) : [];
-    useStore.getState().hydrate({ sessions: adapted });
+    const list = Array.isArray(raw) ? raw : [];
+    const adapted = list.map(adaptSession);
+    // Hydrate "today's spend" from the gateway so the budget readout survives a
+    // page refresh. The live usage.updated handler only ACCUMULATES from the
+    // value present at load, so without this `spent` reset to $0 on every reload.
+    // Sum total_cost_usd across sessions started today (local date).
+    const today = new Date().toDateString();
+    let spentToday = 0;
+    for (const s of list) {
+      if (!s.started_at) continue;
+      const started = new Date(s.started_at);
+      if (!Number.isNaN(started.getTime()) && started.toDateString() === today) {
+        spentToday += typeof s.total_cost_usd === "number" ? s.total_cost_usd : 0;
+      }
+    }
+    spentToday = Math.round(spentToday * 1000) / 1000;
+    useStore.getState().hydrate({ sessions: adapted, spent: spentToday });
     useStore.getState().setReconnecting(false);
   } catch {
     // In live mode, do NOT silently present stale fixture sessions as real.

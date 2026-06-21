@@ -422,6 +422,8 @@ class SessionStore:
         Returns:
             List of session metadata dicts.
         """
+        # Make recently-logged messages visible so derived title/turns are accurate.
+        self.flush_sync()
         with self._lock:
             rows = self._conn.execute(
                 "SELECT id, started_at, ended_at, model, total_turns, title, "
@@ -430,7 +432,35 @@ class SessionStore:
                 (limit,),
             ).fetchall()
 
-        return [dict(row) for row in rows]
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                sid = item["id"]
+                # Derive a human-readable title from the first user message when no
+                # stored title exists yet (LLM title-gen is best-effort/deferred, so
+                # many sessions never get one). A stored title always wins.
+                if not item.get("title"):
+                    first = self._conn.execute(
+                        "SELECT content FROM messages "
+                        "WHERE session_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1",
+                        (sid,),
+                    ).fetchone()
+                    content = (first["content"] if first else "") or ""
+                    stripped = content.strip()
+                    if stripped:
+                        item["title"] = stripped.splitlines()[0][:60].strip()
+                # Derive the turn count from logged user messages when the stored
+                # counter is missing/zero (it is not incremented on every code path).
+                if not item.get("total_turns"):
+                    cnt_row = self._conn.execute(
+                        "SELECT COUNT(*) AS c FROM messages "
+                        "WHERE session_id = ? AND role = 'user'",
+                        (sid,),
+                    ).fetchone()
+                    item["total_turns"] = int(cnt_row["c"]) if cnt_row else 0
+                result.append(item)
+
+        return result
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         """Return the metadata row for a single session, or None if not found."""

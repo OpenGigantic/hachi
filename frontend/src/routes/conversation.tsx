@@ -73,7 +73,9 @@ function SessionPicker({ sessions, activeId, onSwitch, onNew, onDelete, onClose 
         borderRadius: 12,
         boxShadow: '0 8px 24px rgba(28,26,32,.10)',
         zIndex: 50,
-        overflow: 'hidden',
+        maxHeight: '60vh',
+        overflowY: 'auto',
+        overflowX: 'hidden',
       }}
     >
       {/* New conversation row */}
@@ -132,6 +134,7 @@ function SessionPicker({ sessions, activeId, onSwitch, onNew, onDelete, onClose 
               onClick={() => { onSwitch(s.id); onClose() }}
               style={{
                 flex: 1,
+                minWidth: 0,
                 display: 'flex',
                 alignItems: 'center',
                 gap: 10,
@@ -775,6 +778,7 @@ const MessageItem = memo(function MessageItem({ msg, isLast, isStreaming, operat
         <div
           style={{
             maxWidth: '80%',
+            minWidth: 0,
             background: 'var(--hachi-cream)',
             border: '0.5px solid var(--hachi-line)',
             borderRadius: '16px 16px 4px 16px',
@@ -784,6 +788,8 @@ const MessageItem = memo(function MessageItem({ msg, isLast, isStreaming, operat
             display: 'flex',
             flexDirection: 'column',
             gap: 10,
+            overflowWrap: 'anywhere',
+            wordBreak: 'break-word',
           }}
         >
           {hasAttachments && (
@@ -856,6 +862,9 @@ const MessageItem = memo(function MessageItem({ msg, isLast, isStreaming, operat
               fontSize: 15,
               lineHeight: '24px',
               color: isError ? 'var(--hachi-danger)' : 'var(--hachi-ink)',
+              overflowWrap: 'anywhere',
+              wordBreak: 'break-word',
+              minWidth: 0,
             }}
           >
             {showCursor ? (

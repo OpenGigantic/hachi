@@ -703,6 +703,20 @@ class AgentSession:
             return tuple()
         return tuple(self._session_store.get_recent_sessions(limit=limit))
 
+    def query_session_messages(
+        self, session_id: str, limit: int = 500
+    ) -> tuple[dict[str, Any], ...]:
+        """Chronological transcript for a persisted session (resume/history replay)."""
+        if not self._session_store:
+            return tuple()
+        return tuple(self._session_store.get_session_messages(session_id, limit=limit))
+
+    def delete_session(self, session_id: str) -> bool:
+        """Permanently delete a persisted session + its messages. True if it existed."""
+        if not self._session_store:
+            return False
+        return self._session_store.delete_session(session_id)
+
     def query_memory_recall(self, query: str, top_k: int = 8) -> tuple[MemoryRecallSnapshot, ...]:
         """Immutable memory recall search snapshots."""
         if not self.vault:

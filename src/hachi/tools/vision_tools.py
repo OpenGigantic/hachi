@@ -145,25 +145,66 @@ def _too_large(size: int, limit: int) -> str:
     return f"Error: image is {size // 1024} KB, exceeding the {limit // 1024} KB limit for viewing."
 
 
+def _sniff_image_media_type(raw: bytes) -> str | None:
+    """Infer an image media type from magic bytes.
+
+    Used when the file has no usable extension — e.g. content-addressed
+    attachment blobs are stored under their SHA-256 digest with no suffix, so
+    extension-based lookup fails. Covers the four formats Anthropic decodes.
+    """
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(raw) >= 12 and raw[0:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _is_managed_blob(target: Path) -> bool:
+    """True when *target* lives under Hachi's managed attachment blob store.
+
+    Files the user explicitly uploaded through the app are first-party content
+    and always readable by ``view_image`` — the blob directory is an internal
+    managed location, not a user-configured device-permission filesystem root,
+    so it would otherwise be denied by the gate.
+    """
+    try:
+        from hachi.core.paths import get_hachi_paths
+
+        blobs = get_hachi_paths().blobs_dir.resolve()
+        resolved = target.resolve()
+        return resolved == blobs or blobs in resolved.parents
+    except Exception:
+        return False
+
+
 def _read_local_image(path: str, gate: Any | None) -> tuple[bytes, str, str] | str:
     """Return ``(raw_bytes, media_type, label)`` for a local image, or an error string."""
     target = _normalize_user_path(path)
-    if gate is not None:
+    # Managed attachment blobs bypass the device-permission filesystem roots:
+    # they are first-party content the user uploaded through the app, and the
+    # blob dir is never one of the user's configured allowed_paths.
+    if gate is not None and not _is_managed_blob(target):
         check = gate.check_path(str(target), "read")
         if not getattr(check, "allowed", True):
             return f"Permission Denied: {getattr(check, 'reason', 'path not allowed')}"
     if not target.exists() or not target.is_file():
         return f"Error: image file not found: {target}"
-    media_type = _MEDIA_TYPES.get(target.suffix.lower())
+    try:
+        raw = target.read_bytes()
+    except OSError as exc:
+        return f"Error reading image: {exc}"
+    # Prefer the file extension; fall back to magic-byte sniffing for
+    # extension-less files (e.g. content-addressed attachment blobs).
+    media_type = _MEDIA_TYPES.get(target.suffix.lower()) or _sniff_image_media_type(raw)
     if media_type is None:
         return (
             f"Error: unsupported image type '{target.suffix or '(none)'}'. "
             f"Supported: {', '.join(sorted(_MEDIA_TYPES))}."
         )
-    try:
-        raw = target.read_bytes()
-    except OSError as exc:
-        return f"Error reading image: {exc}"
     gate_cap = getattr(gate, "max_file_size_bytes", None) if gate is not None else None
     limit = min(_MAX_IMAGE_BYTES, gate_cap) if isinstance(gate_cap, int) else _MAX_IMAGE_BYTES
     if len(raw) > limit:
