@@ -117,6 +117,7 @@ from hachi.og_engine.engine import SkillEngine
 from hachi.tools.browser_tools import register_browser_tools
 from hachi.tools.config_tools import register_config_tools
 from hachi.tools.delegation_tools import register_delegation_tools
+from hachi.tools.file_tools import register_file_tools
 from hachi.tools.google_tools import GOOGLE_TOOL_NAMES, register_google_tools
 from hachi.tools.memory_tools import register_memory_tools, register_session_tools
 from hachi.tools.messaging_tools import register_messaging_tools
@@ -2356,6 +2357,13 @@ def boot_agent(
             register_fn=lambda d: _register_search_if_available(d),
         ),
         ToolSpec(
+            # File / attachment platform (Initiative E, Slice 2.4).
+            # attach_file, list_attachments, read_attachment, search_attachments.
+            # Permission-gated like os_tools; extraction runs as durable job handler.
+            name="files",
+            register_fn=lambda d: register_file_tools(d.tool_registry, d.gate),
+        ),
+        ToolSpec(
             # Google Workspace (Gmail, Calendar, Drive, Docs, Sheets, Contacts, Meet, Tasks).
             # Only mounted when GOOGLE_CLIENT_ID is set; degrades to a friendly stub otherwise.
             # The session-scoped action_approver gates destructive leaf tools (send_email,
@@ -2605,6 +2613,23 @@ def boot_agent(
         _job_registry.register("generate_title", handle_generate_title)
         _job_registry.register("resume_run", handle_resume_run)
         _job_registry.register("auto_extract", handle_auto_extract)
+
+        # Initiative E: wire reactive file.uploaded → auto_extract via EventBus.
+        # When the EventBus funnel is active (_event_bus is not None) we subscribe
+        # the auto_extract handler in async mode so extraction runs as a durable job.
+        # When the funnel is off (bus is None) the FilePipeline still emits the event
+        # but no subscriber is present — extraction is triggered manually or via
+        # the standalone gateway POST /files route which calls the handler directly.
+        if _event_bus is not None:
+            from hachi.core.runtime_events import FILE_UPLOADED as _FILE_UPLOADED_EVT
+
+            _event_bus.subscribe(
+                _FILE_UPLOADED_EVT,
+                handle_auto_extract,  # type: ignore[arg-type]
+                mode="async",
+                name="auto_extract",
+            )
+            logger.info("boot_agent: file.uploaded → auto_extract subscription registered")
 
         # Expose the WaitConditionRegistry on the process singleton so the
         # scheduler sweep and /runs/{id}/wake endpoint share one registry.
