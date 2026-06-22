@@ -120,8 +120,19 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
         </span>
       </button>
 
-      {/* Nav list */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+      {/* Nav list — flexes and scrolls when taller than the sidebar, so the
+          operator toggle and budget widget below it are never clipped. */}
+      <div
+        className="hachi-scroll"
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '2px',
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+        }}
+      >
         {NAV_ITEMS.map((item) => {
           const isActive = currentPath === item.route
           const badge = item.key === 'approvals' ? pendingApprovals : undefined
@@ -145,8 +156,6 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
           )
         })}
       </div>
-
-      <div style={{ flex: 1 }} />
 
       {/* Operator view toggle */}
       <label
