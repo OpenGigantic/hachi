@@ -55,6 +55,12 @@ export interface ConnectionTestResult {
   detail: string;
 }
 
+export interface ProbeResult {
+  ok: boolean;
+  detail: string;
+  models: string[];
+}
+
 export type AllModelsResponse = Record<string, string[]>;
 
 // ---- API adapters ----
@@ -107,6 +113,27 @@ export async function testConnection(name: string): Promise<ConnectionTestResult
     );
   } catch {
     return { ok: false, detail: "Could not reach gateway" };
+  }
+}
+
+/**
+ * Probe an unsaved provider spec: test connectivity and list available models.
+ *
+ * The browser can't call providers directly (CORS + keys stay server-side), so
+ * the gateway does the round-trip. `name` lets edit-mode reuse a stored key
+ * without re-typing it. Never throws — returns a failed-safe result.
+ */
+export async function probeProvider(
+  spec: ProviderSpec & { name?: string }
+): Promise<ProbeResult> {
+  try {
+    return await apiSend<ProbeResult>("POST", "/config/providers/probe", spec);
+  } catch (e) {
+    return {
+      ok: false,
+      detail: e instanceof Error ? e.message : "Could not reach gateway",
+      models: [],
+    };
   }
 }
 

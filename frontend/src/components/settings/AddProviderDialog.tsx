@@ -1,42 +1,52 @@
 // AddProviderDialog — guided add/edit flow for an AI provider.
 //
 // Add mode: pick a service from a tile grid, then only the fields it needs are
-// shown (API key + model for known providers; base URL only for Ollama/compatible).
-// Allowed-models and custom headers live under a collapsed "Advanced" section.
-// Edit mode: kind + name are locked; the same fields are prefilled.
+// shown. Known providers get their API base URL pre-filled. A "Test connection"
+// button probes the gateway (which calls the provider server-side) to verify the
+// key AND fetch the real model list, so the default-model field becomes a picker
+// instead of a guess that 404s. Allowed-models and custom headers live under
+// "Advanced". Edit mode: kind + name are locked; Test reuses the stored key.
 //
-// Submit delegates to the parent via onSave(name, spec) — same contract the
-// previous inline form used — so list refresh / toast stay in ProviderSettings.
+// Submit delegates to the parent via onSave(name, spec) — the same contract the
+// previous inline form used.
 
 import React, { useState, useRef } from 'react';
 import { Icon } from '../icons/Icon';
 import { useFocusTrap } from '../../lib/hooks/useFocusTrap';
-import type { ProviderSpec } from '../../lib/data/domains/providers';
+import { probeProvider, type ProviderSpec } from '../../lib/data/domains/providers';
 import { inputStyle, labelStyle } from './shared';
 
 interface ProviderKind {
   value: string;
   label: string;
   monogram: string;
+  brand: string;
   needsBase: boolean;
   needsKey: boolean;
   headers: boolean;
   modelPlaceholder: string;
-  baseUrlPlaceholder: string;
+  defaultBaseUrl: string;
 }
 
 export const PROVIDER_KINDS: ProviderKind[] = [
-  { value: 'anthropic', label: 'Anthropic', monogram: 'A', needsBase: false, needsKey: true, headers: false, modelPlaceholder: 'claude-haiku-4-5', baseUrlPlaceholder: '' },
-  { value: 'openai-compatible', label: 'OpenAI / compatible', monogram: 'AI', needsBase: true, needsKey: true, headers: true, modelPlaceholder: 'gpt-4o-mini', baseUrlPlaceholder: 'https://api.openai.com/v1' },
-  { value: 'openrouter', label: 'OpenRouter', monogram: 'OR', needsBase: false, needsKey: true, headers: true, modelPlaceholder: 'anthropic/claude-3.5-sonnet', baseUrlPlaceholder: '' },
-  { value: 'groq', label: 'Groq', monogram: 'G', needsBase: false, needsKey: true, headers: true, modelPlaceholder: 'llama-3.1-70b-versatile', baseUrlPlaceholder: '' },
-  { value: 'together', label: 'Together AI', monogram: 'T', needsBase: false, needsKey: true, headers: true, modelPlaceholder: 'meta-llama/Llama-3-70b', baseUrlPlaceholder: '' },
-  { value: 'deepseek', label: 'DeepSeek', monogram: 'DS', needsBase: false, needsKey: true, headers: true, modelPlaceholder: 'deepseek-chat', baseUrlPlaceholder: '' },
-  { value: 'ollama', label: 'Ollama (local)', monogram: 'OL', needsBase: true, needsKey: false, headers: false, modelPlaceholder: 'llama3.1:8b', baseUrlPlaceholder: 'http://localhost:11434' },
+  { value: 'anthropic', label: 'Anthropic', monogram: 'A', brand: '#D97757', needsBase: false, needsKey: true, headers: false, modelPlaceholder: 'claude-haiku-4-5', defaultBaseUrl: '' },
+  { value: 'openai-compatible', label: 'OpenAI / compatible', monogram: 'AI', brand: '#10A37F', needsBase: true, needsKey: true, headers: true, modelPlaceholder: 'gpt-4o-mini', defaultBaseUrl: 'https://api.openai.com/v1' },
+  { value: 'openrouter', label: 'OpenRouter', monogram: 'OR', brand: '#6467F2', needsBase: false, needsKey: true, headers: true, modelPlaceholder: 'anthropic/claude-3.5-sonnet', defaultBaseUrl: '' },
+  { value: 'groq', label: 'Groq', monogram: 'G', brand: '#F55036', needsBase: false, needsKey: true, headers: true, modelPlaceholder: 'llama-3.1-70b-versatile', defaultBaseUrl: '' },
+  { value: 'together', label: 'Together AI', monogram: 'T', brand: '#1C66FF', needsBase: false, needsKey: true, headers: true, modelPlaceholder: 'meta-llama/Llama-3-70b', defaultBaseUrl: '' },
+  { value: 'deepseek', label: 'DeepSeek', monogram: 'DS', brand: '#4D6BFE', needsBase: false, needsKey: true, headers: true, modelPlaceholder: 'deepseek-chat', defaultBaseUrl: '' },
+  { value: 'ollama', label: 'Ollama (local)', monogram: 'OL', brand: '#475569', needsBase: true, needsKey: false, headers: false, modelPlaceholder: 'llama3.1:8b', defaultBaseUrl: 'http://localhost:11434' },
 ];
 
 function kindOf(value: string): ProviderKind {
   return PROVIDER_KINDS.find((k) => k.value === value) ?? PROVIDER_KINDS[0];
+}
+
+/** Brand-coloured logo tile for a provider kind — shared by the dialog + cards. */
+export function providerVisual(kind: string): { monogram: string; bg: string; fg: string } {
+  const pk = PROVIDER_KINDS.find((k) => k.value === kind);
+  if (pk) return { monogram: pk.monogram, bg: pk.brand, fg: '#fff' };
+  return { monogram: kind.slice(0, 2).toUpperCase(), bg: 'var(--hachi-cream)', fg: 'var(--hachi-muted)' };
 }
 
 interface HeaderRow {
@@ -53,6 +63,8 @@ export interface ProviderFormInitial {
   allowed_models_raw?: string;
   headers?: HeaderRow[];
 }
+
+const selectStyle: React.CSSProperties = { ...inputStyle, cursor: 'pointer', font: '14px var(--font-body)' };
 
 export function AddProviderDialog({
   isEditing,
@@ -75,17 +87,36 @@ export function AddProviderDialog({
   const [apiKey, setApiKey] = useState('');
   const [allowedRaw, setAllowedRaw] = useState(initial?.allowed_models_raw ?? '');
   const [headers, setHeaders] = useState<HeaderRow[]>(initial?.headers ?? []);
-  const [nameAuto, setNameAuto] = useState(!isEditing); // name tracks kind until user edits it
+  const [nameAuto, setNameAuto] = useState(!isEditing); // name tracks kind until edited
+  const [baseAuto, setBaseAuto] = useState(!isEditing); // base url tracks kind until edited
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
+  // Probe (test connection + model listing) state
+  const [probing, setProbing] = useState(false);
+  const [probeResult, setProbeResult] = useState<{ ok: boolean; detail: string } | null>(null);
+  const [models, setModels] = useState<string[]>([]);
+  const [manualModel, setManualModel] = useState(false);
+
   const meta = kindOf(kind);
 
   function selectKind(value: string) {
+    const next = kindOf(value);
     setKind(value);
     if (nameAuto) setName(value);
+    if (baseAuto) setBaseUrl(next.defaultBaseUrl);
+    // Target changed — any earlier probe result no longer applies.
+    setModels([]);
+    setProbeResult(null);
+    setManualModel(false);
     setError('');
+  }
+
+  function buildHeaderMap(): Record<string, string> {
+    const map: Record<string, string> = {};
+    for (const row of headers) if (row.key.trim()) map[row.key.trim()] = row.value;
+    return map;
   }
 
   function addHeader() {
@@ -99,20 +130,34 @@ export function AddProviderDialog({
     setHeaders((h) => h.filter((r) => r.id !== id));
   }
 
+  async function handleTest() {
+    setProbing(true);
+    setProbeResult(null);
+    const res = await probeProvider({
+      name: name.trim() || undefined,
+      kind,
+      base_url: baseUrl.trim() || null,
+      api_key: apiKey || undefined,
+      headers: buildHeaderMap(),
+    });
+    setProbing(false);
+    setProbeResult({ ok: res.ok, detail: res.detail });
+    if (res.models.length > 0) {
+      setModels(res.models);
+      setManualModel(false);
+    }
+  }
+
   async function handleSubmit() {
     if (!name.trim()) return setError('Give this connection a name.');
-    if (!model.trim()) return setError('Enter the default model to use.');
     if (meta.needsBase && !baseUrl.trim()) return setError('This provider needs a base URL.');
-
-    const headerMap: Record<string, string> = {};
-    for (const row of headers) if (row.key.trim()) headerMap[row.key.trim()] = row.value;
 
     const spec: ProviderSpec = {
       kind,
       model: model.trim(),
       base_url: baseUrl.trim() || null,
       allowed_models: allowedRaw.split(',').map((s) => s.trim()).filter(Boolean),
-      headers: headerMap,
+      headers: buildHeaderMap(),
       api_key: apiKey || undefined,
     };
 
@@ -134,6 +179,19 @@ export function AddProviderDialog({
       onClose();
     }
   }
+
+  const showModelSelect = models.length > 0 && !manualModel;
+
+  const linkBtn: React.CSSProperties = {
+    alignSelf: 'flex-start',
+    background: 'transparent',
+    border: 'none',
+    color: 'var(--hachi-trust)',
+    cursor: 'pointer',
+    font: '500 12px var(--font-body)',
+    padding: 0,
+    marginTop: 6,
+  };
 
   const backdropStyle: React.CSSProperties = {
     position: 'fixed',
@@ -215,13 +273,7 @@ export function AddProviderDialog({
         <div style={{ flex: 1, overflowY: 'auto', padding: '18px 22px' }}>
           {!isEditing && (
             <div style={{ marginBottom: 18 }}>
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(4, 1fr)',
-                  gap: 8,
-                }}
-              >
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
                 {PROVIDER_KINDS.map((pk) => {
                   const sel = pk.value === kind;
                   return (
@@ -246,12 +298,12 @@ export function AddProviderDialog({
                           width: 24,
                           height: 24,
                           borderRadius: 6,
-                          background: sel ? 'var(--hachi-brand)' : 'var(--hachi-cream)',
-                          color: sel ? '#fff' : 'var(--hachi-muted)',
+                          background: pk.brand,
+                          color: '#fff',
                           display: 'grid',
                           placeItems: 'center',
                           fontSize: pk.monogram.length > 1 ? 10 : 12,
-                          fontWeight: 500,
+                          fontWeight: 600,
                           fontFamily: 'var(--font-mono)',
                         }}
                       >
@@ -297,8 +349,11 @@ export function AddProviderDialog({
                 <input
                   style={inputStyle}
                   value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
-                  placeholder={meta.baseUrlPlaceholder}
+                  onChange={(e) => {
+                    setBaseUrl(e.target.value);
+                    setBaseAuto(false);
+                  }}
+                  placeholder={meta.defaultBaseUrl}
                 />
               </div>
             )}
@@ -323,15 +378,88 @@ export function AddProviderDialog({
               </div>
             )}
 
+            {/* Test connection */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() => void handleTest()}
+                disabled={probing}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  height: 36,
+                  padding: '0 14px',
+                  borderRadius: 10,
+                  border: '1px solid var(--hachi-trust)',
+                  background: 'transparent',
+                  color: 'var(--hachi-trust)',
+                  font: '500 13px var(--font-body)',
+                  cursor: probing ? 'default' : 'pointer',
+                  opacity: probing ? 0.6 : 1,
+                }}
+              >
+                <Icon name="zap" size={14} />
+                {probing ? 'Testing…' : 'Test connection'}
+              </button>
+              {probeResult && (
+                <span
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    fontSize: 12.5,
+                    color: probeResult.ok ? 'var(--hachi-success)' : 'var(--hachi-danger)',
+                  }}
+                >
+                  <Icon name={probeResult.ok ? 'circle-check' : 'circle-alert'} size={14} />
+                  {probeResult.detail}
+                </span>
+              )}
+            </div>
+
             {/* Model */}
             <div>
-              <label style={labelStyle}>Default model</label>
-              <input
-                style={inputStyle}
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder={meta.modelPlaceholder}
-              />
+              <label style={labelStyle}>
+                Default model <span style={{ opacity: 0.8 }}>(optional)</span>
+              </label>
+              {showModelSelect ? (
+                <>
+                  <select
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    style={selectStyle}
+                  >
+                    <option value="">Provider default</option>
+                    {models.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="button" style={linkBtn} onClick={() => setManualModel(true)}>
+                    Enter a model id manually
+                  </button>
+                </>
+              ) : (
+                <>
+                  <input
+                    style={inputStyle}
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    placeholder={meta.modelPlaceholder}
+                  />
+                  {models.length > 0 ? (
+                    <button type="button" style={linkBtn} onClick={() => setManualModel(false)}>
+                      Pick from {models.length} available models
+                    </button>
+                  ) : (
+                    <div style={{ fontSize: 11, color: 'var(--hachi-muted)', marginTop: 4 }}>
+                      Leave blank to use the provider's default, or Test connection to pick from a list.
+                    </div>
+                  )}
+                </>
+              )}
             </div>
 
             {/* Advanced */}

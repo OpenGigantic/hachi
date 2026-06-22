@@ -1144,6 +1144,16 @@ def create_gateway_app(
             raise HTTPException(status_code=422, detail="invalid provider name")
         return await anyio.to_thread.run_sync(lambda: control_plane.test_provider_connection(name))
 
+    @config.post("/providers/probe")
+    async def post_provider_probe(payload: ProviderUpsertRequest) -> Any:
+        """Probe an unsaved provider spec: connectivity + available models.
+
+        Returns ``{ok, detail, models}`` so the add/edit dialog can verify a key
+        and populate a model picker before the provider is saved.
+        """
+        spec = payload.model_dump(mode="python", exclude_none=True)
+        return await anyio.to_thread.run_sync(lambda: control_plane.probe_provider(spec))
+
     @config.get("/routing")
     async def get_routing() -> Any:
         """Return the capability routing matrix (synthesized when absent)."""

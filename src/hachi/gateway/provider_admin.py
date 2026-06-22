@@ -8,6 +8,7 @@ config file.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -421,6 +422,109 @@ def test_connection(name: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# probe_provider
+# ---------------------------------------------------------------------------
+
+
+def probe_provider(spec: dict[str, Any]) -> dict[str, Any]:
+    """Probe a possibly-unsaved provider spec: connectivity AND model listing.
+
+    Unlike :func:`test_connection` (which works on an already-saved provider by
+    name), this accepts a raw spec — ``{kind, base_url, api_key, headers, name}``
+    — so the "Add a provider" dialog can verify a key and populate a model
+    picker before anything is persisted. The browser cannot do this itself
+    (CORS + keys must stay server-side), hence the gateway round-trip.
+
+    Reuses the same model-listing endpoints as ``test_connection`` and parses the
+    response body into a sorted list of model ids. Short timeout; never raises.
+
+    Args:
+        spec: ``{kind, base_url, api_key, headers, name}``. ``api_key`` is the raw
+              secret typed by the user; if blank and ``name`` names a saved
+              provider, its stored key is used (edit-without-retyping).
+
+    Returns:
+        ``{"ok": bool, "detail": str, "models": list[str]}``.
+    """
+    kind = str(spec.get("kind") or "anthropic").strip().lower()
+    base_url = str(spec.get("base_url") or "").strip()
+    raw_key = str(spec.get("api_key") or "").strip()
+    name = str(spec.get("name") or "").strip()
+    extra_headers = {str(k): str(v) for k, v in (spec.get("headers") or {}).items()}
+
+    # Resolve the key: the raw key wins; otherwise fall back to the saved
+    # provider's stored key so "Test" works during an edit without re-typing it.
+    api_key = raw_key or _resolve_saved_key(name)
+
+    import urllib.request
+
+    from hachi.gateway._net_guard import is_safe_outbound_url
+
+    def _result(status: int, models: list[str]) -> dict[str, Any]:
+        ok = status == 200
+        if ok:
+            detail = f"Connected · {len(models)} model{'' if len(models) == 1 else 's'} available"
+        else:
+            detail = f"HTTP {status}"
+        return {"ok": ok, "detail": detail, "models": models}
+
+    try:
+        if kind == "ollama":
+            root = base_url.rstrip("/") or "http://localhost:11434"
+            if root.endswith("/v1"):
+                root = root[:-3].rstrip("/")
+            url = root + "/api/tags"
+            if not is_safe_outbound_url(url, allow_loopback=True):
+                return {
+                    "ok": False,
+                    "detail": "blocked: base_url resolves to a private or loopback address",
+                    "models": [],
+                }
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                status = resp.status
+                body = resp.read(4_000_000)
+            return _result(status, _parse_models(kind, body))
+
+        if kind == "anthropic":
+            key = api_key or _resolve_key_env("ANTHROPIC_API_KEY")
+            if not key:
+                return {"ok": False, "detail": "no API key configured", "models": []}
+            url = "https://api.anthropic.com/v1/models"
+            req = urllib.request.Request(
+                url,
+                headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                status = resp.status
+                body = resp.read(4_000_000)
+            return _result(status, _parse_models(kind, body))
+
+        # OpenAI-compatible family (openai-compatible, openrouter, groq, together,
+        # deepseek, gemini): GET {base}/models with a Bearer token.
+        if not api_key:
+            return {"ok": False, "detail": "no API key configured", "models": []}
+        endpoint = (base_url.rstrip("/") or _preset_base(kind)) + "/models"
+        if not is_safe_outbound_url(endpoint, allow_loopback=False):
+            return {
+                "ok": False,
+                "detail": "blocked: base_url resolves to a private or loopback address",
+                "models": [],
+            }
+        headers: dict[str, str] = {"Authorization": f"Bearer {api_key}"}
+        headers.update(extra_headers)
+        req = urllib.request.Request(endpoint, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            status = resp.status
+            body = resp.read(4_000_000)
+        return _result(status, _parse_models(kind, body))
+
+    except Exception as exc:
+        return {"ok": False, "detail": str(exc)[:200], "models": []}
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -456,3 +560,69 @@ def _default_model_for_kind(kind: str) -> str:
         "ollama": "llama3.1:8b",
     }
     return _DEFAULTS.get(kind.lower(), "")
+
+
+def _preset_base(kind: str) -> str:
+    """Default API base URL for an OpenAI-compatible provider kind."""
+    from hachi.core.llm import _OPENAI_COMPAT_PRESETS
+
+    if kind in _OPENAI_COMPAT_PRESETS:
+        return str(_OPENAI_COMPAT_PRESETS[kind])
+    return "https://api.openai.com/v1"
+
+
+def _resolve_key_env(env_name: str) -> str | None:
+    """Read an API key directly from the environment by var name."""
+    import os
+
+    return os.environ.get(env_name) or None
+
+
+def _resolve_saved_key(name: str) -> str | None:
+    """Resolve the stored API key for an already-saved provider, if any."""
+    if not name:
+        return None
+    config = load_effective_config()
+    if name == "__primary__":
+        ps: ProviderSettings | None = config.provider
+    else:
+        ps = (config.providers or {}).get(name)
+    if ps is None:
+        return None
+    return _resolve_key(ps)
+
+
+def _parse_models(kind: str, body: bytes) -> list[str]:
+    """Extract a sorted, de-duplicated list of model ids from a /models body.
+
+    Handles the OpenAI shape ``{"data": [{"id": ...}]}``, the Anthropic shape
+    (same ``data``/``id`` layout), and the Ollama ``{"models": [{"name": ...}]}``
+    shape. Returns an empty list on any parse failure.
+    """
+    try:
+        data = json.loads(body)
+    except Exception:
+        return []
+
+    ids: list[str] = []
+    if kind == "ollama":
+        for m in (data.get("models") or []) if isinstance(data, dict) else []:
+            mid = m.get("name") or m.get("model") if isinstance(m, dict) else None
+            if mid:
+                ids.append(str(mid))
+    else:
+        items = data.get("data") if isinstance(data, dict) else data
+        if isinstance(items, list):
+            for m in items:
+                if isinstance(m, dict):
+                    mid = m.get("id") or m.get("name")
+                    if mid:
+                        ids.append(str(mid))
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for mid in sorted(ids):
+        if mid not in seen:
+            seen.add(mid)
+            out.append(mid)
+    return out[:500]

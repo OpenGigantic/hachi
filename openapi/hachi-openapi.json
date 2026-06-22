@@ -2120,6 +2120,56 @@
         ]
       }
     },
+    "/config/providers/probe": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Post Provider Probe",
+        "description": "Probe an unsaved provider spec: connectivity + available models.\n\nReturns ``{ok, detail, models}`` so the add/edit dialog can verify a key\nand populate a model picker before the provider is saved.",
+        "operationId": "post_provider_probe_config_providers_probe_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderUpsertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Provider Probe Config Providers Probe Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/config/routing": {
       "get": {
         "tags": [

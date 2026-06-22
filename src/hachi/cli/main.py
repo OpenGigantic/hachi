@@ -1874,6 +1874,19 @@ class _InProcessGatewayRuntime:
 
         return _list_all_models()
 
+    def probe_provider(self, spec: dict) -> dict:
+        """Probe an unsaved provider spec (POST /config/providers/probe).
+
+        Args:
+            spec: ``{kind, base_url, api_key, headers, name}``.
+
+        Returns:
+            ``{"ok": bool, "detail": str, "models": list[str]}``.
+        """
+        from hachi.gateway.provider_admin import probe_provider as _probe
+
+        return _probe(spec)
+
 
 def _gateway_readiness_probe() -> tuple[bool, list[str]]:
     """Derive readiness blockers for local gateway clients."""
@@ -2189,6 +2202,7 @@ def _build_gateway_control_plane(
         set_routing=support.set_routing,
         test_provider_connection=support.test_provider_connection,
         list_all_models=support.list_all_models,
+        probe_provider=support.probe_provider,
         max_active_sessions=max_active_sessions,
         max_prompt_chars=max_prompt_chars,
     )
