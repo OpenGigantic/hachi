@@ -149,6 +149,7 @@ function capabilityDescription(id: string): string {
     telegram: "Send Telegram messages",
     discord: "Send Discord messages",
     whatsapp: "Send WhatsApp messages",
+    tavily: "Web search via Tavily",
   };
   return descriptions[id.toLowerCase()] ?? "Access external service";
 }
@@ -179,6 +180,7 @@ function iconFromId(id: string): string {
     telegram: "telegram",
     discord: "discord",
     whatsapp: "whatsapp",
+    tavily: "globe",
   };
   return icons[id.toLowerCase()] ?? "plug";
 }

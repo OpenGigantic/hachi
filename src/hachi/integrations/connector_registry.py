@@ -325,6 +325,29 @@ CONNECTORS: list[ConnectorDef] = [
             ),
         ],
     ),
+    # --- Tavily (web search provider) ---
+    # Users get an API key from tavily.com and paste it here. Stored under the
+    # vault ref "tavily_api_key" / env TAVILY_API_KEY — exactly what the Tavily
+    # search provider reads, so configuring it here takes effect.
+    ConnectorDef(
+        id="tavily",
+        name="Tavily",
+        category="search",
+        auth_type="apikey",
+        credential_fields=[
+            _field(
+                "tavily_api_key",
+                "API Key",
+                secret=True,
+                placeholder="tvly-...",
+                optional=False,
+                help_text=(
+                    "Get a key from tavily.com — Hachi uses it for live web search. "
+                    "The key starts with 'tvly-'."
+                ),
+            ),
+        ],
+    ),
 ]
 
 # ---------------------------------------------------------------------------
