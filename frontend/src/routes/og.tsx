@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
@@ -155,25 +155,112 @@ const OG_COLOR: Record<string, string> = {
 }
 
 // ── graph geometry ────────────────────────────────────────────────────────────
-const GRAPH_H = 380
-const COL_X: Record<string, number> = { root: 86, skill: 300, leaf: 514 }
-
-function computePositions(nodes: OgNode[]): Record<string, { x: number; y: number }> {
-  const byCol: Record<string, OgNode[]> = { root: [], skill: [], leaf: [] }
-  nodes.forEach((n) => byCol[n.kind]?.push(n))
-  const pos: Record<string, { x: number; y: number }> = {};
-  (['root', 'skill', 'leaf'] as const).forEach((k) => {
-    const list = byCol[k]
-    const gap = GRAPH_H / (list.length + 1)
-    list.forEach((n, i) => {
-      pos[n.id] = { x: COL_X[k], y: gap * (i + 1) }
-    })
-  })
-  return pos
-}
+const GRAPH_W = 860
+const GRAPH_H = 600
 
 function rOf(n: OgNode, maxFull: number): number {
-  return 13 + (n.full / maxFull) * 14
+  return 9 + (n.full / Math.max(1, maxFull)) * 11
+}
+
+/**
+ * Deterministic force-directed layout with collision resolution.
+ *
+ * Replaces the old 3-column stack, which crammed every same-kind node into one
+ * vertical column (dozens of overlapping circles once all default skills load).
+ * Nodes repel one another and are pulled together along their dependency edges;
+ * a final collision pass guarantees no two circles overlap. Seeded by node index
+ * (no RNG) so the graph is stable across re-renders. Root nodes are biased left,
+ * leaves right, so the dependency hierarchy reads roughly left-to-right.
+ */
+function computeLayout(
+  nodes: OgNode[],
+  edges: [string, string][],
+  maxFull: number,
+): Record<string, { x: number; y: number }> {
+  const n = nodes.length
+  if (n === 0) return {}
+  const cx = GRAPH_W / 2
+  const cy = GRAPH_H / 2
+  const kindBias: Record<string, number> = { root: -230, skill: 0, leaf: 230 }
+  const P = nodes.map((nd, i) => {
+    const a = (i / n) * Math.PI * 2
+    return {
+      x: cx + (kindBias[nd.kind] ?? 0) + Math.cos(a) * 190 + (i % 7) * 5,
+      y: cy + Math.sin(a) * 175 + (i % 4) * 5,
+      r: rOf(nd, maxFull),
+    }
+  })
+  const index = new Map(nodes.map((nd, i) => [nd.id, i] as const))
+  const links: [number, number][] = []
+  for (const [a, b] of edges) {
+    const ia = index.get(a)
+    const ib = index.get(b)
+    if (ia != null && ib != null && ia !== ib) links.push([ia, ib])
+  }
+
+  for (let it = 0; it < 220; it++) {
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        let dx = P[i].x - P[j].x
+        let dy = P[i].y - P[j].y
+        let d2 = dx * dx + dy * dy
+        if (d2 < 0.01) {
+          dx = ((i % 3) - 1) || 1
+          dy = ((j % 3) - 1) || 1
+          d2 = dx * dx + dy * dy
+        }
+        const d = Math.sqrt(d2)
+        const rep = 2800 / d2
+        P[i].x += (dx / d) * rep
+        P[i].y += (dy / d) * rep
+        P[j].x -= (dx / d) * rep
+        P[j].y -= (dy / d) * rep
+      }
+    }
+    for (const [a, b] of links) {
+      let dx = P[b].x - P[a].x
+      let dy = P[b].y - P[a].y
+      const d = Math.sqrt(dx * dx + dy * dy) || 0.01
+      const f = (d - 115) * 0.03
+      P[a].x += (dx / d) * f
+      P[a].y += (dy / d) * f
+      P[b].x -= (dx / d) * f
+      P[b].y -= (dy / d) * f
+    }
+    for (let i = 0; i < n; i++) {
+      P[i].x += (cx - P[i].x) * 0.007
+      P[i].y += (cy - P[i].y) * 0.013
+    }
+  }
+
+  for (let it = 0; it < 18; it++) {
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        let dx = P[j].x - P[i].x
+        let dy = P[j].y - P[i].y
+        let d = Math.sqrt(dx * dx + dy * dy)
+        if (d < 0.01) { d = 0.01; dx = 1; dy = 0 }
+        const min = P[i].r + P[j].r + 10
+        if (d < min) {
+          const push = (min - d) / 2
+          P[i].x -= (dx / d) * push
+          P[i].y -= (dy / d) * push
+          P[j].x += (dx / d) * push
+          P[j].y += (dy / d) * push
+        }
+      }
+    }
+  }
+
+  const out: Record<string, { x: number; y: number }> = {}
+  const PAD = 38
+  nodes.forEach((nd, i) => {
+    out[nd.id] = {
+      x: Math.max(PAD, Math.min(GRAPH_W - PAD, P[i].x)),
+      y: Math.max(PAD, Math.min(GRAPH_H - PAD, P[i].y)),
+    }
+  })
+  return out
 }
 
 // ── sub-components ────────────────────────────────────────────────────────────
@@ -233,7 +320,6 @@ interface GraphPanelProps {
 }
 
 function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelProps) {
-  const pos = computePositions(nodes)
   // clamp to 1 so rOf never divides by zero (avoids NaN radius when all full===0)
   const maxFull = Math.max(1, ...nodes.map((n) => n.full))
   const nodeById = (id: string) => nodes.find((n) => n.id === id)
@@ -243,13 +329,18 @@ function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelP
     nodes.filter((n) => n.kind === k).map((n) => n.id)
   )
 
-  // build edge list
-  const edges: [string, string][] = []
-  nodes.forEach((n) =>
-    (n.deps ?? []).forEach((d) => {
-      if (pos[d]) edges.push([n.id, d])
-    })
-  )
+  // Force-directed layout + edge list, memoised so the (one-off) relaxation does
+  // not re-run on hover/select — only when the node set changes.
+  const { pos, edges } = useMemo(() => {
+    const ids = new Set(nodes.map((n) => n.id))
+    const e: [string, string][] = []
+    nodes.forEach((n) =>
+      (n.deps ?? []).forEach((d) => {
+        if (ids.has(d) && d !== n.id) e.push([n.id, d])
+      })
+    )
+    return { pos: computeLayout(nodes, e, maxFull), edges: e }
+  }, [nodes, maxFull])
 
   const active = ogHover ?? ogSel
 
@@ -305,7 +396,7 @@ function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelP
   return (
     <div style={{ padding: '8px 8px 0' }}>
       <svg
-        viewBox="0 0 600 400"
+        viewBox="0 0 860 600"
         style={{ width: '100%', height: 'auto', display: 'block' }}
         aria-label="ObjectGraph dependency diagram"
         role="img"
@@ -429,7 +520,7 @@ function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelP
                 x={p.x}
                 y={p.y + 4}
                 textAnchor="middle"
-                fontSize={10}
+                fontSize={11}
                 fontWeight={500}
                 fill={color}
                 opacity={lit ? 1 : 0.4}
@@ -443,7 +534,7 @@ function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelP
                 x={p.x}
                 y={nameY}
                 textAnchor="middle"
-                fontSize={10.5}
+                fontSize={13}
                 fill="var(--hachi-ink)"
                 opacity={lit ? 1 : 0.4}
                 style={{ fontFamily: 'var(--font-body)', pointerEvents: 'none' }}
