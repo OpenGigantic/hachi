@@ -156,111 +156,83 @@ const OG_COLOR: Record<string, string> = {
 
 // ── graph geometry ────────────────────────────────────────────────────────────
 const GRAPH_W = 860
-const GRAPH_H = 600
+const GRAPH_H = 460
+// Three columns: the focused node, its dependencies, and their dependencies.
+const COL_X = [150, 430, 720]
+// Cap nodes shown per tier so the focused view stays readable on large graphs.
+const TIER_CAP = 16
 
 function rOf(n: OgNode, maxFull: number): number {
-  return 9 + (n.full / Math.max(1, maxFull)) * 11
+  return 11 + (n.full / Math.max(1, maxFull)) * 15
+}
+
+interface FocusLayout {
+  pos: Record<string, { x: number; y: number }>
+  shown: OgNode[]
+  edges: [string, string][]
 }
 
 /**
- * Deterministic force-directed layout with collision resolution.
- *
- * Replaces the old 3-column stack, which crammed every same-kind node into one
- * vertical column (dozens of overlapping circles once all default skills load).
- * Nodes repel one another and are pulled together along their dependency edges;
- * a final collision pass guarantees no two circles overlap. Seeded by node index
- * (no RNG) so the graph is stable across re-renders. Root nodes are biased left,
- * leaves right, so the dependency hierarchy reads roughly left-to-right.
+ * Focused dependency view (matches the OG Explorer design): the selected node
+ * (default: a root) sits on the left, the nodes it depends on form the middle
+ * column, and *their* dependencies form the right column — a clean three-tier,
+ * left-to-right graph instead of dumping all N nodes at once. Click any node to
+ * re-centre on it. A node with no dependencies instead shows the nodes that
+ * depend on it, so selecting anything always reveals its neighbourhood.
+ * Deterministic (no RNG); each tier is distributed evenly down its column.
  */
-function computeLayout(
-  nodes: OgNode[],
-  edges: [string, string][],
-  maxFull: number,
-): Record<string, { x: number; y: number }> {
-  const n = nodes.length
-  if (n === 0) return {}
-  const cx = GRAPH_W / 2
-  const cy = GRAPH_H / 2
-  const kindBias: Record<string, number> = { root: -230, skill: 0, leaf: 230 }
-  const P = nodes.map((nd, i) => {
-    const a = (i / n) * Math.PI * 2
-    return {
-      x: cx + (kindBias[nd.kind] ?? 0) + Math.cos(a) * 190 + (i % 7) * 5,
-      y: cy + Math.sin(a) * 175 + (i % 4) * 5,
-      r: rOf(nd, maxFull),
-    }
-  })
-  const index = new Map(nodes.map((nd, i) => [nd.id, i] as const))
-  const links: [number, number][] = []
-  for (const [a, b] of edges) {
-    const ia = index.get(a)
-    const ib = index.get(b)
-    if (ia != null && ib != null && ia !== ib) links.push([ia, ib])
-  }
+function computeFocusedLayout(nodes: OgNode[], centerId: string): FocusLayout {
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+  let center = byId.get(centerId)
+  if (!center) center = nodes.find((n) => n.kind === 'root') ?? nodes[0]
+  if (!center) return { pos: {}, shown: [], edges: [] }
+  const centerNode = center
 
-  for (let it = 0; it < 220; it++) {
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        let dx = P[i].x - P[j].x
-        let dy = P[i].y - P[j].y
-        let d2 = dx * dx + dy * dy
-        if (d2 < 0.01) {
-          dx = ((i % 3) - 1) || 1
-          dy = ((j % 3) - 1) || 1
-          d2 = dx * dx + dy * dy
-        }
-        const d = Math.sqrt(d2)
-        const rep = 2800 / d2
-        P[i].x += (dx / d) * rep
-        P[i].y += (dy / d) * rep
-        P[j].x -= (dx / d) * rep
-        P[j].y -= (dy / d) * rep
-      }
-    }
-    for (const [a, b] of links) {
-      let dx = P[b].x - P[a].x
-      let dy = P[b].y - P[a].y
-      const d = Math.sqrt(dx * dx + dy * dy) || 0.01
-      const f = (d - 115) * 0.03
-      P[a].x += (dx / d) * f
-      P[a].y += (dy / d) * f
-      P[b].x -= (dx / d) * f
-      P[b].y -= (dy / d) * f
-    }
-    for (let i = 0; i < n; i++) {
-      P[i].x += (cx - P[i].x) * 0.007
-      P[i].y += (cy - P[i].y) * 0.013
-    }
-  }
+  const depsOf = (id: string): string[] =>
+    (byId.get(id)?.deps ?? []).filter((d) => byId.has(d) && d !== id)
+  const parentsOf = (id: string): string[] =>
+    nodes.filter((n) => n.id !== id && (n.deps ?? []).includes(id)).map((n) => n.id)
+  const byFullDesc = (a: string, b: string) => (byId.get(b)?.full ?? 0) - (byId.get(a)?.full ?? 0)
 
-  for (let it = 0; it < 18; it++) {
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        let dx = P[j].x - P[i].x
-        let dy = P[j].y - P[i].y
-        let d = Math.sqrt(dx * dx + dy * dy)
-        if (d < 0.01) { d = 0.01; dx = 1; dy = 0 }
-        const min = P[i].r + P[j].r + 10
-        if (d < min) {
-          const push = (min - d) / 2
-          P[i].x -= (dx / d) * push
-          P[i].y -= (dy / d) * push
-          P[j].x += (dx / d) * push
-          P[j].y += (dy / d) * push
-        }
+  // Tier 1: the node's dependencies; if it has none (a leaf), the nodes that
+  // depend on it — so the view is never just a lonely dot.
+  let tier1 = depsOf(centerNode.id)
+  if (tier1.length === 0) tier1 = parentsOf(centerNode.id)
+  tier1 = [...new Set(tier1)].sort(byFullDesc).slice(0, TIER_CAP)
+
+  // Tier 2: dependencies of the tier-1 nodes (excluding the centre + tier 1).
+  const seen = new Set<string>([centerNode.id, ...tier1])
+  const tier2: string[] = []
+  for (const t1 of tier1) {
+    for (const d of depsOf(t1)) {
+      if (!seen.has(d)) {
+        seen.add(d)
+        tier2.push(d)
       }
     }
   }
+  const tier2Capped = [...new Set(tier2)].sort(byFullDesc).slice(0, TIER_CAP)
 
-  const out: Record<string, { x: number; y: number }> = {}
-  const PAD = 38
-  nodes.forEach((nd, i) => {
-    out[nd.id] = {
-      x: Math.max(PAD, Math.min(GRAPH_W - PAD, P[i].x)),
-      y: Math.max(PAD, Math.min(GRAPH_H - PAD, P[i].y)),
-    }
+  const columns = [[centerNode.id], tier1, tier2Capped]
+  const pos: Record<string, { x: number; y: number }> = {}
+  columns.forEach((col, ci) => {
+    const gap = GRAPH_H / (col.length + 1)
+    col.forEach((id, i) => {
+      pos[id] = { x: COL_X[ci], y: gap * (i + 1) }
+    })
   })
-  return out
+
+  const shownIds = new Set<string>([centerNode.id, ...tier1, ...tier2Capped])
+  const edges: [string, string][] = []
+  for (const id of shownIds) {
+    for (const d of depsOf(id)) {
+      if (shownIds.has(d)) edges.push([id, d])
+    }
+  }
+  const shown = [...shownIds]
+    .map((id) => byId.get(id))
+    .filter((n): n is OgNode => n != null)
+  return { pos, shown, edges }
 }
 
 // ── sub-components ────────────────────────────────────────────────────────────
@@ -322,25 +294,26 @@ interface GraphPanelProps {
 function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelProps) {
   // clamp to 1 so rOf never divides by zero (avoids NaN radius when all full===0)
   const maxFull = Math.max(1, ...nodes.map((n) => n.full))
-  const nodeById = (id: string) => nodes.find((n) => n.id === id)
 
-  // ordered flat list for arrow-key navigation
-  const orderedIds = (['root', 'skill', 'leaf'] as const).flatMap((k) =>
-    nodes.filter((n) => n.kind === k).map((n) => n.id)
+  // Focused three-tier layout around the selected node; re-centres when the
+  // selection changes (click a node to focus on it), but not on hover.
+  const { pos, shown, edges } = useMemo(
+    () => computeFocusedLayout(nodes, ogSel),
+    [nodes, ogSel],
   )
 
-  // Force-directed layout + edge list, memoised so the (one-off) relaxation does
-  // not re-run on hover/select — only when the node set changes.
-  const { pos, edges } = useMemo(() => {
-    const ids = new Set(nodes.map((n) => n.id))
-    const e: [string, string][] = []
-    nodes.forEach((n) =>
-      (n.deps ?? []).forEach((d) => {
-        if (ids.has(d) && d !== n.id) e.push([n.id, d])
-      })
+  const nodeById = (id: string) =>
+    shown.find((n) => n.id === id) ?? nodes.find((n) => n.id === id)
+
+  // ordered flat list (left-to-right, then top-down) for arrow-key navigation
+  const orderedIds = shown
+    .slice()
+    .sort(
+      (a, b) =>
+        (pos[a.id]?.x ?? 0) - (pos[b.id]?.x ?? 0) ||
+        (pos[a.id]?.y ?? 0) - (pos[b.id]?.y ?? 0),
     )
-    return { pos: computeLayout(nodes, e, maxFull), edges: e }
-  }, [nodes, maxFull])
+    .map((n) => n.id)
 
   const active = ogHover ?? ogSel
 
@@ -396,7 +369,7 @@ function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelP
   return (
     <div style={{ padding: '8px 8px 0' }}>
       <svg
-        viewBox="0 0 860 600"
+        viewBox="0 0 860 460"
         style={{ width: '100%', height: 'auto', display: 'block' }}
         aria-label="ObjectGraph dependency diagram"
         role="img"
@@ -455,7 +428,7 @@ function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelP
         })}
 
         {/* nodes */}
-        {nodes.map((n) => {
+        {shown.map((n) => {
           const p = pos[n.id]
           if (!p) return null
           const r = rOf(n, maxFull)
@@ -1122,6 +1095,23 @@ function OgExplorer() {
 
   // fetch live data on mount (idempotent; bootstrapLiveData also fires on app mount)
   useEffect(() => { void loadOg() }, [])
+
+  // Default the focused graph to the most useful starting node once skills load.
+  // Real skill graphs are sparse and often have no single root, so prefer a root
+  // node if one exists, else centre on the most-connected node for a meaningful
+  // (non-empty) neighbourhood instead of an isolated dot.
+  useEffect(() => {
+    if (ogNodes.length > 0 && !ogNodes.some((n) => n.id === ogSel)) {
+      const conn = new Map(ogNodes.map((n) => [n.id, n.deps?.length ?? 0]))
+      ogNodes.forEach((n) =>
+        (n.deps ?? []).forEach((d) => conn.set(d, (conn.get(d) ?? 0) + 1)),
+      )
+      const start =
+        ogNodes.find((n) => n.kind === 'root') ??
+        [...ogNodes].sort((a, b) => (conn.get(b.id) ?? 0) - (conn.get(a.id) ?? 0))[0]
+      if (start) setOgSel(start.id)
+    }
+  }, [ogSel, ogNodes, setOgSel])
 
   // hover is screen-local (store.setOgHover is a no-op shim per contract)
   const [ogHover, setOgHover] = useState<string | null>(null)
