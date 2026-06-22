@@ -24,8 +24,15 @@ import {
   openFileContent,
 } from '../lib/data/domains/files'
 import { Markdown } from '../components/ui/Markdown'
-import VoiceMode from '../components/voice/VoiceMode'
+import ContinuousVoice from '../components/voice/ContinuousVoice'
 import { getVoiceConfig } from '../lib/data/domains/voice'
+import {
+  startRecognition,
+  recordAndTranscribe,
+  browserSpeechSupported,
+  type RecognizerHandle,
+  type RecordController,
+} from '../lib/voice/speech'
 
 // ---- SessionPicker (M8 MED-020) -----------------------------------
 
@@ -202,6 +209,32 @@ function SessionPicker({ sessions, activeId, onSwitch, onNew, onDelete, onClose 
 
 function fmtDollar(n: number): string {
   return '$' + Number(n).toFixed(2)
+}
+
+// Derive an attachment's icon, tint, type label, and image-ness from its name +
+// media type. Ports the prototype `_attMeta` so chips look consistent whether the
+// upload metadata or only the original file is known.
+interface AttMeta {
+  icon: string
+  tint: string
+  label: string
+  isImage: boolean
+}
+function attMeta(name: string, mediaType: string): AttMeta {
+  const t = (mediaType || '').toLowerCase()
+  const ext = name.includes('.') ? (name.split('.').pop() || '').toLowerCase() : ''
+  if (t.startsWith('image/')) return { icon: 'image', tint: 'var(--hachi-brand)', label: 'Image', isImage: true }
+  if (t === 'application/pdf' || ext === 'pdf') return { icon: 'file-text', tint: 'var(--hachi-danger)', label: 'PDF', isImage: false }
+  if (t.startsWith('text/') || ['txt', 'md', 'csv', 'log', 'json'].includes(ext))
+    return { icon: 'file-text', tint: 'var(--hachi-trust)', label: ext ? ext.toUpperCase() : 'Text', isImage: false }
+  if (['doc', 'docx'].includes(ext)) return { icon: 'file-text', tint: 'var(--hachi-brand)', label: 'Doc', isImage: false }
+  return { icon: 'file', tint: 'var(--hachi-muted)', label: ext ? ext.toUpperCase() : 'File', isImage: false }
+}
+function sizeStr(b?: number): string {
+  if (b == null) return ''
+  if (b < 1024) return b + ' B'
+  if (b < 1048576) return (b / 1024).toFixed(b < 10240 ? 1 : 0) + ' KB'
+  return (b / 1048576).toFixed(1) + ' MB'
 }
 
 function statusMeta(st: string): {
@@ -774,54 +807,78 @@ const MessageItem = memo(function MessageItem({ msg, isLast, isStreaming, operat
   const isError = isHachi && !isStreaming && msg.text === 'Something went wrong — please try again.'
 
   if (isYou) {
-    const hasAttachments = msg.attachments && msg.attachments.length > 0
+    const hasAttachments = !!(msg.attachments && msg.attachments.length > 0)
     return (
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <div
-          style={{
-            maxWidth: '80%',
-            minWidth: 0,
-            background: 'var(--hachi-cream)',
-            border: '0.5px solid var(--hachi-line)',
-            borderRadius: '16px 16px 4px 16px',
-            padding: '12px 16px',
-            fontSize: 15,
-            lineHeight: '24px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 10,
-            overflowWrap: 'anywhere',
-            wordBreak: 'break-word',
-          }}
-        >
-          {hasAttachments && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {msg.attachments!.map((a, i) => (
-                <span
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+        {/* attachments — chips above the bubble, right-aligned */}
+        {hasAttachments && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, justifyContent: 'flex-end', maxWidth: '80%' }}>
+            {msg.attachments!.map((a, i) => {
+              const meta = attMeta(a.name, a.mediaType)
+              return (
+                <div
                   key={i}
                   style={{
-                    display: 'inline-flex',
+                    display: 'flex',
                     alignItems: 'center',
-                    gap: 5,
-                    padding: '3px 9px',
-                    borderRadius: 999,
+                    gap: 8,
                     background: 'var(--hachi-surface)',
                     border: '0.5px solid var(--hachi-line)',
-                    fontSize: 12,
-                    color: 'var(--hachi-muted)',
-                    maxWidth: 200,
+                    borderRadius: 10,
+                    padding: '5px 9px 5px 5px',
                   }}
                 >
-                  <Icon name={a.mediaType.startsWith('image/') ? 'image' : 'file'} size={12} />
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <div
+                    style={{
+                      width: 30,
+                      height: 30,
+                      borderRadius: 6,
+                      background: 'var(--hachi-cream)',
+                      display: 'grid',
+                      placeItems: 'center',
+                      flexShrink: 0,
+                      color: meta.tint,
+                    }}
+                  >
+                    <Icon name={meta.icon} size={15} />
+                  </div>
+                  <span
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 500,
+                      color: 'var(--hachi-ink)',
+                      maxWidth: 130,
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
                     {a.name}
                   </span>
-                </span>
-              ))}
-            </div>
-          )}
-          {msg.text && <Markdown text={msg.text} />}
-        </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+        {/* text bubble */}
+        {msg.text && (
+          <div
+            style={{
+              maxWidth: '80%',
+              minWidth: 0,
+              background: 'var(--hachi-cream)',
+              border: '0.5px solid var(--hachi-line)',
+              borderRadius: '16px 16px 4px 16px',
+              padding: '12px 16px',
+              fontSize: 15,
+              lineHeight: '24px',
+              overflowWrap: 'anywhere',
+              wordBreak: 'break-word',
+            }}
+          >
+            <Markdown text={msg.text} />
+          </div>
+        )}
       </div>
     )
   }
@@ -981,9 +1038,9 @@ function Conversation() {
   // M8: session picker open state
   const [pickerOpen, setPickerOpen] = useState(false)
 
-  // Voice mode state
-  const [voiceModeOpen, setVoiceModeOpen] = useState(false)
-  // Track the last completed assistant text so VoiceMode can auto-TTS it.
+  // Continuous-voice overlay state
+  const [continuousOpen, setContinuousOpen] = useState(false)
+  // Track the last completed assistant text so the overlay can auto-TTS it.
   const [lastAssistantText, setLastAssistantText] = useState('')
   // Track whether gateway voice is configured (for graceful fallback).
   const [gatewayVoiceReady, setGatewayVoiceReady] = useState<boolean | null>(null)
@@ -1008,17 +1065,17 @@ function Conversation() {
       .catch(() => setGatewayVoiceReady(false))
   }, [])
 
-  // When voice mode is open, track the last completed (non-streaming) assistant
-  // message so VoiceMode can auto-speak it via gateway TTS.
+  // While the continuous overlay is open, track the last completed (non-streaming)
+  // assistant message so the overlay can auto-speak it via gateway/browser TTS.
   useEffect(() => {
-    if (!voiceModeOpen) return
+    if (!continuousOpen) return
     if (streaming) return  // still in-flight; wait for it to finish
     const last = [...messages].reverse().find((m) => m.role === 'hachi' && m.text.trim())
     if (last && last.text !== lastAssistantText) {
       setLastAssistantText(last.text)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streaming, messages.length, voiceModeOpen])
+  }, [streaming, messages.length, continuousOpen])
 
   // Restore conversation history on mount and when the active session changes.
   // Guards: skipped in mock mode, skipped if a stream is in-flight.
@@ -1322,25 +1379,23 @@ function Conversation() {
       {/* ---- composer ---- */}
       <ConversationComposer
         onOpenSessionsPicker={() => setPickerOpen(true)}
-        onOpenVoiceMode={() => setVoiceModeOpen(true)}
-        gatewayVoiceReady={gatewayVoiceReady ?? false}
+        onStartContinuous={() => setContinuousOpen(true)}
+        gatewayReady={gatewayVoiceReady ?? false}
       />
 
-      {/* ---- voice mode overlay ---- */}
-      <VoiceMode
-        open={voiceModeOpen}
-        onClose={() => {
-          setVoiceModeOpen(false)
-          setLastAssistantText('')
-        }}
+      {/* ---- continuous voice overlay ---- */}
+      <ContinuousVoice
+        open={continuousOpen}
+        gatewayReady={gatewayVoiceReady ?? false}
+        streaming={streaming}
+        assistantText={lastAssistantText}
         onTranscript={(text) => {
           // Reuse the same send path as the composer.
           useStore.getState().startTask(text)
         }}
-        assistantText={lastAssistantText}
-        onConfigUnavailable={() => {
-          setVoiceModeOpen(false)
-          setGatewayVoiceReady(false)
+        onClose={() => {
+          setContinuousOpen(false)
+          setLastAssistantText('')
         }}
       />
 
@@ -1350,14 +1405,16 @@ function Conversation() {
 
 interface ConversationComposerProps {
   onOpenSessionsPicker: () => void
-  onOpenVoiceMode: () => void
-  gatewayVoiceReady: boolean
+  onStartContinuous: () => void
+  gatewayReady: boolean
 }
+
+type ComposerVoiceMode = null | 'push' | 'dictate'
 
 const ConversationComposer = memo(function ConversationComposer({
   onOpenSessionsPicker,
-  onOpenVoiceMode,
-  gatewayVoiceReady,
+  onStartContinuous,
+  gatewayReady,
 }: ConversationComposerProps) {
   const composer = useStore((s) => s.composer)
   const slashOpen = useStore((s) => s.slashOpen)
@@ -1366,17 +1423,33 @@ const ConversationComposer = memo(function ConversationComposer({
   const setComposer = useStore((s) => s.setComposer)
   const startTask = useStore((s) => s.startTask)
   const stopStreaming = useStore((s) => s.stopStreaming)
+  const showToast = useStore((s) => s.showToast)
   const addPendingAttachment = useStore((s) => s.addPendingAttachment)
   const updatePendingAttachment = useStore((s) => s.updatePendingAttachment)
   const removePendingAttachment = useStore((s) => s.removePendingAttachment)
+
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const voiceMenuRef = useRef<HTMLDivElement>(null)
+  const voiceBtnRef = useRef<HTMLButtonElement>(null)
   const [slashIdx, setSlashIdx] = useState(-1)
   const [uploading, setUploading] = useState(false)
-  // STT state — use `any` because Web Speech API lacks standard TS lib typings
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const recognitionRef = useRef<any>(null)
-  const [listening, setListening] = useState(false)
+
+  // ── voice state ──
+  const [voiceMenuOpen, setVoiceMenuOpen] = useState(false)
+  const [voiceMode, setVoiceMode] = useState<ComposerVoiceMode>(null)
+  const [pushRecording, setPushRecording] = useState(false)
+  const voiceModeRef = useRef<ComposerVoiceMode>(null)
+  const dictateRef = useRef<RecognizerHandle | null>(null)
+  const dictateBaseRef = useRef('')
+  const dictateRecorderRef = useRef<RecordController | null>(null)
+  const pushRecognizerRef = useRef<RecognizerHandle | null>(null)
+  const pushRecorderRef = useRef<RecordController | null>(null)
+  const hasBrowserSpeech = browserSpeechSupported()
+
+  useEffect(() => {
+    voiceModeRef.current = voiceMode
+  }, [voiceMode])
 
   useEffect(() => {
     if (!slashOpen) setSlashIdx(-1)
@@ -1388,6 +1461,16 @@ const ConversationComposer = memo(function ConversationComposer({
     ta.style.height = 'auto'
     ta.style.height = Math.min(ta.scrollHeight, 140) + 'px'
   }, [composer])
+
+  // Stop any in-flight recognition / recording when the composer unmounts.
+  useEffect(() => {
+    return () => {
+      dictateRef.current?.abort()
+      pushRecognizerRef.current?.abort()
+      dictateRecorderRef.current?.cancel()
+      pushRecorderRef.current?.cancel()
+    }
+  }, [])
 
   const canSend = (composer.trim().length > 0 || pendingAttachments.length > 0) && !streaming
 
@@ -1449,39 +1532,174 @@ const ConversationComposer = memo(function ConversationComposer({
     }
   }
 
-  // ── Voice input (STT) ────────────────────────────────────────
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const w = typeof window !== 'undefined' ? (window as any) : null
-  const hasSpeechRecognition = !!(w?.SpeechRecognition || w?.webkitSpeechRecognition)
+  // ── Voice menu ────────────────────────────────────────────────
+  // Close the "Talk to Hachi" menu on outside click / Escape.
+  useEffect(() => {
+    if (!voiceMenuOpen) return
+    function onDown(e: MouseEvent) {
+      const target = e.target as Node
+      // Ignore clicks on the toggle button — its own onClick handles closing,
+      // otherwise mousedown-close + click-reopen would leave the menu stuck open.
+      if (voiceBtnRef.current && voiceBtnRef.current.contains(target)) return
+      if (voiceMenuRef.current && !voiceMenuRef.current.contains(target)) {
+        setVoiceMenuOpen(false)
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setVoiceMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [voiceMenuOpen])
 
-  function handleMic() {
-    const SR = w?.SpeechRecognition ?? w?.webkitSpeechRecognition
-    if (!SR) return
-
-    if (listening && recognitionRef.current) {
-      recognitionRef.current.stop()
-      setListening(false)
+  function pickVoice(mode: 'push' | 'dictate' | 'continuous') {
+    setVoiceMenuOpen(false)
+    if (mode === 'continuous') {
+      onStartContinuous()
       return
     }
-
-    const rec = new SR()
-    rec.lang = 'en-US'
-    rec.interimResults = true
-    rec.continuous = false
-    recognitionRef.current = rec
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    rec.onresult = (event: any) => {
-      const transcript = Array.from(event.results as ArrayLike<{ 0: { transcript: string } }>)
-        .map((r) => r[0].transcript)
-        .join('')
-      setComposer(transcript)
+    if (mode === 'dictate') {
+      startDictate()
+      return
     }
-    rec.onend = () => setListening(false)
-    rec.onerror = () => setListening(false)
+    // push-to-talk: reveal the hold row; recording starts on hold.
+    setVoiceMode('push')
+  }
 
-    rec.start()
-    setListening(true)
+  // ── Dictate: stream a live transcript into the composer ──
+  function startDictate() {
+    dictateBaseRef.current = composer.trim() ? composer.trim() + ' ' : ''
+    if (hasBrowserSpeech) {
+      const handle = startRecognition({
+        continuous: true,
+        onPartial: (text) => setComposer((dictateBaseRef.current + text).trimStart()),
+        onEnd: () => {
+          dictateRef.current = null
+          if (voiceModeRef.current === 'dictate') setVoiceMode(null)
+        },
+        onError: (err) => {
+          if (err === 'not-allowed' || err === 'service-not-allowed') {
+            showToast('Microphone access denied', 'blocked')
+          }
+        },
+      })
+      if (!handle) {
+        showToast('Dictation is not available in this browser', 'blocked')
+        return
+      }
+      dictateRef.current = handle
+      setVoiceMode('dictate')
+      return
+    }
+    // Fallback: gateway record → transcribe (no live preview).
+    if (gatewayReady) {
+      setVoiceMode('dictate')
+      recordAndTranscribe()
+        .then((ctrl) => {
+          dictateRecorderRef.current = ctrl
+          void ctrl.done.then((text) => {
+            dictateRecorderRef.current = null
+            if (text) setComposer((dictateBaseRef.current + text).trimStart())
+            if (voiceModeRef.current === 'dictate') setVoiceMode(null)
+          })
+        })
+        .catch(() => {
+          showToast('Microphone access denied', 'blocked')
+          setVoiceMode(null)
+        })
+      return
+    }
+    showToast('Dictation needs a Chromium browser or a configured voice provider', 'blocked')
+  }
+
+  function stopDictate() {
+    if (dictateRef.current) {
+      dictateRef.current.stop() // onEnd resets voiceMode
+      return
+    }
+    if (dictateRecorderRef.current) {
+      dictateRecorderRef.current.stop() // done handler resets voiceMode
+      return
+    }
+    setVoiceMode(null)
+  }
+
+  // ── Push-to-talk: hold to record, release to transcribe + send ──
+  function holdStart() {
+    if (voiceModeRef.current !== 'push' || pushRecording) return
+    if (hasBrowserSpeech) {
+      const handle = startRecognition({
+        continuous: false,
+        onFinal: (text) => {
+          pushRecognizerRef.current = null
+          const t = text.trim()
+          setPushRecording(false)
+          setVoiceMode(null)
+          if (t && !useStore.getState().streaming) startTask(t)
+        },
+        onError: (err) => {
+          pushRecognizerRef.current = null
+          setPushRecording(false)
+          if (err === 'not-allowed' || err === 'service-not-allowed') {
+            showToast('Microphone access denied', 'blocked')
+          }
+        },
+      })
+      if (!handle) {
+        showToast('Push-to-talk is not available in this browser', 'blocked')
+        return
+      }
+      pushRecognizerRef.current = handle
+      setPushRecording(true)
+      return
+    }
+    if (gatewayReady) {
+      setPushRecording(true)
+      recordAndTranscribe()
+        .then((ctrl) => {
+          pushRecorderRef.current = ctrl
+        })
+        .catch(() => {
+          setPushRecording(false)
+          showToast('Microphone access denied', 'blocked')
+        })
+      return
+    }
+    showToast('Push-to-talk needs a Chromium browser or a configured voice provider', 'blocked')
+  }
+
+  function holdEnd() {
+    if (!pushRecording) return
+    if (pushRecognizerRef.current) {
+      pushRecognizerRef.current.stop() // onFinal sends + resets
+      return
+    }
+    if (pushRecorderRef.current) {
+      const ctrl = pushRecorderRef.current
+      pushRecorderRef.current = null
+      setPushRecording(false)
+      setVoiceMode(null)
+      ctrl.stop()
+      void ctrl.done.then((text) => {
+        const t = text.trim()
+        if (t && !useStore.getState().streaming) startTask(t)
+      })
+      return
+    }
+    setPushRecording(false)
+  }
+
+  function exitVoice() {
+    pushRecognizerRef.current?.abort()
+    pushRecognizerRef.current = null
+    pushRecorderRef.current?.cancel()
+    pushRecorderRef.current = null
+    setPushRecording(false)
+    setVoiceMode(null)
   }
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1512,6 +1730,9 @@ const ConversationComposer = memo(function ConversationComposer({
       if (canSend) startTask(composer)
     }
   }, [slashOpen, slashIdx, canSend, composer, startTask, setComposer])
+
+  const dictating = voiceMode === 'dictate'
+  const isPush = voiceMode === 'push'
 
   return (
     <div
@@ -1565,8 +1786,8 @@ const ConversationComposer = memo(function ConversationComposer({
             style={{
               display: 'flex',
               flexWrap: 'wrap',
-              gap: 6,
-              padding: '0 4px 10px',
+              gap: 8,
+              padding: '0 2px 10px',
             }}
           >
             {pendingAttachments.map((a) => (
@@ -1582,210 +1803,359 @@ const ConversationComposer = memo(function ConversationComposer({
           </div>
         )}
 
-        <div
-          style={{
-            display: 'flex',
-            gap: 10,
-            alignItems: 'flex-end',
-            background: 'var(--hachi-surface)',
-            border: '0.5px solid var(--hachi-line)',
-            borderRadius: 14,
-            padding: '8px 8px 8px 12px',
-          }}
-        >
-          {/* Hidden file input */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept="image/*,text/*,application/json,application/pdf,.md,.csv,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java"
-            style={{ display: 'none' }}
-            onChange={handleFileChange}
-          />
-
-          {/* File attach button */}
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading || streaming}
-            title="Attach file or image"
+        {/* Talk-to-Hachi voice menu */}
+        {voiceMenuOpen && (
+          <div
+            ref={voiceMenuRef}
+            role="menu"
+            aria-label="Talk to Hachi"
             style={{
-              flexShrink: 0,
-              width: 34,
-              height: 34,
-              borderRadius: 8,
-              border: 'none',
-              background: 'transparent',
-              color: uploading ? 'var(--hachi-brand)' : 'var(--hachi-muted)',
-              display: 'grid',
-              placeItems: 'center',
-              cursor: uploading || streaming ? 'default' : 'pointer',
-              opacity: streaming ? 0.4 : 1,
-            }}
-            onMouseEnter={(e) => {
-              if (!uploading && !streaming) {
-                (e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)'
-              }
-            }}
-            onMouseLeave={(e) => {
-              ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+              position: 'absolute',
+              bottom: 'calc(100% + 8px)',
+              right: 0,
+              width: 308,
+              background: 'var(--hachi-surface)',
+              border: '0.5px solid var(--hachi-line)',
+              borderRadius: 14,
+              overflow: 'hidden',
+              boxShadow: '0 8px 28px rgba(28,26,32,.12)',
+              zIndex: 11,
+              animation: 'hachiPop .14s ease',
             }}
           >
-            <Icon name={uploading ? 'refresh' : 'paperclip'} size={16} />
-          </button>
-
-          {/* Mic button — browser Web Speech API (always shown when available) */}
-          {hasSpeechRecognition && !gatewayVoiceReady && (
-            <button
-              type="button"
-              onClick={handleMic}
-              disabled={streaming}
-              title={listening ? 'Stop listening' : 'Speak your message'}
+            <div
               style={{
-                flexShrink: 0,
-                width: 34,
-                height: 34,
-                borderRadius: 8,
-                border: 'none',
-                background: listening ? 'var(--hachi-danger-tint)' : 'transparent',
-                color: listening ? 'var(--hachi-danger)' : 'var(--hachi-muted)',
-                display: 'grid',
-                placeItems: 'center',
-                cursor: streaming ? 'default' : 'pointer',
-                opacity: streaming ? 0.4 : 1,
-              }}
-              onMouseEnter={(e) => {
-                if (!streaming && !listening) {
-                  (e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)'
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (!listening) {
-                  (e.currentTarget as HTMLButtonElement).style.background = 'transparent'
-                }
+                padding: '11px 14px 9px',
+                fontSize: 12,
+                color: 'var(--hachi-muted)',
+                borderBottom: '0.5px solid var(--hachi-line)',
               }}
             >
-              <Icon name={listening ? 'mic-off' : 'mic'} size={16} />
-            </button>
-          )}
+              Talk to Hachi
+            </div>
+            <VoiceOption
+              icon="mic"
+              name="Push to talk"
+              desc="Hold the button, release to send."
+              onPick={() => pickVoice('push')}
+            />
+            <VoiceOption
+              icon="audio-lines"
+              name="Dictate"
+              desc="Speak and I'll type it into the box."
+              onPick={() => pickVoice('dictate')}
+            />
+            <VoiceOption
+              icon="headphones"
+              name="Continuous"
+              desc="Hands-free, back-and-forth conversation."
+              onPick={() => pickVoice('continuous')}
+            />
+          </div>
+        )}
 
-          {/* Voice mode button — gateway STT/TTS (shown when gateway voice is configured) */}
-          {gatewayVoiceReady && (
-            <button
-              type="button"
-              onClick={onOpenVoiceMode}
-              disabled={streaming}
-              title="Open voice mode (gateway-powered)"
-              style={{
-                flexShrink: 0,
-                width: 34,
-                height: 34,
-                borderRadius: 8,
-                border: 'none',
-                background: 'transparent',
-                color: 'var(--hachi-brand)',
-                display: 'grid',
-                placeItems: 'center',
-                cursor: streaming ? 'default' : 'pointer',
-                opacity: streaming ? 0.4 : 1,
-              }}
-              onMouseEnter={(e) => {
-                if (!streaming) {
-                  (e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)'
-                }
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.background = 'transparent'
-              }}
-            >
-              <Icon name="mic" size={16} />
-            </button>
-          )}
+        {/* Hidden file input (shared by the attach button) */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept="image/*,text/*,application/json,application/pdf,.md,.csv,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java"
+          style={{ display: 'none' }}
+          onChange={handleFileChange}
+        />
 
-          <textarea
-            ref={textareaRef}
-            value={composer}
-            onChange={handleInput}
-            onKeyDown={handleKeyDown}
-            rows={1}
-            placeholder={listening ? 'Listening…' : 'Message Hachi…  /  for commands'}
-            aria-label="Message Hachi"
-            aria-autocomplete="list"
-            aria-expanded={slashOpen}
+        {/* ── input row: normal + dictate ── */}
+        {!isPush && (
+          <div
             style={{
-              flex: 1,
-              resize: 'none',
-              border: 'none',
-              background: 'transparent',
-              font: 'inherit',
-              fontSize: 15,
-              lineHeight: '24px',
-              color: 'var(--hachi-ink)',
-              outline: 'none',
-              padding: '9px 0',
-              maxHeight: 140,
-              overflowY: 'auto',
+              display: 'flex',
+              gap: 6,
+              alignItems: 'flex-end',
+              background: 'var(--hachi-surface)',
+              border: '0.5px solid var(--hachi-line)',
+              borderRadius: 14,
+              padding: '7px 8px',
             }}
-          />
-
-          {streaming && (
+          >
+            {/* File attach */}
             <button
               type="button"
-              aria-label="Stop generating"
-              onClick={stopStreaming}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading || streaming}
+              title="Attach a file"
               style={{
                 flexShrink: 0,
                 width: 42,
                 height: 42,
                 borderRadius: 10,
-                border: '1px solid var(--hachi-trust)',
+                border: 'none',
                 background: 'transparent',
-                color: 'var(--hachi-trust)',
+                color: uploading ? 'var(--hachi-brand)' : 'var(--hachi-muted)',
                 display: 'grid',
                 placeItems: 'center',
-                cursor: 'pointer',
+                cursor: uploading || streaming ? 'default' : 'pointer',
+                opacity: streaming ? 0.4 : 1,
               }}
               onMouseEnter={(e) => {
-                ;(e.currentTarget as HTMLButtonElement).style.background =
-                  'var(--hachi-trust-tint)'
+                if (!uploading && !streaming) {
+                  ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)'
+                  ;(e.currentTarget as HTMLButtonElement).style.color = 'var(--hachi-ink)'
+                }
               }}
               onMouseLeave={(e) => {
                 ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+                ;(e.currentTarget as HTMLButtonElement).style.color = uploading
+                  ? 'var(--hachi-brand)'
+                  : 'var(--hachi-muted)'
               }}
             >
-              <Icon name="stop" size={16} />
+              <Icon name={uploading ? 'refresh' : 'paperclip'} size={18} />
             </button>
-          )}
 
-          {canSend && (
+            <textarea
+              ref={textareaRef}
+              value={composer}
+              onChange={handleInput}
+              onKeyDown={handleKeyDown}
+              rows={1}
+              placeholder="Message Hachi…  /  for commands"
+              aria-label="Message Hachi"
+              aria-autocomplete="list"
+              aria-expanded={slashOpen}
+              style={{
+                flex: 1,
+                resize: 'none',
+                border: 'none',
+                background: 'transparent',
+                font: 'inherit',
+                fontSize: 15,
+                lineHeight: '24px',
+                color: 'var(--hachi-ink)',
+                outline: 'none',
+                padding: '9px 4px',
+                maxHeight: 140,
+                overflowY: 'auto',
+              }}
+            />
+
+            {/* Dictating indicator + stop, OR the Talk-to-Hachi mic */}
+            {dictating ? (
+              <>
+                <div
+                  style={{
+                    flexShrink: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 9,
+                    padding: '0 6px 0 2px',
+                  }}
+                >
+                  <VoiceWave height={20} color="var(--hachi-brand)" />
+                  <span style={{ fontSize: 12.5, color: 'var(--hachi-muted)', whiteSpace: 'nowrap' }}>
+                    Dictating…
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={stopDictate}
+                  title="Stop dictation"
+                  aria-label="Stop dictation"
+                  style={{
+                    flexShrink: 0,
+                    width: 42,
+                    height: 42,
+                    borderRadius: 10,
+                    border: 'none',
+                    background: 'var(--hachi-brand)',
+                    color: 'var(--hachi-canvas)',
+                    display: 'grid',
+                    placeItems: 'center',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <Icon name="stop" size={15} />
+                </button>
+              </>
+            ) : (
+              <button
+                ref={voiceBtnRef}
+                type="button"
+                onClick={() => setVoiceMenuOpen((v) => !v)}
+                aria-haspopup="menu"
+                aria-expanded={voiceMenuOpen}
+                title="Talk to Hachi"
+                style={{
+                  flexShrink: 0,
+                  width: 42,
+                  height: 42,
+                  borderRadius: 10,
+                  border: 'none',
+                  background: voiceMenuOpen ? 'var(--hachi-cream)' : 'transparent',
+                  color: voiceMenuOpen ? 'var(--hachi-ink)' : 'var(--hachi-muted)',
+                  display: 'grid',
+                  placeItems: 'center',
+                  cursor: 'pointer',
+                }}
+                onMouseEnter={(e) => {
+                  ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)'
+                  ;(e.currentTarget as HTMLButtonElement).style.color = 'var(--hachi-ink)'
+                }}
+                onMouseLeave={(e) => {
+                  ;(e.currentTarget as HTMLButtonElement).style.background = voiceMenuOpen
+                    ? 'var(--hachi-cream)'
+                    : 'transparent'
+                  ;(e.currentTarget as HTMLButtonElement).style.color = voiceMenuOpen
+                    ? 'var(--hachi-ink)'
+                    : 'var(--hachi-muted)'
+                }}
+              >
+                <Icon name="mic" size={18} />
+              </button>
+            )}
+
+            {streaming && (
+              <button
+                type="button"
+                aria-label="Stop generating"
+                onClick={stopStreaming}
+                style={{
+                  flexShrink: 0,
+                  width: 42,
+                  height: 42,
+                  borderRadius: 10,
+                  border: '1px solid var(--hachi-trust)',
+                  background: 'transparent',
+                  color: 'var(--hachi-trust)',
+                  display: 'grid',
+                  placeItems: 'center',
+                  cursor: 'pointer',
+                }}
+                onMouseEnter={(e) => {
+                  ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-trust-tint)'
+                }}
+                onMouseLeave={(e) => {
+                  ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+                }}
+              >
+                <Icon name="stop" size={16} />
+              </button>
+            )}
+
+            {canSend && (
+              <button
+                type="button"
+                aria-label="Send message"
+                onClick={handleSend}
+                style={{
+                  flexShrink: 0,
+                  width: 42,
+                  height: 42,
+                  borderRadius: 10,
+                  border: '0.5px solid transparent',
+                  background: 'var(--hachi-brand)',
+                  color: 'var(--hachi-canvas)',
+                  display: 'grid',
+                  placeItems: 'center',
+                  cursor: 'pointer',
+                }}
+                onMouseEnter={(e) => {
+                  ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-brand-hover)'
+                }}
+                onMouseLeave={(e) => {
+                  ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-brand)'
+                }}
+              >
+                <Icon name="send" size={16} />
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* ── input row: push-to-talk ── */}
+        {isPush && (
+          <div
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'center',
+              background: 'var(--hachi-surface)',
+              border: '0.5px solid var(--hachi-line)',
+              borderRadius: 14,
+              padding: 8,
+            }}
+          >
             <button
               type="button"
-              aria-label="Send message"
-              onClick={handleSend}
+              onClick={exitVoice}
+              title="Leave voice"
+              aria-label="Leave voice"
               style={{
                 flexShrink: 0,
                 width: 42,
                 height: 42,
                 borderRadius: 10,
-                border: '0.5px solid transparent',
-                background: 'var(--hachi-brand-hover)',
-                color: 'var(--hachi-canvas)',
+                border: 'none',
+                background: 'transparent',
+                color: 'var(--hachi-muted)',
                 display: 'grid',
                 placeItems: 'center',
                 cursor: 'pointer',
               }}
               onMouseEnter={(e) => {
-                ;(e.currentTarget as HTMLButtonElement).style.background =
-                  'var(--hachi-brand-active)'
+                ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)'
+                ;(e.currentTarget as HTMLButtonElement).style.color = 'var(--hachi-ink)'
               }}
               onMouseLeave={(e) => {
-                ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-brand-hover)'
+                ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+                ;(e.currentTarget as HTMLButtonElement).style.color = 'var(--hachi-muted)'
               }}
             >
-              <Icon name="send" size={16} />
+              <Icon name="x" size={18} />
             </button>
-          )}
-        </div>
+            <button
+              type="button"
+              onMouseDown={holdStart}
+              onMouseUp={holdEnd}
+              onMouseLeave={holdEnd}
+              onTouchStart={(e) => {
+                e.preventDefault()
+                holdStart()
+              }}
+              onTouchEnd={(e) => {
+                e.preventDefault()
+                holdEnd()
+              }}
+              aria-label={pushRecording ? 'Release to send' : 'Hold to talk'}
+              style={{
+                flex: 1,
+                height: 48,
+                borderRadius: 11,
+                border: `0.5px solid ${pushRecording ? 'transparent' : 'var(--hachi-line)'}`,
+                background: pushRecording ? 'var(--hachi-brand)' : 'var(--hachi-cream)',
+                color: pushRecording ? 'var(--hachi-canvas)' : 'var(--hachi-ink)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 11,
+                cursor: 'pointer',
+                font: 'inherit',
+                userSelect: 'none',
+              }}
+            >
+              {pushRecording ? (
+                <>
+                  <VoiceWave height={22} color="currentColor" />
+                  <span style={{ fontSize: 14, fontWeight: 500 }}>Release to send</span>
+                </>
+              ) : (
+                <>
+                  <Icon name="mic" size={18} />
+                  <span style={{ fontSize: 14, fontWeight: 500 }}>Hold to talk</span>
+                </>
+              )}
+            </button>
+          </div>
+        )}
 
         <div
           style={{
@@ -1802,6 +2172,98 @@ const ConversationComposer = memo(function ConversationComposer({
   )
 })
 
+// ---- VoiceWave (animated bars for dictate + push-to-talk) -----------
+
+function VoiceWave({ height = 20, color = 'var(--hachi-brand)' }: { height?: number; color?: string }) {
+  const delays = [0, 0.16, 0.32, 0.1, 0.24]
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height }} aria-hidden="true">
+      {delays.map((d, i) => (
+        <span
+          key={i}
+          style={{
+            width: 3,
+            height,
+            borderRadius: 2,
+            background: color,
+            transformOrigin: 'bottom',
+            animation: `hachiVoice .82s ease-in-out infinite ${d}s`,
+          }}
+        />
+      ))}
+    </div>
+  )
+}
+
+// ---- VoiceOption (a row in the Talk-to-Hachi menu) -----------------
+
+interface VoiceOptionProps {
+  icon: string
+  name: string
+  desc: string
+  onPick: () => void
+}
+
+function VoiceOption({ icon, name, desc, onPick }: VoiceOptionProps) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onPick}
+      style={{
+        width: '100%',
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: 12,
+        padding: '12px 14px',
+        border: 'none',
+        borderBottom: '0.5px solid var(--hachi-line)',
+        background: 'transparent',
+        cursor: 'pointer',
+        textAlign: 'left',
+        font: 'inherit',
+      }}
+      onMouseEnter={(e) => {
+        ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)'
+      }}
+      onMouseLeave={(e) => {
+        ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+      }}
+    >
+      <span
+        style={{
+          flexShrink: 0,
+          width: 34,
+          height: 34,
+          borderRadius: 9,
+          background: 'var(--hachi-cream)',
+          display: 'grid',
+          placeItems: 'center',
+          color: 'var(--hachi-brand)',
+        }}
+      >
+        <Icon name={icon} size={18} />
+      </span>
+      <span style={{ minWidth: 0 }}>
+        <span style={{ display: 'block', fontSize: 14, fontWeight: 500, color: 'var(--hachi-ink)' }}>
+          {name}
+        </span>
+        <span
+          style={{
+            display: 'block',
+            fontSize: 12.5,
+            color: 'var(--hachi-muted)',
+            lineHeight: '17px',
+            marginTop: 1,
+          }}
+        >
+          {desc}
+        </span>
+      </span>
+    </button>
+  )
+}
+
 // ---- AttachmentChip ------------------------------------------------
 
 interface AttachmentChipProps {
@@ -1810,50 +2272,67 @@ interface AttachmentChipProps {
 }
 
 function AttachmentChip({ attachment, onRemove }: AttachmentChipProps) {
-  const isImage = attachment.mediaType.startsWith('image/')
+  const meta = attMeta(attachment.name, attachment.mediaType)
   const hasError = !!attachment.error
   const canOpen = !attachment.uploading && !hasError && !attachment.fileId.startsWith('local-')
 
-  // Derive a readable extension from the filename
-  const ext = attachment.name.includes('.')
-    ? attachment.name.split('.').pop()?.toUpperCase() ?? ''
-    : ''
-  const displayName = attachment.name.length > 24
-    ? attachment.name.slice(0, 20) + '…' + (ext ? `.${ext.toLowerCase()}` : '')
-    : attachment.name
+  // Second line: error → upload status → "Type · size".
+  const sub = hasError
+    ? attachment.error && attachment.error.length <= 32
+      ? attachment.error
+      : 'Upload failed — hover for detail'
+    : attachment.uploading
+      ? 'Uploading…'
+      : meta.label + (attachment.size ? ' · ' + sizeStr(attachment.size) : '')
 
   return (
     <div
       title={attachment.error ?? attachment.name}
       style={{
-        display: 'inline-flex',
+        display: 'flex',
         alignItems: 'center',
-        gap: 6,
-        padding: '5px 6px 5px 8px',
-        borderRadius: 10,
+        gap: 9,
         background: hasError ? 'var(--hachi-danger-tint)' : 'var(--hachi-surface)',
         border: `0.5px solid ${hasError ? 'var(--hachi-danger)' : 'var(--hachi-line)'}`,
-        fontSize: 12,
-        color: hasError ? 'var(--hachi-danger)' : 'var(--hachi-ink)',
-        maxWidth: 240,
-        opacity: attachment.uploading ? 0.7 : 1,
+        borderRadius: 11,
+        padding: '6px 8px 6px 6px',
+        maxWidth: 236,
+        opacity: attachment.uploading ? 0.75 : 1,
         transition: 'opacity 0.15s',
+        animation: 'hachiPop .14s ease',
       }}
     >
-      {/* Thumbnail or icon */}
-      {isImage && attachment.localUrl ? (
-        <img
-          src={attachment.localUrl}
-          alt=""
-          style={{ width: 20, height: 20, borderRadius: 4, objectFit: 'cover', flexShrink: 0 }}
+      {/* Thumbnail (image) or icon tile */}
+      {meta.isImage && attachment.localUrl ? (
+        <div
+          style={{
+            width: 34,
+            height: 34,
+            borderRadius: 7,
+            flexShrink: 0,
+            backgroundImage: `url("${attachment.localUrl}")`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+          }}
         />
       ) : (
-        <span style={{ color: hasError ? 'var(--hachi-danger)' : 'var(--hachi-muted)', display: 'inline-flex', flexShrink: 0 }}>
-          <Icon name={hasError ? 'circle-alert' : (isImage ? 'image' : 'file')} size={13} />
-        </span>
+        <div
+          style={{
+            width: 34,
+            height: 34,
+            borderRadius: 7,
+            background: 'var(--hachi-cream)',
+            display: 'grid',
+            placeItems: 'center',
+            flexShrink: 0,
+            color: hasError ? 'var(--hachi-danger)' : meta.tint,
+          }}
+        >
+          <Icon name={hasError ? 'circle-alert' : meta.icon} size={17} />
+        </div>
       )}
 
-      {/* Name + extension */}
+      {/* Name + meta — clicking opens the uploaded file */}
       <button
         type="button"
         onClick={() => {
@@ -1874,47 +2353,50 @@ function AttachmentChip({ attachment, onRemove }: AttachmentChipProps) {
       >
         <span
           style={{
+            fontSize: 12.5,
+            fontWeight: 500,
+            color: hasError ? 'var(--hachi-danger)' : 'var(--hachi-ink)',
+            whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            fontWeight: 500,
-            lineHeight: '15px',
+            maxWidth: 140,
           }}
         >
-          {displayName}
+          {attachment.name}
         </span>
-        {/* Extension badge or upload status */}
-        <span style={{ fontSize: 10, color: hasError ? 'var(--hachi-danger)' : 'var(--hachi-muted)', lineHeight: '13px' }}>
-          {hasError
-            ? (attachment.error && attachment.error.length <= 32
-                ? attachment.error
-                : 'Upload failed — hover for detail')
-            : attachment.uploading
-              ? 'Uploading…'
-              : (ext || attachment.mediaType.split('/')[1] || 'file')}
+        <span style={{ fontSize: 11, color: hasError ? 'var(--hachi-danger)' : 'var(--hachi-muted)' }}>
+          {sub}
         </span>
-          </button>
+      </button>
 
       {/* Remove button */}
       <button
         type="button"
         onClick={onRemove}
         title="Remove"
+        aria-label={`Remove ${attachment.name}`}
         style={{
           flexShrink: 0,
-          display: 'inline-flex',
+          width: 20,
+          height: 20,
+          borderRadius: 6,
+          display: 'grid',
+          placeItems: 'center',
           background: 'transparent',
           border: 'none',
           cursor: 'pointer',
           color: 'var(--hachi-muted)',
-          padding: 2,
-          borderRadius: 4,
-          marginLeft: 2,
         }}
-        onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--hachi-danger)' }}
-        onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--hachi-muted)' }}
+        onMouseEnter={(e) => {
+          ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)'
+          ;(e.currentTarget as HTMLButtonElement).style.color = 'var(--hachi-ink)'
+        }}
+        onMouseLeave={(e) => {
+          ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+          ;(e.currentTarget as HTMLButtonElement).style.color = 'var(--hachi-muted)'
+        }}
       >
-        <Icon name="x" size={12} />
+        <Icon name="x" size={13} />
       </button>
     </div>
   )
