@@ -26,6 +26,12 @@ body { background: var(--hachi-canvas); font-family: var(--font-body); }
   to   { opacity: 1; transform: none; }
 }
 
+/* Voice waveform bars (dictate + push-to-talk) */
+@keyframes hachiVoice {
+  0%, 100% { transform: scaleY(0.32); }
+  50%      { transform: scaleY(1); }
+}
+
 @keyframes hm-breathe {
   0%, 100% { transform: translateY(0); }
   50%       { transform: translateY(-1.5px); }
