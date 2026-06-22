@@ -15,6 +15,7 @@ import {
   loadIntegrations,
   connectIntegration,
   disconnectIntegration,
+  submitCredentials,
   addMcpServer,
   validateMcpServerInput,
   subscribeActionStatus,
@@ -22,7 +23,7 @@ import {
   getDisconnectStatus,
   ALLOWED_MCP_COMMANDS,
 } from '../lib/data/domains/integrations'
-import type { McpCommand, McpTransport } from '../lib/data/domains/integrations'
+import type { McpCommand, McpTransport, CredentialFieldSpec } from '../lib/data/domains/integrations'
 
 // ---- status meta --------------------------------------------------------
 
@@ -136,6 +137,245 @@ function StatusChip({ bg, fg, dot, text, dotSize = 7, padding = '5px 11px', font
   )
 }
 
+// ---- Credential dialog --------------------------------------------------
+
+interface CredentialDialogProps {
+  connectorId: string
+  connectorName: string
+  fields: CredentialFieldSpec[]
+  onClose: () => void
+  onSaved: () => void
+}
+
+function CredentialDialog({ connectorId, connectorName, fields, onClose, onSaved }: CredentialDialogProps) {
+  const trapRef = useFocusTrap<HTMLDivElement>(true)
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(fields.map((f) => [f.key, '']))
+  )
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
+  const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({})
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape' && !submitting) onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose, submitting])
+
+  function validate(): boolean {
+    const errors: Record<string, string> = {}
+    for (const field of fields) {
+      if (!field.optional && !values[field.key]?.trim()) {
+        errors[field.key] = `${field.label} is required.`
+      }
+    }
+    setFieldErrors(errors)
+    return Object.keys(errors).length === 0
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (submitting) return
+    if (!validate()) return
+
+    setSubmitting(true)
+    setSubmitError(null)
+
+    // Only submit non-empty values.
+    const payload: Record<string, string> = {}
+    for (const field of fields) {
+      const v = values[field.key]?.trim()
+      if (v) payload[field.key] = v
+    }
+
+    try {
+      await submitCredentials(connectorId, payload)
+      onSaved()
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to save credentials — try again.'
+      setSubmitError(msg)
+      setSubmitting(false)
+    }
+  }
+
+  const backdropStyle: CSSProperties = {
+    position: 'fixed',
+    inset: 0,
+    background: 'rgba(28,26,32,.4)',
+    display: 'grid',
+    placeItems: 'center',
+    padding: 24,
+    zIndex: 60,
+  }
+
+  const panelStyle: CSSProperties = {
+    width: 480,
+    maxWidth: '96vw',
+    background: 'var(--hachi-surface)',
+    border: '0.5px solid var(--hachi-line)',
+    borderRadius: 18,
+    overflow: 'hidden',
+    boxShadow: '0 24px 60px rgba(28,26,32,.24)',
+  }
+
+  const fieldWrapStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 5 }
+  const labelStyle: CSSProperties = { fontSize: 12, fontWeight: 500, color: 'var(--hachi-muted)' }
+
+  function inputStyle(hasError: boolean): CSSProperties {
+    return {
+      height: 36,
+      padding: '0 10px',
+      borderRadius: 8,
+      border: hasError ? '0.5px solid var(--hachi-danger)' : '0.5px solid var(--hachi-line)',
+      background: 'var(--hachi-canvas)',
+      color: 'var(--hachi-ink)',
+      font: '13px var(--font-body)',
+      width: '100%',
+      boxSizing: 'border-box' as CSSProperties['boxSizing'],
+      fontFamily: 'var(--font-mono)',
+    }
+  }
+
+  return (
+    <div style={backdropStyle} onClick={submitting ? undefined : onClose}>
+      <div
+        ref={trapRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="cred-dialog-title"
+        style={panelStyle}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div style={{ padding: '20px 22px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div id="cred-dialog-title" style={{ fontFamily: 'var(--font-display)', fontWeight: 500, fontSize: 18 }}>
+              Configure {connectorName}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--hachi-muted)', marginTop: 2 }}>
+              Enter your credentials to enable this integration.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={submitting ? undefined : onClose}
+            disabled={submitting}
+            aria-label="Close dialog"
+            style={{
+              width: 30, height: 30, borderRadius: 8, border: 'none',
+              background: 'transparent', color: 'var(--hachi-muted)',
+              cursor: submitting ? 'not-allowed' : 'pointer',
+              display: 'grid', placeItems: 'center', flexShrink: 0,
+            }}
+          >
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} noValidate>
+          <div style={{ padding: '16px 22px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {fields.map((field) => {
+              const hasError = Boolean(fieldErrors[field.key])
+              const isSecret = field.secret
+              const showPlain = showSecrets[field.key] ?? false
+              return (
+                <div key={field.key} style={fieldWrapStyle}>
+                  <label htmlFor={`cred-${field.key}`} style={labelStyle}>
+                    {field.label}
+                    {!field.optional && (
+                      <span aria-hidden="true" style={{ color: 'var(--hachi-danger)', marginLeft: 3 }}>*</span>
+                    )}
+                    {field.optional && (
+                      <span style={{ color: 'var(--hachi-muted)', fontWeight: 400, marginLeft: 4 }}>(optional)</span>
+                    )}
+                  </label>
+                  <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                    <input
+                      id={`cred-${field.key}`}
+                      type={isSecret && !showPlain ? 'password' : 'text'}
+                      value={values[field.key] ?? ''}
+                      onChange={(e) => {
+                        setValues((prev) => ({ ...prev, [field.key]: e.target.value }))
+                        if (hasError) setFieldErrors((prev) => ({ ...prev, [field.key]: '' }))
+                      }}
+                      placeholder={field.placeholder}
+                      disabled={submitting}
+                      aria-invalid={hasError}
+                      aria-describedby={hasError ? `cred-err-${field.key}` : undefined}
+                      style={{ ...inputStyle(hasError), paddingRight: isSecret ? 38 : 10 }}
+                      autoComplete={isSecret ? 'off' : 'on'}
+                      spellCheck={false}
+                    />
+                    {isSecret && (
+                      <button
+                        type="button"
+                        onClick={() => setShowSecrets((prev) => ({ ...prev, [field.key]: !showPlain }))}
+                        tabIndex={-1}
+                        aria-label={showPlain ? 'Hide value' : 'Show value'}
+                        style={{
+                          position: 'absolute', right: 8, border: 'none',
+                          background: 'transparent', color: 'var(--hachi-muted)',
+                          cursor: 'pointer', padding: '2px 4px', borderRadius: 4, lineHeight: 1,
+                        }}
+                      >
+                        <Icon name={showPlain ? 'eye-off' : 'eye'} size={14} />
+                      </button>
+                    )}
+                  </div>
+                  {hasError && (
+                    <span id={`cred-err-${field.key}`} style={{ fontSize: 11.5, color: 'var(--hachi-danger)' }} role="alert">
+                      {fieldErrors[field.key]}
+                    </span>
+                  )}
+                  {field.help_text && (
+                    <span style={{ fontSize: 11, color: 'var(--hachi-muted)' }}>{field.help_text}</span>
+                  )}
+                </div>
+              )
+            })}
+
+            {submitError && (
+              <div
+                style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12.5,
+                  color: 'var(--hachi-danger-fg)', background: 'var(--hachi-danger-tint)',
+                  padding: '10px 12px', borderRadius: 8,
+                }}
+                role="alert"
+              >
+                <Icon name="alert" size={14} style={{ marginTop: 1, flexShrink: 0 }} />
+                {submitError}
+              </div>
+            )}
+          </div>
+
+          {/* Actions */}
+          <div style={{ display: 'flex', gap: 10, padding: '0 22px 22px' }}>
+            <CancelBtn onClick={onClose} disabled={submitting} />
+            <button
+              type="submit"
+              disabled={submitting}
+              aria-busy={submitting}
+              style={{
+                flex: 1, height: 42, borderRadius: 10, border: '0.5px solid transparent',
+                background: 'var(--hachi-brand-hover)', color: 'var(--hachi-canvas)',
+                font: '500 14px var(--font-body)', cursor: submitting ? 'not-allowed' : 'pointer',
+                opacity: submitting ? 0.75 : 1, transition: 'background var(--dur-fast) var(--ease)',
+              }}
+            >
+              {submitting ? 'Saving…' : 'Save credentials'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 // ---- Integration card ---------------------------------------------------
 
 interface IntCardProps {
@@ -157,17 +397,22 @@ function IntCard({
   disconnectLoading,
   disconnectError,
 }: IntCardProps) {
-  // Cast to extended to access OAuth-specific fields gracefully.
+  // Cast to extended to access OAuth-specific and apikey fields gracefully.
   const ext = i as Partial<IntegrationExtended>
   const authType = ext.auth_type ?? 'none'
   const configured = ext.configured ?? true  // default true for backwards compat
+  const credentialFields = ext.credential_fields ?? []
   const isOAuth = authType === 'oauth2'
+  const isApikey = authType === 'apikey'
+  const hasCredentialFields = isApikey && credentialFields.length > 0
+  // OAuth is "unconfigured" when client creds are missing from env (admin task).
+  // Apikey with credential_fields is always "configurable" by the user.
   const isUnconfigured = isOAuth && !configured
 
   const sm = getIntMeta(i.status)
   const connected = i.status === 'connected'
 
-  // Determine primary button label and colour.
+  // Determine primary button label.
   let primaryLabel: string
   if (isUnconfigured) {
     primaryLabel = 'Needs setup'
@@ -175,8 +420,10 @@ function IntCard({
     primaryLabel = 'Connecting…'
   } else if (connectError) {
     primaryLabel = 'Retry'
+  } else if (hasCredentialFields) {
+    primaryLabel = connected ? 'Update credentials' : 'Configure'
   } else if (i.status === 'connected') {
-    primaryLabel = isOAuth ? 'Re-authorise' : 'Re-authorise'
+    primaryLabel = 'Re-authorise'
   } else if (i.status === 'degraded') {
     primaryLabel = 'Fix access'
   } else {
@@ -189,6 +436,8 @@ function IntCard({
       : connectError
       ? 'var(--hachi-danger)'
       : i.status === 'none'
+      ? 'var(--hachi-trust)'
+      : hasCredentialFields && !connected
       ? 'var(--hachi-trust)'
       : 'var(--hachi-ink)'
 
@@ -223,7 +472,15 @@ function IntCard({
           <ConnectorLogo id={i.id} size={22} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 500, fontSize: 15 }}>{i.name}</div>
+          <div style={{ fontWeight: 500, fontSize: 15, display: 'flex', alignItems: 'center', gap: 6 }}>
+            {i.name}
+            {/* Show key icon when apikey connector is configured */}
+            {hasCredentialFields && connected && (
+              <span title="Credentials configured" style={{ lineHeight: 0 }}>
+                <Icon name="key" size={12} style={{ color: 'var(--hachi-success)', flexShrink: 0 }} />
+              </span>
+            )}
+          </div>
           <div style={{ fontSize: 12, color: 'var(--hachi-muted)', marginTop: 1 }}>
             {i.can}
           </div>
@@ -259,6 +516,25 @@ function IntCard({
         </div>
       )}
 
+      {/* apikey hint when not yet configured */}
+      {hasCredentialFields && !connected && !connectError && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 7,
+            fontSize: 12,
+            color: 'var(--hachi-muted)',
+            background: 'var(--hachi-cream)',
+            padding: '7px 10px',
+            borderRadius: 8,
+          }}
+        >
+          <Icon name="key" size={13} style={{ marginTop: 1, flexShrink: 0 }} />
+          Click &ldquo;Configure&rdquo; to enter your credentials.
+        </div>
+      )}
+
       {/* risky warning */}
       {i.risky && (
         <div
@@ -267,7 +543,7 @@ function IntCard({
             alignItems: 'center',
             gap: 7,
             fontSize: 12,
-            color: 'var(--hachi-danger)',
+            color: '#922B21',
             background: 'var(--hachi-danger-tint)',
             padding: '7px 10px',
             borderRadius: 8,
@@ -286,7 +562,7 @@ function IntCard({
             alignItems: 'center',
             gap: 7,
             fontSize: 12,
-            color: 'var(--hachi-danger)',
+            color: 'var(--hachi-danger-fg)',
             background: 'var(--hachi-danger-tint)',
             padding: '7px 10px',
             borderRadius: 8,
@@ -308,7 +584,7 @@ function IntCard({
             alignItems: 'center',
             gap: 7,
             fontSize: 12,
-            color: 'var(--hachi-danger)',
+            color: 'var(--hachi-danger-fg)',
             background: 'var(--hachi-danger-tint)',
             padding: '7px 10px',
             borderRadius: 8,
@@ -335,6 +611,8 @@ function IntCard({
             borderRadius: 10,
             border: connectError
               ? '0.5px solid var(--hachi-danger)'
+              : hasCredentialFields && !connected
+              ? '0.5px solid var(--hachi-trust)'
               : '0.5px solid var(--hachi-line)',
             background: primaryHover && !connectLoading && !disconnectLoading && !isUnconfigured
               ? 'var(--hachi-cream)'
@@ -348,7 +626,8 @@ function IntCard({
         >
           {primaryLabel}
         </button>
-        {connected && (
+        {/* Show "Clear / Disconnect" button when connected or for apikey when configured */}
+        {(connected || (hasCredentialFields && configured)) && (
           <button
             onClick={onDisconnect}
             disabled={connectLoading || disconnectLoading}
@@ -370,7 +649,13 @@ function IntCard({
               transition: 'background var(--dur-fast) var(--ease)',
             }}
           >
-            {disconnectLoading ? 'Disconnecting…' : disconnectError ? 'Retry' : 'Disconnect'}
+            {disconnectLoading
+              ? 'Clearing…'
+              : disconnectError
+              ? 'Retry'
+              : hasCredentialFields
+              ? 'Clear'
+              : 'Disconnect'}
           </button>
         )}
       </div>
@@ -1345,7 +1630,7 @@ function AddMcpDialog({ onClose }: AddMcpDialogProps) {
                   alignItems: 'flex-start',
                   gap: 8,
                   fontSize: 12.5,
-                  color: 'var(--hachi-danger)',
+                  color: 'var(--hachi-danger-fg)',
                   background: 'var(--hachi-danger-tint)',
                   padding: '10px 12px',
                   borderRadius: 8,
@@ -1416,7 +1701,7 @@ function SubmitBtn({ loading }: { loading: boolean }) {
         height: 42,
         borderRadius: 10,
         border: '0.5px solid transparent',
-        background: hovered && !loading ? 'var(--hachi-brand-hover)' : 'var(--hachi-brand)',
+        background: hovered && !loading ? 'var(--hachi-brand-active)' : 'var(--hachi-brand-hover)',
         color: 'var(--hachi-canvas)',
         font: '500 14px var(--font-body)',
         cursor: loading ? 'not-allowed' : 'pointer',
@@ -1475,6 +1760,7 @@ interface IntCardWithStatusProps {
 
 function IntCardWithStatus({ integration: i }: IntCardWithStatusProps) {
   const [, forceUpdate] = useReducer((x: number) => x + 1, 0)
+  const [showCredDialog, setShowCredDialog] = useState(false)
 
   useEffect(() => {
     return subscribeActionStatus(forceUpdate)
@@ -1483,28 +1769,47 @@ function IntCardWithStatus({ integration: i }: IntCardWithStatusProps) {
   const connectStatus = getConnectStatus(i.id)
   const disconnectStatus = getDisconnectStatus(i.id)
 
-  // Extract auth_type from the extended shape if present.
+  // Extract auth_type and credential_fields from the extended shape if present.
   const ext = i as Partial<IntegrationExtended>
   const authType = ext.auth_type
+  const credentialFields = ext.credential_fields ?? []
 
   async function handleConnect() {
-    await connectIntegration(i.id, authType)
+    const result = await connectIntegration(i.id, authType, credentialFields)
+    if (result === 'needs_credentials') {
+      // Apikey connector with declared fields — open the credential dialog.
+      setShowCredDialog(true)
+    }
   }
 
   async function handleDisconnect() {
-    await disconnectIntegration(i.id, authType)
+    await disconnectIntegration(i.id, authType, credentialFields)
   }
 
   return (
-    <IntCard
-      integration={i}
-      onConnect={handleConnect}
-      onDisconnect={handleDisconnect}
-      connectLoading={connectStatus === 'loading'}
-      connectError={connectStatus === 'error'}
-      disconnectLoading={disconnectStatus === 'loading'}
-      disconnectError={disconnectStatus === 'error'}
-    />
+    <>
+      <IntCard
+        integration={i}
+        onConnect={handleConnect}
+        onDisconnect={handleDisconnect}
+        connectLoading={connectStatus === 'loading'}
+        connectError={connectStatus === 'error'}
+        disconnectLoading={disconnectStatus === 'loading'}
+        disconnectError={disconnectStatus === 'error'}
+      />
+      {showCredDialog && credentialFields.length > 0 && (
+        <CredentialDialog
+          connectorId={i.id}
+          connectorName={i.name}
+          fields={credentialFields}
+          onClose={() => setShowCredDialog(false)}
+          onSaved={() => {
+            setShowCredDialog(false)
+            useStore.getState().showToast?.(`${i.name} credentials saved`, 'success')
+          }}
+        />
+      )}
+    </>
   )
 }
 

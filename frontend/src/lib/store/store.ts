@@ -8,6 +8,14 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { USE_MOCKS, registerReconnectCallback } from "../data/client";
 import {
+  allowLeashLive,
+  denyLeashLive,
+  newSessionLive,
+  startTaskLive,
+  stopStreamingLive,
+  switchSessionLive,
+} from "../data/domains/chat";
+import {
   initApprovals,
   history,
   runs,
@@ -81,6 +89,7 @@ import type {
   InContextLeash,
   Provider,
   SafetyLevel,
+  PendingAttachment,
 } from "../data/types";
 
 // Alias used in consent overlay state
@@ -101,7 +110,7 @@ interface RunQueueItem {
 interface State {
   // persisted
   operator: boolean;
-  theme: "light" | "dark";
+  theme: "light" | "dark" | "auto";
   // data source: "live" calls the gateway; "mock" keeps seeded fixtures.
   dataMode: "mock" | "live";
   // budget
@@ -181,6 +190,7 @@ interface State {
   inContext: InContextLeash | null;
   messages: ChatMessage[];
   composer: string;
+  pendingAttachments: PendingAttachment[];
   // home
   homeInput: string;
   selectedWork: unknown | null;
@@ -210,7 +220,7 @@ interface Actions {
   setReconnecting: (v: boolean) => void;
   // operator / theme
   setOperator: (v: boolean) => void;
-  setTheme: (t: "light" | "dark") => void;
+  setTheme: (t: "light" | "dark" | "auto") => void;
   toggleTheme: () => void;
   toggleOperator: () => void;
   // toast
@@ -292,6 +302,10 @@ interface Actions {
   sendMessage: (text: string) => void;
   stopStreaming: () => void;
   setComposer: (v: string) => void;
+  addPendingAttachment: (a: PendingAttachment) => void;
+  updatePendingAttachment: (localId: string, patch: Partial<PendingAttachment>) => void;
+  removePendingAttachment: (fileId: string) => void;
+  clearPendingAttachments: () => void;
   setHomeInput: (v: string) => void;
   icAllow: () => void;
   icAlwaysAllow: () => void;
@@ -337,6 +351,13 @@ let _runIv: ReturnType<typeof setInterval> | null = null;
 let _runQueue: RunQueueItem[] = [];
 let _runFrom = "home";
 let _runStart = 0;
+
+const CHAT_MESSAGES_MAX = 400;
+
+function capMessages(messages: ChatMessage[]): ChatMessage[] {
+  if (messages.length <= CHAT_MESSAGES_MAX) return messages;
+  return messages.slice(-CHAT_MESSAGES_MAX);
+}
 
 function clearIv() { if (_iv) { clearInterval(_iv); _iv = null; } }
 function clearRunIv() { if (_runIv) { clearInterval(_runIv); _runIv = null; } }
@@ -401,6 +422,7 @@ const domainDefaults = (): Omit<State, "operator" | "theme"> => ({
   inContext: null,
   messages: [],
   composer: "",
+  pendingAttachments: [],
   homeInput: "",
   selectedWork: null,
   workFilter: "active",
@@ -433,7 +455,7 @@ export const useStore = create<State & Actions>()(
 
       const setText = (id: number, t: string) => {
         set((s) => ({
-          messages: s.messages.map((m) => (m.id === id ? { ...m, text: t } : m)),
+          messages: capMessages(s.messages.map((m) => (m.id === id ? { ...m, text: t } : m))),
         }));
       };
 
@@ -616,21 +638,37 @@ export const useStore = create<State & Actions>()(
         ...domainDefaults(),
         // persisted defaults (will be overridden by storage)
         operator: false,
-        theme: "light",
+        theme: "auto",
 
         // live-data hydration (foundation)
-        hydrate: (patch) => set(patch as Partial<State & Actions>),
+        hydrate: (patch) => {
+          if (Array.isArray(patch.messages)) {
+            set({
+              ...(patch as Partial<State & Actions>),
+              messages: capMessages(patch.messages),
+            });
+            return;
+          }
+          set(patch as Partial<State & Actions>);
+        },
         setReconnecting: (v) => set({ reconnecting: v }),
 
         // operator / theme
         setOperator: (v) => set({ operator: v }),
         setTheme: (t) => {
-          document.documentElement.setAttribute("data-theme", t);
+          if (t === 'auto') {
+            document.documentElement.removeAttribute('data-theme');
+          } else {
+            document.documentElement.setAttribute('data-theme', t);
+          }
           set({ theme: t });
         },
         toggleTheme: () => {
-          const t = get().theme === "dark" ? "light" : "dark";
-          document.documentElement.setAttribute("data-theme", t);
+          const current = get().theme;
+          const systemDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          const effectiveDark = current === 'dark' || (current === 'auto' && systemDark);
+          const t = effectiveDark ? 'light' : 'dark';
+          document.documentElement.setAttribute('data-theme', t);
           set({ theme: t });
         },
         toggleOperator: () => set((s) => ({ operator: !s.operator })),
@@ -1058,12 +1096,32 @@ export const useStore = create<State & Actions>()(
         setComposer: (v) =>
           set({ composer: v, slashOpen: v.trim().startsWith("/") }),
         setHomeInput: (v) => set({ homeInput: v }),
+        addPendingAttachment: (a) =>
+          set((s) => ({ pendingAttachments: [...s.pendingAttachments, a] })),
+        updatePendingAttachment: (localId, patch) =>
+          set((s) => ({
+            pendingAttachments: s.pendingAttachments.map((a) =>
+              a.fileId === localId ? { ...a, ...patch } : a
+            ),
+          })),
+        removePendingAttachment: (fileId) =>
+          set((s) => ({
+            pendingAttachments: s.pendingAttachments.filter((a) => a.fileId !== fileId),
+          })),
+        clearPendingAttachments: () => set({ pendingAttachments: [] }),
 
         startTask: (text) => {
           const trimmed = text.trim();
-          if (!trimmed || get().streaming) return;
+          const pending = get().pendingAttachments;
+          if (!trimmed && pending.length === 0) return;
+          if (get().streaming) return;
           const youId = nextId();
           const hachiId = nextId();
+          const attachmentSnapshot = [...pending];
+          // Only include attachments that finished uploading successfully.
+          const attachmentIds = attachmentSnapshot
+            .filter((a) => !a.uploading && !a.error)
+            .map((a) => a.fileId);
 
           // Shared state update: always append messages and set streaming=true
           // regardless of mode.  The live/mock divergence happens AFTER this.
@@ -1073,7 +1131,8 @@ export const useStore = create<State & Actions>()(
             streaming: true,
             inContext: null,
             homeInput: "",
-            messages: [
+            pendingAttachments: [],
+            messages: capMessages([
               ...s.messages,
               {
                 id: youId,
@@ -1081,6 +1140,11 @@ export const useStore = create<State & Actions>()(
                 text: trimmed,
                 cards: [],
                 routine: null,
+                attachments: attachmentSnapshot.map((a) => ({
+                  name: a.name,
+                  mediaType: a.mediaType,
+                  size: a.size,
+                })),
               },
               {
                 id: hachiId,
@@ -1089,25 +1153,23 @@ export const useStore = create<State & Actions>()(
                 cards: [],
                 routine: null,
               },
-            ],
+            ]),
           }));
 
           // Live mode: delegate to chat.ts via dynamic import to avoid a
           // static circular dependency (store → chat → store).
           if (get().dataMode === "live") {
-            void import("../data/domains/chat").then(({ startTaskLive }) => {
-              startTaskLive(trimmed, hachiId).catch(() => {
-                // Catch errors from the live send path: reset streaming and surface an error.
-                set((s) => ({
-                  streaming: false,
-                  messages: s.messages.map((m) =>
-                    m.id === hachiId
-                      ? { ...m, text: m.text || "Something went wrong — please try again." }
-                      : m
-                  ),
-                }));
-                toast("Send failed — please try again", "blocked");
-              });
+            startTaskLive(trimmed, hachiId, attachmentIds).catch(() => {
+              // Catch errors from the live send path: reset streaming and surface an error.
+              set((s) => ({
+                streaming: false,
+                messages: s.messages.map((m) =>
+                  m.id === hachiId
+                    ? { ...m, text: m.text || "Something went wrong — please try again." }
+                    : m
+                ),
+              }));
+              toast("Send failed — please try again", "blocked");
             });
             return;
           }
@@ -1183,9 +1245,7 @@ export const useStore = create<State & Actions>()(
         stopStreaming: () => {
           // Live mode: abort the SSE stream via chat.ts
           if (get().dataMode === "live") {
-            void import("../data/domains/chat").then(({ stopStreamingLive }) => {
-              stopStreamingLive();
-            });
+            stopStreamingLive();
             set({ streaming: false, inContext: null });
             toast("Stopped — Hachi is resting", "success");
             return;
@@ -1202,9 +1262,7 @@ export const useStore = create<State & Actions>()(
         icAllow: () => {
           // Live mode: clear leash and let the SSE stream continue
           if (get().dataMode === "live") {
-            void import("../data/domains/chat").then(({ allowLeashLive }) => {
-              void allowLeashLive();
-            });
+            void allowLeashLive();
             return;
           }
 
@@ -1253,13 +1311,11 @@ export const useStore = create<State & Actions>()(
             // Persist always-allow rule to the gateway; surface failure honestly.
             void (async () => {
               try {
-                const { apiSend: _apiSend } = await import("../data/client");
-                await _apiSend("POST", `/sessions/current/permissions/always-allow`, {
+                await apiSend("POST", `/sessions/current/permissions/always-allow`, {
                   request: _ic.request,
                   action: _ic.action,
                 });
                 // On success, let the live stream continue as "allow once" would
-                const { allowLeashLive } = await import("../data/domains/chat");
                 void allowLeashLive();
                 toast("Always allowed — Hachi won't ask again for this", "success");
               } catch {
@@ -1278,9 +1334,7 @@ export const useStore = create<State & Actions>()(
         icDeny: () => {
           // Live mode: abort stream (user declined permission)
           if (get().dataMode === "live") {
-            void import("../data/domains/chat").then(({ denyLeashLive }) => {
-              void denyLeashLive();
-            });
+            void denyLeashLive();
             toast("Stayed put — Hachi is resting", "success");
             return;
           }
@@ -1462,7 +1516,7 @@ export const useStore = create<State & Actions>()(
               runStreaming: true,
               runLines: [...s.runLines, { text: "✓ allowed — continuing", tone: "success" }],
             }));
-            void import("../data/domains/chat").then((m) => void m.allowLeashLive());
+            void allowLeashLive();
             toast("On it — Hachi is working", "working");
             return;
           }
@@ -1494,7 +1548,7 @@ export const useStore = create<State & Actions>()(
                     runStreaming: true,
                     runLines: [...s.runLines, { text: "✓ always allowed — continuing", tone: "success" }],
                   }));
-                  void import("../data/domains/chat").then((m) => void m.allowLeashLive());
+                    void allowLeashLive();
                   toast("Saved — Hachi won't ask again for this", "success");
                 } catch {
                   // Endpoint returned an error — tell the user
@@ -1508,7 +1562,7 @@ export const useStore = create<State & Actions>()(
                 runStreaming: true,
                 runLines: [...s.runLines, { text: "✓ always allowed — continuing", tone: "success" }],
               }));
-              void import("../data/domains/chat").then((m) => void m.allowLeashLive());
+              void allowLeashLive();
               toast("Saved — Hachi won't ask again for this", "success");
             }
             return;
@@ -1543,7 +1597,7 @@ export const useStore = create<State & Actions>()(
                 status: p.status === "working" ? "done" as const : p.status,
               })),
             });
-            void import("../data/domains/chat").then((m) => void m.denyLeashLive());
+              void denyLeashLive();
             toast("Stayed put — Hachi is resting", "success");
             return;
           }
@@ -1586,7 +1640,7 @@ export const useStore = create<State & Actions>()(
                 status: p.status === "working" ? "done" as const : p.status,
               })),
             });
-            void import("../data/domains/chat").then((m) => m.stopStreamingLive());
+              stopStreamingLive();
             toast("Stopped — Hachi is resting", "success");
             return;
           }
@@ -1615,9 +1669,7 @@ export const useStore = create<State & Actions>()(
         // session switching (M8 MED-020)
         switchSession: (sessionId) => {
           if (get().dataMode === "live") {
-            void import("../data/domains/chat").then(({ switchSessionLive }) => {
-              void switchSessionLive(sessionId);
-            });
+            void switchSessionLive(sessionId);
             return;
           }
           // Mock mode: just flip the active flag
@@ -1633,9 +1685,7 @@ export const useStore = create<State & Actions>()(
 
         newSession: () => {
           if (get().dataMode === "live") {
-            void import("../data/domains/chat").then(({ newSessionLive }) => {
-              newSessionLive();
-            });
+            newSessionLive();
             return;
           }
           // Mock mode: clear messages and deactivate all sessions

@@ -589,7 +589,8 @@ class SubAgentRuntime:
         #   case and the previous behaviour).
         # • neither → build a fresh DEFAULT_SUB_AGENT_MODEL client.
         if model is not None:
-            self._llm_client = self._create_client(model)
+            # D2 fix: pass session client so provider kind is preserved.
+            self._llm_client = self._create_client(model, session_client=llm_client)
             logger.info(
                 "SubAgentRuntime: explicit model override for role=%s → model=%s",
                 role,
@@ -615,18 +616,50 @@ class SubAgentRuntime:
         )
 
     @staticmethod
-    def _create_client(model: str) -> AnthropicClient:
+    def _create_client(
+        model: str,
+        session_client: BaseLLMClient | None = None,
+    ) -> BaseLLMClient:
         """Create a lightweight LLM client for the sub-agent.
 
-        Uses a smaller max_tokens budget than the orchestrator since
-        sub-agents should produce concise output, not verbose explanations.
+        D2 fix: respects the session provider instead of always building an
+        AnthropicClient.  When *session_client* is provided its provider kind
+        is reused so OpenAI/Groq/etc. delegations build the correct client type.
 
         Args:
             model: The model identifier.
+            session_client: The parent session's LLM client.  Used to detect
+                the provider kind so the sub-agent stays on the same provider.
 
         Returns:
-            A configured AnthropicClient instance.
+            A configured :class:`~hachi.core.llm.BaseLLMClient` instance.
         """
+        from hachi.core.llm import OpenAICompatibleClient, create_llm_client
+
+        # Detect provider kind from the injected session client.
+        if session_client is not None and isinstance(session_client, OpenAICompatibleClient):
+            # OpenAI-compatible session: build a matching client.
+            provider_config: dict[str, Any] = {
+                "kind": "openai-compatible",
+                "model": model,
+                "base_url": session_client.base_url,
+                "api_key_env": None,
+            }
+            # Pass the already-resolved API key directly so we don't need env vars.
+            if session_client.api_key:
+                provider_config["api_key_env"] = None
+                # create_llm_client accepts explicit api_key via api_key_ref path only;
+                # easier to build directly for the compat case.
+                return OpenAICompatibleClient(
+                    base_url=session_client.base_url,
+                    model=model,
+                    api_key=session_client.api_key,
+                    max_tokens=4096,
+                )
+            return create_llm_client(provider_config, max_tokens=4096)
+
+        # Default: Anthropic (preserves back-compat for Anthropic sessions and when
+        # session_client is None or an AnthropicClient).
         return AnthropicClient(model=model, max_tokens=4096)
 
     def run(self) -> SubAgentReport:

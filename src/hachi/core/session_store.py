@@ -101,6 +101,16 @@ class SessionStore:
             CREATE INDEX IF NOT EXISTS idx_msg_session
                 ON messages(session_id);
             -- idx_msg_content removed: leading-wildcard LIKE cannot use a B-tree index.
+
+            -- Daily spend ledger: one row per calendar date (ISO, e.g. "2026-06-22").
+            -- Rows are only created when spend is first recorded for a date, so a
+            -- missing row is equivalent to 0.0.  Rollover is automatic — a new local
+            -- date produces a fresh row without any explicit reset logic.
+            CREATE TABLE IF NOT EXISTS daily_spend (
+                date        TEXT PRIMARY KEY,
+                total_cost_usd  REAL NOT NULL DEFAULT 0.0,
+                updated_at  REAL NOT NULL
+            );
         """)
         self._conn.commit()
         self._migrate_schema()
@@ -265,6 +275,55 @@ class SessionStore:
             total_cost_usd,
         )
 
+    def record_daily_cost(self, date_str: str, delta_usd: float) -> None:
+        """Atomically add *delta_usd* to the running daily spend total for *date_str*.
+
+        The ledger row is created on first access (INSERT OR IGNORE) and then
+        incremented (UPDATE … = total_cost_usd + ?) inside a single transaction so
+        concurrent writers never lose a write.
+
+        Args:
+            date_str: ISO date string, e.g. ``"2026-06-22"`` (from
+                ``datetime.date.today().isoformat()``).
+            delta_usd: The per-turn cost increment (positive float, USD).  Zero or
+                negative values are silently ignored to guard against accounting glitches.
+        """
+        if delta_usd <= 0:
+            return
+        now_ts = time.time()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO daily_spend (date, total_cost_usd, updated_at) "
+                "VALUES (?, 0.0, ?)",
+                (date_str, now_ts),
+            )
+            self._conn.execute(
+                "UPDATE daily_spend SET total_cost_usd = total_cost_usd + ?, updated_at = ? "
+                "WHERE date = ?",
+                (delta_usd, now_ts, date_str),
+            )
+            self._conn.commit()
+        logger.debug("Daily spend: +$%.6f → %s", delta_usd, date_str)
+
+    def get_daily_spend(self, date_str: str) -> float:
+        """Return the accumulated spend in USD for *date_str*, or 0.0 if no row exists.
+
+        Args:
+            date_str: ISO date string, e.g. ``"2026-06-22"``.
+
+        Returns:
+            Cumulative spend for the requested date in US dollars.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT total_cost_usd FROM daily_spend WHERE date = ?",
+                (date_str,),
+            ).fetchone()
+        if row is None:
+            return 0.0
+        val: float = row["total_cost_usd"] or 0.0
+        return val
+
     def get_sessions_missing_title(self, limit: int = 1000) -> list[dict[str, Any]]:
         """Return sessions that have no title yet (oldest first), for backfill.
 
@@ -422,6 +481,8 @@ class SessionStore:
         Returns:
             List of session metadata dicts.
         """
+        # Make recently-logged messages visible so derived title/turns are accurate.
+        self.flush_sync()
         with self._lock:
             rows = self._conn.execute(
                 "SELECT id, started_at, ended_at, model, total_turns, title, "
@@ -430,7 +491,34 @@ class SessionStore:
                 (limit,),
             ).fetchall()
 
-        return [dict(row) for row in rows]
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                sid = item["id"]
+                # Derive a human-readable title from the first user message when no
+                # stored title exists yet (LLM title-gen is best-effort/deferred, so
+                # many sessions never get one). A stored title always wins.
+                if not item.get("title"):
+                    first = self._conn.execute(
+                        "SELECT content FROM messages "
+                        "WHERE session_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1",
+                        (sid,),
+                    ).fetchone()
+                    content = (first["content"] if first else "") or ""
+                    stripped = content.strip()
+                    if stripped:
+                        item["title"] = stripped.splitlines()[0][:60].strip()
+                # Derive the turn count from logged user messages when the stored
+                # counter is missing/zero (it is not incremented on every code path).
+                if not item.get("total_turns"):
+                    cnt_row = self._conn.execute(
+                        "SELECT COUNT(*) AS c FROM messages WHERE session_id = ? AND role = 'user'",
+                        (sid,),
+                    ).fetchone()
+                    item["total_turns"] = int(cnt_row["c"]) if cnt_row else 0
+                result.append(item)
+
+        return result
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         """Return the metadata row for a single session, or None if not found."""

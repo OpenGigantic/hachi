@@ -8,7 +8,14 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
 import type { Run, Routine, FinishedTask, FailedTask, RunStep, RoutineRun } from '../lib/data/types'
-import { loadWork, pauseRoutineLive, deleteRoutineLive } from '../lib/data/domains/work'
+import {
+  loadWork,
+  pauseRoutineLive,
+  deleteRoutineLive,
+  isDurableRun,
+  wakeDurableRunLive,
+  cancelDurableRunLive,
+} from '../lib/data/domains/work'
 import { loadSpend } from '../lib/data/domains/spend'
 import { loadOperator } from '../lib/data/domains/operator'
 import { useFocusTrap } from '../lib/hooks/useFocusTrap'
@@ -17,6 +24,15 @@ import { useFocusTrap } from '../lib/hooks/useFocusTrap'
 
 function m(n: number): string {
   return '$' + Number(n).toFixed(2)
+}
+
+// Cost formatter for the spend analytics view. Keeps sub-cent amounts visible
+// (a real $0.0012 Haiku turn rendered as "$0.00" with plain toFixed(2), making
+// the Spend tab look broken). Shows 4 decimals when below a cent, 2 otherwise.
+function mc(n: number): string {
+  const v = Number(n) || 0
+  if (v > 0 && v < 0.01) return '$' + v.toFixed(4)
+  return '$' + v.toFixed(2)
 }
 
 type StatusKey = 'working' | 'on-watch' | 'done' | 'blocked'
@@ -152,19 +168,19 @@ function computeSpend(
   const modelRows = spendModels.map(mm => ({
     name: mm.name,
     color: mm.color,
-    costStr: mm.cost ? '$' + mm.cost.toFixed(2) : 'free',
+    costStr: mm.cost ? mc(mm.cost) : 'free',
     costColor: mm.cost ? 'var(--hachi-ink)' : 'var(--hachi-success)',
   }))
-  const spendTotalCost = '$' + spendModels.reduce((a, mm) => a + mm.cost, 0).toFixed(2)
+  const spendTotalCost = mc(spendModels.reduce((a, mm) => a + mm.cost, 0))
 
   return {
     spendBars,
     linePts,
     areaPts,
-    cumLast: '$' + maxCum.toFixed(2),
+    cumLast: mc(maxCum),
     stats: {
       tokens: tokensSession.toLocaleString(),
-      cost: '$' + costSession.toFixed(2),
+      cost: mc(costSession),
       reclaimed: (reclaimed / 1000).toFixed(0) + 'K',
       effective: (effective / 1000).toFixed(1) + 'K',
     },
@@ -192,13 +208,15 @@ interface WorkDetailProps {
   }[]
   onClose: () => void
   onRetry: (id: number) => void
+  onCancelRun: (id: number) => void
   onRunNow: () => void
   onTogglePause: (id: number) => void
   onDelete: (id: number) => void
   onWatchLive: (id: number) => void
+  canCancelRun: boolean
 }
 
-function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePause, onDelete, onWatchLive }: WorkDetailProps) {
+function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow, onTogglePause, onDelete, onWatchLive, canCancelRun }: WorkDetailProps) {
   const sm = statusMeta(item.status)
   const isFailed = item.kind === 'failed'
   const isRoutine = item.kind === 'routine'
@@ -477,28 +495,53 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePaus
         {/* action buttons */}
         <div style={{ display: 'flex', gap: '9px', flexWrap: 'wrap' }}>
           {isFailed && (
-            <button
-              onClick={() => onRetry(item.id)}
-              style={{
-                flex: 1,
-                height: '40px',
-                borderRadius: '10px',
-                border: '0.5px solid transparent',
-                background: 'var(--hachi-brand)',
-                color: 'var(--hachi-canvas)',
-                font: '500 14px var(--font-body)',
-                cursor: 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '7px',
-              }}
-              onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand)')}
-            >
-              <Icon name="refresh" size={15} />
-              Retry
-            </button>
+            <>
+              <button
+                onClick={() => onRetry(item.id)}
+                style={{
+                  flex: 1,
+                  height: '40px',
+                  borderRadius: '10px',
+                  border: '0.5px solid transparent',
+                  background: 'var(--hachi-brand-hover)',
+                  color: 'var(--hachi-canvas)',
+                  font: '500 14px var(--font-body)',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '7px',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-active)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
+              >
+                <Icon name="refresh" size={15} />
+                Retry
+              </button>
+              {canCancelRun && (
+                <button
+                  onClick={() => onCancelRun(item.id)}
+                  style={{
+                    height: '40px',
+                    padding: '0 14px',
+                    borderRadius: '10px',
+                    border: '0.5px solid var(--hachi-line)',
+                    background: 'var(--hachi-canvas)',
+                    color: 'var(--hachi-danger)',
+                    font: '500 14px var(--font-body)',
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-danger-tint)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-canvas)')}
+                >
+                  <Icon name="stop" size={14} />
+                  Cancel run
+                </button>
+              )}
+            </>
           )}
           {isRoutine && (
             <>
@@ -615,7 +658,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePaus
                 height: '40px',
                 borderRadius: '10px',
                 border: '0.5px solid transparent',
-                background: 'var(--hachi-brand)',
+                background: 'var(--hachi-brand-hover)',
                 color: 'var(--hachi-canvas)',
                 font: '500 14px var(--font-body)',
                 cursor: 'pointer',
@@ -624,8 +667,8 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onRunNow, onTogglePaus
                 justifyContent: 'center',
                 gap: '7px',
               }}
-              onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand)')}
+              onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-active)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
             >
               <Icon name="eye" size={15} />
               Watch live
@@ -729,32 +772,51 @@ function SpendLens() {
         <div style={{ flex: '1 1 400px', minWidth: 0, background: 'var(--hachi-surface)', border: '0.5px solid var(--hachi-line)', borderRadius: '16px', padding: '18px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
             <span style={{ fontWeight: 500, fontSize: '14px' }}>Token burn by turn</span>
-            <span style={{ display: 'flex', gap: '12px', fontSize: '11.5px', color: 'var(--hachi-muted)' }}>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
-                <span style={{ width: '9px', height: '9px', borderRadius: '2px', background: 'var(--hachi-trust)' }} />
-                in
+            {spendBars.length > 0 && (
+              <span style={{ display: 'flex', gap: '12px', fontSize: '11.5px', color: 'var(--hachi-muted)' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                  <span style={{ width: '9px', height: '9px', borderRadius: '2px', background: 'var(--hachi-trust)' }} />
+                  in
+                </span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                  <span style={{ width: '9px', height: '9px', borderRadius: '2px', background: 'var(--hachi-trust)', opacity: 0.4 }} />
+                  out
+                </span>
               </span>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
-                <span style={{ width: '9px', height: '9px', borderRadius: '2px', background: 'var(--hachi-trust)', opacity: 0.4 }} />
-                out
-              </span>
-            </span>
+            )}
           </div>
-          <div style={{ display: 'flex', alignItems: 'flex-end', gap: '10px', height: '150px' }}>
-            {spendBars.map(b => (
-              <div key={b.n} style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', gap: '2px', height: '100%' }}>
-                <div style={{ height: b.outPct + '%', background: 'var(--hachi-trust)', opacity: 0.4, borderRadius: '3px 3px 0 0', minHeight: '2px' }} />
-                <div style={{ height: b.inPct + '%', background: 'var(--hachi-trust)', borderRadius: '0 0 3px 3px', minHeight: '2px' }} />
+          {/* HACHI-018: show placeholder when there are no turns yet */}
+          {spendBars.length === 0 ? (
+            <div style={{
+              height: '150px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--hachi-muted)',
+              fontSize: '13px',
+              fontStyle: 'italic',
+            }}>
+              No spend yet this session
+            </div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: '10px', height: '150px' }}>
+                {spendBars.map(b => (
+                  <div key={b.n} style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', gap: '2px', height: '100%' }}>
+                    <div style={{ height: b.outPct + '%', background: 'var(--hachi-trust)', opacity: 0.4, borderRadius: '3px 3px 0 0', minHeight: '2px' }} />
+                    <div style={{ height: b.inPct + '%', background: 'var(--hachi-trust)', borderRadius: '0 0 3px 3px', minHeight: '2px' }} />
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-          <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
-            {spendBars.map(b => (
-              <span key={b.n} style={{ flex: 1, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: '10.5px', color: 'var(--hachi-muted)' }}>
-                #{b.n}
-              </span>
-            ))}
-          </div>
+              <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
+                {spendBars.map(b => (
+                  <span key={b.n} style={{ flex: 1, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: '10.5px', color: 'var(--hachi-muted)' }}>
+                    #{b.n}
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
         </div>
 
         <div style={{ flex: '1 1 320px', minWidth: 0, background: 'var(--hachi-surface)', border: '0.5px solid var(--hachi-line)', borderRadius: '16px', padding: '18px' }}>
@@ -930,6 +992,7 @@ function Work() {
 
   // store state
   const operator = useStore(s => s.operator)
+  const dataMode = useStore(s => s.dataMode)
   const workFilter = useStore(s => s.workFilter)
   const runs = useStore(s => s.runs)
   const routines = useStore(s => s.routines)
@@ -945,12 +1008,56 @@ function Work() {
   const retryFailed = useStore(s => s.retryFailed)
   const runRoutineNow = useStore(s => s.runRoutineNow)
   const openRun = useStore(s => s.openRun)
+  const showToast = useStore(s => s.showToast)
 
-  // load live data on mount (idempotent — bootstrapLiveData also runs on app mount)
+  // load live data on mount, then poll at 6 s intervals.
+  // HACHI-021: pause polling when the tab is hidden to avoid wasting bandwidth.
   useEffect(() => {
     void loadWork()
     void loadSpend()
     void loadOperator()
+
+    const POLL_INTERVAL = 6000
+
+    let intervalId: ReturnType<typeof setInterval> | null = null
+
+    function startPolling() {
+      if (intervalId !== null) return // already running
+      intervalId = setInterval(() => {
+        void loadWork()
+        void loadSpend()
+      }, POLL_INTERVAL)
+    }
+
+    function stopPolling() {
+      if (intervalId !== null) {
+        clearInterval(intervalId)
+        intervalId = null
+      }
+    }
+
+    function handleVisibilityChange() {
+      if (document.hidden) {
+        stopPolling()
+      } else {
+        // Resume immediately so users see fresh data on tab-switch
+        void loadWork()
+        void loadSpend()
+        startPolling()
+      }
+    }
+
+    // Only start polling if the tab is visible on mount
+    if (!document.hidden) {
+      startPolling()
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      stopPolling()
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
   }, [])
 
   // navigate to conversation to start a new task
@@ -1072,6 +1179,42 @@ function Work() {
     navigate({ to: '/run' })
   }
 
+  const handleRetry = (id: number) => {
+    if (dataMode !== 'live' || !isDurableRun(id)) {
+      retryFailed(id)
+      return
+    }
+
+    void (async () => {
+      const woke = await wakeDurableRunLive(id)
+      if (woke) {
+        showToast('Waking durable run — resuming in background', 'working')
+        closeWork()
+        void loadWork()
+        return
+      }
+      showToast('Run is not in waiting state — cannot wake', 'blocked')
+    })()
+  }
+
+  const handleCancelRun = (id: number) => {
+    if (dataMode !== 'live' || !isDurableRun(id)) {
+      showToast('Only durable runs can be cancelled from here', 'blocked')
+      return
+    }
+
+    void (async () => {
+      const cancelled = await cancelDurableRunLive(id)
+      if (cancelled) {
+        showToast('Run cancelled', 'success')
+        closeWork()
+        void loadWork()
+        return
+      }
+      showToast('Could not cancel run — please try again', 'blocked')
+    })()
+  }
+
   return (
     <div
       style={{
@@ -1105,25 +1248,31 @@ function Work() {
             padding: '0 14px',
             borderRadius: '10px',
             border: '0.5px solid transparent',
-            background: 'var(--hachi-brand)',
+            background: 'var(--hachi-brand-hover)',
             color: 'var(--hachi-canvas)',
             font: '500 13px var(--font-body)',
             cursor: 'pointer',
           }}
-          onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
-          onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand)')}
+          onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-active)')}
+          onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
         >
           <Icon name="plus" size={15} />
           New task
         </button>
       </div>
 
-      {/* tabs */}
+      {/* tabs — HACHI-008: overflow-x scroll so all tabs are reachable at 375px */}
       <div style={{
         display: 'flex',
         gap: '4px',
         padding: '14px 32px 0',
         borderBottom: '0.5px solid var(--hachi-line)',
+        overflowX: 'auto',
+        flexWrap: 'nowrap',
+        WebkitOverflowScrolling: 'touch',
+        /* hide scrollbar while keeping scrollability */
+        scrollbarWidth: 'none',
+        msOverflowStyle: 'none',
       }}>
         {tabsDef.map(t => {
           const active = workFilter === t.k
@@ -1144,6 +1293,8 @@ function Work() {
                 font: '500 14px var(--font-body)',
                 cursor: 'pointer',
                 marginBottom: '-0.5px',
+                flexShrink: 0,
+                whiteSpace: 'nowrap',
               }}
             >
               {t.label}
@@ -1315,11 +1466,13 @@ function Work() {
           item={selectedWork as WorkItem}
           packRoster={packRoster}
           onClose={closeWork}
-          onRetry={id => { retryFailed(id) }}
+          onRetry={handleRetry}
+          onCancelRun={handleCancelRun}
           onRunNow={runRoutineNow}
           onTogglePause={handleTogglePause}
           onDelete={handleDelete}
           onWatchLive={handleWatchLive}
+          canCancelRun={isDurableRun((selectedWork as WorkItem).id)}
         />
       )}
     </div>

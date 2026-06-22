@@ -74,6 +74,14 @@ class ProcessSharedServices:
     memory-backend fields of ``config``.  A caller that requests a different
     memory backend always gets a distinct instance — it is never silently
     handed the wrong backend (ADV-024).
+
+    Slice 2.2 additions:
+        event_bus:     Optional :class:`~hachi.core.event_bus.EventBus`.  Set by
+                       ``boot_agent`` when ``[events] bus_funnel=true``; used by
+                       ``resume.py._get_process_bus()`` and the observability sink.
+        wait_registry: Optional :class:`~hachi.core.runtime.waits.WaitConditionRegistry`.
+                       Set by ``boot_agent`` when ``[jobs] durable_handlers=true``
+                       so the scheduler sweep and wake endpoint share one registry.
     """
 
     skill_engine: Any  # SkillEngine
@@ -84,10 +92,30 @@ class ProcessSharedServices:
     brain_dir: str
     _fingerprint: str = field(default="", repr=False)
     initialized_at: float = field(default_factory=time.monotonic)
+    # Slice 2.2: process-level EventBus (None when bus_funnel flag is off).
+    event_bus: Any = field(default=None)  # EventBus | None
+    # Slice 2.2: process-level WaitConditionRegistry (None when durable_handlers off).
+    wait_registry: Any = field(default=None)  # WaitConditionRegistry | None
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    @classmethod
+    def instance(cls) -> ProcessSharedServices | None:
+        """Return the most-recently-created singleton, or ``None`` if none exists yet.
+
+        Used by ``resume.py`` and other internal callers that need the process bus
+        or wait registry without knowing which config fingerprint was used at boot.
+        Returns the *first* (usually only) cached instance; multi-config processes
+        are single-user/single-boot, so this is always the correct one in practice.
+        """
+        with _LOCK:
+            if not _INSTANCES:
+                return None
+            # Return the most recently created instance (last insertion in dict order,
+            # Python 3.7+ guaranteed).
+            return next(reversed(_INSTANCES.values()))
 
     @classmethod
     def get_or_create(
@@ -246,11 +274,18 @@ class ProcessSharedServices:
         skill_engine = SkillEngine(agent_role="orchestrator")
         default_skills_dir = Path(__file__).parent.parent / "default_skills"
         try:
-            skill_engine.index_directory(paths.workspace_dir, recursive=True)
+            skill_engine.load_directory(paths.skills_dir)
+        except OSError:
+            logger.warning(
+                "ProcessSharedServices: workspace skill indexing failed", exc_info=True
+            )
+        try:
             if default_skills_dir.exists():
-                skill_engine.index_directory(default_skills_dir, recursive=True)
-        except Exception:
-            logger.debug("ProcessSharedServices: skill indexing failed", exc_info=True)
+                skill_engine.load_directory(default_skills_dir)
+        except OSError:
+            logger.warning(
+                "ProcessSharedServices: default-skills indexing failed", exc_info=True
+            )
 
         # --- MCPManager (shared MCP subprocess pool) ---
         mcp_manager = MCPManager()

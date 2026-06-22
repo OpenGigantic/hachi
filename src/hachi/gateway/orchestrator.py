@@ -21,6 +21,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import date as _date
 from typing import Any
 
 from hachi.core.approvals import (
@@ -40,6 +41,8 @@ from hachi.core.mcp_client import MCPManager, MCPServerConfig
 from hachi.core.memory import MemoryManager
 from hachi.core.memory_provider import ChromaMemoryProvider, resolve_provider
 from hachi.core.memory_vault import MemoryVault
+from hachi.core.obs.trace import TraceContext
+from hachi.core.obs.trace import bind as _bind_trace_ctx
 from hachi.core.paths import get_hachi_paths
 from hachi.core.permissions import (
     InteractivePermissionGate,
@@ -85,7 +88,7 @@ from hachi.core.secret_store import create_default_secret_store
 from hachi.core.session_store import SessionStore
 from hachi.core.session_titler import generate_title
 from hachi.core.sub_agent import DEFAULT_SUB_AGENT_MODEL
-from hachi.core.tracing import configure_from_env
+from hachi.core.tracing import configure_from_env, span
 from hachi.core.turn_context import TurnContext
 from hachi.gateway.tool_registration import BootDeps, ToolRegistrar, ToolSpec
 from hachi.gateway.workspace import (
@@ -98,6 +101,7 @@ from hachi.gateway.workspace import (
 from hachi.jobs import (
     Job,
     JobQueue,
+    JobRegistry,
     JobStatus,
     JobWorker,
     ResidentWorkerThread,
@@ -114,6 +118,7 @@ from hachi.og_engine.engine import SkillEngine
 from hachi.tools.browser_tools import register_browser_tools
 from hachi.tools.config_tools import register_config_tools
 from hachi.tools.delegation_tools import register_delegation_tools
+from hachi.tools.file_tools import register_file_tools
 from hachi.tools.google_tools import GOOGLE_TOOL_NAMES, register_google_tools
 from hachi.tools.memory_tools import register_memory_tools, register_session_tools
 from hachi.tools.messaging_tools import register_messaging_tools
@@ -123,6 +128,7 @@ from hachi.tools.os_tools import register_os_tools
 from hachi.tools.presentation_tools import register_presentation_tools
 from hachi.tools.sandbox_tools import register_sandbox_tools
 from hachi.tools.schedule_tools import register_schedule_tools
+from hachi.tools.search_tools import register_search_tools
 from hachi.tools.vision_tools import register_vision_tools
 from hachi.tools.voice_tools import register_voice_tools
 from hachi.tools.workflow_tools import register_workflow_tools
@@ -356,6 +362,68 @@ def _build_capability_registry(config: dict[str, Any]) -> CapabilityRegistry:
     )
 
 
+def _register_search_if_available(deps: Any) -> None:
+    """Register search tools when a SearchProvider is present in the ProviderRegistry.
+
+    Resolves the provider, builds a cache and rate limiter from ``[search]``
+    config, then delegates to :func:`~hachi.tools.search_tools.register_search_tools`.
+    When no provider is configured this is a silent no-op (graceful degradation).
+
+    Args:
+        deps: :class:`~hachi.gateway.tool_registration.BootDeps` bundle.
+    """
+    registry = deps.provider_registry
+    if registry is None:
+        return
+
+    provider = registry.get_search()
+    if provider is None:
+        logger.debug("search: no SearchProvider in registry — tools not registered")
+        return
+
+    from hachi.core.rate_limit import OutboundRateLimiter
+    from hachi.core.search_cache import SearchCache
+    from hachi.core.settings import SearchSettings
+
+    # Read [search] config for limits — tolerate missing section gracefully.
+    _raw_cfg = None
+    try:
+        _raw_cfg = getattr(deps, "_config", None)
+    except Exception:
+        pass
+
+    _search_settings = SearchSettings()
+    try:
+        # deps doesn't carry _config directly; read from process-level shared
+        # config if available (same pattern as voice/vision feature flags).
+        import hachi.core.settings as _settings_mod  # noqa: PLC0415
+
+        if hasattr(_settings_mod, "_current_config"):
+            _raw_cfg = getattr(_settings_mod, "_current_config", None)
+        if _raw_cfg is not None and hasattr(_raw_cfg, "search"):
+            _s = _raw_cfg.search
+            if _s is not None:
+                _search_settings = _s
+    except Exception:
+        pass
+
+    cache = SearchCache(ttl_seconds=_search_settings.cache_ttl_seconds)
+    limiter = OutboundRateLimiter(
+        max_per_window=_search_settings.window_max_calls,
+        window_seconds=_search_settings.window_seconds,
+        max_per_turn=_search_settings.max_calls_per_turn,
+    )
+
+    register_search_tools(
+        deps.tool_registry,
+        provider,
+        cache=cache,
+        limiter=limiter,
+        gate=deps.gate,
+    )
+    logger.info("search: registered web_search + extract_url via provider=%r", provider.name)
+
+
 def _register_capability_setup_stub(
     tool_registry: ToolRegistry, descriptor: CapabilityDescriptor
 ) -> None:
@@ -445,6 +513,9 @@ class AgentSession:
         self._session_id: str | None = None
         # Auto-title is generated once, from the first turn's exchange.
         self._title_generated: bool = False
+        # Tracks the cumulative cost after the previous turn so we can compute the
+        # per-turn delta for the daily spend ledger (CostTracker is cumulative).
+        self._last_recorded_cost_usd: float = 0.0
 
         # Resume support: prior-session turns replayed for TUI transcript rendering.
         # (role, content) pairs, oldest first; empty unless booted with resume.
@@ -452,6 +523,11 @@ class AgentSession:
 
         # P4-05: scheduler reference — set by boot_agent after ScheduleRunner starts.
         self._scheduler: Any = None
+
+        # Slice 2.2: when True, _enqueue_title_job uses handler_name= instead of
+        # func= so the job survives a restart.  Set by boot_agent when
+        # [jobs] durable_handlers=true.
+        self._durable_title: bool = False
 
     @property
     def resumed_transcript(self) -> list[tuple[str, str]]:
@@ -598,11 +674,23 @@ class AgentSession:
         }
 
     def list_provider_models(self) -> list[str]:
-        """Best-effort live model discovery from the active provider.
+        """Return model ids — registry-backed when available, else live discovery.
 
-        Delegates to the LLM client's ``list_models`` (network-bound); returns
-        ``[]`` on any failure so callers fall back to a curated/configured list.
+        Tries the :class:`~hachi.core.routing.registry.ModelRegistry` first
+        (populated from bundled defaults + provider discovery at boot).  Falls back
+        to a live ``list_models()`` call when no registry is wired in.
         """
+        # Registry-backed path (Slice 2.1).
+        router = getattr(self.loop, "router", None)
+        if router is not None:
+            try:
+                registry = getattr(router, "_registry", None)
+                if registry is not None:
+                    return [d.id for d in registry.all()]
+            except Exception:
+                logger.debug("list_provider_models: registry path failed", exc_info=True)
+
+        # Fallback: live discovery via the client (pre-routing path).
         client = getattr(self.loop, "llm_client", None)
         lister = getattr(client, "list_models", None)
         if not callable(lister):
@@ -618,6 +706,20 @@ class AgentSession:
         if not self._session_store:
             return tuple()
         return tuple(self._session_store.get_recent_sessions(limit=limit))
+
+    def query_session_messages(
+        self, session_id: str, limit: int = 500
+    ) -> tuple[dict[str, Any], ...]:
+        """Chronological transcript for a persisted session (resume/history replay)."""
+        if not self._session_store:
+            return tuple()
+        return tuple(self._session_store.get_session_messages(session_id, limit=limit))
+
+    def delete_session(self, session_id: str) -> bool:
+        """Permanently delete a persisted session + its messages. True if it existed."""
+        if not self._session_store:
+            return False
+        return self._session_store.delete_session(session_id)
 
     def query_memory_recall(self, query: str, top_k: int = 8) -> tuple[MemoryRecallSnapshot, ...]:
         """Immutable memory recall search snapshots."""
@@ -743,9 +845,7 @@ class AgentSession:
             # Vault closed (e.g. a process-teardown race) — degrade to runtime-only
             # reports instead of surfacing a 500. The shared-vault lifecycle fix makes
             # this rare, but the endpoint must never crash on a closed vault.
-            logger.warning(
-                "query_subagent_reports: vault closed; returning runtime reports only"
-            )
+            logger.warning("query_subagent_reports: vault closed; returning runtime reports only")
             return tuple(runtime_reports)
         for row in vault_rows:
             runtime_reports.append(
@@ -846,73 +946,13 @@ class AgentSession:
     def snapshot_og_graph(self) -> dict:
         """Return ObjectGraph node graph for the OG Explorer web screen.
 
-        Iterates all parsed OGNode objects from the skill engine, computing
-        per-pass token estimates (index/dense/full) and classifying each node
-        as ``root``, ``skill``, or ``leaf``.
+        Delegates to :func:`og_graph_from_engine` using this session's skill engine.
 
         Returns:
-            Dict with key ``nodes`` containing a list of node dicts.
+            Dict with key ``nodes`` containing a list of node dicts and ``count``
+            with the number of nodes.
         """
-        from hachi.og_engine.engine import estimate_tokens
-
-        all_nodes = self.skill_engine.get_all_nodes()
-
-        # Precompute the set of all node names that are referenced by other nodes'
-        # ``requires`` lists — used for leaf classification below.
-        referenced_names: set[str] = set()
-        for node in all_nodes:
-            for dep in node.requires:
-                referenced_names.add(dep)
-
-        result_nodes: list[dict] = []
-        for node in all_nodes:
-            # Pass-1 (index) token estimate: name + keywords.
-            index_tokens = estimate_tokens(node.name + " " + ", ".join(node.keywords))
-
-            # Pass-2 (dense) token estimate: dense summary block.
-            dense_tokens = estimate_tokens(node.dense or node.summary or "")
-
-            # Pass-3 (full) token estimate: sum all heavy content blocks.
-            heavy_parts: list[str] = []
-            if node.full:
-                heavy_parts.append(node.full)
-            if node.steps:
-                heavy_parts.append("\n".join(node.steps))
-            if node.code_blocks:
-                heavy_parts.append("\n".join(node.code_blocks.values()))
-            if node.table:
-                heavy_parts.append(node.table)
-            if node.list_items:
-                heavy_parts.append("\n".join(node.list_items))
-            if node.example:
-                heavy_parts.append(node.example)
-            if node.assertions:
-                heavy_parts.append("\n".join(node.assertions))
-            if node.note:
-                heavy_parts.append(node.note)
-            full_tokens = estimate_tokens("\n".join(heavy_parts))
-
-            # Node kind classification.
-            if node.role in {"root", "brain"} or node.name == "brain":
-                kind = "root"
-            elif not node.requires and node.name not in referenced_names:
-                kind = "leaf"
-            else:
-                kind = "skill"
-
-            result_nodes.append(
-                {
-                    "id": node.name,
-                    "name": node.name,
-                    "kind": kind,
-                    "index": index_tokens,
-                    "dense": dense_tokens,
-                    "full": full_tokens,
-                    "deps": list(node.requires),
-                }
-            )
-
-        return {"nodes": result_nodes}
+        return og_graph_from_engine(self.skill_engine)
 
     # ==========================================
     # Session Memory Snapshot
@@ -1060,20 +1100,47 @@ class AgentSession:
         return title
 
     def _enqueue_title_job(self, session_id: str, user_input: str, response: str) -> None:
-        """Queue first-turn title generation, or run it inline if no queue exists."""
+        """Queue first-turn title generation, or run it inline if no queue exists.
+
+        Slice 2.2: when ``_durable_title=True`` (set by boot_agent when
+        ``[jobs] durable_handlers=true``), the job is enqueued with
+        ``handler_name="generate_title"`` + serializable payload so it survives a
+        process restart.  The durable path uses a deterministic fallback title
+        (no LLM call) — see ``handle_generate_title`` in runtime/job_handlers.py.
+
+        When ``_durable_title=False`` (default), the original ``func=`` path runs
+        unchanged, preserving LLM-generated titles.
+        """
         if not self._job_queue:
             self._run_title_job(session_id, user_input, response)
             return
 
-        job = Job(
-            job_id="",
-            name="session_title",
-            status=JobStatus.PENDING,
-            func=self._run_title_job,
-            args=(session_id, user_input, response),
-            job_type="background",
-            session_id=session_id,
-        )
+        if self._durable_title:
+            # Durable path: serializable payload, survives restart.
+            job = Job(
+                job_id="",
+                name="session_title",
+                status=JobStatus.PENDING,
+                handler_name="generate_title",
+                payload={
+                    "session_id": session_id,
+                    "user_message": user_input,
+                    "assistant_message": response,
+                },
+                job_type="background",
+                session_id=session_id,
+            )
+        else:
+            # Default path: func= closure with LLM client access.
+            job = Job(
+                job_id="",
+                name="session_title",
+                status=JobStatus.PENDING,
+                func=self._run_title_job,
+                args=(session_id, user_input, response),
+                job_type="background",
+                session_id=session_id,
+            )
         try:
             self._job_queue.enqueue(job)
         except Exception:
@@ -1139,6 +1206,30 @@ class AgentSession:
         """Internal single-turn implementation; must only be called while _chat_lock is held."""
         # 1. Refresh memory snapshot at turn start
         turn_id = str(uuid.uuid4())[:8]
+
+        # Build the TraceContext and open the agent.turn ROOT span.  All child spans
+        # (llm.generate, tool.call) will nest under this root via OTel context
+        # propagation (thread pool fix in loop.py).  The trace_id == turn_id per ADR-0005.
+        _trace_ctx = TraceContext(
+            trace_id=turn_id,
+            session_id=self._session_id or "unknown",
+            principal="session",  # placeholder; real user id when auth grows
+            surface=surface,
+        )
+
+        with (
+            _bind_trace_ctx(_trace_ctx),
+            span(
+                "agent.turn",
+                turn_id=turn_id,
+                session_id=self._session_id or "unknown",
+                surface=surface,
+            ),
+        ):
+            return self._chat_impl_inner(user_input, turn_id=turn_id, surface=surface)
+
+    def _chat_impl_inner(self, user_input: str, *, turn_id: str, surface: str) -> str:
+        """Inner implementation body (runs inside the agent.turn root span)."""
         self._emit_event(
             SESSION_CHAT_STARTED,
             {
@@ -1160,7 +1251,7 @@ class AgentSession:
             except Exception:
                 # HIGH-012: synchronous recall failures should be visible.
                 logger.warning(
-                    "_chat_impl: synchronous vault recall failed for turn %s",
+                    "_chat_impl_inner: synchronous vault recall failed for turn %s",
                     turn_id,
                     exc_info=True,
                 )
@@ -1217,7 +1308,8 @@ class AgentSession:
                     "_chat_impl: failed to log turn %s to session store", turn_id, exc_info=True
                 )
 
-            # Persist cumulative cost/token totals for this session.
+            # Persist cumulative cost/token totals for this session and update the
+            # rolling daily spend ledger with the per-turn delta.
             try:
                 tracker = getattr(self.loop, "cost_tracker", None)
                 if tracker is not None:
@@ -1227,6 +1319,12 @@ class AgentSession:
                         snap.total_tokens,
                         snap.estimated_cost_usd,
                     )
+                    # Compute the per-turn delta from the cumulative snapshot so the
+                    # daily ledger accumulates exactly what this turn spent.
+                    turn_delta = snap.estimated_cost_usd - self._last_recorded_cost_usd
+                    self._last_recorded_cost_usd = snap.estimated_cost_usd
+                    if turn_delta > 0:
+                        self._session_store.record_daily_cost(_date.today().isoformat(), turn_delta)
             except Exception:
                 # HIGH-012: cost persistence failures must be visible.
                 logger.warning(
@@ -1446,6 +1544,302 @@ def _configure_mcp_servers(
 
 
 # ==========================================
+# Slice 2.2 — Durable execution helpers (A4 / §6)
+# ==========================================
+
+_SWEEP_INTERVAL_SECONDS = 30  # how often to check for timed-out WAITING runs
+
+
+def _boot_recover_runs(
+    job_queue: "JobQueue",
+    registry: "JobRegistry",
+    wait_registry: Any,
+    emit: Any,
+) -> None:
+    """Restart-recovery pass for durable runs (design §6).
+
+    Scans the RunStateStore on boot and:
+    - **WAITING** runs: re-arm each WaitCondition in the in-process registry so
+      EVENT/TIME/USER wakes can still fire.
+    - **RUNNING** runs left by a crash: if a ``resume_cursor`` exists, enqueue a
+      ``resume_run`` job to replay from the last turn; otherwise mark as FAILED
+      with a clear message so the operator knows work was lost.
+
+    This is best-effort: any exception per run is logged and skipped so one
+    corrupt record never blocks a whole boot.
+    """
+    try:
+        from hachi.core.runtime.state import RunStatus
+        from hachi.core.runtime.store import RunStateStore
+        from hachi.core.runtime_events import now_iso
+        from hachi.jobs import Job, JobStatus
+
+        store = RunStateStore()
+        waiting_runs = store.waiting()
+        for run in waiting_runs:
+            try:
+                if run.wait is not None:
+                    wait_registry.arm(run.run_id, run.wait)
+                    logger.info(
+                        "_boot_recover_runs: re-armed WAITING run %r (kind=%s key=%s)",
+                        run.run_id,
+                        run.wait.kind.value if run.wait else "?",
+                        run.wait.key if run.wait else "?",
+                    )
+            except Exception:
+                logger.warning(
+                    "_boot_recover_runs: failed to re-arm run %r", run.run_id, exc_info=True
+                )
+
+        # Recover RUNNING runs (crashed mid-turn).
+        all_runs = store.list_all(limit=500)
+        for run in all_runs:
+            if run.status != RunStatus.RUNNING:
+                continue
+            try:
+                if run.resume_cursor and run.resume_cursor > 0:
+                    # Cursor exists → re-enqueue resume so the run can finish.
+                    job = Job(
+                        job_id="",
+                        name="resume_run_recovery",
+                        handler_name="resume_run",
+                        payload={"run_id": run.run_id, "result": {"reason": "crash_recovery"}},
+                        status=JobStatus.PENDING,
+                        session_id=run.session_id,
+                    )
+                    job_queue.enqueue(job)
+                    logger.info(
+                        "_boot_recover_runs: re-enqueued resume for crashed run %r", run.run_id
+                    )
+                else:
+                    # No cursor — cannot resume cleanly; mark FAILED.
+                    run = run.model_copy(
+                        update={
+                            "status": RunStatus.FAILED,
+                            "payload": {
+                                **run.payload,
+                                "error": "Process crashed while RUNNING; no resume cursor",
+                            },
+                            "updated_at": now_iso(),
+                        }
+                    )
+                    store.upsert(run)
+                    logger.info(
+                        "_boot_recover_runs: marked crashed run %r as FAILED (no cursor)",
+                        run.run_id,
+                    )
+            except Exception:
+                logger.warning(
+                    "_boot_recover_runs: failed to recover RUNNING run %r",
+                    run.run_id,
+                    exc_info=True,
+                )
+    except Exception:
+        logger.warning("_boot_recover_runs: recovery pass failed", exc_info=True)
+
+
+def _start_timeout_sweep(
+    job_queue: "JobQueue",
+    registry: "JobRegistry | None",
+    emit: Any,
+) -> None:
+    """Start a background thread that sweeps WAITING runs past their timeout_at (A4).
+
+    The sweep runs every ``_SWEEP_INTERVAL_SECONDS`` seconds.  For each WAITING
+    run with ``wait.timeout_at`` in the past, it enqueues a ``resume_run`` job
+    with ``result={"reason": "timeout"}`` so the run wakes and can fail/complete
+    gracefully rather than hanging forever.
+
+    The thread is daemonized so it does not prevent process exit.
+    """
+    import threading as _threading
+    import time as _time
+
+    def _sweep_loop() -> None:
+        while True:
+            _time.sleep(_SWEEP_INTERVAL_SECONDS)
+            try:
+                _sweep_once(job_queue)
+            except Exception:
+                logger.debug("_start_timeout_sweep: sweep tick failed", exc_info=True)
+
+    t = _threading.Thread(target=_sweep_loop, name="hachi-timeout-sweep", daemon=True)
+    t.start()
+    logger.info("_start_timeout_sweep: started (interval=%ds)", _SWEEP_INTERVAL_SECONDS)
+
+
+def _sweep_once(
+    job_queue: "JobQueue",
+    now: "Any | None" = None,
+    store: "Any | None" = None,
+) -> list[str]:
+    """Sweep WAITING runs whose timeout_at is in the past.
+
+    Args:
+        job_queue: Queue to enqueue ``resume_run`` wake jobs.
+        now:       Override "current time" as a ``datetime.datetime`` (for
+                   deterministic tests). When ``None``, uses ``datetime.UTC`` now.
+        store:     Optional ``RunStateStore`` override (for testing). When ``None``,
+                   uses the default store (platform data dir).
+
+    Returns:
+        List of run_ids that were swept (woken with timeout result).
+    """
+    import datetime
+
+    from hachi.core.runtime.store import RunStateStore
+    from hachi.jobs import Job, JobStatus
+
+    _now = now or datetime.datetime.now(datetime.UTC)
+    swept: list[str] = []
+
+    try:
+        store = store or RunStateStore()
+        waiting = store.waiting()
+        for run in waiting:
+            if run.wait is None or run.wait.timeout_at is None:
+                continue
+            try:
+                timeout_dt = datetime.datetime.fromisoformat(run.wait.timeout_at)
+                # Ensure both are offset-aware for comparison.
+                if timeout_dt.tzinfo is None:
+                    timeout_dt = timeout_dt.replace(tzinfo=datetime.UTC)
+            except Exception:
+                continue  # malformed timeout_at — skip
+
+            if _now >= timeout_dt:
+                try:
+                    job = Job(
+                        job_id="",
+                        name=f"timeout_sweep:{run.run_id[:8]}",
+                        handler_name="resume_run",
+                        payload={
+                            "run_id": run.run_id,
+                            "result": {
+                                "reason": "timeout",
+                                "wait_kind": run.wait.kind.value if run.wait else "unknown",
+                                "timeout_at": run.wait.timeout_at if run.wait else None,
+                            },
+                        },
+                        status=JobStatus.PENDING,
+                        session_id=run.session_id,
+                    )
+                    job_queue.enqueue(job)
+                    swept.append(run.run_id)
+                    logger.info(
+                        "_sweep_once: timed-out WAITING run %r swept (timeout_at=%s)",
+                        run.run_id,
+                        run.wait.timeout_at if run.wait else "?",
+                    )
+                except Exception:
+                    logger.warning(
+                        "_sweep_once: failed to enqueue timeout wake for run %r",
+                        run.run_id,
+                        exc_info=True,
+                    )
+    except Exception:
+        logger.debug("_sweep_once: store read failed", exc_info=True)
+
+    return swept
+
+
+# ==========================================
+# OG Graph helper (used by AgentSession.snapshot_og_graph and the pre-session fallback)
+# ==========================================
+
+
+def og_graph_from_engine(skill_engine: Any) -> dict[str, Any]:
+    """Build the ObjectGraph node-graph dict from a :class:`SkillEngine` instance.
+
+    Iterates all parsed OGNode objects from *skill_engine*, computing per-pass
+    token estimates (index/dense/full) and classifying each node as ``root``,
+    ``skill``, or ``leaf``.
+
+    This is a module-level helper so it can be used both by
+    :meth:`AgentSession.snapshot_og_graph` (active session) and by
+    :meth:`_InProcessGatewayRuntime.get_og_graph` (pre-session fallback via the
+    process-shared services skill engine).
+
+    Args:
+        skill_engine: A :class:`~hachi.og_engine.engine.SkillEngine` instance whose
+            nodes have already been loaded.
+
+    Returns:
+        Dict with key ``nodes`` (list of node dicts) and ``count`` (int).
+    """
+    from hachi.og_engine.engine import estimate_tokens
+
+    all_nodes = skill_engine.get_all_nodes()
+
+    # Precompute the set of all node names that are referenced by other nodes'
+    # ``requires`` lists — used for leaf classification below.
+    referenced_names: set[str] = set()
+    for node in all_nodes:
+        for dep in node.requires:
+            referenced_names.add(dep)
+
+    result_nodes: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for node in all_nodes:
+        # Multiple skill files can each define a node with the same bare name
+        # (e.g. every role brain has an "identity" node). The graph is keyed by
+        # bare name and edges reference bare names via ``requires``, so collapse
+        # duplicate names to keep node ids unique for the OG Explorer (otherwise
+        # the diagram overlaps nodes and React warns about duplicate keys).
+        if node.name in seen_names:
+            continue
+        seen_names.add(node.name)
+
+        # Pass-1 (index) token estimate: name + keywords.
+        index_tokens = estimate_tokens(node.name + " " + ", ".join(node.keywords))
+
+        # Pass-2 (dense) token estimate: dense summary block.
+        dense_tokens = estimate_tokens(node.dense or node.summary or "")
+
+        # Pass-3 (full) token estimate: sum all heavy content blocks.
+        heavy_parts: list[str] = []
+        if node.full:
+            heavy_parts.append(node.full)
+        if node.steps:
+            heavy_parts.append("\n".join(node.steps))
+        if node.code_blocks:
+            heavy_parts.append("\n".join(node.code_blocks.values()))
+        if node.table:
+            heavy_parts.append(node.table)
+        if node.list_items:
+            heavy_parts.append("\n".join(node.list_items))
+        if node.example:
+            heavy_parts.append(node.example)
+        if node.assertions:
+            heavy_parts.append("\n".join(node.assertions))
+        if node.note:
+            heavy_parts.append(node.note)
+        full_tokens = estimate_tokens("\n".join(heavy_parts))
+
+        # Node kind classification.
+        if node.role in {"root", "brain"} or node.name == "brain":
+            kind = "root"
+        elif not node.requires and node.name not in referenced_names:
+            kind = "leaf"
+        else:
+            kind = "skill"
+
+        result_nodes.append(
+            {
+                "id": node.name,
+                "name": node.name,
+                "kind": kind,
+                "index": index_tokens,
+                "dense": dense_tokens,
+                "full": full_tokens,
+                "deps": list(node.requires),
+            }
+        )
+
+    return {"nodes": result_nodes, "count": len(result_nodes)}
+
+
+# ==========================================
 # Boot Sequence
 # ==========================================
 
@@ -1480,6 +1874,19 @@ def boot_agent(
 
     read_models = RuntimeReadModelStore()
     job_queue: JobQueue = SQLiteJobQueue()
+
+    # ------------------------------------------------------------------
+    # Slice 2.2 — EventBus funnel (gated behind [events] bus_funnel=true)
+    #
+    # When the flag is OFF (default): the two closures below are used exactly
+    # as before — byte-identical output, zero behavior change.
+    #
+    # When the flag is ON: an EventBus is instantiated; the same two consumers
+    # (read-models append + SSE/TUI surface) are registered as sync subscribers
+    # in the same order, so publish() produces identical output by construction.
+    # emit_runtime_event / relay_event are then re-bound to publish through the bus.
+    # ------------------------------------------------------------------
+    _event_bus: Any = None  # EventBus | None; exposed on ProcessSharedServices below
 
     def emit_runtime_event(name: str, payload: dict[str, Any] | None = None) -> None:
         event = RuntimeEvent(name=name, payload=payload or {}, timestamp=now_iso())
@@ -1555,6 +1962,58 @@ def boot_agent(
     )
     max_tokens = config.get("agent", {}).get("max_tokens", 8192)
 
+    # ------------------------------------------------------------------
+    # Slice 2.2 — EventBus funnel: rebind emit/relay through the bus when
+    # [events] bus_funnel=true.  Back-compat: the two sync subscribers below
+    # are identical to the original direct-call code path, registered in the
+    # same order, so SSE/TUI output is byte-identical by construction.
+    # ------------------------------------------------------------------
+    from hachi.core.settings import EventsSettings, JobsSettings
+
+    _events_cfg = EventsSettings.model_validate(config.get("events", {}))
+    _jobs_cfg = JobsSettings.model_validate(config.get("jobs", {}))
+
+    if _events_cfg.bus_funnel:
+        from hachi.core.event_bus import EventBus
+
+        _event_bus = EventBus(job_queue=job_queue)
+
+        def _read_models_sink(event: RuntimeEvent) -> None:
+            read_models.append_event(event)
+
+        def _surface_sink(event: RuntimeEvent) -> None:
+            if on_event:
+                on_event(event.name, event.payload)
+
+        _event_bus.subscribe("*", _read_models_sink, mode="sync", name="read-models")
+        _event_bus.subscribe("*", _surface_sink, mode="sync", name="surface")
+
+        # Rebind emit_runtime_event to publish through the bus.
+        def emit_runtime_event(  # type: ignore[misc]  # noqa: F811
+            name: str, payload: dict[str, Any] | None = None
+        ) -> None:
+            event = RuntimeEvent(name=name, payload=payload or {}, timestamp=now_iso())
+            _event_bus.publish(event)
+
+        # Rebind relay_event: publish primary events through the bus (so all
+        # subscribers see them) and call on_event directly for legacy aliases
+        # (aliases are NOT appended to read_models, matching the original behavior).
+        def relay_event(  # type: ignore[misc]  # noqa: F811
+            event_type: str, payload: dict[str, Any] | None = None
+        ) -> None:
+            envelopes = adapt_event(event_type, payload)
+            for envelope in envelopes:
+                _event_bus.publish(envelope.primary)
+                # Aliases: on_event only, never read_models (original behavior preserved).
+                if on_event and envelope.legacy_aliases:
+                    for alias in envelope.legacy_aliases:
+                        on_event(alias, envelope.primary.payload)
+
+        logger.info("boot_agent: EventBus funnel active (bus_funnel=true)")
+    # ------------------------------------------------------------------
+    # End EventBus funnel wiring
+    # ------------------------------------------------------------------
+
     capability_registry = _build_capability_registry(config)
     enabled_capabilities = [item.id for item in capability_registry.iter_enabled()]
     for capability_id in enabled_capabilities:
@@ -1576,6 +2035,11 @@ def boot_agent(
     from hachi.gateway.shared_services import ProcessSharedServices
 
     _shared = ProcessSharedServices.get_or_create(config, str(get_hachi_paths().data_dir))
+    # Slice 2.2: publish the EventBus on the shared singleton so resume.py and
+    # the observability sink (slice 2.3) can find it via ProcessSharedServices.instance().
+    if _event_bus is not None:
+        _shared.event_bus = _event_bus
+
     if _shared.skill_engine is not None:
         skill_engine = _shared.skill_engine
     else:
@@ -1673,9 +2137,57 @@ def boot_agent(
         sub_agent_provider, secret_store=secret_store, max_tokens=4096
     )
 
+    # 6b. Build routing infrastructure (behind [routing] flag; absent = back-compat).
+    # ProviderRegistry → ModelRegistry → RoutingPolicy → ModelRouter.
+    # When [routing] is absent, the policy synthesises a single-model-for-all-caps
+    # mapping and default_client() returns the existing `client` unchanged.
+    _model_router = None
+    _provider_registry = None
+    try:
+        from hachi.core.providers.registry import ProviderRegistry
+        from hachi.core.resilience import RetryPolicy
+        from hachi.core.routing.policy import RoutingPolicy
+        from hachi.core.routing.registry import ModelRegistry
+        from hachi.core.routing.router import ModelRouter
+        from hachi.core.settings import ResolvedConfig
+
+        _resolved_cfg = ResolvedConfig.model_validate(config)
+        _provider_registry = ProviderRegistry.from_config(_resolved_cfg, secret_store)
+        _model_registry = ModelRegistry.build(_resolved_cfg, _provider_registry)
+        _routing_policy = RoutingPolicy.from_config(_resolved_cfg)
+        # Apply auto-policy if requested (amendment A1).
+        if _routing_policy.auto:
+            _routing_policy = _routing_policy.derive_auto_policy(_model_registry)
+        _retry_policy = RetryPolicy.from_config(_resolved_cfg)
+        _model_router = ModelRouter(
+            registry=_model_registry,
+            policy=_routing_policy,
+            providers=_provider_registry,
+            resilience=_retry_policy,
+        )
+        logger.info(
+            "Routing boot: %d models registered; default=%s; auto=%s",
+            len(_model_registry.all()),
+            _routing_policy.default_model,
+            _routing_policy.auto,
+        )
+    except Exception:
+        logger.debug(
+            "Routing boot: failed to initialise routing layer; falling back to direct client",
+            exc_info=True,
+        )
+        _model_router = None
+
     # Shared per-session token/cost tracker — used by the main loop AND threaded
     # into delegated sub-agents so their spend is included in the session total.
-    cost_tracker = CostTracker()
+    # Pass the model registry so registry-backed pricing is used (registry seeds from
+    # cost.py values, so no drift).
+    _registry_for_cost = (
+        _model_router._registry  # type: ignore[union-attr]
+        if _model_router is not None
+        else None
+    )
+    cost_tracker = CostTracker(registry=_registry_for_cost)
 
     emit_runtime_event(
         BOOT_PROGRESS,
@@ -1828,6 +2340,9 @@ def boot_agent(
             secret_store=secret_store,
             tool_registry=tool_registry,
             lease_manager=_lease_manager,
+            router=_model_router,
+            provider_registry=_provider_registry,
+            session_llm=client,
         )
 
     TOOL_SPECS: list[ToolSpec] = [
@@ -1874,18 +2389,40 @@ def boot_agent(
             register_fn=lambda d: register_notification_tools(d.tool_registry),
         ),
         ToolSpec(
-            # Vision input — view local images. Image blocks only flow to the Anthropic
-            # provider, so the tool is provider-aware (it reports instead of analyzing on others).
+            # Vision input — view local images.  Capability-routed (doc 20 §3):
+            # session model with VISION → inline; else router.select(VISION) → routed;
+            # else graceful text fallback.
             name="vision",
             register_fn=lambda d: register_vision_tools(
-                d.tool_registry, d.gate, provider_kind=d.provider_kind
+                d.tool_registry,
+                d.gate,
+                provider_kind=d.provider_kind,
+                session_client=d.session_llm,
+                router=d.router,
             ),
         ),
         ToolSpec(
-            # Voice input — transcribe local audio files. Credentials (OpenAI/compatible
-            # Whisper) resolve lazily; the tool degrades to a "not configured" hint until set.
+            # Voice input — transcribe/synthesize audio.  Provider resolved via
+            # ProviderRegistry.get_speech() (doc 19 §3); falls back to SpeechToText.from_env()
+            # when registry is unavailable (back-compat).
             name="voice",
-            register_fn=lambda d: register_voice_tools(d.tool_registry, d.gate),
+            register_fn=lambda d: register_voice_tools(
+                d.tool_registry, d.gate, provider_registry=d.provider_registry
+            ),
+        ),
+        ToolSpec(
+            # Web search + URL extraction (Initiative A — Search Platform, doc 17).
+            # Registered only when a SearchProvider is available in the ProviderRegistry.
+            # Degrades gracefully to a no-op when no provider / key is configured.
+            name="search",
+            register_fn=lambda d: _register_search_if_available(d),
+        ),
+        ToolSpec(
+            # File / attachment platform (Initiative E, Slice 2.4).
+            # attach_file, list_attachments, read_attachment, search_attachments.
+            # Permission-gated like os_tools; extraction runs as durable job handler.
+            name="files",
+            register_fn=lambda d: register_file_tools(d.tool_registry, d.gate),
         ),
         ToolSpec(
             # Google Workspace (Gmail, Calendar, Drive, Docs, Sheets, Contacts, Meet, Tasks).
@@ -2046,8 +2583,20 @@ def boot_agent(
     )
 
     # 9. Instantiate the Brain Loop (cost_tracker created earlier, shared with sub-agents)
+    # When the router is available, default_client() returns the configured model's
+    # resilient client; the loop's llm_client is unchanged (back-compat).
+    _loop_client = client
+    if _model_router is not None:
+        try:
+            _loop_client = _model_router.default_client()
+        except Exception:
+            logger.debug(
+                "Routing: default_client() failed; falling back to direct client", exc_info=True
+            )
+            _loop_client = client
+
     loop = ExecutionLoop(
-        llm_client=client,
+        llm_client=_loop_client,
         registry=tool_registry,
         memory=memory,
         base_system_prompt=system_prompt,
@@ -2058,6 +2607,7 @@ def boot_agent(
         max_tokens=max_session_tokens,
         max_cost_per_turn=max_turn_cost_usd,
         max_tokens_per_turn=max_turn_tokens,
+        router=_model_router,
     )
 
     # 10. Create the Session
@@ -2094,10 +2644,69 @@ def boot_agent(
             )
     session._sub_agent_client = sub_agent_client  # closed on shutdown alongside the main client
     session._browser_controller = browser_controller  # closed on shutdown (no-op if never used)
+    # Slice 2.2: activate durable title job path when the flag is on.
+    if _jobs_cfg.durable_handlers:
+        session._durable_title = True
+
+    # ------------------------------------------------------------------
+    # Slice 2.2 — JobRegistry activation (gated behind [jobs] durable_handlers=true)
+    #
+    # When OFF (default): the resident worker runs with registry=None; func= jobs
+    # execute as before; nothing changes.
+    #
+    # When ON: a JobRegistry is built, the four named handlers are registered,
+    # and the registry is passed to the worker so handler_name= jobs are routed
+    # to the correct implementation.  The scheduler tick also sweeps WAITING runs
+    # past their timeout_at (A4 amendment) and restart recovery re-arms them (§6).
+    # ------------------------------------------------------------------
+    _job_registry: JobRegistry | None = None
+    if _jobs_cfg.durable_handlers:
+        from hachi.core.runtime.job_handlers import (
+            handle_auto_extract,
+            handle_extract_fact,
+            handle_generate_title,
+            handle_resume_run,
+        )
+        from hachi.core.runtime.waits import get_wait_registry
+
+        _job_registry = JobRegistry()
+        _job_registry.register("extract_fact", handle_extract_fact)
+        _job_registry.register("generate_title", handle_generate_title)
+        _job_registry.register("resume_run", handle_resume_run)
+        _job_registry.register("auto_extract", handle_auto_extract)
+
+        # Initiative E: wire reactive file.uploaded → auto_extract via EventBus.
+        # When the EventBus funnel is active (_event_bus is not None) we subscribe
+        # the auto_extract handler in async mode so extraction runs as a durable job.
+        # When the funnel is off (bus is None) the FilePipeline still emits the event
+        # but no subscriber is present — extraction is triggered manually or via
+        # the standalone gateway POST /files route which calls the handler directly.
+        if _event_bus is not None:
+            from hachi.core.runtime_events import FILE_UPLOADED as _FILE_UPLOADED_EVT
+
+            _event_bus.subscribe(
+                _FILE_UPLOADED_EVT,
+                handle_auto_extract,  # type: ignore[arg-type]
+                mode="async",
+                name="auto_extract",
+            )
+            logger.info("boot_agent: file.uploaded → auto_extract subscription registered")
+
+        # Expose the WaitConditionRegistry on the process singleton so the
+        # scheduler sweep and /runs/{id}/wake endpoint share one registry.
+        _wait_registry = get_wait_registry()
+        _shared.wait_registry = _wait_registry
+
+        # A6 (§6): restart recovery — re-arm WAITING runs; transition crash-RUNNING runs.
+        _boot_recover_runs(job_queue, _job_registry, _wait_registry, emit_runtime_event)
+
+        logger.info("boot_agent: JobRegistry active with 4 handlers (durable_handlers=true)")
 
     # Start the resident job worker so background jobs (fact extraction, prefetch,
     # title generation) execute without blocking the turn path.
-    _job_worker_for_session = JobWorker(job_queue, on_job_event=emit_runtime_event)
+    _job_worker_for_session = JobWorker(
+        job_queue, on_job_event=emit_runtime_event, registry=_job_registry
+    )
     _resident_worker = ResidentWorkerThread(_job_worker_for_session)
     _resident_worker.start()
     session.set_resident_worker(_resident_worker)
@@ -2121,6 +2730,18 @@ def boot_agent(
     _schedule_runner.start()
     session._schedule_runner = _schedule_runner  # stopped in shutdown()
     session._scheduler = scheduler  # P4-05: exposed for companion web UI
+
+    # ------------------------------------------------------------------
+    # Slice 2.2 — A4: scheduler timeout sweep for WAITING runs.
+    # When durable_handlers=true, attach a periodic sweep to the existing
+    # ScheduleRunner tick by enqueuing a "sweep_waiting_runs" job on each tick.
+    # The sweep is implemented as a standalone function (not a Schedule entry)
+    # so it runs every ScheduleRunner interval without cluttering the user's
+    # schedule list.  Implementation: a resident helper thread that wakes every
+    # SWEEP_INTERVAL seconds and sweeps timed-out runs.
+    # ------------------------------------------------------------------
+    if _jobs_cfg.durable_handlers:
+        _start_timeout_sweep(job_queue, _job_registry, emit_runtime_event)
 
     emit_runtime_event(
         BOOT_COMPLETE,

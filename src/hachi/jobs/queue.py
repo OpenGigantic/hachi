@@ -508,6 +508,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     job_type            TEXT NOT NULL DEFAULT 'background',
     session_id          TEXT,
     turn_id             TEXT,
+    owner_id            TEXT NOT NULL DEFAULT '',
     created_at          TEXT NOT NULL,
     started_at          TEXT,
     completed_at        TEXT,
@@ -541,6 +542,15 @@ class SQLiteJobQueue(JobQueue):
     restart (the callable is not persisted). They complete normally within the
     same process.
 
+    Func-job ownership: every instance stamps a unique ``_instance_id`` onto the
+    ``owner_id`` column of the func-based rows it enqueues (handler-name rows are
+    left unowned, ``owner_id=''``, so any worker may run them via the shared
+    :class:`JobRegistry`). ``get_pending`` only returns unowned rows or rows this
+    instance owns. This prevents a *sibling* instance over the same DB file (the
+    gateway boots one ``SQLiteJobQueue`` per agent) from claiming a func job whose
+    callable lives only in another instance's in-process side-table and then
+    false-failing it with "no callable func and handler_name '' is not in registry".
+
     HIGH-016: A single persistent ``sqlite3.Connection`` is opened in ``__init__``
     and reused for all operations, eliminating the 2+ open/close cycles per second
     caused by the resident worker's 0.5 s poll interval.  All access is serialised
@@ -551,6 +561,9 @@ class SQLiteJobQueue(JobQueue):
 
     def __init__(self, db_path: Path | None = None) -> None:
         self._db_path = db_path or _default_db_path()
+        # Per-instance identity used to scope func-based jobs to their enqueuing
+        # instance (see class docstring). Handler-name jobs are left unowned.
+        self._instance_id = uuid.uuid4().hex
         # HIGH-016: single persistent connection; all access serialised via _lock.
         # check_same_thread=False is safe because _lock guarantees mutual exclusion.
         self._lock = threading.RLock()
@@ -602,27 +615,46 @@ class SQLiteJobQueue(JobQueue):
     def _init_db(self) -> None:
         with self._conn() as conn:
             conn.executescript(_SCHEMA_SQL)
+            # Migration: add owner_id to a pre-existing DB created before func-job
+            # ownership was introduced. ALTER ADD COLUMN is a no-op-safe one-shot.
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+            if "owner_id" not in cols:
+                conn.execute("ALTER TABLE jobs ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
 
     def _recover_running(self) -> int:
         with self._conn() as conn:
-            # Reset any jobs that were mid-execution when the process died.
+            # Reset jobs that were mid-execution when the process died so a worker
+            # re-runs them — but ONLY handler-name jobs, which any worker can
+            # dispatch via the shared JobRegistry. Func-only jobs cannot resume
+            # (their callable lived only in the dead process) so they are swept
+            # below instead of being reset into an unrunnable PENDING state.
             cur = conn.execute(
-                "UPDATE jobs SET status = 'pending', started_at = NULL WHERE status = 'running'"
+                "UPDATE jobs SET status = 'pending', started_at = NULL "
+                "WHERE status = 'running' AND handler_name != ''"
             )
             recovered = int(cur.rowcount)
 
-            # Discard func-only jobs that survived a restart — they have no handler_name
-            # so they can never execute in a new process (the callable was in-memory only).
-            # Retrying them wastes cycles and clutters the job header in the TUI.
+            # Sweep crash-orphaned func-only rows. Live func jobs run in
+            # milliseconds, so any func-only row still pending/running after an
+            # hour belongs to a process that is gone. Deleting (not failing) keeps
+            # the job header and "Needs attention" list clean — these are internal
+            # background jobs with no user action. Fresh sibling-instance func jobs
+            # are younger than the cutoff AND invisible to us via the owner_id
+            # filter in get_pending(), so they are never touched here.
+            cutoff = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
             conn.execute(
-                """
-                UPDATE jobs
-                SET status = 'failed',
-                    result_error = 'Discarded on recovery: func-only job cannot run after restart',
-                    completed_at = datetime('now')
-                WHERE status = 'pending'
-                  AND (handler_name IS NULL OR handler_name = '')
-                """
+                "DELETE FROM jobs "
+                "WHERE (handler_name IS NULL OR handler_name = '') "
+                "AND status IN ('pending', 'running') AND created_at < ?",
+                (cutoff,),
+            )
+
+            # One-time cleanup of historical structural false-failures (rows the
+            # pre-ownership bug produced) so they stop cluttering the UI on upgrade.
+            conn.execute(
+                "DELETE FROM jobs WHERE status = 'failed' "
+                "AND (result_error LIKE '%no callable func%' "
+                "OR result_error LIKE 'Discarded on recovery%')"
             )
             return recovered
 
@@ -680,16 +712,22 @@ class SQLiteJobQueue(JobQueue):
                 job.scheduled_for = datetime.now(UTC).isoformat()
             # Retain a callable (func) job in the in-process side-table so the worker
             # can dispatch it after reading the (func-less) row back from SQLite.
+            # Func jobs are stamped with this instance's owner_id so a sibling
+            # instance over the same DB never claims a callable it does not hold.
+            # Handler-name jobs stay unowned ('') — any worker may run them.
             if job.func is not None:
                 self._func_table[job.job_id] = (job.func, job.args, job.kwargs)
+                owner_id = self._instance_id
+            else:
+                owner_id = ""
             with self._conn() as conn:
                 conn.execute(
                     """
                     INSERT INTO jobs (
                         job_id, name, handler_name, payload, status, attempt, max_retries,
-                        backoff_base_secs, job_type, session_id, turn_id,
+                        backoff_base_secs, job_type, session_id, turn_id, owner_id,
                         created_at, scheduled_for
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         job.job_id,
@@ -703,6 +741,7 @@ class SQLiteJobQueue(JobQueue):
                         job.job_type,
                         job.session_id,
                         job.turn_id,
+                        owner_id,
                         job.created_at,
                         job.scheduled_for,
                     ),
@@ -712,16 +751,21 @@ class SQLiteJobQueue(JobQueue):
 
     def get_pending(self, limit: int = 10) -> list[Job]:
         now_str = datetime.now(UTC).isoformat()
+        # Only consider unowned rows (handler-name jobs, runnable by any worker)
+        # or func jobs this instance owns (callable present in our side-table).
+        # Excluding sibling-owned func rows at the SQL level avoids both stealing
+        # them and starving our own runnable rows behind an un-dispatchable one.
         with self._conn() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM jobs
                 WHERE status = 'pending'
                   AND (scheduled_for IS NULL OR scheduled_for <= ?)
+                  AND (owner_id = '' OR owner_id = ?)
                 ORDER BY created_at ASC
                 LIMIT ?
                 """,
-                (now_str, limit),
+                (now_str, self._instance_id, limit),
             ).fetchall()
         return [self._row_to_job(r) for r in rows]
 
@@ -828,6 +872,18 @@ class SQLiteJobQueue(JobQueue):
 
     def shutdown(self) -> None:
         with self._lock:
+            # Best-effort: drop our own un-drained func jobs so they do not linger
+            # as zombie rows after we exit (their callable dies with this process).
+            # Handler-name jobs (owner_id='') are left for other/future workers.
+            try:
+                with self._conn() as conn:
+                    conn.execute(
+                        "DELETE FROM jobs WHERE owner_id = ? "
+                        "AND status IN ('pending', 'running')",
+                        (self._instance_id,),
+                    )
+            except Exception:
+                pass
             self._func_table.clear()
             try:
                 self._db_conn.close()

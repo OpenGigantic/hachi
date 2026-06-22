@@ -28,6 +28,7 @@ Performance & concurrency improvements (BE-4):
 """
 
 import concurrent.futures
+import contextlib
 import logging
 import threading
 import time
@@ -35,6 +36,12 @@ from collections.abc import Callable
 from typing import Any
 
 from hachi.core.llm import BaseLLMClient, LLMResponse, Message, ToolCall
+from hachi.core.obs.trace import (
+    TraceContext,
+    attach_otel_context,
+    copy_otel_context,
+    detach_otel_context,
+)
 from hachi.core.runtime_events import SESSION_ITERATION_LIMIT, TOOL_RESULT_PREVIEW_MAX
 from hachi.core.tool_results import ToolResultBlocks
 from hachi.core.tracing import span
@@ -73,10 +80,17 @@ class AgentException(Exception):
 
 
 class SuspendWorkflow(Exception):
-    """Signal that the agent loop should suspend and wait for an external trigger."""
+    """Signal that the agent loop should suspend and wait for an external trigger.
 
-    def __init__(self, reason: str):
+    The loop catches this exception, ends the current turn cleanly, and surfaces
+    the wait condition to the gateway layer for RunState persistence and registry
+    arming.
+    """
+
+    def __init__(self, reason: str, wait_kind: str = "user", wait_key: str = "") -> None:
         self.reason = reason
+        self.wait_kind = wait_kind
+        self.wait_key = wait_key
         super().__init__(reason)
 
 
@@ -278,6 +292,7 @@ class ExecutionLoop:
         max_cost_per_turn: float = 0.0,
         max_tokens_per_turn: int = 0,
         max_wall_seconds: float = 600.0,
+        router=None,
     ):
         """Initialize the execution loop.
 
@@ -301,6 +316,10 @@ class ExecutionLoop:
                 Always on (default 600 s = 10 min). Set to a positive value to cap
                 long-running turns independent of iteration count or token budgets.
                 Set to 0 to disable (not recommended; leaves only the iteration cap).
+            router: Optional :class:`~hachi.core.routing.router.ModelRouter`.  When
+                provided, tools and future slices may call ``router.select(capability)``
+                for capability-aware routing.  When ``None`` (default), the loop behaves
+                exactly as today — ``llm_client`` is the only client used.
         """
         self.llm_client = llm_client
         self.registry = registry
@@ -309,6 +328,8 @@ class ExecutionLoop:
         self.on_event = on_event or (lambda *a, **kw: None)
         self.skill_engine = skill_engine
         self.cost_tracker = cost_tracker
+        # Optional ModelRouter — when None, loop uses llm_client directly (back-compat).
+        self.router = router
         # Per-session safety caps (0 = unlimited). Enforced between iterations so a
         # runaway tool-calling loop can't silently drain the user's API budget.
         self.max_cost_usd = max_cost_usd
@@ -343,22 +364,44 @@ class ExecutionLoop:
         self._wall_deadline: float | None = None
 
     def _execute_single_tool(
-        self, tool_call: ToolCall
+        self,
+        tool_call: ToolCall,
+        _otel_ctx: Any = None,
+        _trace_ctx: "TraceContext | None" = None,
     ) -> tuple[Any, bool, "SuspendWorkflow | None"]:
         """Execute one tool call and return (result, is_error, suspend_exc_or_None).
 
         Designed to run inside the thread pool.  ``SuspendWorkflow`` is returned
         as a value (not re-raised) so the caller can collect all futures before
         deciding whether to suspend.
+
+        Args:
+            tool_call:   The tool invocation to execute.
+            _otel_ctx:   OTel context captured on the calling thread (before
+                         submit) so ``tool.call`` spans nest UNDER ``agent.turn``
+                         across the thread boundary — the critical propagation fix.
+            _trace_ctx:  :class:`~hachi.core.obs.trace.TraceContext` to re-bind
+                         inside the worker so correlated logging and event-stamping
+                         work even after the hand-off.
         """
+        # Re-attach the OTel context captured on the submitting thread so spans
+        # opened inside the pool are children of the agent.turn root span.
+        otel_token = attach_otel_context(_otel_ctx)
+        # Re-bind the TraceContext so contextvar-backed lookups work in the worker.
+        from hachi.core.obs.trace import bind as _bind_trace
+
         try:
-            with span("tool.call", tool=tool_call.name):
-                result = self.registry.execute(tool_call)
-            return (result, False, None)
-        except SuspendWorkflow as exc:
-            return (None, False, exc)
-        except Exception as exc:
-            return (f"Tool Execution Error: {str(exc)}", True, None)
+            with _bind_trace(_trace_ctx) if _trace_ctx is not None else contextlib.nullcontext():
+                try:
+                    with span("tool.call", tool=tool_call.name):
+                        result = self.registry.execute(tool_call)
+                    return (result, False, None)
+                except SuspendWorkflow as exc:
+                    return (None, False, exc)
+                except Exception as exc:
+                    return (f"Tool Execution Error: {str(exc)}", True, None)
+        finally:
+            detach_otel_context(otel_token)
 
     def add_user_message(self, text: str):
         """Add a user query to the active session history via the MemoryManager."""
@@ -734,8 +777,35 @@ class ExecutionLoop:
                     self.on_event("text_delta", {"text": chunk})
 
                 try:
-                    with span("llm.generate", model=getattr(self.llm_client, "model", "unknown")):
+                    _llm_model = getattr(self.llm_client, "model", "unknown")
+                    with span("llm.generate", model=_llm_model):
                         response = self._stream_generate(on_delta=_on_delta, **gen_kwargs)
+                        if response is None:
+                            # Defence-in-depth: a resilient/streaming provider path can
+                            # complete with a None value instead of raising when the
+                            # upstream call fails (commonly: out of API credits, invalid
+                            # key, or model unavailable). Surface a clear, logged error
+                            # instead of crashing below on `response.usage` with an opaque
+                            # AttributeError that masks the real cause.
+                            raise RuntimeError(
+                                "LLM returned no response — the AI provider call failed "
+                                "(check API credits, key, and model configuration)."
+                            )
+                        # Enrich the span with token/cost telemetry while still inside
+                        # the span context so attributes land on the correct span.
+                        from hachi.core.tracing import add_span_attributes
+
+                        # ``usage`` can be absent on a degraded/empty provider response
+                        # (e.g. a swallowed upstream failure); guard so telemetry never
+                        # crashes the turn with an opaque AttributeError.
+                        if response.usage is not None:
+                            add_span_attributes(
+                                llm_input_tokens=response.usage.input_tokens,
+                                llm_output_tokens=response.usage.output_tokens,
+                                llm_cache_read_tokens=response.usage.cache_read_tokens,
+                                llm_cache_creation_tokens=response.usage.cache_creation_tokens,
+                                llm_model=_llm_model,
+                            )
                 except _StreamCancelled as exc:
                     # Mid-stream cancel: partial text is in exc.partial_text plus whatever
                     # was already flushed into _partial_text from prior iterations.
@@ -823,7 +893,7 @@ class ExecutionLoop:
                 # (active_groups, active_skill) that downstream tools may rely on, so they
                 # must run before any tool is submitted.
                 tool_results: list[dict[str, Any]] = []
-                suspend_reason = None
+                suspend_exc: SuspendWorkflow | None = None
 
                 for tool_call in response.tool_calls:
                     self.on_event("tool_call", {"name": tool_call.name, "input": tool_call.input})
@@ -853,18 +923,29 @@ class ExecutionLoop:
                 # P4-03: Submit all tool calls to the thread pool concurrently.
                 # Results are collected in original order so the API receives a
                 # well-ordered tool_result block list (Anthropic requires it).
+                #
+                # OTel context propagation (the critical fix, 21-observability.md §3):
+                # The OTel context and TraceContext are captured HERE (on the turn
+                # thread, inside the agent.turn root span) and forwarded into each
+                # worker so tool.call spans are children of agent.turn across the
+                # thread boundary.  Without this capture the pool workers start with a
+                # fresh empty context and spans cannot be correlated.
+                from hachi.core.obs.trace import current as _current_trace_ctx
+
+                _otel_ctx = copy_otel_context()
+                _trace_ctx = _current_trace_ctx()
                 _futures: dict[str, concurrent.futures.Future] = {}
                 for tool_call in response.tool_calls:
                     _futures[tool_call.id] = self._tool_pool.submit(
-                        self._execute_single_tool, tool_call
+                        self._execute_single_tool, tool_call, _otel_ctx, _trace_ctx
                     )
 
                 for tool_call in response.tool_calls:
-                    if suspend_reason:
+                    if suspend_exc is not None:
                         break
                     raw_result, tool_error, _suspend = _futures[tool_call.id].result()
                     if _suspend is not None:
-                        suspend_reason = _suspend.reason
+                        suspend_exc = _suspend
                         break
 
                     # Most tools return text (stringified here). A tool that needs
@@ -914,9 +995,11 @@ class ExecutionLoop:
                 if tool_results:
                     self.memory.add_message(Message(role="user", content=tool_results))
 
-                if suspend_reason:
-                    self.memory.complete_task(user_input_for_turn, f"Suspended: {suspend_reason}")
-                    return f"[WORKFLOW SUSPENDED] {suspend_reason}"
+                if suspend_exc is not None:
+                    self.memory.complete_task(
+                        user_input_for_turn, f"Suspended: {suspend_exc.reason}"
+                    )
+                    return f"[WORKFLOW SUSPENDED] {suspend_exc.reason}"
 
             self.on_event(
                 SESSION_ITERATION_LIMIT,

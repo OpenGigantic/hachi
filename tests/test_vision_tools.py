@@ -16,6 +16,8 @@ from hachi.core.sub_agent import SubAgentMemory
 from hachi.core.tool_results import ToolResultBlocks
 from hachi.tools.vision_tools import (
     _make_view_image,
+    _read_local_image,
+    _sniff_image_media_type,
     register_vision_tools,
 )
 
@@ -156,7 +158,8 @@ def test_view_image_unsupported_provider_returns_text(tmp_path: Path) -> None:
     view = _make_view_image(_Gate("guided"), provider_kind="ollama")
     out = view(str(img))
     assert isinstance(out, str)
-    assert "not supported by the ollama provider" in out
+    # New graceful fallback message (doc 20 §3 step 4).
+    assert "no vision-capable" in out or "configure a vision model" in out.lower()
 
 
 def test_view_image_jpeg_media_type(tmp_path: Path) -> None:
@@ -240,3 +243,66 @@ def test_plain_tool_result_is_still_stringified() -> None:
     content = _last_tool_result_content(_run_with_tool_returning({"status": "ok"}))
     assert isinstance(content, str)
     assert "status" in content
+
+
+# --------------------------------------------------------------------------- #
+# Attachment blobs: extension-less files + managed-blob gate bypass
+# --------------------------------------------------------------------------- #
+def test_sniff_image_media_type_signatures() -> None:
+    assert _sniff_image_media_type(_PNG_1X1) == "image/png"
+    assert _sniff_image_media_type(b"\xff\xd8\xff\xe0\x00\x10JFIF") == "image/jpeg"
+    assert _sniff_image_media_type(b"GIF89a\x01\x00") == "image/gif"
+    assert _sniff_image_media_type(b"RIFF\x24\x00\x00\x00WEBPVP8 ") == "image/webp"
+    assert _sniff_image_media_type(b"this is not an image") is None
+
+
+def test_read_local_image_sniffs_extensionless_blob(tmp_path: Path) -> None:
+    """A content-addressed blob has no suffix; media type must be sniffed."""
+    blob = tmp_path / "a3f9c0deadbeefcafe"  # SHA-256-style id, no extension
+    blob.write_bytes(_PNG_1X1)
+    result = _read_local_image(str(blob), _Gate("guided", allowed=True))
+    assert not isinstance(result, str), result  # not an error string
+    raw, media_type, _label = result
+    assert media_type == "image/png"
+    assert raw == _PNG_1X1
+
+
+def _fake_paths(tmp_path: Path):
+    from hachi.core.paths import HachiPaths
+
+    return HachiPaths(
+        config_dir=tmp_path / "cfg",
+        data_dir=tmp_path / "data",
+        cache_dir=tmp_path / "cache",
+        state_dir=tmp_path / "state",
+    )
+
+
+def test_read_local_image_allows_managed_blob_despite_denying_gate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An attachment under the managed blobs dir is readable even when the gate
+    denies everything — it is first-party content, not an arbitrary FS path."""
+    paths = _fake_paths(tmp_path)
+    monkeypatch.setattr("hachi.core.paths.get_hachi_paths", lambda: paths)
+
+    paths.blobs_dir.mkdir(parents=True)
+    blob = paths.blobs_dir / "deadbeefcafe0001"  # extension-less, inside blobs dir
+    blob.write_bytes(_PNG_1X1)
+
+    result = _read_local_image(str(blob), _Gate("guided", allowed=False))
+    assert not isinstance(result, str), result  # NOT "Permission Denied"
+    _raw, media_type, _label = result
+    assert media_type == "image/png"
+
+
+def test_read_local_image_still_gates_non_blob_paths(tmp_path: Path, monkeypatch) -> None:
+    """The managed-blob bypass is scoped: ordinary paths remain gated."""
+    paths = _fake_paths(tmp_path)
+    monkeypatch.setattr("hachi.core.paths.get_hachi_paths", lambda: paths)
+
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(_PNG_1X1)
+    result = _read_local_image(str(outside), _Gate("guided", allowed=False))
+    assert isinstance(result, str)
+    assert "Permission Denied" in result

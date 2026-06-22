@@ -201,12 +201,12 @@ function FactCard({
                 padding: '0 13px',
                 borderRadius: '8px',
                 border: '0.5px solid transparent',
-                background: 'var(--hachi-brand)',
+                background: 'var(--hachi-brand-hover)',
                 color: 'var(--hachi-canvas)',
                 font: '500 13px var(--font-body)',
                 cursor: 'pointer',
               }}
-              hoverStyle={{ background: 'var(--hachi-brand-hover)' }}
+              hoverStyle={{ background: 'var(--hachi-brand-active)' }}
             >
               Save
             </TextBtn>
@@ -536,12 +536,12 @@ function Memory() {
                       padding: '0 15px',
                       borderRadius: '10px',
                       border: '0.5px solid transparent',
-                      background: 'var(--hachi-brand)',
+                      background: 'var(--hachi-brand-hover)',
                       color: 'var(--hachi-canvas)',
                       font: '500 13px var(--font-body)',
                       cursor: recallLoading ? 'not-allowed' : 'pointer',
                     }}
-                    hoverStyle={{ background: 'var(--hachi-brand-hover)' }}
+                    hoverStyle={{ background: 'var(--hachi-brand-active)' }}
                   >
                     <Icon name={recallLoading ? 'loader' : 'search'} size={15} />
                     {recallLoading ? 'Recalling…' : 'Recall'}
@@ -685,12 +685,12 @@ function Memory() {
                           padding: '0 14px',
                           borderRadius: '10px',
                           border: '0.5px solid transparent',
-                          background: 'var(--hachi-brand)',
+                          background: 'var(--hachi-brand-hover)',
                           color: 'var(--hachi-canvas)',
                           font: '500 13px var(--font-body)',
                           cursor: 'pointer',
                         }}
-                        hoverStyle={{ background: 'var(--hachi-brand-hover)' }}
+                        hoverStyle={{ background: 'var(--hachi-brand-active)' }}
                       >
                         Approve change
                       </TextBtn>
@@ -823,12 +823,12 @@ function Memory() {
                         padding: '0 14px',
                         borderRadius: '8px',
                         border: '0.5px solid transparent',
-                        background: 'var(--hachi-brand)',
+                        background: 'var(--hachi-brand-hover)',
                         color: 'var(--hachi-canvas)',
                         font: '500 13px var(--font-body)',
                         cursor: addFactSaving || !addFactText.trim() ? 'not-allowed' : 'pointer',
                       }}
-                      hoverStyle={{ background: 'var(--hachi-brand-hover)' }}
+                      hoverStyle={{ background: 'var(--hachi-brand-active)' }}
                     >
                       {addFactSaving ? 'Saving…' : 'Save fact'}
                     </TextBtn>

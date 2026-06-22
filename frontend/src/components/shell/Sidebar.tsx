@@ -41,6 +41,7 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
   const openPalette = useStore((s) => s.openPalette)
   const spent = useStore((s) => s.spent)
   const budget = useStore((s) => s.budget)
+  const setWorkFilter = useStore((s) => s.setWorkFilter)
   const approvals = useStore((s) => s.approvals)
 
   const runs = useStore((s) => s.runs)
@@ -58,6 +59,8 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
   const currentPath = location.pathname
 
   const handleBudgetClick = () => {
+    // Land directly on the Spend tab (not the default Active tab).
+    setWorkFilter('spend')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     navigate({ to: '/work' as any })
     onNavClick?.()
@@ -117,29 +120,42 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
         </span>
       </button>
 
-      {/* Nav list */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+      {/* Nav list — flexes and scrolls when taller than the sidebar, so the
+          operator toggle and budget widget below it are never clipped. */}
+      <div
+        className="hachi-scroll"
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '2px',
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+        }}
+      >
         {NAV_ITEMS.map((item) => {
           const isActive = currentPath === item.route
           const badge = item.key === 'approvals' ? pendingApprovals : undefined
           return (
-            <NavItem
-              key={item.key}
-              label={item.label}
-              icon={item.icon}
-              active={isActive}
-              badge={badge}
-              onClick={() => {
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                navigate({ to: item.route as any })
-                onNavClick?.()
-              }}
-            />
+            <React.Fragment key={item.key}>
+              {item.key === 'skills' && (
+                <hr style={{ border: 'none', borderTop: '0.5px solid var(--hachi-line)', margin: '6px 0' }} />
+              )}
+              <NavItem
+                label={item.label}
+                icon={item.icon}
+                active={isActive}
+                badge={badge}
+                onClick={() => {
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  navigate({ to: item.route as any })
+                  onNavClick?.()
+                }}
+              />
+            </React.Fragment>
           )
         })}
       </div>
-
-      <div style={{ flex: 1 }} />
 
       {/* Operator view toggle */}
       <label
@@ -280,7 +296,7 @@ export function Sidebar() {
         width: '248px',
         flexShrink: 0,
         background: 'var(--hachi-surface)',
-        borderRight: '0.5px solid var(--hachi-line)',
+        borderRight: '1px solid var(--hachi-line)',
         height: '100%',
         display: 'flex',
         flexDirection: 'column',

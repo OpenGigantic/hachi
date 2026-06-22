@@ -16,6 +16,7 @@ import os
 import sys
 import threading
 from dataclasses import asdict
+from datetime import date as _date
 from pathlib import Path
 
 import typer
@@ -329,6 +330,22 @@ class _InProcessGatewayRuntime:
             return []
         return [dict(item) for item in agent.query_recent_sessions(limit=limit)]
 
+    def session_messages(self, session_id: str, limit: int = 500) -> list[dict]:
+        """Stored transcript for a (possibly historical) session — powers resume."""
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return []
+        return [dict(item) for item in agent.query_session_messages(session_id, limit=limit)]
+
+    def delete_session_record(self, session_id: str) -> bool:
+        """Permanently delete a persisted session from the store. True if it existed."""
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return False
+        return bool(agent.delete_session(session_id))
+
     def runtime_events(self, session_id: str | None, limit: int) -> list[dict]:
         if session_id:
             agent = self._get_agent(session_id)
@@ -442,13 +459,13 @@ class _InProcessGatewayRuntime:
     def get_config(self) -> dict:
         config = load_effective_config()
         raw = config.model_dump(mode="python", exclude_none=True)
-        # Step 1: Ensure GET /config always includes a ``limits`` block with the
-        # frontend-facing keys ``per_task_cap_usd`` / ``daily_cap_usd`` so that
-        # caps saved via PUT /config/limits round-trip on reload.
-        # Internally the model stores max_turn_cost_usd / max_session_cost_usd.
+        # Ensure GET /config always includes a ``limits`` block with the frontend-facing
+        # keys ``per_task_cap_usd`` / ``daily_cap_usd`` so caps saved via PUT /config/limits
+        # round-trip on reload.
+        # Internally: max_turn_cost_usd = per-task cap, max_daily_cost_usd = daily cap.
         limits_block = raw.setdefault("limits", {})
-        limits_block["per_task_cap_usd"] = config.limits.max_turn_cost_usd
-        limits_block["daily_cap_usd"] = config.limits.max_session_cost_usd
+        limits_block["per_task_cap_usd"] = getattr(config.limits, "max_turn_cost_usd", None)
+        limits_block["daily_cap_usd"] = getattr(config.limits, "max_daily_cost_usd", None)
         return raw
 
     def update_provider(self, payload: dict) -> dict:
@@ -467,10 +484,15 @@ class _InProcessGatewayRuntime:
         api_key_env = provider.get("api_key_env")
 
         if kind is not None:
+            from typing import get_args
+
+            from hachi.core.settings import ProviderKind
+
             kind_text = str(kind)
-            if kind_text not in {"anthropic", "openai-compatible", "ollama"}:
+            _valid_kinds = set(get_args(ProviderKind))
+            if kind_text not in _valid_kinds:
                 raise GatewayProtocolError(
-                    "provider.kind must be anthropic, openai-compatible, or ollama"
+                    f"provider.kind must be one of: {', '.join(sorted(_valid_kinds))}"
                 )
             config.provider.kind = kind_text  # type: ignore[assignment]
 
@@ -542,8 +564,13 @@ class _InProcessGatewayRuntime:
         errors: list[str] = []
         warnings: list[str] = []
 
-        if kind not in {"anthropic", "openai-compatible", "ollama"}:
-            errors.append("provider.kind must be anthropic, openai-compatible, or ollama")
+        from typing import get_args
+
+        from hachi.core.settings import ProviderKind
+
+        _valid_kinds = set(get_args(ProviderKind))
+        if kind not in _valid_kinds:
+            errors.append(f"provider.kind must be one of: {', '.join(sorted(_valid_kinds))}")
         if not model:
             errors.append("provider.model is required")
 
@@ -582,9 +609,7 @@ class _InProcessGatewayRuntime:
                         f"permissions.ask_before.{key} is not a recognised rule"
                     )
                 if not isinstance(value, bool):
-                    raise GatewayProtocolError(
-                        f"permissions.ask_before.{key} must be a boolean"
-                    )
+                    raise GatewayProtocolError(f"permissions.ask_before.{key} must be a boolean")
                 setattr(config.permissions.ask_before, key, value)
 
         write_global_config(config)
@@ -647,9 +672,7 @@ class _InProcessGatewayRuntime:
                 "api_key_env": getattr(config.provider, "api_key_env", None),
                 "base_url": getattr(config.provider, "base_url", None),
             }
-            client = create_llm_client(
-                provider_config, secret_store=create_default_secret_store()
-            )
+            client = create_llm_client(provider_config, secret_store=create_default_secret_store())
             try:
                 discovered = client.list_models()
             finally:
@@ -769,12 +792,72 @@ class _InProcessGatewayRuntime:
         return results
 
     def get_og_graph(self) -> dict:
-        """Return the ObjectGraph node graph (route: GET /og/graph)."""
+        """Return the ObjectGraph node graph (route: GET /og/graph).
+
+        When an active agent session exists, its skill engine (which includes
+        workspace skills) is used.  Before any session is started, falls back to
+        the process-shared skill engine populated by
+        :class:`~hachi.gateway.shared_services.ProcessSharedServices`, which
+        loads the bundled default skills at gateway boot time.  This ensures the
+        OG Explorer shows data even before the first conversation is opened.
+        """
+        from hachi.gateway.orchestrator import og_graph_from_engine
+
         with self._agents_lock:
             agent = next(iter(self._agents.values()), None)
-        if agent is None:
-            return {"nodes": []}
-        return agent.snapshot_og_graph()
+        if agent is not None:
+            return agent.snapshot_og_graph()
+
+        # No active session yet. Prefer the process-shared engine if a prior
+        # session already initialised it; otherwise build a standalone engine
+        # from the bundled default skills so the OG Explorer is populated before
+        # the first conversation is opened (the shared services are created
+        # lazily on first session boot, not at gateway startup).
+        from hachi.gateway.shared_services import ProcessSharedServices
+
+        shared = ProcessSharedServices.instance()
+        if shared is not None and shared.skill_engine is not None:
+            graph = og_graph_from_engine(shared.skill_engine)
+            if graph.get("count"):
+                return graph
+
+        engine = self._standalone_og_engine()
+        if engine is not None:
+            return og_graph_from_engine(engine)
+        return {"nodes": [], "count": 0}
+
+    def _standalone_og_engine(self) -> object | None:
+        """Build (once, cached) a SkillEngine from the bundled default skills.
+
+        The process-shared services are initialised lazily on first session
+        boot, so before any conversation exists ``ProcessSharedServices.instance``
+        is ``None``. This standalone engine lets the OG Explorer show the skill
+        graph immediately after gateway startup.
+        """
+        cached = getattr(self, "_og_engine_cache", None)
+        if cached is not None:
+            return cached
+        try:
+            from hachi.core.paths import get_hachi_paths
+            from hachi.og_engine.engine import SkillEngine
+
+            engine = SkillEngine(agent_role="orchestrator")
+            default_skills_dir = Path(__file__).parent.parent / "default_skills"
+            if default_skills_dir.exists():
+                engine.load_directory(default_skills_dir)
+            try:
+                engine.load_directory(get_hachi_paths().skills_dir)
+            except OSError:
+                logging.getLogger(__name__).debug(
+                    "standalone OG engine: workspace load skipped", exc_info=True
+                )
+            self._og_engine_cache = engine
+            return engine
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "standalone OG engine build failed", exc_info=True
+            )
+            return None
 
     def get_authoring_targets(self) -> list[dict]:
         """List editable .og and config targets from the workspace (route: GET /authoring/targets).
@@ -910,9 +993,7 @@ class _InProcessGatewayRuntime:
         }
 
         try:
-            client = create_llm_client(
-                provider_config, secret_store=create_default_secret_store()
-            )
+            client = create_llm_client(provider_config, secret_store=create_default_secret_store())
         except ValueError as exc:
             raise GatewayUnavailableError(
                 f"Cannot generate patch: LLM client unavailable — {exc}. "
@@ -949,9 +1030,7 @@ class _InProcessGatewayRuntime:
 
         proposed = response.content.strip()
         if not proposed:
-            raise GatewayUnavailableError(
-                "LLM returned an empty response; cannot produce a diff."
-            )
+            raise GatewayUnavailableError("LLM returned an empty response; cannot produce a diff.")
 
         # Store pending proposal so apply() can write it.
         with self._authoring_lock:
@@ -1001,9 +1080,7 @@ class _InProcessGatewayRuntime:
             proposed = self._pending_proposals.get(name)
 
         if proposed is None:
-            raise GatewayProtocolError(
-                f"No pending proposal for '{name}'. Call /generate first."
-            )
+            raise GatewayProtocolError(f"No pending proposal for '{name}'. Call /generate first.")
 
         file_path = self._resolve_authoring_target_path(name)
         prior = file_path.read_text(encoding="utf-8")
@@ -1240,6 +1317,33 @@ class _InProcessGatewayRuntime:
 
         return {"turns": turns, "tidies": tidies, "models": models}
 
+    def get_spend_daily(self) -> dict:
+        """Return today's accumulated spend plus configured caps (GET /spend/daily).
+
+        Reads the daily_spend ledger from SQLite directly — no live agent needed.
+        Works immediately after a restart so the frontend can hydrate ``spent`` on load.
+
+        Returns:
+            Dict with:
+                ``spent_usd``     — cumulative spend for today (local calendar date).
+                ``daily_cap_usd`` — configured daily cap or ``None`` if unlimited.
+                ``task_cap_usd``  — configured per-task (turn) cap or ``None`` if unlimited.
+                ``date``          — today's ISO date string (e.g. ``"2026-06-22"``).
+        """
+        today = _date.today().isoformat()
+        store = SessionStore()
+        try:
+            spent = store.get_daily_spend(today)
+        finally:
+            store.shutdown()
+        config = load_effective_config()
+        return {
+            "spent_usd": spent,
+            "daily_cap_usd": config.limits.max_daily_cost_usd,
+            "task_cap_usd": config.limits.max_turn_cost_usd,
+            "date": today,
+        }
+
     def set_capability_enabled(self, cap_id: str, enabled: bool) -> dict:
         """Toggle a capability on/off and persist to global config (PUT /capabilities/{id}/enabled).
 
@@ -1307,12 +1411,12 @@ class _InProcessGatewayRuntime:
     def update_limits(self, payload: dict) -> dict:
         """Persist per-task and daily spend caps to global config (PUT /config/limits).
 
-        Reads the existing config, updates limits.max_turn_cost_usd and
-        limits.max_session_cost_usd (frontend terms: per_task_cap_usd / daily_cap_usd),
+        Reads the existing config, updates limits.max_turn_cost_usd (frontend:
+        ``per_task_cap_usd``) and limits.max_daily_cost_usd (frontend: ``daily_cap_usd``),
         writes back, and returns the updated config dump.
 
         Args:
-            payload: Dict with optional per_task_cap_usd and daily_cap_usd (float, USD).
+            payload: Dict with optional ``per_task_cap_usd`` and ``daily_cap_usd`` (float, USD).
 
         Returns:
             Updated config dict.
@@ -1330,7 +1434,9 @@ class _InProcessGatewayRuntime:
         if daily is not None:
             try:
                 val = float(daily)
-                config.limits.max_session_cost_usd = val if val > 0 else None
+                # max_daily_cost_usd is the rolling calendar-day cap; distinct from
+                # max_session_cost_usd which caps a single conversation session.
+                config.limits.max_daily_cost_usd = val if val > 0 else None
             except (TypeError, ValueError):
                 raise GatewayProtocolError("daily_cap_usd must be a number") from None
 
@@ -1357,9 +1463,7 @@ class _InProcessGatewayRuntime:
 
         permissions_file = get_permissions_file()
         if not permissions_file.exists():
-            raise GatewayProtocolError(
-                "device-permissions.og not found — run `hachi setup` first"
-            )
+            raise GatewayProtocolError("device-permissions.og not found — run `hachi setup` first")
 
         resolved = str(_Path(path).expanduser().resolve())
         content = permissions_file.read_text(encoding="utf-8")
@@ -1397,9 +1501,7 @@ class _InProcessGatewayRuntime:
 
         permissions_file = get_permissions_file()
         if not permissions_file.exists():
-            raise GatewayProtocolError(
-                "device-permissions.og not found — run `hachi setup` first"
-            )
+            raise GatewayProtocolError("device-permissions.og not found — run `hachi setup` first")
 
         content = permissions_file.read_text(encoding="utf-8")
         lines = content.splitlines()
@@ -1468,6 +1570,7 @@ class _InProcessGatewayRuntime:
         tmp = config_toml.with_name(f"{config_toml.name}.tmp")
         tmp.write_text(_tomlkit.dumps(doc), encoding="utf-8")
         import os as _os
+
         _os.replace(tmp, config_toml)
 
         return {"ok": True, "request": req, "action": act, "already_existed": False}
@@ -1678,6 +1781,98 @@ class _InProcessGatewayRuntime:
                 except Exception:
                     results.append(False)
         return {"ok": any(results)}
+
+    # ------------------------------------------------------------------
+    # Multi-provider admin (provider_admin delegates)
+    # ------------------------------------------------------------------
+
+    def list_providers(self) -> dict:
+        """Return all configured providers with secrets masked (GET /config/providers).
+
+        Returns:
+            Dict with ``providers`` list.
+        """
+        from hachi.gateway.provider_admin import list_providers as _list_providers
+
+        return _list_providers()
+
+    def add_or_update_provider(self, name: str, spec: dict) -> dict:
+        """Upsert a named provider in config.providers.
+
+        Args:
+            name: Provider name (``__primary__`` updates the primary provider).
+            spec: Dict with kind, model, base_url, allowed_models, headers, api_key.
+
+        Returns:
+            Masked provider entry after write.
+        """
+        from hachi.gateway.provider_admin import add_or_update_provider as _upsert
+
+        result = _upsert(name, spec)
+        self._reload_agents()
+        return result
+
+    def remove_provider(self, name: str) -> dict:
+        """Remove a named provider from config.
+
+        Args:
+            name: Provider name to remove.
+
+        Returns:
+            ``{"ok": True, "name": name}``.
+        """
+        from hachi.gateway.provider_admin import remove_provider as _remove
+
+        result = _remove(name)
+        self._reload_agents()
+        return result
+
+    def get_routing(self) -> dict:
+        """Return the capability routing matrix (GET /config/routing).
+
+        Returns:
+            Dict with default_model and capabilities list.
+        """
+        from hachi.gateway.provider_admin import get_routing as _get_routing
+
+        return _get_routing()
+
+    def set_routing(self, default_model: str, capabilities: dict) -> dict:
+        """Persist the routing matrix (PUT /config/routing).
+
+        Args:
+            default_model: Default/fallback model id.
+            capabilities: Mapping of capability name → ordered model-id list.
+
+        Returns:
+            New routing snapshot.
+        """
+        from hachi.gateway.provider_admin import set_routing as _set_routing
+
+        return _set_routing(default_model, capabilities)
+
+    def test_provider_connection(self, name: str) -> dict:
+        """Best-effort connectivity test for a provider.
+
+        Args:
+            name: Provider name (``__primary__`` for the primary provider).
+
+        Returns:
+            ``{"ok": bool, "detail": str}``.
+        """
+        from hachi.gateway.provider_admin import test_connection
+
+        return test_connection(name)
+
+    def list_all_models(self) -> dict:
+        """Return model ids per configured provider (GET /config/models/all).
+
+        Returns:
+            Dict keyed by provider name → list of model ids.
+        """
+        from hachi.gateway.provider_admin import list_all_models as _list_all_models
+
+        return _list_all_models()
 
 
 def _gateway_readiness_probe() -> tuple[bool, list[str]]:
@@ -1941,6 +2136,8 @@ def _build_gateway_control_plane(
         read_events=runtime.read_events if runtime else None,
         get_session_state=runtime.session_state if runtime else None,
         get_recent_sessions=runtime.recent_sessions if runtime else None,
+        get_session_messages=runtime.session_messages if runtime else None,
+        delete_session=runtime.delete_session_record if runtime else None,
         get_runtime_events=runtime.runtime_events if runtime else None,
         get_mcp_inventory=runtime.mcp_inventory if runtime else None,
         get_active_jobs=runtime.active_jobs if runtime else None,
@@ -1971,6 +2168,7 @@ def _build_gateway_control_plane(
         authoring_revert=support.authoring_revert,
         authoring_save_source=support.authoring_save_source,
         get_spend=runtime.get_spend if runtime else None,
+        get_spend_daily=support.get_spend_daily,
         set_capability_enabled=support.set_capability_enabled,
         # Memory CRUD:
         add_memory_fact=runtime.add_memory_fact if runtime else None,
@@ -1983,6 +2181,14 @@ def _build_gateway_control_plane(
         register_mcp_server=support.register_mcp_server,
         get_kennel=support.get_kennel,
         add_skill=support.add_skill_from_kennel,
+        # Multi-provider admin:
+        list_providers=support.list_providers,
+        add_or_update_provider=support.add_or_update_provider,
+        remove_provider=support.remove_provider,
+        get_routing=support.get_routing,
+        set_routing=support.set_routing,
+        test_provider_connection=support.test_provider_connection,
+        list_all_models=support.list_all_models,
         max_active_sessions=max_active_sessions,
         max_prompt_chars=max_prompt_chars,
     )
