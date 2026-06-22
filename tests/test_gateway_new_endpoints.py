@@ -9,6 +9,7 @@ Covers:
   Step 6 — POST /memory/facts accepts all three group values
   Step 7 — Slash-command handling for /model, /help, /unknown
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -48,7 +49,7 @@ class _FakeResolvedConfig:
     def __init__(self, per_task: float | None = None, daily: float | None = None) -> None:
         self.limits = SimpleNamespace(
             max_turn_cost_usd=per_task,
-            max_session_cost_usd=daily,
+            max_daily_cost_usd=daily,
         )
         self.provider = SimpleNamespace(
             kind="anthropic",
@@ -191,9 +192,7 @@ def test_authoring_save_source_runtime_validation(
     # Mock _resolve_authoring_target_path to return a real temp file path.
     og_file = tmp_path / "brain-test.og"
     og_file.write_text("", encoding="utf-8")
-    monkeypatch.setattr(
-        runtime, "_resolve_authoring_target_path", lambda name: og_file
-    )
+    monkeypatch.setattr(runtime, "_resolve_authoring_target_path", lambda name: og_file)
 
     # Patch the og parser at the module level to simulate a parse failure.
     with patch("hachi.og_engine.parser.parse_og_file", side_effect=ValueError("bad syntax")):
@@ -211,9 +210,7 @@ def test_authoring_save_source_non_og_skips_parse(
     toml_file = tmp_path / "settings.toml"
     toml_file.write_text("[provider]\nkind = 'anthropic'\n", encoding="utf-8")
 
-    monkeypatch.setattr(
-        runtime, "_resolve_authoring_target_path", lambda name: toml_file
-    )
+    monkeypatch.setattr(runtime, "_resolve_authoring_target_path", lambda name: toml_file)
 
     result = runtime.authoring_save_source("settings.toml", "[provider]\nkind = 'ollama'\n")
     assert result["ok"] is True
@@ -412,8 +409,7 @@ def test_memory_fact_add_runtime_group_mapping(monkeypatch: pytest.MonkeyPatch) 
     runtime = _InProcessGatewayRuntime()
     expected_groups = {"core_memory", "user_profile", "agent_profile"}
     assert expected_groups == set(runtime._VAULT_GROUP_MAP.keys()), (
-        f"_VAULT_GROUP_MAP missing groups: "
-        f"{expected_groups - set(runtime._VAULT_GROUP_MAP.keys())}"
+        f"_VAULT_GROUP_MAP missing groups: {expected_groups - set(runtime._VAULT_GROUP_MAP.keys())}"
     )
 
 
@@ -621,3 +617,85 @@ def test_slash_not_sent_to_llm() -> None:
         client.post(f"/sessions/{session_id}/messages", json={"prompt": "/model"})
 
     assert llm_called == [], f"LLM was called with: {llm_called}"
+
+
+# ---------------------------------------------------------------------------
+# Step 8 — attachment_ids augment the forwarded prompt (file-platform wiring)
+#
+# The frontend uploads files (POST /files) and sends their ids alongside a
+# message (POST /sessions/{id}/messages, body {prompt, attachment_ids}). The
+# gateway's _build_augmented_prompt() looks each id up in the FileMetaStore and
+# appends a context block before forwarding to the LLM. These tests exercise
+# that wiring through the HTTP layer — _make_cp_with_chat() echoes the prompt it
+# receives, so the response body reveals exactly what reached the LLM.
+# ---------------------------------------------------------------------------
+
+
+def _seed_file_meta(tmp_path, *, file_id, name, media_type, extracted_text_ref=None):
+    """Insert one FileMeta row and return a fake HachiPaths pointing at tmp_path."""
+    from hachi.core.files.store import FileMeta, FileMetaStore
+
+    store = FileMetaStore(tmp_path / "files.db")
+    store.save(
+        FileMeta(
+            file_id=file_id,
+            name=name,
+            media_type=media_type,
+            size=42,
+            extracted_text_ref=extracted_text_ref,
+        )
+    )
+    return SimpleNamespace(files_db=tmp_path / "files.db", blobs_dir=tmp_path / "blobs")
+
+
+def _post_message(client, prompt, attachment_ids):
+    """Create a session and post a message; return the raw response."""
+    create = client.post(
+        "/sessions",
+        json={"client_id": "t", "surface": "test", "protocol_version": "1.0"},
+    )
+    session_id = create.json()["session_id"]
+    return client.post(
+        f"/sessions/{session_id}/messages",
+        json={"prompt": prompt, "attachment_ids": attachment_ids},
+    )
+
+
+def test_message_with_image_attachment_augments_prompt(tmp_path) -> None:
+    """An image attachment_id appends a view_image hint to the forwarded prompt."""
+    fake_paths = _seed_file_meta(
+        tmp_path, file_id="img1", name="diagram.png", media_type="image/png"
+    )
+    cp = _make_cp_with_chat()
+    with patch("hachi.core.paths.get_hachi_paths", return_value=fake_paths):
+        with _app(cp) as client:
+            resp = _post_message(client, "what is this?", ["img1"])
+    assert resp.status_code == 200
+    reply = resp.json()["response"]
+    # The original prompt AND the synthesized image block must reach the LLM.
+    assert "what is this?" in reply
+    assert "[Attached image: diagram.png]" in reply
+    assert "view_image" in reply
+
+
+def test_message_without_attachments_is_not_augmented() -> None:
+    """No attachment_ids → the prompt is forwarded verbatim (regression guard)."""
+    cp = _make_cp_with_chat()
+    with _app(cp) as client:
+        resp = _post_message(client, "plain question", [])
+    assert resp.status_code == 200
+    assert resp.json()["response"] == "LLM reply to: plain question"
+
+
+def test_message_with_unknown_attachment_id_degrades_gracefully(tmp_path) -> None:
+    """An unknown attachment_id is skipped, not fatal — prompt forwarded unchanged."""
+    from hachi.core.files.store import FileMetaStore
+
+    FileMetaStore(tmp_path / "files.db")  # empty store → get() returns None
+    fake_paths = SimpleNamespace(files_db=tmp_path / "files.db", blobs_dir=tmp_path / "blobs")
+    cp = _make_cp_with_chat()
+    with patch("hachi.core.paths.get_hachi_paths", return_value=fake_paths):
+        with _app(cp) as client:
+            resp = _post_message(client, "hello", ["does-not-exist"])
+    assert resp.status_code == 200
+    assert resp.json()["response"] == "LLM reply to: hello"

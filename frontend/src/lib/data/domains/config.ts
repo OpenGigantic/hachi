@@ -19,6 +19,7 @@ import { apiGet, apiSend, USE_MOCKS } from "../client";
 import { registerLoader } from "../live";
 import { dedupe } from "../dedupe";
 import { useStore } from "../../store/store";
+import { loadDailySpend } from "./spend";
 import type { SafetyLevel, Provider, AskRule } from "../types";
 
 // ---- Local types mirroring the gateway Python dataclasses ----
@@ -175,9 +176,19 @@ async function _loadConfigImpl(): Promise<void> {
         ? limitsRaw.daily_cap_usd
         : currentState.dailyCap;
 
+    // `budget` is the denominator shown in the governance bar / home / settings
+    // spend readouts. Keep it in lockstep with the persisted daily cap so the
+    // value survives a refresh (previously only `dailyCap` was hydrated, leaving
+    // `budget` at its 5.0 default → "of $5.00" instead of the saved cap).
     useStore
       .getState()
-      .hydrate({ safety, askRules, provider, taskCap, dailyCap, configLoaded: true });
+      .hydrate({ safety, askRules, provider, taskCap, dailyCap, budget: dailyCap, configLoaded: true });
+
+    // Restore today's real accumulated spend from the daily ledger so the
+    // spend bar reflects the correct value on every page load (not just during
+    // active streaming turns where SSE bumps it in real time).
+    await loadDailySpend();
+
     _hasEverSucceeded = true;
   } catch {
     if (!_hasEverSucceeded) {
@@ -257,6 +268,25 @@ export async function setProviderLive(patch: Partial<Provider>): Promise<void> {
   } catch {
     // Network errors surface the reconnecting banner via client.ts callback.
   }
+}
+
+/**
+ * Persist the spend caps to the gateway via PUT /config/limits.
+ *
+ * Unlike the optimistic setters above (which swallow network errors), this
+ * PROPAGATES failures: the Settings "Save" button needs to distinguish success
+ * from failure to keep the unsaved indicator and show the right toast. Pass a
+ * non-positive value (or null) to clear a cap. No-ops in mock mode.
+ */
+export async function setLimitsLive(
+  perTaskCapUsd: number | null,
+  dailyCapUsd: number | null
+): Promise<void> {
+  if (USE_MOCKS) return;
+  await apiSend<GatewayConfig>("PUT", "/config/limits", {
+    per_task_cap_usd: perTaskCapUsd,
+    daily_cap_usd: dailyCapUsd,
+  });
 }
 
 /**

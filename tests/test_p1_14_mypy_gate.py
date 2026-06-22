@@ -21,6 +21,7 @@ def _run_gate() -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "mypy", "--config-file", str(_GATE_CONFIG)],
         capture_output=True,
+        stdin=subprocess.DEVNULL,
         text=True,
         cwd=_REPO_ROOT,
     )
@@ -43,7 +44,8 @@ def test_gate_config_lists_at_least_36_files() -> None:
     """Sanity-check that the gate config hasn't been accidentally emptied."""
     content = _GATE_CONFIG.read_text(encoding="utf-8")
     py_files = [
-        ln.strip().rstrip(",") for ln in content.splitlines()
+        ln.strip().rstrip(",")
+        for ln in content.splitlines()
         if ln.strip().endswith(".py,") or ln.strip().endswith(".py")
     ]
     assert len(py_files) >= 36, (

@@ -318,6 +318,7 @@ export interface ChatMessage {
   text: string;
   cards: ActionCard[];
   routine?: RoutineProposal | null;
+  attachments?: Pick<PendingAttachment, "name" | "mediaType" | "size">[];
 }
 
 // ----- run pack (live run) -----
@@ -343,4 +344,19 @@ export interface Provider {
   name: string;
   model: string;
   key: string;
+}
+
+// ----- file attachments (Phase 4 — Initiative E wiring) -----
+export interface PendingAttachment {
+  /** Stable local key used before the server responds. Replaced by real SHA-256 file_id on upload success. */
+  fileId: string;
+  name: string;
+  mediaType: string;
+  size: number;
+  /** Object URL for local image preview; undefined for non-image files. */
+  localUrl?: string;
+  /** True while the upload is in flight. */
+  uploading?: boolean;
+  /** Set when upload failed; chip shows an error state. */
+  error?: string;
 }

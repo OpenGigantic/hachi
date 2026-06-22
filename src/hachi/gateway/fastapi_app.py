@@ -11,13 +11,23 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import anyio
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 # UC-PERM-006: approvals inbox REST surface. core/approvals.py is a foundation
@@ -92,6 +102,7 @@ class SessionCreateResponse(BaseModel):
 
 class SessionMessageRequest(BaseModel):
     prompt: str
+    attachment_ids: list[str] = []
 
 
 class SessionMessageResponse(BaseModel):
@@ -132,6 +143,41 @@ class ConfigPayload(BaseModel):
 
 class ProviderRequest(BaseModel):
     provider: dict[str, Any]
+
+
+class ProviderUpsertRequest(BaseModel):
+    """Body for POST /config/providers (add) and PUT /config/providers/{name} (update)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str | None = None  # present for POST; absent for PUT (name in path)
+    kind: str = "anthropic"
+    model: str = ""
+    base_url: str | None = None
+    allowed_models: list[str] = Field(default_factory=list)
+    headers: dict[str, str] = Field(default_factory=dict)
+    api_key: str | None = None
+
+
+class RoutingUpdateRequest(BaseModel):
+    """Body for PUT /config/routing."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    default_model: str
+    capabilities: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class VoiceSpeakBody(BaseModel):
+    """Body for POST /voice/speak."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    text: str = Field(max_length=8000)
+    voice: str | None = None
+    model: str | None = None
+    format: str = "mp3"
+    provider: Literal["openai", "elevenlabs"] | None = None
 
 
 class PermissionsRequest(BaseModel):
@@ -185,6 +231,7 @@ class CapabilityToggleRequest(BaseModel):
 
 
 # G1 — new request models
+
 
 class LimitsRequest(BaseModel):
     """Body for PUT /config/limits (G1-T3)."""
@@ -457,6 +504,51 @@ def create_gateway_app(
     ) -> JSONResponse:
         return _error_response(status_code=503, code="service_unavailable", message=str(exc))
 
+    # Provider (LLM) errors — surface the upstream provider's actionable message
+    # (e.g. "credit balance too low", auth failure, rate limit) instead of masking
+    # it as an opaque 500 internal_error. Only the provider's user-facing message
+    # is exposed — never the stack trace or API key. Registered against
+    # anthropic.APIStatusError; its subclasses (BadRequestError / AuthenticationError
+    # / RateLimitError / ...) are matched via the exception MRO. Guarded import so
+    # the gateway still starts if the SDK is absent (e.g. non-runtime mode).
+    _anthropic: Any = None
+    try:
+        import anthropic
+
+        _anthropic = anthropic
+    except Exception:  # pragma: no cover - anthropic is present in runtime mode
+        pass
+
+    if _anthropic is not None:
+
+        @app.exception_handler(_anthropic.APIStatusError)
+        async def _provider_error_handler(_request: Request, exc: Any) -> JSONResponse:
+            status = getattr(exc, "status_code", None) or 400
+            message: str | None = None
+            body = getattr(exc, "body", None)
+            if isinstance(body, dict):
+                err = body.get("error")
+                if isinstance(err, dict) and isinstance(err.get("message"), str):
+                    message = err["message"]
+            if not message:
+                message = getattr(exc, "message", None) or "AI provider request failed."
+            # Upstream 5xx / overloaded → transient: report as unavailable so clients
+            # may retry. Upstream 4xx (billing / auth / validation / rate-limit) →
+            # surface the actionable message under a stable provider_error code so the
+            # UI can show it (and the user can fix billing / key / model).
+            if status in (500, 502, 503, 504, 529):
+                return _error_response(
+                    status_code=503,
+                    code="provider_unavailable",
+                    message=f"AI provider temporarily unavailable: {message}",
+                )
+            client_status = status if status in (400, 401, 403, 404, 409, 422, 429) else 400
+            return _error_response(
+                status_code=client_status,
+                code="provider_error",
+                message=message,
+            )
+
     @app.exception_handler(RequestValidationError)
     async def _validation_error_handler(
         _request: Request, exc: RequestValidationError
@@ -585,6 +677,7 @@ def create_gateway_app(
         if caller_hash is None:
             # No-auth mode: return everything.
             return all_sessions
+
         # Filter: include the session if the owner is NULL (legacy) or matches caller.
         def _owned(s: dict[str, Any]) -> bool:
             sid = s.get("session_id") or s.get("id") or ""
@@ -610,6 +703,50 @@ def create_gateway_app(
         "  /model — Show the current model and how to change it\n"
         "  /help  — Show this help text"
     )
+
+    def _build_augmented_prompt(prompt: str, attachment_ids: list[str]) -> str:
+        """Append file-attachment context blocks to *prompt* (graceful: errors skipped)."""
+        if not attachment_ids:
+            return prompt
+        try:
+            from hachi.core.files.store import FileMetaStore, LocalStorageProvider
+            from hachi.core.paths import get_hachi_paths
+
+            paths = get_hachi_paths()
+            meta_store = FileMetaStore(paths.files_db)
+            storage = LocalStorageProvider(paths.blobs_dir)
+
+            parts: list[str] = []
+            for file_id in attachment_ids[:5]:  # cap at 5 attachments per turn
+                try:
+                    meta = meta_store.get(file_id)
+                    if meta is None:
+                        continue
+                    if meta.media_type.startswith("image/"):
+                        blob_path = str(paths.blobs_dir / file_id)
+                        parts.append(
+                            f"[Attached image: {meta.name}]\n"
+                            f"(Use the view_image tool with path: {blob_path})"
+                        )
+                    elif meta.extracted_text_ref:
+                        try:
+                            with storage.open(meta.extracted_text_ref) as f:
+                                text = f.read(4096).decode("utf-8", errors="replace")
+                            parts.append(f"[Attached file: {meta.name}]\n{text}")
+                        except Exception:
+                            parts.append(f"[Attached file: {meta.name} — extraction pending]")
+                    else:
+                        parts.append(
+                            f"[Attached file: {meta.name} ({meta.media_type})]"
+                            " — no extracted text yet"
+                        )
+                except Exception:
+                    continue
+            if not parts:
+                return prompt
+            return prompt.rstrip() + "\n\n" + "\n\n".join(parts)
+        except Exception:
+            return prompt
 
     def _handle_slash_command(session_id: str, prompt: str) -> dict[str, Any] | None:
         """Return a synthetic assistant response for leading-slash commands, or None.
@@ -641,10 +778,7 @@ def create_gateway_app(
         elif word == "help":
             reply = _SLASH_HELP_TEXT
         else:
-            reply = (
-                f"Unknown command `/{word}`. "
-                f"Try /help to see available commands."
-            )
+            reply = f"Unknown command `/{word}`. Try /help to see available commands."
 
         return {"response": reply}
 
@@ -659,7 +793,8 @@ def create_gateway_app(
         slash_result = _handle_slash_command(session_id, payload.prompt)
         if slash_result is not None:
             return slash_result
-        return control_plane.send_message(session_id=session_id, prompt=payload.prompt)
+        augmented = _build_augmented_prompt(payload.prompt, payload.attachment_ids)
+        return control_plane.send_message(session_id=session_id, prompt=augmented)
 
     @sessions.delete("/{session_id}", response_model=SessionCloseResponse)
     async def delete_session(session_id: str, request: Request) -> Any:
@@ -808,8 +943,17 @@ def create_gateway_app(
         _ALLOWED_COMMANDS = {"npx", "uvx", "python", "python3", "node", "uv"}
         _ALLOWED_TRANSPORTS = {"stdio", "sse", "http"}
         _SECRET_PATTERNS = {
-            "key", "token", "secret", "password", "passwd", "credential",
-            "private", "auth", "bearer", "apikey", "api_key",
+            "key",
+            "token",
+            "secret",
+            "password",
+            "passwd",
+            "credential",
+            "private",
+            "auth",
+            "bearer",
+            "apikey",
+            "api_key",
         }
         import re
 
@@ -820,8 +964,7 @@ def create_gateway_app(
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "name must be non-empty and contain only "
-                    "letters, digits, hyphens, underscores"
+                    "name must be non-empty and contain only letters, digits, hyphens, underscores"
                 ),
             )
         if transport not in _ALLOWED_TRANSPORTS:
@@ -852,8 +995,7 @@ def create_gateway_app(
                 raise HTTPException(
                     status_code=422,
                     detail=(
-                        f"url is required and must be an http/https URL "
-                        f"for {transport} transport"
+                        f"url is required and must be an http/https URL for {transport} transport"
                     ),
                 )
 
@@ -863,9 +1005,7 @@ def create_gateway_app(
             if any(p in lower for p in _SECRET_PATTERNS):
                 raise HTTPException(
                     status_code=422,
-                    detail=(
-                        f"key '{env_key}' looks like a secret; use SecretStore instead"
-                    ),
+                    detail=(f"key '{env_key}' looks like a secret; use SecretStore instead"),
                 )
 
         return control_plane.register_mcp_server(
@@ -951,6 +1091,75 @@ def create_gateway_app(
     async def post_allowed_command(payload: AllowedCommandRequest) -> Any:
         """Append a command to the allowed_commands list and persist to device-permissions.og."""
         return control_plane.add_allowed_command(payload.command)
+
+    # ---- Multi-provider + routing admin routes ----
+
+    @config.get("/providers")
+    async def get_providers() -> Any:
+        """Return all configured providers (secrets masked)."""
+        return await anyio.to_thread.run_sync(lambda: control_plane.list_providers())
+
+    @config.post("/providers")
+    async def post_provider(payload: ProviderUpsertRequest) -> Any:
+        """Add a new named provider."""
+        name = (payload.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="name is required")
+        import re as _re
+
+        if not _re.match(r"^[A-Za-z0-9_-]+$", name):
+            raise HTTPException(status_code=422, detail="invalid provider name")
+        spec = payload.model_dump(mode="python", exclude={"name"}, exclude_none=True)
+        return await anyio.to_thread.run_sync(
+            lambda: control_plane.add_or_update_provider(name, spec)
+        )
+
+    @config.put("/providers/{name}")
+    async def put_provider_named(name: str, payload: ProviderUpsertRequest) -> Any:
+        """Update (or create) a named provider."""
+        import re as _re
+
+        if not _re.match(r"^[A-Za-z0-9_-]+$", name):
+            raise HTTPException(status_code=422, detail="invalid provider name")
+        spec = payload.model_dump(mode="python", exclude={"name"}, exclude_none=True)
+        return await anyio.to_thread.run_sync(
+            lambda: control_plane.add_or_update_provider(name, spec)
+        )
+
+    @config.delete("/providers/{name}")
+    async def delete_provider(name: str) -> Any:
+        """Remove a named provider."""
+        import re as _re
+
+        if not _re.match(r"^[A-Za-z0-9_-]+$", name):
+            raise HTTPException(status_code=422, detail="invalid provider name")
+        return await anyio.to_thread.run_sync(lambda: control_plane.remove_provider(name))
+
+    @config.post("/providers/{name}/test-connection")
+    async def post_provider_test(name: str) -> Any:
+        """Best-effort connectivity test for a provider."""
+        import re as _re
+
+        if not _re.match(r"^[A-Za-z0-9_-]+$", name):
+            raise HTTPException(status_code=422, detail="invalid provider name")
+        return await anyio.to_thread.run_sync(lambda: control_plane.test_provider_connection(name))
+
+    @config.get("/routing")
+    async def get_routing() -> Any:
+        """Return the capability routing matrix (synthesized when absent)."""
+        return await anyio.to_thread.run_sync(lambda: control_plane.get_routing())
+
+    @config.put("/routing")
+    async def put_routing(payload: RoutingUpdateRequest) -> Any:
+        """Persist the capability routing matrix."""
+        return await anyio.to_thread.run_sync(
+            lambda: control_plane.set_routing(payload.default_model, payload.capabilities)
+        )
+
+    @config.get("/models/all")
+    async def get_models_all() -> Any:
+        """Return model ids per configured provider."""
+        return await anyio.to_thread.run_sync(lambda: control_plane.list_all_models())
 
     @setup.get("")
     async def get_setup() -> Any:
@@ -1386,6 +1595,11 @@ def create_gateway_app(
         """Return per-turn token/cost rows, compaction events, and model totals."""
         return control_plane.spend(session_id=session_id)
 
+    @spend_router.get("/spend/daily")
+    async def get_spend_daily() -> Any:
+        """Return today's accumulated spend from the daily ledger plus configured caps."""
+        return control_plane.spend_daily()
+
     @system.put("/capabilities/{cap_id}/enabled")
     async def put_capability_enabled(
         cap_id: str,
@@ -1516,6 +1730,481 @@ def create_gateway_app(
         status_info = connector_status(connector_id)
         return {**result, **status_info}
 
+    @integrations_router.post("/{connector_id}/credentials")
+    async def post_credentials(connector_id: str, payload: dict[str, Any]) -> Any:
+        """Store apikey credentials for a connector.
+
+        Body: ``{"fields": {"<key>": "<value>", ...}}``
+
+        Only keys declared in the connector's ``credential_fields`` are accepted.
+        Returns the updated connector status dict (same shape as ``GET /integrations``
+        entries) so the frontend can update the card immediately without re-fetching.
+
+        Returns HTTP 400 for invalid connector id format.
+        Returns HTTP 404 for unknown connectors.
+        Returns HTTP 422 for undeclared field keys or empty values.
+        """
+        import re
+
+        from hachi.integrations.connector_registry import get_connector
+        from hachi.integrations.oauth_flow import connector_status, store_apikey_credential
+
+        if not re.match(r"^[a-z0-9_-]+$", connector_id):
+            return _error_response(400, "invalid_connector_id", "Connector id is not valid")
+
+        connector = get_connector(connector_id)
+        if connector is None:
+            return _error_response(404, "unknown_connector", f"Unknown connector: {connector_id!r}")
+
+        if connector.auth_type != "apikey":
+            return _error_response(
+                422,
+                "wrong_auth_type",
+                f"Connector {connector_id!r} uses {connector.auth_type!r} auth, not apikey",
+            )
+
+        fields_payload = payload.get("fields")
+        if not isinstance(fields_payload, dict):
+            return _error_response(422, "invalid_payload", 'Body must be {"fields": {...}}')
+
+        allowed_keys = {f["key"] for f in connector.credential_fields}
+        for key, value in fields_payload.items():
+            if key not in allowed_keys:
+                return _error_response(
+                    422,
+                    "unknown_field",
+                    f"Field key {key!r} is not declared for connector {connector_id!r}. "
+                    f"Allowed keys: {sorted(allowed_keys)}",
+                )
+            if not isinstance(value, str) or not value.strip():
+                return _error_response(
+                    422,
+                    "empty_value",
+                    f"Value for field {key!r} must be a non-empty string",
+                )
+
+        def _store_all() -> None:
+            for key, value in fields_payload.items():
+                store_apikey_credential(connector_id, key, value.strip())
+
+        await anyio.to_thread.run_sync(_store_all)
+
+        status_info = await anyio.to_thread.run_sync(lambda: connector_status(connector_id))
+        return {
+            "id": connector.id,
+            "name": connector.name,
+            "category": connector.category,
+            **status_info,
+        }
+
+    @integrations_router.delete("/{connector_id}/credentials")
+    async def delete_credentials(connector_id: str) -> Any:
+        """Clear all stored apikey credentials for a connector.
+
+        Returns the updated connector status dict.
+
+        Returns HTTP 400 for invalid connector id format.
+        Returns HTTP 404 for unknown connectors.
+        Returns HTTP 422 if the connector is not an apikey connector.
+        """
+        import re
+
+        from hachi.integrations.connector_registry import get_connector
+        from hachi.integrations.oauth_flow import clear_apikey_credentials, connector_status
+
+        if not re.match(r"^[a-z0-9_-]+$", connector_id):
+            return _error_response(400, "invalid_connector_id", "Connector id is not valid")
+
+        connector = get_connector(connector_id)
+        if connector is None:
+            return _error_response(404, "unknown_connector", f"Unknown connector: {connector_id!r}")
+
+        if connector.auth_type != "apikey":
+            return _error_response(
+                422,
+                "wrong_auth_type",
+                f"Connector {connector_id!r} uses {connector.auth_type!r} auth, not apikey",
+            )
+
+        await anyio.to_thread.run_sync(lambda: clear_apikey_credentials(connector_id))
+
+        status_info = await anyio.to_thread.run_sync(lambda: connector_status(connector_id))
+        return {
+            "id": connector.id,
+            "name": connector.name,
+            "category": connector.category,
+            **status_info,
+        }
+
+    # ==========================================
+    # Durable Runs routes (Initiative D)
+    # ==========================================
+
+    runs_router = APIRouter(prefix="/runs", tags=["runs"], dependencies=protected_dependencies)
+
+    @runs_router.get("", summary="List recent durable runs")
+    async def get_runs(limit: int = Query(default=100, ge=1, le=500)) -> Any:
+        """Return recent durable runs across all sessions, newest first."""
+        from hachi.core.runtime.state import RunStateView
+        from hachi.core.runtime.store import RunStateStore
+
+        store = RunStateStore()
+        runs = store.list_all(limit=limit)
+        return {"runs": [RunStateView.from_run_state(r).model_dump() for r in runs]}
+
+    @runs_router.get("/{run_id}", summary="Get a durable run by ID")
+    async def get_run(run_id: str) -> Any:
+        """Return a single RunState by run_id.  404 if not found."""
+        from hachi.core.runtime.state import RunStateView
+        from hachi.core.runtime.store import RunStateStore
+
+        store = RunStateStore()
+        run = store.get(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
+        return RunStateView.from_run_state(run).model_dump()
+
+    @runs_router.post("/{run_id}/wake", summary="Wake a WAITING run")
+    async def post_run_wake(run_id: str, body: dict[str, Any] | None = None) -> Any:
+        """Wake a WAITING run by resolving its wait condition.
+
+        The run transitions WAITING→RUNNING and the resumed turn is started in the
+        background via the job queue (durable, survives restart).
+
+        Returns ``{"status": "waking", "run_id": "..."}`` immediately; the actual
+        resume happens asynchronously.  If the run is not WAITING, returns 409.
+        """
+        from hachi.core.runtime.state import RunStatus
+        from hachi.core.runtime.store import RunStateStore
+        from hachi.core.runtime.waits import get_wait_registry
+
+        body = body or {}
+        result_payload: dict[str, Any] = body.get("result", {}) if isinstance(body, dict) else {}
+        source: str = body.get("source", "webhook") if isinstance(body, dict) else "webhook"
+
+        store = RunStateStore()
+        run = store.get(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
+        if run.status != RunStatus.WAITING:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Run {run_id!r} is {run.status.value!r}, not 'waiting'",
+            )
+
+        # Resolve via WaitConditionRegistry (idempotent)
+        registry = get_wait_registry()
+        wake_key = run.wait.key if run.wait else run_id
+        resolved_id = registry.resolve(wake_key, result_payload)
+
+        if resolved_id is None and run.wait is not None:
+            # Key not in registry (e.g., after restart) — fall through to direct dispatch
+            pass
+
+        # Dispatch resume_run as a durable job
+        try:
+            from hachi.jobs import Job, JobStatus
+
+            job = Job(
+                job_id="",
+                name=f"resume_run.{run_id}",
+                handler_name="resume_run",
+                payload={"run_id": run_id, "result": result_payload, "source": source},
+                status=JobStatus.PENDING,
+            )
+            control_plane.job_queue.enqueue(job)
+        except Exception as exc:
+            _log.warning("post_run_wake: failed to enqueue resume job for %r: %s", run_id, exc)
+            # Fall back to inline attempt
+            try:
+                from hachi.core.runtime.resume import resume_run
+
+                await anyio.to_thread.run_sync(lambda: resume_run(run_id, result_payload))
+            except Exception as resume_exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Resume failed: {resume_exc}",
+                ) from resume_exc
+
+        return {"status": "waking", "run_id": run_id, "source": source}
+
+    @runs_router.delete("/{run_id}", summary="Cancel a durable run")
+    async def delete_run(run_id: str) -> Any:
+        """Cancel a durable run (sets status to CANCELLED and disarms its wait).
+
+        Idempotent: cancelling an already-terminal run returns 200 with the
+        current status.
+        """
+        from hachi.core.runtime.state import RunStatus
+        from hachi.core.runtime.store import RunStateStore
+        from hachi.core.runtime.waits import get_wait_registry
+        from hachi.core.runtime_events import now_iso
+
+        store = RunStateStore()
+        run = store.get(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
+
+        terminal = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
+        if run.status in terminal:
+            return {"run_id": run_id, "status": run.status.value, "note": "already terminal"}
+
+        get_wait_registry().disarm(run_id)
+        run = run.model_copy(update={"status": RunStatus.CANCELLED, "updated_at": now_iso()})
+        store.upsert(run)
+        return {"run_id": run_id, "status": RunStatus.CANCELLED.value}
+
+    # ------------------------------------------------------------------
+    # Initiative E — File / Attachment Platform routes
+    # POST   /files            — multipart upload; returns FileMeta JSON
+    # GET    /files            — list all file metadata records
+    # GET    /files/{id}       — get FileMeta for a single file
+    # GET    /files/{id}/content — stream raw bytes (FileResponse)
+    # ------------------------------------------------------------------
+    files_router = APIRouter(prefix="/files", tags=["files"], dependencies=protected_dependencies)
+
+    # Max upload size guard — read from [files] settings, fallback 50 MB.
+    def _files_max_bytes() -> int:
+        try:
+            from hachi.core.config_loader import load_effective_config
+
+            return int(load_effective_config().files.max_size_bytes)
+        except Exception:
+            return 50 * 1024 * 1024
+
+    def _files_allowed_types() -> set[str]:
+        try:
+            from hachi.core.config_loader import load_effective_config
+
+            return set(load_effective_config().files.allowed_types)
+        except Exception:
+            return set()
+
+    def _get_file_pipeline() -> Any:
+        """Build a FilePipeline from paths (one per request; lightweight)."""
+        from hachi.core.files.store import (
+            FileMetaStore,
+            FilePipeline,
+            LocalStorageProvider,
+            NoOpScanner,
+        )
+        from hachi.core.paths import get_hachi_paths
+
+        paths = get_hachi_paths()
+        meta_store = FileMetaStore(paths.files_db)
+        storage = LocalStorageProvider(paths.blobs_dir, _files_max_bytes())
+        return FilePipeline(
+            meta_store=meta_store,
+            storage=storage,
+            scanner=NoOpScanner(),
+            allowed_types=_files_allowed_types(),
+            max_size_bytes=_files_max_bytes(),
+        )
+
+    def _get_file_meta_store() -> Any:
+        from hachi.core.files.store import FileMetaStore
+        from hachi.core.paths import get_hachi_paths
+
+        return FileMetaStore(get_hachi_paths().files_db)
+
+    def _get_file_storage() -> Any:
+        from hachi.core.files.store import LocalStorageProvider
+        from hachi.core.paths import get_hachi_paths
+
+        return LocalStorageProvider(get_hachi_paths().blobs_dir)
+
+    def _reject_path_traversal(file_id: str) -> None:
+        """Raise 400 if *file_id* contains path traversal sequences."""
+        if "/" in file_id or "\\" in file_id or ".." in file_id or not file_id:
+            raise HTTPException(status_code=400, detail="Invalid file_id")
+
+    @files_router.post("", summary="Upload a file attachment")
+    async def upload_file(
+        file: UploadFile = File(...),  # noqa: B008
+        media_type_override: str | None = Query(default=None, alias="media_type"),
+    ) -> Any:
+        """Ingest a multipart file upload into the managed attachment store.
+
+        Validates type and size BEFORE storage.  Returns :class:`FileMeta` JSON.
+        A ``file.uploaded`` event is emitted after storage so the reactive
+        extract-and-index pipeline fires asynchronously via the JobRegistry.
+        """
+        if file.filename is None:
+            raise HTTPException(status_code=400, detail="Filename is required")
+
+        # Infer MIME type: explicit override → content_type header → extension.
+        effective_type = media_type_override or file.content_type or "application/octet-stream"
+
+        # Size pre-check from Content-Length header (not authoritative but fast).
+        max_bytes = _files_max_bytes()
+
+        import io as _io
+
+        raw = await file.read()
+        if len(raw) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File exceeds maximum allowed size ({max_bytes} bytes)",
+            )
+
+        try:
+            pipeline = _get_file_pipeline()
+            meta = pipeline.ingest(
+                name=file.filename,
+                media_type=effective_type,
+                data=_io.BytesIO(raw),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        # Trigger extraction synchronously as a best-effort inline step when
+        # the durable-handler path is not configured (e.g. during tests).
+        # In production (durable_handlers=true) the EventBus subscription does this.
+        _trigger_extraction_inline(meta.file_id, meta.name, meta.media_type)
+
+        return meta.model_dump()
+
+    def _trigger_extraction_inline(file_id: str, name: str, media_type: str) -> None:
+        """Best-effort inline extraction when the durable path is unavailable."""
+        try:
+            from hachi.core.runtime.job_handlers import handle_auto_extract
+
+            handle_auto_extract(
+                event_name="file.uploaded",
+                event_payload={
+                    "file_id": file_id,
+                    "name": name,
+                    "media_type": media_type,
+                },
+            )
+        except Exception:
+            pass  # Non-fatal; file stays at 'stored' until a job worker picks it up.
+
+    @files_router.get("", summary="List all file attachments")
+    async def list_files() -> Any:
+        """Return all stored file metadata records, newest first."""
+        store = _get_file_meta_store()
+        return [m.model_dump() for m in store.list_all()]
+
+    @files_router.get("/{file_id}", summary="Get file metadata")
+    async def get_file_meta(file_id: str) -> Any:
+        """Return the :class:`FileMeta` record for a single *file_id*."""
+        _reject_path_traversal(file_id)
+        store = _get_file_meta_store()
+        meta = store.get(file_id)
+        if meta is None:
+            raise HTTPException(status_code=404, detail=f"File {file_id!r} not found")
+        return meta.model_dump()
+
+    @files_router.get("/{file_id}/content", summary="Stream raw file content")
+    async def get_file_content(file_id: str) -> Any:
+        """Stream the raw bytes of the stored blob for *file_id*.
+
+        Quarantined files are NOT served (404).
+        """
+        _reject_path_traversal(file_id)
+        store = _get_file_meta_store()
+        meta = store.get(file_id)
+        if meta is None:
+            raise HTTPException(status_code=404, detail=f"File {file_id!r} not found")
+        if meta.status == "quarantined":
+            raise HTTPException(status_code=404, detail="File is not available")
+
+        from hachi.core.paths import get_hachi_paths
+
+        blob_path = get_hachi_paths().blobs_dir / file_id
+        if not blob_path.exists():
+            raise HTTPException(status_code=404, detail="Blob not found on disk")
+
+        return FileResponse(
+            path=str(blob_path),
+            media_type=meta.media_type,
+            filename=meta.name,
+        )
+
+    # ---- Voice router (STT/TTS provider endpoints) ----
+    from hachi.gateway.voice_endpoints import (
+        VoiceConfigError,
+    )
+    from hachi.gateway.voice_endpoints import (
+        set_voice_config as _voice_set_config,
+    )
+    from hachi.gateway.voice_endpoints import (
+        speak as _voice_speak,
+    )
+    from hachi.gateway.voice_endpoints import (
+        transcribe as _voice_transcribe,
+    )
+    from hachi.gateway.voice_endpoints import (
+        voice_config as _voice_config,
+    )
+
+    voice_router = APIRouter(prefix="/voice", tags=["voice"], dependencies=protected_dependencies)
+
+    _MAX_AUDIO_BYTES = 25 * 1024 * 1024  # 25 MB hard ceiling for audio uploads
+
+    @voice_router.post("/transcribe", summary="Transcribe audio via STT provider")
+    async def route_voice_transcribe(audio: UploadFile = File(...)) -> Any:  # noqa: B008
+        """Transcribe a multipart audio upload to text via the configured STT backend."""
+        if audio.filename is None:
+            raise HTTPException(status_code=400, detail="Filename is required")
+        # Bounded read — prevents memory exhaustion from oversized uploads.
+        raw = await audio.read(_MAX_AUDIO_BYTES + 1)
+        if len(raw) > _MAX_AUDIO_BYTES:
+            raise HTTPException(status_code=413, detail="Audio exceeds 25 MB limit")
+        content_type = audio.content_type or "audio/webm"
+        try:
+            result = await anyio.to_thread.run_sync(
+                lambda: _voice_transcribe(raw, filename=audio.filename, content_type=content_type)
+            )
+        except VoiceConfigError as exc:
+            return _error_response(503, "voice_not_configured", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("STT transcription failed: %s", exc)
+            return _error_response(
+                500,
+                "transcription_error",
+                "Transcription failed, check voice provider configuration",
+            )
+        return result
+
+    @voice_router.post("/speak", summary="Synthesize text via TTS provider")
+    async def route_voice_speak(body: VoiceSpeakBody) -> Any:
+        """Synthesize text to audio via the configured TTS backend."""
+        import io
+
+        try:
+            audio_bytes, media_type = await anyio.to_thread.run_sync(
+                lambda: _voice_speak(
+                    body.text,
+                    voice=body.voice,
+                    model=body.model,
+                    fmt=body.format,
+                    provider=body.provider,
+                )
+            )
+        except VoiceConfigError as exc:
+            return _error_response(503, "voice_not_configured", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("TTS synthesis failed: %s", exc)
+            return _error_response(
+                500, "synthesis_error", "Synthesis failed, check voice provider configuration"
+            )
+        return StreamingResponse(io.BytesIO(audio_bytes), media_type=media_type)
+
+    @voice_router.get("/config", summary="Get voice configuration")
+    async def route_voice_config() -> Any:
+        """Return the current voice provider config summary for the UI."""
+        return await anyio.to_thread.run_sync(_voice_config)
+
+    @voice_router.put("/config", summary="Update voice configuration")
+    async def route_voice_set_config(patch: dict[str, Any]) -> Any:
+        """Persist voice config fields and return the updated summary."""
+        try:
+            return await anyio.to_thread.run_sync(lambda: _voice_set_config(patch))
+        except Exception as exc:  # noqa: BLE001
+            return _error_response(500, "config_write_error", str(exc))
+
     app.include_router(integrations_router)
     app.include_router(integrations_callback_router)
     app.include_router(system)
@@ -1531,6 +2220,9 @@ def create_gateway_app(
     app.include_router(og_router)
     app.include_router(authoring_router)
     app.include_router(spend_router)
+    app.include_router(runs_router)
+    app.include_router(files_router)
+    app.include_router(voice_router)
 
     if _auth_enabled:
         # Inject the bearer security scheme into the exported OpenAPI spec so

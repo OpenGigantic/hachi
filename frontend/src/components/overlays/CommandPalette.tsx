@@ -4,7 +4,7 @@
 // Logic: lines 2133–2136, 2410–2432 (palette renderVals)
 // ============================================================
 
-import React, { useEffect, useRef, CSSProperties } from 'react';
+import React, { useEffect, useRef, useState, CSSProperties } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { useStore } from '../../lib/store/store';
 import { Icon } from '../icons/Icon';
@@ -47,6 +47,11 @@ export function CommandPalette() {
   const simulateReconnect = useStore((s) => s.simulateReconnect);
   const openRun          = useStore((s) => s.openRun);
   const startTask        = useStore((s) => s.startTask);
+  const sessions         = useStore((s) => s.sessions);
+  const switchSession    = useStore((s) => s.switchSession);
+
+  // HACHI-007: active keyboard-navigation index over the flat visible item list.
+  const [activeIndex, setActiveIndex] = useState<number>(-1);
 
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -72,11 +77,12 @@ export function CommandPalette() {
     return () => window.removeEventListener('keydown', handler);
   }, [open, closePalette, openPalette]);
 
-  // Focus input when opened
+  // Focus input when opened; reset active index when palette opens/closes.
   useEffect(() => {
     if (open && inputRef.current) {
       inputRef.current.focus();
     }
+    if (!open) setActiveIndex(-1);
   }, [open]);
 
   if (!open) return null;
@@ -105,11 +111,18 @@ export function CommandPalette() {
     { label: 'Preview the reconnecting state', icon: 'refresh', shortcut: null, go: () => { closePalette(); simulateReconnect(); } },
   ];
 
-  const recentsAll = [
-    { label: 'Reply to Priya about Q3 deck', icon: 'chat',   shortcut: null, go: () => go('/conversation') },
-    { label: 'Morning briefing routine',     icon: 'repeat', shortcut: null, go: () => go('/work') },
-    { label: 'Memory: about you',            icon: 'memory', shortcut: null, go: () => go('/memory') },
-  ];
+  // HACHI-006: derive Recent from real store sessions (up to 3 most recent).
+  // Session list is already ordered with the most recent first by the chat domain.
+  const recentsAll = sessions.slice(0, 3).map((sess) => ({
+    label: sess.title,
+    icon: 'chat' as string,
+    shortcut: null as string | null,
+    go: () => {
+      switchSession(sess.id);
+      closePalette();
+      navigate({ to: '/conversation' });
+    },
+  }));
 
   const filt = <T extends { label: string }>(arr: T[]) =>
     arr.filter((x) => !pq || x.label.toLowerCase().includes(pq));
@@ -121,6 +134,36 @@ export function CommandPalette() {
   ].filter((g) => g.items.length > 0);
 
   const isEmpty = paletteGroups.length === 0;
+
+  // HACHI-007: flat ordered list of all currently visible items for keyboard nav.
+  const flatItems = paletteGroups.flatMap((g) => g.items);
+
+  const handleQueryChange = (v: string) => {
+    setPaletteQuery(v);
+    setActiveIndex(-1); // reset selection when query changes
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActiveIndex((i) => (flatItems.length === 0 ? -1 : Math.min(i + 1, flatItems.length - 1)));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActiveIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const idx = activeIndex >= 0 ? activeIndex : 0;
+      if (flatItems[idx]) {
+        flatItems[idx].go();
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closePalette();
+    }
+  };
+
+  // Stable item id for aria-activedescendant.
+  const activeItemId = activeIndex >= 0 ? `palette-item-${activeIndex}` : undefined;
 
   const backdropStyle: CSSProperties = {
     position: 'fixed',
@@ -201,23 +244,48 @@ export function CommandPalette() {
           <input
             ref={inputRef}
             value={query}
-            onChange={(e) => setPaletteQuery(e.target.value)}
+            onChange={(e) => handleQueryChange(e.target.value)}
+            onKeyDown={handleKeyDown}
             placeholder="Jump to a place, or do something…"
             style={inputStyle}
+            role="combobox"
+            aria-expanded={!isEmpty}
+            aria-controls="palette-listbox"
+            aria-autocomplete="list"
+            aria-activedescendant={activeItemId}
           />
           <span style={escPillStyle}>esc</span>
         </div>
 
         {/* Results */}
-        <div className="hachi-scroll" style={listStyle}>
-          {paletteGroups.map((grp) => (
-            <div key={grp.title}>
-              <div style={groupLabelStyle}>{grp.title}</div>
-              {grp.items.map((item) => (
-                <PaletteItem key={item.label} item={item} />
-              ))}
-            </div>
-          ))}
+        <div
+          id="palette-listbox"
+          role="listbox"
+          aria-label="Commands"
+          className="hachi-scroll"
+          style={listStyle}
+        >
+          {(() => {
+            // Track a running flat index across groups so each item gets a stable flat position.
+            let flatIdx = 0;
+            return paletteGroups.map((grp) => (
+              <div key={grp.title}>
+                <div style={groupLabelStyle}>{grp.title}</div>
+                {grp.items.map((item) => {
+                  const itemFlatIdx = flatIdx++;
+                  return (
+                    <PaletteItem
+                      key={item.label}
+                      item={item}
+                      id={`palette-item-${itemFlatIdx}`}
+                      active={activeIndex === itemFlatIdx}
+                      onHover={() => setActiveIndex(itemFlatIdx)}
+                    />
+                  );
+                })}
+              </div>
+            ));
+          })()}
           {isEmpty && (
             <div style={{ padding: 20, textAlign: 'center', color: 'var(--hachi-muted)', fontSize: 14 }}>
               Nothing matches "{query}".
@@ -236,8 +304,18 @@ interface PaletteItemData {
   go: () => void;
 }
 
-function PaletteItem({ item }: { item: PaletteItemData }) {
-  const [hovered, setHovered] = React.useState(false);
+function PaletteItem({
+  item,
+  id,
+  active,
+  onHover,
+}: {
+  item: PaletteItemData;
+  id: string;
+  active: boolean;
+  onHover: () => void;
+}) {
+  const highlighted = active;
 
   const btnStyle: CSSProperties = {
     width: '100%',
@@ -246,7 +324,7 @@ function PaletteItem({ item }: { item: PaletteItemData }) {
     gap: 12,
     padding: '10px 12px',
     border: 'none',
-    background: hovered ? 'var(--hachi-cream)' : 'transparent',
+    background: highlighted ? 'var(--hachi-cream)' : 'transparent',
     borderRadius: 10,
     cursor: 'pointer',
     textAlign: 'left',
@@ -265,10 +343,12 @@ function PaletteItem({ item }: { item: PaletteItemData }) {
 
   return (
     <button
+      id={id}
+      role="option"
+      aria-selected={active}
       style={btnStyle}
       onClick={item.go}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseEnter={onHover}
     >
       <span style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}>
         <Icon name={item.icon} size={17} />

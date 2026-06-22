@@ -283,6 +283,7 @@ def _raw_run_terminal_command(command: str, cwd: str = ".", timeout: int = 120) 
             shell=False,
             cwd=target_cwd,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=timeout,
         )
@@ -340,6 +341,7 @@ def _raw_run_shell_script(script: str, cwd: str = ".", timeout: int = 120) -> st
                 shell=False,
                 cwd=target_cwd,
                 capture_output=True,
+                stdin=subprocess.DEVNULL,
                 text=True,
                 timeout=timeout,
             )

@@ -12,7 +12,7 @@
 // empty-state card otherwise.
 // ============================================================
 
-import React, { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useStore } from "../lib/store/store";
@@ -86,7 +86,6 @@ interface RunSurfaceProps {
 function RunSurface({ onBack }: RunSurfaceProps) {
   // Store slices
   const runView = useStore((s) => s.runView);
-  const runLines = useStore((s) => s.runLines);
   const runDone = useStore((s) => s.runDone);
   const runLeash = useStore((s) => s.runLeash);
   const runSpent = useStore((s) => s.runSpent);
@@ -98,15 +97,6 @@ function RunSurface({ onBack }: RunSurfaceProps) {
   const runAllowLeash = useStore((s) => s.runAllowLeash);
   const runAlwaysAllow = useStore((s) => s.runAlwaysAllow);
   const runDenyLeash = useStore((s) => s.runDenyLeash);
-
-  // Auto-scroll ref for the terminal output wrapper
-  const outputRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = outputRef.current;
-    if (el) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [runLines]);
 
   // ---- derived renderVals (mirror dc.html lines 2452–2471) ----
   const runPhase: "working" | "done" | "blocked" = runDone
@@ -530,7 +520,6 @@ function RunSurface({ onBack }: RunSurfaceProps) {
 
           {/* scrollable terminal wrapper */}
           <div
-            ref={outputRef}
             className="hachi-run-output hachi-scroll"
             style={{
               flex: 1,
@@ -539,11 +528,7 @@ function RunSurface({ onBack }: RunSurfaceProps) {
               padding: "0 24px 24px",
             }}
           >
-            <Terminal
-              lines={runLines}
-              prompt=""
-              style={{ display: "block", minHeight: "100%" }}
-            />
+            <RunOutputTerminal />
           </div>
 
           {/* leash overlay (inline, mid-run) */}
@@ -575,6 +560,17 @@ function RunSurface({ onBack }: RunSurfaceProps) {
     </div>
   );
 }
+
+const RunOutputTerminal = memo(function RunOutputTerminal() {
+  const runLines = useStore((s) => s.runLines);
+  return (
+    <Terminal
+      lines={runLines}
+      prompt=""
+      style={{ display: "block", minHeight: "100%" }}
+    />
+  );
+});
 
 // ---- Mock simulation component (mock mode only) ----
 

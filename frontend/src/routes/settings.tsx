@@ -8,8 +8,9 @@ import { useStore } from '../lib/store/store';
 import { Icon } from '../components/icons/Icon';
 import { Switch } from '../components/ui/Switch';
 import type { SafetyLevel } from '../lib/data/types';
-import { loadConfig, setSafetyLive, setAskRuleLive, setProviderLive, addFolderLive, addCommandLive } from '../lib/data/domains/config';
-import { apiSend, USE_MOCKS } from '../lib/data/client';
+import { loadConfig, setSafetyLive, setAskRuleLive, addFolderLive, addCommandLive, setLimitsLive } from '../lib/data/domains/config';
+import ProviderSettings from '../components/settings/ProviderSettings';
+import VoiceSettings from '../components/settings/VoiceSettings';
 
 // ---- Safety level definitions (mirror prototype renderVals lines 2337–2342) ----
 const SAFETY_LEVELS: { k: SafetyLevel; name: string; desc: string }[] = [
@@ -226,49 +227,40 @@ function SpendCapInput({ label, value, onChange, onSave }: SpendCapInputProps) {
 }
 
 function Settings() {
-  const {
-    // state
-    operator,
-    theme,
-    safety,
-    askRules,
-    allowedFolders,
-    allowedCommands,
-    opTools,
-    provider,
-    setup,
-    spent,
-    budget,
-    taskCap,
-    dailyCap,
-    configLoaded,
-    // actions (setSafety/toggleAskRule called indirectly via *Live helpers)
-    removeFolder,
-    removeCommand,
-    toggleOpTool,
-    toggleTheme,
-    toggleOperator,
-    openSetup,
-    showToast,
-    setTaskCap,
-    setDailyCap,
-  } = useStore();
+  const operator = useStore((s) => s.operator);
+  const theme = useStore((s) => s.theme);
+  const safety = useStore((s) => s.safety);
+  const askRules = useStore((s) => s.askRules);
+  const allowedFolders = useStore((s) => s.allowedFolders);
+  const allowedCommands = useStore((s) => s.allowedCommands);
+  const opTools = useStore((s) => s.opTools);
+  const spent = useStore((s) => s.spent);
+  const budget = useStore((s) => s.budget);
+  const taskCap = useStore((s) => s.taskCap);
+  const dailyCap = useStore((s) => s.dailyCap);
+  const configLoaded = useStore((s) => s.configLoaded);
+  const removeFolder = useStore((s) => s.removeFolder);
+  const removeCommand = useStore((s) => s.removeCommand);
+  const toggleOpTool = useStore((s) => s.toggleOpTool);
+  const toggleTheme = useStore((s) => s.toggleTheme);
+  const toggleOperator = useStore((s) => s.toggleOperator);
+  const openSetup = useStore((s) => s.openSetup);
+  const showToast = useStore((s) => s.showToast);
+  const setTaskCap = useStore((s) => s.setTaskCap);
+  const setDailyCap = useStore((s) => s.setDailyCap);
 
-  // ---- Inline provider editor state ----
-  // When the user clicks "Change provider", open an inline editor instead of the wizard.
-  const [editingProvider, setEditingProvider] = useState(false);
-  const [editProviderName, setEditProviderName] = useState(provider.name);
-  const [editProviderModel, setEditProviderModel] = useState(provider.model);
-  const [editProviderKey, setEditProviderKey] = useState('');
-  const [providerSaving, setProviderSaving] = useState(false);
-
-  // Keep the inline form in sync if the store's provider changes externally.
+  // HACHI-017: local pending safety — prevents the radio from briefly reverting to the
+  // old store value while setSafetyLive + loadConfig re-hydration races are in flight.
+  // We track the user's chosen value locally and use it for rendering; it is cleared
+  // once the store value catches up (or after a short guard timeout).
+  const [pendingSafety, setPendingSafety] = useState<SafetyLevel | null>(null);
+  const pendingSafetyRef = useRef<SafetyLevel | null>(null);
   useEffect(() => {
-    if (!editingProvider) {
-      setEditProviderName(provider.name);
-      setEditProviderModel(provider.model);
+    if (pendingSafety !== null && safety === pendingSafety) {
+      setPendingSafety(null);
+      pendingSafetyRef.current = null;
     }
-  }, [provider.name, provider.model, editingProvider]);
+  }, [safety, pendingSafety]);
 
   // Load config from gateway on mount (idempotent — also runs on app boot via live.ts)
   useEffect(() => { void loadConfig(); }, []);
@@ -307,12 +299,7 @@ function Settings() {
   async function handleSave() {
     // MED-017: persist caps to gateway then clear unsaved indicator on success
     try {
-      if (!USE_MOCKS) {
-        await apiSend('PUT', '/config/limits', {
-          per_task_cap_usd: taskCap,
-          daily_cap_usd: dailyCap,
-        });
-      }
+      await setLimitsLive(taskCap, dailyCap);
       setUnsaved(false);
       setRestartSettings([]);
       showToast('Settings saved', 'success');
@@ -322,50 +309,12 @@ function Settings() {
     }
   }
 
-  async function handleSaveProvider() {
-    setProviderSaving(true);
-    try {
-      const patch: { name?: string; model?: string } = {};
-      if (editProviderName.trim()) patch.name = editProviderName.trim();
-      if (editProviderModel.trim()) patch.model = editProviderModel.trim();
-      await setProviderLive(patch);
-      // If a new API key was typed, send it via setup/apply (provider step only).
-      // setProviderLive handles name+model; key storage goes through the wizard path.
-      if (editProviderKey.trim()) {
-        // POST /setup/apply with just the provider key — reuse the setup domain helper.
-        if (!USE_MOCKS) {
-          await apiSend('POST', '/setup/apply', {
-            plan: {
-              tier: 'lightning',
-              steps: ['provider'],
-              answers: {
-                provider: {
-                  kind: patch.name ?? provider.name,
-                  model: patch.model ?? provider.model,
-                  api_key: editProviderKey.trim(),
-                  api_key_env: 'ANTHROPIC_API_KEY',
-                },
-              },
-              enable_memory: false,
-              show_integrations: false,
-              show_advanced: false,
-            },
-          });
-        }
-      }
-      setEditingProvider(false);
-      setEditProviderKey('');
-      markUnsaved('provider');
-      showToast('Provider updated — applies on next restart', 'success');
-    } catch {
-      showToast('Could not save provider — please try again', 'blocked');
-    } finally {
-      setProviderSaving(false);
-    }
-  }
-
   // Wrap actions to set unsaved flag
   function handleSetSafety(v: SafetyLevel) {
+    // HACHI-017: pin the radio to the user's choice immediately so a concurrent
+    // loadConfig re-hydration cannot overwrite it while the PUT is in flight.
+    setPendingSafety(v);
+    pendingSafetyRef.current = v;
     void setSafetyLive(v);
     markUnsaved('safety level');
   }
@@ -411,14 +360,9 @@ function Settings() {
   const pct = Math.min(100, Math.round((spent / budget) * 100));
 
   // Theme icon (sun = light → switching to dark; moon = dark → switching to light)
-  const isDark = theme === 'dark';
+  const systemIsDark = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const isDark = theme === 'dark' || (theme === 'auto' && systemIsDark);
   const themeIcon = isDark ? 'moon' : 'sun';
-
-  // Provider display — name/model come from live gateway config. The API key is
-  // never surfaced to the browser; we derive its display from the env boolean
-  // returned by GET /setup (keyAlreadySet) — never from the key value itself.
-  const providerLabel = [provider.name, provider.model].filter(Boolean).join(' · ');
-  const keyDisplay = setup.keyAlreadySet ? '•••••••• (configured)' : 'not set';
 
   // Card container style (shared)
   const cardStyle: React.CSSProperties = {
@@ -477,16 +421,16 @@ function Settings() {
               padding: '0 16px',
               borderRadius: 10,
               border: 'none',
-              background: 'var(--hachi-brand)',
+              background: 'var(--hachi-brand-hover)',
               color: 'var(--hachi-canvas)',
               font: '500 13px var(--font-body)',
               cursor: 'pointer',
             }}
             onMouseEnter={(e) => {
-              ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-brand-hover)';
+              ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-brand-active)';
             }}
             onMouseLeave={(e) => {
-              ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-brand)';
+              ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-brand-hover)';
             }}
           >
             Save
@@ -575,7 +519,9 @@ function Settings() {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
                 {SAFETY_LEVELS.map((lvl) => {
-                  const sel = safety === lvl.k;
+                  // HACHI-017: prefer local pending choice to avoid re-hydration flicker
+                  const effectiveSafety = pendingSafety ?? safety;
+                  const sel = effectiveSafety === lvl.k;
                   return (
                     <button
                       key={lvl.k}
@@ -616,8 +562,8 @@ function Settings() {
               </div>
             )}
 
-            {/* Open warning */}
-            {safety === 'open' && (
+            {/* Open warning — use pendingSafety if set to avoid flicker (HACHI-017) */}
+            {(pendingSafety ?? safety) === 'open' && (
               <div
                 style={{
                   display: 'flex',
@@ -992,126 +938,10 @@ function Settings() {
           </div>
 
           {/* ---- AI provider & model ---- */}
-          <div style={cardStyle}>
-            <h2 style={{ ...sectionHeadingStyle, margin: '0 0 16px' }}>
-              AI provider &amp; model
-            </h2>
+          <ProviderSettings />
 
-            {editingProvider ? (
-              /* Inline provider editor — no wizard; calls PUT /config/provider directly */
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <div>
-                  <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '6px' }}>Provider</div>
-                  <input
-                    type="text"
-                    value={editProviderName}
-                    onChange={(e) => setEditProviderName(e.target.value)}
-                    placeholder="anthropic"
-                    style={{
-                      width: '100%',
-                      height: '40px',
-                      padding: '0 12px',
-                      borderRadius: '10px',
-                      border: '0.5px solid var(--hachi-line)',
-                      background: 'var(--hachi-canvas)',
-                      font: '14px var(--font-mono)',
-                      color: 'var(--hachi-ink)',
-                      outline: 'none',
-                      boxSizing: 'border-box',
-                    }}
-                  />
-                </div>
-                <div>
-                  <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '6px' }}>Model</div>
-                  <input
-                    type="text"
-                    value={editProviderModel}
-                    onChange={(e) => setEditProviderModel(e.target.value)}
-                    placeholder="claude-haiku-4-5"
-                    style={{
-                      width: '100%',
-                      height: '40px',
-                      padding: '0 12px',
-                      borderRadius: '10px',
-                      border: '0.5px solid var(--hachi-line)',
-                      background: 'var(--hachi-canvas)',
-                      font: '14px var(--font-mono)',
-                      color: 'var(--hachi-ink)',
-                      outline: 'none',
-                      boxSizing: 'border-box',
-                    }}
-                  />
-                </div>
-                <div>
-                  <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '6px' }}>API key</div>
-                  <input
-                    type="password"
-                    value={editProviderKey}
-                    onChange={(e) => setEditProviderKey(e.target.value)}
-                    placeholder="Leave blank to keep existing key"
-                    style={{
-                      width: '100%',
-                      height: '40px',
-                      padding: '0 12px',
-                      borderRadius: '10px',
-                      border: '0.5px solid var(--hachi-line)',
-                      background: 'var(--hachi-canvas)',
-                      font: '14px var(--font-mono)',
-                      color: 'var(--hachi-ink)',
-                      outline: 'none',
-                      boxSizing: 'border-box',
-                    }}
-                  />
-                  <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginTop: '5px' }}>
-                    Your key is stored securely and never shown. Leave blank to keep the current key.
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
-                  <ProviderButton onClick={() => void handleSaveProvider()}>
-                    {providerSaving ? 'Saving…' : 'Save'}
-                  </ProviderButton>
-                  <button
-                    type="button"
-                    onClick={() => { setEditingProvider(false); setEditProviderKey(''); }}
-                    style={{
-                      height: '36px',
-                      padding: '0 14px',
-                      borderRadius: '10px',
-                      border: '0.5px solid var(--hachi-line)',
-                      background: 'transparent',
-                      color: 'var(--hachi-muted)',
-                      font: `500 13px var(--font-body)`,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : (
-              /* Read-only view */
-              <div>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '14px',
-                    marginBottom: '14px',
-                  }}
-                >
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: '14px', fontWeight: 500 }}>
-                      {providerLabel}
-                    </div>
-                    <div style={{ fontSize: '13px', color: 'var(--hachi-muted)', marginTop: '2px' }}>
-                      API key {keyDisplay}
-                    </div>
-                  </div>
-                </div>
-                <ProviderButton onClick={() => setEditingProvider(true)}>Change provider</ProviderButton>
-              </div>
-            )}
-          </div>
+          {/* ---- Voice (STT / TTS) ---- */}
+          <VoiceSettings />
 
           {/* ---- Appearance & account ---- */}
           <div style={cardStyle}>
@@ -1160,36 +990,6 @@ function Settings() {
 }
 
 // ---- Small local button components ----
-
-function ProviderButton({
-  onClick,
-  children,
-}: {
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  const [hovered, setHovered] = useState(false);
-  return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        height: '36px',
-        padding: '0 14px',
-        borderRadius: '10px',
-        border: '1px solid var(--hachi-trust)',
-        background: hovered ? 'var(--hachi-trust-tint)' : 'transparent',
-        color: 'var(--hachi-trust)',
-        font: `500 13px var(--font-body)`,
-        cursor: 'pointer',
-        transition: 'background var(--dur-fast) var(--ease)',
-      }}
-    >
-      {children}
-    </button>
-  );
-}
 
 function SetupButton({
   onClick,

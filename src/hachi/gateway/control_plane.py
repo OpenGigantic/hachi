@@ -74,6 +74,8 @@ class GatewayControlPlane:
         read_events: Callable[[str, int, int], list[GatewayEvent]] | None = None,
         get_session_state: Callable[[str], dict[str, Any]] | None = None,
         get_recent_sessions: Callable[[int], list[dict[str, Any]]] | None = None,
+        get_session_messages: Callable[[str, int], list[dict[str, Any]]] | None = None,
+        delete_session: Callable[[str], bool] | None = None,
         get_runtime_events: Callable[[str | None, int], list[dict[str, Any]]] | None = None,
         get_mcp_inventory: Callable[[], dict[str, Any]] | None = None,
         get_active_jobs: Callable[[], list[dict[str, Any]]] | None = None,
@@ -103,6 +105,7 @@ class GatewayControlPlane:
         authoring_revert: Callable[[str], dict[str, Any]] | None = None,
         authoring_save_source: Callable[[str, str], dict[str, Any]] | None = None,
         get_spend: Callable[[str | None], dict[str, Any]] | None = None,
+        get_spend_daily: Callable[[], dict[str, Any]] | None = None,
         set_capability_enabled: Callable[[str, bool], dict[str, Any]] | None = None,
         add_memory_fact: Callable[[str, str], dict[str, Any]] | None = None,
         delete_memory_fact: Callable[[str], dict[str, Any]] | None = None,
@@ -111,11 +114,17 @@ class GatewayControlPlane:
         add_allowed_folder: Callable[[str], dict[str, Any]] | None = None,
         add_allowed_command: Callable[[str], dict[str, Any]] | None = None,
         add_always_allow: Callable[[str, str, str], dict[str, Any]] | None = None,
-        register_mcp_server: (
-            Callable[..., dict[str, Any]] | None
-        ) = None,
+        register_mcp_server: (Callable[..., dict[str, Any]] | None) = None,
         get_kennel: Callable[[], list[dict[str, Any]]] | None = None,
         add_skill: Callable[[str], dict[str, Any]] | None = None,
+        # Multi-provider admin handlers
+        list_providers: Callable[[], dict[str, Any]] | None = None,
+        add_or_update_provider: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+        remove_provider: Callable[[str], dict[str, Any]] | None = None,
+        get_routing: Callable[[], dict[str, Any]] | None = None,
+        set_routing: Callable[[str, dict[str, list[str]]], dict[str, Any]] | None = None,
+        test_provider_connection: Callable[[str], dict[str, Any]] | None = None,
+        list_all_models: Callable[[], dict[str, Any]] | None = None,
         max_active_sessions: int = 100,
         max_prompt_chars: int = 100_000,
     ) -> None:
@@ -126,6 +135,8 @@ class GatewayControlPlane:
         self._read_events = read_events
         self._get_session_state = get_session_state
         self._get_recent_sessions = get_recent_sessions
+        self._get_session_messages = get_session_messages
+        self._delete_session = delete_session
         self._get_runtime_events = get_runtime_events
         self._get_mcp_inventory = get_mcp_inventory
         self._get_active_jobs = get_active_jobs
@@ -155,6 +166,7 @@ class GatewayControlPlane:
         self._authoring_revert = authoring_revert
         self._authoring_save_source = authoring_save_source
         self._get_spend = get_spend
+        self._get_spend_daily = get_spend_daily
         self._set_capability_enabled = set_capability_enabled
         self._add_memory_fact = add_memory_fact
         self._delete_memory_fact = delete_memory_fact
@@ -166,6 +178,14 @@ class GatewayControlPlane:
         self._register_mcp_server = register_mcp_server
         self._get_kennel = get_kennel
         self._add_skill = add_skill
+        # Multi-provider admin handlers
+        self._list_providers = list_providers
+        self._add_or_update_provider = add_or_update_provider
+        self._remove_provider = remove_provider
+        self._get_routing = get_routing
+        self._set_routing = set_routing
+        self._test_provider_connection = test_provider_connection
+        self._list_all_models = list_all_models
         self._connections: dict[str, dict[str, Any]] = {}
         self._api_sessions: dict[str, str] = {}  # session_key -> session_id (facade sessions)
         self._connections_lock = threading.Lock()
@@ -384,16 +404,32 @@ class GatewayControlPlane:
         normalized_session_id = session_id.strip()
         if not normalized_session_id:
             raise GatewayProtocolError("session_id is required")
+        was_live = False
         with self._connections_lock:
-            if normalized_session_id not in self._connections:
-                raise GatewayProtocolError("Unknown session_id")
-            self._connections.pop(normalized_session_id, None)
-            # Prune any api-facade session-key that pointed at this session_id.
-            stale_keys = [k for k, v in self._api_sessions.items() if v == normalized_session_id]
-            for k in stale_keys:
-                del self._api_sessions[k]
-        if self._on_disconnect is not None:
+            if normalized_session_id in self._connections:
+                was_live = True
+                self._connections.pop(normalized_session_id, None)
+                # Prune any api-facade session-key that pointed at this session_id.
+                stale_keys = [
+                    k for k, v in self._api_sessions.items() if v == normalized_session_id
+                ]
+                for k in stale_keys:
+                    del self._api_sessions[k]
+        if was_live and self._on_disconnect is not None:
             self._on_disconnect(normalized_session_id)
+
+        # Also remove the persisted record so the conversation disappears from the
+        # recent-sessions list. The recent list is keyed by SessionStore ids, which
+        # are never live connections — so historical sessions are delete-only here.
+        deleted = False
+        if self._delete_session is not None:
+            try:
+                deleted = bool(self._delete_session(normalized_session_id))
+            except Exception:
+                deleted = False
+
+        if not was_live and not deleted:
+            raise GatewayProtocolError("Unknown session_id")
 
         return {"session_id": normalized_session_id, "closed": True}
 
@@ -402,32 +438,109 @@ class GatewayControlPlane:
     ) -> dict[str, Any]:
         if not session_id:
             raise GatewayProtocolError("session_id is required")
-        with self._connections_lock:
-            if session_id not in self._connections:
-                raise GatewayProtocolError("Unknown session_id")
-        if self._read_events is None:
-            raise GatewayUnavailableError("event stream is not attached")
 
         safe_limit = max(1, min(limit, 500))
         safe_after = max(0, after)
-        batch = self._read_events(session_id, safe_after, safe_limit)
-        next_sequence = safe_after
-        if batch:
-            next_sequence = batch[-1].sequence
 
+        with self._connections_lock:
+            is_live = session_id in self._connections
+
+        if is_live:
+            if self._read_events is None:
+                raise GatewayUnavailableError("event stream is not attached")
+            batch = self._read_events(session_id, safe_after, safe_limit)
+            next_sequence = safe_after
+            if batch:
+                next_sequence = batch[-1].sequence
+            return {
+                "session_id": session_id,
+                "events": [
+                    {
+                        "sequence": event.sequence,
+                        "event_type": event.event_type,
+                        "payload": event.payload,
+                        "time": event.time,
+                    }
+                    for event in batch
+                ],
+                "next_sequence": next_sequence,
+            }
+
+        # Not a live connection — replay the persisted transcript so a past session
+        # can be resumed. We synthesize the same event envelopes the client already
+        # reconstructs from a live turn, so the UI replay path is identical.
+        if self._get_session_messages is None:
+            raise GatewayProtocolError("Unknown session_id")
+        events = self._synthesize_history_events(session_id, safe_after, safe_limit)
+        next_sequence = events[-1]["sequence"] if events else safe_after
         return {
             "session_id": session_id,
-            "events": [
-                {
-                    "sequence": event.sequence,
-                    "event_type": event.event_type,
-                    "payload": event.payload,
-                    "time": event.time,
-                }
-                for event in batch
-            ],
+            "events": events,
             "next_sequence": next_sequence,
         }
+
+    def _synthesize_history_events(
+        self, session_id: str, after: int, limit: int
+    ) -> list[dict[str, Any]]:
+        """Turn a stored transcript into the event envelopes the client replays.
+
+        user msg  → ``session.turn.started`` {user_text}
+        assistant → ``text.stream.delta`` {text} + ``session.chat.completed``
+        tool msg  → ``tool.call.completed`` {name, result_preview}
+        """
+        if self._get_session_messages is None:
+            return []
+        messages = self._get_session_messages(session_id, 500) or []
+        events: list[dict[str, Any]] = []
+        seq = 0
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content") or ""
+            ts = msg.get("time") or msg.get("timestamp") or ""
+            if role == "user":
+                seq += 1
+                events.append(
+                    {
+                        "sequence": seq,
+                        "event_type": "session.turn.started",
+                        "payload": {"user_text": content},
+                        "time": ts,
+                    }
+                )
+            elif role == "assistant":
+                seq += 1
+                events.append(
+                    {
+                        "sequence": seq,
+                        "event_type": "text.stream.delta",
+                        "payload": {"text": content},
+                        "time": ts,
+                    }
+                )
+                seq += 1
+                events.append(
+                    {
+                        "sequence": seq,
+                        "event_type": "session.chat.completed",
+                        "payload": {},
+                        "time": ts,
+                    }
+                )
+            elif role == "tool":
+                seq += 1
+                events.append(
+                    {
+                        "sequence": seq,
+                        "event_type": "tool.call.completed",
+                        "payload": {
+                            "name": msg.get("tool_name") or "tool",
+                            "result_preview": content,
+                        },
+                        "time": ts,
+                    }
+                )
+        # Honour pagination: drop events at/below `after`, cap to `limit`.
+        return [e for e in events if e["sequence"] > after][:limit]
 
     def session_state(self, session_id: str) -> Any:
         if not session_id:
@@ -585,6 +698,22 @@ class GatewayControlPlane:
             return {"turns": [], "tidies": [], "models": []}
         return self._get_spend(session_id)
 
+    def spend_daily(self) -> Any:
+        """Return today's accumulated daily spend plus configured caps (GET /spend/daily).
+
+        Always returns a safe dict even when no handler is wired, so callers can
+        rely on the ``spent_usd`` / ``daily_cap_usd`` / ``task_cap_usd`` keys being
+        present without a None-guard.
+        """
+        if self._get_spend_daily is None:
+            return {
+                "spent_usd": 0.0,
+                "daily_cap_usd": None,
+                "task_cap_usd": None,
+                "date": datetime.now(UTC).date().isoformat(),
+            }
+        return self._get_spend_daily()
+
     def set_capability_enabled(self, cap_id: str, enabled: bool) -> Any:
         """Toggle a capability on/off (PUT /capabilities/{id}/enabled)."""
         handler = self._require_handler(self._set_capability_enabled, "capability toggle")
@@ -658,6 +787,52 @@ class GatewayControlPlane:
         """Install a skill from the kennel (POST /skills/add)."""
         handler = self._require_handler(self._add_skill, "skill install")
         return handler(kennel_id)
+
+    # ==========================================
+    # Multi-provider admin public methods
+    # ==========================================
+
+    def list_providers(self) -> Any:
+        """Return all configured providers (secrets masked) — GET /config/providers."""
+        if self._list_providers is None:
+            return {"providers": []}
+        return self._list_providers()
+
+    def add_or_update_provider(self, name: str, spec: dict[str, Any]) -> Any:
+        """Upsert a named provider — POST /config/providers or PUT /config/providers/{name}."""
+        handler = self._require_handler(self._add_or_update_provider, "provider upsert")
+        return handler(name, spec)
+
+    def remove_provider(self, name: str) -> Any:
+        """Delete a named provider — DELETE /config/providers/{name}."""
+        handler = self._require_handler(self._remove_provider, "provider removal")
+        return handler(name)
+
+    def get_routing(self) -> Any:
+        """Return the capability routing matrix — GET /config/routing."""
+        if self._get_routing is None:
+            return {"default_model": "claude-haiku-4-5", "capabilities": []}
+        return self._get_routing()
+
+    def set_routing(self, default_model: str, capabilities: dict[str, list[str]]) -> Any:
+        """Persist the routing matrix — PUT /config/routing."""
+        handler = self._require_handler(self._set_routing, "routing update")
+        return handler(default_model, capabilities)
+
+    def test_provider_connection(self, name: str) -> Any:
+        """Test connectivity for a named provider — POST /config/providers/{name}/test-connection.
+
+        Returns ``{"ok": bool, "detail": str}``.
+        """
+        if self._test_provider_connection is None:
+            return {"ok": False, "detail": "test_connection not available"}
+        return self._test_provider_connection(name)
+
+    def list_all_models(self) -> Any:
+        """Return models indexed by provider — GET /config/models/all."""
+        if self._list_all_models is None:
+            return {}
+        return self._list_all_models()
 
     # Backward-compatible aliases for previous envelope methods.
     def connect(self, payload: dict[str, Any]) -> dict[str, Any]:

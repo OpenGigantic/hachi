@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
@@ -155,25 +155,84 @@ const OG_COLOR: Record<string, string> = {
 }
 
 // ── graph geometry ────────────────────────────────────────────────────────────
-const GRAPH_H = 380
-const COL_X: Record<string, number> = { root: 86, skill: 300, leaf: 514 }
-
-function computePositions(nodes: OgNode[]): Record<string, { x: number; y: number }> {
-  const byCol: Record<string, OgNode[]> = { root: [], skill: [], leaf: [] }
-  nodes.forEach((n) => byCol[n.kind]?.push(n))
-  const pos: Record<string, { x: number; y: number }> = {};
-  (['root', 'skill', 'leaf'] as const).forEach((k) => {
-    const list = byCol[k]
-    const gap = GRAPH_H / (list.length + 1)
-    list.forEach((n, i) => {
-      pos[n.id] = { x: COL_X[k], y: gap * (i + 1) }
-    })
-  })
-  return pos
-}
+const GRAPH_W = 860
+const GRAPH_H = 460
+// Three columns: the focused node, its dependencies, and their dependencies.
+const COL_X = [150, 430, 720]
+// Cap nodes shown per tier so the focused view stays readable on large graphs.
+const TIER_CAP = 16
 
 function rOf(n: OgNode, maxFull: number): number {
-  return 13 + (n.full / maxFull) * 14
+  return 11 + (n.full / Math.max(1, maxFull)) * 15
+}
+
+interface FocusLayout {
+  pos: Record<string, { x: number; y: number }>
+  shown: OgNode[]
+  edges: [string, string][]
+}
+
+/**
+ * Focused dependency view (matches the OG Explorer design): the selected node
+ * (default: a root) sits on the left, the nodes it depends on form the middle
+ * column, and *their* dependencies form the right column — a clean three-tier,
+ * left-to-right graph instead of dumping all N nodes at once. Click any node to
+ * re-centre on it. A node with no dependencies instead shows the nodes that
+ * depend on it, so selecting anything always reveals its neighbourhood.
+ * Deterministic (no RNG); each tier is distributed evenly down its column.
+ */
+function computeFocusedLayout(nodes: OgNode[], centerId: string): FocusLayout {
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+  let center = byId.get(centerId)
+  if (!center) center = nodes.find((n) => n.kind === 'root') ?? nodes[0]
+  if (!center) return { pos: {}, shown: [], edges: [] }
+  const centerNode = center
+
+  const depsOf = (id: string): string[] =>
+    (byId.get(id)?.deps ?? []).filter((d) => byId.has(d) && d !== id)
+  const parentsOf = (id: string): string[] =>
+    nodes.filter((n) => n.id !== id && (n.deps ?? []).includes(id)).map((n) => n.id)
+  const byFullDesc = (a: string, b: string) => (byId.get(b)?.full ?? 0) - (byId.get(a)?.full ?? 0)
+
+  // Tier 1: the node's dependencies; if it has none (a leaf), the nodes that
+  // depend on it — so the view is never just a lonely dot.
+  let tier1 = depsOf(centerNode.id)
+  if (tier1.length === 0) tier1 = parentsOf(centerNode.id)
+  tier1 = [...new Set(tier1)].sort(byFullDesc).slice(0, TIER_CAP)
+
+  // Tier 2: dependencies of the tier-1 nodes (excluding the centre + tier 1).
+  const seen = new Set<string>([centerNode.id, ...tier1])
+  const tier2: string[] = []
+  for (const t1 of tier1) {
+    for (const d of depsOf(t1)) {
+      if (!seen.has(d)) {
+        seen.add(d)
+        tier2.push(d)
+      }
+    }
+  }
+  const tier2Capped = [...new Set(tier2)].sort(byFullDesc).slice(0, TIER_CAP)
+
+  const columns = [[centerNode.id], tier1, tier2Capped]
+  const pos: Record<string, { x: number; y: number }> = {}
+  columns.forEach((col, ci) => {
+    const gap = GRAPH_H / (col.length + 1)
+    col.forEach((id, i) => {
+      pos[id] = { x: COL_X[ci], y: gap * (i + 1) }
+    })
+  })
+
+  const shownIds = new Set<string>([centerNode.id, ...tier1, ...tier2Capped])
+  const edges: [string, string][] = []
+  for (const id of shownIds) {
+    for (const d of depsOf(id)) {
+      if (shownIds.has(d)) edges.push([id, d])
+    }
+  }
+  const shown = [...shownIds]
+    .map((id) => byId.get(id))
+    .filter((n): n is OgNode => n != null)
+  return { pos, shown, edges }
 }
 
 // ── sub-components ────────────────────────────────────────────────────────────
@@ -233,23 +292,28 @@ interface GraphPanelProps {
 }
 
 function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelProps) {
-  const pos = computePositions(nodes)
   // clamp to 1 so rOf never divides by zero (avoids NaN radius when all full===0)
   const maxFull = Math.max(1, ...nodes.map((n) => n.full))
-  const nodeById = (id: string) => nodes.find((n) => n.id === id)
 
-  // ordered flat list for arrow-key navigation
-  const orderedIds = (['root', 'skill', 'leaf'] as const).flatMap((k) =>
-    nodes.filter((n) => n.kind === k).map((n) => n.id)
+  // Focused three-tier layout around the selected node; re-centres when the
+  // selection changes (click a node to focus on it), but not on hover.
+  const { pos, shown, edges } = useMemo(
+    () => computeFocusedLayout(nodes, ogSel),
+    [nodes, ogSel],
   )
 
-  // build edge list
-  const edges: [string, string][] = []
-  nodes.forEach((n) =>
-    (n.deps ?? []).forEach((d) => {
-      if (pos[d]) edges.push([n.id, d])
-    })
-  )
+  const nodeById = (id: string) =>
+    shown.find((n) => n.id === id) ?? nodes.find((n) => n.id === id)
+
+  // ordered flat list (left-to-right, then top-down) for arrow-key navigation
+  const orderedIds = shown
+    .slice()
+    .sort(
+      (a, b) =>
+        (pos[a.id]?.x ?? 0) - (pos[b.id]?.x ?? 0) ||
+        (pos[a.id]?.y ?? 0) - (pos[b.id]?.y ?? 0),
+    )
+    .map((n) => n.id)
 
   const active = ogHover ?? ogSel
 
@@ -305,7 +369,7 @@ function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelP
   return (
     <div style={{ padding: '8px 8px 0' }}>
       <svg
-        viewBox="0 0 600 400"
+        viewBox="0 0 860 460"
         style={{ width: '100%', height: 'auto', display: 'block' }}
         aria-label="ObjectGraph dependency diagram"
         role="img"
@@ -364,7 +428,7 @@ function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelP
         })}
 
         {/* nodes */}
-        {nodes.map((n) => {
+        {shown.map((n) => {
           const p = pos[n.id]
           if (!p) return null
           const r = rOf(n, maxFull)
@@ -429,7 +493,7 @@ function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelP
                 x={p.x}
                 y={p.y + 4}
                 textAnchor="middle"
-                fontSize={10}
+                fontSize={11}
                 fontWeight={500}
                 fill={color}
                 opacity={lit ? 1 : 0.4}
@@ -443,7 +507,7 @@ function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelP
                 x={p.x}
                 y={nameY}
                 textAnchor="middle"
-                fontSize={10.5}
+                fontSize={13}
                 fill="var(--hachi-ink)"
                 opacity={lit ? 1 : 0.4}
                 style={{ fontFamily: 'var(--font-body)', pointerEvents: 'none' }}
@@ -1026,9 +1090,28 @@ function OgExplorer() {
   const ogView = useStore((s) => s.ogView)
   const setOgSel = useStore((s) => s.setOgSel)
   const setOgView = useStore((s) => s.setOgView)
+  // HACHI-016: distinguish disconnected vs. connected-but-empty skill index
+  const reconnecting = useStore((s) => s.reconnecting)
 
   // fetch live data on mount (idempotent; bootstrapLiveData also fires on app mount)
   useEffect(() => { void loadOg() }, [])
+
+  // Default the focused graph to the most useful starting node once skills load.
+  // Real skill graphs are sparse and often have no single root, so prefer a root
+  // node if one exists, else centre on the most-connected node for a meaningful
+  // (non-empty) neighbourhood instead of an isolated dot.
+  useEffect(() => {
+    if (ogNodes.length > 0 && !ogNodes.some((n) => n.id === ogSel)) {
+      const conn = new Map(ogNodes.map((n) => [n.id, n.deps?.length ?? 0]))
+      ogNodes.forEach((n) =>
+        (n.deps ?? []).forEach((d) => conn.set(d, (conn.get(d) ?? 0) + 1)),
+      )
+      const start =
+        ogNodes.find((n) => n.kind === 'root') ??
+        [...ogNodes].sort((a, b) => (conn.get(b.id) ?? 0) - (conn.get(a.id) ?? 0))[0]
+      if (start) setOgSel(start.id)
+    }
+  }, [ogSel, ogNodes, setOgSel])
 
   // hover is screen-local (store.setOgHover is a no-op shim per contract)
   const [ogHover, setOgHover] = useState<string | null>(null)
@@ -1236,7 +1319,7 @@ function OgExplorer() {
                 </div>
               </div>
 
-              {/* empty state — shown while gateway hasn't returned nodes yet */}
+              {/* HACHI-016: branch empty state copy — disconnected vs. connected-but-empty index */}
               {ogNodes.length === 0 ? (
                 <div
                   style={{
@@ -1253,13 +1336,27 @@ function OgExplorer() {
                   <span style={{ opacity: 0.4 }}>
                     <Icon name="network" size={32} />
                   </span>
-                  <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--hachi-ink)' }}>
-                    No graph data yet
-                  </div>
-                  <div style={{ fontSize: 13, maxWidth: 320, lineHeight: '20px' }}>
-                    Connect to a running Hachi gateway — the .og graph populates
-                    once the skill index is built.
-                  </div>
+                  {reconnecting ? (
+                    <>
+                      <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--hachi-ink)' }}>
+                        Not connected
+                      </div>
+                      <div style={{ fontSize: 13, maxWidth: 320, lineHeight: '20px' }}>
+                        Connect to a running Hachi gateway — the .og graph will
+                        populate once the gateway is reachable.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--hachi-ink)' }}>
+                        Skill index is empty
+                      </div>
+                      <div style={{ fontSize: 13, maxWidth: 320, lineHeight: '20px' }}>
+                        The gateway is connected but no .og skills have been indexed yet.
+                        Run a task or trigger a skill index build to populate the graph.
+                      </div>
+                    </>
+                  )}
                 </div>
               ) : (
                 <>

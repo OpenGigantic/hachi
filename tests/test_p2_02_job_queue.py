@@ -335,21 +335,78 @@ def test_func_based_job_executes_in_process(tmp_path: Path) -> None:
     assert jid not in q._func_table
 
 
-def test_func_based_job_failed_on_restart_recovery(tmp_path: Path) -> None:
-    """A func-only job cannot run after a restart (the callable is in-memory only).
+def test_func_only_job_not_runnable_by_foreign_instance(tmp_path: Path) -> None:
+    """A func-only job is never dispatched — nor false-failed — by another instance.
 
-    A fresh SQLiteJobQueue over the same DB has an empty func-table, so
-    _recover_running() fails the orphaned pending job rather than leaving it stuck
-    or silently re-running it without its callable.
+    A second SQLiteJobQueue over the same DB has an empty func-table, so it must
+    not offer the orphaned func row to its worker (it cannot dispatch the
+    callable). Crucially it must NOT mark the row FAILED either — that "no callable
+    func ..." false-failure was the bug that spammed prefetch_recall /
+    fact_extraction / session_title into "Needs attention". The owner_id filter
+    keeps the row invisible to the foreign instance instead.
     """
     db = tmp_path / "jobs.db"
     q1 = SQLiteJobQueue(db_path=db)
     jid = q1.enqueue(Job(job_id="", name="ephemeral", func=lambda: None))
     assert jid in q1._func_table
 
-    # Simulate a process restart: a new queue instance over the same DB file.
+    # A second instance over the same DB (sibling agent, or a fresh boot).
     q2 = SQLiteJobQueue(db_path=db)
-    assert q2.get_pending() == []  # not left pending for a worker that can't run it
-    recovered = q2.get_job(jid)
-    assert recovered is not None
-    assert recovered.status == JobStatus.FAILED
+    assert q2.get_pending() == []  # not offered to a worker that cannot run it
+    foreign_view = q2.get_job(jid)
+    assert foreign_view is not None
+    assert foreign_view.status != JobStatus.FAILED  # not false-failed as "no callable func"
+
+
+def test_func_job_not_stolen_by_sibling_instance(tmp_path: Path) -> None:
+    """Two live queues over one DB must not steal/false-fail each other's func jobs.
+
+    Regression for the continuous prefetch_recall / fact_extraction / session_title
+    failures: the gateway boots one SQLiteJobQueue per agent, so a sibling worker
+    used to claim a func row it had no callable for and fail it with
+    "no callable func and handler_name '' is not in registry".
+    """
+    db = tmp_path / "jobs.db"
+    a = SQLiteJobQueue(db_path=db)
+    b = SQLiteJobQueue(db_path=db)
+
+    ran: list[str] = []
+    jid = a.enqueue(Job(job_id="", name="prefetch_recall", func=lambda: ran.append("ok")))
+
+    # Sibling B must neither see nor fail A's func job.
+    assert b.get_pending() == []
+    assert JobWorker(b).execute_one() is False  # nothing runnable for B
+    a_view = a.get_job(jid)
+    assert a_view is not None and a_view.status == JobStatus.PENDING  # B did not touch it
+
+    # A's own worker dispatches it via the shared in-process side-table.
+    assert JobWorker(a).execute_one() is True
+    assert ran == ["ok"]
+    done = a.get_job(jid)
+    assert done is not None and done.status == JobStatus.COMPLETED
+
+
+def test_boot_purges_historical_false_failures(tmp_path: Path) -> None:
+    """A new instance clears the old structural false-failure rows on boot.
+
+    These are the prefetch_recall / fact_extraction / session_title rows the
+    pre-ownership bug left blocked in "Needs attention". They are non-actionable,
+    so _recover_running deletes them on the next gateway start.
+    """
+    db = tmp_path / "jobs.db"
+    q1 = SQLiteJobQueue(db_path=db)
+    jid = q1.enqueue(Job(job_id="", name="prefetch_recall", handler_name="x", payload={}))
+    q1.update_status(
+        jid,
+        JobStatus.FAILED,
+        JobResult(
+            status=JobStatus.FAILED,
+            error="Job 'prefetch_recall': no callable func and handler_name '' is not in registry",
+        ),
+    )
+    assert q1.get_job(jid) is not None
+    q1.shutdown()
+
+    q2 = SQLiteJobQueue(db_path=db)  # boot recovery purges the false-failure row
+    assert q2.get_job(jid) is None
+    assert q2.get_failed_jobs() == []

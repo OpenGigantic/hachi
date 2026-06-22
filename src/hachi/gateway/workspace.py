@@ -5,6 +5,7 @@ Manages the ~/.hachi/ directory structure — the local home of every Hachi inst
 Handles first-run setup, configuration loading, brain loading, and the device permissions wizard.
 """
 
+import logging
 import shutil
 from pathlib import Path
 
@@ -12,6 +13,10 @@ from hachi.core.config_loader import load_effective_config, write_global_config
 from hachi.core.paths import ensure_directories, get_hachi_paths
 from hachi.core.permissions import generate_permissions_og
 from hachi.core.skill_packs import install_core_skill_packs, install_skill_pack
+
+logger = logging.getLogger(__name__)
+
+_LEGACY_BRAND_TOKEN = "tokoboros"
 
 # ==========================================
 # Path Resolution
@@ -41,6 +46,50 @@ def get_permissions_file() -> Path:
 # ==========================================
 
 
+def _heal_legacy_brand(brain_file: Path, bundled_default: Path) -> bool:
+    """Migrate a brain.og file that still contains the legacy "tokoboros" brand name.
+
+    If ``brain_file`` exists and its content contains the legacy brand token
+    (case-insensitive), this function:
+
+    1. Backs up the existing file to ``<brain_file>.legacy-bak`` (skips backup if the
+       ``.legacy-bak`` already exists so repeated calls are idempotent).
+    2. Overwrites ``brain_file`` with the content of ``bundled_default``.
+    3. Logs an INFO line describing the migration.
+
+    Only modifies the file when the legacy brand token is present; fresh or already-
+    migrated installs are left untouched.
+
+    Args:
+        brain_file: Absolute path to the local brain.og that should be checked.
+        bundled_default: Absolute path to the canonical bundled brain.og.
+
+    Returns:
+        ``True`` if the file was migrated, ``False`` if no action was needed.
+    """
+    if not brain_file.exists():
+        return False
+    if not bundled_default.exists():
+        return False
+
+    content = brain_file.read_text(encoding="utf-8")
+    if _LEGACY_BRAND_TOKEN not in content.lower():
+        return False
+
+    # Back up before overwriting (never clobber an existing backup).
+    bak_path = brain_file.with_suffix(brain_file.suffix + ".legacy-bak")
+    if not bak_path.exists():
+        shutil.copy2(brain_file, bak_path)
+
+    shutil.copy2(bundled_default, brain_file)
+    logger.info(
+        "Migrated legacy brain.og identity (tokoboros→hachi): %s → backed up to %s",
+        brain_file,
+        bak_path,
+    )
+    return True
+
+
 def ensure_workspace():
     """
     Creates the default workspace structure if it doesn't exist.
@@ -58,12 +107,13 @@ def ensure_workspace():
         except Exception:
             pass
 
+    bundled_default = Path(__file__).parent.parent / "default_skills" / "brain.og"
+
     # Create default brain.og if it doesn't exist
     brain_file = paths.brain_file
     if not brain_file.exists():
-        default_brain = Path(__file__).parent.parent / "default_skills" / "brain.og"
-        if default_brain.exists():
-            shutil.copy2(default_brain, brain_file)
+        if bundled_default.exists():
+            shutil.copy2(bundled_default, brain_file)
         else:
             # Minimal fallback if default_skills is missing
             with open(brain_file, "w", encoding="utf-8") as f:
@@ -73,6 +123,14 @@ def ensure_workspace():
                     "::dense\n"
                     "You are Hachi, an elite autonomous agent.\n"
                 )
+    else:
+        # Heal any pre-rename install that still carries the legacy brand.
+        _heal_legacy_brand(brain_file, bundled_default)
+
+    # Also heal the secondary copy that install_core_skill_packs may have placed under
+    # skills_dir/brain.og (present on older installs).
+    secondary_brain = skills_dir / "brain.og"
+    _heal_legacy_brand(secondary_brain, bundled_default)
 
     # Create canonical TOML config if it doesn't exist
     if not paths.global_config_toml.exists():

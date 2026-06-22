@@ -61,6 +61,11 @@ const registry: Record<string, string> = {
   "file-code": '<path d="M10 12.5 8 15l2 2.5"/><path d="m14 12.5 2 2.5-2 2.5"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/>',
   "menu": '<line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/>',
   "message-square": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  "paperclip": '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+  "mic": '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>',
+  "mic-off": '<line x1="2" x2="22" y1="2" y2="22"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 5"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><line x1="12" x2="12" y1="19" y2="22"/>',
+  "volume-2": '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
+  "image": '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
 }
 
 export interface IconProps {
@@ -68,10 +73,17 @@ export interface IconProps {
   size?: number
   style?: React.CSSProperties
   className?: string
+  /** Accessibility label. When provided the SVG is announced as an image with
+   *  this label (role="img" + aria-label). Omit for decorative icons — they are
+   *  hidden from screen readers by default (aria-hidden="true"). */
+  label?: string
 }
 
-export function Icon({ name, size = 18, style, className }: IconProps) {
+export function Icon({ name, size = 18, style, className, label }: IconProps) {
   const inner = registry[name] ?? ''
+  const a11yProps = label
+    ? { role: 'img' as const, 'aria-label': label }
+    : { 'aria-hidden': true as const, focusable: 'false' as const }
   return (
     <svg
       viewBox="0 0 24 24"
@@ -84,6 +96,7 @@ export function Icon({ name, size = 18, style, className }: IconProps) {
       strokeLinejoin="round"
       style={{ display: 'block', flexShrink: 0, ...style }}
       className={className}
+      {...a11yProps}
       dangerouslySetInnerHTML={{ __html: inner }}
     />
   )

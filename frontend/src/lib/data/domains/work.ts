@@ -6,6 +6,10 @@
 //   GET /jobs/active       → Job[]          → Run[]
 //   GET /jobs/failed?limit=20 → JobFailure[]  → FailedTask[]
 //   GET /schedules         → { schedules: Schedule[] } → Routine[]
+//   GET /runs              → { runs: RunStateView[] }  → Run[] / FailedTask[]
+//   GET /runs/{run_id}     → RunStateView
+//   POST /runs/{run_id}/wake
+//   DELETE /runs/{run_id}
 //   PUT /schedules/{id}/enabled body { enabled }
 //   DELETE /schedules/{id}
 // ============================================================
@@ -53,6 +57,21 @@ interface GatewaySchedulesResponse {
   schedules: GatewaySchedule[];
 }
 
+interface GatewayRunStateView {
+  run_id: string;
+  session_id: string;
+  status: "pending" | "running" | "waiting" | "blocked" | "completed" | "failed" | "cancelled" | string;
+  wait_kind?: string | null;
+  wait_key?: string | null;
+  wait_timeout_at?: string | null;
+  resume_cursor?: number;
+  updated_at: string;
+}
+
+interface GatewayRunsResponse {
+  runs: GatewayRunStateView[];
+}
+
 // ---- Stable numeric-id mapper ----
 // Maps string gateway ids → stable numeric React keys.
 // The string id is preserved on the UI object in a side field so mutations
@@ -73,6 +92,7 @@ const _idCounter = (() => {
 
 // Parallel map from numeric UI id → string gateway schedule_id for mutations.
 const _scheduleIdMap = new Map<number, string>();
+const _durableRunIdMap = new Map<number, string>();
 
 // ---- Pure adapters ----
 
@@ -181,6 +201,71 @@ function adaptSchedule(raw: GatewaySchedule): Routine {
   };
 }
 
+function adaptDurableRun(raw: GatewayRunStateView): Run | null {
+  const numId = _idCounter(raw.run_id);
+  _durableRunIdMap.set(numId, raw.run_id);
+
+  const statusMap: Record<string, Run["status"]> = {
+    pending: "on-watch",
+    running: "working",
+    waiting: "blocked",
+    blocked: "blocked",
+    completed: "done",
+  };
+
+  const uiStatus = statusMap[raw.status];
+  if (!uiStatus) return null;
+
+  let when = "durable";
+  try {
+    when = new Date(raw.updated_at).toLocaleTimeString("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    when = raw.updated_at;
+  }
+
+  return {
+    id: numId,
+    title: `Run ${raw.run_id.slice(0, 8)}`,
+    status: uiStatus,
+    progress: uiStatus === "done" ? 1 : uiStatus === "working" ? 0.5 : 0,
+    spent: 0,
+    budget: 1.0,
+    meta: `durable/${raw.status}`,
+    owner: raw.wait_kind ?? "runtime",
+    when,
+  };
+}
+
+function adaptDurableFailure(raw: GatewayRunStateView): FailedTask | null {
+  if (raw.status !== "failed" && raw.status !== "cancelled") return null;
+  const numId = _idCounter(raw.run_id);
+  _durableRunIdMap.set(numId, raw.run_id);
+
+  let when = "unknown";
+  try {
+    when = new Date(raw.updated_at).toLocaleTimeString("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    when = raw.updated_at;
+  }
+
+  return {
+    id: numId,
+    title: `Run ${raw.run_id.slice(0, 8)}`,
+    status: raw.status,
+    when,
+    cost: 0,
+    error: raw.status === "cancelled" ? "Run cancelled" : "Durable run failed",
+    owner: raw.wait_kind ?? "runtime",
+    waitingOn: raw.wait_key ?? undefined,
+  };
+}
+
 // ---- Loader ----
 
 // Tracks whether this domain has ever received real data from the gateway.
@@ -191,17 +276,29 @@ let _hasEverSucceeded = false;
 export async function loadWork(): Promise<void> {
   if (USE_MOCKS) return; // keep seeded fixtures
   try {
-    const [rawJobs, rawFailed, rawSchedules] = await Promise.all([
+    const [rawJobs, rawFailed, rawSchedules, rawRuns] = await Promise.all([
       apiGet<GatewayJob[]>("/jobs/active"),
       apiGet<GatewayJobFailure[]>("/jobs/failed", { limit: 20 }),
       apiGet<GatewaySchedulesResponse>("/schedules"),
+      apiGet<GatewayRunsResponse>("/runs", { limit: 100 }),
     ]);
 
     const runs: Run[] = (rawJobs ?? []).map(adaptJob);
     const failed: FailedTask[] = (rawFailed ?? []).map(adaptJobFailure);
     const routines: Routine[] = (rawSchedules?.schedules ?? []).map(adaptSchedule);
 
-    useStore.getState().hydrate({ runs, failed, routines });
+    const durableRuns = (rawRuns?.runs ?? []).map(adaptDurableRun).filter((r): r is Run => r !== null);
+    const durableFailed =
+      (rawRuns?.runs ?? [])
+        .map(adaptDurableFailure)
+        .filter((r): r is FailedTask => r !== null);
+
+    const seenRunIds = new Set(runs.map((r) => r.id));
+    const mergedRuns = runs.concat(durableRuns.filter((r) => !seenRunIds.has(r.id)));
+    const seenFailedIds = new Set(failed.map((f) => f.id));
+    const mergedFailed = failed.concat(durableFailed.filter((f) => !seenFailedIds.has(f.id)));
+
+    useStore.getState().hydrate({ runs: mergedRuns, failed: mergedFailed, routines });
     _hasEverSucceeded = true;
   } catch {
     if (!_hasEverSucceeded) {
@@ -272,5 +369,65 @@ export async function deleteRoutineLive(numericId: number): Promise<void> {
     // Revert on failure.
     // Network errors surface the reconnecting banner via client.ts callback.
     useStore.getState().hydrate({ routines: previousRoutines });
+  }
+}
+
+/** True when the UI item id corresponds to a durable run from GET /runs. */
+export function isDurableRun(numericId: number): boolean {
+  return _durableRunIdMap.has(numericId);
+}
+
+/**
+ * Fetch one durable run by UI numeric id.
+ * Returns null when the item is not durable or the request fails.
+ */
+export async function getDurableRunLive(numericId: number): Promise<GatewayRunStateView | null> {
+  if (USE_MOCKS) return null;
+  const runId = _durableRunIdMap.get(numericId);
+  if (!runId) return null;
+  try {
+    return await apiGet<GatewayRunStateView>(`/runs/${encodeURIComponent(runId)}`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Wake a WAITING durable run.
+ * Returns true when wake was requested, false when run is non-durable/not-waiting/failed.
+ */
+export async function wakeDurableRunLive(numericId: number): Promise<boolean> {
+  if (USE_MOCKS) return false;
+  const runId = _durableRunIdMap.get(numericId);
+  if (!runId) return false;
+
+  const current = await getDurableRunLive(numericId);
+  if (!current || current.status !== "waiting") return false;
+
+  try {
+    await apiSend<{ status: string; run_id: string }>(
+      "POST",
+      `/runs/${encodeURIComponent(runId)}/wake`,
+      { source: "web", result: {} }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Cancel a durable run.
+ * Returns true when backend accepted the cancel request.
+ */
+export async function cancelDurableRunLive(numericId: number): Promise<boolean> {
+  if (USE_MOCKS) return false;
+  const runId = _durableRunIdMap.get(numericId);
+  if (!runId) return false;
+  try {
+    await apiSend<unknown>("DELETE", `/runs/${encodeURIComponent(runId)}`);
+    return true;
+  } catch {
+    return false;
   }
 }

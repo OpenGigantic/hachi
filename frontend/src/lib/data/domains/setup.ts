@@ -14,6 +14,7 @@
 
 import { apiGet, apiSend, USE_MOCKS } from "../client";
 import { registerLoader } from "../live";
+import { dedupe } from "../dedupe";
 import { useStore } from "../../store/store";
 import type { SafetyLevel } from "../types";
 
@@ -148,7 +149,11 @@ let _hasEverSucceeded = false;
  * structural defaults (no content from fixtures). After a successful first
  * fetch, subsequent failures preserve the last known real gateway state.
  */
-export async function loadSetup(): Promise<void> {
+export function loadSetup(): Promise<void> {
+  return dedupe("setup", _loadSetupImpl);
+}
+
+async function _loadSetupImpl(): Promise<void> {
   if (USE_MOCKS) return;
 
   try {
@@ -319,4 +324,37 @@ export async function applySetup(answers: WizardAnswers): Promise<GatewayApplyRe
     // Network errors surface the reconnecting banner via client.ts callback.
     return null;
   }
+}
+
+/**
+ * Persist a single provider API key (with optional name/model) via the
+ * provider-only step of POST /setup/apply. Used by the Settings "edit provider"
+ * flow, which only needs to store/rotate the key — not run the full wizard.
+ *
+ * Unlike applySetup, this PROPAGATES errors so the Settings screen can keep the
+ * editor open and surface a save-failed toast. No-ops in mock mode.
+ */
+export async function applyProviderKey(input: {
+  kind: string;
+  model: string;
+  apiKey: string;
+}): Promise<void> {
+  if (USE_MOCKS) return;
+  await apiSend<GatewayApplyResponse>("POST", "/setup/apply", {
+    plan: {
+      tier: "lightning",
+      steps: ["provider"],
+      answers: {
+        provider: {
+          kind: input.kind,
+          model: input.model,
+          api_key: input.apiKey,
+          api_key_env: "ANTHROPIC_API_KEY",
+        },
+      },
+      enable_memory: false,
+      show_integrations: false,
+      show_advanced: false,
+    },
+  });
 }

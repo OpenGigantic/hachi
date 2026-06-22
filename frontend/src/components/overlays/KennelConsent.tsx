@@ -389,7 +389,7 @@ function ConfirmBtn({ onClick }: { onClick: () => void }) {
         height: 42,
         borderRadius: 10,
         border: '0.5px solid transparent',
-        background: hovered ? 'var(--hachi-brand-hover)' : 'var(--hachi-brand)',
+        background: hovered ? 'var(--hachi-brand-active)' : 'var(--hachi-brand-hover)',
         color: 'var(--hachi-canvas)',
         font: '500 14px var(--font-body)',
         cursor: 'pointer',

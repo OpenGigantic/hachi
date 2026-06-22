@@ -84,22 +84,47 @@ function Authoring() {
   const setAuthMode = useStore((s) => s.setAuthMode)
   const rejectPatch = useStore((s) => s.rejectPatch)
 
-  // Load targets list on mount (and refresh on navigate)
+  // Load targets list on mount (and refresh on navigate).
+  // HACHI-019: after targets arrive, if the current authSel is not in the live set,
+  // switch to the first live target (or clear) so we never auto-fetch a phantom target.
   useEffect(() => {
-    void loadAuthoring()
+    void loadAuthoring().then(() => {
+      const targets = useStore.getState().authTargets
+      if (targets.length === 0) return
+      const currentSel = useStore.getState().authSel
+      const inLiveSet = targets.some((t) => t.name === currentSel)
+      if (!inLiveSet) {
+        selectAuthTarget(targets[0].name)
+      }
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // When the selected target changes, fetch its source
+  // When the selected target changes, fetch its source.
+  // HACHI-019: guard — only fetch when authSel is in the live targets set.
+  // Surface any fetch error inline instead of silently swallowing it.
   useEffect(() => {
     if (!authSel) return
-    void loadAuthoringSource(authSel)
-  }, [authSel])
+    setSourceFetchError(null)
+    // If targets have loaded and this sel is not in the live set, skip the fetch.
+    if (authTargets.length > 0 && !authTargets.some((t) => t.name === authSel)) {
+      return
+    }
+    void loadAuthoringSource(authSel).then((result) => {
+      if (result.fetchError) {
+        setSourceFetchError(result.fetchError)
+      }
+    })
+  }, [authSel, authTargets])
 
   // LOCAL: prompt input (LOW-002) and generated diff state (CRIT-002)
   const [prompt, setPrompt] = useState('')
   const [generatedDiff, setGeneratedDiff] = useState<DiffLine[] | null>(null)
   const [generateError, setGenerateError] = useState<string | null>(null)
   const [isGenerating, setIsGenerating] = useState(false)
+
+  // HACHI-019: inline source-fetch error (surfaces 400 / not-found errors instead of swallowing them)
+  const [sourceFetchError, setSourceFetchError] = useState<string | null>(null)
 
   // Reset prompt and stale patch when the selected target changes (LOW-002).
   // Clearing generatedDiff prevents a prior target's diff from appearing under
@@ -108,6 +133,7 @@ function Authoring() {
     setPrompt('')
     setGeneratedDiff(null)
     setGenerateError(null)
+    setSourceFetchError(null)
   }, [authSel])
 
   // .og explainer panel dismissal (E6-T1)
@@ -593,8 +619,8 @@ function Authoring() {
                             background: isSaving
                               ? 'var(--hachi-muted)'
                               : hoverSave
-                              ? 'var(--hachi-brand-hover)'
-                              : 'var(--hachi-brand)',
+                              ? 'var(--hachi-brand-active)'
+                              : 'var(--hachi-brand-hover)',
                             color: 'var(--hachi-canvas)',
                             transition: 'background var(--dur-fast) var(--ease)',
                             opacity: isSaving ? 0.6 : 1,
@@ -668,7 +694,23 @@ function Authoring() {
                       padding: '12px 0',
                     }}
                   >
-                    {visibleLines.length === 0 ? (
+                    {/* HACHI-019: surface source-fetch errors inline instead of swallowing them */}
+                    {sourceFetchError ? (
+                      <div
+                        style={{
+                          padding: '24px',
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: 8,
+                          color: 'var(--hachi-danger)',
+                          fontSize: 13,
+                          lineHeight: '20px',
+                        }}
+                      >
+                        <Icon name="x" size={14} />
+                        <span>{sourceFetchError}</span>
+                      </div>
+                    ) : visibleLines.length === 0 ? (
                       <div
                         style={{
                           padding: '32px 24px',
@@ -850,8 +892,8 @@ function Authoring() {
                           isGenerating || !authSel || !prompt.trim()
                             ? 'var(--hachi-muted)'
                             : hoverGenerate
-                            ? 'var(--hachi-brand-hover)'
-                            : 'var(--hachi-brand)',
+                            ? 'var(--hachi-brand-active)'
+                            : 'var(--hachi-brand-hover)',
                         color: 'var(--hachi-canvas)',
                         font: '500 13px var(--font-body)',
                         cursor:
@@ -1022,8 +1064,8 @@ function Authoring() {
                                 borderRadius: 10,
                                 border: '0.5px solid transparent',
                                 background: hoverApply
-                                  ? 'var(--hachi-brand-hover)'
-                                  : 'var(--hachi-brand)',
+                                  ? 'var(--hachi-brand-active)'
+                                  : 'var(--hachi-brand-hover)',
                                 color: 'var(--hachi-canvas)',
                                 font: '500 13px var(--font-body)',
                                 cursor: 'pointer',

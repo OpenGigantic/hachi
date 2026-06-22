@@ -62,6 +62,7 @@ from typing import Any
 
 import httpx
 
+from hachi.core.credential_vault import CredentialVault
 from hachi.core.secret_store import SecretStore, create_default_secret_store
 from hachi.integrations.connector_registry import ConnectorDef, get_connector
 
@@ -224,6 +225,140 @@ _token_store = OAuthTokenStore()
 
 
 # ---------------------------------------------------------------------------
+# API-key credential storage (for apikey connectors)
+# ---------------------------------------------------------------------------
+
+_APIKEY_PREFIX = "apikey."
+
+
+def _apikey_vault_key(connector_id: str, field_key: str) -> str:
+    """Compute the vault storage key for a single apikey credential field.
+
+    Convention: ``apikey.<connector_id>.<field_key>``
+    This namespace is separate from OAuth2 tokens (``oauth2.*``) so the two
+    never collide, even if a connector changes auth_type in the future.
+
+    Args:
+        connector_id: Connector slug (e.g. ``"telegram"``).
+        field_key: Credential field key (e.g. ``"telegram_bot_token"``).
+
+    Returns:
+        Vault storage key string.
+    """
+    return f"{_APIKEY_PREFIX}{connector_id}.{field_key}"
+
+
+def store_apikey_credential(connector_id: str, field_key: str, value: str) -> None:
+    """Persist a single apikey credential field for a connector.
+
+    Args:
+        connector_id: Connector slug.
+        field_key: The ``key`` from the connector's :attr:`credential_fields`.
+        value: The credential value to store.  Must be non-empty.
+
+    Raises:
+        ValueError: If ``value`` is empty or ``field_key`` is blank.
+    """
+    if not field_key:
+        raise ValueError("field_key must be non-empty")
+    if not value:
+        raise ValueError(f"Credential value for {field_key!r} must be non-empty")
+
+    vault = CredentialVault()
+    vault.set_token(_apikey_vault_key(connector_id, field_key), value)
+    _log.debug("Stored apikey credential connector=%s field=%s", connector_id, field_key)
+
+
+def get_apikey_credential(connector_id: str, field_key: str) -> str | None:
+    """Retrieve a stored apikey credential field value.
+
+    Args:
+        connector_id: Connector slug.
+        field_key: Credential field key.
+
+    Returns:
+        The stored value, or ``None`` if absent.
+    """
+    vault = CredentialVault()
+    try:
+        val = vault.get_token(_apikey_vault_key(connector_id, field_key))
+        return str(val) if val is not None else None
+    except Exception:
+        return None
+
+
+def clear_apikey_credentials(connector_id: str) -> None:
+    """Remove all stored apikey credentials for a connector.
+
+    Iterates over the connector's declared ``credential_fields`` and deletes
+    each from the vault.  Missing keys are silently skipped.
+
+    Args:
+        connector_id: Connector slug.
+    """
+    connector = get_connector(connector_id)
+    if connector is None:
+        return
+
+    vault = CredentialVault()
+    for field in connector.credential_fields:
+        vault_key = _apikey_vault_key(connector_id, field["key"])
+        try:
+            vault.delete_token(vault_key)
+        except Exception:
+            pass  # Already absent — no-op
+    _log.info("Cleared apikey credentials for connector=%s", connector_id)
+
+
+def _env_value_for_field(connector_id: str, field_key: str) -> str | None:
+    """Check the conventional env var for a credential field.
+
+    The convention (field_key uppercased) matches what :mod:`hachi.channels.whatsapp`
+    and :mod:`hachi.channels.telegram_setup` read from ``os.environ``.
+
+    Args:
+        connector_id: Connector slug (unused but kept for future disambiguation).
+        field_key: Credential field key.
+
+    Returns:
+        The env var value, or ``None`` if not set.
+    """
+    env_var = field_key.upper()
+    return os.environ.get(env_var) or None
+
+
+def is_apikey_connector_configured(connector_id: str) -> bool:
+    """Return True iff all required (non-optional) credential fields are present.
+
+    A field is considered present when:
+    - Its value exists in the credential vault, OR
+    - The conventional environment variable (field_key uppercased) is set.
+
+    Args:
+        connector_id: Connector slug.
+
+    Returns:
+        ``True`` when every required field has a value; ``False`` otherwise.
+        Returns ``False`` for unknown connectors or connectors with no fields.
+    """
+    connector = get_connector(connector_id)
+    if connector is None or connector.auth_type != "apikey":
+        return False
+
+    required_keys = connector.required_credential_keys()
+    if not required_keys:
+        # No required fields — consider it "configured" (e.g. legacy connectors).
+        return True
+
+    for field_key in required_keys:
+        vault_val = get_apikey_credential(connector_id, field_key)
+        env_val = _env_value_for_field(connector_id, field_key)
+        if not (vault_val or env_val):
+            return False
+    return True
+
+
+# ---------------------------------------------------------------------------
 # OAuth flow helpers
 # ---------------------------------------------------------------------------
 
@@ -292,9 +427,7 @@ def _exchange_code(
     if connector.id == "notion":
         import base64
 
-        cred = base64.b64encode(
-            f"{connector.client_id() or ''}:{secret or ''}".encode()
-        ).decode()
+        cred = base64.b64encode(f"{connector.client_id() or ''}:{secret or ''}".encode()).decode()
         auth = None
         headers["Authorization"] = f"Basic {cred}"
         headers["Notion-Version"] = "2022-06-28"
@@ -510,13 +643,24 @@ def oauth_disconnect(connector_id: str) -> dict[str, Any]:
 def connector_status(connector_id: str) -> dict[str, Any]:
     """Return status fields for a single connector.
 
-    No network calls — only checks env vars and stored token presence.
+    No network calls — only checks env vars and stored token/vault presence.
+
+    For ``apikey`` connectors the ``configured`` flag is ``True`` when all
+    required credential fields are present (vault or env).  The ``connected``
+    flag mirrors ``configured`` for apikey connectors (no separate token state).
+
+    For ``oauth2`` connectors, ``configured`` means client creds are in env and
+    ``connected`` means a real token is stored.
+
+    Also returns ``credential_fields`` from the registry so the UI can render
+    the appropriate credential form without a separate registry lookup.
 
     Args:
         connector_id: Connector slug.
 
     Returns:
-        Dict with ``auth_type``, ``configured``, ``connected``, ``status``.
+        Dict with ``auth_type``, ``configured``, ``connected``, ``status``,
+        and ``credential_fields``.
     """
     connector = get_connector(connector_id)
     if connector is None:
@@ -525,15 +669,28 @@ def connector_status(connector_id: str) -> dict[str, Any]:
             "configured": False,
             "connected": False,
             "status": "unknown",
+            "credential_fields": [],
         }
-    connected = connector.auth_type == "oauth2" and _token_store.is_connected(connector_id)
-    configured = connector.is_configured()
-    status = "connected" if connected else ("configured" if configured else "disconnected")
+
+    if connector.auth_type == "oauth2":
+        connected = _token_store.is_connected(connector_id)
+        configured = connector.is_configured()
+        status = "connected" if connected else ("configured" if configured else "disconnected")
+    elif connector.auth_type == "apikey":
+        configured = is_apikey_connector_configured(connector_id)
+        connected = configured  # apikey connectors are "connected" when all creds are present
+        status = "connected" if configured else "disconnected"
+    else:
+        configured = False
+        connected = False
+        status = "disconnected"
+
     return {
         "auth_type": connector.auth_type,
         "configured": configured,
         "connected": connected,
         "status": status,
+        "credential_fields": list(connector.credential_fields),
     }
 
 
@@ -541,6 +698,8 @@ def all_connector_statuses() -> list[dict[str, Any]]:
     """Return status dicts for all registered connectors.
 
     No network calls.  Fast enough for the integrations list endpoint.
+    Includes ``credential_fields`` for each connector so the UI can render
+    the appropriate credential form without a separate round-trip.
     """
     from hachi.integrations.connector_registry import list_connectors
 
