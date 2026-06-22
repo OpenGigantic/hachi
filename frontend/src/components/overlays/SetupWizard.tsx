@@ -8,6 +8,7 @@ import React, { CSSProperties, useCallback, useEffect, useRef, useState } from '
 import { useStore } from '../../lib/store/store';
 import { HachiMark } from '../brand/HachiMark';
 import { Icon } from '../icons/Icon';
+import { ConnectorLogo } from '../icons/ConnectorLogo';
 import { Switch } from '../ui/Switch';
 import { loadSetup, applySetup, validateKey, type KeyValidationResult } from '../../lib/data/domains/setup';
 import { useFocusTrap } from '../../lib/hooks/useFocusTrap';
@@ -165,6 +166,9 @@ export function SetupWizard() {
   const panelStyle: CSSProperties = {
     width: 540,
     maxWidth: '96vw',
+    maxHeight: 'min(88vh, 720px)',
+    display: 'flex',
+    flexDirection: 'column',
     background: 'var(--hachi-surface)',
     border: '0.5px solid var(--hachi-line)',
     borderRadius: 18,
@@ -183,6 +187,8 @@ export function SetupWizard() {
   const bodyStyle: CSSProperties = {
     padding: '26px 22px',
     minHeight: 230,
+    flex: 1,
+    overflowY: 'auto',
   };
 
   const footerStyle: CSSProperties = {
@@ -191,6 +197,7 @@ export function SetupWizard() {
     gap: 10,
     padding: '16px 22px',
     borderTop: '0.5px solid var(--hachi-line)',
+    flexShrink: 0,
   };
 
   return (
@@ -554,7 +561,7 @@ function Step3({ integrations }: { integrations: { id: string; icon: string; nam
           return (
             <ConnectRow
               key={integration.id}
-              icon={integration.icon}
+              id={integration.id}
               title={integration.name}
               sub={integration.can}
               connected={isConnected}
@@ -569,9 +576,9 @@ function Step3({ integrations }: { integrations: { id: string; icon: string; nam
 }
 
 function ConnectRow({
-  icon, title, sub, connected, pending, onConnect,
+  id, title, sub, connected, pending, onConnect,
 }: {
-  icon: string; title: string; sub: string; connected: boolean; pending: boolean; onConnect: () => void;
+  id: string; title: string; sub: string; connected: boolean; pending: boolean; onConnect: () => void;
 }) {
   const [hovered, setHovered] = React.useState(false);
 
@@ -603,7 +610,7 @@ function ConnectRow({
         placeItems: 'center',
         flexShrink: 0,
       }}>
-        <Icon name={icon} size={20} />
+        <ConnectorLogo id={id} size={22} />
       </div>
       <div style={{ flex: 1 }}>
         <div style={{ fontWeight: 500, fontSize: 14 }}>{title}</div>
