@@ -761,6 +761,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/config/providers/probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Provider Probe
+         * @description Probe an unsaved provider spec: connectivity + available models.
+         *
+         *     Returns ``{ok, detail, models}`` so the add/edit dialog can verify a key
+         *     and populate a model picker before the provider is saved.
+         */
+        post: operations["post_provider_probe_config_providers_probe_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/config/routing": {
         parameters: {
             query?: never;
@@ -3433,6 +3456,46 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_provider_probe_config_providers_probe_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderUpsertRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

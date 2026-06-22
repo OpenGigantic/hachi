@@ -125,6 +125,7 @@ class GatewayControlPlane:
         set_routing: Callable[[str, dict[str, list[str]]], dict[str, Any]] | None = None,
         test_provider_connection: Callable[[str], dict[str, Any]] | None = None,
         list_all_models: Callable[[], dict[str, Any]] | None = None,
+        probe_provider: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         max_active_sessions: int = 100,
         max_prompt_chars: int = 100_000,
     ) -> None:
@@ -186,6 +187,7 @@ class GatewayControlPlane:
         self._set_routing = set_routing
         self._test_provider_connection = test_provider_connection
         self._list_all_models = list_all_models
+        self._probe_provider = probe_provider
         self._connections: dict[str, dict[str, Any]] = {}
         self._api_sessions: dict[str, str] = {}  # session_key -> session_id (facade sessions)
         self._connections_lock = threading.Lock()
@@ -833,6 +835,15 @@ class GatewayControlPlane:
         if self._list_all_models is None:
             return {}
         return self._list_all_models()
+
+    def probe_provider(self, spec: dict[str, Any]) -> Any:
+        """Probe an unsaved provider spec — POST /config/providers/probe.
+
+        Returns ``{"ok": bool, "detail": str, "models": list[str]}``.
+        """
+        if self._probe_provider is None:
+            return {"ok": False, "detail": "probe not available", "models": []}
+        return self._probe_provider(spec)
 
     # Backward-compatible aliases for previous envelope methods.
     def connect(self, payload: dict[str, Any]) -> dict[str, Any]:

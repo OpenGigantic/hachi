@@ -24,17 +24,9 @@ import {
 import { useStore } from '../../lib/store/store';
 import { Icon } from '../icons/Icon';
 import { cardStyle, sectionHeadingStyle, labelStyle, PanelHeader, Banner } from './shared';
-import { AddProviderDialog, PROVIDER_KINDS, type ProviderFormInitial } from './AddProviderDialog';
+import { AddProviderDialog, providerVisual, type ProviderFormInitial } from './AddProviderDialog';
 
 const NO_KEY_KINDS = new Set(['ollama']);
-
-function monogramFor(kind: string): { text: string; bg: string; fg: string } {
-  const pk = PROVIDER_KINDS.find((k) => k.value === kind);
-  const text = pk?.monogram ?? kind.slice(0, 2).toUpperCase();
-  if (kind === 'anthropic') return { text, bg: 'var(--hachi-brand-tint)', fg: 'var(--hachi-brand)' };
-  if (kind === 'ollama') return { text, bg: 'var(--hachi-cream)', fg: 'var(--hachi-muted)' };
-  return { text, bg: 'var(--hachi-trust-tint)', fg: 'var(--hachi-trust)' };
-}
 
 // Best-effort icon + hint for a routing capability, matched on its name. Falls
 // back to a neutral chip icon for capabilities we don't recognise.
@@ -113,7 +105,7 @@ function ProviderCard({
   const isPrimary = provider.name === '__primary__';
   const noKey = NO_KEY_KINDS.has(provider.kind);
   const displayName = isPrimary ? 'Primary provider' : provider.name;
-  const mono = monogramFor(provider.kind);
+  const mono = providerVisual(provider.kind);
 
   async function handleTest() {
     setTesting(true);
@@ -184,13 +176,13 @@ function ProviderCard({
             color: mono.fg,
             display: 'grid',
             placeItems: 'center',
-            fontSize: mono.text.length > 1 ? 11 : 13,
-            fontWeight: 500,
+            fontSize: mono.monogram.length > 1 ? 11 : 13,
+            fontWeight: 600,
             fontFamily: 'var(--font-mono)',
             flexShrink: 0,
           }}
         >
-          {mono.text}
+          {mono.monogram}
         </span>
         <span
           style={{
