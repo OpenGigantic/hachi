@@ -15,6 +15,7 @@ import { streamSSE } from "../sse";
 import { registerLoader } from "../live";
 import { useStore } from "../../store/store";
 import { approveFirstMatching, denyFirstMatching } from "./approvals";
+import { loadDailySpend } from "./spend";
 import { ensureNotificationPermission, notifyApprovalPending } from "../../notifications";
 import type { Session, ActionCard } from "../types";
 
@@ -602,6 +603,9 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
       flushDeltaBufferSync();
       // Turn is done — end streaming state
       store.hydrate({ streaming: false });
+      // Reconcile today's spend with the durable backend ledger (GET /spend/daily)
+      // so the live SSE-accumulated value can never drift from backend truth.
+      void loadDailySpend();
       _hachiMsgId = null;
       // Clear the run buffers after a short delay (so the user sees "✓ done")
       // but only if a newer run hasn't started in the meantime.
@@ -1284,21 +1288,11 @@ export async function loadSessions(): Promise<void> {
     const raw = await apiGet<GatewaySession[]>("/sessions", { limit: 10 });
     const list = Array.isArray(raw) ? raw : [];
     const adapted = list.map(adaptSession);
-    // Hydrate "today's spend" from the gateway so the budget readout survives a
-    // page refresh. The live usage.updated handler only ACCUMULATES from the
-    // value present at load, so without this `spent` reset to $0 on every reload.
-    // Sum total_cost_usd across sessions started today (local date).
-    const today = new Date().toDateString();
-    let spentToday = 0;
-    for (const s of list) {
-      if (!s.started_at) continue;
-      const started = new Date(s.started_at);
-      if (!Number.isNaN(started.getTime()) && started.toDateString() === today) {
-        spentToday += typeof s.total_cost_usd === "number" ? s.total_cost_usd : 0;
-      }
-    }
-    spentToday = Math.round(spentToday * 1000) / 1000;
-    useStore.getState().hydrate({ sessions: adapted, spent: spentToday });
+    // NOTE: today's spend (`spent`) is the SINGLE source of truth from the
+    // durable backend ledger, hydrated via loadDailySpend() (GET /spend/daily).
+    // We deliberately do NOT also sum session costs here — that produced a
+    // second, diverging value for the same number (the inconsistency users saw).
+    useStore.getState().hydrate({ sessions: adapted });
     useStore.getState().setReconnecting(false);
   } catch {
     // In live mode, do NOT silently present stale fixture sessions as real.
