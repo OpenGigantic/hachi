@@ -949,7 +949,7 @@ function Conversation() {
   const streaming = useStore((s) => s.streaming)
   const inContext = useStore((s) => s.inContext)
   const operator = useStore((s) => s.operator)
-  const taskSpent = useStore((s) => s.taskSpent)
+  const spent = useStore((s) => s.spent)
   const budget = useStore((s) => s.budget)
   const sessions = useStore((s) => s.sessions)
   const integrations = useStore((s) => s.integrations)
@@ -1206,7 +1206,7 @@ function Conversation() {
             fontVariantNumeric: 'tabular-nums',
           }}
         >
-          spent {fmtDollar(taskSpent)} of {fmtDollar(budget)} this task
+          spent {fmtDollar(spent)} of {fmtDollar(budget)} today
         </span>
       </div>
 
