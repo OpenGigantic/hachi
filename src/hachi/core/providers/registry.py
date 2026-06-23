@@ -255,11 +255,17 @@ class ProviderRegistry:
             _tavily_env_key = bool(_os.environ.get("TAVILY_API_KEY", "").strip())
             _tavily_store_key = False
             if not _tavily_env_key and secret_store is not None:
-                try:
-                    _stored = secret_store.get("tavily_api_key")
-                    _tavily_store_key = bool(_stored and str(_stored).strip())
-                except Exception:
-                    pass
+                # The integrations UI stores the key namespaced as
+                # "apikey.tavily.tavily_api_key" (oauth_flow.store_apikey_credential),
+                # while `hachi set tavily_api_key=...` stores the bare name. Check both.
+                for _k in ("apikey.tavily.tavily_api_key", "tavily_api_key"):
+                    try:
+                        _stored = secret_store.get(_k)
+                    except Exception:
+                        _stored = None
+                    if _stored and str(_stored).strip():
+                        _tavily_store_key = True
+                        break
 
             if _tavily_by_config or _tavily_env_key or _tavily_store_key:
                 from hachi.core.providers.tavily_provider import TavilySearchProvider

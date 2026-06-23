@@ -118,12 +118,12 @@ function SessionPicker({ sessions, activeId, onSwitch, onNew, onDelete, onCleanu
       </button>
 
       {/* Session list — FIX 3: filter out obviously-empty unnamed sessions (0 turns, no title) */}
-      {sessions.filter((s) => !(s.turns === 0 && (s.title === 'Unnamed session' || !s.title))).length === 0 && (
+      {sessions.filter((s) => s.active || !(s.turns === 0 && (s.title === 'Unnamed session' || !s.title))).length === 0 && (
         <div style={{ padding: '12px 14px', fontSize: 13, color: 'var(--hachi-muted)' }}>
           No recent sessions
         </div>
       )}
-      {sessions.filter((s) => !(s.turns === 0 && (s.title === 'Unnamed session' || !s.title))).map((s) => {
+      {sessions.filter((s) => s.active || !(s.turns === 0 && (s.title === 'Unnamed session' || !s.title))).map((s) => {
         const isActive = s.id === activeId
         return (
           <div
@@ -1217,16 +1217,12 @@ function Conversation() {
     })()
   }
 
-  // MED-020: retry handler — resend the last "you" message
+  // MED-020 / retry fix: retry IN PLACE — reuses the failed assistant bubble and
+  // re-sends the last prompt without appending a duplicate "you" message. Also relies
+  // on the SSE session guard (chat.ts) so a stale stream can't render a foreign reply.
   const handleRetry = useCallback(() => {
-    const currentMessages = useStore.getState().messages
-    for (let i = currentMessages.length - 1; i >= 0; i -= 1) {
-      if (currentMessages[i].role === 'you') {
-        startTask(currentMessages[i].text)
-        return
-      }
-    }
-  }, [startTask])
+    useStore.getState().retryLastMessage()
+  }, [])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>

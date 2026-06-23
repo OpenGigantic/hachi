@@ -779,6 +779,7 @@ class AgentSession:
                 tool_count=int(row.get("tool_count", 0)),
                 tools=tuple(row.get("tools", [])),
                 transport=row.get("transport", "stdio"),
+                err=row.get("err"),
             )
             for row in inventory_rows
         )
@@ -1643,9 +1644,12 @@ def _configure_mcp_servers(
             )
             continue
 
-        # Apply the same permission gate as .og servers: all TOML-registered servers
-        # are treated as non-filesystem (they don't use the filesystem path override).
-        decision = gate.is_mcp_server_allowed(server_name, trusted=False)
+        # TOML [mcp_servers] entries are USER-authored config — added by the user via the
+        # UI/CLI or by editing settings.toml directly — so they are trusted by definition,
+        # unlike community-pack .og servers (which are web-installed code and must be
+        # tier-gated). Without trusted=True, a UI-registered server is silently DENIED under
+        # the default "guided" tier and never appears in the conversation (Issue 4).
+        decision = gate.is_mcp_server_allowed(server_name, trusted=True)
         if not decision.allowed:
             emit(MCP_SERVER_FAILED, {"server": server_name, "reason": decision.reason})
             continue
@@ -2720,9 +2724,22 @@ def boot_agent(
     if _model_router is not None:
         try:
             _loop_client = _model_router.default_client()
-        except Exception:
-            logger.debug(
-                "Routing: default_client() failed; falling back to direct client", exc_info=True
+            # Issue 11/9: routing succeeded — report the routed default model as the
+            # session model so the "last used model" badge and /spend reflect what
+            # actually runs (previously these reported provider.model = the primary).
+            model_name = _routing_policy.default_model or model_name
+        except Exception as _route_exc:
+            # The routed default model's provider is not usable (missing API key,
+            # unknown/misspelled model id, etc.). Fall back to the primary client but
+            # do NOT misreport the model — keep model_name as the primary provider's
+            # model and warn loudly so the user learns their selection didn't take effect.
+            logger.warning(
+                "Routing: requested default model %r is not usable (%s) — falling back "
+                "to %r. Configure that provider's API key or fix the model id in "
+                "[routing]/[providers].",
+                getattr(_routing_policy, "default_model", "?"),
+                _route_exc,
+                model_name,
             )
             _loop_client = client
 

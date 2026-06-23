@@ -68,9 +68,17 @@ class OpenAICompatProvider:
         return caps
 
     def models(self) -> list[ModelDescriptor]:
-        """Return known OpenAI model descriptors (from bundled defaults)."""
+        """Return known OpenAI model descriptors, re-homed to THIS provider's name.
+
+        The bundled descriptors declare ``provider="openai"``; we rewrite the provider to
+        this instance's registry name (e.g. ``"openai-compatible"``) so the router resolves
+        them to THIS provider — which carries the configured ``base_url`` and API key —
+        instead of falling back to a keyless generic ``"openai"`` client. Without this,
+        routing to gpt-4o-mini built an unauthenticated client and silently ran on the
+        primary model instead (Issue 11).
+        """
         if self._kind in ("openai", "openai-compatible"):
-            return _OPENAI_DEFAULTS
+            return [d.model_copy(update={"provider": self.name}) for d in _OPENAI_DEFAULTS]
         # Other compat providers: no bundled descriptors; let config overrides fill them.
         return []
 

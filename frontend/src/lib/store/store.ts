@@ -301,6 +301,9 @@ interface Actions {
   setProvider: (p: Partial<Provider>) => void;
   // chat / streaming
   startTask: (text: string) => void;
+  /** Retry the last failed turn IN PLACE — re-sends the last prompt and reuses the
+   *  failed assistant bubble instead of appending a duplicate "you" message. */
+  retryLastMessage: () => void;
   sendMessage: (text: string) => void;
   stopStreaming: () => void;
   setComposer: (v: string) => void;
@@ -1240,6 +1243,47 @@ export const useStore = create<State & Actions>()(
                 }, 450);
               }
             );
+          }
+        },
+
+        retryLastMessage: () => {
+          // Find the last user prompt and the trailing (failed) assistant bubble.
+          const msgs = get().messages;
+          let youText: string | null = null;
+          let hachiId: number | null = null;
+          for (let i = msgs.length - 1; i >= 0; i -= 1) {
+            if (hachiId === null && msgs[i].role === "hachi") hachiId = msgs[i].id;
+            if (msgs[i].role === "you") {
+              youText = msgs[i].text;
+              break;
+            }
+          }
+          if (!youText || hachiId === null) return;
+          const retryHachiId = hachiId;
+          // Reset the failed assistant bubble IN PLACE — appending a new you/hachi pair
+          // was the source of the duplicated user message on retry.
+          set((s) => ({
+            streaming: true,
+            inContext: null,
+            messages: s.messages.map((m) =>
+              m.id === retryHachiId ? { ...m, text: "", cards: [] } : m
+            ),
+          }));
+          if (get().dataMode === "live") {
+            startTaskLive(youText, retryHachiId).catch(() => {
+              set((s) => ({
+                streaming: false,
+                messages: s.messages.map((m) =>
+                  m.id === retryHachiId
+                    ? { ...m, text: m.text || "Something went wrong — please try again." }
+                    : m
+                ),
+              }));
+              toast("Send failed — please try again", "blocked");
+            });
+          } else {
+            // Mock mode has no live gateway to resend against — just clear the error.
+            set({ streaming: false });
           }
         },
 

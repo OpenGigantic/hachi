@@ -1946,7 +1946,13 @@ class _InProcessGatewayRuntime:
         """
         from hachi.gateway.provider_admin import set_routing as _set_routing
 
-        return _set_routing(default_model, capabilities)
+        result = _set_routing(default_model, capabilities)
+        # Issue 11: re-boot live agents so the new routing (default_model + per-capability
+        # model lists) takes effect immediately. Without this, running sessions keep the
+        # ModelRouter baked at the previous boot and a routing change in the UI appears to
+        # do nothing (mirrors add_or_update_provider, which already reloads).
+        self._reload_agents()
+        return result
 
     def test_provider_connection(self, name: str) -> dict:
         """Best-effort connectivity test for a provider.

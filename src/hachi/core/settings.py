@@ -370,6 +370,11 @@ class ResolvedConfig(BaseModel):
     search: SearchSettings = Field(default_factory=SearchSettings)
     # Optional [files] section — absent = default 50 MB cap, all types allowed.
     files: FileSettings = Field(default_factory=FileSettings)
+    # [mcp_servers.<name>] sections — Model Context Protocol servers registered via the
+    # UI/CLI. Kept as raw dicts (parsed by MCPServerConfig.from_toml_entry at boot) so the
+    # section survives model_dump() — without this field it was silently dropped and
+    # TOML-registered MCP servers never loaded.
+    mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 def default_config() -> ResolvedConfig:
