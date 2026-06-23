@@ -432,3 +432,75 @@ on `usage.updated` + `session.chat.completed` (A8 emits field, A7 populates, A1 
 - `TODO(issue10)`: cosine write-time dedup for paraphrases; bound/TTL `delegation_log`; LRU (not just oldest-first) eviction for `core_memory`.
 - `TODO(issue8c)`: gateway route + UI view for `.og` version history (CLI `hachi og history`/`rollback` shipped; the append-only store + engine wiring shipped).
 - Voice provider/hardware limits (documented, not code-fixable): Whisper is batch-only (mitigate via Groq `whisper-large-v3-turbo` through `stt_base_url`); OpenAI/ElevenLabs TTS buffer server-side until they expose `synthesize_stream`; energy-RMS VAD is noise-sensitive (a WASM VAD like Silero is the upgrade path).
+
+---
+
+## Live bug-fix round (2026-06-23, post-deploy) — user-reported in the running app
+
+Diagnosed against the live gateway; root causes were deeper than the first pass and several
+were **pre-existing latent bugs** the first round's fixes merely exposed. All verified live
+(gateway booted, real session turns).
+
+**Process gotcha (the meta-cause of "still not working"):** the running gateway is a long-lived
+process — uncommitted on-disk fixes and `settings.toml` edits do **not** reach it until restart.
+Confirmed via process start-time vs edit-time. Restarted the gateway after each backend change.
+The Vite dev server (HMR) does pick up frontend edits live, but it was talking to a stale gateway.
+
+### MCP "internet-search not reachable" (web search) — THREE stacked bugs
+- **`[mcp_servers]` silently dropped by the config loader.** `workspace.load_config()` returns
+  `ResolvedConfig.model_dump()`, and `ResolvedConfig` had **no `mcp_servers` field** (`extra="ignore"`),
+  so every TOML-defined MCP server was stripped before boot ever saw it — TOML MCP servers could
+  *never* have worked. Fix: added `mcp_servers: dict[str, dict[str, Any]]` to `ResolvedConfig`
+  (`settings.py`). (Also removed A5's false "unknown key: mcp_servers" validator warning.)
+- **HTTP transport sent the wrong `Accept` header → `406 Not Acceptable`.** MCP streamable-HTTP
+  requires `Accept: application/json, text/event-stream`; `HttpTransport.start()` sent only
+  `Content-Type`. The response also comes back as SSE (`data: {…}`) which the parser couldn't read,
+  and the spec needs the `Mcp-Session-Id` echoed. Fixed all three in `mcp_client.py::HttpTransport`.
+- **Permission gate blocked user-registered TOML servers.** The gate reads its tier from
+  `device-permissions.og` (which was `guided`), *not* `settings.toml` (`unrestricted`) — a known
+  split. Under `guided`, `is_mcp_server_allowed(name, trusted=False)` denied all of them. Fix:
+  TOML `[mcp_servers]` are user-authored config → call the gate with `trusted=True` (unlike
+  community-pack `.og` servers). `orchestrator._configure_mcp_servers`.
+- **Result (verified):** all 4 servers boot `ready` — `internet-search` exposes `tavily_search`
+  + 4 more (17 tools total). `err` now surfaced to the UI (`MCPServerSnapshot.err`).
+- *Note:* the user has 3 identical Tavily MCP entries (`tavily`, `tavily-mcp`, `internet-search`) →
+  15 duplicate tools; recommend keeping one. The native `[search] provider="tavily"` path also had a
+  vault-key-name mismatch (`apikey.tavily.tavily_api_key` vs `tavily_api_key`) — fixed in `registry.py`.
+
+### Model selection (gpt-4o-mini → spend showed haiku) — FOUR stacked bugs
+- **The chat baked its model from `provider.model` (haiku), ignoring `routing.default_model`.**
+  Fixed: when the router is active, `model_name = routing.default_model` so the session metadata +
+  `/spend` reflect what actually runs (`orchestrator.py`). Plus a loud warning on fallback instead of
+  silent haiku.
+- **`set_routing` didn't reload live agents** → routing UI changes did nothing until restart. Added
+  `self._reload_agents()` (`cli/main.py`).
+- **Factory rejected provider kind `openai`** (`Unsupported provider kind: openai`) — the bundled
+  gpt-4o/gpt-4o-mini descriptors use kind `openai`; the factory only knew `openai-compatible`. Added
+  `openai` (maps to the OpenAI base URL) in `llm.py::create_llm_client`.
+- **The configured provider's key never reached gpt-4o-mini.** `OpenAICompatProvider.models()`
+  advertised descriptors with `provider="openai"`, but the provider's registry name is
+  `"openai-compatible"`, so the router couldn't match them to *this* provider (which holds the key)
+  and built a keyless generic client. Fixed: re-home advertised descriptors to `self.name`
+  (`openai_compat_provider.py`). Also fixed a `gpt-4o-min` typo in the user's `settings.toml`.
+- **Result (verified):** a live turn now runs on `gpt-4o-mini` (was haiku).
+
+### Frontend: retry / cross-section leak / title / session list
+- **Retry returned the *previous/unrelated* response + duplicated the user message.** `handleRetry`
+  called `startTask` (which appends a fresh you/hachi pair), and — the real correctness bug — SSE
+  events were applied to the global store with **no session scoping**, so a stale stream (or a
+  query from another screen) rendered into the current chat (the "Aditya Dhanraj" leak). Fixes:
+  new `store.retryLastMessage()` that resets the failed bubble in place (no duplicate); and a
+  `_streamSessionId`/`session_id` guard at the top of `handleSseMessage` + `_cursor` reset on session
+  change + single-stream abort (`chat.ts`). This is the highest-impact correctness fix of the round.
+- **Title not instant** — there is no backend title event at all; the title only refreshed via
+  `loadSessions` on mount. Added `loadSessions()` (immediate + delayed) on `session.chat.completed`.
+- **Session list flickered between visible and empty** — `loadSessions` wiped the list to `[]` on any
+  transient error, filtered out the active 0-message session, and never marked the live session
+  active. Fixed all three (`chat.ts` + `conversation.tsx`).
+
+### Verification (this round)
+- Live gateway: 4 MCP servers `ready` (17 tools); turn runs on `gpt-4o-mini`; auth preserved across
+  restart (persisted token).
+- `ruff` clean on all changed files; OpenAPI re-exported + `schema.d.ts` regenerated + frontend
+  `tsc` clean + 56 vitest pass; targeted backend suite **462 passed / 0 failed**; full `pytest -q`
+  re-run for cross-cutting regressions.

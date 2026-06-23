@@ -768,6 +768,9 @@ class HttpTransport(MCPTransport):
         self._boot_timeout_seconds = float(boot_timeout_seconds or 30.0)
         self._client: Any = None
         self._alive: bool = False
+        # Streamable-HTTP: the server assigns a session id on initialize (returned in
+        # the Mcp-Session-Id response header) that must be echoed on later requests.
+        self._session_id: str | None = None
 
     def start(self) -> bool:
         """Verify the endpoint is reachable (HEAD/GET probe).
@@ -779,7 +782,14 @@ class HttpTransport(MCPTransport):
             import httpx
 
             self._client = httpx.Client(
-                headers={"Content-Type": "application/json", **self._headers},
+                headers={
+                    "Content-Type": "application/json",
+                    # MCP streamable-HTTP requires the client to accept BOTH a single
+                    # JSON response and an SSE stream. Hosted servers (e.g. Tavily's
+                    # mcp.tavily.com) return 406 Not Acceptable without text/event-stream.
+                    "Accept": "application/json, text/event-stream",
+                    **self._headers,
+                },
                 timeout=self._request_timeout_seconds,
             )
             self._alive = True
@@ -800,7 +810,10 @@ class HttpTransport(MCPTransport):
         if not self._client:
             return
         try:
-            self._client.post(self._url, json=message, timeout=self._request_timeout_seconds)
+            _headers = {"Mcp-Session-Id": self._session_id} if self._session_id else None
+            self._client.post(
+                self._url, json=message, timeout=self._request_timeout_seconds, headers=_headers
+            )
         except Exception as exc:
             logger.warning("[mcp/http] %s: send error: %s", self._name, exc)
 
@@ -835,27 +848,53 @@ class HttpTransport(MCPTransport):
         if not self._client:
             return None
         try:
+            _headers = {"Mcp-Session-Id": self._session_id} if self._session_id else None
             resp = self._client.post(
-                self._url, json=message, timeout=self._request_timeout_seconds
+                self._url, json=message, timeout=self._request_timeout_seconds, headers=_headers
             )
             resp.raise_for_status()
-            text = resp.text.strip()
-            # Handle NDJSON streaming response: take the last non-empty JSON line.
-            if "\n" in text:
-                for line in reversed(text.splitlines()):
-                    line = line.strip()
-                    if line:
-                        try:
-                            parsed: dict[str, Any] = json.loads(line)
-                            return parsed
-                        except json.JSONDecodeError:
-                            continue
-                return None
-            result: dict[str, Any] = json.loads(text)
-            return result
+            # Capture the session id assigned on initialize for subsequent requests.
+            _sid = resp.headers.get("Mcp-Session-Id") or resp.headers.get("mcp-session-id")
+            if _sid:
+                self._session_id = _sid
+            return self._parse_response_body(resp.text)
         except Exception as exc:
             logger.warning("[mcp/http] %s: send_and_receive error: %s", self._name, exc)
             return {"error": {"message": str(exc)}}
+
+    @staticmethod
+    def _parse_response_body(text: str) -> dict[str, Any] | None:
+        """Parse a streamable-HTTP response body.
+
+        The body may be a single JSON object, NDJSON, or an SSE stream
+        (``event: message\\ndata: {json}\\n\\n``). Scan lines from the end for the
+        last JSON-RPC object, stripping an optional ``data:`` SSE prefix and skipping
+        SSE control lines.
+        """
+        text = (text or "").strip()
+        if not text:
+            return None
+        if "\n" in text or text.startswith("data:"):
+            for raw in reversed(text.splitlines()):
+                line = raw.strip()
+                if not line or line.startswith((":", "event:", "id:", "retry:")):
+                    continue
+                if line.startswith("data:"):
+                    line = line[len("data:") :].strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict):
+                    return obj
+            return None
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        return obj if isinstance(obj, dict) else None
 
     def close(self) -> None:
         """Close the HTTP client."""

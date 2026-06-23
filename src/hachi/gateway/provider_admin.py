@@ -16,6 +16,7 @@ from typing import Any, get_args
 
 from hachi.core.config_loader import load_effective_config, write_global_config
 from hachi.core.credential_vault import CredentialVault
+from hachi.core.onboarding import default_api_key_env_for
 from hachi.core.routing.capability import Capability
 from hachi.core.routing.descriptor import BUNDLED_MODEL_DEFAULTS
 from hachi.core.routing.policy import RoutingPolicy
@@ -142,12 +143,16 @@ def add_or_update_provider(name: str, spec: dict[str, Any]) -> dict[str, Any]:
         vault_key = f"provider.{name}.api_key"
         api_key_ref: str | None = None
 
+        fallback_env: str | None = None
         if raw_api_key:
             # Store secret in vault only — never write raw key to os.environ
             # (env leaks the secret to all child processes)
             vault = CredentialVault(secret_store=create_default_secret_store())
             vault.set_token(vault_key, raw_api_key)
             api_key_ref = vault_key
+            # Always record the conventional env-var name as a fallback so the
+            # provider still works if the vault is cleared (e.g. clean install).
+            fallback_env = default_api_key_env_for(kind) or None
 
         # Build the new ProviderSettings
         ps = ProviderSettings(
@@ -159,6 +164,8 @@ def add_or_update_provider(name: str, spec: dict[str, Any]) -> dict[str, Any]:
         )
         if api_key_ref is not None:
             ps.api_key_ref = api_key_ref
+            if fallback_env is not None:
+                ps.api_key_env = fallback_env
         elif name != "__primary__" and (config.providers or {}).get(name) is not None:
             # Preserve existing api_key_ref when no new key supplied
             existing = (config.providers or {})[name]

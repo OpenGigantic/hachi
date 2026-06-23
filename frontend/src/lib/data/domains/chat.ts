@@ -50,6 +50,11 @@ function readPersistedSessionId(): string | null {
 // reconnects to the existing session instead of always creating a new one.
 let _liveSessionId: string | null = readPersistedSessionId();
 let _sseAbort: AbortController | null = null;
+// The session id that the *currently open* SSE stream belongs to.
+// Set right before opening a new stream; cleared when it closes or is aborted.
+// Guards against a stale/previous stream writing into the active session's store
+// (the "Aditya Dhanraj" cross-session leak scenario).
+let _streamSessionId: string | null = null;
 // Highest event sequence consumed so far. Persists ACROSS turns: the session is
 // reused, and the gateway stream replays every event after this cursor, so each
 // new turn must resume from the last consumed sequence — otherwise turn 2 would
@@ -535,6 +540,20 @@ function driveRunSlice(eventType: string, payload: Record<string, unknown>): voi
 // ============================================================
 
 function handleSseMessage(eventType: string, payload: Record<string, unknown>): void {
+  // FIX 2: Drop events from a stale/foreign stream.
+  // _streamSessionId is the session this stream was opened for;
+  // _liveSessionId is the currently active session.
+  // If they've diverged (e.g. user switched sessions while a stream was in-flight),
+  // or the event itself carries a session_id that doesn't match, discard it.
+  const eventSessionId =
+    typeof payload.session_id === "string" ? payload.session_id : null;
+  if (eventSessionId !== null && eventSessionId !== _liveSessionId) {
+    return;
+  }
+  if (_streamSessionId !== null && _streamSessionId !== _liveSessionId) {
+    return;
+  }
+
   const store = useStore.getState();
   const isLive = store.dataMode === "live";
 
@@ -647,6 +666,13 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
       // Reconcile today's spend with the durable backend ledger (GET /spend/daily)
       // so the live SSE-accumulated value can never drift from backend truth.
       void loadDailySpend();
+      // FIX 3: refresh the session list so the auto-generated title shows up without a
+      // manual navigation. The titler runs asynchronously AFTER the turn completes, so
+      // re-fetch once now and again shortly after to catch the title once it lands.
+      void loadSessions();
+      setTimeout(() => {
+        void loadSessions();
+      }, 2500);
       _hachiMsgId = null;
       // Clear the run buffers after a short delay (so the user sees "✓ done")
       // but only if a newer run hasn't started in the meantime.
@@ -739,6 +765,11 @@ export async function startTaskLive(
     useStore.getState().hydrate({ streaming: false });
     return;
   }
+
+  // FIX 2: bind this SSE stream to its session so handleSseMessage can drop events
+  // that arrive after the user switched sessions (this is what actually prevents the
+  // cross-session/cross-section leak — the guard at the top of handleSseMessage reads it).
+  _streamSessionId = sessionId;
 
   // Resume from the module-level cursor so a reused session only streams the
   // NEW turn's events (see _cursor docs above), not the whole session history.
@@ -1371,7 +1402,11 @@ export async function loadSessions(): Promise<void> {
   try {
     const raw = await apiGet<GatewaySession[]>("/sessions", { limit: 10 });
     const list = Array.isArray(raw) ? raw : [];
-    const adapted = list.map(adaptSession);
+    // FIX 4: mark the live session active so `activeSessionId` resolves (otherwise the
+    // picker stays empty and loadConversationHistory never fires for the current chat).
+    const adapted = list
+      .map(adaptSession)
+      .map((s) => (s.id === _liveSessionId ? { ...s, active: true } : s));
     // NOTE: today's spend (`spent`) is the SINGLE source of truth from the
     // durable backend ledger, hydrated via loadDailySpend() (GET /spend/daily).
     // We deliberately do NOT also sum session costs here — that produced a
@@ -1379,9 +1414,9 @@ export async function loadSessions(): Promise<void> {
     useStore.getState().hydrate({ sessions: adapted });
     useStore.getState().setReconnecting(false);
   } catch {
-    // In live mode, do NOT silently present stale fixture sessions as real.
-    // Clear the session slice to show an honest empty/reconnecting state.
-    useStore.getState().hydrate({ sessions: [] });
+    // FIX 4: do NOT wipe the list on a transient error — a stale list beats an empty
+    // one. Wiping to [] on any blip is what made the previous-sessions list flicker
+    // between visible and empty. Just flag reconnecting and keep what we have.
     useStore.getState().setReconnecting(true);
   }
 }

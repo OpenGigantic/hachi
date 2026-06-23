@@ -69,6 +69,9 @@ class MCPServerSnapshot:
     tool_count: int
     tools: tuple[str, ...]
     transport: str = "stdio"
+    # Failure reason when status is "failed"/"stopped" (e.g. bad command/url, server
+    # crashed on start). Surfaced to the UI so "not reachable" shows WHY (Issue 4).
+    err: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -731,7 +731,11 @@ def create_llm_client(
             base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens
         )
 
-    if kind == "openai-compatible":
+    if kind in ("openai-compatible", "openai"):
+        # "openai" is the kind on the bundled gpt-4o / gpt-4o-mini model descriptors;
+        # it speaks the same wire protocol as "openai-compatible", just defaulting to
+        # the canonical OpenAI base URL. Without this, routing to gpt-4o-mini raised
+        # "Unsupported provider kind: openai" and silently fell back to the primary model.
         resolved_base = str(
             base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
         )
