@@ -20,11 +20,35 @@ import { ensureNotificationPermission, notifyApprovalPending } from "../../notif
 import type { Session, ActionCard } from "../types";
 
 // ============================================================
-// 1. Module-level session id (NOT persisted to store)
-//    Reuse a single live session across the page lifetime.
+// 1. Module-level session id — persisted to sessionStorage (FIX 2)
+//    Reusing across same-tab refreshes reconnects to the same session.
 // ============================================================
 
-let _liveSessionId: string | null = null;
+const SESSION_STORAGE_KEY = "hachi.liveSessionId";
+
+function persistSessionId(id: string | null): void {
+  try {
+    if (id) {
+      sessionStorage.setItem(SESSION_STORAGE_KEY, id);
+    } else {
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    }
+  } catch {
+    // private browsing / storage disabled — ignore
+  }
+}
+
+function readPersistedSessionId(): string | null {
+  try {
+    return sessionStorage.getItem(SESSION_STORAGE_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Rehydrate from sessionStorage on module load so a same-tab refresh
+// reconnects to the existing session instead of always creating a new one.
+let _liveSessionId: string | null = readPersistedSessionId();
 let _sseAbort: AbortController | null = null;
 // Highest event sequence consumed so far. Persists ACROSS turns: the session is
 // reused, and the gateway stream replays every event after this cursor, so each
@@ -308,6 +332,7 @@ async function ensureSession(): Promise<string> {
     capabilities: [],
   });
   _liveSessionId = res.session_id;
+  persistSessionId(_liveSessionId); // FIX 2: persist for same-tab refresh
   _cursor = 0; // fresh session → fresh event log
   return _liveSessionId;
 }
@@ -592,6 +617,13 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
           ...(isLive ? { runSpent: Math.round(turnDelta * 1000) / 1000 } : {}),
         });
       }
+      // FIX 4: also consume model from usage.updated as a fallback
+      // (contract C-MODEL — backend may send it here instead of chat.completed)
+      const usageModel =
+        typeof payload.model === "string" && payload.model ? payload.model : null;
+      if (usageModel) {
+        store.hydrate({ lastUsedModel: usageModel });
+      }
       // totalTokens surfaced but no dedicated UI field currently
       void totalTokens;
       break;
@@ -601,6 +633,15 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
       // Flush any remaining buffered text BEFORE ending streaming state, so
       // the final message is complete when the UI transitions out of streaming.
       flushDeltaBufferSync();
+      // FIX 4: capture the model id from this event (contract C-MODEL).
+      // The field may be absent; default to null if missing (defensive).
+      const completedModel =
+        typeof payload.model === "string" && payload.model
+          ? payload.model
+          : null;
+      if (completedModel) {
+        store.hydrate({ lastUsedModel: completedModel });
+      }
       // Turn is done — end streaming state
       store.hydrate({ streaming: false });
       // Reconcile today's spend with the durable backend ledger (GET /spend/daily)
@@ -742,6 +783,40 @@ export async function startTaskLive(
     }
   }).catch((err: unknown) => {
     // POST failed — surface the error to the user and clean up.
+
+    // FIX 2: Handle session expiry / unknown session robustly.
+    // "session_expired" → create a new session and show a friendly notice.
+    // Any "Unknown session" / corrupted-id case → silently reset and create new.
+    const isSessionExpired =
+      err instanceof ApiError &&
+      (err.message === "session_expired" ||
+        (typeof (err as ApiError & { code?: string }).code === "string" &&
+          (err as ApiError & { code?: string }).code === "session_expired"));
+    const isUnknownSession =
+      err instanceof ApiError &&
+      (err.message === "Unknown session_id" ||
+        err.message?.toLowerCase().includes("unknown session"));
+
+    if (isSessionExpired || isUnknownSession) {
+      // Drop stale session id so next ensureSession() mints a fresh one
+      _liveSessionId = null;
+      persistSessionId(null);
+      _cursor = 0;
+
+      // Update sessions list so the stale active marker is cleared
+      const store = useStore.getState();
+      store.hydrate({
+        sessions: store.sessions.map((s) => ({ ...s, active: false })),
+      });
+
+      if (isSessionExpired) {
+        // Show a friendly inline notice for the user (contract C-SESSION)
+        store.showToast("This session expired — started a fresh one.", "success");
+      }
+      // For unknown session (corrupted id) — silently reset with no visible error.
+      return;
+    }
+
     const store = useStore.getState();
     if (store.streaming && _hachiMsgId === hachiMsgId) {
       // HACHI-010: abort the SSE reader so it doesn't linger until idle timeout.
@@ -1137,7 +1212,10 @@ export async function loadConversationHistory(): Promise<void> {
   // Advance cursor so the next live turn only streams new events
   if (lastSeq > _cursor) _cursor = lastSeq;
   // Also sync the live session id so the SSE stream uses the right session
-  if (!_liveSessionId) _liveSessionId = sessionId;
+  if (!_liveSessionId) {
+    _liveSessionId = sessionId;
+    persistSessionId(sessionId); // FIX 2: persist rehydrated id
+  }
 
   if (reconstructed.length === 0) {
     // Nothing to restore — leave the store as-is (welcome screen is correct)
@@ -1163,6 +1241,7 @@ export async function switchSessionLive(sessionId: string): Promise<void> {
 
   // 2. Switch session id and reset cursor
   _liveSessionId = sessionId;
+  persistSessionId(sessionId); // FIX 2
   _cursor = 0;
   _lastKnownCumCost = 0;
   _costCumAtTurnStart = 0;
@@ -1204,21 +1283,9 @@ export async function switchSessionLive(sessionId: string): Promise<void> {
   // Advance cursor so the next live turn only sees new events
   _cursor = lastSeq;
 
-  // Hydrate the reconstructed history; if nothing was reconstructed, show a
-  // "resumed" note so the user sees honest state rather than a blank screen.
-  if (reconstructed.length === 0) {
-    useStore.getState().hydrate({
-      messages: [{
-        id: Date.now(),
-        role: "hachi" as const,
-        text: "(session resumed — no message history found)",
-        cards: [],
-        routine: null,
-      }],
-    });
-  } else {
-    useStore.getState().hydrate({ messages: reconstructed });
-  }
+  // FIX 3: if no messages were reconstructed, treat it as an empty/fresh
+  // conversation silently (don't show a misleading "no history found" note).
+  useStore.getState().hydrate({ messages: reconstructed });
 }
 
 /**
@@ -1239,6 +1306,7 @@ export async function deleteSessionLive(sessionId: string): Promise<boolean> {
     abortSse();
     resetDeltaBuffer();
     _liveSessionId = null;
+    persistSessionId(null); // FIX 2
     _cursor = 0;
     _hachiMsgId = null;
     _textLineActive = false;
@@ -1264,6 +1332,7 @@ export function newSessionLive(): void {
   abortSse();
   resetDeltaBuffer();
   _liveSessionId = null;
+  persistSessionId(null); // FIX 2: clear persisted id
   _cursor = 0;
   _hachiMsgId = null;
   _textLineActive = false;
@@ -1276,6 +1345,21 @@ export function newSessionLive(): void {
     inContext: null,
     sessions: useStore.getState().sessions.map((s) => ({ ...s, active: false })),
   });
+}
+
+// ============================================================
+// 11a. Cleanup: POST /sessions/cleanup-empty (FIX 3)
+//     Asks the backend to remove 0-message sessions, then refreshes the list.
+// ============================================================
+
+export async function cleanupEmptySessionsLive(): Promise<void> {
+  if (USE_MOCKS) return;
+  try {
+    await apiSend<unknown>("POST", "/sessions/cleanup-empty");
+  } catch {
+    // Best-effort — even if the route doesn't exist yet, refresh the list.
+  }
+  await loadSessions();
 }
 
 // ============================================================

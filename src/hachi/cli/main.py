@@ -79,6 +79,12 @@ app.add_typer(session_app, name="session")
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(ogpack_app, name="pack")
 
+# Sub-apps defined later in this file — registered here so they appear in --help
+keys_app = typer.Typer(help="Manage named API keys and credentials in the secure vault.")
+og_app = typer.Typer(help="Manage ObjectGraph (.og) skill version history.")
+app.add_typer(keys_app, name="keys")
+app.add_typer(og_app, name="og")
+
 # On Windows the default console encoding is often cp1252, which cannot represent
 # Unicode arrows/dashes used throughout CLI output.  Reconfigure stdout/stderr to
 # UTF-8 with replacement characters so output degrades gracefully instead of raising
@@ -117,6 +123,42 @@ def _load_dotenv_into_environ(dotenv_path: Path) -> None:
 
 
 _load_dotenv_into_environ(Path.cwd() / ".env")
+
+# ---------------------------------------------------------------------------
+# Task 6d — TOKOBOROS_ → HACHI_ back-compat shim
+# ---------------------------------------------------------------------------
+
+_logger = logging.getLogger(__name__)
+
+_TOKOBOROS_RENAMES: dict[str, str] = {
+    "TOKOBOROS_STT_API_KEY": "HACHI_STT_API_KEY",
+    "TOKOBOROS_TTS_API_KEY": "HACHI_TTS_API_KEY",
+    "TOKOBOROS_SMTP_USER": "HACHI_SMTP_USER",
+    "TOKOBOROS_SMTP_PASSWORD": "HACHI_SMTP_PASSWORD",
+    "TOKOBOROS_SMTP_HOST": "HACHI_SMTP_HOST",
+    "TOKOBOROS_SMTP_PORT": "HACHI_SMTP_PORT",
+    "TOKOBOROS_SMTP_FROM": "HACHI_SMTP_FROM",
+}
+
+
+def _apply_tokoboros_shim() -> None:
+    """Copy deprecated TOKOBOROS_* env vars to their HACHI_* equivalents.
+
+    Only copies when the old var is present and the new var is NOT already set.
+    Logs a deprecation warning for each migrated key so operators know to
+    update their environment.
+    """
+    for old, new in _TOKOBOROS_RENAMES.items():
+        if old in os.environ and new not in os.environ:
+            os.environ[new] = os.environ[old]
+            _logger.warning(
+                "Deprecated env var %r — rename to %r in your .env or environment.",
+                old,
+                new,
+            )
+
+
+_apply_tokoboros_shim()
 
 console = Console()
 
@@ -1301,21 +1343,76 @@ class _InProcessGatewayRuntime:
                     }
                 )
 
-        # Model totals from snapshot_usage().
+        # Issue 9: real per-model breakdown from the cost tracker (a session that
+        # routed to e.g. opus + haiku now shows BOTH, instead of one collapsed entry).
+        # Each row carries both the legacy keys (name/tokens/cost — read by the work
+        # tab) and the C-SPEND keys (model/cost_usd/input_tokens/output_tokens — read
+        # by the Spend settings breakdown), so both consumers are satisfied.
         config = load_effective_config()
         usage = agent.snapshot_usage()
+        tracker = getattr(getattr(agent, "loop", None), "cost_tracker", None)
         models: list[dict] = []
-        if usage:
+        if tracker is not None and hasattr(tracker, "per_model_snapshot"):
+            try:
+                for mid, snap in tracker.per_model_snapshot().items():
+                    _cost = round(float(snap.estimated_cost_usd), 6)
+                    models.append(
+                        {
+                            "name": mid,
+                            "model": mid,
+                            "tokens": int(snap.input_tokens + snap.output_tokens),
+                            "input_tokens": int(snap.input_tokens),
+                            "output_tokens": int(snap.output_tokens),
+                            "cost": _cost,
+                            "cost_usd": _cost,
+                            "color": "",  # Client assigns color.
+                        }
+                    )
+            except Exception:
+                models = []
+        if not models and usage:
+            # Fallback: single aggregate entry (no per-model attribution available yet).
+            _cost = round(float(usage.get("estimated_cost_usd", 0) or 0), 6)
             models.append(
                 {
                     "name": config.provider.model,
+                    "model": config.provider.model,
                     "tokens": int(usage.get("total_tokens", 0) or 0),
-                    "cost": float(usage.get("estimated_cost_usd", 0) or 0),
-                    "color": "",  # Client assigns color.
+                    "input_tokens": int(usage.get("input_tokens", 0) or 0),
+                    "output_tokens": int(usage.get("output_tokens", 0) or 0),
+                    "cost": _cost,
+                    "cost_usd": _cost,
+                    "color": "",
                 }
             )
 
-        return {"turns": turns, "tidies": tidies, "models": models}
+        # C-SPEND: per-modality / per-session / cumulative breakdown for the Spend UI.
+        # Text cost = sum of per-model LLM costs. Voice cost is recorded into the daily
+        # ledger (cost.record_voice_usage) but is not yet attributed per-session, so the
+        # per-session modality split lists text only. TODO(issue9): modality-tagged ledger.
+        text_cost = round(sum(float(m["cost_usd"]) for m in models), 6)
+        session_total = (
+            round(float(usage.get("estimated_cost_usd", 0) or 0), 6) if usage else text_cost
+        )
+        cumulative_usd = session_total
+        try:
+            _daily = self.get_spend_daily()
+            cumulative_usd = round(float(_daily.get("spent_usd", session_total) or 0), 6)
+        except Exception:
+            pass
+
+        return {
+            "turns": turns,
+            "tidies": tidies,
+            "models": models,
+            "modalities": {"text": text_cost},
+            "session": {
+                "session_id": session_id or "",
+                "cost_usd": session_total,
+                "turns": len(turns),
+            },
+            "cumulative_usd": cumulative_usd,
+        }
 
     def get_spend_daily(self) -> dict:
         """Return today's accumulated spend plus configured caps (GET /spend/daily).
@@ -4037,6 +4134,367 @@ def memoir(
         console.print(f"[green]Memoir written to[/green] {output}")
     else:
         console.print(Markdown(human_text))
+
+
+# ---------------------------------------------------------------------------
+# Task 6c — Credential management commands
+# ---------------------------------------------------------------------------
+
+KNOWN_CREDENTIAL_KEYS: dict[str, str] = {
+    "ANTHROPIC_API_KEY": "Anthropic LLM provider",
+    "OPENAI_API_KEY": "OpenAI-compatible provider",
+    "GOOGLE_CLIENT_ID": "Google OAuth client ID (legacy)",
+    "GOOGLE_CLIENT_SECRET": "Google OAuth client secret (legacy)",
+    "HACHI_OAUTH_GOOGLE_CLIENT_ID": "Google connector client ID",
+    "HACHI_OAUTH_GOOGLE_CLIENT_SECRET": "Google connector client secret",
+    "HACHI_OAUTH_SLACK_CLIENT_ID": "Slack connector client ID",
+    "HACHI_OAUTH_SLACK_CLIENT_SECRET": "Slack connector client secret",
+    "HACHI_OAUTH_DISCORD_CLIENT_ID": "Discord connector client ID",
+    "HACHI_OAUTH_DISCORD_CLIENT_SECRET": "Discord connector client secret",
+    "HACHI_OAUTH_NOTION_CLIENT_ID": "Notion connector client ID",
+    "HACHI_OAUTH_NOTION_CLIENT_SECRET": "Notion connector client secret",
+    "HACHI_OAUTH_GITHUB_CLIENT_ID": "GitHub connector client ID",
+    "HACHI_OAUTH_GITHUB_CLIENT_SECRET": "GitHub connector client secret",
+    "telegram_bot_token": "Telegram bot token",
+    "tavily_api_key": "Tavily web search API key",
+    "META_WHATSAPP_TOKEN": "WhatsApp Meta access token",
+    "META_WHATSAPP_PHONE_ID": "WhatsApp phone number ID",
+    "TWILIO_ACCOUNT_SID": "Twilio account SID (WhatsApp optional)",
+    "TWILIO_AUTH_TOKEN": "Twilio auth token (WhatsApp optional)",
+    "HACHI_STT_API_KEY": "Speech-to-text API key",
+    "HACHI_TTS_API_KEY": "Text-to-speech API key",
+    "HACHI_SECRET_PASSPHRASE": "Passphrase for encrypted file secret store",
+}
+
+
+def _mask_secret(value: str) -> str:
+    """Return a masked representation of a secret value.
+
+    Shows first 4 and last 4 characters with ellipsis in between.
+    For short values (< 8 chars), masks everything.
+    """
+    if len(value) >= 8:
+        return f"{value[:4]}…{value[-4:]}"
+    return "****"
+
+
+def _get_vault() -> CredentialVault:
+    """Instantiate a CredentialVault using the default backing store."""
+    return CredentialVault()
+
+
+# -- hachi set KEY=value [KEY2=value2 ...] ------------------------------------
+
+
+@app.command(name="set")
+def cred_set(
+    pairs: list[str] = typer.Argument(  # noqa: B008
+        ...,
+        metavar="KEY=value",
+        help="One or more KEY=value pairs to store in the credential vault.",
+    ),
+) -> None:
+    """Store one or more named credentials in the secure vault.
+
+    Each argument must be in KEY=value form.  The key is validated against
+    KNOWN_CREDENTIAL_KEYS; unknown keys are accepted with a warning.
+
+    Example::
+
+        hachi set ANTHROPIC_API_KEY=sk-abc123 tavily_api_key=tv-xyz
+    """
+    from rich.table import Table
+
+    vault = _get_vault()
+    table = Table(show_header=False, box=None, padding=(0, 1))
+
+    for pair in pairs:
+        if "=" not in pair:
+            console.print(
+                f"[red]Error:[/red] {pair!r} is not a KEY=value pair — "
+                "each argument must contain '='."
+            )
+            raise typer.Exit(1)
+
+        key, value = pair.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+
+        if not key:
+            console.print("[red]Error:[/red] Empty key in argument — provide KEY=value.")
+            raise typer.Exit(1)
+
+        if key not in KNOWN_CREDENTIAL_KEYS:
+            console.print(
+                f"[yellow]Warning:[/yellow] unknown key {key!r} — storing anyway."
+            )
+
+        vault.set_token(key, value)
+        table.add_row("[green]Saved:[/green]", f"[cyan]{key}[/cyan]")
+
+    console.print(table)
+
+
+# -- hachi get KEY ------------------------------------------------------------
+
+
+@app.command(name="get")
+def cred_get(
+    key: str = typer.Argument(..., metavar="KEY", help="Credential key to retrieve."),
+) -> None:
+    """Retrieve a credential from the vault and print it masked.
+
+    The full value is NEVER printed.  Use this to confirm a key is set
+    without exposing it in terminal history.
+    """
+    vault = _get_vault()
+    value: str | None = None
+    try:
+        value = vault.get_token(key)
+    except Exception:
+        value = None
+
+    if value is None:
+        console.print(f"[yellow]{key}[/yellow]: [dim]\\[not set][/dim]")
+    else:
+        console.print(f"[cyan]{key}[/cyan]: {_mask_secret(value)}")
+
+
+# -- hachi list-keys ----------------------------------------------------------
+
+
+@app.command(name="list-keys")
+def cred_list_keys() -> None:
+    """List all known credential keys with their current status.
+
+    Checks the vault first, then falls back to environment variables.
+    Extra vault keys not in the built-in schema are appended at the bottom.
+    """
+    from rich.table import Table
+
+    vault = _get_vault()
+
+    # Collect vault metadata to detect extra keys
+    try:
+        vault_meta = vault.list_token_metadata()
+        vault_keys_present: set[str] = {m["name"] for m in vault_meta}
+    except Exception:
+        vault_keys_present = set()
+
+    table = Table(title="Credential Keys", show_header=True, header_style="bold")
+    table.add_column("Key", style="cyan", no_wrap=True)
+    table.add_column("Description")
+    table.add_column("Status")
+
+    shown: set[str] = set()
+
+    for key, description in KNOWN_CREDENTIAL_KEYS.items():
+        shown.add(key)
+        # Check vault first
+        vault_has: bool = key in vault_keys_present
+        env_has: bool = key in os.environ
+
+        if vault_has:
+            status = "[green]SET (vault)[/green]"
+        elif env_has:
+            status = "[yellow]SET (env)[/yellow]"
+        else:
+            status = "[dim]not set[/dim]"
+
+        table.add_row(key, description, status)
+
+    # Append any extra vault keys not already in KNOWN_CREDENTIAL_KEYS
+    extra_keys = vault_keys_present - shown
+    for key in sorted(extra_keys):
+        table.add_row(key, "[dim](custom)[/dim]", "[green]SET (vault)[/green]")
+
+    console.print(table)
+
+
+# -- hachi unset KEY ----------------------------------------------------------
+
+
+@app.command(name="unset")
+def cred_unset(
+    key: str = typer.Argument(..., metavar="KEY", help="Credential key to remove."),
+) -> None:
+    """Remove a credential from the vault.
+
+    If an environment variable of the same name is still set in the current
+    shell session, a warning is printed because the env var will continue to
+    shadow any future vault writes until the shell is restarted.
+    """
+    vault = _get_vault()
+    try:
+        vault.delete_token(key)
+        console.print(f"[green]Removed:[/green] [cyan]{key}[/cyan]")
+    except Exception as exc:
+        console.print(f"[yellow]Warning:[/yellow] could not remove {key!r} from vault: {exc}")
+
+    if key in os.environ:
+        console.print(
+            f"[yellow]Note:[/yellow] environment variable [cyan]{key}[/cyan] is still set "
+            "in the current shell session and will continue to shadow the vault entry "
+            "until you restart your shell or unset it manually."
+        )
+
+
+# -- keys sub-app aliases (hachi keys set/get/list/unset) ---------------------
+
+
+@keys_app.command(name="set")
+def keys_set(
+    pairs: list[str] = typer.Argument(  # noqa: B008
+        ...,
+        metavar="KEY=value",
+        help="One or more KEY=value pairs to store in the credential vault.",
+    ),
+) -> None:
+    """Store one or more named credentials (alias of ``hachi set``)."""
+    cred_set(pairs)
+
+
+@keys_app.command(name="get")
+def keys_get(
+    key: str = typer.Argument(..., metavar="KEY", help="Credential key to retrieve."),
+) -> None:
+    """Retrieve a masked credential value (alias of ``hachi get``)."""
+    cred_get(key)
+
+
+@keys_app.command(name="list")
+def keys_list() -> None:
+    """List all credential keys and their status (alias of ``hachi list-keys``)."""
+    cred_list_keys()
+
+
+@keys_app.command(name="unset")
+def keys_unset(
+    key: str = typer.Argument(..., metavar="KEY", help="Credential key to remove."),
+) -> None:
+    """Remove a credential from the vault (alias of ``hachi unset``)."""
+    cred_unset(key)
+
+
+# ---------------------------------------------------------------------------
+# Task 8c — ObjectGraph version history and rollback
+# ---------------------------------------------------------------------------
+
+
+@og_app.command(name="history")
+def og_history_cmd(
+    name: str = typer.Argument(..., metavar="NAME", help="Skill name (without .og extension)."),
+) -> None:
+    """Show the version history of an ObjectGraph skill file.
+
+    Reads from the append-only .og-history sidecar in the skills directory.
+    """
+    from rich.table import Table
+
+    from hachi.core.og_history import list_versions
+
+    skills_dir = get_hachi_paths().skills_dir
+    versions = list_versions(name, skills_dir=skills_dir)
+
+    if not versions:
+        console.print(f"[yellow]No history found for skill:[/yellow] {name!r}")
+        raise typer.Exit(0)
+
+    table = Table(title=f"Version history: {name}", show_header=True, header_style="bold")
+    table.add_column("Version", style="cyan", justify="right")
+    table.add_column("Timestamp")
+    table.add_column("Author")
+    table.add_column("Summary")
+
+    for entry in versions:
+        table.add_row(
+            str(entry.get("version", "?")),
+            str(entry.get("timestamp", "")),
+            str(entry.get("author", "")),
+            str(entry.get("summary", "")),
+        )
+
+    console.print(table)
+
+
+@og_app.command(name="rollback")
+def og_rollback_cmd(
+    name: str = typer.Argument(..., metavar="NAME", help="Skill name (without .og extension)."),
+    version: int = typer.Option(
+        ..., "--version", "-v", help="Version number to roll back to.", show_default=False
+    ),
+) -> None:
+    """Roll back an ObjectGraph skill to a previous version.
+
+    Retrieves the snapshot from history, writes it back to the skills
+    directory (overwriting the current file), and records the rollback as
+    a new history entry so the audit trail is preserved.
+    """
+    from hachi.core.og_history import get_version, record_version
+
+    skills_dir = get_hachi_paths().skills_dir
+
+    # Retrieve the historical snapshot
+    content = get_version(name, version, skills_dir=skills_dir)
+    if content is None:
+        console.print(
+            f"[red]Error:[/red] version {version} of skill {name!r} not found in history."
+        )
+        raise typer.Exit(1)
+
+    # Write the snapshot back to the skills dir (match the naming convention used
+    # by upsert_skill: top-level .og for hand-authored, learned/<name>.og for
+    # agent-authored).  We write to whichever location already has the file;
+    # if neither exists yet, we use the top-level skills dir.
+    candidate_paths: list[Path] = []
+    if skills_dir.exists():
+        candidate_paths = [
+            skills_dir / f"{name}.og",
+            skills_dir / "learned" / f"{name}.og",
+        ]
+
+    target: Path | None = None
+    for p in candidate_paths:
+        if p.exists():
+            target = p
+            break
+
+    if target is None:
+        # Skill file doesn't exist yet — write to top-level skills dir
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        target = skills_dir / f"{name}.og"
+
+    # Atomic write via tempfile + replace to avoid corruption
+    import tempfile
+
+    tmp_fd, tmp_path_str = tempfile.mkstemp(
+        dir=target.parent, prefix=f".{name}_rollback_", suffix=".og.tmp"
+    )
+    tmp_path = Path(tmp_path_str)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        tmp_path.replace(target)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+    # Record the rollback as a new human-authored version
+    new_version = record_version(
+        name,
+        content,
+        author="human",
+        summary=f"rollback to v{version}",
+        skills_dir=skills_dir,
+    )
+
+    console.print(
+        f"[green]Rolled back[/green] [cyan]{name}[/cyan] to v{version} "
+        f"→ written to [dim]{target}[/dim] (recorded as v{new_version})."
+    )
 
 
 if __name__ == "__main__":

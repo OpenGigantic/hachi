@@ -103,6 +103,42 @@ class RuntimeEventEnvelope:
     legacy_aliases: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class UsageUpdatedPayload:
+    """Structured payload for :data:`USAGE_UPDATED` events (Issue 9 & 11).
+
+    Carries the per-turn token breakdown and the model that was used so the
+    frontend can render a "last used model" badge and a per-modality spend
+    breakdown without scraping the raw payload dict.
+
+    All fields except ``model`` were already forwarded verbatim by
+    :func:`adapt_event`; adding them here makes the contract explicit and
+    type-safe for callers that build events directly.
+
+    Defaults to ``None`` for all optional fields so existing callers that omit
+    them remain valid (backward compatible).
+    """
+
+    model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    # Rolled-up cost for this turn in USD (best-effort estimate).
+    estimated_cost_usd: float | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        """Serialise to a plain dict for inclusion in a :class:`RuntimeEvent`."""
+        return {
+            "model": self.model,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+            "estimated_cost_usd": self.estimated_cost_usd,
+        }
+
+
 def now_iso() -> str:
     """UTC timestamp in ISO-8601 format."""
     return datetime.datetime.now(datetime.UTC).isoformat()
@@ -171,9 +207,18 @@ def adapt_event(event_type: str, data: dict[str, Any] | None = None) -> list[Run
         ]
 
     if event_type == "usage":
+        # Issue 9 & 11: forward all usage fields verbatim, plus ensure ``model``
+        # and the per-token breakdown fields are present (with None defaults for
+        # backward compatibility when callers don't supply them yet).
+        usage_payload: dict[str, Any] = dict(payload)
+        usage_payload.setdefault("model", None)
+        usage_payload.setdefault("input_tokens", None)
+        usage_payload.setdefault("output_tokens", None)
+        usage_payload.setdefault("cache_read_tokens", None)
+        usage_payload.setdefault("cache_write_tokens", None)
         return [
             RuntimeEventEnvelope(
-                _event(USAGE_UPDATED, dict(payload)),
+                _event(USAGE_UPDATED, usage_payload),
                 legacy_aliases=("usage",),
             )
         ]

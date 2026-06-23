@@ -1,0 +1,434 @@
+# DECISIONS.md
+
+Engineering decision log for the 12-issue hardening pass on `feat/phase4-platform-impl`.
+Each entry: **Found** (root cause / current behaviour) → **Decided/Changed** (approach + files) →
+**Why** (rationale). Significant architectural decisions are flagged **[ADR]**.
+
+Methodology: 8 parallel read-only audits (one per issue cluster) established root causes, then 8
+file-disjoint implementation lanes applied fixes with explicit cross-file contracts. Audits and
+fixes were delegated to Sonnet 4.6 subagents; orchestration, decisions, and verification by Opus.
+"Minimal-safe" means: smallest correct fix now, with deeper refactors captured as `# TODO(issueN)`.
+
+---
+
+## ⚠️ Operational findings (require human action — NOT code-fixable)
+
+1. **Live secrets in `.env`.** `D:\OpenGigantic\hachi\.env` holds real, plaintext production
+   credentials (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`,
+   `GOOGLE_CLIENT_SECRET`, `NOTION_API_KEY`, Discord/Slack tokens, STT/TTS keys). The file is
+   gitignored (verified) so it is not in git history, but these keys should be **rotated** because
+   they have been stored in cleartext. We did not modify `.env` (it is the user's live secret store).
+
+2. **Stale `.env` comment.** The header comment in `.env` claims "the app does NOT auto-load this
+   file." That is now false — `cli/main.py::_load_dotenv_into_environ()` loads it at import time.
+   Documented in `docs/settings.md`; the user should update/remove the misleading comment.
+
+---
+
+## Issue 1 — "Unknown session id" on page refresh
+
+**Found.** The session id lives in two unbridged stores. `POST /sessions` registers a UUID in the
+in-memory `GatewayControlPlane._connections` dict; `SessionStore.start_session()` separately writes
+a (different-format) id to SQLite. On gateway restart `_connections` is wiped. Client-side,
+`_liveSessionId` is a **module-level variable** (`frontend/.../chat.ts:27`) with no persistence — it
+resets to `null` on browser refresh, and the zustand store does not persist `sessions`. The visible
+error originates in `control_plane.py`: `session_state()` (~547) and `send_message()` (~341) gate on
+`_connections` only and raise `GatewayProtocolError("Unknown session_id")` for a session from a prior
+process. The events endpoint already tolerates dead sessions (falls back to SQLite history); only
+`session_state`/`send_message` do not.
+
+**Decided/Changed.**
+- Backend (`control_plane.py`): `session_state()` falls back to SQLite-backed metadata instead of
+  raising for a known-but-dead session. `send_message()` raises a **typed, recoverable** signal
+  (`session_expired`) instead of a generic "Unknown session_id". `# TODO(issue1)` left for full
+  server-side session re-boot-on-resume.
+- Frontend (`chat.ts`): persist `_liveSessionId` to `sessionStorage` (tab-scoped) and rehydrate on
+  load so a same-tab refresh reconnects. On `session_expired` → silently create a new session + show
+  a friendly inline notice. On unrecognized/corrupted id → silently reset and create new, **no
+  error surfaced**.
+
+**Why.** [ADR] We **distinguish expired (expected) from corrupted (bug)** as the spec requires:
+expired is a normal lifecycle event → friendly, non-alarming UX; a missing/garbled id is our bug →
+recover silently rather than blame the user. Making `session_state` SQLite-tolerant mirrors the
+already-correct events endpoint, so the fix is consistent with existing patterns and low-risk. Full
+transparent server resume is deferred because it needs careful re-wiring of the orchestrator boot
+path — the minimal fix already removes the user-visible failure.
+
+---
+
+## Issue 2 — Slow/delayed markdown & code-block rendering (FOUC)
+
+**Found.** Not a parser or highlighter problem (the markdown component is a zero-dep synchronous
+regex tokenizer; no lazy `import()`, no shiki/prism). Root cause is **(c) streaming buffering + (d)
+remount**: `conversation.tsx` (~929) renders `<StreamingText>` (raw `white-space:pre-wrap`, zero
+markdown) during the stream, then switches to `<Markdown>` only when streaming completes. That
+switch **unmounts/remounts** the whole message subtree, so code blocks go from plain text to fully
+styled in one repaint — the flash — plus a layout shift (inline spans → block `<pre>`/`<div>`).
+
+**Decided/Changed.** Render `<Markdown text={msg.text} isStreaming={showCursor}/>` **always** (drop the
+StreamingText branch for hachi messages). New `isStreaming` prop: keep synchronous per-flush parsing
+(cheap; the existing `FLUSH_MIN_INTERVAL_MS=48` throttle bounds cadence and `useMemo(parseBlocks,
+[text])` bounds re-parse), but for an **unclosed** fenced code block render the styled `<pre>`
+container with un-highlighted text so chrome appears the instant ``` arrives. Stable block keys
+across streaming→done = prop change, not remount. `min-height` on the message body prevents the
+start/end collapse-expand shift.
+
+**Why.** The original `StreamingText` optimization avoided O(size²) re-renders, but `React.memo` on
+`MessageItem` already ensures only the last message re-renders per flush — so the perf win no longer
+justifies the FOUC. Parsing during streaming is the correct trade now. Keeping the same component
+across the transition is what actually kills the flash (no remount) and the layout shift.
+
+---
+
+## Issue 3 — Voice: speed, accuracy, reliability
+
+**Found.** Latency is dominated by code-fixable issues, not the providers:
+- **TTS waits for the full blob** before playback (`speakText` does `await res.blob()`); server
+  returns `StreamingResponse(io.BytesIO(full_bytes))` — buffered, not streamed. ~1–2.5 s of silence.
+- **STT batches** the full utterance (Whisper has no token streaming) — provider-limited.
+- **VAD hangover** `SILENCE_HANGOVER_FRAMES=40` ≈ 667 ms tail on every utterance.
+- **`httpx.Client` rebuilt per call** → TLS handshake each time (~100–300 ms).
+- **ElevenLabs model hardcoded** `eleven_monolingual_v1` (not the low-latency turbo/flash model).
+- **Mic stream + AudioContext rebuilt every utterance** (~150–200 ms + permission churn).
+
+**Decided/Changed.** P1 stream TTS playback via `MediaSource`/`ReadableStream` (blob fallback) + server
+streams httpx body where supported. P2 reuse MediaStream/AudioContext across utterances (rebuild only
+the MediaRecorder). P3 hangover 40→25 + pre-speech gate (don't upload leading silence). P4 shared
+lazy `httpx.Client` + 60 s timeout. P6 `config.voice.elevenlabs_model` (default `eleven_turbo_v2_5`)
++ configurable stt/tts model & base_url. Plus voice cost tracking (see Issue 9).
+
+**Why.** [ADR] **Fix what's in our control; document what isn't.** Streaming TTS playback is the single
+biggest perceived-latency win and is fully ours. STT streaming is genuinely provider-limited (Whisper
+is batch-only) — documented in `docs/` with a mitigation path (Groq `whisper-large-v3-turbo` via
+`stt_base_url`) rather than faked. VAD stays an energy detector (a WASM VAD like Silero is noted as a
+follow-up) because retuning the threshold/hangover is low-risk and recovers most of the latency now.
+
+---
+
+## Issue 4 — MCP servers not appearing after registration
+
+**Found.** Two compounding gaps. (1) Boot (`orchestrator._configure_mcp_servers`, ~1475) reads MCP
+servers **only from `.og` `role=mcp` nodes**, never from the `[mcp_servers]` TOML that the
+registration API writes — so an API-registered server is lost on restart and absent if no session is
+live to hot-load it. (2) `MCPManager.get_inventory()` never populates an error field, so the UI has
+no per-server `error`/`loading` state (only binary ready/stopped).
+
+**Decided/Changed.** `_configure_mcp_servers` also loads `[mcp_servers]` TOML entries
+(`MCPServerConfig.from_toml_entry`) at boot, de-duped against `.og`-defined servers. `get_inventory`
+gains `err` (from a new `_last_error` on the connection) and a transient `loading`/`starting` status.
+Frontend renders connected/loading/error chips and shows the error text.
+
+**Why.** Registration already persisted to TOML correctly; the bug was purely that the boot path never
+read it back — so the smallest correct fix is to make boot authoritative over both sources. Surfacing
+`err` closes the "registered but silently dead" UX hole the spec calls out.
+
+---
+
+## Issue 5 — Tavily ignored; everything routes to Playwright
+
+**Found.** `ProviderRegistry.from_config()` only instantiates `TavilySearchProvider` when
+`config.search.provider == "tavily"` (default `None`). Storing the Tavily API key via the
+integrations UI writes the key to the vault but **never sets `search.provider`** — so the provider is
+never registered, `web_search`/`extract_url` tools are never added, and the LLM only ever has
+`browse_web` (Playwright). There is no "routing" between them; the LLM simply uses the only web tool
+present.
+
+**Decided/Changed.** (1) `registry.from_config()` registers Tavily when `provider=="tavily"` **OR** a
+Tavily key is resolvable (vault `tavily_api_key` or env `TAVILY_API_KEY`) — **key-presence is
+sufficient**. (2) The credential-submit route also persists `[search] provider="tavily"` so it
+survives restarts. (3) `_register_search_if_available` logs a clear warning when no provider is found
+and `browse_web`/Playwright becomes the fallback; a `fallback_active` status field drives a UI notice.
+
+**Why.** [ADR] **Configured-credential implies intent.** A user who pastes a Tavily key obviously wants
+Tavily; requiring a separate hidden `provider` toggle was the trap. We make the key the activation
+signal and make the Playwright fallback **explicit and visible** (log + UI) rather than silent, as the
+spec demands.
+
+---
+
+## Issue 6 — `.env` credentials ignored; "Needs setup" shown wrongly
+
+**Found (6a).** OAuth2 connectors compute "configured" via `is_configured()` which reads **only** the
+canonical `HACHI_OAUTH_<NAME>_CLIENT_ID` env name. A user's `.env` with the bare `GOOGLE_CLIENT_ID`
+(what the legacy Google path uses) therefore reads as unconfigured. apikey connectors (Telegram/
+WhatsApp/Tavily) already check vault-or-env and work. `.env` *is* loaded (via
+`cli/main.py::_load_dotenv_into_environ`), contradicting the stale `.env` comment.
+
+**Decided/Changed.**
+- **6a:** connector resolution checks the canonical name **and** documented legacy aliases (e.g.
+  `GOOGLE_CLIENT_ID`/`_SECRET`); `connector_status()` now reports `source: "vault"|"env"|null` so the
+  UI can show "(from environment)". Explicit env→connector→state mapping documented in
+  `connector_registry.py`.
+- **6b:** the existing generic `CredentialDialog` (masked fields) gains a per-integration **Test
+  connection** button (`POST /integrations/{id}/credentials/test`), a "currently configured" masked
+  hint, and an env-sourced tag. Secrets are never put in localStorage (verified: only UI-dismissal
+  flags are).
+- **6c:** CLI commands `hachi set K=v [K2=v2 ...]`, `hachi get K` (masked), `hachi list-keys`
+  (status: vault/env/not-set), `hachi unset K`, validated against a `KNOWN_CREDENTIAL_KEYS` schema
+  (warn on unknown). Backed by the existing `CredentialVault`. *(wave 2 — in `cli/main.py`)*
+- **6d:** repo-wide scan found **zero `TOKOBOROS_` in tracked code/docs/CI/Docker**; the only
+  occurrences are in the user's local `.env` (`STT_API_KEY`, `TTS_API_KEY`, 5× `SMTP_*`). So the
+  rename is a no-op in code; we add a **startup back-compat shim** that copies any set `TOKOBOROS_*`
+  to its `HACHI_*` equivalent (if unset) and logs a deprecation warning. *(wave 2)*
+
+**Why.** [ADR] **6d shim despite the "no migration shims" memory.** A prior decision ripped out
+back-compat shims and resolved never to reintroduce them. The current explicit instruction overrides
+that, and this shim is narrow (env-var only, deprecation-warned, no persistent state) and directly
+serves the user's own working `.env`. Tension noted here for reversibility. The alias approach for 6a
+is preferred over forcing users to rename env vars because it makes the *common* `.env` (bare provider
+names) "just work" while keeping the canonical `HACHI_OAUTH_*` names authoritative.
+
+---
+
+## Issue 7 — `settings.toml` validation & authority
+
+**Found.** `settings.toml` **is** loaded and respected (4-layer merge in `config_loader.py`;
+`permissions.tier` is a clean behaviour-controlling key for a test). But every model uses
+`extra="ignore"`, so **unknown keys are silently dropped**; malformed TOML logs a warning and falls
+back to defaults with **no abort**; there is **no file-permission check**; `settings.toml` is **not in
+`.gitignore`** and there is **no `settings.example.toml`**; the `provider.headers` dict could harbor a
+literal `Authorization` secret.
+
+**Decided/Changed.** `config_loader` gains load-time validation: warn on unknown top-level/section keys
+(diffed against `ResolvedConfig`), surface malformed primary-config clearly, and a **strict mode**
+(`HACHI_CONFIG_STRICT=1`) that raises. A **world-writable check** (`mode & 0o002`) warns (aborts under
+strict) on POSIX, best-effort on Windows. `settings.toml` + `**/.hachi/settings.toml` added to
+`.gitignore`; new `settings.example.toml` documents every key (type/default/effect). Full key
+reference in `docs/settings.md`.
+
+**Why.** [ADR] **Validate loudly, fail safe by default.** Hard-aborting every existing install on an
+unknown key would be hostile to current users, so the default is warn-and-continue with an opt-in
+strict gate for CI/production. The agent already cannot write `permissions.tier` or credential keys
+(blocked in `set_agent_config`), so "read-only authority" is enforced at the tool layer; the
+world-writable check defends the remaining OS-level vector the spec names.
+
+---
+
+## Issue 8 — `.og` security model, governance, versioning
+
+**Found (8a/8b).** `.og` files are parsed by `og_engine` with a 3-pass (index→dense→full) model;
+malformed/missing files are handled gracefully (skipped + logged, sandbox fallback). The agent can
+write `.og` via `save_skill`/`add_mcp_server` but only into the skills dir, never `~/.hachi/`
+(blocked). **Crucially: permissions are engine-enforced** — `PermissionGate.check_command/check_path`
+block actions *before* execution; only an advisory tier/folder **summary** is injected into the
+prompt, **not** the full blocked-paths/commands policy. So the agent cannot read and "reason around"
+the real policy. **No secrets found in any `.og` file.** Gaps: `upsert_skill`'s write is **non-atomic**,
+and there is **no content version history** (only an in-file `::changelog` + semver).
+
+**Decided/Changed.**
+- **8b model:** documented tiered trust in `docs/og-security.md` — **Tier 1** engine-enforced,
+  never-agent-writable (`device-permissions.og`, `brain.og`); **Tier 2** advisory bundled skills;
+  **Tier 3** agent-writable (`learned/*.og`, `mcp-*.og`, guard-scanned + linted on write).
+  Recommendation: engine should refuse `upsert_skill` targeting core/system names.
+- **8a/8b fix:** `upsert_skill` write made **atomic** (temp + `os.replace`).
+- **8c versioning:** new `core/og_history.py` — **append-only** `<skills_dir>/.og-history/<name>.jsonl`
+  (`{version, utc-timestamp, author: human|agent, summary, sha256, content}`), wired into
+  `upsert_skill` (author=`agent`). CLI `hachi og rollback <name> --version N` (wave 2, records
+  author=`human`). UI history view (wave 2 / tracked TODO).
+
+**Why.** [ADR] **Permissions stay out of the prompt; history stays append-only and out of agent reach.**
+The audit confirmed the engine-enforcement design is sound, so the work is to *formalize and document*
+it rather than re-architect. Versioning is a sidecar JSONL (not git, not a rewrite of the `.og`) so it
+is trivially append-only and cannot be edited through the agent's tool surface — satisfying "the
+versioning system itself cannot be modified by the agent." Atomic write closes a real
+corruption-on-crash risk found in the audit.
+
+---
+
+## Issue 9 — Cost tracking accuracy & completeness
+
+**Found.** Only **5 of 16** model/API call sites track cost — the main LLM path is covered, but
+**STT, TTS, the session titler, and Tavily are untracked**. The cost model correctly prices
+input/output/cache-read/cache-write Anthropic tokens, but has **no voice pricing**. `get_spend`
+collapses a multi-model session into a **single** entry (ignores `per_model_snapshot()`), reports
+`inT=0` always, and there is **no per-modality** breakdown and **no "last used model"** in the
+conversation UI.
+
+**Decided/Changed.** `cost.py` gains `VOICE_PRICING` + `record_voice_usage(modality, model, units)`
+feeding the **same daily ledger** (so `/spend/daily` includes voice). `session_titler.generate_title`
+accepts a `cost_tracker` and records its usage. `runtime_events` turn/usage event gains `model` (+
+token split); the orchestrator populates it. UI: per-model + per-modality + per-session + cumulative
+breakdown in the Spend panel; a "via <model>" badge under the latest assistant message. `get_spend`
+wired to `per_model_snapshot()` (wave 2 in `cli/main.py`).
+
+**Why.** Voice (especially ElevenLabs) is materially expensive, so untracked voice was the biggest
+correctness gap. Routing one capability to Opus and another to Haiku in the same session made the
+single-entry breakdown actively misleading — surfacing `per_model_snapshot()` fixes that. The
+"last used model" badge is the cheapest way to give users the confidence the spec asks for.
+
+---
+
+## Issue 10 — Memory audit & quality
+
+**Found.** **Write:** every clean turn triggers LLM fact-extraction with only a 30-char gate (noise
+risk); dedup is SHA-256-exact only (paraphrases proliferate), and a bare-fallback in
+`memory_tools.py:137` bypasses the smart-consolidation dedup entirely. **Read:** hybrid — user/agent
+profiles are **bulk-injected** every session (bounded at 25 entries each, acceptable), workspace
+memory is **semantically queried per turn against real user input (good)**, but session-start uses a
+**biased fixed query `"important context"`**. **Quality:** `_query_collection` fetches distances but
+**never applies a similarity threshold** — top-k is returned regardless of relevance; `core_memory`
+and `delegation_log` are **unbounded**.
+
+**Decided/Changed.** Add a configurable **similarity threshold** in `_query_collection` (read distances,
+drop low-similarity hits; conservative default). Add **`get_recent_facts()`** and replace the biased
+`"important context"` probe with it (orchestrator lane). **Remove the dedup-bypass fallback**
+(`memory_tools.py:137`) — log+skip on consolidation failure. Add a **write-quality filter** for trivial
+extracted facts. Add a **soft cap + prune** for `core_memory`. Architecture written up in
+`docs/memory.md`.
+
+**Why.** [ADR] **A relevance threshold is the highest-leverage fix** — injecting 5 unrelated facts every
+turn both wastes context and degrades answers; returning *fewer, relevant* memories beats *k, always*.
+The default threshold is deliberately conservative (favor recall) so we don't silently starve good
+recalls; it's tunable. Replacing the fixed probe removes a systematic bias that surfaced whatever
+happened to match the literal words "important context."
+
+---
+
+## Issue 11 — Model routing options all work
+
+**Found.** Concrete model descriptors (opus-4/-4-8, sonnet-4, haiku-4/-4-5, gpt-4o/-mini) and the
+real capability slots (reasoning, coding, summarization, title_generation, compaction, long_context,
+vision) all resolve correctly. But **5 capability slots are stubs with no router impl** —
+`embeddings`, `speech_to_text`, `text_to_speech`, `web_search`, `realtime` — and there is **no
+"last used model" indicator** in the conversation UI.
+
+**Decided/Changed.** Hide/disable the 5 stub capability slots in the routing UI (label "not
+configurable yet") so users can't select a no-op route. Add the "last used model" badge (shared with
+Issue 9 via the new `model` SSE field).
+
+**Why.** Showing routing controls that silently fall through to the default model is a trust bug —
+better to disable them honestly than to imply configurability that doesn't exist. The badge gives the
+positive confirmation (which model actually answered) the spec wants.
+
+---
+
+## Issue 12 — Ghost / unnamed sessions
+
+**Found.** `on_connect` calls `SessionStore.start_session()` **eagerly**, persisting an empty SQLite
+row before any message exists — so failed boots, OpenAI-compat facade sessions, and
+created-but-never-used sessions all leave "Unnamed" rows. `get_recent_sessions()` returns those
+0-message rows. Deletion is actually **correct** (it removes from SQLite); sessions "reappear" only
+because a new empty row is created on the next send before the first message commits.
+
+**Decided/Changed.** First implemented as **lazy** row creation (defer the INSERT to the first
+`log_message`). The full regression suite then showed lazy persistence broke real guarantees other
+code/tests rely on: foreign-key rejection of unknown sessions, synchronous-commit visibility, and
+per-session cost recording. **Revised to keep `start_session` eager** (row inserted + committed
+immediately, FK integrity intact) and prevent ghosts at the *visibility* and *cleanup* layers instead:
+`get_recent_sessions` hides sessions with no real signal (no messages AND no cost AND no title AND no
+turns); `delete_empty_sessions()` (same predicate) + `POST /sessions/cleanup-empty` route + a "Clean up
+empty sessions" UI action remove them on demand; the frontend also guards against rendering obviously
+empty unnamed sessions and no longer shows the "no message history found" placeholder. The automatic
+startup ghost-purge was **removed** — silently deleting message-less rows on every DB open is dangerous
+(it deleted a legacy row a migration test still expected).
+
+**Why.** [ADR] **Don't trade an integrity guarantee for a cosmetic one.** Lazy persistence removed FK
+rejection (a safety property) and synchronous commit (relied on by cost recording and same-connection
+reads). Hiding + explicit cleanup achieves the user-visible goal (no ghost sessions in the UI; one-click
+cleanup) without weakening the store. The visibility predicate keys on "real signal" so a cost-bearing
+or titled session is never mistaken for a ghost.
+
+---
+
+## Cross-cutting architectural decisions [ADR]
+
+- **File-disjoint parallelism with contracts.** The backend hotspots (`orchestrator.py`,
+  `fastapi_app.py`, `control_plane.py`) are touched by many issues, so they were assigned to a single
+  owning lane; other lanes call newly-added functions by agreed signature (`delete_empty_sessions`,
+  `record_voice_usage`, `get_recent_facts`, the `model` event field, `generate_title(cost_tracker=)`).
+  This guarantees zero edit conflicts while preserving parallelism.
+- **Cost discipline.** Audits and implementation ran on Sonnet 4.6 (not Opus) per the cost mandate;
+  Opus was reserved for orchestration, decisions, and verification.
+- **Verification gate.** No issue is "done" until: `ruff check`, `mypy src`, `pytest -q`, the frontend
+  `vitest` + `vite build`, and OpenAPI `check:api` pass (any backend route change requires
+  `gateway-openapi` re-export + `npm run generate:api`). Status tracked in the wave-2 reconciliation
+  section below.
+
+---
+
+## Implementation reconciliation (what actually landed)
+
+Delegated to 8 parallel Sonnet lanes (wave 1) + 1 CLI lane (wave 2), with cross-cutting glue and
+verification by Opus. Per-lane landed changes and their own test counts:
+
+| Lane | Key files | Tests |
+|---|---|---|
+| Conversation UI | `Markdown.tsx`, `conversation.tsx`, `chat.ts`, `store.ts` | 24 (Markdown) |
+| Integrations/Spend UI | `integrations.tsx/.ts`, `SpendSection.tsx`, `ProviderSettings.tsx`, `types.ts` | 24 |
+| Voice | `voice.py`, `speech.py`, `voice_endpoints.py`, `ContinuousVoice.tsx`, `voice.ts` | 9 + 4 |
+| Memory | `memory_vault.py`, `memory.py`, `memory_tools.py` | 20 |
+| Governance | `config_loader.py`, `og_engine/engine.py`, `og_history.py` (new), docs, `settings.example.toml`, `.gitignore` | 16 |
+| Creds/env | `connector_registry.py`, `oauth_flow.py` | 17 |
+| Gateway core | `orchestrator.py`, `fastapi_app.py`, `control_plane.py` | 16 |
+| Supporting backend | `session_store.py`, `registry.py`, `mcp_client.py`, `settings.py`, `cost.py`, `session_titler.py`, `runtime_events.py` | 36 |
+| CLI (wave 2) | `cli/main.py` | 32 |
+
+**Cross-cutting glue done by Opus:**
+- Memory config keys wired end-to-end: `MemorySettings.recall_distance_max` / `core_memory_max_entries`
+  (`settings.py`) → `ChromaMemoryProvider.initialize(...)` (`memory_provider.py`) → vault construction
+  (`orchestrator.py`). Without this the keys would be "read by nothing" (the anti-pattern the
+  `LimitsSettings` docstring explicitly warns about).
+- **Seam GAP-1** (Issue 5): `fallback_active` added to the `GET /integrations` Tavily entry (the UI reads
+  it there; the lane had only put it on the POST-credentials response). `fastapi_app.py::get_integrations`.
+- **Seam GAP-4** (Issue 6b): new `POST /integrations/{id}/credentials/test` route — bounded live probe
+  (real ping for Tavily/Telegram, "stored; no live test" for others), never echoes secrets, never raises.
+- **Seam GAP-3** (Issue 9): `get_spend` (`cli/main.py`) now emits the real per-model breakdown from
+  `CostTracker.per_model_snapshot()` plus `modalities`/`session`/`cumulative_usd` (C-SPEND), keeping the
+  legacy keys for the work tab. *Known limit:* per-session **voice** modality isn't split out — voice cost
+  is recorded into the daily ledger total, not a per-session modality bucket. `TODO(issue9)`: modality-tagged ledger.
+- **Seam GAP-2** (Issue 1): verified end-to-end — the gateway's `SessionExpiredError` → HTTP 410 with
+  `code="session_expired"`, and `client.ts::parseError` lifts `body.code` into `ApiError.code`, which
+  `chat.ts` matches. No change needed.
+- `docs/memory.md` authored; `settings.example.toml` extended with the new memory + `elevenlabs_model` keys.
+
+**Cross-lane contract alignment (verified):** `session_expired` code (gateway↔chat.ts) ✓; `payload.model`
+on `usage.updated` + `session.chat.completed` (A8 emits field, A7 populates, A1 consumes) ✓;
+`POST /sessions/cleanup-empty` (A7 route ↔ A1 caller) ✓; `get_recent_facts` (A4 ↔ A7) ✓;
+`record_voice_usage` (A8 ↔ A3) ✓; `delete_empty_sessions` (A8 ↔ A7) ✓; `source` field (A6 ↔ UI) ✓.
+
+## Verification results
+
+> **Bottom line:** `pytest -q` = **3359 passed / 0 failed / 17 skipped**; frontend `tsc` + 56 vitest +
+> `vite build` green; `ruff check src tests` clean; the `mypy` strict-gate test passes; OpenAPI contract
+> regenerated and re-typechecked clean.
+
+- **Frontend:** `tsc --noEmit` clean; **56 vitest tests pass**; `vite build` succeeds (199 modules).
+- **OpenAPI contract:** schema re-exported (`hachi gateway-openapi`), `schema.d.ts` regenerated
+  (`generate:api`, +128 lines for the new routes/shapes), frontend **re-typechecks clean against the new
+  schema**. (The regenerated `schema.d.ts` is an intentional, committable change — `check:api` "diff" is expected.)
+- **Backend lint:** `ruff check src tests` — **all checks pass**.
+- **Backend types:** `mypy src` baseline is a large pre-existing style-debt set (≈450, `no-untyped-def` /
+  `type-arg` / `no-any-return`; mypy is `continue-on-error` on main for this reason). This session
+  introduced **7 new errors** (in `og_history.py`, `fastapi_app.py`, `config_loader.py`, `cost.py`,
+  `voice_endpoints.py`) — **all 7 fixed**, so the session is net-zero (slightly negative) on the mypy count.
+- **Backend tests:** all **144** new-suite tests across the 8+1 lanes pass together (2 POSIX-only skips).
+  Fixed one test-isolation bug in `test_memory_fixes.py` (the consolidation-failure tests patched
+  `AnthropicClient` during job *capture* but executed the captured job *outside* the patch, so a
+  shared client from an earlier test leaked in — now they execute under an active patch).
+- **Full-suite regression triage (the important part):** the first full `pytest -q` run surfaced
+  **17 failures** — and triage showed these were **real regressions**, not pre-existing env noise. The
+  parallel lanes each passed their own isolated tests but broke pre-existing tests they couldn't see,
+  in four clusters: (1) the `session_store` **lazy-row** change broke FK-integrity / synchronous-commit /
+  session-cost / title-migration tests; (2) a speculative `claude-haiku-4-5` price override shadowed the
+  family prefix the cost tests encode; (3) the OAuth **alias** + the local `.env` made three
+  "not configured" tests non-hermetic (they cleared only the canonical env var, not the legacy alias);
+  (4) a new unused `type: ignore` (`fastapi_app.py:840`) failed the strict **mypy-gate** test. **All four
+  root-caused and fixed** — session_store reverted to eager + visibility/cleanup (see Issue 12);
+  haiku-4-5 override removed (prefix-match to `claude-haiku-4` → `(1.0, 5.0)`); the three OAuth tests made
+  hermetic by also clearing `GOOGLE_CLIENT_ID`; the gated `type: ignore` removed; and one new
+  test rewritten to assert the eager design. Re-run of the 9 affected files + the 9 lane suites is
+  **green (150 + 144 pass)**; a final full `pytest -q` was run to confirm the whole suite (~3359 tests)
+  is clean.
+- **Lesson:** parallel lanes must be regression-tested against the *whole* suite, not just their own new
+  tests — isolated green is necessary but not sufficient. The first full run is what caught all 17.
+- **Live integration proof:** exporting the OpenAPI schema imports the entire gateway cleanly (all lanes
+  integrate), and the run shows the **`TOKOBOROS_*`→`HACHI_*` shim firing** on the real `.env` with the
+  expected deprecation warnings (Issue 6d verified live).
+
+## Tracked follow-ups (`TODO`)
+
+- `TODO(issue1)`: full server-side session re-boot-on-resume (current fix makes `session_state` SQLite-tolerant + returns a typed `session_expired`; the frontend then resumes/creates cleanly).
+- `TODO(issue9)`: modality-tagged daily ledger for a true per-session voice/text/image cost split.
+- `TODO(issue10)`: cosine write-time dedup for paraphrases; bound/TTL `delegation_log`; LRU (not just oldest-first) eviction for `core_memory`.
+- `TODO(issue8c)`: gateway route + UI view for `.og` version history (CLI `hachi og history`/`rollback` shipped; the append-only store + engine wiring shipped).
+- Voice provider/hardware limits (documented, not code-fixable): Whisper is batch-only (mitigate via Groq `whisper-large-v3-turbo` through `stt_base_url`); OpenAI/ElevenLabs TTS buffer server-side until they expose `synthesize_stream`; energy-RMS VAD is noise-sensitive (a WASM VAD like Silero is the upgrade path).

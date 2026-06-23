@@ -2,7 +2,7 @@
 Hachi Long-Term Vector Memory Vault
 
 Dual-collection architecture:
-  - core_memory:   Unbounded workspace facts (env details, architecture decisions, etc.)
+  - core_memory:   Workspace facts with configurable soft cap (default 1000 entries).
   - user_profile:  Bounded user identity store (name, preferences, habits — max 25 entries).
 
 The user_profile collection guarantees that high-value identity facts are never
@@ -61,6 +61,35 @@ logger = logging.getLogger(__name__)
 # Config-loader consumers should prefer passing account_id= explicitly.
 _ACCOUNT_ENV_VAR = "HACHI_ACCOUNT"
 _DEFAULT_ACCOUNT = "default"
+
+# ---------------------------------------------------------------------------
+# FIX 1 — Similarity threshold for recall (HIGH-priority audit finding).
+#
+# ChromaDB's default embedding function uses cosine distance, returned as the
+# "distances" key in query results.  Cosine distance ranges [0, 2]:
+#   0.0  = identical vectors
+#   1.0  = orthogonal (no similarity)
+#   2.0  = opposite vectors
+#
+# A distance of 1.0 means the fact is entirely unrelated.  We default to 0.85,
+# which in practice allows broadly-related facts while filtering clearly
+# unrelated noise.  Set to None (or omit the config key) to disable filtering
+# and preserve the pre-fix behaviour.
+#
+# Config key: memory.recall_distance_max (float | None)
+# ---------------------------------------------------------------------------
+_DEFAULT_RECALL_DISTANCE_MAX: float = 0.85
+
+# ---------------------------------------------------------------------------
+# FIX 5 — Soft cap for core_memory growth.
+#
+# When core_memory reaches this limit, the oldest entries (by stored timestamp)
+# are pruned down to 90% of the cap.  The cap is intentionally generous so
+# normal usage is never impacted.
+#
+# Config key: memory.core_memory_max_entries (int)
+# ---------------------------------------------------------------------------
+_DEFAULT_CORE_MEMORY_MAX_ENTRIES: int = 1000
 
 # --- User Profile Constraints ---
 USER_PROFILE_MAX_ENTRIES = 25
@@ -231,6 +260,8 @@ class MemoryVault:
         self,
         brain_dir: str | None = None,
         account_id: str | None = None,
+        recall_distance_max: float | None = _DEFAULT_RECALL_DISTANCE_MAX,
+        core_memory_max_entries: int = _DEFAULT_CORE_MEMORY_MAX_ENTRIES,
     ):
         """Record vault configuration but defer all ChromaDB I/O.
 
@@ -249,6 +280,16 @@ class MemoryVault:
                           3. The literal string ``"default"``.
                         The ``"default"`` account maps to the legacy unnamespaced
                         collection names so existing data resolves without migration.
+            recall_distance_max: Maximum cosine distance for a recalled fact to be
+                        returned by ``_query_collection``.  ChromaDB returns cosine
+                        distance in [0, 2]; 0 = identical, 1 = orthogonal.  Defaults
+                        to ``_DEFAULT_RECALL_DISTANCE_MAX`` (0.85).  Pass ``None``
+                        to disable filtering and restore the pre-fix behaviour.
+                        Config key: ``memory.recall_distance_max``.
+            core_memory_max_entries: Soft cap for the ``core_memory`` collection.
+                        When the collection exceeds this count, ``prune_core_memory``
+                        is called opportunistically to evict the oldest entries.
+                        Config key: ``memory.core_memory_max_entries``.
         """
         if not brain_dir:
             brain_dir = str(get_hachi_paths().data_dir)
@@ -296,6 +337,12 @@ class MemoryVault:
         # subsequent collection-access calls raise RuntimeError rather than
         # crashing with AttributeError on a nulled collection ref.
         self._closed: bool = False
+
+        # FIX 1: cosine-distance threshold for recall.  None disables filtering.
+        self._recall_distance_max: float | None = recall_distance_max
+
+        # FIX 5: soft cap for core_memory growth.
+        self._core_memory_max_entries: int = max(1, core_memory_max_entries)
 
         # Shared-vault guard: ProcessSharedServices marks the process-singleton
         # vault with is_shared=True. An individual AgentSession must NOT close a
@@ -663,7 +710,11 @@ class MemoryVault:
         return results[:top_k]
 
     def _query_collection(
-        self, collection_attr: str, query: str, top_k: int
+        self,
+        collection_attr: str,
+        query: str,
+        top_k: int,
+        distance_threshold: float | None = None,
     ) -> list[dict[str, Any]]:
         """Shared semantic search logic for all collections.
 
@@ -671,6 +722,13 @@ class MemoryVault:
         ChromaDB error (lazy-init failure, missing collection, query error) a
         WARNING is logged and an empty list is returned so callers degrade
         gracefully instead of propagating a 500.
+
+        FIX 1 — Similarity threshold: when ``distance_threshold`` is provided (or
+        the vault-level ``_recall_distance_max`` is set), results whose cosine
+        distance exceeds the threshold are dropped so unrelated facts are not
+        injected.  ChromaDB returns cosine distance in [0, 2] where 0 = identical
+        and 1 = orthogonal.  The ``include=["distances"]`` kwarg is passed so the
+        distances are always present in the response.
 
         HIGH-021: acquires _vault_lock around the ChromaDB query.
         H12: raises RuntimeError if the vault has been closed — closed-vault
@@ -682,17 +740,34 @@ class MemoryVault:
             collection_attr: Key into ``_COLLECTION_SPECS`` / ``_collections``.
             query: Natural language query string.
             top_k: Maximum number of results.
+            distance_threshold: Maximum cosine distance allowed.  ``None`` means
+                use the vault default (``_recall_distance_max``).  Pass ``0.0`` or
+                a negative value to explicitly disable filtering for this call.
 
         Returns:
             Ranked list of fact dicts, or ``[]`` on ChromaDB error.
         """
+        # Resolve which threshold to apply for this call.
+        # Callers that pass distance_threshold explicitly override the vault default.
+        if distance_threshold is None:
+            effective_threshold = self._recall_distance_max
+        elif distance_threshold <= 0:
+            # Caller explicitly disabled filtering for this call.
+            effective_threshold = None
+        else:
+            effective_threshold = distance_threshold
+
         try:
             with self._vault_lock:
                 self._assert_open()
                 collection = self._get_collection(collection_attr)
                 if collection.count() == 0:
                     return []
-                results = collection.query(query_texts=[query], n_results=top_k)
+                results = collection.query(
+                    query_texts=[query],
+                    n_results=top_k,
+                    include=["documents", "metadatas", "distances"],
+                )
         except RuntimeError:
             # Re-raise closed-vault errors — callers must not silently ignore them.
             raise
@@ -713,8 +788,23 @@ class MemoryVault:
             documents = results["documents"][0]
             ids = results["ids"][0]
             metadatas = results["metadatas"][0] if results.get("metadatas") else []
+            # FIX 1: read distances so we can filter below.
+            distances: list[float] = (
+                results["distances"][0] if results.get("distances") else []
+            )
 
             for i, doc in enumerate(documents):
+                # FIX 1: drop results that are too dissimilar to the query.
+                if effective_threshold is not None and i < len(distances):
+                    if distances[i] > effective_threshold:
+                        logger.debug(
+                            "_query_collection: dropped result %d (distance=%.4f > threshold=%.4f)",
+                            i,
+                            distances[i],
+                            effective_threshold,
+                        )
+                        continue
+
                 meta = metadatas[i] if i < len(metadatas) else {}
                 cat = meta.get("category", "workspace_state")
                 ts = meta.get("timestamp", "Unknown Date")
@@ -726,6 +816,7 @@ class MemoryVault:
                         "category": cat,
                         "timestamp": ts,
                         "raw_content": doc,
+                        "distance": distances[i] if i < len(distances) else None,
                     }
                 )
 
@@ -741,6 +832,11 @@ class MemoryVault:
         All writes pass through MemoryGuard. Duplicate content is idempotent
         due to content-addressable IDs.
 
+        FIX 5: After writing, checks whether the collection has exceeded the soft
+        cap (``_core_memory_max_entries``) and calls ``prune_core_memory()``
+        opportunistically to evict the oldest entries.  This keeps the collection
+        bounded without blocking writes.
+
         Args:
             content: The fact to persist (e.g., "Project uses FastAPI 0.115").
             category: Organizational tag for filtering.
@@ -748,7 +844,19 @@ class MemoryVault:
         Returns:
             The fact ID, or 'BLOCKED:<threat>' if rejected by the guard.
         """
-        return self._guarded_write("collection", content, category)
+        result = self._guarded_write("collection", content, category)
+        # FIX 5: opportunistic cap enforcement — only check count if write succeeded.
+        if not result.startswith("BLOCKED:"):
+            try:
+                with self._vault_lock:
+                    if not self._closed:
+                        current_count = self._get_collection("collection").count()
+                if current_count > self._core_memory_max_entries:
+                    self.prune_core_memory()
+            except Exception:
+                # Cap enforcement is best-effort; never fail the caller's write.
+                pass
+        return result
 
     def delete_fact(self, fact_id: str) -> bool:
         """Remove a fact from ALL backends: Chroma core_memory + FTS5 index.
@@ -811,6 +919,169 @@ class MemoryVault:
         except Exception:
             logger.debug("MemoryVault: graph index search failed; falling back to Chroma only")
             return _redact_results(chroma_results)
+
+    def get_recent_facts(
+        self, collection: str = "core_memory", limit: int = 8
+    ) -> list[str]:
+        """Return the most-recently-stored facts by insertion timestamp.
+
+        FIX 2 — Unbiased recent-facts accessor (contract C-RECENT).
+
+        Unlike ``semantic_search``, this method does NOT embed a query and therefore
+        introduces NO retrieval bias.  It is designed as a drop-in replacement for
+        the session-start ``semantic_search("important context", top_k=8)`` probe
+        used by the orchestrator: that probe biases recall toward facts that happen
+        to be similar to the phrase "important context" rather than the ones most
+        recently written.
+
+        The method fetches up to ``limit * 5`` raw entries from ChromaDB (to
+        counteract the arbitrary order ChromaDB's ``get()`` may return), sorts them
+        by their stored ``timestamp`` metadata field in descending order, and returns
+        the ``limit`` most recent plain text strings.  The strings are NOT formatted
+        with category/timestamp tags so callers can format them as they like.
+
+        Args:
+            collection: Collection name suffix as listed in ``_COLLECTION_SPECS``
+                        values — e.g. ``"core_memory"`` (default) or
+                        ``"user_profile"``.  The method resolves the attribute name
+                        by reverse-looking up ``_COLLECTION_SPECS``.
+            limit: Maximum number of facts to return (default 8).
+
+        Returns:
+            List of raw fact strings, most-recent first.  Returns ``[]`` on any
+            error or when the collection is empty.
+        """
+        # Resolve collection name suffix → attribute key
+        attr: str | None = None
+        for _attr, (_suffix, _desc) in self._COLLECTION_SPECS.items():
+            if _suffix == collection:
+                attr = _attr
+                break
+        if attr is None:
+            # Unknown collection name — fall back to core_memory
+            logger.warning(
+                "get_recent_facts: unknown collection %r; falling back to core_memory",
+                collection,
+            )
+            attr = "collection"
+
+        try:
+            with self._vault_lock:
+                self._assert_open()
+                coll = self._get_collection(attr)
+                if coll.count() == 0:
+                    return []
+                # Fetch a generous batch so we can sort by timestamp.
+                # Limit ChromaDB to avoid huge reads on very large collections.
+                fetch_limit = min(max(limit * 5, 40), 200)
+                rows = coll.get(limit=fetch_limit, include=["documents", "metadatas"])
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "MemoryVault.get_recent_facts: ChromaDB read failed "
+                "(collection=%s, limit=%d); returning []. Error: %s",
+                collection,
+                limit,
+                exc,
+                exc_info=True,
+            )
+            return []
+
+        docs = rows.get("documents") or []
+        metas = rows.get("metadatas") or []
+
+        # Pair each doc with its timestamp, sort descending, return top-N text.
+        paired: list[tuple[str, str]] = []
+        for i, doc in enumerate(docs):
+            ts = metas[i].get("timestamp", "") if i < len(metas) else ""
+            paired.append((ts, doc))
+
+        paired.sort(key=lambda x: x[0], reverse=True)
+        return [doc for (_ts, doc) in paired[:limit]]
+
+    def prune_core_memory(self, target_count: int | None = None) -> int:
+        """Evict the oldest core_memory entries to respect the soft cap.
+
+        FIX 5 — Bound core_memory growth.
+
+        When the ``core_memory`` collection exceeds ``_core_memory_max_entries``,
+        this method deletes the oldest entries (sorted by their stored ``timestamp``
+        metadata field) until the collection size is at or below ``target_count``.
+
+        This is a *soft* cap: writes are not blocked, but ``upsert_fact`` calls
+        this method opportunistically when the collection is over the cap.  For a
+        smarter LRU/access-frequency strategy, see ``# TODO(issue10)`` below.
+
+        Args:
+            target_count: Desired collection size after pruning.  Defaults to 90%
+                          of ``_core_memory_max_entries`` so there is headroom
+                          before the next prune is triggered.
+
+        Returns:
+            The number of entries deleted.  Returns 0 on any error.
+
+        # TODO(issue10): Replace naive oldest-first eviction with LRU (track
+        # last-accessed timestamp via a metadata field updated on each query hit).
+        """
+        if target_count is None:
+            target_count = max(1, int(self._core_memory_max_entries * 0.9))
+
+        try:
+            with self._vault_lock:
+                self._assert_open()
+                coll = self._get_collection("collection")
+                current = coll.count()
+                if current <= self._core_memory_max_entries:
+                    return 0
+
+                n_to_delete = current - target_count
+                if n_to_delete <= 0:
+                    return 0
+
+                # Fetch all entries to sort by timestamp — we only need IDs + metadatas.
+                rows = coll.get(include=["metadatas"])
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "prune_core_memory: ChromaDB read failed; skipping prune. Error: %s", exc
+            )
+            return 0
+
+        ids_all = rows.get("ids") or []
+        metas_all = rows.get("metadatas") or []
+
+        # Pair each id with its timestamp, sort ascending (oldest first).
+        id_ts: list[tuple[str, str]] = []
+        for i, entry_id in enumerate(ids_all):
+            ts = metas_all[i].get("timestamp", "") if i < len(metas_all) else ""
+            id_ts.append((entry_id, ts))
+        id_ts.sort(key=lambda x: x[1])  # oldest timestamp first
+
+        evict_ids = [entry_id for (entry_id, _) in id_ts[:n_to_delete]]
+        if not evict_ids:
+            return 0
+
+        try:
+            with self._vault_lock:
+                self._assert_open()
+                self._get_collection("collection").delete(ids=evict_ids)
+        except Exception as exc:
+            logger.warning(
+                "prune_core_memory: ChromaDB delete failed for %d ids. Error: %s",
+                len(evict_ids),
+                exc,
+            )
+            return 0
+
+        logger.info(
+            "prune_core_memory: evicted %d oldest entries (was %d, target %d)",
+            len(evict_ids),
+            current,
+            target_count,
+        )
+        return len(evict_ids)
 
     # ==========================================
     # User Profile (Bounded Identity Store)

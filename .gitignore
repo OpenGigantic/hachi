@@ -68,6 +68,12 @@ htmlcov/
 credentials.json
 token.json
 
+# ==========================================
+# Hachi user settings (contain credentials)
+# ==========================================
+settings.toml
+**/.hachi/settings.toml
+
 # Claude Design handoff bundle (reference only)
 .design-bundle/
 

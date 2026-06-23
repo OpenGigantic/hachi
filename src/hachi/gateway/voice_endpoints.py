@@ -19,6 +19,7 @@ Error contract:
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from typing import Any
 
 from hachi.core.providers.speech import build_stt_provider, build_tts_provider
@@ -94,6 +95,40 @@ def _is_voice_configured(voice_cfg: Any | None) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _record_voice_cost(modality: str, model: str, units: float) -> None:
+    """Fire-and-forget cost recording — never propagates exceptions."""
+    try:
+        from hachi.core.cost import record_voice_usage  # contract C-VOICECOST
+
+        record_voice_usage(modality, model, units)
+    except Exception:  # noqa: BLE001
+        logger.debug("Voice cost tracking skipped (record_voice_usage not yet available)")
+
+
+def _audio_duration_minutes(audio_bytes: bytes, content_type: str) -> float:
+    """Estimate audio duration in minutes from byte size and content-type.
+
+    Uses a rough bitrate heuristic — good enough for cost accounting.
+    """
+    size = len(audio_bytes)
+    if not size:
+        return 0.0
+    ct = content_type.lower()
+    # Approximate bitrate (kbps): webm/opus ~32, mp3 ~128, wav ~1411 (16-bit 44.1kHz stereo)
+    if "webm" in ct or "ogg" in ct or "opus" in ct:
+        kbps = 32.0
+    elif "mp3" in ct or "mpeg" in ct:
+        kbps = 128.0
+    elif "wav" in ct or "wave" in ct:
+        kbps = 1411.0
+    elif "flac" in ct:
+        kbps = 800.0
+    else:
+        kbps = 64.0  # conservative default
+    duration_seconds = (size * 8) / (kbps * 1000)
+    return max(duration_seconds / 60.0, 0.0)
+
+
 def transcribe(
     audio_bytes: bytes,
     *,
@@ -137,7 +172,14 @@ def transcribe(
         effective_cfg = {"stt_model": model}
 
     stt_provider = build_stt_provider(effective_cfg)
+    # Determine effective STT model name for cost tracking.
+    effective_model = model or getattr(voice_cfg, "stt_model", None) or "whisper-1"
+
     text: str = stt_provider.transcribe(audio_bytes, media_type=content_type)
+
+    # Record cost (fire-and-forget — never blocks or breaks the response).
+    duration_minutes = _audio_duration_minutes(audio_bytes, content_type)
+    _record_voice_cost("stt", effective_model, duration_minutes)
 
     result: dict[str, Any] = {"text": text}
     if language:
@@ -194,11 +236,95 @@ def speak(
         effective_cfg = update_fields
 
     tts_provider = build_tts_provider(effective_cfg)
+    # Determine effective TTS model name for cost tracking.
+    effective_model = model or getattr(voice_cfg, "tts_model", None) or "tts-1"
     audio_bytes: bytes = tts_provider.synthesize(text, voice=voice, fmt=fmt)
+
+    # Record cost (fire-and-forget — never blocks or breaks the response).
+    _record_voice_cost("tts", effective_model, float(len(text)))
 
     # Normalise format to canonical MIME type.
     media_type = _AUDIO_FORMATS.get(fmt.lower(), "audio/mpeg")
     return audio_bytes, media_type
+
+
+def speak_stream(
+    text: str,
+    *,
+    voice: str | None = None,
+    model: str | None = None,
+    fmt: str = "mp3",
+    provider: str | None = None,
+    chunk_size: int = 8192,
+) -> tuple[Iterator[bytes], str]:
+    """Synthesize *text* via TTS and stream the bytes as they arrive.
+
+    When the provider/underlying httpx call supports streaming (i.e. the bytes
+    are produced incrementally), the first chunk is yielded before the full clip
+    is available.  Falls back to returning the buffered bytes from :func:`speak`
+    when the provider does not natively stream — the gateway route then pipes
+    those bytes through a generator so the FastAPI ``StreamingResponse`` signature
+    stays identical.
+
+    Returns:
+        ``(iterator_of_bytes_chunks, media_type)``
+
+    Raises:
+        VoiceConfigError: When TTS is not configured.
+    """
+    voice_cfg = _load_voice_cfg()
+
+    if not _is_voice_configured(voice_cfg):
+        raise VoiceConfigError(
+            "Text-to-speech is not configured. Set OPENAI_API_KEY or add a [voice] section "
+            "to ~/.hachi/settings.toml with tts_api_key_env pointing to your key."
+        )
+
+    effective_cfg: Any = voice_cfg
+    update_fields: dict[str, Any] = {}
+    if model:
+        update_fields["tts_model"] = model
+    if provider:
+        update_fields["tts_provider"] = provider
+    if update_fields and voice_cfg is not None:
+        try:
+            effective_cfg = voice_cfg.model_copy(update=update_fields)
+        except AttributeError:
+            pass
+    elif update_fields and voice_cfg is None:
+        effective_cfg = update_fields
+
+    tts_provider = build_tts_provider(effective_cfg)
+    effective_model = model or getattr(voice_cfg, "tts_model", None) or "tts-1"
+    media_type = _AUDIO_FORMATS.get(fmt.lower(), "audio/mpeg")
+
+    # Try native streaming via the provider's httpx request if supported.
+    # OpenAI /audio/speech supports streaming; we detect it by checking if the
+    # provider exposes a ``synthesize_stream`` method.
+    if hasattr(tts_provider, "synthesize_stream"):
+        try:
+            raw_stream = tts_provider.synthesize_stream(text, voice=voice, fmt=fmt)
+
+            def _tracked_stream() -> Iterator[bytes]:
+                yield from raw_stream
+                # Record cost after the stream completes.
+                _record_voice_cost("tts", effective_model, float(len(text)))
+
+            return _tracked_stream(), media_type
+        except Exception:  # noqa: BLE001
+            logger.debug("synthesize_stream failed, falling back to buffered speak")
+
+    # Fallback: buffer via speak() and pipe through a generator.
+    audio_bytes = tts_provider.synthesize(text, voice=voice, fmt=fmt)
+    _record_voice_cost("tts", effective_model, float(len(text)))
+
+    def _buf_stream() -> Iterator[bytes]:
+        offset = 0
+        while offset < len(audio_bytes):
+            yield audio_bytes[offset : offset + chunk_size]
+            offset += chunk_size
+
+    return _buf_stream(), media_type
 
 
 def voice_config() -> dict[str, Any]:

@@ -234,14 +234,34 @@ class ProviderRegistry:
                 exc_info=False,
             )
 
-        # Search provider (Initiative A): build from [search] config.
-        # Registered only when provider name is set and the API key is available.
+        # Search provider (Initiative A / Issue 5): register TavilySearchProvider when:
+        #   (a) config.search.provider == "tavily", OR
+        #   (b) TAVILY_API_KEY env var is set, OR
+        #   (c) the secret store holds a "tavily_api_key" entry.
+        # The provider itself resolves the key lazily at call time; we only decide
+        # here whether to register the adapter (defensively, no network call).
         try:
+            import os as _os
+
             _search_cfg = getattr(config, "search", None)
             _search_provider_name = (
                 getattr(_search_cfg, "provider", None) if _search_cfg is not None else None
             )
-            if _search_provider_name and str(_search_provider_name).lower() == "tavily":
+            _tavily_by_config = (
+                _search_provider_name and str(_search_provider_name).lower() == "tavily"
+            )
+
+            # Resolve key availability without triggering a network round-trip.
+            _tavily_env_key = bool(_os.environ.get("TAVILY_API_KEY", "").strip())
+            _tavily_store_key = False
+            if not _tavily_env_key and secret_store is not None:
+                try:
+                    _stored = secret_store.get("tavily_api_key")
+                    _tavily_store_key = bool(_stored and str(_stored).strip())
+                except Exception:
+                    pass
+
+            if _tavily_by_config or _tavily_env_key or _tavily_store_key:
                 from hachi.core.providers.tavily_provider import TavilySearchProvider
                 from hachi.core.resilience import RetryPolicy as _RetryPolicy
 
@@ -251,7 +271,13 @@ class ProviderRegistry:
                     retry_policy=_search_retry,
                 )
                 reg.register(_tavily)
-                logger.debug("ProviderRegistry: registered Tavily search provider")
+                logger.debug(
+                    "ProviderRegistry: registered Tavily search provider "
+                    "(by_config=%s, env=%s, store=%s)",
+                    _tavily_by_config,
+                    _tavily_env_key,
+                    _tavily_store_key,
+                )
         except Exception:
             logger.debug(
                 "ProviderRegistry.from_config: search provider init skipped (no key or error)",

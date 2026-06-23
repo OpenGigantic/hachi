@@ -3,13 +3,14 @@
 //   - Headings (#, ##, …, ######)
 //   - Unordered lists (- / * prefix)
 //   - Ordered lists (1. prefix)
+//   - Fenced code blocks (``` lang … ```)
 //   - Paragraphs / blank-line separation
 //   - Inline: bold (**…** / __…__), italic (*…* / _…_), code (`…`), links ([t](u))
 //
 // Streaming-safe: never throws on partial/unterminated input.
 // Unclosed markers render as literal text until the closing marker arrives.
 
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useState, useRef, useCallback } from 'react'
 import type { ReactNode, CSSProperties } from 'react'
 
 // ---- URL sanitizer --------------------------------------------------
@@ -194,13 +195,18 @@ type BlockNode =
   | { kind: 'ul'; items: string[] }
   | { kind: 'ol'; items: string[] }
   | { kind: 'paragraph'; lines: string[] }
+  | { kind: 'code'; lang: string; code: string }
   | { kind: 'blank' }
 
 const HEADING_RE = /^(#{1,6})\s+(.*)$/
 const UL_RE = /^[-*]\s+(.*)$/
 const OL_RE = /^\d+\.\s+(.*)$/
 
-function parseBlocks(text: string): BlockNode[] {
+// When isStreaming is true, an unclosed fenced code block is flagged so the
+// renderer can show the styled container immediately (no FOUC on fence close).
+type ParseOptions = { isStreaming?: boolean }
+
+function parseBlocks(text: string, opts: ParseOptions = {}): BlockNode[] {
   const rawLines = text.split('\n')
   const blocks: BlockNode[] = []
 
@@ -212,6 +218,37 @@ function parseBlocks(text: string): BlockNode[] {
     if (line.trim() === '') {
       blocks.push({ kind: 'blank' })
       i++
+      continue
+    }
+
+    // Fenced code block (``` or ~~~)
+    if (line.startsWith('```') || line.startsWith('~~~')) {
+      const fence = line.slice(0, 3)
+      const lang = line.slice(3).trim().toLowerCase()
+      const codeLines: string[] = []
+      i++
+      let closedFence = false
+      while (i < rawLines.length && !rawLines[i].startsWith(fence)) {
+        codeLines.push(rawLines[i])
+        i++
+      }
+      if (i < rawLines.length) {
+        closedFence = true
+        i++ // consume closing fence
+      }
+      // Drop a single trailing empty line added by the model after the fence
+      while (codeLines.length > 0 && codeLines[codeLines.length - 1].trim() === '') {
+        codeLines.pop()
+      }
+      // During streaming an unclosed fence is still rendered as a code block so
+      // the styled container appears immediately. We mark it so tests can assert it.
+      if (!closedFence && !opts.isStreaming) {
+        // Not streaming and fence is unclosed: emit as paragraph text to avoid
+        // a dangling styled container in completed messages.
+        blocks.push({ kind: 'paragraph', lines: [fence + lang, ...codeLines] })
+      } else {
+        blocks.push({ kind: 'code', lang, code: codeLines.join('\n') })
+      }
       continue
     }
 
@@ -254,7 +291,9 @@ function parseBlocks(text: string): BlockNode[] {
       rawLines[i].trim() !== '' &&
       !HEADING_RE.test(rawLines[i]) &&
       !UL_RE.test(rawLines[i]) &&
-      !OL_RE.test(rawLines[i])
+      !OL_RE.test(rawLines[i]) &&
+      !rawLines[i].startsWith('```') &&
+      !rawLines[i].startsWith('~~~')
     ) {
       lines.push(rawLines[i])
       i++
@@ -279,6 +318,365 @@ function headingStyle(level: number): CSSProperties {
     6: { fontSize: '0.9em', fontWeight: 600, lineHeight: '1.3', margin: '0.4em 0 0.15em' },
   }
   return sizes[level] ?? sizes[6]
+}
+
+// ---- Syntax highlighting --------------------------------------------
+
+const PY_KW = new Set(
+  'False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield'.split(
+    ' '
+  )
+)
+const PY_BUILTIN = new Set(
+  'print input len range type str int float list dict set tuple bool open enumerate zip map filter sorted reversed sum min max abs repr vars dir hasattr getattr setattr isinstance issubclass'.split(
+    ' '
+  )
+)
+const JS_KW = new Set(
+  'const let var function return if else for while do break continue class extends import export default from new typeof instanceof void delete in of async await try catch finally throw switch case yield'.split(
+    ' '
+  )
+)
+const JS_BUILTIN = new Set(
+  'console log warn error JSON parse stringify Math floor ceil round abs Object Array Promise setTimeout clearTimeout setInterval clearInterval fetch window document'.split(
+    ' '
+  )
+)
+
+type SyntaxKind = 'kw' | 'builtin' | 'str' | 'cmt' | 'num' | 'fn' | 'plain'
+type SyntaxToken = { t: SyntaxKind; v: string }
+
+const SYNTAX_COLORS: Record<SyntaxKind, string | undefined> = {
+  kw: 'var(--syntax-kw, #c792ea)',
+  builtin: 'var(--syntax-builtin, #82aaff)',
+  fn: 'var(--syntax-fn, #82aaff)',
+  str: 'var(--syntax-str, #c3e88d)',
+  cmt: 'var(--syntax-cmt, #546e7a)',
+  num: 'var(--syntax-num, #f78c6c)',
+  plain: undefined,
+}
+
+function tokenizeLine(line: string, lang: string): SyntaxToken[] {
+  const isPy = lang === 'python' || lang === 'py'
+  const isJs =
+    lang === 'js' ||
+    lang === 'javascript' ||
+    lang === 'ts' ||
+    lang === 'typescript' ||
+    lang === 'jsx' ||
+    lang === 'tsx'
+
+  if (!isPy && !isJs) return [{ t: 'plain', v: line }]
+
+  const tokens: SyntaxToken[] = []
+  let i = 0
+
+  while (i < line.length) {
+    // Python comment
+    if (isPy && line[i] === '#') {
+      tokens.push({ t: 'cmt', v: line.slice(i) })
+      break
+    }
+    // JS/TS line comment
+    if (isJs && line.slice(i, i + 2) === '//') {
+      tokens.push({ t: 'cmt', v: line.slice(i) })
+      break
+    }
+
+    // String literal (single or double quoted, no multiline)
+    if (line[i] === '"' || line[i] === "'") {
+      const quote = line[i]
+      let j = i + 1
+      while (j < line.length && line[j] !== quote) {
+        if (line[j] === '\\') j++
+        j++
+      }
+      if (j < line.length) j++
+      tokens.push({ t: 'str', v: line.slice(i, j) })
+      i = j
+      continue
+    }
+
+    // Template literal (JS)
+    if (isJs && line[i] === '`') {
+      let j = i + 1
+      while (j < line.length && line[j] !== '`') {
+        if (line[j] === '\\') j++
+        j++
+      }
+      if (j < line.length) j++
+      tokens.push({ t: 'str', v: line.slice(i, j) })
+      i = j
+      continue
+    }
+
+    // Number
+    if (/\d/.test(line[i]) && (i === 0 || !/\w/.test(line[i - 1]))) {
+      let j = i
+      while (j < line.length && /[\d._]/.test(line[j])) j++
+      tokens.push({ t: 'num', v: line.slice(i, j) })
+      i = j
+      continue
+    }
+
+    // Identifier / keyword / builtin / function call
+    if (/[a-zA-Z_]/.test(line[i])) {
+      let j = i
+      while (j < line.length && /\w/.test(line[j])) j++
+      const word = line.slice(i, j)
+      const isKw = isPy ? PY_KW.has(word) : JS_KW.has(word)
+      const isBuiltin = isPy ? PY_BUILTIN.has(word) : JS_BUILTIN.has(word)
+      const isFn = !isKw && !isBuiltin && j < line.length && line[j] === '('
+      tokens.push({ t: isKw ? 'kw' : isBuiltin ? 'builtin' : isFn ? 'fn' : 'plain', v: word })
+      i = j
+      continue
+    }
+
+    // Plain run (operators, punctuation, whitespace)
+    let j = i
+    while (
+      j < line.length &&
+      !/[a-zA-Z_"'`#\d]/.test(line[j]) &&
+      !(isPy && line[j] === '#') &&
+      !(isJs && line.slice(j, j + 2) === '//')
+    ) {
+      j++
+    }
+    if (j > i) {
+      tokens.push({ t: 'plain', v: line.slice(i, j) })
+      i = j
+    } else {
+      tokens.push({ t: 'plain', v: line[i] })
+      i++
+    }
+  }
+
+  return tokens
+}
+
+function renderHighlighted(code: string, lang: string): ReactNode {
+  const highlightable = new Set([
+    'python', 'py', 'js', 'javascript', 'ts', 'typescript', 'jsx', 'tsx',
+  ])
+  if (!highlightable.has(lang)) return code
+
+  const lines = code.split('\n')
+  return lines.map((line, li) => (
+    <span key={li}>
+      {tokenizeLine(line, lang).map((tok, ti) => {
+        const color = SYNTAX_COLORS[tok.t]
+        return color ? (
+          <span key={ti} style={{ color }}>
+            {tok.v}
+          </span>
+        ) : (
+          <span key={ti}>{tok.v}</span>
+        )
+      })}
+      {li < lines.length - 1 && '\n'}
+    </span>
+  ))
+}
+
+// ---- Language display helpers ----------------------------------------
+
+const LANG_DISPLAY: Record<string, string> = {
+  python: 'Python',
+  py: 'Python',
+  javascript: 'JavaScript',
+  js: 'JavaScript',
+  typescript: 'TypeScript',
+  ts: 'TypeScript',
+  tsx: 'TSX',
+  jsx: 'JSX',
+  bash: 'Shell',
+  shell: 'Shell',
+  sh: 'Shell',
+  zsh: 'Shell',
+  json: 'JSON',
+  html: 'HTML',
+  css: 'CSS',
+  sql: 'SQL',
+  rust: 'Rust',
+  go: 'Go',
+  java: 'Java',
+  c: 'C',
+  cpp: 'C++',
+  ruby: 'Ruby',
+  rb: 'Ruby',
+  yaml: 'YAML',
+  yml: 'YAML',
+  toml: 'TOML',
+  md: 'Markdown',
+  markdown: 'Markdown',
+}
+
+const RUNNABLE_LANGS = new Set(['python', 'py', 'js', 'javascript', 'ts', 'typescript'])
+
+function formatLang(lang: string): string {
+  return LANG_DISPLAY[lang] ?? (lang ? lang.charAt(0).toUpperCase() + lang.slice(1) : 'Code')
+}
+
+// ---- CodeBlock component --------------------------------------------
+
+function CopyIcon(): JSX.Element {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M3 11H2.5A1.5 1.5 0 011 9.5v-7A1.5 1.5 0 012.5 1h7A1.5 1.5 0 0111 2.5V3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function CheckIcon(): JSX.Element {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M3 8l4 4 6-6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function CodeBlock({ lang, code }: { lang: string; code: string }): JSX.Element {
+  const [copied, setCopied] = useState(false)
+  const copyBtnRef = useRef<HTMLButtonElement>(null)
+
+  const handleCopy = useCallback(() => {
+    const write = async () => {
+      try {
+        await navigator.clipboard.writeText(code)
+      } catch {
+        // Fallback for iframes / non-HTTPS contexts where clipboard API is blocked
+        const el = document.createElement('textarea')
+        el.value = code
+        el.style.cssText = 'position:fixed;opacity:0;pointer-events:none'
+        document.body.appendChild(el)
+        el.select()
+        try { document.execCommand('copy') } catch { /* ignore */ }
+        document.body.removeChild(el)
+      }
+      setCopied(true)
+      copyBtnRef.current?.animate(
+        [{ transform: 'scale(1)' }, { transform: 'scale(1.3)' }, { transform: 'scale(1)' }],
+        { duration: 250, easing: 'ease-out' }
+      )
+      setTimeout(() => setCopied(false), 2000)
+    }
+    void write()
+  }, [code])
+
+  const displayLang = formatLang(lang)
+  const canRun = RUNNABLE_LANGS.has(lang)
+
+  return (
+    <div
+      style={{
+        borderRadius: 8,
+        overflow: 'hidden',
+        margin: '0.65em 0',
+        border: '1px solid rgba(255,255,255,0.09)',
+        background: 'var(--hachi-code-bg)',
+      }}
+    >
+      {/* Header */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '5px 12px',
+          background: 'rgba(255,255,255,0.04)',
+          borderBottom: '1px solid rgba(255,255,255,0.07)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ opacity: 0.45 }}>
+            <path d="M5 4L1 8l4 4M11 4l4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span
+            style={{
+              fontSize: '0.76em',
+              fontFamily: 'var(--font-mono, monospace)',
+              color: 'var(--hachi-code-icon)',
+              letterSpacing: '0.01em',
+            }}
+          >
+            {displayLang}
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button
+            ref={copyBtnRef}
+            onClick={handleCopy}
+            title={copied ? 'Copied!' : 'Copy code'}
+            style={{
+              background: copied ? 'var(--hachi-code-copied-bg)' : 'none',
+              border: 'none',
+              cursor: 'pointer',
+              padding: '3px 8px',
+              borderRadius: 4,
+              color: copied ? 'var(--hachi-code-copied)' : 'var(--hachi-code-icon)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+              transition: 'color 0.2s, background 0.2s',
+            }}
+          >
+            {copied ? (
+              <>
+                <CheckIcon />
+                <span style={{ fontSize: '0.74em', fontFamily: 'inherit', fontWeight: 500 }}>
+                  Copied!
+                </span>
+              </>
+            ) : (
+              <CopyIcon />
+            )}
+          </button>
+
+          {canRun && (
+            <button
+              title="Run"
+              style={{
+                background: 'none',
+                border: '1px solid rgba(255,255,255,0.18)',
+                cursor: 'pointer',
+                padding: '2px 10px',
+                borderRadius: 12,
+                color: 'var(--hachi-code-icon)',
+                fontSize: '0.76em',
+                fontFamily: 'inherit',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 5,
+                lineHeight: 1.5,
+              }}
+            >
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                <path d="M2.5 1.5l8 4.5-8 4.5V1.5z" />
+              </svg>
+              Run
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Code */}
+      <pre
+        style={{
+          margin: 0,
+          padding: '14px 16px',
+          overflowX: 'auto',
+          fontFamily: 'var(--font-mono, monospace)',
+          fontSize: '0.87em',
+          lineHeight: '1.65',
+          color: 'var(--hachi-code-text)',
+        }}
+      >
+        <code>{renderHighlighted(code, lang)}</code>
+      </pre>
+    </div>
+  )
 }
 
 // ---- Render blocks --------------------------------------------------
@@ -335,6 +733,9 @@ function renderBlock(block: BlockNode, blockIdx: number): ReactNode {
         </ol>
       )
 
+    case 'code':
+      return <CodeBlock key={key} lang={block.lang} code={block.code} />
+
     case 'paragraph': {
       // Within a paragraph, individual lines are separated by <br> to preserve
       // single-newline breaks (equivalent to pre-wrap newlines).
@@ -361,19 +762,24 @@ function renderBlock(block: BlockNode, blockIdx: number): ReactNode {
 // the text prop actually changes — not on every store flush that re-creates the
 // parent component's subtree.
 
-export const Markdown = memo(function Markdown({ text }: { text: string }): JSX.Element {
+export const Markdown = memo(function Markdown({
+  text,
+  isStreaming,
+}: {
+  text: string
+  isStreaming?: boolean
+}): JSX.Element {
   // eslint-disable-next-line react-hooks/rules-of-hooks -- memo wrapper is a function component
-  const blocks = useMemo(() => parseBlocks(text), [text])
-
-  if (text === '') {
-    return <span />
-  }
+  const blocks = useMemo(() => parseBlocks(text, { isStreaming }), [text, isStreaming])
 
   return (
     <div
       style={{
         // Inherit font, color, lineHeight from parent — no overrides needed.
         // whiteSpace is NOT set here; the block structure handles newlines.
+        // min-height prevents the container collapsing to zero while text===''
+        // then expanding on first token, which causes a layout shift (FIX 1).
+        minHeight: '1.6em',
       }}
     >
       {blocks.map((block, i) => renderBlock(block, i))}

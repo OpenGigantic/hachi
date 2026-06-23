@@ -137,6 +137,11 @@ class SessionStore:
         if "owner_token_hash" not in existing:
             self._conn.execute("ALTER TABLE sessions ADD COLUMN owner_token_hash TEXT")
             self._conn.commit()
+        # NOTE(issue12): no automatic ghost-cleanup runs here. Silently deleting
+        # message-less session rows on every DB open is dangerous (it would also
+        # remove legacy rows a caller still expects). Cleanup is explicit instead —
+        # via delete_empty_sessions(), the POST /sessions/cleanup-empty route, and
+        # `hachi doctor`.
 
     # ==========================================
     # Session Lifecycle
@@ -144,6 +149,17 @@ class SessionStore:
 
     def start_session(self, model: str = "unknown") -> str:
         """Begin a new session and return its unique ID.
+
+        The ``sessions`` row is inserted and committed synchronously so the
+        foreign-key constraint holds for subsequent message writes and the row is
+        immediately visible to other connections (callers read session state right
+        after creation, e.g. per-session cost recording).
+
+        Ghost (zero-message) sessions are NOT prevented by deferring this insert —
+        deferral removed FK-integrity and synchronous-commit guarantees that other
+        code and tests rely on. Instead, empty sessions are hidden from the UI by
+        :meth:`get_recent_sessions` and removed on demand by
+        :meth:`delete_empty_sessions` (Issue 12; rationale in DECISIONS.md).
 
         Args:
             model: The LLM model name used for this session.
@@ -153,14 +169,12 @@ class SessionStore:
         """
         session_id = uuid.uuid4().hex[:16]
         now = datetime.datetime.now(datetime.UTC).isoformat()
-
         with self._lock:
             self._conn.execute(
                 "INSERT INTO sessions (id, started_at, model) VALUES (?, ?, ?)",
                 (session_id, now, model),
             )
             self._conn.commit()
-
         logger.debug("Session started: %s (model=%s)", session_id, model)
         return session_id
 
@@ -371,8 +385,9 @@ class SessionStore:
         content = content[:50_000] if content else ""
 
         with self._lock:
-            # Synchronous INSERT: a bad session_id raises immediately (foreign-key
-            # enforcement) and same-connection reads see the row without a flush.
+            # Synchronous INSERT: an unknown session_id raises immediately (foreign-key
+            # enforcement — start_session must have created the row) and same-connection
+            # reads see the row without a flush.
             self._conn.execute(
                 "INSERT INTO messages (session_id, role, content, tool_name, timestamp) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -484,10 +499,16 @@ class SessionStore:
         # Make recently-logged messages visible so derived title/turns are accurate.
         self.flush_sync()
         with self._lock:
+            # Issue 12: hide ghost sessions (nothing logged) but keep any session with
+            # real signal — messages, recorded cost, a stored title, or counted turns.
             rows = self._conn.execute(
                 "SELECT id, started_at, ended_at, model, total_turns, title, "
                 "total_tokens, total_cost_usd "
-                "FROM sessions ORDER BY started_at DESC LIMIT ?",
+                "FROM sessions "
+                "WHERE (EXISTS (SELECT 1 FROM messages WHERE messages.session_id = sessions.id) "
+                "OR COALESCE(total_cost_usd, 0) > 0 OR title IS NOT NULL "
+                "OR COALESCE(total_turns, 0) > 0) "
+                "ORDER BY started_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
 
@@ -621,6 +642,40 @@ class SessionStore:
             )
             self._conn.commit()
         return len(ids)
+
+    def delete_empty_sessions(self) -> int:
+        """Delete all sessions that have no messages and return the count deleted.
+
+        A session is an "abandoned ghost" only when it has NO real signal at all —
+        no messages, no recorded cost, no title, and no turns. Sessions with any of
+        those are preserved (mirrors the get_recent_sessions visibility predicate).
+
+        Called by the gateway's maintenance route and the CLI ``doctor`` command.
+
+        Returns:
+            Number of session rows deleted (0 if none found).
+        """
+        with self._lock:
+            ghost_ids = [
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT id FROM sessions "
+                    "WHERE NOT EXISTS "
+                    "(SELECT 1 FROM messages WHERE messages.session_id = sessions.id) "
+                    "AND COALESCE(total_cost_usd, 0) = 0 AND title IS NULL "
+                    "AND COALESCE(total_turns, 0) = 0"
+                ).fetchall()
+            ]
+            if not ghost_ids:
+                return 0
+            placeholders = ",".join("?" * len(ghost_ids))
+            self._conn.execute(
+                f"DELETE FROM sessions WHERE id IN ({placeholders})",  # noqa: S608
+                ghost_ids,
+            )
+            self._conn.commit()
+        logger.info("delete_empty_sessions: removed %d ghost session(s)", len(ghost_ids))
+        return len(ghost_ids)
 
     def backup(self, dest: Path) -> None:
         """Create an online hot-backup of the database to *dest*.

@@ -64,7 +64,11 @@ import httpx
 
 from hachi.core.credential_vault import CredentialVault
 from hachi.core.secret_store import SecretStore, create_default_secret_store
-from hachi.integrations.connector_registry import ConnectorDef, get_connector
+from hachi.integrations.connector_registry import (
+    OAUTH2_CLIENT_ID_ALIASES,
+    ConnectorDef,
+    get_connector,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -325,6 +329,57 @@ def _env_value_for_field(connector_id: str, field_key: str) -> str | None:
     """
     env_var = field_key.upper()
     return os.environ.get(env_var) or None
+
+
+def _oauth2_credential_source(connector: ConnectorDef) -> str | None:
+    """Return where the OAuth2 client-id credential was found.
+
+    Checks the same resolution order as :meth:`ConnectorDef.client_id`:
+    canonical env var first, then any registered legacy alias.
+
+    Args:
+        connector: The :class:`ConnectorDef` to inspect.
+
+    Returns:
+        ``"env"`` when a client id is found in any env var, ``None`` otherwise.
+        (OAuth2 credentials never live in the vault — they come only from env.)
+    """
+    if connector.client_id_env and os.environ.get(connector.client_id_env):
+        return "env"
+    alias_pair = OAUTH2_CLIENT_ID_ALIASES.get(connector.id)
+    if alias_pair and alias_pair[0] and os.environ.get(alias_pair[0]):
+        return "env"
+    return None
+
+
+def _apikey_credential_source(connector_id: str) -> str | None:
+    """Return where the first required apikey credential was found.
+
+    Checks vault then env for each required field, in the same order as
+    :func:`is_apikey_connector_configured`.
+
+    Args:
+        connector_id: Connector slug.
+
+    Returns:
+        ``"vault"`` when the first satisfied required field came from the vault,
+        ``"env"`` when it came from an environment variable, ``None`` when no
+        required field is satisfied (i.e. the connector is not configured).
+    """
+    connector = get_connector(connector_id)
+    if connector is None or connector.auth_type != "apikey":
+        return None
+    required_keys = connector.required_credential_keys()
+    if not required_keys:
+        return None
+    for field_key in required_keys:
+        vault_val = get_apikey_credential(connector_id, field_key)
+        if vault_val:
+            return "vault"
+        env_val = _env_value_for_field(connector_id, field_key)
+        if env_val:
+            return "env"
+    return None
 
 
 def is_apikey_connector_configured(connector_id: str) -> bool:
@@ -655,12 +710,18 @@ def connector_status(connector_id: str) -> dict[str, Any]:
     Also returns ``credential_fields`` from the registry so the UI can render
     the appropriate credential form without a separate registry lookup.
 
+    The ``source`` field (contract C-CREDSOURCE) indicates where the satisfying
+    credential was found:
+    - ``"env"``   — satisfied by an environment variable (canonical or alias).
+    - ``"vault"`` — satisfied by the credential vault (apikey connectors only).
+    - ``null``    — connector is not configured / no credential found.
+
     Args:
         connector_id: Connector slug.
 
     Returns:
         Dict with ``auth_type``, ``configured``, ``connected``, ``status``,
-        and ``credential_fields``.
+        ``source``, and ``credential_fields``.
     """
     connector = get_connector(connector_id)
     if connector is None:
@@ -669,6 +730,7 @@ def connector_status(connector_id: str) -> dict[str, Any]:
             "configured": False,
             "connected": False,
             "status": "unknown",
+            "source": None,
             "credential_fields": [],
         }
 
@@ -676,20 +738,24 @@ def connector_status(connector_id: str) -> dict[str, Any]:
         connected = _token_store.is_connected(connector_id)
         configured = connector.is_configured()
         status = "connected" if connected else ("configured" if configured else "disconnected")
+        source: str | None = _oauth2_credential_source(connector) if configured else None
     elif connector.auth_type == "apikey":
         configured = is_apikey_connector_configured(connector_id)
         connected = configured  # apikey connectors are "connected" when all creds are present
         status = "connected" if configured else "disconnected"
+        source = _apikey_credential_source(connector_id) if configured else None
     else:
         configured = False
         connected = False
         status = "disconnected"
+        source = None
 
     return {
         "auth_type": connector.auth_type,
         "configured": configured,
         "connected": connected,
         "status": status,
+        "source": source,
         "credential_fields": list(connector.credential_fields),
     }
 

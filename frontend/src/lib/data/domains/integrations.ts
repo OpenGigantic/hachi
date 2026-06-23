@@ -58,6 +58,13 @@ interface GatewayIntegrationStatus {
   connected?: boolean;
   status?: string;
   credential_fields?: CredentialFieldSpec[];
+  /** Where the credential was loaded from (C-CREDSOURCE). */
+  source?: "vault" | "env" | null;
+  /**
+   * When true, web search is falling back to Playwright because Tavily is
+   * not configured or unreachable (C-SEARCHFALLBACK).
+   */
+  fallback_active?: boolean;
 }
 
 /** Raw MCP server entry inside GET /runtime/mcp/inventory */
@@ -116,6 +123,17 @@ export interface IntegrationExtended extends Integration {
    * Returned by GET /integrations so the UI can render a dynamic credential form.
    */
   credential_fields: CredentialFieldSpec[];
+  /**
+   * Where the credential was loaded from (C-CREDSOURCE).
+   * "vault" = user saved via credential dialog, "env" = set in env vars,
+   * null = not yet configured.
+   */
+  source?: "vault" | "env" | null;
+  /**
+   * When true, this integration (Tavily/web-search) is falling back to
+   * Playwright because Tavily is not reachable (C-SEARCHFALLBACK).
+   */
+  fallback_active?: boolean;
 }
 
 // ============================================================
@@ -257,6 +275,8 @@ function adaptIntegrationStatus(raw: GatewayIntegrationStatus): IntegrationExten
     connected,
     configured,
     credential_fields: Array.isArray(raw.credential_fields) ? raw.credential_fields : [],
+    source: raw.source ?? null,
+    fallback_active: raw.fallback_active ?? false,
   };
 }
 
@@ -272,6 +292,10 @@ function adaptMcpServer(raw: GatewayMcpServer): McpServer {
     ready: "connected",
     running: "connected",
     starting: "starting",
+    loading: "loading",
+    initialising: "loading",
+    initializing: "loading",
+    pending: "loading",
     blocked: "blocked",
     failed: "blocked",
     error: "blocked",
@@ -286,6 +310,46 @@ function adaptMcpServer(raw: GatewayMcpServer): McpServer {
     uptime: raw.uptime ?? "—",
     err: raw.err,
   };
+}
+
+/** Response from POST /integrations/{id}/credentials/test (C-CREDTEST). */
+export interface CredentialTestResult {
+  ok: boolean;
+  message: string;
+}
+
+/**
+ * Test stored credentials for an apikey connector without saving them.
+ *
+ * Contract (C-CREDTEST):
+ *   POST /integrations/{id}/credentials/test → { ok: boolean, message: string }
+ *
+ * Degrades gracefully on 404 (endpoint not yet deployed) — returns null so the
+ * caller can hide/disable the test button.
+ *
+ * @throws ApiError on other network/server errors (caller should show the message).
+ */
+export async function testCredentials(
+  id: string,
+): Promise<CredentialTestResult | null> {
+  if (USE_MOCKS) return { ok: true, message: "Mock: credentials look good" };
+  try {
+    return await apiSend<CredentialTestResult>(
+      "POST",
+      `/integrations/${id}/credentials/test`,
+    );
+  } catch (err) {
+    // 404 → endpoint not deployed yet → signal "not available"
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      "status" in err &&
+      (err as { status: number }).status === 404
+    ) {
+      return null;
+    }
+    throw err;
+  }
 }
 
 /**

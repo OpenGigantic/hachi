@@ -207,6 +207,8 @@ interface State {
   // memory
   editingFactId: string | null;
   editingText: string;
+  // FIX 4: last model id seen in a usage/turn-complete SSE event
+  lastUsedModel: string | null;
 }
 
 // ============================================================
@@ -436,6 +438,7 @@ const domainDefaults = (): Omit<State, "operator" | "theme"> => ({
   runSteps: [],
   editingFactId: null,
   editingText: "",
+  lastUsedModel: null,
 });
 
 export const useStore = create<State & Actions>()(

@@ -28,6 +28,19 @@ import { AddProviderDialog, providerVisual, type ProviderFormInitial } from './A
 
 const NO_KEY_KINDS = new Set(['ollama']);
 
+/**
+ * Capability slots that have no router implementation yet (FIX 5 — Issue 11).
+ * These are rendered as disabled rows with a "not configurable yet" hint
+ * rather than as functional model selects.
+ */
+const STUB_CAPABILITIES = new Set([
+  'embeddings',
+  'speech_to_text',
+  'text_to_speech',
+  'web_search',
+  'realtime',
+]);
+
 // Best-effort icon + hint for a routing capability, matched on its name. Falls
 // back to a neutral chip icon for capabilities we don't recognise.
 function capMeta(name: string): { icon: string; desc?: string } {
@@ -48,7 +61,9 @@ const selectStyleSm: React.CSSProperties = {
   borderRadius: 9,
   border: '0.5px solid var(--hachi-line)',
   background: 'var(--hachi-canvas)',
-  font: '12.5px var(--font-mono)',
+  fontFamily: 'var(--font-body)',
+  fontWeight: 500,
+  fontSize: 13,
   color: 'var(--hachi-ink)',
   outline: 'none',
   cursor: 'pointer',
@@ -236,17 +251,30 @@ function ProviderCard({
 
       <div
         style={{
-          fontFamily: 'var(--font-mono)',
-          fontSize: 11.5,
+          fontSize: 12,
           color: 'var(--hachi-muted)',
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 5,
         }}
         title={provider.base_url ? `${provider.model} · ${provider.base_url}` : provider.model}
       >
-        {provider.model}
-        {provider.base_url ? ` · ${provider.base_url}` : ''}
+        {provider.model && (
+          <span style={{ fontFamily: 'var(--font-body)', fontWeight: 500, color: 'var(--hachi-ink)', flexShrink: 0 }}>
+            {provider.model}
+          </span>
+        )}
+        {provider.base_url && (
+          <>
+            {provider.model && <span style={{ opacity: 0.4 }}>·</span>}
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {provider.base_url}
+            </span>
+          </>
+        )}
       </div>
 
       {status === false && detail && (
@@ -342,7 +370,7 @@ function RoutingPanel({
           onChange={setDefaultModel}
           allModels={allModels}
           placeholder="— keep current —"
-          style={{ height: 40, fontSize: 13 }}
+          style={{ height: 40 }}
         />
         <div style={{ fontSize: 11, color: 'var(--hachi-muted)', marginTop: 7 }}>
           Used for everything unless a task below overrides it.
@@ -362,7 +390,9 @@ function RoutingPanel({
             }}
           >
             {routing.capabilities.map((row, idx) => {
+              const isStub = STUB_CAPABILITIES.has(row.name);
               const meta = capMeta(row.name);
+              const isLast = idx === routing.capabilities.length - 1;
               return (
                 <div
                   key={row.name}
@@ -371,28 +401,53 @@ function RoutingPanel({
                     alignItems: 'center',
                     gap: 11,
                     padding: '11px 13px',
-                    borderBottom:
-                      idx < routing.capabilities.length - 1
-                        ? '0.5px solid var(--hachi-line)'
-                        : undefined,
+                    borderBottom: isLast ? undefined : '0.5px solid var(--hachi-line)',
+                    opacity: isStub ? 0.5 : 1,
                   }}
+                  title={isStub ? 'Not configurable yet — routing for this capability is not implemented.' : undefined}
                 >
                   <span style={{ color: 'var(--hachi-muted)', display: 'inline-flex', flexShrink: 0 }}>
                     <Icon name={meta.icon} size={17} />
                   </span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 500 }}>{row.label}</div>
-                    {meta.desc && (
-                      <div style={{ fontSize: 11, color: 'var(--hachi-muted)' }}>{meta.desc}</div>
+                    {isStub ? (
+                      <div style={{ fontSize: 11, color: 'var(--hachi-muted)' }}>
+                        not configurable yet
+                      </div>
+                    ) : (
+                      meta.desc && (
+                        <div style={{ fontSize: 11, color: 'var(--hachi-muted)' }}>{meta.desc}</div>
+                      )
                     )}
                   </div>
                   <div style={{ width: 170, flexShrink: 0 }}>
-                    <ModelSelect
-                      value={caps[row.name]?.[0] ?? ''}
-                      onChange={(m) => setCapModel(row.name, m)}
-                      allModels={allModels}
-                      placeholder="— use default —"
-                    />
+                    {isStub ? (
+                      <div
+                        style={{
+                          height: 36,
+                          borderRadius: 9,
+                          border: '0.5px solid var(--hachi-line)',
+                          background: 'var(--hachi-canvas)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          paddingLeft: 10,
+                          fontSize: 12,
+                          color: 'var(--hachi-muted)',
+                          userSelect: 'none',
+                        }}
+                        aria-disabled="true"
+                      >
+                        — not available —
+                      </div>
+                    ) : (
+                      <ModelSelect
+                        value={caps[row.name]?.[0] ?? ''}
+                        onChange={(m) => setCapModel(row.name, m)}
+                        allModels={allModels}
+                        placeholder="— use default —"
+                      />
+                    )}
                   </div>
                 </div>
               );

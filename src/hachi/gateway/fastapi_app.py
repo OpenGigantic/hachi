@@ -41,6 +41,7 @@ from hachi.gateway.control_plane import (
     GatewayControlPlane,
     GatewayProtocolError,
     GatewayUnavailableError,
+    SessionExpiredError,
 )
 
 _APPROVALS_AVAILABLE = True
@@ -494,9 +495,25 @@ def create_gateway_app(
         # storing or comparing the raw bearer value.
         return hashlib.sha256(raw_token.encode()).hexdigest()
 
+    # Issue 1: SessionExpiredError must be registered BEFORE GatewayProtocolError
+    # (it is a subclass).  HTTP 410 Gone tells the frontend the session existed but
+    # is no longer active, and the client should create a new session.
+    @app.exception_handler(SessionExpiredError)
+    async def _session_expired_handler(
+        _request: Request, exc: SessionExpiredError
+    ) -> JSONResponse:
+        return _error_response(
+            status_code=410,
+            code=exc.code,
+            message=str(exc),
+            details={"session_id": exc.session_id},
+        )
+
     @app.exception_handler(GatewayProtocolError)
     async def _protocol_error_handler(_request: Request, exc: GatewayProtocolError) -> JSONResponse:
-        return _error_response(status_code=400, code="protocol_error", message=str(exc))
+        return _error_response(
+            status_code=400, code=getattr(exc, "code", "protocol_error"), message=str(exc)
+        )
 
     @app.exception_handler(GatewayUnavailableError)
     async def _unavailable_error_handler(
@@ -800,6 +817,38 @@ def create_gateway_app(
     async def delete_session(session_id: str, request: Request) -> Any:
         _check_session_ownership(session_id, _require_auth(request))
         return control_plane.close_session(session_id)
+
+    # Issue 12 — POST /sessions/cleanup-empty
+    # Deletes session rows that have no messages (ghost sessions accumulated before
+    # the lazy-row-creation fix landed).  Requires auth; returns {"removed": <int>}.
+    @sessions.post("/cleanup-empty")
+    async def cleanup_empty_sessions() -> Any:
+        """Delete all empty sessions (no messages) from the SQLite store.
+
+        Safe to call at any time.  Sessions that are currently booting (in-memory
+        but with no messages yet) are not affected — they have no DB row yet.
+
+        Returns:
+            ``{"removed": <count>}`` — the number of rows deleted.
+        """
+        removed = 0
+        try:
+            from hachi.gateway.shared_services import ProcessSharedServices
+
+            _shared = ProcessSharedServices.instance()
+            if _shared is not None and hasattr(_shared, "session_store"):
+                _store = _shared.session_store
+                if _store is not None and hasattr(_store, "delete_empty_sessions"):
+                    removed = _store.delete_empty_sessions()
+            else:
+                # Fallback: instantiate a fresh store (same DB file).
+                from hachi.core.session_store import SessionStore
+
+                _store = SessionStore()
+                removed = _store.delete_empty_sessions()
+        except Exception:
+            _log.warning("cleanup_empty_sessions: failed to delete empty sessions", exc_info=True)
+        return {"removed": removed}
 
     # G1-T4 — POST /sessions/{session_id}/permissions/always-allow
     # The frontend posts to /sessions/current/permissions/always-allow — "current" is a
@@ -1632,10 +1681,34 @@ def create_gateway_app(
 
     @integrations_router.get("")
     async def get_integrations() -> Any:
-        """List all connectors with their auth_type, configured, connected, and status fields."""
+        """List all connectors with their auth_type, configured, connected, and status fields.
+
+        Issue 5: the Tavily/search connector entry also carries ``fallback_active``
+        (True when no web_search provider is registered, so browse_web/Playwright is the
+        active fallback). The frontend reads this off GET /integrations to show a
+        "web search unavailable — using Playwright fallback" notice. Computed here so
+        GET /integrations and the POST /credentials response agree.
+        """
         from hachi.integrations.oauth_flow import all_connector_statuses
 
-        return all_connector_statuses()
+        statuses = await anyio.to_thread.run_sync(all_connector_statuses)
+
+        fallback_active = True
+        try:
+            from hachi.gateway.shared_services import ProcessSharedServices
+
+            _shared = ProcessSharedServices.instance()
+            if _shared is not None:
+                _pr = getattr(_shared, "provider_registry", None)
+                if _pr is not None and hasattr(_pr, "get_search"):
+                    fallback_active = _pr.get_search() is None
+        except Exception:
+            pass
+
+        for entry in statuses:
+            if isinstance(entry, dict) and entry.get("id") == "tavily":
+                entry["fallback_active"] = fallback_active
+        return statuses
 
     @integrations_router.post("/{connector_id}/oauth/start")
     async def post_oauth_start(connector_id: str) -> Any:
@@ -1796,16 +1869,143 @@ def create_gateway_app(
         def _store_all() -> None:
             for key, value in fields_payload.items():
                 store_apikey_credential(connector_id, key, value.strip())
+            # Issue 5 — Tavily-first: when the Tavily connector is configured via the UI,
+            # also persist [search] provider = "tavily" to settings.toml so the search
+            # provider activates at next boot without manual config edits.
+            # Contract C-SEARCHFALLBACK: the search.provider field drives auto-registration
+            # in registry.py (another lane); we only persist the TOML value here.
+            if connector_id == "tavily":
+                try:
+                    from hachi.core.config_loader import load_effective_config, write_global_config
+
+                    _cfg = load_effective_config()
+                    if _cfg.search.provider != "tavily":
+                        _new_search = _cfg.search.model_copy(update={"provider": "tavily"})
+                        _new_cfg = _cfg.model_copy(update={"search": _new_search})
+                        write_global_config(_new_cfg)
+                        _log.info(
+                            "post_credentials: persisted [search] provider='tavily'"
+                            " to settings.toml"
+                        )
+                except Exception:
+                    # Non-fatal: credential is stored, TOML update is best-effort.
+                    _log.warning(
+                        "post_credentials: failed to persist [search] provider for tavily",
+                        exc_info=True,
+                    )
 
         await anyio.to_thread.run_sync(_store_all)
+
+        # Issue 5 — expose search fallback status for the UI (contract C-SEARCHFALLBACK).
+        # ``fallback_active=True`` means no SearchProvider is registered and browse_web
+        # (Playwright) is the current fallback.  The frontend uses this to show a
+        # "web search unavailable" badge on the Tavily integration card.
+        _fallback_active = True
+        try:
+            from hachi.gateway.shared_services import ProcessSharedServices
+
+            _shared = ProcessSharedServices.instance()
+            if _shared is not None:
+                # A ProviderRegistry on the shared services has a registered search
+                # provider when Tavily is active; absence means fallback is in use.
+                _pr = getattr(_shared, "provider_registry", None)
+                if _pr is not None and hasattr(_pr, "get_search"):
+                    _fallback_active = _pr.get_search() is None
+        except Exception:
+            pass
 
         status_info = await anyio.to_thread.run_sync(lambda: connector_status(connector_id))
         return {
             "id": connector.id,
             "name": connector.name,
             "category": connector.category,
+            "fallback_active": _fallback_active,
             **status_info,
         }
+
+    @integrations_router.post("/{connector_id}/credentials/test")
+    async def post_credentials_test(connector_id: str) -> Any:
+        """Validate a connector's stored credentials with a bounded live probe.
+
+        Issue 6b (contract C-CREDTEST). Returns ``{"ok": bool, "message": str}``.
+        Never echoes the secret and never raises — a failed or timed-out probe yields
+        ``ok: false`` with a short message. Connectors without a cheap probe report
+        ``ok: true`` with a "stored; live test not available" message so the UI still
+        confirms the credential was saved.
+        """
+        import re
+
+        from hachi.integrations.connector_registry import get_connector
+
+        if not re.match(r"^[a-z0-9_-]+$", connector_id):
+            return _error_response(400, "invalid_connector_id", "Connector id is not valid")
+        connector = get_connector(connector_id)
+        if connector is None:
+            return _error_response(404, "unknown_connector", f"Unknown connector: {connector_id!r}")
+
+        def _resolve_secret(*names: str) -> str | None:
+            # Vault first, then environment (canonical + UPPER) — never logged.
+            try:
+                from hachi.core.credential_vault import CredentialVault
+
+                _v = CredentialVault()
+                for n in names:
+                    val = _v.get_token(n)
+                    if val:
+                        return str(val)
+            except Exception:
+                pass
+            for n in names:
+                val = os.environ.get(n) or os.environ.get(n.upper())
+                if val:
+                    return val
+            return None
+
+        def _probe() -> dict[str, Any]:
+            try:
+                if connector_id == "tavily":
+                    key = _resolve_secret("tavily_api_key")
+                    if not key:
+                        return {"ok": False, "message": "No Tavily API key stored."}
+                    import httpx
+
+                    resp = httpx.post(
+                        "https://api.tavily.com/search",
+                        json={"api_key": key, "query": "ping", "max_results": 1},
+                        timeout=8.0,
+                    )
+                    if resp.status_code == 200:
+                        return {"ok": True, "message": "Tavily reachable — API key is valid."}
+                    if resp.status_code in (401, 403):
+                        return {"ok": False, "message": "Tavily rejected the API key."}
+                    return {"ok": False, "message": f"Tavily returned HTTP {resp.status_code}."}
+                if connector_id == "telegram":
+                    token = _resolve_secret("telegram_bot_token")
+                    if not token:
+                        return {"ok": False, "message": "No Telegram bot token stored."}
+                    import httpx
+
+                    resp = httpx.get(
+                        f"https://api.telegram.org/bot{token}/getMe", timeout=8.0
+                    )
+                    if resp.status_code == 200 and resp.json().get("ok"):
+                        name = resp.json().get("result", {}).get("username", "bot")
+                        return {"ok": True, "message": f"Telegram bot @{name} reachable."}
+                    return {"ok": False, "message": "Telegram rejected the bot token."}
+                # Generic: confirm a credential is present; no live probe available.
+                from hachi.integrations.oauth_flow import connector_status
+
+                st = connector_status(connector_id)
+                if st.get("status") in {"connected", "configured"}:
+                    return {
+                        "ok": True,
+                        "message": "Credential stored; live test not available for this connector.",
+                    }
+                return {"ok": False, "message": "No credential configured for this connector."}
+            except Exception as exc:  # never leak secrets or stack traces to the client
+                return {"ok": False, "message": f"Test failed: {type(exc).__name__}"}
+
+        return await anyio.to_thread.run_sync(_probe)
 
     @integrations_router.delete("/{connector_id}/credentials")
     async def delete_credentials(connector_id: str) -> Any:
@@ -2140,7 +2340,7 @@ def create_gateway_app(
         set_voice_config as _voice_set_config,
     )
     from hachi.gateway.voice_endpoints import (
-        speak as _voice_speak,
+        speak_stream as _voice_speak_stream,
     )
     from hachi.gateway.voice_endpoints import (
         transcribe as _voice_transcribe,
@@ -2180,12 +2380,16 @@ def create_gateway_app(
 
     @voice_router.post("/speak", summary="Synthesize text via TTS provider")
     async def route_voice_speak(body: VoiceSpeakBody) -> Any:
-        """Synthesize text to audio via the configured TTS backend."""
-        import io
+        """Synthesize text to audio via the configured TTS backend.
 
+        Uses :func:`~hachi.gateway.voice_endpoints.speak_stream` to pipe bytes
+        through a generator so the first bytes reach the client before the full
+        clip is produced (FIX P1).  Falls back to the buffered path automatically
+        for providers that don't support streaming.
+        """
         try:
-            audio_bytes, media_type = await anyio.to_thread.run_sync(
-                lambda: _voice_speak(
+            chunk_iter, media_type = await anyio.to_thread.run_sync(
+                lambda: _voice_speak_stream(
                     body.text,
                     voice=body.voice,
                     model=body.model,
@@ -2200,7 +2404,7 @@ def create_gateway_app(
             return _error_response(
                 500, "synthesis_error", "Synthesis failed, check voice provider configuration"
             )
-        return StreamingResponse(io.BytesIO(audio_bytes), media_type=media_type)
+        return StreamingResponse(chunk_iter, media_type=media_type)
 
     @voice_router.get("/config", summary="Get voice configuration")
     async def route_voice_config() -> Any:

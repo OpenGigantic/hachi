@@ -97,22 +97,27 @@ export async function transcribeAudio(blob: Blob): Promise<TranscribeResult> {
 /**
  * Synthesize text to speech and return a temporary object URL for playback.
  *
- * Sends a JSON POST to POST /voice/speak and wraps the response bytes
- * in a Blob object URL. The caller is responsible for revoking the URL
- * with `URL.revokeObjectURL(url)` once playback finishes.
+ * P1 streaming path: pipes `res.body` (ReadableStream) into a `MediaSource` +
+ * `SourceBuffer` so audio starts as bytes arrive — no full-blob wait.  Falls
+ * back to the blob path when MediaSource is unavailable or the codec is not
+ * supported by the browser.
+ *
+ * The caller must revoke the returned URL with `URL.revokeObjectURL(url)` after
+ * playback finishes.
  *
  * @param text - The text to synthesize.
  * @param opts - Optional overrides for voice, model, format, and provider.
- * @returns A temporary object URL pointing to the audio blob.
+ * @returns A temporary object URL that resolves to the audio (streaming or blob).
  * @throws ApiError on gateway/network errors.
  */
 export async function speakText(text: string, opts: SpeakOptions = {}): Promise<string> {
+  const fmt = opts.format ?? "mp3";
   const url = `${API_BASE}/voice/speak`;
   const body = {
     text,
     voice: opts.voice,
     model: opts.model,
-    format: opts.format ?? "mp3",
+    format: fmt,
     provider: opts.provider,
   };
 
@@ -138,9 +143,138 @@ export async function speakText(text: string, opts: SpeakOptions = {}): Promise<
   }
 
   const contentType = res.headers.get("Content-Type") ?? "audio/mpeg";
+
+  // --- P1: Try MediaSource streaming path first ---
+  const mediaSourceUrl = _tryStreamViaMediaSource(res, contentType);
+  if (mediaSourceUrl !== null) {
+    return mediaSourceUrl;
+  }
+
+  // --- Fallback: buffer the full blob (original behaviour) ---
   const audioBlob = await res.blob();
   const typedBlob = new Blob([audioBlob], { type: contentType });
   return URL.createObjectURL(typedBlob);
+}
+
+/**
+ * Attempt to pipe the fetch response stream into a MediaSource so playback
+ * starts as bytes arrive.  Returns the MediaSource object URL on success,
+ * or `null` when MediaSource / the codec is unsupported (caller falls back
+ * to blob path).
+ *
+ * @internal
+ */
+function _tryStreamViaMediaSource(res: Response, contentType: string): string | null {
+  // Guard: MediaSource must exist and the response must have a readable body.
+  if (
+    typeof MediaSource === "undefined" ||
+    !res.body ||
+    typeof MediaSource.isTypeSupported !== "function"
+  ) {
+    return null;
+  }
+
+  // Map gateway content-type to a MediaSource-compatible MIME string.
+  // MediaSource needs a codec hint for some formats.
+  const mimeMap: Record<string, string> = {
+    "audio/mpeg": "audio/mpeg",
+    "audio/mp3": "audio/mpeg",
+    "audio/ogg": "audio/ogg; codecs=opus",
+    "audio/ogg; codecs=opus": "audio/ogg; codecs=opus",
+    "audio/aac": "audio/aac",
+    "audio/flac": "audio/flac",
+    "audio/wav": "audio/wav",
+  };
+  const baseType = contentType.split(";")[0].trim().toLowerCase();
+  const mimeType = mimeMap[baseType] ?? mimeMap[contentType.toLowerCase()] ?? contentType;
+
+  if (!MediaSource.isTypeSupported(mimeType)) {
+    return null;
+  }
+
+  try {
+    const ms = new MediaSource();
+    const objectUrl = URL.createObjectURL(ms);
+
+    // Pipe the stream asynchronously; the caller gets the URL immediately.
+    ms.addEventListener(
+      "sourceopen",
+      () => {
+        let sb: SourceBuffer;
+        try {
+          sb = ms.addSourceBuffer(mimeType);
+        } catch {
+          // If addSourceBuffer fails (e.g. quota / codec mismatch) abandon the MS.
+          try {
+            ms.endOfStream("decode");
+          } catch { /* ignore */ }
+          return;
+        }
+
+        const reader = res.body!.getReader();
+        const appendQueue: Uint8Array[] = [];
+        let appending = false;
+        let streamDone = false;
+
+        function maybeEndStream() {
+          if (streamDone && appendQueue.length === 0 && !appending) {
+            try {
+              if (ms.readyState === "open") ms.endOfStream();
+            } catch { /* ignore */ }
+          }
+        }
+
+        function drainQueue() {
+          if (appending || appendQueue.length === 0) return;
+          const chunk = appendQueue.shift()!;
+          appending = true;
+          try {
+            // Cast: a Uint8Array is a valid BufferSource at runtime; the TS 5.7
+            // lib.dom types over-narrow to ArrayBuffer-backed views only.
+            sb.appendBuffer(chunk as unknown as BufferSource);
+          } catch {
+            // Buffer full or decode error — skip this chunk.
+            appending = false;
+            drainQueue();
+          }
+        }
+
+        sb.addEventListener("updateend", () => {
+          appending = false;
+          drainQueue();
+          maybeEndStream();
+        });
+
+        function pump(): void {
+          reader
+            .read()
+            .then(({ done, value }) => {
+              if (done) {
+                streamDone = true;
+                maybeEndStream();
+                return;
+              }
+              if (value) appendQueue.push(value);
+              drainQueue();
+              pump();
+            })
+            .catch(() => {
+              streamDone = true;
+              try {
+                if (ms.readyState === "open") ms.endOfStream("network");
+              } catch { /* ignore */ }
+            });
+        }
+
+        pump();
+      },
+      { once: true },
+    );
+
+    return objectUrl;
+  } catch {
+    return null;
+  }
 }
 
 /**

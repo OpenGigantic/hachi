@@ -110,12 +110,31 @@ class ChromaMemoryProvider(MemoryProvider):
         """Direct access to the underlying MemoryVault for tools that need it."""
         return self._vault
 
-    def initialize(self, brain_dir: str) -> None:
-        """Create a MemoryVault if one wasn't provided at construction time."""
+    def initialize(
+        self,
+        brain_dir: str,
+        *,
+        recall_distance_max: float | None = None,
+        core_memory_max_entries: int | None = None,
+    ) -> None:
+        """Create a MemoryVault if one wasn't provided at construction time.
+
+        Args:
+            brain_dir: Base directory for the ChromaDB persistent store.
+            recall_distance_max: Optional cosine-distance ceiling for recall
+                filtering (Issue 10). ``None`` keeps the MemoryVault default.
+            core_memory_max_entries: Optional soft cap on the ``core_memory``
+                collection (Issue 10). ``None`` keeps the MemoryVault default.
+        """
         if self._vault is None:
             from hachi.core.memory_vault import MemoryVault
 
-            self._vault = MemoryVault(brain_dir=brain_dir)
+            _kwargs: dict[str, Any] = {"brain_dir": brain_dir}
+            if recall_distance_max is not None:
+                _kwargs["recall_distance_max"] = recall_distance_max
+            if core_memory_max_entries is not None:
+                _kwargs["core_memory_max_entries"] = core_memory_max_entries
+            self._vault = MemoryVault(**_kwargs)
 
     def upsert(self, content: str, category: str = "workspace_state") -> str:
         """Delegate to MemoryVault.upsert_fact()."""

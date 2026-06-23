@@ -21,13 +21,16 @@ import bisect
 import json
 import logging
 import math
+import os
 import re
+import tempfile
 import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from hachi.core import og_history
 from hachi.core.paths import get_hachi_paths
 from hachi.og_engine.parser import (
     OGChangelogEntry,
@@ -1282,8 +1285,47 @@ class SkillEngine:
             nodes=[node],
         )
 
-        path.write_text(serialize_og_file(og), encoding="utf-8")
+        serialized = serialize_og_file(og)
+
+        # Atomic write: serialize to a sibling temp file then os.replace so a
+        # crash mid-write cannot leave a truncated/corrupt .og file on disk.
+        tmp_fd, tmp_path_str = tempfile.mkstemp(
+            prefix=f"_{slug}_", suffix=".og.tmp", dir=path.parent
+        )
+        _tmp_fd_closed = False
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+                fh.write(serialized)
+                _tmp_fd_closed = True  # os.fdopen context manager closed the fd
+            os.replace(tmp_path_str, path)
+        except Exception:
+            # Ensure the raw fd is closed before we try to unlink on Windows.
+            if not _tmp_fd_closed:
+                try:
+                    os.close(tmp_fd)
+                except OSError:
+                    pass
+            # Best-effort cleanup: remove the temp file if replace failed.
+            try:
+                Path(tmp_path_str).unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
         self.load_file(path)  # hot-load so the skill is usable immediately
+
+        # Record this revision in the append-only version history sidecar.
+        # history_dir sits at <skills_dir>/.og-history/ — outside agent-writable paths.
+        try:
+            og_history.record_version(
+                slug,
+                serialized,
+                author="agent",
+                summary=reason or ("updated" if is_update else "created"),
+                skills_dir=target_dir,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("og_history: failed to record version for %r: %s", slug, exc)
 
         # Lint the just-written skill and surface advisory feedback so the agent
         # can self-correct on its next refinement (the quality side of the
