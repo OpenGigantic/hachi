@@ -374,11 +374,22 @@ def _register_search_if_available(deps: Any) -> None:
     """
     registry = deps.provider_registry
     if registry is None:
+        logger.warning(
+            "search: web_search is UNAVAILABLE (no ProviderRegistry at boot). "
+            "browse_web/Playwright is the active fallback. "
+            "To enable Tavily: set TAVILY_API_KEY env var or configure "
+            "[search] provider = \"tavily\" in settings.toml, then restart."
+        )
         return
 
     provider = registry.get_search()
     if provider is None:
-        logger.debug("search: no SearchProvider in registry — tools not registered")
+        logger.warning(
+            "search: web_search is UNAVAILABLE (no SearchProvider registered). "
+            "browse_web/Playwright is the active fallback. "
+            "To enable Tavily: set TAVILY_API_KEY env var or configure "
+            "[search] provider = \"tavily\" in settings.toml, then restart."
+        )
         return
 
     from hachi.core.rate_limit import OutboundRateLimiter
@@ -983,16 +994,28 @@ class AgentSession:
         if agent_persona:
             parts.append(agent_persona)
 
-        # Top workspace facts (general context)
+        # Top workspace facts (general context).
+        # Issue 10: use get_recent_facts() instead of a biased semantic_search probe so
+        # the fixed query "important context" no longer skews which facts surface here.
+        # Contract C-RECENT: vault.get_recent_facts(collection="core_memory", limit=8) -> list[str]
         try:
-            top_facts = self.vault.semantic_search("important context", top_k=8)
-            if top_facts:
-                lines = [f"- {f['raw_content']}" for f in top_facts]
+            if hasattr(self.vault, "get_recent_facts"):
+                top_fact_texts: list[str] = self.vault.get_recent_facts(
+                    collection="core_memory", limit=8
+                )
+            else:
+                # Graceful fallback when another lane has not yet landed the contract.
+                raw_facts = self.vault.semantic_search("important context", top_k=8)
+                top_fact_texts = [
+                    f.get("raw_content", "") for f in raw_facts if f.get("raw_content")
+                ]
+            if top_fact_texts:
+                lines = [f"- {t}" for t in top_fact_texts if t]
                 parts.append("## Known Context\n" + "\n".join(lines))
         except Exception:
             # HIGH-012: vault recall failures must be visible, not silently dropped.
             logger.warning(
-                "_build_frozen_snapshot: vault semantic_search failed; "
+                "_build_frozen_snapshot: get_recent_facts failed; "
                 "workspace context will be absent this turn",
                 exc_info=True,
             )
@@ -1086,7 +1109,22 @@ class AgentSession:
         # Prefer the cheaper sub-agent client (a smaller model on Anthropic);
         # fall back to the main loop client when no sub-agent client is wired.
         client = getattr(self, "_sub_agent_client", None) or getattr(self.loop, "llm_client", None)
-        title = generate_title(user_input, assistant_response, llm_client=client)
+        # Issue 11 (contract C-TITLER-COST): pass cost_tracker so title-generation tokens are
+        # counted in the session's cumulative spend.  The titler signature gains an optional
+        # ``cost_tracker`` kwarg — another lane implements this; guarded with inspect so a
+        # missing parameter never breaks title generation.
+        _tracker = getattr(self.loop, "cost_tracker", None)
+        try:
+            import inspect as _inspect
+            _sig = _inspect.signature(generate_title)
+            if "cost_tracker" in _sig.parameters:
+                title = generate_title(
+                    user_input, assistant_response, llm_client=client, cost_tracker=_tracker
+                )
+            else:
+                title = generate_title(user_input, assistant_response, llm_client=client)
+        except Exception:
+            title = generate_title(user_input, assistant_response, llm_client=client)
         if self._session_store:
             try:
                 self._session_store.set_session_title(session_id, title)
@@ -1340,12 +1378,31 @@ class AgentSession:
                 self._title_generated = True
                 self._enqueue_title_job(self._session_id, user_input, response or "")
 
+        # Issue 9: populate the ``model`` field (contract C-MODEL) so the frontend
+        # can display the "last used model" badge without a separate API call.
+        _cost_snap = None
+        try:
+            _tracker = getattr(self.loop, "cost_tracker", None)
+            if _tracker is not None:
+                _cost_snap = _tracker.snapshot()
+        except Exception:
+            pass
+
         self._emit_event(
             SESSION_CHAT_COMPLETED,
             {
                 "turn_id": turn_id,
                 "session_id": self._session_id,
                 "response_preview": (response or "")[:180],
+                # C-MODEL: actual model id for the last turn (None before first turn).
+                "model": self.model_name or None,
+                # Token split for per-turn usage display.
+                "input_tokens": _cost_snap.input_tokens if _cost_snap else None,
+                "output_tokens": _cost_snap.output_tokens if _cost_snap else None,
+                "total_tokens": _cost_snap.total_tokens if _cost_snap else None,
+                "estimated_cost_usd": (
+                    round(_cost_snap.estimated_cost_usd, 6) if _cost_snap else None
+                ),
             },
         )
 
@@ -1477,9 +1534,15 @@ def _configure_mcp_servers(
     mcp_manager: MCPManager,
     gate: PermissionGate,
     emit: Callable[[str, dict[str, Any]], None],
+    config: dict[str, Any] | None = None,
 ):
-    """
-    Start MCP servers with permissions-aware configuration.
+    """Start MCP servers with permissions-aware configuration.
+
+    Issue 4: in addition to ``.og`` nodes with ``role=mcp``, also boots servers
+    declared under ``[mcp_servers]`` in ``settings.toml`` so API-registered
+    servers (written by ``POST /runtime/mcp/register``) survive a gateway restart.
+    Duplicate names (declared in both sources) are de-duped: the ``.og`` definition
+    takes precedence and the TOML entry is skipped.
 
     The filesystem MCP server's allowed directories are pulled dynamically from
     the PermissionGate instead of being hardcoded in mcp-services.og.
@@ -1489,8 +1552,16 @@ def _configure_mcp_servers(
         skill_engine: The loaded skill engine containing MCP node definitions.
         mcp_manager: The MCP manager to start servers on.
         gate: The PermissionGate loaded from device-permissions.og.
+        emit: Event emitter callback for boot-progress events.
+        config: Optional raw config dict (the same dict returned by
+            :func:`~hachi.gateway.workspace.load_config`).  When provided,
+            ``config.get("mcp_servers", {})`` entries are parsed and started
+            after the ``.og`` pass, subject to the same permission gate.
     """
     packs_root = str(get_hachi_paths().skills_dir / "packs")
+    # Track which server names were launched from .og nodes so TOML entries for
+    # the same name are skipped (de-dup: .og wins).
+    og_server_names: set[str] = set()
     for node in skill_engine.get_nodes_by_role("mcp"):
         emit(MCP_SERVER_STARTING, {"server": node.name})
         if node.name == "filesystem_mcp":
@@ -1525,6 +1596,7 @@ def _configure_mcp_servers(
 
         # Start the server (filesystem with dynamic paths, or other MCP servers unchanged)
         started = mcp_manager.setup_from_node(node)
+        og_server_names.add(node.name)
         if started:
             emit(
                 MCP_SERVER_READY,
@@ -1541,6 +1613,54 @@ def _configure_mcp_servers(
                     "reason": "startup failed",
                 },
             )
+
+    # Issue 4: load TOML [mcp_servers] entries so servers registered via the API
+    # (written to settings.toml by POST /runtime/mcp/register) survive a restart.
+    toml_mcp_entries: dict[str, Any] = {}
+    if config is not None:
+        _raw = config.get("mcp_servers")
+        if isinstance(_raw, dict):
+            toml_mcp_entries = _raw
+
+    for server_name, entry in toml_mcp_entries.items():
+        if not isinstance(entry, dict):
+            continue
+        if server_name in og_server_names:
+            # .og definition takes precedence — skip the TOML duplicate.
+            logger.debug(
+                "_configure_mcp_servers: TOML entry %r skipped (already started from .og)",
+                server_name,
+            )
+            continue
+        emit(MCP_SERVER_STARTING, {"server": server_name})
+        try:
+            cfg = MCPServerConfig.from_toml_entry(server_name, entry)
+        except Exception:
+            emit(MCP_SERVER_FAILED, {"server": server_name, "reason": "invalid TOML config"})
+            logger.warning(
+                "_configure_mcp_servers: failed to parse TOML entry for %r", server_name,
+                exc_info=True,
+            )
+            continue
+
+        # Apply the same permission gate as .og servers: all TOML-registered servers
+        # are treated as non-filesystem (they don't use the filesystem path override).
+        decision = gate.is_mcp_server_allowed(server_name, trusted=False)
+        if not decision.allowed:
+            emit(MCP_SERVER_FAILED, {"server": server_name, "reason": decision.reason})
+            continue
+
+        started = mcp_manager.setup_from_config(cfg)
+        if started:
+            emit(
+                MCP_SERVER_READY,
+                {
+                    "server": server_name,
+                    "tool_count": mcp_manager.get_server_tool_count(server_name),
+                },
+            )
+        else:
+            emit(MCP_SERVER_FAILED, {"server": server_name, "reason": "startup failed"})
 
 
 # ==========================================
@@ -2082,8 +2202,9 @@ def boot_agent(
     )
 
     # 4. Initialize MCP Manager (dynamically configured from permissions)
+    # Issue 4: pass the raw config dict so TOML [mcp_servers] entries are also started.
     mcp_manager = MCPManager()
-    _configure_mcp_servers(skill_engine, mcp_manager, gate, emit_runtime_event)
+    _configure_mcp_servers(skill_engine, mcp_manager, gate, emit_runtime_event, config=config)
     mcp_tool_count = mcp_manager.total_tool_count
 
     emit_runtime_event(
@@ -2242,7 +2363,17 @@ def boot_agent(
         _provider = ChromaMemoryProvider(vault=vault)
     else:
         _provider = resolve_provider(_memory_settings)
-        _provider.initialize(brain_dir=str(get_hachi_paths().data_dir))
+        # Issue 10: pass the recall-distance threshold and core-memory cap from the
+        # [memory] config into the ChromaDB vault so settings.toml actually controls
+        # retrieval behaviour. Non-Chroma backends keep the plain initialize() signature.
+        if isinstance(_provider, ChromaMemoryProvider):
+            _provider.initialize(
+                brain_dir=str(get_hachi_paths().data_dir),
+                recall_distance_max=_memory_settings.recall_distance_max,
+                core_memory_max_entries=_memory_settings.core_memory_max_entries,
+            )
+        else:
+            _provider.initialize(brain_dir=str(get_hachi_paths().data_dir))
         vault = _provider.vault if isinstance(_provider, ChromaMemoryProvider) else None
     memory.set_vault(vault)
 

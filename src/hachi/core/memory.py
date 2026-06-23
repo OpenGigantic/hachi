@@ -41,6 +41,69 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# FIX 4 — Write-quality gate helpers for auto-sync fact extraction.
+#
+# Trivial acknowledgements and extremely short strings carry no persistent
+# value and should not be written to the vault.  The filter is intentionally
+# permissive: it drops only facts that are clearly too short (< 12 chars) or
+# that match a small set of obvious one-word/two-word acknowledgements.
+#
+# The existing 30-char *combined* exchange gate in sync_turn already prevents
+# most trivial turns from reaching LLM extraction; this filter provides a
+# second line of defense against whatever short strings LLM extraction
+# occasionally emits despite the "do not extract transient status" instruction.
+# ---------------------------------------------------------------------------
+_MIN_FACT_LENGTH: int = 12  # characters
+
+_TRIVIAL_FACT_PATTERNS: frozenset[str] = frozenset(
+    {
+        "ok",
+        "okay",
+        "yes",
+        "no",
+        "sure",
+        "got it",
+        "thanks",
+        "thank you",
+        "understood",
+        "noted",
+        "alright",
+        "done",
+        "great",
+        "good",
+        "nice",
+        "cool",
+        "agreed",
+    }
+)
+
+
+def _is_substantive_fact(fact: str) -> bool:
+    """Return True when ``fact`` is worth persisting to the memory vault.
+
+    Rejects facts that are:
+    - Shorter than ``_MIN_FACT_LENGTH`` characters (after stripping whitespace).
+    - A single-/two-word acknowledgement in ``_TRIVIAL_FACT_PATTERNS``.
+
+    This guard is intentionally conservative — it only rejects *obviously*
+    trivial content.  The existing 30-char combined-exchange gate in
+    ``sync_turn`` already filters most short turns before LLM extraction runs.
+
+    Args:
+        fact: Candidate string extracted by the fact extraction LLM.
+
+    Returns:
+        True if the fact should be persisted, False if it should be skipped.
+    """
+    stripped = fact.strip()
+    if len(stripped) < _MIN_FACT_LENGTH:
+        return False
+    if stripped.lower() in _TRIVIAL_FACT_PATTERNS:
+        return False
+    return True
+
+
 # Estimated-token threshold above which prepare_for_turn() losslessly clears large,
 # re-fetchable tool outputs from older turns. Set high so ordinary short conversations
 # are never touched — only genuinely large contexts. Exposed at module level so tests
@@ -253,15 +316,15 @@ class MemoryManager:
         data = json.loads(text)
 
         for fact in data.get("user_facts", []):
-            if isinstance(fact, str) and len(fact) > 5:
+            if isinstance(fact, str) and _is_substantive_fact(fact):
                 self.vault.upsert_user_fact(fact)
 
         for fact in data.get("workspace_facts", []):
-            if isinstance(fact, str) and len(fact) > 5:
+            if isinstance(fact, str) and _is_substantive_fact(fact):
                 self.vault.upsert_fact(fact, category="auto_synced")
 
         for fact in data.get("agent_facts", []):
-            if isinstance(fact, str) and len(fact) > 5:
+            if isinstance(fact, str) and _is_substantive_fact(fact):
                 self.vault.upsert_agent_fact(fact)
 
         extracted = (
@@ -1089,7 +1152,7 @@ class MemoryManager:
 
         facts = json.loads(text)
         for fact in facts:
-            if isinstance(fact, str) and len(fact) > 5:
+            if isinstance(fact, str) and _is_substantive_fact(fact):
                 self.vault.upsert_fact(fact, category="auto_flushed_context")
 
     def _generate_structured_summary(self, messages: list) -> str:

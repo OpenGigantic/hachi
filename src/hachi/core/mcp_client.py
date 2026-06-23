@@ -936,6 +936,13 @@ class MCPServerConnection:
         self._id_lock = threading.Lock()
         self._tools: list[dict[str, Any]] = []
 
+        # Issue 4: per-server error tracking and transient loading state.
+        # _last_error is set when a server fails to start; status is exposed
+        # via get_inventory() so operator views can surface the failure reason.
+        self._last_error: str | None = None
+        # _loading is True while setup_from_config's boot thread is running.
+        self._loading: bool = False
+
         self._transport: MCPTransport = self._make_transport()
 
     def _make_transport(self) -> MCPTransport:
@@ -1016,11 +1023,9 @@ class MCPServerConnection:
         t.join(timeout=boot_timeout)
 
         if t.is_alive():
-            logger.warning(
-                "[mcp] %s: boot timed out after %.1fs (UC-DEV-001).",
-                self.name,
-                boot_timeout,
-            )
+            msg = f"boot timed out after {boot_timeout:.1f}s (UC-DEV-001)"
+            logger.warning("[mcp] %s: %s", self.name, msg)
+            self._last_error = msg
             # Kill subprocess if one was spawned
             try:
                 proc = self._process
@@ -1033,12 +1038,15 @@ class MCPServerConnection:
             return False
 
         if exc_holder:
-            logger.warning(
-                "[mcp] %s: unexpected error during boot: %s", self.name, exc_holder[0]
-            )
+            msg = str(exc_holder[0])
+            logger.warning("[mcp] %s: unexpected error during boot: %s", self.name, msg)
+            self._last_error = msg
             return False
 
-        return result_holder[0] if result_holder else False
+        success = result_holder[0] if result_holder else False
+        if not success and self._last_error is None:
+            self._last_error = "server failed to start (check command/url and server logs)"
+        return success
 
     def _start_inner(self) -> bool:
         """Run the MCP boot sequence (called inside the timed boot thread).
@@ -1369,6 +1377,11 @@ class MCPManager:
         API, the config is persisted and then this method is called to bring the
         server online without a gateway restart.
 
+        The server is registered immediately with ``_loading=True`` so that
+        :meth:`get_inventory` surfaces a transient "starting" status while the
+        boot thread runs.  Once boot completes the flag is cleared and the status
+        reflects the real outcome.
+
         Args:
             cfg: A fully populated :class:`MCPServerConfig`.
 
@@ -1386,10 +1399,19 @@ class MCPManager:
             url=cfg.url,
             headers=cfg.headers,
         )
-        if server.start():
-            self._servers[cfg.name] = server
-            return True
-        return False
+        # Mark as loading so inventory shows "starting" during boot.
+        server._loading = True
+        # Optimistically register so get_inventory returns an entry immediately.
+        self._servers[cfg.name] = server
+        try:
+            ok = server.start()
+        finally:
+            server._loading = False
+        if not ok:
+            # Keep the failed entry in _servers so get_inventory can surface the
+            # error; the gateway can call shutdown() to remove it if desired.
+            pass
+        return ok
 
     def register_tools(self, registry: ToolRegistry) -> None:
         """Register all discovered MCP tools into the Hachi ToolRegistry.
@@ -1466,22 +1488,40 @@ class MCPManager:
         """Return a structured MCP inventory snapshot for operator views.
 
         Each entry includes the server ``name``, ``transport``, ``status``,
-        ``tool_count``, and the list of tool names (``tools``).
+        ``tool_count``, the list of tool names (``tools``), and an optional
+        ``err`` string populated when the server failed to start (Issue 4).
+
+        Status values:
+          - ``"starting"`` — boot thread is still running (transient).
+          - ``"ready"``    — transport is alive and tools were discovered.
+          - ``"failed"``   — server failed to start; see ``err`` for reason.
+          - ``"stopped"``  — previously alive but transport is no longer alive.
 
         Returns:
             List of inventory dicts, one per registered server.
         """
         rows: list[dict[str, Any]] = []
         for name, server in self._servers.items():
-            rows.append(
-                {
-                    "name": name,
-                    "transport": server.transport_kind,
-                    "status": "ready" if server.is_alive else "stopped",
-                    "tool_count": len(server.tools),
-                    "tools": [tool.get("name", "") for tool in server.tools if tool.get("name")],
-                }
-            )
+            loading = getattr(server, "_loading", False)
+            last_err: str | None = getattr(server, "_last_error", None)
+            if loading:
+                status = "starting"
+            elif server.is_alive:
+                status = "ready"
+            elif last_err is not None:
+                status = "failed"
+            else:
+                status = "stopped"
+
+            entry: dict[str, Any] = {
+                "name": name,
+                "transport": server.transport_kind,
+                "status": status,
+                "tool_count": len(server.tools),
+                "tools": [tool.get("name", "") for tool in server.tools if tool.get("name")],
+                "err": last_err,
+            }
+            rows.append(entry)
         return rows
 
     @property

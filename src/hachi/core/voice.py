@@ -282,15 +282,36 @@ class VoiceError(RuntimeError):
     """Raised when a voice backend is misconfigured or rejects the request."""
 
 
+def _get_shared_http_client() -> Any:
+    """Return a lazily-created module-level httpx.Client (reuses TCP/TLS connections).
+
+    Never called at import time — only on the first actual request.  The 60-second
+    per-request timeout replaces the old 120-second one; the circuit-breaker in
+    :mod:`hachi.core.resilience` provides the outer retry/abort boundary.
+    """
+    import httpx
+
+    global _shared_http_client  # noqa: PLW0603
+    if _shared_http_client is None:
+        _shared_http_client = httpx.Client(
+            timeout=60.0,
+            follow_redirects=False,
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        )
+    return _shared_http_client
+
+
+# Module-level shared client — None until the first voice call.
+_shared_http_client: Any = None
+
+
 def _default_transcriber(
     url: str, file_bytes: bytes, filename: str, form_data: dict[str, str], headers: dict[str, str]
 ) -> tuple[int, str]:
-    import httpx
-
+    client = _get_shared_http_client()
     files = {"file": (filename, file_bytes)}
-    with httpx.Client(timeout=120.0, follow_redirects=False) as client:
-        resp = client.post(url, files=files, data=form_data, headers=headers)
-        return resp.status_code, resp.text
+    resp = client.post(url, files=files, data=form_data, headers=headers)
+    return resp.status_code, resp.text
 
 
 class SpeechToText:
@@ -373,11 +394,9 @@ class SpeechToText:
 def _default_synthesizer(
     url: str, payload: dict[str, object], headers: dict[str, str]
 ) -> tuple[int, bytes]:
-    import httpx
-
-    with httpx.Client(timeout=120.0, follow_redirects=False) as client:
-        resp = client.post(url, json=payload, headers=headers)
-        return resp.status_code, resp.content
+    client = _get_shared_http_client()
+    resp = client.post(url, json=payload, headers=headers)
+    return resp.status_code, resp.content
 
 
 class TextToSpeech:

@@ -1,12 +1,51 @@
-// SpendSection — per-task and daily spend caps + today's spend bar.
-// Caps now persist live on commit (Enter / blur) via PUT /config/limits, so the
-// old page-level "Save" button is gone — every Settings change saves on its own.
+// SpendSection — per-task and daily spend caps + today's spend bar + breakdown.
+// Caps persist live on commit (Enter / blur) via PUT /config/limits.
+// FIX 4: breakdown section fetches /spend and /spend/daily for per-model,
+// per-modality, per-session, and cumulative data (C-SPEND).
 
 import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../../lib/store/store';
 import { Icon } from '../../icons/Icon';
 import { setLimitsLive } from '../../../lib/data/domains/config';
 import { cardStyle, sectionHeadingStyle, PanelHeader } from '../shared';
+import { apiGet } from '../../../lib/data/client';
+
+// ---- C-SPEND contract shapes (backend may not expose all fields yet) ----
+
+interface CSpendModel {
+  model: string;
+  cost_usd: number;
+  input_tokens?: number;
+  output_tokens?: number;
+}
+
+interface CSpendModalities {
+  text?: number;
+  voice?: number;
+  [key: string]: number | undefined;
+}
+
+interface CSpendSession {
+  session_id?: string;
+  cost_usd?: number;
+  turns?: number;
+}
+
+interface CSpendResponse {
+  // per-model breakdown (C-SPEND)
+  models?: CSpendModel[];
+  // per-modality breakdown (C-SPEND)
+  modalities?: CSpendModalities;
+  // per-session
+  session?: CSpendSession;
+  // cumulative all-time
+  cumulative_usd?: number;
+  // legacy fields still present (don't break existing loading)
+  turns?: unknown[];
+  tidies?: unknown[];
+}
+
+// ---- SpendCapInput ----
 
 interface SpendCapInputProps {
   label: string;
@@ -115,6 +154,188 @@ function SpendCapInput({ label, value, onCommit }: SpendCapInputProps) {
   );
 }
 
+// ---- SpendBreakdown ----
+
+interface SpendBreakdownProps {
+  data: CSpendResponse | null;
+  loading: boolean;
+}
+
+function usd(v: number | undefined): string {
+  if (v == null) return '—';
+  return `$${v.toFixed(4)}`;
+}
+
+function tok(v: number | undefined): string {
+  if (v == null) return '—';
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
+  return String(v);
+}
+
+const tableHeadStyle: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 500,
+  color: 'var(--hachi-muted)',
+  textTransform: 'uppercase',
+  letterSpacing: '0.04em',
+  padding: '6px 0',
+  borderBottom: '0.5px solid var(--hachi-line)',
+};
+
+const tableCellStyle: React.CSSProperties = {
+  fontSize: 12.5,
+  padding: '7px 0',
+  borderBottom: '0.5px solid var(--hachi-line)',
+  fontFamily: 'var(--font-mono)',
+  color: 'var(--hachi-ink)',
+};
+
+const tableLastCellStyle: React.CSSProperties = {
+  ...tableCellStyle,
+  borderBottom: 'none',
+};
+
+function SpendBreakdown({ data, loading }: SpendBreakdownProps) {
+  if (loading) {
+    return (
+      <div style={{ fontSize: 12, color: 'var(--hachi-muted)', padding: '8px 0' }}>
+        Loading breakdown…
+      </div>
+    );
+  }
+
+  const hasModels = Array.isArray(data?.models) && data!.models!.length > 0;
+  const modalities = data?.modalities ?? null;
+  const hasModalities = modalities != null && Object.keys(modalities).length > 0;
+  const hasCumulative = typeof data?.cumulative_usd === 'number';
+  const hasSession = data?.session != null;
+
+  if (!hasModels && !hasModalities && !hasCumulative && !hasSession) {
+    return (
+      <div style={{ fontSize: 12, color: 'var(--hachi-muted)', fontStyle: 'italic' }}>
+        No breakdown data yet — start a conversation to see per-model costs.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+      {/* Per-model */}
+      {hasModels && (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--hachi-muted)', marginBottom: 6 }}>
+            Per model (today)
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th style={{ ...tableHeadStyle, textAlign: 'left' }}>Model</th>
+                <th style={{ ...tableHeadStyle, textAlign: 'right' }}>In</th>
+                <th style={{ ...tableHeadStyle, textAlign: 'right' }}>Out</th>
+                <th style={{ ...tableHeadStyle, textAlign: 'right' }}>Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data!.models!.map((row, idx) => {
+                const isLast = idx === data!.models!.length - 1;
+                const cell: React.CSSProperties = isLast ? tableLastCellStyle : tableCellStyle;
+                return (
+                  <tr key={row.model}>
+                    <td style={{ ...cell, fontFamily: 'var(--font-body)', fontWeight: 500, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {row.model}
+                    </td>
+                    <td style={{ ...cell, textAlign: 'right', color: 'var(--hachi-muted)' }}>{tok(row.input_tokens)}</td>
+                    <td style={{ ...cell, textAlign: 'right', color: 'var(--hachi-muted)' }}>{tok(row.output_tokens)}</td>
+                    <td style={{ ...cell, textAlign: 'right' }}>{usd(row.cost_usd)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Per-modality */}
+      {hasModalities && (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--hachi-muted)', marginBottom: 6 }}>
+            By modality (today)
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            {Object.entries(modalities!).map(([key, val]) => (
+              val != null && (
+                <div
+                  key={key}
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 2,
+                    background: 'var(--hachi-canvas)',
+                    border: '0.5px solid var(--hachi-line)',
+                    borderRadius: 9,
+                    padding: '7px 14px',
+                    minWidth: 80,
+                  }}
+                >
+                  <span style={{ fontSize: 11, color: 'var(--hachi-muted)', textTransform: 'capitalize' }}>
+                    {key}
+                  </span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 500 }}>
+                    {usd(val)}
+                  </span>
+                </div>
+              )
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Session + cumulative */}
+      {(hasSession || hasCumulative) && (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          {hasSession && typeof data!.session!.cost_usd === 'number' && (
+            <div
+              style={{
+                display: 'flex', flexDirection: 'column', gap: 2,
+                background: 'var(--hachi-canvas)', border: '0.5px solid var(--hachi-line)',
+                borderRadius: 9, padding: '7px 14px', minWidth: 110,
+              }}
+            >
+              <span style={{ fontSize: 11, color: 'var(--hachi-muted)' }}>This session</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 500 }}>
+                {usd(data!.session!.cost_usd)}
+              </span>
+              {typeof data!.session!.turns === 'number' && (
+                <span style={{ fontSize: 11, color: 'var(--hachi-muted)' }}>
+                  {data!.session!.turns} turn{data!.session!.turns !== 1 ? 's' : ''}
+                </span>
+              )}
+            </div>
+          )}
+          {hasCumulative && (
+            <div
+              style={{
+                display: 'flex', flexDirection: 'column', gap: 2,
+                background: 'var(--hachi-canvas)', border: '0.5px solid var(--hachi-line)',
+                borderRadius: 9, padding: '7px 14px', minWidth: 110,
+              }}
+            >
+              <span style={{ fontSize: 11, color: 'var(--hachi-muted)' }}>All time</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 500 }}>
+                {usd(data!.cumulative_usd)}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- Main component ----
+
 export default function SpendSection() {
   const spent = useStore((s) => s.spent);
   const budget = useStore((s) => s.budget);
@@ -124,8 +345,26 @@ export default function SpendSection() {
   const setDailyCap = useStore((s) => s.setDailyCap);
   const showToast = useStore((s) => s.showToast);
 
-  // Persist both caps to the gateway; report failure honestly. Reads the latest
-  // caps from the store so we always send a consistent pair.
+  // C-SPEND breakdown data fetched locally (not in store).
+  const [breakdownData, setBreakdownData] = useState<CSpendResponse | null>(null);
+  const [breakdownLoading, setBreakdownLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setBreakdownLoading(true);
+    apiGet<CSpendResponse>('/spend')
+      .then((data) => {
+        if (!cancelled) setBreakdownData(data ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setBreakdownData(null);
+      })
+      .finally(() => {
+        if (!cancelled) setBreakdownLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   async function persistLimits() {
     const s = useStore.getState();
     try {
@@ -193,6 +432,17 @@ export default function SpendSection() {
         <div style={{ fontSize: 13, color: 'var(--hachi-muted)' }}>
           What's costing money: model calls {spentStr} · tools $0.00
         </div>
+      </div>
+
+      {/* C-SPEND breakdown */}
+      <div style={cardStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 14 }}>
+          <span style={{ color: 'var(--hachi-ink)', display: 'inline-flex' }}>
+            <Icon name="bar-chart" size={17} />
+          </span>
+          <h3 style={sectionHeadingStyle}>Breakdown</h3>
+        </div>
+        <SpendBreakdown data={breakdownData} loading={breakdownLoading} />
       </div>
     </div>
   );

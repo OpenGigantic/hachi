@@ -134,7 +134,20 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=
                     for s_content in data.get("save_contents", [content]):
                         vault.upsert_fact(s_content, category)
                 except Exception:
-                    vault.upsert_fact(content, category)
+                    # FIX 3: Do NOT fall back to a bare upsert_fact here.
+                    # The bare fallback bypassed _smart_upsert consolidation/dedup
+                    # on any exception (e.g. LLM error, JSON parse failure) and
+                    # silently wrote the raw compound fact — creating near-duplicate
+                    # entries that _smart_upsert was designed to prevent.
+                    # Log at WARNING so operators can diagnose consolidation failures,
+                    # but skip the write so we never create a known near-duplicate.
+                    logger.warning(
+                        "_smart_upsert: consolidation failed for fact %.80r — "
+                        "skipping write to avoid near-duplicate. "
+                        "Retry core_save_memory to persist this fact.",
+                        content,
+                        exc_info=True,
+                    )
 
         job_id = _enqueue_memory_job("memory_smart_upsert", _smart_upsert, (facts,))
         if job_id is None:

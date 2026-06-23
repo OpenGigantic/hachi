@@ -14,6 +14,12 @@ export interface paths {
         /**
          * Get Integrations
          * @description List all connectors with their auth_type, configured, connected, and status fields.
+         *
+         *     Issue 5: the Tavily/search connector entry also carries ``fallback_active``
+         *     (True when no web_search provider is registered, so browse_web/Playwright is the
+         *     active fallback). The frontend reads this off GET /integrations to show a
+         *     "web search unavailable — using Playwright fallback" notice. Computed here so
+         *     GET /integrations and the POST /credentials response agree.
          */
         get: operations["get_integrations_integrations_get"];
         put?: never;
@@ -108,6 +114,32 @@ export interface paths {
          *     Returns HTTP 422 if the connector is not an apikey connector.
          */
         delete: operations["delete_credentials_integrations__connector_id__credentials_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/{connector_id}/credentials/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Credentials Test
+         * @description Validate a connector's stored credentials with a bounded live probe.
+         *
+         *     Issue 6b (contract C-CREDTEST). Returns ``{"ok": bool, "message": str}``.
+         *     Never echoes the secret and never raises — a failed or timed-out probe yields
+         *     ``ok: false`` with a short message. Connectors without a cheap probe report
+         *     ``ok: true`` with a "stored; live test not available" message so the UI still
+         *     confirms the credential was saved.
+         */
+        post: operations["post_credentials_test_integrations__connector_id__credentials_test_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -295,6 +327,32 @@ export interface paths {
         put?: never;
         /** Post Message */
         post: operations["post_message_sessions__session_id__messages_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sessions/cleanup-empty": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cleanup Empty Sessions
+         * @description Delete all empty sessions (no messages) from the SQLite store.
+         *
+         *     Safe to call at any time.  Sessions that are currently booting (in-memory
+         *     but with no messages yet) are not affected — they have no DB row yet.
+         *
+         *     Returns:
+         *         ``{"removed": <count>}`` — the number of rows deleted.
+         */
+        post: operations["cleanup_empty_sessions_sessions_cleanup_empty_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1487,6 +1545,11 @@ export interface paths {
         /**
          * Synthesize text via TTS provider
          * @description Synthesize text to audio via the configured TTS backend.
+         *
+         *     Uses :func:`~hachi.gateway.voice_endpoints.speak_stream` to pipe bytes
+         *     through a generator so the first bytes reach the client before the full
+         *     clip is produced (FIX P1).  Falls back to the buffered path automatically
+         *     for providers that don't support streaming.
          */
         post: operations["route_voice_speak_voice_speak_post"];
         delete?: never;
@@ -2099,6 +2162,44 @@ export interface operations {
             };
         };
     };
+    post_credentials_test_integrations__connector_id__credentials_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_oauth_callback_integrations_oauth_callback_get: {
         parameters: {
             query?: {
@@ -2509,6 +2610,33 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    cleanup_empty_sessions_sessions_cleanup_empty_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

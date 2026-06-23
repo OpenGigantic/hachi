@@ -85,6 +85,14 @@ class MemorySettings(BaseModel):
     backend: MemoryBackend = "chroma"
     # P2-04: M0 — FTS5 index over memory/*.og files, merged via RRF with Chroma.
     graph: bool = False
+    # Issue 10 — retrieval-quality controls, consumed by MemoryVault:
+    #   recall_distance_max: cosine-distance ceiling in [0, 2]; per-turn recall results
+    #     above it are dropped so unrelated facts are never injected into context.
+    #     Set to None to disable the filter (legacy "top-k always" behaviour). Default 0.85.
+    #   core_memory_max_entries: soft cap on the core_memory collection; oldest entries
+    #     are pruned once exceeded so the store cannot grow unbounded. Default 1000.
+    recall_distance_max: float | None = 0.85
+    core_memory_max_entries: int = 1000
 
 
 class LimitsSettings(BaseModel):
@@ -234,10 +242,10 @@ class VoiceSettings(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    stt_model: str | None = None
+    stt_model: str = "whisper-1"
     stt_base_url: str | None = None
     stt_api_key_env: str | None = None
-    tts_model: str | None = None
+    tts_model: str = "tts-1"
     tts_base_url: str | None = None
     tts_api_key_env: str | None = None
     tts_voice: str | None = None
@@ -249,6 +257,8 @@ class VoiceSettings(BaseModel):
     # ElevenLabs (TTS only) — used when ``tts_provider == "elevenlabs"``.
     elevenlabs_api_key_env: str | None = None
     elevenlabs_voice_id: str | None = None
+    # ElevenLabs model id. Defaults to eleven_turbo_v2_5 (low-latency, high quality).
+    elevenlabs_model: str = "eleven_turbo_v2_5"
 
 
 class RoutingSettings(BaseModel):

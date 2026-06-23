@@ -38,6 +38,118 @@ describe('Markdown — recursion / inline parsing', () => {
   })
 })
 
+// Fenced code block rendering
+describe('Markdown — fenced code blocks', () => {
+  it('renders a fenced code block as <pre><code>, not inline', () => {
+    const html = renderToString(
+      <Markdown text={'Run this:\n```\nhachi setup --tier enhanced\n```\nDone.'} />
+    )
+    expect(html).toContain('<pre')
+    expect(html).toContain('<code')
+    expect(html).toContain('hachi setup --tier enhanced')
+    // Code content must be inside <pre>, not in a bare <p>
+    expect(html).toMatch(/<pre[^>]*>[\s\S]*hachi setup --tier enhanced[\s\S]*<\/pre>/)
+  })
+
+  it('captures the language tag and renders the display label', () => {
+    const html = renderToString(
+      <Markdown text={'```python\nprint("hello")\n```'} />
+    )
+    expect(html).toContain('Python')
+    expect(html).toContain('print')
+  })
+
+  it('renders the Run button only for runnable languages', () => {
+    const pyHtml = renderToString(<Markdown text={'```python\nx = 1\n```'} />)
+    expect(pyHtml).toContain('Run')
+
+    const shHtml = renderToString(<Markdown text={'```bash\necho hello\n```'} />)
+    expect(shHtml).not.toContain('Run')
+  })
+
+  it('handles unclosed fenced block (streaming partial input) with isStreaming', () => {
+    // During streaming, an unclosed fence must render as a styled code block
+    const html = renderToString(<Markdown text={'```python\ndef foo():\n    return 1'} isStreaming />)
+    expect(html).toContain('<pre')
+    // Syntax highlighter splits tokens into spans — check tokens individually
+    expect(html).toContain('def')
+    expect(html).toContain('foo')
+    expect(html).toContain('return')
+  })
+
+  it('text before and after code block renders as paragraphs', () => {
+    const html = renderToString(
+      <Markdown text={'Before\n```js\nconsole.log(1)\n```\nAfter'} />
+    )
+    expect(html).toContain('Before')
+    expect(html).toContain('After')
+    // Syntax highlighter splits "console" and "log" into separate spans
+    expect(html).toContain('console')
+    expect(html).toContain('log')
+  })
+})
+
+// Streaming mode — FIX 1 tests
+describe('Markdown — streaming / isStreaming prop (FIX 1)', () => {
+  it('(a) unclosed fence with isStreaming renders a styled <pre> container, not bare text', () => {
+    // Text has an opening ``` fence but no closing fence — simulates mid-stream code block.
+    const html = renderToString(
+      <Markdown text={"```python\ndef f():"} isStreaming />
+    )
+    // The styled code-block container (<pre>) must be present
+    expect(html).toContain('<pre')
+    // The partial code content should be inside it
+    expect(html).toContain('def')
+    expect(html).toContain('f')
+    // Must NOT render as a bare paragraph / text blob (no <pre> would indicate that)
+    expect(html).not.toMatch(/```python[\s\S]*?def f\(\):<\/p>/)
+  })
+
+  it('(b) transitioning from streaming to done produces the same <pre> structure — stable key means no remount', () => {
+    // Both streaming and done should produce a code block for a *closed* fence.
+    // The block `key` is `b<index>` which is identical in both renders,
+    // so React reuses the DOM node rather than unmounting/remounting.
+    // We verify structural equivalence: same outer element, same code content.
+    const codeText = "```python\ndef f():\n    return 1\n```"
+
+    const htmlStreaming = renderToString(<Markdown text={codeText} isStreaming />)
+    const htmlDone = renderToString(<Markdown text={codeText} isStreaming={false} />)
+
+    // Both should contain a <pre> (code block chrome)
+    expect(htmlStreaming).toContain('<pre')
+    expect(htmlDone).toContain('<pre')
+
+    // Both should contain the code content tokens
+    expect(htmlStreaming).toContain('def')
+    expect(htmlDone).toContain('def')
+
+    // The wrapping div structure is the same — React will reconcile rather than remount
+    // (the block key `b0` appears in both renders as the same element type)
+    // We check that both renders emit the code block with the same lang label
+    expect(htmlStreaming).toContain('Python')
+    expect(htmlDone).toContain('Python')
+  })
+
+  it('unclosed fence without isStreaming renders as paragraph (no <pre> block)', () => {
+    // When streaming is false and the fence is unclosed, we fall back to paragraph text.
+    // The backtick line is rendered as inline code markup inside a <p>, NOT a styled <pre>.
+    const html = renderToString(
+      <Markdown text={"```python\ndef f():"} isStreaming={false} />
+    )
+    // Must NOT produce a styled code-block <pre>
+    expect(html).not.toContain('<pre')
+    // Content tokens should still be present (as inline/paragraph text)
+    expect(html).toContain('def')
+    expect(html).toContain('f')
+  })
+
+  it('empty text renders a container with min-height (no collapse to zero)', () => {
+    const html = renderToString(<Markdown text="" />)
+    // The wrapping div must have minHeight set (anti-FOUC)
+    expect(html).toContain('min-height')
+  })
+})
+
 // Security regression tests — HACHI-001 (DOM XSS via unsanitized link hrefs).
 // These guard against javascript:, data:, and other dangerous URL schemes being
 // rendered as live <a href> attributes. If any of these fail, the XSS fix has

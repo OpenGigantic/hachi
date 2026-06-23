@@ -101,8 +101,10 @@ class TestConnectorRegistry:
             assert conn.client_id_env, f"{conn.id} missing client_id_env"
 
     def test_is_configured_false_without_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Ensure the env var is absent.
+        # Ensure the env var is absent — including the legacy bare-name alias
+        # (GOOGLE_CLIENT_ID) that is_configured() now also honours (Issue 6a).
         monkeypatch.delenv("HACHI_OAUTH_GOOGLE_CLIENT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
         c = get_connector("google")
         assert c is not None
         assert not c.is_configured()
@@ -224,6 +226,7 @@ class TestOAuthStart:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("HACHI_OAUTH_GOOGLE_CLIENT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
         with pytest.raises(LookupError, match="not configured"):
             oauth_start("google")
 
@@ -460,6 +463,7 @@ class TestIntegrationsRoutes:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("HACHI_OAUTH_GOOGLE_CLIENT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
         resp = self._client().post("/integrations/google/oauth/start")
         assert resp.status_code == 409
         assert resp.json()["code"] == "credentials_not_configured"

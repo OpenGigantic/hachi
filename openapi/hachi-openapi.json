@@ -11,7 +11,7 @@
           "integrations"
         ],
         "summary": "Get Integrations",
-        "description": "List all connectors with their auth_type, configured, connected, and status fields.",
+        "description": "List all connectors with their auth_type, configured, connected, and status fields.\n\nIssue 5: the Tavily/search connector entry also carries ``fallback_active``\n(True when no web_search provider is registered, so browse_web/Playwright is the\nactive fallback). The frontend reads this off GET /integrations to show a\n\"web search unavailable \u2014 using Playwright fallback\" notice. Computed here so\nGET /integrations and the POST /credentials response agree.",
         "operationId": "get_integrations_integrations_get",
         "responses": {
           "200": {
@@ -224,6 +224,57 @@
               "application/json": {
                 "schema": {
                   "title": "Response Delete Credentials Integrations  Connector Id  Credentials Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/integrations/{connector_id}/credentials/test": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Post Credentials Test",
+        "description": "Validate a connector's stored credentials with a bounded live probe.\n\nIssue 6b (contract C-CREDTEST). Returns ``{\"ok\": bool, \"message\": str}``.\nNever echoes the secret and never raises \u2014 a failed or timed-out probe yields\n``ok: false`` with a short message. Connectors without a cheap probe report\n``ok: true`` with a \"stored; live test not available\" message so the UI still\nconfirms the credential was saved.",
+        "operationId": "post_credentials_test_integrations__connector_id__credentials_test_post",
+        "parameters": [
+          {
+            "name": "connector_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Connector Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Credentials Test Integrations  Connector Id  Credentials Test Post"
                 }
               }
             }
@@ -788,6 +839,36 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/sessions/cleanup-empty": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Cleanup Empty Sessions",
+        "description": "Delete all empty sessions (no messages) from the SQLite store.\n\nSafe to call at any time.  Sessions that are currently booting (in-memory\nbut with no messages yet) are not affected \u2014 they have no DB row yet.\n\nReturns:\n    ``{\"removed\": <count>}`` \u2014 the number of rows deleted.",
+        "operationId": "cleanup_empty_sessions_sessions_cleanup_empty_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Cleanup Empty Sessions Sessions Cleanup Empty Post"
                 }
               }
             }
@@ -3790,7 +3871,7 @@
           "voice"
         ],
         "summary": "Synthesize text via TTS provider",
-        "description": "Synthesize text to audio via the configured TTS backend.",
+        "description": "Synthesize text to audio via the configured TTS backend.\n\nUses :func:`~hachi.gateway.voice_endpoints.speak_stream` to pipe bytes\nthrough a generator so the first bytes reach the client before the full\nclip is produced (FIX P1).  Falls back to the buffered path automatically\nfor providers that don't support streaming.",
         "operationId": "route_voice_speak_voice_speak_post",
         "requestBody": {
           "content": {

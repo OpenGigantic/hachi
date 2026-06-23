@@ -16,6 +16,7 @@ import {
   loadConversationHistory,
   abortSseLive,
   deleteSessionLive,
+  cleanupEmptySessionsLive,
 } from '../lib/data/domains/chat'
 import {
   uploadFile,
@@ -42,10 +43,11 @@ interface SessionPickerProps {
   onSwitch: (id: string) => void
   onNew: () => void
   onDelete: (id: string) => void
+  onCleanupEmpty: () => void
   onClose: () => void
 }
 
-function SessionPicker({ sessions, activeId, onSwitch, onNew, onDelete, onClose }: SessionPickerProps) {
+function SessionPicker({ sessions, activeId, onSwitch, onNew, onDelete, onCleanupEmpty, onClose }: SessionPickerProps) {
   const ref = useRef<HTMLDivElement>(null)
 
   // Close on outside click
@@ -115,13 +117,13 @@ function SessionPicker({ sessions, activeId, onSwitch, onNew, onDelete, onClose 
         New conversation
       </button>
 
-      {/* Session list */}
-      {sessions.length === 0 && (
+      {/* Session list — FIX 3: filter out obviously-empty unnamed sessions (0 turns, no title) */}
+      {sessions.filter((s) => !(s.turns === 0 && (s.title === 'Unnamed session' || !s.title))).length === 0 && (
         <div style={{ padding: '12px 14px', fontSize: 13, color: 'var(--hachi-muted)' }}>
           No recent sessions
         </div>
       )}
-      {sessions.map((s) => {
+      {sessions.filter((s) => !(s.turns === 0 && (s.title === 'Unnamed session' || !s.title))).map((s) => {
         const isActive = s.id === activeId
         return (
           <div
@@ -201,6 +203,33 @@ function SessionPicker({ sessions, activeId, onSwitch, onNew, onDelete, onClose 
           </div>
         )
       })}
+
+      {/* FIX 3: Clean up empty sessions affordance */}
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => { onCleanupEmpty(); onClose() }}
+        style={{
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          padding: '10px 14px',
+          border: 'none',
+          borderTop: '0.5px solid var(--hachi-line)',
+          background: 'transparent',
+          cursor: 'pointer',
+          textAlign: 'left',
+          font: 'inherit',
+          fontSize: 12,
+          color: 'var(--hachi-muted)',
+        }}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)' }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
+      >
+        <Icon name="trash" size={12} />
+        Clean up empty sessions
+      </button>
     </div>
   )
 }
@@ -795,11 +824,12 @@ interface MessageItemProps {
   isStreaming: boolean
   operator: boolean
   onRetry?: () => void
+  lastUsedModel?: string | null
 }
 
 // Wrapped in React.memo so that updating the last streaming message text does
 // NOT re-render every prior (stable) message in the list.
-const MessageItem = memo(function MessageItem({ msg, isLast, isStreaming, operator, onRetry }: MessageItemProps) {
+const MessageItem = memo(function MessageItem({ msg, isLast, isStreaming, operator, onRetry, lastUsedModel }: MessageItemProps) {
   const isYou = msg.role === 'you'
   const isHachi = msg.role === 'hachi'
   const showCursor = isStreaming && isHachi && isLast
@@ -926,17 +956,32 @@ const MessageItem = memo(function MessageItem({ msg, isLast, isStreaming, operat
               minWidth: 0,
             }}
           >
-            {showCursor ? (
-              <StreamingText text={msg.text} />
-            ) : (
-              <Markdown text={msg.text} />
-            )}
+            {/* FIX 1: always render Markdown (even during streaming) so the DOM
+                node is stable across the streaming→done transition (no remount/FOUC).
+                The isStreaming prop tells the parser to treat unclosed fences as valid
+                code blocks so the chrome appears immediately. */}
+            <Markdown text={msg.text} isStreaming={showCursor} />
             {showCursor && <StreamingCursor />}
           </div>
 
           {/* TTS speak button — only on completed messages with text */}
           {!showCursor && msg.text && !isError && (
             <TtsButton text={msg.text} />
+          )}
+
+          {/* FIX 4: last-used model badge — only on final completed assistant message */}
+          {!showCursor && isLast && lastUsedModel && (
+            <div
+              style={{
+                fontSize: 11,
+                color: 'var(--hachi-muted)',
+                opacity: 0.7,
+                fontFamily: 'var(--font-mono, monospace)',
+                letterSpacing: '0.01em',
+              }}
+            >
+              via {lastUsedModel}
+            </div>
           )}
 
           {/* retry button on error */}
@@ -1019,6 +1064,8 @@ function Conversation() {
   const newSession = useStore((s) => s.newSession)
   const dataMode = useStore((s) => s.dataMode)
   const showToast = useStore((s) => s.showToast)
+  // FIX 4: last used model id (from usage SSE event via store)
+  const lastUsedModel = useStore((s) => s.lastUsedModel)
 
   // Memoize the messages array passed to the list: re-create only when length,
   // last id, or streaming flag changes (not on every token flush of the tail).
@@ -1158,6 +1205,18 @@ function Conversation() {
     })()
   }
 
+  // FIX 3: clean up 0-message sessions via backend route
+  const handleCleanupEmpty = () => {
+    if (dataMode !== 'live') {
+      showToast('Available in live mode only', 'blocked')
+      return
+    }
+    void (async () => {
+      await cleanupEmptySessionsLive()
+      showToast('Empty sessions cleaned up', 'success')
+    })()
+  }
+
   // MED-020: retry handler — resend the last "you" message
   const handleRetry = useCallback(() => {
     const currentMessages = useStore.getState().messages
@@ -1240,6 +1299,7 @@ function Conversation() {
               onSwitch={(id) => switchSession(id)}
               onNew={() => newSession()}
               onDelete={handleDeleteSession}
+              onCleanupEmpty={handleCleanupEmpty}
               onClose={() => setPickerOpen(false)}
             />
           )}
@@ -1351,6 +1411,7 @@ function Conversation() {
                       isStreaming={streamingThis}
                       operator={operator}
                       onRetry={handleRetry}
+                      lastUsedModel={isLast ? lastUsedModel : null}
                     />
                   </div>
                 )

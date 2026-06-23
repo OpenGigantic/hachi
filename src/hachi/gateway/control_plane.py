@@ -53,6 +53,26 @@ class GatewayEvent:
 class GatewayProtocolError(ValueError):
     """Raised when a typed gateway envelope is malformed."""
 
+    def __init__(self, message: str, *, code: str = "protocol_error") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class SessionExpiredError(GatewayProtocolError):
+    """Raised when a session_id is known in SQLite but not in active memory.
+
+    Issue 1: frontend can distinguish this from an unknown/garbage id and
+    initiate a graceful session re-creation rather than showing a generic error.
+    The ``code`` attribute is always ``"session_expired"``.
+    """
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__(
+            f"Session '{session_id}' is no longer active. Create a new session to continue.",
+            code="session_expired",
+        )
+        self.session_id = session_id
+
 
 class GatewayUnavailableError(RuntimeError):
     """Raised when a requested gateway operation is unavailable."""
@@ -348,7 +368,18 @@ class GatewayControlPlane:
             raise GatewayProtocolError("session_id is required")
         with self._connections_lock:
             if normalized_session_id not in self._connections:
-                raise GatewayProtocolError("Unknown session_id")
+                # Issue 1: distinguish a known-but-expired session (has history in SQLite)
+                # from a garbage id so the frontend can recover gracefully.
+                # TODO(issue1): full session re-boot-on-resume — for now surface a typed
+                # SessionExpiredError so the caller can create a new session and optionally
+                # replay history via GET /sessions/{id}/events before continuing.
+                _known_in_db = self._is_session_in_store(normalized_session_id)
+                raise SessionExpiredError(normalized_session_id) if _known_in_db else (
+                    GatewayProtocolError(
+                        f"Unknown session_id '{normalized_session_id}'",
+                        code="unknown_session",
+                    )
+                )
         if not normalized_prompt:
             raise GatewayProtocolError("prompt is required")
         if len(prompt) > self._max_prompt_chars:
@@ -544,14 +575,68 @@ class GatewayControlPlane:
         # Honour pagination: drop events at/below `after`, cap to `limit`.
         return [e for e in events if e["sequence"] > after][:limit]
 
+    def _is_session_in_store(self, session_id: str) -> bool:
+        """Return True when *session_id* exists as a row in the SQLite session store.
+
+        Used by :meth:`send_message` and :meth:`session_state` to distinguish a
+        known-but-expired session from a garbage id. Safe to call outside the
+        connections lock — reads from the already-initialised SQLite store.
+
+        Returns:
+            True if the session has a persisted record; False if unknown or the
+            store handler is not wired.
+        """
+        if self._get_session_messages is None:
+            return False
+        try:
+            messages = self._get_session_messages(session_id, 1)
+            # A non-empty list means the session has at least one persisted message.
+            # An empty list means the session id is unknown (no messages ever written).
+            return isinstance(messages, list) and len(messages) > 0
+        except Exception:
+            return False
+
     def session_state(self, session_id: str) -> Any:
+        """Return a state dict for *session_id*.
+
+        Issue 1: when the session is not in the in-memory connection map (e.g.
+        the gateway process restarted), fall back to a lightweight dict built
+        from the SQLite transcript so the UI can still show session metadata
+        without raising ``GatewayProtocolError("Unknown session_id")``.
+
+        Args:
+            session_id: The session to query.
+
+        Returns:
+            A state dict.  Live sessions use the full handler; dead-but-known
+            sessions return a minimal ``{"session_id": ..., "status": "expired"}``
+            dict.  Completely unknown ids raise ``GatewayProtocolError``.
+        """
         if not session_id:
             raise GatewayProtocolError("session_id is required")
         with self._connections_lock:
-            if session_id not in self._connections:
-                raise GatewayProtocolError("Unknown session_id")
-        handler = self._require_handler(self._get_session_state, "session state")
-        return handler(session_id)
+            is_live = session_id in self._connections
+
+        if is_live:
+            handler = self._require_handler(self._get_session_state, "session state")
+            return handler(session_id)
+
+        # Not live — check SQLite before raising so a page-refresh after a gateway
+        # restart returns usable metadata rather than an error.
+        if self._is_session_in_store(session_id):
+            return {
+                "session_id": session_id,
+                "status": "expired",
+                "active_skill": None,
+                "last_user_query": "",
+                "model_name": None,
+                "boot_ready": False,
+                "pending_job_count": 0,
+                "total_tokens": 0,
+                "estimated_cost_usd": 0.0,
+            }
+
+        raise GatewayProtocolError(f"Unknown session_id '{session_id}'", code="unknown_session")
 
     def recent_sessions(self, limit: int = 10) -> Any:
         handler = self._require_handler(self._get_recent_sessions, "recent sessions")

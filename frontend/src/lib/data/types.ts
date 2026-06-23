@@ -168,7 +168,8 @@ export interface Integration {
 
 export interface McpServer {
   name: string;
-  status: "connected" | "starting" | "blocked";
+  /** "loading" is a transient state while the gateway is initialising the server. */
+  status: "connected" | "starting" | "blocked" | "loading";
   tools: number;
   transport: string;
   uptime: string;
