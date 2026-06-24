@@ -179,6 +179,31 @@ jobs:
       - name: ObjectGraph benchmark (token-savings + M1 retrieval)
         run: uv run hachi skill benchmark --suite fast --json --threshold 0.80
 
+  eval:
+    # Regression gate for the agent loop (P4 Eval). Replays the curated eval
+    # corpus (DEFAULT_REPLAY_SUITE) through the REAL ExecutionLoop driven by a
+    # scripted LLM — deterministic, no API key needed — and FAILS if any case
+    # regresses. `hachi eval run` exits non-zero on any case failure, so this
+    # job blocks merges that break the loop's control-flow contracts.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Run eval regression suite
+        run: uv run hachi eval run
+
   frontend-contract:
     runs-on: ubuntu-latest
     steps:
