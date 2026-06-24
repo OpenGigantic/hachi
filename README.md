@@ -557,6 +557,32 @@ For the complete specification, see [ObjectGraph_Complete_Specification.md](Obje
 
 ---
 
+## Security model / single-tenant
+
+**Hachi is a single-operator product.** It is designed to run on one machine or VPS for one
+trusted operator. It is **NOT multi-tenant** and must **NOT** be exposed to multiple distinct
+users or tenants without significant additional engineering.
+
+The long-term memory store (ChromaDB collections `core_memory`, `user_profile`, `agent_profile`,
+and `delegation_log`) is shared across all sessions created within the same Hachi install. There
+is no per-user isolation today: any session can read and write the same collections.
+
+**Why this is safe under the stated model:** The gateway enforces per-session ownership via a
+hashed bearer token (one token = one principal). Under a single-operator deployment this is
+sufficient — there is only one trusted human behind all sessions.
+
+**Why it becomes unsafe the moment a second user is added:** Two principals sharing one install
+would share one `user_profile` / `core_memory` collection → cross-user PII recall and profile
+contamination. The `MemoryVault` has an `account_id` namespacing mechanism (ADV-023) that can
+isolate collections per account, but it is intentionally unplumbed in the current release. Adding
+a second principal without first wiring `account_id` end-to-end is a data-isolation vulnerability.
+
+**If you need multi-user:** Do NOT route multiple distinct users through a shared Hachi gateway
+without plumbing `account_id` → vault construction AND `ProcessSharedServices` fingerprint. See
+`SECURITY.md` "Trust model" and AUDIT P1-1 in `DECISIONS.md` for the full design note.
+
+---
+
 ## Configuration
 
 ### Workspace Structure

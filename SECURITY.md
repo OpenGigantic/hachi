@@ -55,6 +55,38 @@ Out of scope (use regular GitHub issues):
 - Issues requiring physical access to the machine
 - Social-engineering attacks against the user (Hachi is a local-first tool)
 
+## Trust model
+
+**Hachi is a single-operator product.** One trusted operator per machine / VPS. It is NOT
+multi-tenant. Do NOT expose a shared Hachi gateway to multiple distinct users or tenants.
+
+### Memory isolation (AUDIT P1-1)
+
+All ChromaDB collections (`core_memory`, `user_profile`, `agent_profile`, `delegation_log`) are
+shared per install. The `MemoryVault` accepts an `account_id` parameter that namespaces
+collections with a per-account prefix (ADV-023), but this parameter is **intentionally unplumbed**
+in the current release — `boot_agent` constructs the vault with no `account_id`, and the
+`principal` field in `TraceContext` is a hardcoded `"session"` placeholder
+(`src/hachi/gateway/orchestrator.py`).
+
+**Under the single-operator trust model this is safe** because only one authenticated principal
+exists in a normal install.
+
+**It becomes unsafe the moment a second user is added.** Two principals sharing one install would
+share one `user_profile` / `core_memory` collection, enabling cross-user PII recall and profile
+contamination.
+
+**Do NOT add a second principal/tenant without:**
+1. Plumbing the authenticated principal → `account_id` into `MemoryVault` construction.
+2. Updating the `ProcessSharedServices` fingerprint to include the account key so each account
+   gets a separate shared-vault singleton.
+
+The `account_id` seam is already built into `MemoryVault.__init__` — it just needs to be wired
+from the authentication layer. See `src/hachi/core/memory_vault.py` docstring (ADV-023) and
+`DECISIONS.md` "P1-1 — document the single-tenant constraint" for the full design note.
+
+Multi-tenant account isolation is tracked as a 12-month roadmap item (AUDIT P1-1 action b).
+
 ## Security Architecture Notes
 
 - **No remote code execution path in skill install** — `.og` files are data files parsed
