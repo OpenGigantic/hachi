@@ -947,6 +947,15 @@ export async function startTaskLive(
 export function stopStreamingLive(): void {
   // Flush any pending delta before aborting so the partial text is preserved
   flushDeltaBufferSync();
+  // P1-4: fire-and-forget interrupt so the server-side worker thread also stops,
+  // not just the SSE coroutine. abortSse() closes the stream first so the server
+  // can see is_disconnected(); the explicit interrupt guarantees the worker stops
+  // even on HTTP/1.1 where disconnect detection may lag.
+  if (_liveSessionId) {
+    apiSend<{ interrupted: boolean }>("POST", `/sessions/${_liveSessionId}/interrupt`).catch(
+      () => void 0 // fire-and-forget — never block the UI
+    );
+  }
   abortSse();
   _hachiMsgId = null;
   resetDeltaBuffer();

@@ -759,3 +759,66 @@ uv run pytest tests/test_daily_cap_enforcement.py tests/test_daily_spend_ledger.
 uv run ruff check src/hachi/gateway/orchestrator.py
 uv run mypy src/hachi/gateway/orchestrator.py --ignore-missing-imports
 ```
+
+---
+
+### P1-4 — web Stop cancels the server-side turn
+
+**Found.** `ExecutionLoop.cancel()` (a `threading.Event`) is correctly implemented and
+tested. But it was unreachable from the gateway. The gateway only called
+`turn_task.cancel()` (asyncio `CancelledError`) on client disconnect — which cancels the
+*coroutine* waiting for the result but not the *worker thread* running the turn via
+`anyio.to_thread.run_sync(...)`. The worker thread continued to completion, incurring
+full LLM and tool costs after the user hit Stop. There was also no HTTP route to trigger
+a mid-turn cancellation explicitly.
+
+**Decided/Changed.**
+1. **`GatewayControlPlane.__init__`** (`src/hachi/gateway/control_plane.py`) — added
+   `on_interrupt: Callable[[str], dict[str, Any]] | None = None` parameter (stored as
+   `self._on_interrupt`), mirroring the existing `on_chat`/`on_connect` callback pattern.
+2. **`GatewayControlPlane.interrupt(session_id)`** — new public method: checks that the
+   session is live (returns `{"interrupted": False}` if not), then calls `_on_interrupt`
+   if wired (swallows handler exceptions so it never leaks a 5xx). Always returns
+   `dict[str, Any]` with a single `"interrupted"` bool key.
+3. **`_InProcessGatewayRuntime.interrupt_session(session_id)`** (`src/hachi/cli/main.py`)
+   — new method: looks up the `AgentSession` by session_id under `_agents_lock`, calls
+   `agent.loop.cancel()` (thread-safe), returns `{"interrupted": True/False}`.
+4. **`_build_gateway_control_plane`** (`src/hachi/cli/main.py`) — wires
+   `on_interrupt=runtime.interrupt_session if runtime else None` (one new line, matching
+   the pattern of the 30+ other callbacks in that function).
+5. **`POST /sessions/{session_id}/interrupt`** (`src/hachi/gateway/fastapi_app.py`) —
+   new route; uses the same `_check_session_ownership` + `_require_auth` as every other
+   `/sessions/{id}` route; returns `SessionInterruptResponse` (new `BaseModel`). Returns
+   200 with `{"interrupted": false}` for non-live sessions (safe, never 404/500).
+6. **SSE disconnect wiring** (`fastapi_app.py`) — both the primary SSE stream
+   (`/sessions/{id}/stream`) and the OpenAI-compatible stream (`/v1/chat/completions`)
+   now also call `control_plane.interrupt(session_id)` on `await request.is_disconnected()`
+   in addition to the existing `turn_task.cancel()`.
+7. **Frontend** (`frontend/src/lib/data/domains/chat.ts`) — `stopStreamingLive()` now
+   fires `POST /sessions/{id}/interrupt` as a fire-and-forget (`catch(() => void 0)`)
+   before calling `abortSse()`, so the Stop button explicitly stops the server-side
+   worker thread even when SSE disconnect detection lags.
+8. **OpenAPI** — `openapi/hachi-openapi.json` and `frontend/src/lib/data/schema.d.ts`
+   regenerated to include the new route and `SessionInterruptResponse` schema.
+9. **Tests** — `tests/test_gateway_interrupt.py` (new, 13 tests): control-plane unit
+   tests (handler called, unknown-session safe, no-runtime safe, handler-exception safe),
+   HTTP integration tests (200/403/401), ownership enforcement, and a real-loop smoke test
+   verifying `_cancel_event` is set by `loop.cancel()`.
+
+**Why.** The minimal correct path: `loop.cancel()` already existed and was fully tested;
+the gap was purely a wiring gap. No cancellation logic was reimplemented. The callback
+pattern matches the existing 30+ callbacks in `control_plane.py` exactly, keeping the
+surface consistent. The SSE and frontend wiring are belt-and-suspenders: the browser
+disconnect alone should trigger `is_disconnected()` → `interrupt`, but the explicit Stop
+button call guarantees the signal arrives even on HTTP/1.1 where disconnect detection may
+lag by one poll interval.
+
+**Verify.**
+```
+uv run pytest tests/test_gateway_interrupt.py tests/test_gateway_control_plane.py tests/test_loop_backstop_cancel.py tests/test_session_ownership.py -q
+uv run ruff check src/hachi/gateway/control_plane.py src/hachi/gateway/fastapi_app.py src/hachi/cli/main.py tests/test_gateway_interrupt.py
+uv run ruff format --check src/hachi/gateway/control_plane.py src/hachi/gateway/fastapi_app.py src/hachi/cli/main.py tests/test_gateway_interrupt.py
+uv run mypy src/hachi/gateway/fastapi_app.py --ignore-missing-imports   # must be 0
+uv run mypy src/hachi/gateway/control_plane.py --ignore-missing-imports  # must be 0
+npm run --prefix frontend typecheck   # must be 0
+```

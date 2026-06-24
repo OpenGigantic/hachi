@@ -146,6 +146,8 @@ class GatewayControlPlane:
         test_provider_connection: Callable[[str], dict[str, Any]] | None = None,
         list_all_models: Callable[[], dict[str, Any]] | None = None,
         probe_provider: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        # P1-4 — server-side turn interrupt
+        on_interrupt: Callable[[str], dict[str, Any]] | None = None,
         max_active_sessions: int = 100,
         max_prompt_chars: int = 100_000,
     ) -> None:
@@ -208,6 +210,7 @@ class GatewayControlPlane:
         self._test_provider_connection = test_provider_connection
         self._list_all_models = list_all_models
         self._probe_provider = probe_provider
+        self._on_interrupt = on_interrupt
         self._connections: dict[str, dict[str, Any]] = {}
         self._api_sessions: dict[str, str] = {}  # session_key -> session_id (facade sessions)
         self._connections_lock = threading.Lock()
@@ -374,10 +377,14 @@ class GatewayControlPlane:
                 # SessionExpiredError so the caller can create a new session and optionally
                 # replay history via GET /sessions/{id}/events before continuing.
                 _known_in_db = self._is_session_in_store(normalized_session_id)
-                raise SessionExpiredError(normalized_session_id) if _known_in_db else (
-                    GatewayProtocolError(
-                        f"Unknown session_id '{normalized_session_id}'",
-                        code="unknown_session",
+                raise (
+                    SessionExpiredError(normalized_session_id)
+                    if _known_in_db
+                    else (
+                        GatewayProtocolError(
+                            f"Unknown session_id '{normalized_session_id}'",
+                            code="unknown_session",
+                        )
                     )
                 )
         if not normalized_prompt:
@@ -929,6 +936,37 @@ class GatewayControlPlane:
         if self._probe_provider is None:
             return {"ok": False, "detail": "probe not available", "models": []}
         return self._probe_provider(spec)
+
+    def interrupt(self, session_id: str) -> dict[str, Any]:
+        """Signal a live session's execution loop to stop at its next iteration boundary.
+
+        P1-4: wires the HTTP-level Stop action to ``ExecutionLoop.cancel()`` so that a
+        browser disconnect or explicit Stop button actually stops the worker thread, not
+        just the awaiting coroutine.
+
+        Returns ``{"interrupted": True}`` when the signal was delivered to a live session,
+        ``{"interrupted": False}`` when the session is not live (safe, no exception).
+
+        Args:
+            session_id: The session to interrupt.
+
+        Returns:
+            Dict with a single boolean key ``interrupted``.
+        """
+        normalized = session_id.strip()
+        with self._connections_lock:
+            is_live = normalized in self._connections
+        if not is_live:
+            return {"interrupted": False}
+        if self._on_interrupt is None:
+            # Runtime not attached (standalone gateway without --runtime): the
+            # session connection record exists but there is no live loop to cancel.
+            return {"interrupted": False}
+        try:
+            result = self._on_interrupt(normalized)
+            return result if isinstance(result, dict) else {"interrupted": False}
+        except Exception:
+            return {"interrupted": False}
 
     # Backward-compatible aliases for previous envelope methods.
     def connect(self, payload: dict[str, Any]) -> dict[str, Any]:
