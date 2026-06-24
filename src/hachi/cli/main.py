@@ -64,6 +64,7 @@ from hachi.gateway.workspace import (
     run_permissions_wizard,
     show_current_permissions,
 )
+from hachi.jobs import ResidentWorkerThread
 
 app = typer.Typer(
     help="Hachi - The Autonomous Agent Engine powered by ObjectGraph",
@@ -262,7 +263,14 @@ class _InProcessGatewayRuntime:
         Returns:
             A booted :class:`AgentSession` ready to receive user input.
         """
-        return boot_agent(resume_session_id=resume_session_id)
+        agent = boot_agent(resume_session_id=resume_session_id)
+        # Expose the resident worker to the module-level readiness probe so it
+        # can check worker liveness without coupling probe ↔ runtime instance.
+        global _GATEWAY_RESIDENT_WORKER  # noqa: PLW0603
+        worker = getattr(agent, "_resident_worker", None)
+        if worker is not None:
+            _GATEWAY_RESIDENT_WORKER = worker
+        return agent
 
     def _get_agent(self, session_id: str) -> AgentSession:
         with self._agents_lock:
@@ -2025,17 +2033,108 @@ class _InProcessGatewayRuntime:
         return _probe(spec)
 
 
-def _gateway_readiness_probe() -> tuple[bool, list[str]]:
-    """Derive readiness blockers for local gateway clients."""
+def _gateway_readiness_probe() -> tuple[bool, list[str], dict[str, str]]:
+    """Derive readiness blockers for the gateway with per-check detail.
+
+    Checks performed (all fast + side-effect-free; no paid API calls):
+    - ``config_file`` — global settings TOML is present.
+    - ``permissions_file`` — device-permissions .og file is present.
+    - ``provider_configured`` — an LLM provider API key is resolvable from
+      env / keyring (skipped for keyless providers such as Ollama).
+    - ``session_store_writable`` — the parent directory for the SQLite
+      sessions DB is writable (create + unlink a sentinel file).
+    - ``job_worker`` — if a ResidentWorkerThread has been registered with the
+      ``_GATEWAY_RESIDENT_WORKER`` module-level slot, it must be alive.
+
+    Returns:
+        A three-tuple ``(ready, blockers, checks)`` where:
+        - ``ready`` is *False* when any critical check fails,
+        - ``blockers`` lists the names of failing checks (empty ↔ ready),
+        - ``checks`` maps every check name to a short human-readable reason.
+    """
+    import os as _os
+    import tempfile
+
     paths = get_hachi_paths()
+    checks: dict[str, str] = {}
     blockers: list[str] = []
 
-    if not paths.global_config_toml.exists():
-        blockers.append("config_missing")
-    if not paths.permissions_file.exists():
-        blockers.append("device_permissions_missing")
+    # --- 1. Config file present ---
+    if paths.global_config_toml.exists():
+        checks["config_file"] = "ok"
+    else:
+        checks["config_file"] = "global config TOML missing"
+        blockers.append("config_file")
 
-    return (len(blockers) == 0, blockers)
+    # --- 2. Permissions file present ---
+    if paths.permissions_file.exists():
+        checks["permissions_file"] = "ok"
+    else:
+        checks["permissions_file"] = "device-permissions file missing"
+        blockers.append("permissions_file")
+
+    # --- 3. Provider API key resolvable (no live API call) ---
+    try:
+        cfg = load_effective_config()
+        kind = (getattr(cfg.provider, "kind", None) or "anthropic").strip().lower()
+        _keyless = {"ollama"}
+        if kind in _keyless:
+            checks["provider_configured"] = f"ok (keyless: {kind})"
+        else:
+            api_key_env = getattr(cfg.provider, "api_key_env", None)
+            env_name = api_key_env or default_api_key_env_for(kind) or ""
+            resolved = _os.environ.get(env_name) if env_name else None
+            if not resolved and env_name:
+                try:
+                    resolved = create_default_secret_store().get(env_name)
+                except Exception:
+                    pass
+            if resolved:
+                checks["provider_configured"] = f"ok ({env_name})"
+            else:
+                checks["provider_configured"] = (
+                    f"no API key for {kind!r} (expected env {env_name!r})"
+                )
+                blockers.append("provider_configured")
+    except Exception as exc:  # config load failure is also a blocker
+        checks["provider_configured"] = f"config load error: {exc}"
+        blockers.append("provider_configured")
+
+    # --- 4. Session-store directory writable ---
+    try:
+        store_dir = paths.sessions_db.parent
+        store_dir.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=store_dir, prefix=".readiness-")
+        try:
+            _os.close(fd)
+        finally:
+            try:
+                _os.unlink(tmp_path)
+            except OSError:
+                pass
+        checks["session_store_writable"] = "ok"
+    except Exception as exc:
+        checks["session_store_writable"] = f"not writable: {exc}"
+        blockers.append("session_store_writable")
+
+    # --- 5. Job-worker thread alive (if one has been registered) ---
+    worker = _GATEWAY_RESIDENT_WORKER
+    if worker is not None:
+        if worker.is_running:
+            checks["job_worker"] = "ok"
+        else:
+            checks["job_worker"] = "resident worker thread is not alive"
+            blockers.append("job_worker")
+    else:
+        checks["job_worker"] = "not started"  # not a blocker — pre-session startup
+
+    return (len(blockers) == 0, blockers, checks)
+
+
+#: Module-level slot for the ResidentWorkerThread started by the in-process
+#: gateway runtime.  Set by :class:`_InProcessGatewayRuntime` once an agent
+#: session is booted; inspected by :func:`_gateway_readiness_probe`.
+_GATEWAY_RESIDENT_WORKER: "ResidentWorkerThread | None" = None
 
 
 def _wait_until_interrupted() -> None:

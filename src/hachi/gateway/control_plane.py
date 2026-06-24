@@ -87,7 +87,9 @@ class GatewayControlPlane:
 
     def __init__(
         self,
-        readiness_probe: Callable[[], tuple[bool, list[str]]] | None = None,
+        readiness_probe: (
+            Callable[[], tuple[bool, list[str]] | tuple[bool, list[str], dict[str, str]]] | None
+        ) = None,
         on_connect: Callable[[str, ConnectRequest], None] | None = None,
         on_disconnect: Callable[[str], None] | None = None,
         on_chat: Callable[[str, str], str] | None = None,
@@ -231,13 +233,24 @@ class GatewayControlPlane:
         }
 
     def readiness(self) -> dict[str, Any]:
-        ready, blockers = self._readiness_probe()
+        """Return a structured readiness payload.
+
+        The registered probe may return either a legacy ``(ready, blockers)``
+        two-tuple or the extended ``(ready, blockers, checks)`` three-tuple.
+        Both forms are handled transparently; callers always receive a payload
+        that includes the ``checks`` key (empty dict for legacy probes).
+        """
+        result = self._readiness_probe()
+        ready: bool = result[0]
+        blockers: list[str] = result[1]
+        checks: dict[str, str] = result[2] if len(result) == 3 else {}
         with self._connections_lock:
             active = len(self._connections)
         return {
             "status": "ready" if ready else "not_ready",
             "ready": ready,
             "blockers": blockers,
+            "checks": checks,
             "active_connections": active,
             "time": _now_iso(),
         }

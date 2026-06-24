@@ -1510,3 +1510,104 @@ uv run ruff check tests/test_brain_constraints.py
 uv run ruff format --check tests/test_brain_constraints.py
 # → 1 file already formatted
 ```
+
+---
+
+### P2-11 — deep readiness probe + compose healthcheck
+
+**Found.**
+`_gateway_readiness_probe()` in `src/hachi/cli/main.py` (line ~2028) only checked that
+two files exist (`global_config_toml`, `permissions_file`).  A gateway with no provider
+API key, an unwritable session-store directory, or a dead job-worker thread still
+reported `"ready": true`.  `docker-compose.yml` had no `healthcheck` for the `hachi`
+service — Docker could not distinguish a broken gateway from a healthy one.
+
+**Changed.**
+
+| File | Change |
+|------|--------|
+| `src/hachi/cli/main.py` | `_gateway_readiness_probe` now returns `(bool, list[str], dict[str, str])` with five checks. Added `_GATEWAY_RESIDENT_WORKER` module-level slot; `_InProcessGatewayRuntime._boot_session_agent` populates it after agent boot so the probe can inspect worker liveness without coupling to the runtime instance. Added `ResidentWorkerThread` import. |
+| `src/hachi/gateway/control_plane.py` | `readiness()` unpacks both 2-tuple (legacy) and 3-tuple probes; adds `checks` key to the returned dict. Constructor type annotation updated. |
+| `src/hachi/gateway/fastapi_app.py` | `ReadinessResponse` Pydantic model gains `checks: dict[str, str]` field (default `{}`). |
+| `docker-compose.yml` | Added `healthcheck` to the `hachi` service (30 s interval, 10 s timeout, 3 retries, 20 s start_period, `curl --fail http://localhost:8787/readiness`). `frontend.depends_on` now waits for `service_healthy`. |
+| `tests/test_readiness_probe.py` | 12 new tests covering all five checks and the HTTP route. |
+
+**Readiness checks performed** (all fast + side-effect-free; no live API calls):
+
+1. `config_file` — global `settings.toml` exists.
+2. `permissions_file` — `device-permissions.og` exists.
+3. `provider_configured` — API key resolvable from env / keyring for the configured
+   provider (skipped for keyless providers such as Ollama).
+4. `session_store_writable` — `mkstemp` + immediate unlink in the sessions-DB parent
+   dir confirms the directory is writable without persisting anything.
+5. `job_worker` — if a `ResidentWorkerThread` has been registered, it must be alive
+   (`.is_running` ↔ `thread.is_alive()`).  Pre-session (not yet registered) is
+   reported as `"not started"` and is **not** a blocker.
+
+**Structured result shape** (`GET /readiness`):
+
+```json
+{
+  "status": "ready | not_ready",
+  "ready": true,
+  "blockers": [],
+  "checks": {
+    "config_file": "ok",
+    "permissions_file": "ok",
+    "provider_configured": "ok (ANTHROPIC_API_KEY)",
+    "session_store_writable": "ok",
+    "job_worker": "not started"
+  },
+  "active_connections": 0,
+  "time": "2026-06-24T…"
+}
+```
+
+HTTP 200 when ready; HTTP 503 when `ready` is false.  The endpoint is **unauthenticated**
+so Docker / load-balancer probes do not need a bearer token.  No secrets are returned —
+values are booleans or short human-readable reasons (no key material).
+
+**Docker-compose healthcheck config:**
+
+```yaml
+healthcheck:
+  test: ["CMD", "python", "-c",
+         "import urllib.request; urllib.request.urlopen('http://localhost:8787/readiness', timeout=5)"]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 20s
+```
+
+**Why.**
+AUDIT P2-11 identified that the readiness probe was cosmetic (file-exists only).  A
+broken provider key or a crashed job-worker would silently report "ready", causing
+clients and the Docker scheduler to route traffic to a non-functional gateway.  The
+compose healthcheck ensures Docker marks the container `unhealthy` and prevents
+`frontend` from starting before the gateway is genuinely ready.
+
+The healthcheck originally used `curl`, but `python:3.12-slim` does not include `curl`
+(the Dockerfile runs only `pip install` — no `apt-get install curl`).  Using `curl`
+would cause the healthcheck to always exit with "curl: not found", permanently marking
+the container unhealthy and preventing the `frontend` service (which has
+`depends_on: hachi: condition: service_healthy`) from ever starting.  The replacement
+uses `urllib.request.urlopen` from Python's stdlib: it raises on non-2xx responses
+(including the 503 the readiness route returns when not ready) and on
+connection-refused during startup, so the exit code semantics are identical to
+`curl --fail`.
+
+**Verify.**
+```
+cd /d/OpenGigantic/hachi
+PYTHONPATH=src uv run --with pytest --no-project pytest \
+    tests/test_readiness_probe.py tests/test_gateway_control_plane.py \
+    tests/test_cli_gateway_command.py -q
+
+uv run ruff check src/hachi/cli/main.py src/hachi/gateway/fastapi_app.py \
+    src/hachi/gateway/control_plane.py tests/test_readiness_probe.py
+uv run ruff format --check src/hachi/cli/main.py src/hachi/gateway/fastapi_app.py \
+    src/hachi/gateway/control_plane.py tests/test_readiness_probe.py
+uv run mypy src/hachi/gateway/fastapi_app.py src/hachi/cli/main.py \
+    --ignore-missing-imports  # fastapi_app MUST be 0; cli/main stays at 122
+python -c "import yaml; yaml.safe_load(open('docker-compose.yml')); print('compose valid')"
+```
