@@ -1611,6 +1611,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/interactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Interactions
+         * @description Return interaction_log rows newest-first, optionally scoped to one session.
+         *
+         *     Ownership rules (mirrors ``list_sessions``):
+         *     - If ``session_id`` is supplied: ownership-check that session before querying.
+         *     - If not supplied: return rows across all sessions owned by the caller
+         *       (legacy NULL-owner sessions included for back-compat); no-auth returns all.
+         *
+         *     Args:
+         *         session_id: Optional session filter.
+         *         limit: Maximum rows to return (1–500; default 100).
+         */
+        get: operations["get_interactions_interactions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/interactions/{interaction_id}/rating": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Interaction Rating
+         * @description Set the thumbs-up / thumbs-down rating (and optional notes) for a turn.
+         *
+         *     Ownership check: looks up the row's ``session_id`` first, then verifies the
+         *     caller owns that session before allowing the write.
+         *
+         *     Returns 404 if ``interaction_id`` does not exist.
+         */
+        put: operations["put_interaction_rating_interactions__interaction_id__rating_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1728,6 +1782,49 @@ export interface components {
             protocol_version: string;
             /** Time */
             time: string;
+        };
+        /**
+         * InteractionListResponse
+         * @description Response for ``GET /interactions``.
+         */
+        InteractionListResponse: {
+            /** Interactions */
+            interactions: components["schemas"]["InteractionRecord"][];
+        };
+        /**
+         * InteractionRecord
+         * @description One row from ``interaction_log`` — the per-turn eval ground truth.
+         *
+         *     ``tool_calls`` and ``memory_hits`` are decoded JSON arrays (lists of strings).
+         *     Numeric fields are optional because they may be NULL for older rows.
+         */
+        InteractionRecord: {
+            /** Id */
+            id: string;
+            /** Session Id */
+            session_id: string;
+            /** Turn Id */
+            turn_id?: string | null;
+            /** Ts */
+            ts: string;
+            /** User Input */
+            user_input?: string | null;
+            /** Agent Output */
+            agent_output?: string | null;
+            /** Tool Calls */
+            tool_calls?: string[];
+            /** Memory Hits */
+            memory_hits?: string[];
+            /** Model Used */
+            model_used?: string | null;
+            /** Token Cost */
+            token_cost?: number | null;
+            /** Tokens */
+            tokens?: number | null;
+            /** Rating */
+            rating?: string | null;
+            /** Notes */
+            notes?: string | null;
         };
         /**
          * LimitsRequest
@@ -1862,6 +1959,27 @@ export interface components {
             /** Api Key */
             api_key?: string | null;
         };
+        /**
+         * RatingRequest
+         * @description Body for ``PUT /interactions/{interaction_id}/rating``.
+         */
+        RatingRequest: {
+            /**
+             * Rating
+             * @enum {string}
+             */
+            rating: "up" | "down";
+            /** Notes */
+            notes?: string | null;
+        };
+        /**
+         * RatingResponse
+         * @description Response for ``PUT /interactions/{interaction_id}/rating``.
+         */
+        RatingResponse: {
+            /** Ok */
+            ok: boolean;
+        };
         /** ReadinessResponse */
         ReadinessResponse: {
             /** Status */
@@ -1870,6 +1988,10 @@ export interface components {
             ready: boolean;
             /** Blockers */
             blockers: string[];
+            /** Checks */
+            checks?: {
+                [key: string]: string;
+            };
             /** Active Connections */
             active_connections: number;
             /** Time */
@@ -5055,6 +5177,87 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_interactions_interactions_get: {
+        parameters: {
+            query?: {
+                session_id?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InteractionListResponse"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_interaction_rating_interactions__interaction_id__rating_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                interaction_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RatingRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RatingResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */

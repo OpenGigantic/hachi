@@ -347,6 +347,27 @@ export interface Provider {
   key: string;
 }
 
+// ----- eval loop / interactions -----
+export interface AgentInteraction {
+  id: string;
+  sessionId: string;
+  turnId: string | null;
+  ts: string;
+  /** Human-readable relative timestamp (e.g. "5m ago"). */
+  tsHuman: string;
+  userInput: string;
+  agentOutput: string;
+  /** Tool call names — string[], never objects. */
+  toolCalls: string[];
+  /** Memory hit descriptions — string[], never objects. */
+  memoryHits: string[];
+  modelUsed: string;
+  tokenCost: number | null;
+  tokens: number | null;
+  rating: "up" | "down" | null;
+  notes: string | null;
+}
+
 // ----- file attachments (Phase 4 — Initiative E wiring) -----
 export interface PendingAttachment {
   /** Stable local key used before the server responds. Replaced by real SHA-256 file_id on upload success. */
