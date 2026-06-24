@@ -82,10 +82,32 @@ append-only CorrectionLog + save tool); P1-8 MCP retry/breaker/reconnect; P1-9 `
 + Windows CI + removed the phantom GitHub connector; P1-1 single-tenant constraint documented (account_id
 plumbing deferred to the 12-month multi-tenant track). Score impact: **P3 Routing 62→76**, **P7
 Personalization 48→64**, **P1 Memory 68→74**, **P5 Loop 56→66**, **P2 Tools 74→80**, **Reliability
-82→86**, **Deployment 60→66**, **CI 70→78**. **Overall 64→73→~82.** Remaining: the P2 tech-debt list
-(§5) + the deferred product/eval items (`/review` UI, cold-start resume, dead-letter queue, container
-sandbox, knowledge graph, multi-tenant account_id plumbing). The 2026-06-23 scorecard/findings below are
-preserved as the baseline snapshot; this dated block is the current truth.
+82→86**, **Deployment 60→66**, **CI 70→78**. **Overall 64→73→~82.**
+
+**P2 hardening tier — the clear-cut hardening debt is now closed (2026-06-24, same agent-orchestrated pattern;
+Sonnet 4.6 subagents under Opus orchestration + independent verification + full-suite gate):** P2-1 token-based
+context-window management (removes the count→token *cliff*; `_MAX_ACTIVE_TOKENS` + bounded compaction passes);
+P2-5 behavioral tests guarding the `brain.og` hard-constraint blocks (persona-drift CI gate); P2-7 job-queue
+dead-letter + `redrive` (durable background work survives a longer outage instead of silent post-FAILED
+deletion); P2-10 **cold-start resume** (a WAITING run woken after a gateway restart now rehydrates its session
+from the SQLite transcript via the existing `boot_agent(resume_session_id=…)` → `resume_from_session` machinery
+instead of `HonestResumeError`; the previously-untested replay is now proven against a **real** store+memory —
+no mocks); P2-11 deep readiness probe + compose healthcheck; P2-13 structural perf-regression guards for recall
+(bounded top-k, lazy ChromaDB) and compaction (bounded passes, no unbounded history growth). Also confirmed
+already-shipped: P2-4's **recall-side** PII/secret redaction (`memory_vault` MED-009 `_redact_results`). Score
+impact (incremental): **Context Engineering 78→84**, **Reliability 86→88**, **Gateway 78→82**, **Prompt-as-Code
+82→86**, **Long-Running Tasks 84→88**, **CI/Tests 78→82**. **Overall ~82→~84.** Full `pytest` after the batch:
+**3643 passed / 17 skipped / 0 failed**.
+
+What remains is **features, not hardening** — episodic store (P2-3), memory decay/recency + LRU eviction (P2-2),
+EventBus reactivity (P2-6), container/gVisor sandbox (P2-8), unified knowledge graph (P2-9), FE client query
+cache (P2-12) — plus design-decision items (encryption-at-rest, multi-tenant `account_id` plumbing). Per the
+operating protocol these are **flagged, not auto-built**. The leash approve/deny `request_id` correlation
+(P2-12b, currently text-matched) is a real but **near-zero-blast-radius** nicety — per-session `_chat_lock`
+serialization precludes the concurrent-identical-request race it guards against — flagged for a future
+cross-stack pass rather than auto-built.
+
+The 2026-06-23 scorecard/findings below are preserved as the baseline snapshot; this dated block is the current truth.
 
 ---
 
@@ -347,19 +369,19 @@ PRIORITY: P1
 
 ## 5. Technical debt — **P2** (ranked by blast radius)
 
-1. **Window management is message-count, not token-based** (memory.py:864) → large tool outputs can blow the provider context window before the count trips: failure is a *cliff* (Anthropic 400 / truncation), not graceful. Add `count_tokens`-based triggering.
+1. **Window management is message-count, not token-based** (memory.py:864) → large tool outputs can blow the provider context window before the count trips: failure is a *cliff* (Anthropic 400 / truncation), not graceful. Add `count_tokens`-based triggering. — ✅ **DONE 2026-06-24** (P2-1): token trigger + `_MAX_ACTIVE_TOKENS` + bounded compaction passes.
 2. **No memory decay / recency weighting; naive oldest-first eviction** (vault:1003-1084; LRU is an open TODO at :1024). Stale facts resurface; hot facts get evicted. `valid_until` exists but is never auto-populated.
 3. **Episodic store is a raw transcript searched by leading-wildcard LIKE** (session_store.py:458) — no `{summary, entities, sentiment, outcome}`, no semantic episodic recall, full-scan at 1000s of sessions.
-4. **Implicit learning stores raw PII** (memory.py:270-338) — redaction covers secrets, not names/emails/addresses; no PII-minimization/abstraction step; ChromaDB + sessions.db are plaintext on disk (no encryption-at-rest option).
-5. **No behavioral tests for brain.og constraints** (test_prompt_composer.py is structural-only) — a careless edit to the hard-constraint `::warning` block passes CI; classic persona drift ships silently.
+4. **Implicit learning stores raw PII** (memory.py:270-338) — redaction covers secrets, not names/emails/addresses; no PII-minimization/abstraction step; ChromaDB + sessions.db are plaintext on disk (no encryption-at-rest option). — *recall-side* secret/PII redaction ✅ already shipped (MED-009 `_redact_results` on `semantic_search`/`search_user_profile`); raw-PII-min on the *write* path + encryption-at-rest remain (design decision, flagged).
+5. **No behavioral tests for brain.og constraints** (test_prompt_composer.py is structural-only) — a careless edit to the hard-constraint `::warning` block passes CI; classic persona drift ships silently. — ✅ **DONE 2026-06-24** (P2-5).
 6. **EventBus is behaviorally shallow** — one reactive workflow (file.uploaded→extract); tool/memory/job lifecycle events are emitted but nothing reacts beyond read-model/telemetry fan-out. No trigger/rules engine.
-7. **No dead-letter / re-drive in the job queue** (queue.py:439-460,857) — exhausted-retry jobs go FAILED then are deleted by cleanup; durable background work (memory) can be permanently lost across a longer outage.
+7. **No dead-letter / re-drive in the job queue** (queue.py:439-460,857) — exhausted-retry jobs go FAILED then are deleted by cleanup; durable background work (memory) can be permanently lost across a longer outage. — ✅ **DONE 2026-06-24** (P2-7): `JobStatus.DEAD_LETTER` + `redrive_dead_letter()` + `hachi jobs dead-letter/redrive` CLI; cleanup preserves dead-letters.
 8. **Sandbox is process-only** (sandbox.py, honestly labeled) — model-generated code runs at operator privilege; env-gated off by default. Needs a container/gVisor backend before default-on or untrusted code.
 9. **No unified knowledge graph** — memory_graph is over `.og` files only; connectors are isolated tools with no cross-source entity linking. (Seam exists: connector reads could emit facts into the vault `attachments` collection.)
-10. **Cold-start resume unimplemented** (resume.py:148-152) — a WAITING run survives restart at the state level but the wake fails if the in-memory session is gone (`HonestResumeError`).
-11. **Shallow readiness probe** (cli/main.py:1994) — only checks two files exist; a gateway with a dead provider key or crashed worker reports "ready". No compose healthcheck.
+10. **Cold-start resume unimplemented** (resume.py:148-152) — a WAITING run survives restart at the state level but the wake fails if the in-memory session is gone (`HonestResumeError`). — ✅ **DONE 2026-06-24** (P2-10): rehydrates from the SQLite transcript via the existing `boot_agent(resume_session_id=…)` → `resume_from_session` path; `HonestResumeError` kept only when no runtime is attached (standalone CLI). Replay now has direct real-store coverage.
+11. **Shallow readiness probe** (cli/main.py:1994) — only checks two files exist; a gateway with a dead provider key or crashed worker reports "ready". No compose healthcheck. — ✅ **DONE 2026-06-24** (P2-11): deep probe + compose healthcheck (stdlib `urllib`, not `curl`) gating the frontend's `depends_on`.
 12. **Frontend has no client-side query cache** (no TanStack Query) — refetch-on-nav; and the leash allow/deny is matched by request *text* not request_id (chat.ts:976) — rare mis-association under concurrent identical requests.
-13. **No latency/perf regression test** anywhere despite perf-sensitive streaming + vector retrieval; recall <100ms is architecturally right (prefetch, lazy Chroma) but never benchmarked.
+13. **No latency/perf regression test** anywhere despite perf-sensitive streaming + vector retrieval; recall <100ms is architecturally right (prefetch, lazy Chroma) but never benchmarked. — ✅ **DONE 2026-06-24** (P2-13): structural (not wall-clock) regression guards — bounded recall top-k, lazy ChromaDB at `__init__`, bounded compaction passes, no unbounded history growth.
 
 ---
 
@@ -409,11 +431,11 @@ foundations.
 8. ~~**Durable memory writes** (P1-5) + **apply the structured summary back into history** (P1-6).~~ ✅ **DONE.**
 9. ~~**`UserProfileStore {get,set,correct,export}` + `CorrectionLog`** (P1-7).~~ ✅ **DONE** (backend substrate + save tool; personalization *onboarding wizard* + frontend deferred as feature work).
 10. ~~**MCP retry/breaker + reconnect** (P1-8).~~ ✅ **DONE** (full `{ok,code,message,retryable}` envelope across all tool types + tool allow-list deferred to P2).
-11. **Cold-start resume** (rehydrate session from transcript) — *still open*; ~~**`hachi backup`/`restore`** (P1-9)~~ ✅ **DONE.**
+11. ~~**Cold-start resume** (rehydrate session from transcript)~~ ✅ **DONE 2026-06-24** (P2-10); ~~**`hachi backup`/`restore`** (P1-9)~~ ✅ **DONE.**
 
 ### 6 months — the eval loop + memory maturity + reactivity
 12. **Trajectory/regression eval suite + thumbs UI + `/review` page + weekly failure report** (on `interaction_log`).
-13. **Token-budget window management** (P2-1) — remove the context-limit cliff.
+13. ~~**Token-budget window management** (P2-1) — remove the context-limit cliff.~~ ✅ **DONE 2026-06-24.**
 14. **Memory decay/recency + LRU eviction + episodic `{summary,entities,sentiment,outcome}` store** (P2-2/3).
 15. **Reactive EventBus automations** (inbound email/message triggers) (P2-6).
 16. **Knowledge-graph seam** — connector reads emit facts into the vault; implement/remove GitHub (P2-9).
@@ -422,7 +444,7 @@ foundations.
 ### 12 months — scale, trust, ecosystem
 18. **Multi-tenant readiness** — plumb `account_id` through the vault + session principal (only if product calls for it) (P1-1).
 19. **Container/gVisor sandbox backend** before default-on generated-code execution (P2-8).
-20. **Job-queue dead-letter + re-drive** (P2-7).
+20. ~~**Job-queue dead-letter + re-drive** (P2-7).~~ ✅ **DONE 2026-06-24.**
 21. **Confidence/uncertainty gate + explicit plan/reflect loop phases** (P5).
 22. **Hosted observability/eval dashboard + connector ecosystem expansion** (close the distribution gap).
 23. **Self-improvement loop** — candidate-skill synthesis from trajectories → human review → publish (plan.md Phase 5).
