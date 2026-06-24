@@ -1818,3 +1818,83 @@ PYTHONPATH=src uv run --with pytest --no-project pytest \
 uv run ruff check tests/test_perf_regression.py   # All checks passed!
 uv run ruff format --check tests/test_perf_regression.py  # 1 file already formatted
 ```
+
+---
+
+### Eval loop E1 — interaction read/rating API
+
+**Found.** `SessionStore` already had `get_interactions()` and `set_interaction_rating()` (written as the P0-2 eval plumbing), but no gateway routes exposed them to the frontend or eval tooling. The `/review` UI and any trajectory-eval harness had no way to read rows or post ratings without going directly to SQLite.
+
+**Changed.**
+- `src/hachi/gateway/fastapi_app.py` — four new Pydantic models (`InteractionRecord`, `InteractionListResponse`, `RatingRequest`, `RatingResponse`) added above the `_lifespan` function (line ~340 area). New `interactions_router` (prefix `/interactions`, `protected_dependencies`) with two routes:
+  - `GET /interactions` — query params `session_id` (optional) and `limit` (1–500, default 100). If `session_id` supplied: `_check_session_ownership` then `store.get_interactions(session_id=..., limit=...)`. Otherwise: fetch all rows then filter to sessions owned by the caller (mirrors `list_sessions`' `_owned` helper); no-auth returns everything. 503 if the store is unavailable.
+  - `PUT /interactions/{interaction_id}/rating` — body `{rating: "up"|"down", notes?: str}`. Looks up the row's `session_id` first (via `get_interactions` scan), ownership-checks that session, then calls `store.set_interaction_rating`. Returns 404 if no row matched; 422 if `rating` is not `"up"` or `"down"` (Pydantic `Literal`).
+  - `app.include_router(interactions_router)` appended to the existing `include_router` block (~line 2507).
+- `tests/test_interactions_api.py` — 23 new tests across 5 classes; all use real `SessionStore(db_path=tmp_path)` seeded via `log_interaction`, with `patch("hachi.gateway.fastapi_app._resolve_session_store", ...)` to inject the isolated DB.
+- `openapi/hachi-openapi.json` — regenerated; now contains `/interactions` and `/interactions/{interaction_id}/rating`.
+
+**Why.** The write side (`log_interaction`) was complete but dark. This adds the read surface needed for the `/review` UI and eval tooling without any write-side coupling. Ownership gating mirrors the existing `list_sessions` / `get_session` pattern so no new security surface is introduced. `Literal["up","down"]` at the API layer constrains the free-text store column to a meaningful vocabulary without changing the store schema.
+
+**Verify.**
+```
+uv run pytest tests/test_interactions_api.py -q
+# 23 passed
+
+uv run ruff check src/hachi/gateway/fastapi_app.py tests/test_interactions_api.py
+# All checks passed!
+
+uv run python -m mypy --config-file mypy-strict-gate.ini
+# Success: no issues found in 36 source files
+
+uv run hachi gateway-openapi --output openapi/hachi-openapi.json
+# then: python -c "import json; data=json.load(open('openapi/hachi-openapi.json')); ..."
+# ['/interactions', '/interactions/{interaction_id}/rating']
+```
+
+---
+
+### Eval loop E2 — eval report + regression runner
+
+**Found.** The interaction_log was populated (P0-2) and exposed via the HTTP API (E1), but there was no in-process analytics layer and no structural regression harness. Failure patterns (down-rated turns, tool names, per-model costs) had to be queried manually; there was no way to run a named regression case through the real agent loop and assert structural properties of the trajectory.
+
+**Changed.**
+
+- `src/hachi/core/eval/__init__.py` — package init, re-exports public API.
+- `src/hachi/core/eval/report.py` — **REAL analytics; pure function, no I/O.** `build_failure_report(interactions, *, since) -> EvalReport` aggregates over `interaction_log` rows. `EvalReport` fields: `total_turns`, `rated_up`, `rated_down`, `unrated`, `failure_rate` (`down / (up+down)`, 0.0 when no rated turns), `avg_cost_per_turn` (excludes None-cost rows from denominator), `total_cost`, `errored_turns` (output empty/whitespace OR starts with `[error]`/`error:`/`exception:`/`traceback`/`[incomplete]`), `top_failing_tools` (tool→count from down-rated turns only, sorted desc), `per_model` (model→`PerModelStats{count,avg_cost,down_count}`), `recent_failures` (last 10 down-rated turns). Optional `since` ISO filter applied before all aggregation.
+- `src/hachi/core/eval/runner.py` — **REAL execution; dependency-injected turn_fn.** Four assertion kinds: `ToolCalledAssertion`, `OutputContainsAssertion`, `NoErrorAssertion`, `MaxCostAssertion`. `run_case(case, turn_fn=...)` calls the injected `turn_fn` (real `ExecutionLoop` in tests, real `AgentSession` in production), evaluates all assertions against the real `TurnTrajectory`, and sets `passed=True` only when the failures list is empty — never hardcoded. `DEFAULT_SUITE` has 2 seed cases; docstring is explicit this is a starting scaffold.
+- `src/hachi/cli/commands/eval.py` — `eval_app` Typer sub-app with two commands:
+  - `hachi eval report [--json] [--since ISO] [--session SID] [--limit N]` — opens the real SessionStore (same path as `hachi session`), calls `get_interactions`, calls `build_failure_report`, renders a Rich table or JSON. Fully functional.
+  - `hachi eval run [--suite PATH]` — honestly reports "not wired" rather than faking a pass (see "Why" below). Suite loading (`.py` files) is scaffolded; JSON format stub present.
+- `src/hachi/cli/main.py` — one line added: `app.add_typer(eval_app, name="eval")`.
+- `tests/test_eval_report.py` — 26 tests; pin exact aggregation math: rating counts, failure_rate fractions, cost sum/avg, errored_turns rule (empty + prefix), top_failing_tools counts and sort order, per_model stats, since filter inclusion/exclusion, recent_failures cap at 10.
+- `tests/test_eval_runner.py` — 12 tests including the **anti-fake proof**: `test_unsatisfiable_assertion_fails_with_reason` passes `output_contains("NEVER_IN_OUTPUT")` against a scripted ExecutionLoop that returns "pong" — asserts `passed=False` with the needle in the failure reason. Any runner that hardcodes pass would break this test.
+
+**Why.**
+
+*Report*: analytics must be a pure function so it is testable without a live database; seeding 38 tests against known rows pins the real math.
+
+*Runner*: dependency-injecting `turn_fn` keeps the runner framework-agnostic and makes the anti-fake guarantee testable without a live API key. The scripted `ExecutionLoop` in the test is the same class that runs in production — not a mock — so the test covers real assertion logic against real loop output.
+
+*`eval run` not wired*: wiring `boot_agent` in the CLI command would require workspace init, LLM credentials, and skills loading — too fragile for a first-pass CLI and not guaranteed in CI. The runner itself is fully exercised in tests. When a real turn_fn is available, wire it in `eval.py` with `from hachi.gateway.orchestrator import boot_agent`.
+
+*`errored_turns` rule*: conservative prefix list catches the three real failure modes (empty reply, crash traces, iteration-limit `[INCOMPLETE]`) without over-flagging short valid responses like "No." The rule is documented in the module docstring and tested.
+
+**Verify.**
+```
+PYTHONPATH=src uv run --with pytest --no-project pytest tests/test_eval_report.py tests/test_eval_runner.py -q
+# 38 passed in 4.68s
+
+uv run ruff check src/hachi/core/eval/__init__.py src/hachi/core/eval/report.py \
+    src/hachi/core/eval/runner.py src/hachi/cli/commands/eval.py \
+    tests/test_eval_report.py tests/test_eval_runner.py
+# All checks passed!
+
+uv run mypy src/hachi/core/eval src/hachi/cli/commands/eval.py --ignore-missing-imports
+# Success: no issues found in 4 source files
+
+PYTHONPATH=src uv run --no-project python -c "from hachi.cli.main import app; app()" eval report --json
+# {"total_turns": 25, "rated_up": 0, "rated_down": 0, "unrated": 25, "failure_rate": 0.0,
+#  "avg_cost_per_turn": 0.0, "total_cost": 0.0, "errored_turns": 0,
+#  "top_failing_tools": [], "per_model": {"gpt-4o-mini": {"count": 25, ...}},
+#  "recent_failures": [], "since": null}
+```

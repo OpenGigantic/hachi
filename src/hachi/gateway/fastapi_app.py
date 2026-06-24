@@ -339,6 +339,52 @@ class ApprovalActionRequest(BaseModel):
     rationale: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Eval loop — interaction read/rating models (E1)
+# ---------------------------------------------------------------------------
+
+
+class InteractionRecord(BaseModel):
+    """One row from ``interaction_log`` — the per-turn eval ground truth.
+
+    ``tool_calls`` and ``memory_hits`` are decoded JSON arrays (lists of strings).
+    Numeric fields are optional because they may be NULL for older rows.
+    """
+
+    id: str
+    session_id: str
+    turn_id: str | None = None
+    ts: str
+    user_input: str | None = None
+    agent_output: str | None = None
+    tool_calls: list[str] = Field(default_factory=list)
+    memory_hits: list[str] = Field(default_factory=list)
+    model_used: str | None = None
+    token_cost: float | None = None
+    tokens: int | None = None
+    rating: str | None = None
+    notes: str | None = None
+
+
+class InteractionListResponse(BaseModel):
+    """Response for ``GET /interactions``."""
+
+    interactions: list[InteractionRecord]
+
+
+class RatingRequest(BaseModel):
+    """Body for ``PUT /interactions/{interaction_id}/rating``."""
+
+    rating: Literal["up", "down"]
+    notes: str | None = None
+
+
+class RatingResponse(BaseModel):
+    """Response for ``PUT /interactions/{interaction_id}/rating``."""
+
+    ok: bool
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
@@ -2487,6 +2533,89 @@ def create_gateway_app(
         except Exception as exc:  # noqa: BLE001
             return _error_response(500, "config_write_error", str(exc))
 
+    # ==========================================
+    # Eval loop — interaction read/rating (E1)
+    # ==========================================
+
+    interactions_router = APIRouter(
+        prefix="/interactions", tags=["interactions"], dependencies=protected_dependencies
+    )
+
+    @interactions_router.get("", response_model=InteractionListResponse)
+    async def get_interactions(
+        request: Request,
+        session_id: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> InteractionListResponse:
+        """Return interaction_log rows newest-first, optionally scoped to one session.
+
+        Ownership rules (mirrors ``list_sessions``):
+        - If ``session_id`` is supplied: ownership-check that session before querying.
+        - If not supplied: return rows across all sessions owned by the caller
+          (legacy NULL-owner sessions included for back-compat); no-auth returns all.
+
+        Args:
+            session_id: Optional session filter.
+            limit: Maximum rows to return (1–500; default 100).
+        """
+        caller_hash = _require_auth(request)
+        store = _resolve_session_store()
+        if store is None:
+            raise HTTPException(status_code=503, detail="session store unavailable")
+
+        if session_id is not None:
+            # Ownership-check before querying to avoid leaking row existence.
+            _check_session_ownership(session_id, caller_hash)
+            rows = store.get_interactions(session_id=session_id, limit=limit)
+        else:
+            # Pull all rows then filter to owned sessions.
+            rows = store.get_interactions(session_id=None, limit=limit)
+            if caller_hash is not None:
+                def _owned_session(sid: str) -> bool:
+                    owner = control_plane.get_session_owner(sid)
+                    return owner is None or secrets.compare_digest(owner, caller_hash)
+
+                rows = [r for r in rows if _owned_session(r.get("session_id") or "")]
+
+        records = [InteractionRecord(**row) for row in rows]
+        return InteractionListResponse(interactions=records)
+
+    @interactions_router.put("/{interaction_id}/rating", response_model=RatingResponse)
+    async def put_interaction_rating(
+        interaction_id: str,
+        payload: RatingRequest,
+        request: Request,
+    ) -> RatingResponse:
+        """Set the thumbs-up / thumbs-down rating (and optional notes) for a turn.
+
+        Ownership check: looks up the row's ``session_id`` first, then verifies the
+        caller owns that session before allowing the write.
+
+        Returns 404 if ``interaction_id`` does not exist.
+        """
+        caller_hash = _require_auth(request)
+        store = _resolve_session_store()
+        if store is None:
+            raise HTTPException(status_code=503, detail="session store unavailable")
+
+        # Look up the row to discover its session_id for the ownership check.
+        existing = store.get_interactions(session_id=None, limit=10_000)
+        row = next((r for r in existing if r.get("id") == interaction_id), None)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Interaction {interaction_id!r} not found")
+
+        # Ownership-check the owning session before mutating.
+        row_session_id: str = row.get("session_id") or ""
+        if row_session_id:
+            _check_session_ownership(row_session_id, caller_hash)
+
+        updated = store.set_interaction_rating(
+            interaction_id, rating=payload.rating, notes=payload.notes
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Interaction {interaction_id!r} not found")
+        return RatingResponse(ok=True)
+
     app.include_router(integrations_router)
     app.include_router(integrations_callback_router)
     app.include_router(system)
@@ -2505,6 +2634,7 @@ def create_gateway_app(
     app.include_router(runs_router)
     app.include_router(files_router)
     app.include_router(voice_router)
+    app.include_router(interactions_router)
 
     if _auth_enabled:
         # Inject the bearer security scheme into the exported OpenAPI spec so
