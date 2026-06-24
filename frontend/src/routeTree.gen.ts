@@ -13,6 +13,7 @@ import { Route as WorkRouteImport } from './routes/work'
 import { Route as SkillsRouteImport } from './routes/skills'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RunRouteImport } from './routes/run'
+import { Route as ReviewRouteImport } from './routes/review'
 import { Route as OgRouteImport } from './routes/og'
 import { Route as MemoryRouteImport } from './routes/memory'
 import { Route as IntegrationsRouteImport } from './routes/integrations'
@@ -39,6 +40,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const RunRoute = RunRouteImport.update({
   id: '/run',
   path: '/run',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ReviewRoute = ReviewRouteImport.update({
+  id: '/review',
+  path: '/review',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OgRoute = OgRouteImport.update({
@@ -85,6 +91,7 @@ export interface FileRoutesByFullPath {
   '/integrations': typeof IntegrationsRoute
   '/memory': typeof MemoryRoute
   '/og': typeof OgRoute
+  '/review': typeof ReviewRoute
   '/run': typeof RunRoute
   '/settings': typeof SettingsRoute
   '/skills': typeof SkillsRoute
@@ -98,6 +105,7 @@ export interface FileRoutesByTo {
   '/integrations': typeof IntegrationsRoute
   '/memory': typeof MemoryRoute
   '/og': typeof OgRoute
+  '/review': typeof ReviewRoute
   '/run': typeof RunRoute
   '/settings': typeof SettingsRoute
   '/skills': typeof SkillsRoute
@@ -112,6 +120,7 @@ export interface FileRoutesById {
   '/integrations': typeof IntegrationsRoute
   '/memory': typeof MemoryRoute
   '/og': typeof OgRoute
+  '/review': typeof ReviewRoute
   '/run': typeof RunRoute
   '/settings': typeof SettingsRoute
   '/skills': typeof SkillsRoute
@@ -127,6 +136,7 @@ export interface FileRouteTypes {
     | '/integrations'
     | '/memory'
     | '/og'
+    | '/review'
     | '/run'
     | '/settings'
     | '/skills'
@@ -140,6 +150,7 @@ export interface FileRouteTypes {
     | '/integrations'
     | '/memory'
     | '/og'
+    | '/review'
     | '/run'
     | '/settings'
     | '/skills'
@@ -153,6 +164,7 @@ export interface FileRouteTypes {
     | '/integrations'
     | '/memory'
     | '/og'
+    | '/review'
     | '/run'
     | '/settings'
     | '/skills'
@@ -167,6 +179,7 @@ export interface RootRouteChildren {
   IntegrationsRoute: typeof IntegrationsRoute
   MemoryRoute: typeof MemoryRoute
   OgRoute: typeof OgRoute
+  ReviewRoute: typeof ReviewRoute
   RunRoute: typeof RunRoute
   SettingsRoute: typeof SettingsRoute
   SkillsRoute: typeof SkillsRoute
@@ -201,6 +214,13 @@ declare module '@tanstack/react-router' {
       path: '/run'
       fullPath: '/run'
       preLoaderRoute: typeof RunRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/review': {
+      id: '/review'
+      path: '/review'
+      fullPath: '/review'
+      preLoaderRoute: typeof ReviewRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/og': {
@@ -263,6 +283,7 @@ const rootRouteChildren: RootRouteChildren = {
   IntegrationsRoute: IntegrationsRoute,
   MemoryRoute: MemoryRoute,
   OgRoute: OgRoute,
+  ReviewRoute: ReviewRoute,
   RunRoute: RunRoute,
   SettingsRoute: SettingsRoute,
   SkillsRoute: SkillsRoute,

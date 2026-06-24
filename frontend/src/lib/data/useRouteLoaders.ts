@@ -75,6 +75,10 @@ export function useRouteLoaders(): void {
       void import("./domains/config").then((m) => void m.loadConfig());
       return;
     }
+    if (p === "/review") {
+      void import("./domains/interactions").then((m) => void m.loadInteractions());
+      return;
+    }
     // "/" (home / conversation) — no additional non-critical domain needed
   }, [pathname]);
 }

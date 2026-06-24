@@ -90,6 +90,7 @@ import type {
   Provider,
   SafetyLevel,
   PendingAttachment,
+  AgentInteraction,
 } from "../data/types";
 
 // Alias used in consent overlay state
@@ -209,6 +210,8 @@ interface State {
   editingText: string;
   // FIX 4: last model id seen in a usage/turn-complete SSE event
   lastUsedModel: string | null;
+  // eval loop
+  interactions: AgentInteraction[];
 }
 
 // ============================================================
@@ -442,6 +445,7 @@ const domainDefaults = (): Omit<State, "operator" | "theme"> => ({
   editingFactId: null,
   editingText: "",
   lastUsedModel: null,
+  interactions: [],
 });
 
 export const useStore = create<State & Actions>()(

@@ -26,6 +26,7 @@ const NAV_ITEMS: NavEntry[] = [
   { key: 'og',           route: '/og',           label: 'OG explorer',  icon: 'network'   },
   { key: 'authoring',    route: '/authoring',    label: 'Authoring',    icon: 'file-code' },
   { key: 'integrations', route: '/integrations', label: 'Integrations', icon: 'plug'      },
+  { key: 'review',       route: '/review',       label: 'Review',       icon: 'eye'       },
   { key: 'settings',     route: '/settings',     label: 'Settings',     icon: 'settings'  },
 ]
 
