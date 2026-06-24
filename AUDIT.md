@@ -132,11 +132,24 @@ daemon (`[eval_reports] enabled`, default OFF, mirrors the proven `_start_timeou
 load-bearing agent-turn scheduler is untouched) + a `hachi eval snapshot` manual/cron command + an
 `eval.report.generated` event. 54 new tests; full `pytest` **3758 pass / 0 fail**. Verified live on the
 REAL store: `eval run` 5/5, `eval report` over 29 real turns, `eval snapshot` artifact written. The
-flywheel immediately surfaced one real finding — every logged turn shows **$0.00 cost** (per-turn cost is
-not captured into `interaction_log`; a pre-existing P0-2 instrumentation gap, now the top evidence-based
-next-hardening candidate). Remaining eval gaps are CONTENT/OPS not machinery: the replay corpus is a 5-case
-seed (not comprehensive), `eval run` is not yet a blocking CI job, and there is no live-record mode
-(fixtures are hand-authored). Score impact: **P4 Eval & Observability 62→70.** **Overall ~85→~86.**
+flywheel immediately surfaced one real finding — every logged turn showed **$0.00 cost / 0 tokens** (a
+pre-existing P0-2 instrumentation gap, NOT introduced by E4/E5), which was then root-caused and **FIXED
+(COST-1, below)**. Remaining eval gaps are CONTENT/OPS not machinery: the replay corpus is a 5-case seed
+(not comprehensive), `eval run` is not yet a blocking CI job, and there is no live-record mode (fixtures are
+hand-authored). Score impact: **P4 Eval & Observability 62→70.** **Overall ~85→~86.**
+
+**COST-1 — OpenAI-compat streaming usage fix (2026-06-24, surfaced by the eval flywheel above):**
+`OpenAICompatibleClient.generate_stream` set `stream=True` but never sent
+`stream_options:{include_usage:true}`, so OpenAI-compatible providers omit the final usage chunk in
+streaming mode → the `CostTracker` recorded **zero tokens/cost for every streaming turn**. Two real
+consequences, not just cosmetics: (1) interaction_log / eval-report cost+token metrics were meaningless for
+all non-Anthropic providers; (2) the **daily spend cap (P1-3) was silently inert** for OpenAI-compat
+streaming (cost never accrued → the cap could never trip). Fix: request usage by default (threaded through
+all client build sites via a `stream_usage` provider-config flag; opt-out for strict local servers that 400
+on unknown fields). 4 new streaming tests; full `pytest` **3762 pass / 0 fail**. This closes a silent
+correctness gap behind both the P1-3 cap and the P4 cost metrics for OpenAI-compatible providers; overall
+holds at **~86** (a restored guarantee, not a new capability). Honest limits: historical rows do not
+backfill; the `chatgpt-web` unofficial provider is inherently usage-less.
 
 The 2026-06-23 scorecard/findings below are preserved as the baseline snapshot; this dated block is the current truth.
 
