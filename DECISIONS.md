@@ -1985,3 +1985,93 @@ uv run hachi eval run
 # 0 passed / 1 failed  out of 1 total
 # Exit code: 1
 ```
+
+---
+
+### E5 — Weekly failure-report automation (2026-06-24)
+
+**Gap.** The `interaction_log` + `build_failure_report()` already existed, but nothing
+triggered a periodic report.  A user could only get a report by running `hachi eval report`
+manually.  The audit named "weekly-failure-report automation" as the natural next increment
+so Hachi self-reports failure-rate degradation over time without human prompting.
+
+**Design: why NOT the agent-turn scheduler.**  `src/hachi/jobs/scheduler.py` fires agent
+turns (`Schedule.task` → `session.chat()`).  A failure report is internal computation, not
+an LLM turn — it needs no Anthropic API key, no tool loop, and must never contribute to
+session cost.  Using the scheduler would model it as a user request, add noise to the
+interaction_log, and block on the session lock during a live turn.
+
+**Chosen pattern: mirror `_start_timeout_sweep`.**  `orchestrator._start_timeout_sweep` is
+the established pattern for resident internal computation: a module-level function that
+starts a daemon thread with a `while True: sleep(); try: work(); except: log_debug` loop.
+`_start_eval_report_scheduler` follows exactly this shape:
+- Thread named `hachi-eval-report`, daemon=True
+- Sleeps `min(interval_seconds, 3600)` per tick (caps at 1 h so the process stays
+  responsive even with a 1-week interval)
+- Calls `maybe_generate_report(...)` inside try/except, logs at debug on failure, never
+  raises
+
+**Decoupled core (`src/hachi/core/eval/scheduled_report.py`).**  All logic is extracted
+into a pure module with no orchestrator imports:
+- `render_report_markdown(report)` — pure EvalReport → markdown
+- `ReportArtifact` — typed result (md_path, json_path, report, generated_at)
+- `generate_failure_report_artifact(store, *, out_dir, …)` — reads rows, builds report,
+  writes both `eval-report-<stamp>.md` and `eval-report-<stamp>.json`
+- `due_for_report(last_run_at, now, interval_seconds)` — pure predicate
+- `read_last_report_at` / `write_last_report_at` — atomic marker (temp + os.replace)
+- `maybe_generate_report(store, *, out_dir, marker_path, interval_seconds, limit, emit, now)`
+  — the single testable unit the thread calls each wake
+
+**Opt-in, default off.**  `EvalReportSettings(BaseModel)` in `src/hachi/core/settings.py`
+with `enabled: bool = False`, `interval_seconds: int = 604800`, `limit: int = 1000`.
+Boot wiring in `orchestrator.boot_agent` reads `config.get("eval_reports", {})` and calls
+`_start_eval_report_scheduler` only when `enabled=True`.  Nothing runs unless the operator
+adds `[eval_reports] enabled = true` to `settings.toml`.
+
+**Event.**  `EVAL_REPORT_GENERATED = "eval.report.generated"` added to
+`src/hachi/core/runtime_events.py`.  Payload carries `markdown_path`, `json_path`,
+`total_turns`, `failure_rate`, `generated_at`.
+
+**Output location.**  `get_hachi_paths().state_dir / "eval-reports"` — confirmed
+`state_dir` is where `sessions.db`, `schedules.json`, and `checkpoints/` already live.
+`workspace_dir` does not exist; `data_dir` is for persistent data not ephemeral reports.
+
+**Manual entry point: `hachi eval snapshot`.**  New `@eval_app.command("snapshot")` in
+`src/hachi/cli/commands/eval.py`.  Generates the artifact immediately, updates the weekly
+marker (so the scheduler clock resets), and prints the written paths + totals.  Does not
+touch `eval report` or `eval run`.
+
+**Verification output.**
+
+```
+uv run pytest tests/test_eval_scheduled_report.py -q
+# 37 passed in 1.45s
+
+uv run pytest tests/test_eval_report.py tests/test_eval_runner.py tests/test_eval_replay.py -q
+# 55 passed in 5.71s (no regression)
+
+uv run ruff check src/hachi/core/eval src/hachi/core/runtime_events.py \
+    src/hachi/gateway/orchestrator.py src/hachi/cli/commands/eval.py \
+    tests/test_eval_scheduled_report.py
+# All checks passed!
+
+uv run mypy src/hachi/core/eval src/hachi/core/runtime_events.py \
+    src/hachi/cli/commands/eval.py --ignore-missing-imports
+# Success: no issues found in 8 source files
+
+uv run mypy src/hachi/gateway/orchestrator.py --ignore-missing-imports
+# Found 34 errors (all pre-existing; zero new errors from E5 symbols)
+
+uv run hachi eval snapshot --out $TEMP/hachi-eval-test
+# Snapshot written  turns=27  failure_rate=0.0%
+#   md  → C:\Users\opsin\AppData\Local\Temp\hachi-eval-test\eval-report-20260624-172538.md
+#   json→ C:\Users\opsin\AppData\Local\Temp\hachi-eval-test\eval-report-20260624-172538.json
+```
+
+**Honest residual limitation.**  The resident scheduler is intentionally dormant until
+opted in.  Because `hachi gateway` boot_agent is the entry point, the scheduler is NOT
+active in `hachi run` (TUI mode) — it fires only when the gateway is running.  A user who
+never runs the gateway can still generate reports on demand via `hachi eval snapshot`.
+The first automatic run fires at the first `min(interval, 3600)` tick after `enabled=True`
+boot — not immediately on boot.  Both behaviours are intentional: the first-tick-delay
+avoids a report storm on restart; gateway-only scope keeps the clean process model intact.

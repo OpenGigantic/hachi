@@ -80,6 +80,9 @@ BUDGET_EXCEEDED = "budget.exceeded"
 LLM_RETRY = "llm.retry"
 SESSION_TIME_LIMIT = "session.time.limit"
 
+# Eval loop events
+EVAL_REPORT_GENERATED = "eval.report.generated"
+
 # Max chars of a tool result carried in a ``tool.call.completed`` preview.
 # Bounded so the event stream stays light, but large enough that expanding a
 # tool card in the TUI shows the substance of the result, not a stub.

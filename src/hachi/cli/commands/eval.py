@@ -2,8 +2,9 @@
 
 Commands
 --------
-``hachi eval report``  — Query the interaction_log and print an analytics report.
-``hachi eval run``     — Run the regression suite via record/replay and print a scorecard.
+``hachi eval report``   — Query the interaction_log and print an analytics report.
+``hachi eval run``      — Run the regression suite via record/replay and print a scorecard.
+``hachi eval snapshot`` — Generate a failure-report artifact NOW (manual / OS-cron entry point).
 
 Design note
 -----------
@@ -14,6 +15,11 @@ SessionStore and builds a real EvalReport via ``build_failure_report``.
 harness (see ``hachi.core.eval.replay``).  It drives a production ``ExecutionLoop``
 with a ``ScriptedLLMClient`` that replays pre-recorded ``LLMResponse`` objects —
 no live API key required.  It exits non-zero if any case fails.
+
+``eval snapshot`` generates a failure-report artifact immediately (bypassing the
+weekly schedule) and writes it to ``state_dir/eval-reports/`` (or a custom
+``--out`` directory).  Running it also resets the weekly clock so the next
+automatic run is deferred by the full interval.
 """
 
 from __future__ import annotations
@@ -186,6 +192,80 @@ def eval_report(
 
     if report.total_turns == 0:
         console.print("[dim]No interaction rows found.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# hachi eval snapshot
+# ---------------------------------------------------------------------------
+
+
+@eval_app.command("snapshot")
+def eval_snapshot(
+    since: str | None = typer.Option(
+        None,
+        "--since",
+        help="ISO timestamp (YYYY-MM-DDTHH:MM:SS or YYYY-MM-DD) — filter rows from this point.",
+    ),
+    limit: int = typer.Option(
+        1000,
+        "--limit",
+        "-n",
+        help="Maximum number of interaction rows to load (newest first).",
+    ),
+    out: str | None = typer.Option(
+        None,
+        "--out",
+        help="Output directory for the report artifacts.  "
+             "Defaults to state_dir/eval-reports/.",
+    ),
+) -> None:
+    """Generate a failure-report artifact immediately (manual / OS-cron entry point).
+
+    Reads the interaction_log from the default SessionStore, builds an
+    :class:`~hachi.core.eval.report.EvalReport`, and writes both a Markdown
+    summary and a JSON file to the output directory.  Also updates the weekly
+    scheduler marker so the next automatic run is deferred by the full interval.
+
+    Examples::
+
+        hachi eval snapshot
+        hachi eval snapshot --since 2026-06-01
+        hachi eval snapshot --out /tmp/reports --limit 500
+    """
+    from pathlib import Path as _Path
+
+    from hachi.core.eval.scheduled_report import (
+        generate_failure_report_artifact,
+        write_last_report_at,
+    )
+    from hachi.core.paths import get_hachi_paths
+
+    paths = get_hachi_paths()
+    out_dir = _Path(out) if out is not None else paths.state_dir / "eval-reports"
+
+    store = _open_store()
+    try:
+        artifact = generate_failure_report_artifact(
+            store,
+            out_dir=out_dir,
+            since=since,
+            limit=limit,
+        )
+    finally:
+        store.shutdown()
+
+    # Reset the weekly clock so the resident scheduler is not triggered again
+    # for a full interval after a manual snapshot.
+    marker_path = out_dir / ".last_report.json"
+    write_last_report_at(marker_path, _dt.datetime.now(tz=_dt.UTC))
+
+    failure_pct = f"{artifact.report.failure_rate * 100:.1f}%"
+    console.print(
+        f"[green]Snapshot written[/green]  "
+        f"turns={artifact.report.total_turns}  failure_rate={failure_pct}"
+    )
+    console.print(f"  md  → {artifact.markdown_path}")
+    console.print(f"  json→ {artifact.json_path}")
 
 
 # ---------------------------------------------------------------------------
