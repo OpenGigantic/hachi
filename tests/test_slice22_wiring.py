@@ -395,18 +395,23 @@ class TestHandlerCorrections:
         assert result == expected
         assert stored == [("s1", expected)]
 
-    def test_extract_fact_is_honest_seam(self) -> None:
-        """handle_extract_fact is a documented seam — logs and returns seam string."""
+    def test_extract_fact_is_real_and_degrades_gracefully(self) -> None:
+        # P1-5 made handle_extract_fact a real durable handler; with no vault/LLM
+        # resolvable in the test env it must degrade gracefully (status string,
+        # never crash, never the old "seam:" placeholder).
         from hachi.core.runtime.job_handlers import handle_extract_fact
 
         result = handle_extract_fact(session_id="s2", text="The user prefers dark mode")
-        assert result.startswith("seam:extract_fact:")
+        assert isinstance(result, str)
+        assert not result.startswith("seam:")
+        # Degrades to a skipped/error status — vault or LLM client unavailable in CI.
+        assert result.startswith(("skipped:", "error:"))
 
     def test_extract_fact_skips_empty_text(self) -> None:
         from hachi.core.runtime.job_handlers import handle_extract_fact
 
         result = handle_extract_fact(session_id="s3", text="")
-        assert result == "skipped: empty text"
+        assert result == "skipped:empty_text"
 
     def test_auto_extract_is_real_and_degrades_gracefully(self) -> None:
         # Slice 2.4 (Files) made handle_auto_extract a real extractor; with no
