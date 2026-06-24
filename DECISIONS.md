@@ -1089,3 +1089,87 @@ uv run mypy src/hachi/core/memory.py src/hachi/core/runtime/job_handlers.py --ig
 
 Results (2026-06-24): 120/120 tests pass; ruff check + format clean; mypy before=18 errors (16+2),
 after=15 (13+2) — net improvement of 3 (refactored methods removed some pre-existing errors). No regression.
+
+---
+
+### P1-9 — backup/restore CLI + Windows CI + GitHub connector
+
+#### Part A — `hachi backup` / `hachi restore` CLI
+
+**Found.** `SessionStore.backup(dest)` existed (core/session_store.py:862) with no callers and no
+CLI entry point. The memory vault (ChromaDB at `paths.chroma_dir`) had no backup path at all. Users
+had no supported way to protect or recover their session history or memory vault.
+
+**Changed.**
+- `src/hachi/cli/main.py`: Added `@app.command("backup")` and `@app.command("restore")`.
+  - `hachi backup [--dest <dir>]`: creates `<dest>/hachi-backup-<YYYYMMDD-HHMMSS>/` containing
+    (1) `sessions.db` via `SessionStore.backup()` (online hot-backup, safe with a running gateway),
+    (2) `chroma_vault/` via `shutil.copytree`, (3) `settings.toml` + `device-permissions.og`.
+    `.env` files are **explicitly excluded** (contain secrets) — the output states this clearly.
+    Default dest: `<state_dir>/backups/`.
+  - `hachi restore <src> [--yes]`: copies `sessions.db` back via `shutil.copy2` and replaces the
+    live `chroma_vault/` via `shutil.rmtree` + `copytree`. Requires `--yes` or interactive
+    confirmation; refuses cleanly on cancel. Exits 1 with a clear message if src is missing.
+- `tests/test_backup_restore.py`: 11 tests covering backup creates files (sessions.db round-trip via
+  real SQLite, chroma_vault dir copy, config files, secrets excluded, output mentions exclusion,
+  default dest), and restore round-trips both artefacts and refuses without confirmation.
+
+**Why.** The backup command gives users a point-in-time snapshot of session history + memory vault
+with zero dependencies (no archive format, no external tools). Secrets are intentionally excluded
+because `.env` contains plaintext credentials that belong in a secret manager, not a backup dir.
+The restore guard (`--yes`) prevents accidental overwrite of live data.
+
+#### Part B — Windows in CI
+
+**Found.** `.github/workflows/ci.yml` `test` job matrix was `[ubuntu-latest, macos-latest]`.
+The primary dev platform (Windows 11) was not covered, so Windows-specific regressions in path
+handling, file encoding, or subprocess behaviour would not be caught in CI.
+
+**Changed.**
+- `.github/workflows/ci.yml`: Added `windows-latest` to the `test` job matrix. `fail-fast: false`
+  was already set so a Windows failure does not mask Linux/macOS results. The `uv sync` and
+  `uv run pytest -q` steps are cross-platform and require no shell changes.
+
+**Why.** The Windows encoding fix at main.py boot (`sys.stdout.reconfigure`) and several
+Windows-specific path guards already exist; CI should verify they stay working.
+
+#### Part C — phantom GitHub connector removed
+
+**Found.** `connector_registry.py` registered a full GitHub OAuth2 `ConnectorSpec` (id="github")
+with authorize/token URLs and env-var mappings, but there is no `src/hachi/integrations/github/`
+backend and no GitHub tool. A user who clicked "Connect GitHub" in the UI would complete the OAuth
+flow and then have nothing to use it with — a dead UI affordance.
+
+**Decision: REMOVED the registration** (clean removal was straightforward — no deep entanglement).
+
+**Changed.**
+- `src/hachi/integrations/connector_registry.py`: Removed the `github` `ConnectorDef` from
+  `CONNECTORS` and the `"github"` entry from `OAUTH2_CLIENT_ID_ALIASES`. Updated the module
+  docstring table to remove the github rows and added a NOTE explaining the intentional absence
+  (add back once `src/hachi/integrations/github/` exists).
+- `tests/test_oauth_integrations.py`: Updated `test_all_connectors_have_ids` to assert
+  `"github" not in ids` (with explanatory comment) and lowered the minimum connector count from 5
+  to 4. Replaced the github-specific `test_status_configured_when_creds_present_but_no_token` test
+  with the same logic targeting `notion` (same OAuth2 pattern, actually backed by tools).
+
+**Why.** Clean removal is better than a documented dead affordance: users don't see a "Connect
+GitHub" button that leads nowhere, and the code surface is smaller. The secret-scanner tests
+(`test_secret_scanner.py`, `test_secret_patterns_extended.py`) that detect GitHub PAT patterns
+(`ghp_*`, `github_pat_*`) are unaffected — they test secret detection, not connector registration.
+
+**Frontend note.** `grep -rn "github" frontend/` may reveal a hardcoded GitHub connector tile.
+That is a follow-up (frontend change not tackled here — the backend registry is the source of
+truth for the integrations list endpoint, so the tile will simply return 404 on connect attempts
+until the frontend is updated or GitHub tools are implemented).
+
+**Verify.**
+```
+uv run pytest tests/test_backup_restore.py tests/test_oauth_integrations.py -q
+uv run ruff check src/hachi/cli/main.py src/hachi/integrations/connector_registry.py tests/test_backup_restore.py tests/test_oauth_integrations.py
+uv run ruff format --check src/hachi/cli/main.py src/hachi/integrations/connector_registry.py tests/test_backup_restore.py tests/test_oauth_integrations.py
+uv run mypy src/hachi/cli/main.py src/hachi/integrations/connector_registry.py --ignore-missing-imports
+python -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml')); print('ci.yml OK')"
+```
+
+Results (2026-06-24): 59/59 tests pass; ruff check + format clean; mypy main.py 122 errors
+(baseline was already 122 — no regression); connector_registry.py 0 errors; ci.yml YAML valid.
