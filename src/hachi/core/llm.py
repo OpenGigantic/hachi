@@ -381,11 +381,21 @@ class OpenAICompatibleClient(BaseLLMClient):
         api_key: str | None = None,
         max_tokens: int = 4096,
         timeout: float = 60.0,
+        stream_usage: bool = True,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
         self.max_tokens = max_tokens
+        # Request usage metadata in streamed responses (OpenAI stream_options.include_usage).
+        # Default True: every major hosted provider (OpenAI, Groq, Together, DeepSeek,
+        # OpenRouter, Gemini-compat, recent Ollama/vLLM) supports it and without it the
+        # final usage chunk is omitted — making token/cost accounting silently zero and
+        # leaving the daily spend cap (P1-3) inert for all OpenAI-compat streaming turns.
+        # Set stream_usage=False in the provider config ONLY for strict local servers that
+        # return HTTP 400 on unknown request fields; that keeps chat working at the cost of
+        # losing usage metrics for that provider.
+        self._stream_usage: bool = stream_usage
         self._http = httpx.Client(timeout=timeout)
 
     def close(self) -> None:
@@ -518,6 +528,11 @@ class OpenAICompatibleClient(BaseLLMClient):
         """
         headers, payload = self._build_request(messages, system_prompt, tools, dynamic_system)
         payload["stream"] = True
+        # Request usage in the final SSE chunk so token accounting and the daily spend cap
+        # work correctly.  Omitted only when the operator explicitly sets stream_usage=False
+        # for a strict local server that rejects unknown fields.
+        if self._stream_usage:
+            payload["stream_options"] = {"include_usage": True}
 
         text_parts: list[str] = []
         # Accumulate streaming tool-call fragments: {index: {id, name, args_parts}}
@@ -662,6 +677,9 @@ def create_llm_client(
     api_key_ref = provider_config.get("api_key_ref")
     api_key_env = provider_config.get("api_key_env")
     base_url = provider_config.get("base_url")
+    # stream_usage defaults True for all OpenAI-compat providers; operators of strict
+    # local servers that reject unknown fields can set it False in provider config.
+    stream_usage: bool = bool(provider_config.get("stream_usage", True))
 
     api_key: str | None = None
     if api_key_ref and secret_store is not None:
@@ -680,7 +698,11 @@ def create_llm_client(
             base_url or os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434/v1"
         )
         return OpenAICompatibleClient(
-            base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens
+            base_url=resolved_base,
+            model=model,
+            api_key=api_key,
+            max_tokens=max_tokens,
+            stream_usage=stream_usage,
         )
 
     if kind == "gemini":
@@ -693,7 +715,11 @@ def create_llm_client(
         if model == "claude-haiku-4-5":
             model = "gemini-2.0-flash"
         return OpenAICompatibleClient(
-            base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens
+            base_url=resolved_base,
+            model=model,
+            api_key=api_key,
+            max_tokens=max_tokens,
+            stream_usage=stream_usage,
         )
 
     if kind == "chatgpt-web":
@@ -728,7 +754,11 @@ def create_llm_client(
         # same wire protocol, different base URL. A config `base_url` still overrides.
         resolved_base = str(base_url or _OPENAI_COMPAT_PRESETS[kind])
         return OpenAICompatibleClient(
-            base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens
+            base_url=resolved_base,
+            model=model,
+            api_key=api_key,
+            max_tokens=max_tokens,
+            stream_usage=stream_usage,
         )
 
     if kind in ("openai-compatible", "openai"):
@@ -740,7 +770,11 @@ def create_llm_client(
             base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
         )
         return OpenAICompatibleClient(
-            base_url=resolved_base, model=model, api_key=api_key, max_tokens=max_tokens
+            base_url=resolved_base,
+            model=model,
+            api_key=api_key,
+            max_tokens=max_tokens,
+            stream_usage=stream_usage,
         )
 
     raise ValueError(f"Unsupported provider kind: {kind}")

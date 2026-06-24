@@ -2075,3 +2075,77 @@ never runs the gateway can still generate reports on demand via `hachi eval snap
 The first automatic run fires at the first `min(interval, 3600)` tick after `enabled=True`
 boot — not immediately on boot.  Both behaviours are intentional: the first-tick-delay
 avoids a report storm on restart; gateway-only scope keeps the clean process model intact.
+
+---
+
+### COST-1 — OpenAI-compatible streaming usage (eval-flywheel finding) (2026-06-24)
+
+**Symptom.**  Every `gpt-4o-mini` (and all other OpenAI-compat provider) turn appeared in
+the `interaction_log` with `tokens=0` and `token_cost=0.0`.  The eval report showed 100%
+of OpenAI-compat interactions with zero cost and zero tokens.
+
+**Root cause.**  `OpenAICompatibleClient.generate_stream` set `payload["stream"] = True`
+but never sent `stream_options: {"include_usage": true}`.  Per the OpenAI streaming spec,
+usage is omitted from streamed responses unless that option is requested explicitly.  The
+final-chunk usage-parse block (`if "usage" in data`) in the SSE loop therefore never fired,
+`final_usage` stayed `TokenUsage()` (all zeros), and `cost_tracker.record(model, response.usage)`
+recorded nothing.  The non-streaming `generate` path already parsed `usage` correctly — this
+was streaming-only.
+
+**Impact.**  Beyond cosmetic eval metrics:
+1. Eval report cost/token metrics were always zero for all OpenAI-compat providers.
+2. **The daily spend cap (P1-3) was silently inert for streaming OpenAI-compat turns** —
+   cost never accrued so the cap never tripped.  This is a trust/safety regression for any
+   non-Anthropic user relying on spend limits.
+3. The frontend per-turn token/cost badge showed nothing for these providers.
+
+**Fix.**  Added a `stream_usage: bool = True` parameter to `OpenAICompatibleClient.__init__`
+stored as `self._stream_usage`.  In `generate_stream`, immediately after `payload["stream"] = True`,
+added `if self._stream_usage: payload["stream_options"] = {"include_usage": True}`.
+`create_llm_client` reads `provider_config.get("stream_usage", True)` and threads the value
+through all four `OpenAICompatibleClient(...)` construction sites (ollama, gemini, named
+presets, openai/openai-compatible).  The existing final-chunk parse path
+(`if "usage" in data and data["usage"]`) already handled empty-choices + usage-field chunks
+correctly — no change needed there.
+
+**Opt-out rationale.**  Default `True` because every major hosted provider (OpenAI, Groq,
+Together, DeepSeek, OpenRouter, Gemini-compat, recent Ollama/vLLM) supports `stream_options`.
+The opt-out flag (`stream_usage: false` in provider config) exists only for the rare strict
+local server that returns HTTP 400 on unknown request fields.  The cost of opting out is
+losing usage metrics for that provider.
+
+**Honest limitations.**
+- Historical rows in the `interaction_log` already written with `tokens=0`/`cost=0.0` will
+  NOT backfill — this is a forward-only fix.
+- The `chatgpt-web` (unofficial) provider is inherently usage-less; its `generate_stream`
+  is in `unofficial_providers.py` and is unaffected / not addressable.
+- Cache-token fields (`cache_read_tokens`, `cache_creation_tokens`) are NOT parsed from the
+  OpenAI streaming usage chunk (OpenAI does not return them in the same way Anthropic does);
+  this is symmetric with the non-streaming `generate` path and left as a potential follow-up.
+
+**Files changed.**
+- `src/hachi/core/llm.py` — `__init__` (new `stream_usage` param + `_stream_usage` attr),
+  `generate_stream` (two lines: opt-in block after `payload["stream"] = True`),
+  `create_llm_client` (read `stream_usage` from config + thread to all 4 construction sites).
+- `tests/test_streaming.py` — updated `_make_openai_client()` to set `_stream_usage = True`
+  (mirrors `__init__` default; required because the helper uses `__new__`), added 4 new
+  tests: `test_openai_stream_default_sends_stream_options`,
+  `test_openai_stream_opt_out_omits_stream_options`,
+  `test_openai_stream_usage_captured_from_final_chunk`,
+  `test_openai_stream_no_usage_chunk_returns_zeros`.
+
+**Verification output.**
+
+```
+uv run pytest tests/test_streaming.py -q
+# 18 passed in 3.76s
+
+uv run pytest tests/ -q -k "llm or openai or stream or usage or cost"
+# 195 passed, 3584 deselected in 43.44s
+
+uv run ruff check src/hachi/core/llm.py tests/test_streaming.py
+# All checks passed!
+
+uv run mypy src/hachi/core/llm.py --ignore-missing-imports
+# Success: no issues found in 1 source file
+```
