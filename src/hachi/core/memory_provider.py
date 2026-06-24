@@ -116,6 +116,7 @@ class ChromaMemoryProvider(MemoryProvider):
         *,
         recall_distance_max: float | None = None,
         core_memory_max_entries: int | None = None,
+        decay_half_life_days: float | None = None,
     ) -> None:
         """Create a MemoryVault if one wasn't provided at construction time.
 
@@ -125,6 +126,10 @@ class ChromaMemoryProvider(MemoryProvider):
                 filtering (Issue 10). ``None`` keeps the MemoryVault default.
             core_memory_max_entries: Optional soft cap on the ``core_memory``
                 collection (Issue 10). ``None`` keeps the MemoryVault default.
+            decay_half_life_days: Optional recency-decay half-life in days (M2).
+                ``None`` disables decay (MemoryVault default). Only re-ranks
+                relevance-gated recall; never applies to user_profile or
+                get_recent_facts.
         """
         if self._vault is None:
             from hachi.core.memory_vault import MemoryVault
@@ -134,6 +139,8 @@ class ChromaMemoryProvider(MemoryProvider):
                 _kwargs["recall_distance_max"] = recall_distance_max
             if core_memory_max_entries is not None:
                 _kwargs["core_memory_max_entries"] = core_memory_max_entries
+            if decay_half_life_days is not None:
+                _kwargs["decay_half_life_days"] = decay_half_life_days
             self._vault = MemoryVault(**_kwargs)
 
     def upsert(self, content: str, category: str = "workspace_state") -> str:

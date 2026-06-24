@@ -2309,3 +2309,87 @@ uv run python -m mypy --config-file mypy-strict-gate.ini
 uv run mypy src/hachi/gateway/orchestrator.py --ignore-missing-imports
 # Found 34 errors (all pre-existing; zero new errors from M1)
 ```
+
+---
+
+## Memory decay (M2) — 2026-06-25
+
+**Branch:** `reassess`
+
+### Found / motivation
+
+Semantic recall returns facts ranked purely by cosine distance (relevance). For a personal
+agent vault that accumulates facts over months, this means a stale fact stored 6 months ago
+can outrank a fresh fact stored yesterday if their embedding similarity differs by even a
+small amount. This misranks recall whenever the user's context has evolved (new project,
+new preference, new role). The fix must never break recall — it must only *re-order* an
+already-quality-gated candidate set.
+
+### Decided / changed
+
+**Formula (multiplicative recency decay):** `score = distance / recency_decay` where
+`recency_decay = 0.5 ** (age_days / half_life_days)`. Score is in the same direction as
+distance (lower = better). At age 0 → score == distance (no penalty). At exactly
+`half_life_days` → score == 2 × distance (the fact competes as if twice as far away).
+The formula is parameter-free beyond the half-life value; it has no intercept, no
+training data, and no risk of divergence.
+
+**Off by default:** `decay_half_life_days: float | None = None` in `MemorySettings`.
+When `None` or `<= 0`, `_query_collection` is byte-for-byte identical to pre-M2.
+
+**Never resurrects filtered facts:** the `distance > effective_threshold` gate runs on
+the RAW cosine distance and is completely unchanged. Decay only re-orders the survivors;
+it cannot make a beyond-threshold candidate pass the gate.
+
+**Over-fetch for larger reordering pool:** when decay is active, ChromaDB is queried for
+`min(top_k × 4, 50)` candidates (constants `_DECAY_OVERFETCH=4`, `_DECAY_OVERFETCH_CAP=50`).
+After the distance gate and decay sort, the result is sliced to `top_k`. This ensures
+the freshest *relevant* fact can bubble up even if it wasn't in the top-k by raw distance.
+
+**Never on user_profile:** `search_user_profile` passes `apply_decay=False`. Identity and
+preference facts (name, role, timezone, habits) are timeless — a user's name stored two
+years ago is not "stale". Only `semantic_search` (core_memory) and `search_episodic`
+(episode summaries) get decay.
+
+**`get_recent_facts` unaffected:** it uses `collection.get()` not `collection.query()`,
+so it is a completely separate code path. Decay is not applied and contract C-RECENT
+(unbiased recency access) is unchanged.
+
+**`search_delegations` unaffected:** it has its own custom query path with where-clause
+filtering and is not routed through `_query_collection`.
+
+**Safety wrapping:** the decay sort is wrapped in `try/except Exception`; any bug in
+`_decay_score` or the sort falls back to the undecayed relevance order and logs at DEBUG.
+`_decay_score` itself is a total, exception-free pure function — unparseable/missing/empty
+timestamps return `distance` unchanged; naive timestamps are assumed UTC (no tz-error);
+extreme ages (underflow of `0.5**N`) are guarded by `max(recency_decay, 1e-9)`.
+
+**Strict mypy gate:** `memory_provider.py` and `settings.py` are in `mypy-strict-gate.ini`.
+Both remain 0 errors after M2. `memory_vault.py` is advisory — also clean.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/hachi/core/memory_vault.py` | Add `_DECAY_OVERFETCH`, `_DECAY_OVERFETCH_CAP` constants; add `_decay_score()` module-level pure function; add `decay_half_life_days` param to `__init__`; add `apply_decay` param to `_query_collection` with over-fetch and try/except-wrapped re-rank; add `apply_decay=False` to `search_user_profile` call |
+| `src/hachi/core/settings.py` | Add `decay_half_life_days: float | None = None` to `MemorySettings` |
+| `src/hachi/core/memory_provider.py` | Add `decay_half_life_days: float | None = None` kwarg to `ChromaMemoryProvider.initialize()`; thread it into `_kwargs` |
+| `src/hachi/gateway/orchestrator.py` | Pass `decay_half_life_days=_memory_settings.decay_half_life_days` in the `ChromaMemoryProvider.initialize()` call in `boot_agent` |
+| `tests/test_memory_decay.py` | New: 20 tests covering `_decay_score` unit (age-0, half-life, unparseable, empty, Unknown-Date, distance-0, extreme-age, monotonicity, naive-ts, future-ts, half-life-0-guard), re-rank order flip via `_query_collection` and `semantic_search`, over-fetch+truncate, user_profile not-decayed, distance-gate-precedes-decay, default-off parity, C-RECENT contract |
+
+**Config key to enable:** `memory.decay_half_life_days = 30.0` in `settings.toml`.
+A value of 30 days means a one-month-old fact competes as if 2× more distant; a
+three-month-old fact competes as if 8× more distant. Leave unset (the default) for
+pure relevance order.
+
+**Verification.**
+```
+python -m pytest tests/test_memory_decay.py tests/test_episodic_memory.py tests/test_memory_fixes.py tests/test_memory_vault_close.py tests/test_memory_reliability.py tests/test_memory_provider.py -q
+# 100 passed
+
+python -m mypy --config-file mypy-strict-gate.ini
+# Success: no issues found in 36 source files
+
+python -m ruff check src/hachi/core/memory_vault.py src/hachi/core/memory_provider.py src/hachi/core/settings.py src/hachi/gateway/orchestrator.py tests/test_memory_decay.py
+# All checks passed!
+```

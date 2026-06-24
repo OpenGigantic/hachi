@@ -91,6 +91,65 @@ _DEFAULT_RECALL_DISTANCE_MAX: float = 0.85
 # ---------------------------------------------------------------------------
 _DEFAULT_CORE_MEMORY_MAX_ENTRIES: int = 1000
 
+# ---------------------------------------------------------------------------
+# M2 — Memory decay constants
+#
+# Over-fetch multiplier when decay is active: fetch up to OVERFETCH times the
+# requested top_k so decay can reorder a larger candidate pool before slicing.
+# Capped at OVERFETCH_CAP to avoid overloading ChromaDB on large collections.
+# ---------------------------------------------------------------------------
+_DECAY_OVERFETCH: int = 4
+_DECAY_OVERFETCH_CAP: int = 50
+
+
+def _decay_score(
+    distance: float,
+    stored_timestamp: str,
+    *,
+    now: datetime.datetime,
+    half_life_days: float,
+) -> float:
+    """Recency-weighted rank score; smaller = better (same direction as distance).
+
+    Multiplicative model: every ``half_life_days`` of age doubles the effective
+    distance.  ``score = distance / recency_decay`` where
+    ``recency_decay = 0.5 ** (age_days / half_life_days)`` in (0, 1].
+    age 0 -> score == distance; one half-life -> score == 2*distance.
+    Unparseable/missing timestamp -> no penalty (returns ``distance``).
+    Never raises.
+
+    Args:
+        distance: Raw cosine distance from ChromaDB (0 = identical, 2 = opposite).
+        stored_timestamp: ISO-format timestamp string as written by ``_now_iso()``.
+        now: Current UTC datetime (passed in so callers can use a single snapshot).
+        half_life_days: Half-life in days.  Must be > 0 (caller guards this).
+
+    Returns:
+        Recency-adjusted score (float).  Lower is better.
+    """
+    if half_life_days <= 0:
+        return distance
+
+    # Fast-path: empty / sentinel timestamps → no penalty.
+    if not stored_timestamp or stored_timestamp == "Unknown Date":
+        return distance
+
+    try:
+        stored = datetime.datetime.fromisoformat(stored_timestamp)
+        # Defensive tz handling: naive timestamps are assumed UTC.
+        if stored.tzinfo is None:
+            stored = stored.replace(tzinfo=datetime.UTC)
+        age_days = max(0.0, (now - stored).total_seconds() / 86_400.0)
+    except (ValueError, TypeError):
+        # Unparseable timestamp → no penalty.
+        return distance
+
+    recency_decay = 0.5 ** (age_days / half_life_days)
+    # Guard underflow: very old items drive recency_decay → 0.0.
+    recency_decay = max(recency_decay, 1e-9)
+    return distance / recency_decay
+
+
 # --- User Profile Constraints ---
 USER_PROFILE_MAX_ENTRIES = 25
 USER_PROFILE_CATEGORIES = frozenset(
@@ -266,6 +325,7 @@ class MemoryVault:
         account_id: str | None = None,
         recall_distance_max: float | None = _DEFAULT_RECALL_DISTANCE_MAX,
         core_memory_max_entries: int = _DEFAULT_CORE_MEMORY_MAX_ENTRIES,
+        decay_half_life_days: float | None = None,
     ):
         """Record vault configuration but defer all ChromaDB I/O.
 
@@ -294,6 +354,15 @@ class MemoryVault:
                         When the collection exceeds this count, ``prune_core_memory``
                         is called opportunistically to evict the oldest entries.
                         Config key: ``memory.core_memory_max_entries``.
+            decay_half_life_days: Half-life (in days) for recency weighting applied
+                        to relevance-gated recall results.  A fact this many days old
+                        ranks as if it were twice as cosine-distant.  ``None`` (the
+                        default) or ``<= 0`` disables decay entirely — behaviour is
+                        byte-for-byte identical to the pre-M2 code.  Only re-ranks
+                        already-admitted candidates; never resurrects a filtered fact.
+                        Does NOT apply to ``search_user_profile`` (identity/preference
+                        facts are timeless) or ``get_recent_facts`` / ``search_delegations``.
+                        Config key: ``memory.decay_half_life_days``.
         """
         if not brain_dir:
             brain_dir = str(get_hachi_paths().data_dir)
@@ -355,6 +424,10 @@ class MemoryVault:
 
         # FIX 5: soft cap for core_memory growth.
         self._core_memory_max_entries: int = max(1, core_memory_max_entries)
+
+        # M2: optional recency weighting for recall re-ranking.
+        # None (or <= 0) disables decay — behaviour is unchanged from pre-M2.
+        self._decay_half_life_days: float | None = decay_half_life_days
 
         # Shared-vault guard: ProcessSharedServices marks the process-singleton
         # vault with is_shared=True. An individual AgentSession must NOT close a
@@ -731,6 +804,7 @@ class MemoryVault:
         query: str,
         top_k: int,
         distance_threshold: float | None = None,
+        apply_decay: bool = True,
     ) -> list[dict[str, Any]]:
         """Shared semantic search logic for all collections.
 
@@ -746,6 +820,13 @@ class MemoryVault:
         and 1 = orthogonal.  The ``include=["distances"]`` kwarg is passed so the
         distances are always present in the response.
 
+        M2 — Recency decay re-ranking: when ``apply_decay=True`` and
+        ``_decay_half_life_days`` is configured, over-fetches candidates (up to
+        ``_DECAY_OVERFETCH × top_k``, capped at ``_DECAY_OVERFETCH_CAP``), lets
+        the distance gate run unchanged, then re-ranks survivors by
+        ``_decay_score`` and returns the best ``top_k``.  The re-rank is wrapped
+        in try/except so any bug falls back to the undecayed relevance order.
+
         HIGH-021: acquires _vault_lock around the ChromaDB query.
         H12: raises RuntimeError if the vault has been closed — closed-vault
              errors are re-raised so callers know the vault is gone, but all
@@ -759,6 +840,11 @@ class MemoryVault:
             distance_threshold: Maximum cosine distance allowed.  ``None`` means
                 use the vault default (``_recall_distance_max``).  Pass ``0.0`` or
                 a negative value to explicitly disable filtering for this call.
+            apply_decay: When ``True`` (default) and ``_decay_half_life_days`` is
+                configured, survivors of the distance gate are re-ranked by recency
+                before the final ``top_k`` slice.  Pass ``False`` to suppress decay
+                for collections where recency reordering is inappropriate (e.g.
+                ``user_profile`` — identity/preference facts are timeless).
 
         Returns:
             Ranked list of fact dicts, or ``[]`` on ChromaDB error.
@@ -773,6 +859,22 @@ class MemoryVault:
         else:
             effective_threshold = distance_threshold
 
+        # M2: determine whether decay re-ranking is active for this call.
+        # Use getattr with None default so vaults constructed without this attribute
+        # (e.g. via __new__ in older test code) degrade gracefully to no-decay.
+        _half_life: float | None = getattr(self, "_decay_half_life_days", None)
+        decay_active = (
+            apply_decay
+            and _half_life is not None
+            and _half_life > 0
+        )
+
+        # M2: over-fetch so decay has a larger pool to reorder.
+        if decay_active:
+            n_results = min(top_k * _DECAY_OVERFETCH, _DECAY_OVERFETCH_CAP)
+        else:
+            n_results = top_k
+
         try:
             with self._vault_lock:
                 self._assert_open()
@@ -781,7 +883,7 @@ class MemoryVault:
                     return []
                 results = collection.query(
                     query_texts=[query],
-                    n_results=top_k,
+                    n_results=n_results,
                     include=["documents", "metadatas", "distances"],
                 )
         except RuntimeError:
@@ -811,6 +913,7 @@ class MemoryVault:
 
             for i, doc in enumerate(documents):
                 # FIX 1: drop results that are too dissimilar to the query.
+                # This gate runs on the RAW distance and is unchanged by M2.
                 if effective_threshold is not None and i < len(distances):
                     if distances[i] > effective_threshold:
                         logger.debug(
@@ -835,6 +938,30 @@ class MemoryVault:
                         "distance": distances[i] if i < len(distances) else None,
                     }
                 )
+
+        # M2: re-rank survivors by recency-weighted score and slice to top_k.
+        # Runs AFTER the try/except block and AFTER the distance gate — never
+        # inside the locked ChromaDB section, and never on pre-gate candidates.
+        if decay_active and formatted:
+            try:
+                now = datetime.datetime.now(datetime.UTC)
+                # _half_life is guaranteed non-None and > 0 here (decay_active guard above).
+                assert _half_life is not None  # for mypy
+                formatted.sort(
+                    key=lambda item: _decay_score(
+                        item["distance"] or 0.0,
+                        item["timestamp"],
+                        now=now,
+                        half_life_days=_half_life,
+                    )
+                )
+                return formatted[:top_k]
+            except Exception:
+                logger.debug(
+                    "_query_collection: decay re-rank failed; falling back to relevance order",
+                    exc_info=True,
+                )
+                return formatted[:top_k]
 
         return formatted
 
@@ -1163,7 +1290,10 @@ class MemoryVault:
         Returns:
             Ranked list of user profile fact dicts.
         """
-        return _redact_results(self._query_collection("user_collection", query, top_k))
+        # Identity/preference facts are timeless — recency must not reorder them.
+        return _redact_results(
+            self._query_collection("user_collection", query, top_k, apply_decay=False)
+        )
 
     def get_user_snapshot(self) -> str:
         """Return all user profile facts as a frozen text block.
