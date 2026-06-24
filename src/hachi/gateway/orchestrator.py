@@ -1260,7 +1260,12 @@ class AgentSession:
         _trace_ctx = TraceContext(
             trace_id=turn_id,
             session_id=self._session_id or "unknown",
-            principal="session",  # placeholder; real user id when auth grows
+            # SINGLE-TENANT: "session" is a hardcoded placeholder — account_id is intentionally
+            # unplumbed; safe only under one-operator-per-install (AUDIT P1-1). Before supporting
+            # a 2nd principal/tenant, plumb the authenticated principal → account_id into BOTH
+            # MemoryVault construction AND the ProcessSharedServices fingerprint (see
+            # src/hachi/core/memory_vault.py docstring ADV-023 and SECURITY.md "Trust model").
+            principal="session",
             surface=surface,
         )
 

@@ -1251,3 +1251,53 @@ uv run ruff check src/hachi/core/user_profile.py src/hachi/tools/memory_tools.py
 uv run ruff format --check src/hachi/core/user_profile.py src/hachi/tools/memory_tools.py tests/test_user_profile_store.py
 uv run mypy src/hachi/core/user_profile.py src/hachi/tools/memory_tools.py --ignore-missing-imports
 ```
+
+---
+
+### P1-1 — document the single-tenant constraint
+
+**Found.**
+`MemoryVault` accepts an `account_id` parameter that namespaces ChromaDB collections per account
+(ADV-023 — all five collections get a `<account_id>_` prefix and a per-account subdirectory under
+`chroma_vault/`). However, `account_id` is **never plumbed** from the authentication layer:
+`boot_agent` constructs the vault with no `account_id` argument; the `TraceContext` `principal`
+field in `orchestrator.py` is hardcoded to `"session"` (a placeholder). The result is that every
+session on the same install shares the same `core_memory`, `user_profile`, `agent_profile`, and
+`delegation_log` collections. Under the stated single-operator model this is safe — there is only
+one trusted human behind all sessions. But the moment a second user/token/tenant is added, the two
+principals would share one memory store → cross-user PII recall and profile contamination.
+
+**Changed (action a only — documentation + comment seams; NO behavioral change).**
+
+- **`README.md`**: Added a prominent "Security model / single-tenant" subsection (before the
+  Configuration section) stating that Hachi is a single-operator product, that ChromaDB collections
+  are shared per-install, that `account_id` namespacing exists but is unplumbed, and explicitly
+  warning against adding a second principal without wiring `account_id` first.
+- **`SECURITY.md`**: Added a "Trust model" section (before "Security Architecture Notes") with the
+  same constraint, the explicit do-not-add-second-user warning, the two required wiring steps
+  (`MemoryVault` constructor + `ProcessSharedServices` fingerprint), and a reference to the vault
+  `account_id` seam (ADV-023).
+- **`src/hachi/gateway/orchestrator.py`** (line ~1263): Extended the `principal="session"` comment
+  with a SINGLE-TENANT block explaining the unplumbed state and what must be done before a second
+  principal is added — so a future developer wiring multi-tenant sees the warning at the code.
+- **`src/hachi/core/memory_vault.py`** (`__init__`, line ~302): Added a SINGLE-TENANT comment
+  block before the `resolved_account` assignment — the exact construction site where `account_id`
+  would be wired — with the same warning and cross-references.
+
+**Why.**
+The guard rails for the account_id seam exist in the vault but are invisible to a developer who
+only reads the boot path. Documentation at the two seams (vault construction + TraceContext) makes
+the constraint impossible to miss and prevents an accidental multi-user deployment.
+
+**Action (b) — account_id plumbing — is intentionally DEFERRED** to the 12-month multi-tenant
+roadmap track. Wiring requires: (1) authenticating the principal in the gateway request context,
+(2) passing it through `boot_agent` → `MemoryVault.__init__`, and (3) updating
+`ProcessSharedServices` to fingerprint per-account so each account gets an independent shared-vault
+singleton. This is non-trivial and out of scope for the current hardening pass.
+
+**Verify.**
+```
+uv run ruff check src/hachi/gateway/orchestrator.py src/hachi/core/memory_vault.py
+uv run mypy src/hachi/gateway/orchestrator.py src/hachi/core/memory_vault.py --ignore-missing-imports
+PYTHONPATH=src uv run --with pytest --no-project pytest tests/test_memory_vault.py -q
+```

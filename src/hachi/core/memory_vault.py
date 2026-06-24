@@ -299,6 +299,14 @@ class MemoryVault:
         # on the same thread (e.g. _guarded_write → _quarantine_write chain).
         self._vault_lock: threading.RLock = threading.RLock()
 
+        # SINGLE-TENANT: account_id is intentionally unplumbed in the current release — boot_agent
+        # constructs MemoryVault with no account_id so all sessions share the "default" collections
+        # (core_memory, user_profile, agent_profile, delegation_log). This is safe only under a
+        # one-operator-per-install deployment (AUDIT P1-1). Before supporting a 2nd
+        # principal/tenant, plumb the authenticated principal → account_id into BOTH this
+        # constructor AND the ProcessSharedServices fingerprint so each account gets a separate
+        # shared-vault singleton. See SECURITY.md "Trust model" + DECISIONS.md "P1-1".
+
         # Resolve the account key — env var is a convenience override for scripts.
         resolved_account = (
             account_id or os.environ.get(_ACCOUNT_ENV_VAR) or _DEFAULT_ACCOUNT
