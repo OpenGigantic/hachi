@@ -1301,3 +1301,76 @@ uv run ruff check src/hachi/gateway/orchestrator.py src/hachi/core/memory_vault.
 uv run mypy src/hachi/gateway/orchestrator.py src/hachi/core/memory_vault.py --ignore-missing-imports
 PYTHONPATH=src uv run --with pytest --no-project pytest tests/test_memory_vault.py -q
 ```
+
+---
+
+### P2-1 — token-based window management
+
+**Found.**
+`MemoryManager.prepare_for_turn` and `add_message` triggered sliding-window compaction only when
+`len(self._history) > self._max_active_messages` (a message-COUNT check). A handful of very large
+messages — e.g. a single 50 000-character tool output — could push estimated token usage well past
+the provider context window BEFORE the count limit (30 messages) was reached. This produced a hard
+"prompt too long" 400 from Anthropic instead of graceful compaction.
+
+**Changed.**
+
+*Files changed:*
+- `src/hachi/core/memory.py` — token-budget implementation
+- `tests/test_token_window_management.py` — 12 new tests (all green)
+
+*Changes:*
+1. **Module constant** `_MAX_ACTIVE_TOKENS = 24_000` added (line ~383). Rationale: Anthropic
+   claude-3-* has a 200 000-token window; system prompt + tool schemas consume ~8 000 tokens;
+   24 000 leaves ~168 000 for the in-flight turn — well under the hard limit with generous headroom.
+
+2. **Constructor param** `max_active_tokens: int | None = None` added to `MemoryManager.__init__`.
+   Resolution order (highest to lowest priority):
+   - Explicit constructor arg
+   - `HACHI_MAX_ACTIVE_TOKENS` environment variable
+   - Module constant `_MAX_ACTIVE_TOKENS`
+
+3. **Token trigger in `add_message`** (fires BEFORE the count trigger so large messages compact
+   early): `if self.estimate_token_count() > self._max_active_tokens: self._sliding_window_compact(); return`
+
+4. **Token trigger in `prepare_for_turn`** — catches histories loaded via `seed_history()` or
+   direct `_history` manipulation that bypassed `add_message`. Fires AFTER `apply_pending_compaction`
+   and sets `compacted=True` in the returned `IterationState`.
+
+5. **`_sliding_window_compact` updated**:
+   - Guard changed from `if len(self._history) <= self._max_active_messages` to
+     `if not over_count and not over_tokens: return` (both triggers are checked).
+   - Token-triggered runs use `keep_count = max(4, len(self._history) // 2 - 2)` (drop half)
+     instead of the standard `max_active_messages - 2` to make a larger dent in one pass.
+   - **Bounded post-compaction loop**: after each pass, if tokens are still over budget, `keep_count`
+     is halved and the loop retries. The loop is capped at `_MAX_COMPACT_PASSES = 3` iterations;
+     after the third pass it logs a WARNING and returns (the caller retries on the next turn). This
+     prevents infinite compaction for pathological cases (e.g. a single retained message that is
+     itself larger than the budget).
+   - Added `-> None` return type annotation (fixes 2 pre-existing mypy `no-untyped-call` errors).
+
+**Why.**
+`estimate_token_count()` already existed and was already used for the lossless tool-result-clearing
+path (`_TOOL_RESULT_CLEAR_TOKENS`). Reusing it costs a single O(N) pass per `add_message` call —
+cheap given N is bounded by `_max_active_messages`. The change is additive and backwards-compatible:
+the message-count trigger is kept as secondary defense-in-depth, all existing tool-pair-safety
+logic (`_find_safe_sliding_boundary`), the async summary placeholder/apply-back (P1-6), and the
+lossless tool-result clearing are fully preserved.
+
+**Verify.**
+```
+PYTHONPATH=src uv run --with pytest --no-project pytest \
+    tests/test_token_window_management.py \
+    tests/test_conversation_memory.py \
+    tests/test_compaction_summary_applyback.py \
+    tests/test_memory_tools_queue.py \
+    tests/test_g3_compaction.py -q
+# → 37 passed
+
+uv run ruff check src/hachi/core/memory.py tests/test_token_window_management.py
+uv run ruff format --check src/hachi/core/memory.py tests/test_token_window_management.py
+# → All checks passed / 2 files already formatted
+
+uv run mypy src/hachi/core/memory.py --ignore-missing-imports
+# → 11 errors (baseline was 13 — net improvement of 2)
+```

@@ -365,6 +365,25 @@ _CLEARED_TOOL_RESULT = (
     "[tool result cleared to reclaim context — re-run the tool if you need this output again]"
 )
 
+# Default token budget for the active conversation history.  Compaction fires when
+# estimated token count exceeds this value *even if* the message count is still under
+# _max_active_messages — preventing the "few huge messages blow the context window"
+# cliff.
+#
+# Rationale for 24 000:
+#   - Anthropic claude-3-* models have a 200 000-token context window, but we want
+#     *headroom* for system prompt, tool definitions, and the ongoing assistant turn.
+#   - A conservative upper bound for those fixed costs is ~8 000 tokens (large system
+#     prompt + all tool schemas).  Compacting at 24 000 leaves ~168 000 tokens for
+#     the in-flight turn, well under any provider's hard limit.
+#   - 24 000 tokens ≈ ~96 000 characters under the 4 chars/token heuristic.  A
+#     typical large tool output (e.g. a 5 000-line grep result) is ~20 000 chars /
+#     5 000 tokens, so this budget can comfortably hold several such results before
+#     triggering.
+#   - Overridable via the ``max_active_tokens`` constructor arg or the
+#     ``HACHI_MAX_ACTIVE_TOKENS`` environment variable.
+_MAX_ACTIVE_TOKENS: int = 24_000
+
 
 class TaskRecord:
     """
@@ -396,6 +415,7 @@ class MemoryManager:
     def __init__(
         self,
         max_active_messages: int = 30,
+        max_active_tokens: int | None = None,
         job_queue: Any | None = None,
         llm_client: Any | None = None,
     ):
@@ -406,6 +426,14 @@ class MemoryManager:
             max_active_messages: Maximum number of raw messages before triggering
                                  sliding-window compaction. Prevents unbounded growth
                                  even within a single skill execution.
+            max_active_tokens: Estimated-token budget for the active conversation history.
+                               Compaction fires when ``estimate_token_count()`` exceeds
+                               this value, even if the message count is still under
+                               ``max_active_messages``.  Defaults to the module-level
+                               ``_MAX_ACTIVE_TOKENS`` constant (24 000), overridable via
+                               the ``HACHI_MAX_ACTIVE_TOKENS`` environment variable.
+                               Pass an explicit value to override both the constant and
+                               the environment variable.
             job_queue: Optional durable JobQueue for background work.
                        sync_turn() requires a job queue; without one, memory extraction
                        is disabled and a WARNING is logged.
@@ -420,11 +448,22 @@ class MemoryManager:
                            via the job queue failure pipeline instead of being swallowed.
                            Set to False only in tests or debugging scenarios.
         """
+        import os
+
         self._history: list[Message] = []
         self._task_ledger: list[TaskRecord] = []
         self._active_skill: str | None = None
         self._skill_start_index: int = 0  # Index in _history where current skill began
         self._max_active_messages = max_active_messages
+        # P2-1: Token-based compaction budget.  Resolution order:
+        #   1. Explicit constructor arg (highest priority)
+        #   2. HACHI_MAX_ACTIVE_TOKENS env var
+        #   3. Module-level _MAX_ACTIVE_TOKENS constant
+        if max_active_tokens is not None:
+            self._max_active_tokens: int = max_active_tokens
+        else:
+            env_val = os.environ.get("HACHI_MAX_ACTIVE_TOKENS")
+            self._max_active_tokens = int(env_val) if env_val else _MAX_ACTIVE_TOKENS
         self._last_user_query: str = ""
         self.vault = None
         self.job_queue = job_queue
@@ -597,16 +636,31 @@ class MemoryManager:
         return self._task_ledger
 
     def add_message(self, message: Message):
-        """
-        Append a message to the active history.
+        """Append a message to the active history.
+
         If the user sends a new message, capture it as the latest query.
+        Triggers sliding-window compaction when either the message count or the
+        estimated token count exceeds the configured budgets.  The token check
+        fires first so that a handful of very large messages (e.g. big tool
+        outputs) cannot silently blow the provider context window before the
+        count-based guard trips.
+
+        Args:
+            message: The :class:`~hachi.core.llm.Message` to append.
         """
         if message.role == "user" and isinstance(message.content, str):
             self._last_user_query = message.content
 
         self._history.append(message)
 
-        # Enforce sliding window within a single skill execution
+        # P2-1: Token-budget trigger (defense-in-depth before message-count trigger).
+        # Runs estimate_token_count() only after every message to keep the common path
+        # cheap — the estimator is O(N) but N is bounded by _max_active_messages.
+        if self.estimate_token_count() > self._max_active_tokens:
+            self._sliding_window_compact()
+            return
+
+        # Message-count trigger — kept as secondary defense-in-depth.
         if len(self._history) > self._max_active_messages:
             self._sliding_window_compact()
 
@@ -813,6 +867,11 @@ class MemoryManager:
         Executes compaction, stale tool-result clearing, and tool-pair repair in
         a single call so the ExecutionLoop does not need to reach into internals.
 
+        The token-budget check here acts as a second compaction site (the first is
+        ``add_message``).  It catches the edge case where ``seed_history`` or direct
+        ``_history`` manipulation bypasses ``add_message`` and the context arrives at
+        turn-start already over budget.
+
         Returns:
             An :class:`~hachi.core.conversation_memory.IterationState` snapshot
             describing what housekeeping ran.
@@ -827,6 +886,13 @@ class MemoryManager:
         if self.apply_pending_compaction():
             compacted = True
             old_skill = getattr(self, "_pending_old_skill", "unknown") or "unknown"
+
+        # P2-1: Token-budget trigger at turn-start.  Catches histories loaded via
+        # seed_history() or direct _history manipulation that bypassed add_message().
+        # Also fires if the token budget was lowered between turns.
+        if self.estimate_token_count() > self._max_active_tokens:
+            self._sliding_window_compact()
+            compacted = True
 
         if self.estimate_token_count() > _TOOL_RESULT_CLEAR_TOKENS:
             tool_results_cleared = self.clear_stale_tool_results()
@@ -923,12 +989,20 @@ class MemoryManager:
                 break
         return len(messages)
 
-    def _sliding_window_compact(self):
-        """Trim oldest messages when history exceeds the max window size.
+    def _sliding_window_compact(self) -> None:
+        """Trim oldest messages when history exceeds the message-count or token budget.
 
         Keeps the first 2 messages as anchors and the most recent keep_count messages,
-        where the cut point is adjusted backward via _find_safe_compact_boundary so
+        where the cut point is adjusted backward via _find_safe_sliding_boundary so
         that no tool_use/tool_result pair is ever split across the boundary.
+
+        P2-1 — post-compaction token check:
+          After the main compaction, if the retained window is STILL over the token
+          budget (e.g. the recent slice itself contains very large messages), the
+          method compacts again with a smaller keep_count, halving it each pass.  The
+          loop is bounded to ``_MAX_COMPACT_PASSES`` iterations so it cannot spin
+          forever; after the last pass it logs a warning and returns even if still
+          over budget (the caller will retry on the next turn).
 
         The dropped middle segment is processed via the job queue (preferred) or a
         daemon thread fallback:
@@ -936,124 +1010,165 @@ class MemoryManager:
           2. Structured summary → replace the dropped messages with an LLM-generated
              checkpoint containing Active Task, Completed Actions, Key Decisions, etc.
         """
-        if len(self._history) <= self._max_active_messages:
+        _MAX_COMPACT_PASSES = 3  # Bound the post-compaction tightening loop.
+
+        over_count = len(self._history) > self._max_active_messages
+        over_tokens = self.estimate_token_count() > self._max_active_tokens
+        if not over_count and not over_tokens:
             return
 
-        keep_count = self._max_active_messages - 2
-        # Candidate cut point: everything from here onward is "recent"
-        candidate_cut = len(self._history) - keep_count
-
-        # Walk the cut point backward to a safe boundary where every tool_use
-        # in the retained window already has a matching tool_result after it.
-        safe_cut = self._find_safe_sliding_boundary(candidate_cut)
-
-        anchor = self._history[:2]
-        # Ensure anchor does not overlap safe_cut
-        safe_cut = max(safe_cut, 2)
-
-        # Nothing to drop — clamping consumed the entire candidate window.
-        # Inserting a checkpoint here would be a no-op at best and could break
-        # tool_use/tool_result pairs whose tool_use sits in anchor[1].
-        if safe_cut >= len(self._history):
-            return
-
-        # If any tool_use in the anchor has its matching tool_result in the
-        # retained slice, the checkpoint insertion would sit between them and
-        # break the pair, causing an Anthropic 400.  Skip compaction in that case.
-        anchor_tool_use_ids: set[str] = {
-            b["id"]
-            for msg in anchor
-            for b in (msg.content if isinstance(msg.content, list) else [])
-            if isinstance(b, dict) and b.get("type") == "tool_use"
-        }
-        if anchor_tool_use_ids:
-            retained = self._history[safe_cut:]
-            anchor_results_in_retained = any(
-                isinstance(b, dict)
-                and b.get("type") == "tool_result"
-                and b.get("tool_use_id") in anchor_tool_use_ids
-                for msg in retained
-                for b in (msg.content if isinstance(msg.content, list) else [])
-            )
-            if anchor_results_in_retained:
-                return
-
-        dropped_messages = self._history[2:safe_cut]
-        recent = self._history[safe_cut:]
-
-        if self.job_queue:
-            from hachi.jobs.queue import Job, JobStatus
-
-            # Flush permanent facts to vault (background, durable).
-            if self.vault:
-                flush_job = Job(
-                    job_id="",
-                    name="flush_facts",
-                    status=JobStatus.PENDING,
-                    func=self._flush_facts_to_vault,
-                    args=(dropped_messages,),
-                    job_type="sync",
-                )
-                try:
-                    self.job_queue.enqueue(flush_job)
-                except Exception as enqueue_err:
-                    logger.error("Failed to enqueue flush_facts job: %s", enqueue_err)
-
-            # HIGH-015: Enqueue the structured summary LLM call as a background job
-            # instead of blocking prepare_for_turn().  A lightweight placeholder
-            # checkpoint is inserted immediately so the history stays valid and the
-            # loop continues.  The background job will update the checkpoint text
-            # only when callers explicitly request it via get_pending_summaries(); in
-            # practice the placeholder is sufficient for continuity because the
-            # model has seen the full history and carries it in its own context.
-            #
-            # Double-enqueue guard: skip if a compaction job is already in flight.
-            # The context window may grow by up to one additional window-size while
-            # the job is pending — acceptable; we never re-enqueue until the job
-            # clears _compaction_in_flight.
-            if not self._compaction_in_flight:
-                self._compaction_in_flight = True
-                summary_job = Job(
-                    job_id="",
-                    name="generate_structured_summary",
-                    status=JobStatus.PENDING,
-                    func=self._run_and_clear_summary_job,
-                    args=(dropped_messages,),
-                    job_type="background",
-                )
-                try:
-                    self.job_queue.enqueue(summary_job)
-                except Exception as enqueue_err:
-                    logger.error("Failed to enqueue summary job: %s", enqueue_err)
-                    self._compaction_in_flight = False  # allow retry next window
-            else:
-                logger.debug(
-                    "Sliding-window compaction: skipping summary enqueue "
-                    "(compaction job already in flight)"
-                )
-
-            summary = (
-                "[Context compacted asynchronously. "
-                "Permanent facts are being flushed to Long-Term Memory in the background.]"
-            )
+        # P2-1: When token-triggered but count is fine, use a tighter keep_count so
+        # we drop enough to actually get under budget.  When count-triggered, use the
+        # standard formula.  The keep_count is halved on each re-pass below.
+        if over_tokens and not over_count:
+            # Drop half the history on token-triggered runs to make a meaningful dent.
+            keep_count = max(4, len(self._history) // 2 - 2)
         else:
-            # No job queue: flush facts is skipped; generate summary synchronously
-            # as a best-effort fallback (legacy / test path).
-            if self.vault:
-                logger.warning(
-                    "flush_facts skipped: no job queue configured. "
-                    "Dropped context will not be persisted to long-term memory."
+            keep_count = self._max_active_messages - 2
+
+        for _pass in range(_MAX_COMPACT_PASSES):
+            # Candidate cut point: everything from here onward is "recent"
+            candidate_cut = len(self._history) - keep_count
+
+            # Walk the cut point backward to a safe boundary where every tool_use
+            # in the retained window already has a matching tool_result after it.
+            safe_cut = self._find_safe_sliding_boundary(candidate_cut)
+
+            anchor = self._history[:2]
+            # Ensure anchor does not overlap safe_cut
+            safe_cut = max(safe_cut, 2)
+
+            # Nothing to drop — clamping consumed the entire candidate window.
+            # Inserting a checkpoint here would be a no-op at best and could break
+            # tool_use/tool_result pairs whose tool_use sits in anchor[1].
+            if safe_cut >= len(self._history):
+                if _pass == 0:
+                    return  # Nothing to do on first pass.
+                break  # Can't cut further; exit loop.
+
+            # If any tool_use in the anchor has its matching tool_result in the
+            # retained slice, the checkpoint insertion would sit between them and
+            # break the pair, causing an Anthropic 400.  Skip compaction in that case.
+            anchor_tool_use_ids: set[str] = {
+                b["id"]
+                for msg in anchor
+                for b in (msg.content if isinstance(msg.content, list) else [])
+                if isinstance(b, dict) and b.get("type") == "tool_use"
+            }
+            if anchor_tool_use_ids:
+                retained = self._history[safe_cut:]
+                anchor_results_in_retained = any(
+                    isinstance(b, dict)
+                    and b.get("type") == "tool_result"
+                    and b.get("tool_use_id") in anchor_tool_use_ids
+                    for msg in retained
+                    for b in (msg.content if isinstance(msg.content, list) else [])
                 )
-            summary = self._generate_structured_summary(dropped_messages)
+                if anchor_results_in_retained:
+                    if _pass == 0:
+                        return  # Anchor constraint: cannot compact at all.
+                    break  # Cannot tighten further; exit loop.
 
-        checkpoint = Message(
-            role="user",
-            content=f"[CONTEXT CHECKPOINT — REFERENCE ONLY, DO NOT RESPOND TO THIS]\n{summary}",
-        )
+            dropped_messages = self._history[2:safe_cut]
+            recent = self._history[safe_cut:]
 
-        with self._history_lock:
-            self._history = anchor + [checkpoint] + recent
-        self._skill_start_index = min(self._skill_start_index, len(self._history))
+            if self.job_queue:
+                from hachi.jobs.queue import Job, JobStatus
+
+                # Flush permanent facts to vault (background, durable).
+                if self.vault:
+                    flush_job = Job(
+                        job_id="",
+                        name="flush_facts",
+                        status=JobStatus.PENDING,
+                        func=self._flush_facts_to_vault,
+                        args=(dropped_messages,),
+                        job_type="sync",
+                    )
+                    try:
+                        self.job_queue.enqueue(flush_job)
+                    except Exception as enqueue_err:
+                        logger.error("Failed to enqueue flush_facts job: %s", enqueue_err)
+
+                # HIGH-015: Enqueue the structured summary LLM call as a background job
+                # instead of blocking prepare_for_turn().  A lightweight placeholder
+                # checkpoint is inserted immediately so the history stays valid and the
+                # loop continues.  The background job will update the checkpoint text
+                # only when callers explicitly request it via get_pending_summaries(); in
+                # practice the placeholder is sufficient for continuity because the
+                # model has seen the full history and carries it in its own context.
+                #
+                # Double-enqueue guard: skip if a compaction job is already in flight.
+                # The context window may grow by up to one additional window-size while
+                # the job is pending — acceptable; we never re-enqueue until the job
+                # clears _compaction_in_flight.
+                if not self._compaction_in_flight:
+                    self._compaction_in_flight = True
+                    summary_job = Job(
+                        job_id="",
+                        name="generate_structured_summary",
+                        status=JobStatus.PENDING,
+                        func=self._run_and_clear_summary_job,
+                        args=(dropped_messages,),
+                        job_type="background",
+                    )
+                    try:
+                        self.job_queue.enqueue(summary_job)
+                    except Exception as enqueue_err:
+                        logger.error("Failed to enqueue summary job: %s", enqueue_err)
+                        self._compaction_in_flight = False  # allow retry next window
+                else:
+                    logger.debug(
+                        "Sliding-window compaction: skipping summary enqueue "
+                        "(compaction job already in flight)"
+                    )
+
+                summary = (
+                    "[Context compacted asynchronously. "
+                    "Permanent facts are being flushed to Long-Term Memory in the background.]"
+                )
+            else:
+                # No job queue: flush facts is skipped; generate summary synchronously
+                # as a best-effort fallback (legacy / test path).
+                if self.vault:
+                    logger.warning(
+                        "flush_facts skipped: no job queue configured. "
+                        "Dropped context will not be persisted to long-term memory."
+                    )
+                summary = self._generate_structured_summary(dropped_messages)
+
+            checkpoint = Message(
+                role="user",
+                content=(
+                    f"[CONTEXT CHECKPOINT — REFERENCE ONLY, DO NOT RESPOND TO THIS]\n{summary}"
+                ),
+            )
+
+            with self._history_lock:
+                self._history = anchor + [checkpoint] + recent
+            self._skill_start_index = min(self._skill_start_index, len(self._history))
+
+            # P2-1: Post-compaction token check.  If the retained window is still over
+            # budget, halve keep_count and try again (bounded by _MAX_COMPACT_PASSES).
+            if self.estimate_token_count() <= self._max_active_tokens:
+                break  # Under budget — done.
+
+            if _pass < _MAX_COMPACT_PASSES - 1:
+                keep_count = max(4, keep_count // 2)
+                logger.debug(
+                    "Token budget still exceeded after compaction pass %d; "
+                    "retrying with keep_count=%d",
+                    _pass + 1,
+                    keep_count,
+                )
+            else:
+                logger.warning(
+                    "Token budget (%d) still exceeded after %d compaction passes; "
+                    "will retry next turn.  Current estimate: %d tokens.",
+                    self._max_active_tokens,
+                    _MAX_COMPACT_PASSES,
+                    self.estimate_token_count(),
+                )
 
     def _find_safe_sliding_boundary(self, candidate_cut: int) -> int:
         """Return the latest cut index <= candidate_cut where no tool_use/tool_result
