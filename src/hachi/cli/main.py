@@ -4545,5 +4545,211 @@ def og_rollback_cmd(
     )
 
 
+@app.command("backup")
+def backup(
+    dest: Path = typer.Option(  # noqa: B008
+        None,
+        "--dest",
+        help=(
+            "Parent directory for the backup. Defaults to a 'backups' sub-dir of the Hachi"
+            " state dir."
+        ),
+        show_default=False,
+    ),
+) -> None:
+    """Create a timestamped backup of session history and the memory vault.
+
+    Backs up (1) the sessions SQLite database via an online hot-backup, (2) the
+    ChromaDB memory-vault directory via a directory copy, and (3) the config-dir
+    files ``settings.toml`` and ``device-permissions.og`` (non-secret config only).
+
+    Secrets (.env files) are intentionally excluded because they contain credentials
+    that should be managed through your secret manager, not copied into backup dirs.
+
+    The backup is written to a timestamped sub-directory:
+        <dest>/hachi-backup-<YYYYMMDD-HHMMSS>/
+    """
+    import shutil
+    from datetime import datetime
+
+    paths = get_hachi_paths()
+
+    # Resolve destination directory: default to <state_dir>/backups/
+    if dest is None:
+        dest = paths.state_dir / "backups"
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_dir = dest / f"hachi-backup-{timestamp}"
+
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        console.print(f"[red]Backup directory already exists: {backup_dir}[/red]")
+        raise typer.Exit(1) from None
+    except OSError as exc:
+        console.print(f"[red]Cannot create backup directory {backup_dir}: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    manifest: list[str] = []
+    errors: list[str] = []
+
+    # 1. Sessions database (online hot-backup — safe while gateway is running).
+    sessions_src = paths.sessions_db
+    sessions_dest = backup_dir / "sessions.db"
+    if sessions_src.exists():
+        try:
+            store = SessionStore(db_path=sessions_src)
+            try:
+                store.backup(sessions_dest)
+            finally:
+                store.shutdown()
+            manifest.append(f"  sessions.db  ({sessions_src})")
+        except Exception as exc:
+            errors.append(f"sessions.db: {exc}")
+    else:
+        manifest.append("  sessions.db  (skipped — not yet created)")
+
+    # 2. ChromaDB memory vault (directory copy — stop-the-world snapshot).
+    chroma_src = paths.chroma_dir
+    chroma_dest = backup_dir / "chroma_vault"
+    if chroma_src.exists():
+        try:
+            shutil.copytree(str(chroma_src), str(chroma_dest))
+            manifest.append(f"  chroma_vault/ ({chroma_src})")
+        except Exception as exc:
+            errors.append(f"chroma_vault: {exc}")
+    else:
+        manifest.append("  chroma_vault/ (skipped — not yet created)")
+
+    # 3. Config files (non-secret): settings.toml + device-permissions.og
+    for config_file in (paths.global_config_toml, paths.permissions_file):
+        if config_file.exists():
+            try:
+                shutil.copy2(str(config_file), str(backup_dir / config_file.name))
+                manifest.append(f"  {config_file.name}  ({config_file})")
+            except Exception as exc:
+                errors.append(f"{config_file.name}: {exc}")
+
+    # Secrets are explicitly excluded — note it in the output.
+    manifest.append("  .env files   (excluded — contain secrets; manage separately)")
+
+    if errors:
+        console.print("[yellow]Backup completed with errors:[/yellow]")
+        for err in errors:
+            console.print(f"  [red]ERROR:[/red] {err}")
+
+    console.print(
+        Panel(
+            f"[bold green]Backup created:[/bold green] {backup_dir}\n\n"
+            "Contents:\n" + "\n".join(manifest),
+            title="hachi backup",
+            border_style="green",
+        )
+    )
+
+
+@app.command("restore")
+def restore(
+    src: Path = typer.Argument(  # noqa: B008
+        ...,
+        help="Path to a backup directory created by `hachi backup`.",
+    ),
+    yes: bool = typer.Option(  # noqa: B008
+        False,
+        "--yes",
+        "-y",
+        help="Skip the confirmation prompt (required for non-interactive / CI use).",
+    ),
+) -> None:
+    """Restore session history and memory vault from a backup directory.
+
+    WARNING: This operation overwrites live data.  The current sessions database and
+    memory vault will be replaced with the contents of the backup.  Any data created
+    after the backup was taken will be lost.
+
+    Requires ``--yes`` or interactive confirmation to proceed.
+
+    The gateway must not be running when restoring the memory vault (ChromaDB does
+    not support concurrent writers); the sessions database can be restored safely
+    (the hot-backup copy is consistent).
+    """
+    import shutil
+
+    paths = get_hachi_paths()
+    src = Path(src)
+
+    if not src.exists() or not src.is_dir():
+        console.print(f"[red]Source backup directory not found: {src}[/red]")
+        raise typer.Exit(1)
+
+    # Guard: require explicit confirmation before overwriting live data.
+    if not yes:
+        confirm = typer.confirm(
+            f"This will overwrite your live Hachi data with the backup at:\n  {src}\nContinue?",
+            default=False,
+        )
+        if not confirm:
+            console.print("[yellow]Restore cancelled.[/yellow]")
+            raise typer.Exit(0)
+
+    restored: list[str] = []
+    errors: list[str] = []
+
+    # 1. Sessions database.
+    sessions_src = src / "sessions.db"
+    sessions_dest = paths.sessions_db
+    if sessions_src.exists():
+        try:
+            sessions_dest.parent.mkdir(parents=True, exist_ok=True)
+            import shutil as _shutil
+
+            _shutil.copy2(str(sessions_src), str(sessions_dest))
+            restored.append(f"  sessions.db  → {sessions_dest}")
+        except Exception as exc:
+            errors.append(f"sessions.db: {exc}")
+    else:
+        restored.append("  sessions.db  (not in backup — skipped)")
+
+    # 2. ChromaDB memory vault.
+    chroma_src = src / "chroma_vault"
+    chroma_dest = paths.chroma_dir
+    if chroma_src.exists():
+        try:
+            if chroma_dest.exists():
+                shutil.rmtree(str(chroma_dest))
+            shutil.copytree(str(chroma_src), str(chroma_dest))
+            restored.append(f"  chroma_vault/ → {chroma_dest}")
+        except Exception as exc:
+            errors.append(f"chroma_vault: {exc}")
+    else:
+        restored.append("  chroma_vault/ (not in backup — skipped)")
+
+    # 3. Config files (non-secret).
+    for config_name in ("settings.toml", "device-permissions.og"):
+        config_src = src / config_name
+        config_dest = paths.config_dir / config_name
+        if config_src.exists():
+            try:
+                config_dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(config_src), str(config_dest))
+                restored.append(f"  {config_name}  → {config_dest}")
+            except Exception as exc:
+                errors.append(f"{config_name}: {exc}")
+
+    if errors:
+        console.print("[yellow]Restore completed with errors:[/yellow]")
+        for err in errors:
+            console.print(f"  [red]ERROR:[/red] {err}")
+        raise typer.Exit(1)
+
+    console.print(
+        Panel(
+            "[bold green]Restore complete.[/bold green]\n\nRestored:\n" + "\n".join(restored),
+            title="hachi restore",
+            border_style="green",
+        )
+    )
+
+
 if __name__ == "__main__":
     app()

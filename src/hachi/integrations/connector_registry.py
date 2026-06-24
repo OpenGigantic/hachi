@@ -21,7 +21,6 @@ Legacy / bare env aliases (see ``OAUTH2_CLIENT_ID_ALIASES`` below):
     SLACK_CLIENT_ID  / SLACK_CLIENT_SECRET
     DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET
     NOTION_CLIENT_ID / NOTION_CLIENT_SECRET
-    GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET
 
 Either form is accepted.  Canonical names take precedence.  When either is set,
 ``is_configured()`` returns ``True`` and ``connector_status()`` reports
@@ -50,8 +49,12 @@ OAuth2 connectors (client_id is the minimum requirement):
   discord    | HACHI_OAUTH_DISCORD_CLIENT_SECRET       | DISCORD_CLIENT_SECRET
   notion     | HACHI_OAUTH_NOTION_CLIENT_ID            | NOTION_CLIENT_ID
   notion     | HACHI_OAUTH_NOTION_CLIENT_SECRET        | NOTION_CLIENT_SECRET
-  github     | HACHI_OAUTH_GITHUB_CLIENT_ID            | GITHUB_CLIENT_ID
-  github     | HACHI_OAUTH_GITHUB_CLIENT_SECRET        | GITHUB_CLIENT_SECRET
+
+NOTE: GitHub OAuth is intentionally absent from this registry.  The OAuth flow
+itself (authorize → token) would work, but there is no hachi GitHub tool backend
+to invoke after connecting — surfacing a "Connect GitHub" button with no callable
+tools would be a dead UI affordance.  Add a GitHub entry here once a
+``src/hachi/integrations/github/`` tool module exists (see DECISIONS.md P1-9).
 
 API-key connectors (field_key.upper() is already the conventional env var):
 
@@ -91,7 +94,6 @@ OAUTH2_CLIENT_ID_ALIASES: dict[str, tuple[str, str]] = {
     "slack": ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET"),
     "discord": ("DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET"),
     "notion": ("NOTION_CLIENT_ID", "NOTION_CLIENT_SECRET"),
-    "github": ("GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"),
 }
 
 
@@ -322,21 +324,6 @@ CONNECTORS: list[ConnectorDef] = [
         client_secret_env="HACHI_OAUTH_NOTION_CLIENT_SECRET",
         needs_offline=False,  # Notion tokens are long-lived
         extra_auth_params={"owner": "user"},
-    ),
-    # --- GitHub ---
-    ConnectorDef(
-        id="github",
-        name="GitHub",
-        category="development",
-        auth_type="oauth2",
-        authorize_url="https://github.com/login/oauth/authorize",
-        token_url="https://github.com/login/oauth/access_token",
-        revoke_url="",  # GitHub revocation is done via API, not standard endpoint
-        default_scopes=["repo", "read:user", "read:org"],
-        client_id_env="HACHI_OAUTH_GITHUB_CLIENT_ID",
-        client_secret_env="HACHI_OAUTH_GITHUB_CLIENT_SECRET",
-        needs_offline=False,  # GitHub tokens are long-lived
-        extra_auth_params={},
     ),
     # --- WhatsApp (Meta Business API) — not standard OAuth2; listed as apikey ---
     # Users must provision a permanent token via Meta Business Suite.
