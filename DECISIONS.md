@@ -822,3 +822,70 @@ uv run mypy src/hachi/gateway/fastapi_app.py --ignore-missing-imports   # must b
 uv run mypy src/hachi/gateway/control_plane.py --ignore-missing-imports  # must be 0
 npm run --prefix frontend typecheck   # must be 0
 ```
+
+---
+
+### P1-8 — MCP retry / circuit-breaker / reconnect
+
+**Found.**  `MCPServerConnection.call_tool(...)` was single-shot: one transport call, no
+retry, no circuit-breaker, no reconnect.  A flapping or mid-session-dead MCP server was
+re-hit every turn at full blocking cost.  The `resilient_call` / `HealthRecorder` /
+`RetryPolicy` machinery in `core/resilience.py` was already wired to LLM, Speech, and
+Search providers — but never to MCP.  `errors.py` already defined `MCPError` and
+`ToolError` (both unused: `grep "raise ToolError\|raise MCPError" src` → 0).  When an
+MCP transport error occurred, `call_tool` returned an English string (`"Error: No response
+from MCP server '...'"`) that the loop treated as a successful tool result
+(`is_error=False`), hiding failures from the LLM and the operator view.
+
+**Decided/Changed.**
+1. **`src/hachi/core/mcp_client.py`** — Added:
+   - Three new imports at top: `MCPError`, `HealthRecorder + RetryPolicy + resilient_call`.
+   - `_MCPTimeoutError(TimeoutError)` — private exception for transport-dead/no-response
+     cases; `TimeoutError` base ensures `resilience._is_transient` recognises it as
+     retryable without coupling `MCPError` (which can be non-retryable protocol errors) into
+     the transient-detection path.
+   - Three new attributes in `MCPServerConnection.__init__`: `_retry_policy`, `_health_recorder`,
+     `_reconnect_lock` — all scoped **per connection** so one dead server's breaker is invisible
+     to peers.  Policy defaults: `max_attempts=3`, `backoff_base_s=0.25`, `breaker_threshold=5`,
+     `breaker_cooldown_s=30.0`.
+   - `call_tool(...)` replaced: fast-fails (raises `MCPError`) when the breaker is open;
+     attempts one `_try_reconnect()` when the transport is dead before entering the retry loop;
+     delegates to `resilient_call(_attempt, ...)` with `on_failover` logging; wraps non-MCPError
+     exceptions in `MCPError`.
+   - `_try_reconnect()` — serialised via `_reconnect_lock`; calls `transport.close()`,
+     re-creates transport via `_make_transport()`, re-runs `_start_inner()` (the same sequence as
+     `MCPServerConnection.start()`, minus the outer timed thread).
+   - `_call_tool_once(...)` — extracted from the old `call_tool` body; raises
+     `_MCPTimeoutError` on no-response (transient/retryable) and `MCPError` on JSON-RPC error
+     responses (non-transient, not retried).
+2. **`tests/test_mcp_resilience.py`** (new) — 16 tests covering all five required scenarios:
+   transient retry + success, max-attempts exhaustion, breaker opens + fast-fails without
+   touching transport, dead transport → exactly one reconnect, reconnect failure → MCPError,
+   no reconnect when transport healthy, happy-path result unchanged, per-server isolation.
+   Uses `FakeTransport` (no subprocess/network) and monkey-patched `_call_tool_once`.
+
+**Secondary error-surfacing (DONE — partial).** Before this change, a tool failure
+returned a success-looking string (`is_error=False`).  After this change, `call_tool`
+raises `MCPError` on all failure paths.  The execution loop (`core/loop.py:401-402`)
+already catches any `Exception` from `registry.execute(tool_call)` and returns
+`(error_string, is_error=True, None)`, which the loop encodes as `{"is_error": True}` on
+the `tool_result` block — visible to the LLM and the operator.  The full structured
+`{ok, code, message, retryable}` envelope refactor (cross-cutting, all tool types) is
+deferred as a follow-up.
+
+**Why.**  Minimal-safe: reused the existing `resilient_call` + `HealthRecorder` +
+`RetryPolicy` with zero changes to `resilience.py`.  Per-server isolation is automatic
+because each `MCPServerConnection` owns its own recorder; no global state.  The
+`_MCPTimeoutError(TimeoutError)` trick avoids modifying `resilience._is_transient`
+(which is also used by LLM/Speech/Search providers) to avoid unintended side-effects.
+The reconnect path reuses the existing `_make_transport()` + `_start_inner()` pair that
+was already the established boot sequence.  The successful path is byte-for-byte identical
+to the old `call_tool` (same return value, same truncation logic).
+
+**Verify.**
+```
+PYTHONPATH=src uv run --with pytest --no-project pytest tests/test_mcp_resilience.py tests/test_mcp_transport_and_config.py tests/test_mcp_client_timeout.py tests/test_mcp_injection_guard.py -q
+uv run ruff check src/hachi/core/mcp_client.py tests/test_mcp_resilience.py
+uv run ruff format --check src/hachi/core/mcp_client.py tests/test_mcp_resilience.py
+uv run mypy src/hachi/core/mcp_client.py src/hachi/core/resilience.py src/hachi/core/errors.py --ignore-missing-imports   # 0 errors across all three
+```
