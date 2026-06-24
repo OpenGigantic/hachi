@@ -253,6 +253,14 @@ def _parse_dt(value: str) -> datetime:
     return dt
 
 
+# A retried create_schedule (LLM retry, tool-pool re-dispatch, turn resume) with the same
+# logical identity inside this window returns the EXISTING schedule instead of minting a
+# duplicate recurring job (AUDIT P0-3 / Theme A: no duplicate side effects on retry). The
+# window is short — long enough to absorb retry storms, short enough that a genuinely
+# intentional re-creation much later is still honored.
+_DEDUP_WINDOW_SECONDS = 60.0
+
+
 @dataclass(slots=True)
 class Schedule:
     """A recurring (or one-shot) proactive task."""
@@ -562,10 +570,31 @@ class Scheduler:
         webhook_url: str | None = None,
         condition_skill: str | None = None,
         now: datetime | None = None,
+        dedup_window_seconds: float = _DEDUP_WINDOW_SECONDS,
     ) -> Schedule:
         now = now or _now()
         kind = ScheduleKind(kind)
         self._validate(kind, run_at, interval_seconds, cron)
+        # Idempotency (AUDIT P0-3): a retried create with the same logical identity inside
+        # the dedup window returns the existing schedule rather than a duplicate. Scanning
+        # the live store keeps the dedup record and the source of truth in sync (no parallel
+        # bookkeeping that could drift from what is actually scheduled).
+        duplicate = self._find_recent_duplicate(
+            name=name,
+            task=task,
+            kind=kind,
+            run_at=run_at,
+            interval_seconds=interval_seconds,
+            cron=cron,
+            timezone=timezone,
+            deliver_to=deliver_to,
+            webhook_url=webhook_url,
+            condition_skill=condition_skill,
+            now=now,
+            window_seconds=dedup_window_seconds,
+        )
+        if duplicate is not None:
+            return duplicate
         schedule = Schedule(
             schedule_id=str(uuid.uuid4()),
             name=name,
@@ -585,6 +614,51 @@ class Scheduler:
         self._schedules[schedule.schedule_id] = schedule
         self._persist()
         return schedule
+
+    def _find_recent_duplicate(
+        self,
+        *,
+        name: str,
+        task: str,
+        kind: ScheduleKind,
+        run_at: str | None,
+        interval_seconds: int | None,
+        cron: str | None,
+        timezone: str,
+        deliver_to: str,
+        webhook_url: str | None,
+        condition_skill: str | None,
+        now: datetime,
+        window_seconds: float,
+    ) -> Schedule | None:
+        """Return an existing schedule with the same logical identity created within
+        ``window_seconds`` of ``now``, else None.
+
+        Suppresses duplicate creations from a retried ``create_schedule`` (Theme A). A
+        non-positive window disables dedup. Identity is the full set of user-meaningful
+        fields — two schedules that differ in *any* of them are genuinely distinct.
+        """
+        if window_seconds <= 0:
+            return None
+        for s in self._schedules.values():
+            if (
+                s.name == name
+                and s.task == task
+                and s.kind == kind
+                and s.run_at == run_at
+                and s.interval_seconds == interval_seconds
+                and s.cron == cron
+                and s.timezone == timezone
+                and s.deliver_to == deliver_to
+                and s.webhook_url == webhook_url
+                and s.condition_skill == condition_skill
+            ):
+                if not s.created_at:
+                    continue
+                age = abs((now - _parse_dt(s.created_at)).total_seconds())
+                if age <= window_seconds:
+                    return s
+        return None
 
     def cancel(self, schedule_id: str) -> bool:
         if schedule_id in self._schedules:

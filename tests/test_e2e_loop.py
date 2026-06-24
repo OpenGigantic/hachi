@@ -173,8 +173,7 @@ def test_batch_tool_calls_all_get_paired_results() -> None:
     assert result == "All three done."
 
     tool_result_msgs = [
-        m for m in loop.memory.history
-        if m.role == "user" and isinstance(m.content, list)
+        m for m in loop.memory.history if m.role == "user" and isinstance(m.content, list)
     ]
     assert tool_result_msgs, "no tool_results message in history"
     answered_ids = {
@@ -209,13 +208,15 @@ def test_tool_error_sets_is_error_in_history() -> None:
     assert result == "I saw the error."
 
     tool_result_msgs = [
-        m for m in loop.memory.history
-        if m.role == "user" and isinstance(m.content, list)
+        m for m in loop.memory.history if m.role == "user" and isinstance(m.content, list)
     ]
     assert tool_result_msgs
     result_block = next(
-        (b for b in tool_result_msgs[-1].content
-         if isinstance(b, dict) and b.get("tool_use_id") == "t1"),
+        (
+            b
+            for b in tool_result_msgs[-1].content
+            if isinstance(b, dict) and b.get("tool_use_id") == "t1"
+        ),
         None,
     )
     assert result_block is not None, "no tool_result block for t1"
@@ -292,6 +293,7 @@ def test_compaction_event_fires_on_skill_switch() -> None:
     # Seed a prior skill and its history so compaction has something to compact
     memory._active_skill = "prior_skill"  # simulate a skill already loaded
     from hachi.core.llm import Message as Msg
+
     memory._history = [
         Msg(role="user", content="previous user message"),
         Msg(role="assistant", content="previous assistant reply"),
@@ -310,7 +312,9 @@ def test_compaction_event_fires_on_skill_switch() -> None:
         LLMResponse(content="Switched to weather."),
     ]
     loop, _ = _make_loop(
-        responses, registry=reg, memory=memory,
+        responses,
+        registry=reg,
+        memory=memory,
         on_event=lambda name, data: events.append((name, data)),
     )
     loop.add_user_message("switch to weather")
@@ -338,7 +342,8 @@ def test_event_order_thinking_tool_result_text() -> None:
     ]
     event_names: list[str] = []
     loop, _ = _make_loop(
-        responses, registry=reg,
+        responses,
+        registry=reg,
         on_event=lambda name, _data: event_names.append(name),
     )
     loop.add_user_message("go")
@@ -434,9 +439,7 @@ def test_tool_result_reaches_next_llm_call() -> None:
     assert llm.calls == 2
     second_call_messages = llm.call_kwargs[1].get("messages", [])
     # The second call must contain the tool result in the user message
-    all_content = " ".join(
-        str(m.content) for m in second_call_messages
-    )
+    all_content = " ".join(str(m.content) for m in second_call_messages)
     assert "secret_value_42" in all_content, (
         "tool result must be present in messages sent to second LLM call"
     )
@@ -637,3 +640,82 @@ def test_text_chunk_emitted_as_non_streaming_fallback() -> None:
     assert chunks == ["final answer"], (
         f"Expected exactly one text_chunk in the no-delta fallback; got: {chunks}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-turn tool-call record for the interaction_log (AUDIT P0-2)
+# ---------------------------------------------------------------------------
+
+
+def test_last_tool_calls_records_batch_in_order() -> None:
+    reg = ToolRegistry()
+    reg.register(_tool("tool_a"), lambda: "a")
+    reg.register(_tool("tool_b"), lambda: "b")
+    responses = [
+        LLMResponse(
+            content="",
+            tool_calls=[
+                ToolCall(id="t1", name="tool_a", input={}),
+                ToolCall(id="t2", name="tool_b", input={}),
+            ],
+        ),
+        LLMResponse(content="done"),
+    ]
+    loop, _ = _make_loop(responses, registry=reg)
+    loop.add_user_message("go")
+    loop.run(max_iterations=3)
+    assert loop.last_tool_calls == ["tool_a", "tool_b"]
+
+
+def test_last_tool_calls_empty_before_run() -> None:
+    loop, _ = _make_loop([LLMResponse(content="hi")])
+    assert loop.last_tool_calls == []
+
+
+def test_last_tool_calls_resets_each_run() -> None:
+    reg = ToolRegistry()
+    reg.register(_tool("tool_a"), lambda: "a")
+    responses = [
+        LLMResponse(content="", tool_calls=[ToolCall(id="t1", name="tool_a", input={})]),
+        LLMResponse(content="done"),
+    ]
+    loop, _ = _make_loop(responses, registry=reg)
+    loop.add_user_message("go")
+    loop.run(max_iterations=3)
+    assert loop.last_tool_calls == ["tool_a"]
+    # A second run whose responses carry no tool calls must reset the record to empty.
+    loop.add_user_message("again")
+    loop.run(max_iterations=3)
+    assert loop.last_tool_calls == []
+
+
+def test_last_suspend_records_wait_condition_on_suspend() -> None:
+    from hachi.core.loop import SuspendWorkflow
+
+    reg = ToolRegistry()
+
+    def _suspend(**_kw: object) -> str:
+        raise SuspendWorkflow("need approval", wait_kind="event", wait_key="email.received:boss")
+
+    reg.register(_tool("core_suspend_workflow"), _suspend)
+    responses = [
+        LLMResponse(
+            content="",
+            tool_calls=[ToolCall(id="t1", name="core_suspend_workflow", input={})],
+        ),
+        LLMResponse(content="unreached"),
+    ]
+    loop, _ = _make_loop(responses, registry=reg)
+    loop.add_user_message("do it")
+    result = loop.run(max_iterations=3)
+    assert result.startswith("[WORKFLOW SUSPENDED]")
+    assert loop.last_suspend is not None
+    assert loop.last_suspend.wait_kind == "event"
+    assert loop.last_suspend.wait_key == "email.received:boss"
+
+
+def test_last_suspend_is_none_on_normal_turn() -> None:
+    loop, _ = _make_loop([LLMResponse(content="all done")])
+    loop.add_user_message("hello")
+    loop.run(max_iterations=2)
+    assert loop.last_suspend is None

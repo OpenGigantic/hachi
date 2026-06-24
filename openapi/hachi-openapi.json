@@ -4670,6 +4670,17 @@
             "type": "array",
             "title": "Attachment Ids",
             "default": []
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
           }
         },
         "type": "object",

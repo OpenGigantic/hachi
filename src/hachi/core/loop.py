@@ -614,6 +614,24 @@ class ExecutionLoop:
             )
         return None
 
+    @property
+    def last_tool_calls(self) -> list[str]:
+        """Tool names invoked during the most recent ``run()``, in call order.
+
+        Powers the per-turn ``interaction_log`` (P0-2). Returns an empty list before the
+        first run. A copy, so callers can't mutate loop state.
+        """
+        return list(getattr(self, "_last_tool_calls", []))
+
+    @property
+    def last_suspend(self) -> "SuspendWorkflow | None":
+        """The ``SuspendWorkflow`` if the most recent ``run()`` ended by suspension, else None.
+
+        Lets the caller persist a durable WAITING run + arm the wait registry (P0-1).
+        Reset at the start of every ``run()``.
+        """
+        return getattr(self, "_last_suspend", None)
+
     def run(self, max_iterations: int = 15, turn_context: TurnContext | None = None) -> str:
         """
         Execute the autonomous loop until the model stops calling tools or hits the limit.
@@ -645,6 +663,11 @@ class ExecutionLoop:
         # Reset per-run state.
         self._cancel_event.clear()
         self._partial_text = []
+        # Per-turn tool-call record (names, in call order) for the interaction_log (P0-2).
+        self._last_tool_calls: list[str] = []
+        # Set when this run() ends by suspension, so the caller (AgentSession) can persist
+        # a durable WAITING run + arm the wait registry (P0-1). None on a normal turn.
+        self._last_suspend: SuspendWorkflow | None = None
 
         # Wall-clock deadline for this run() call (None when disabled).
         # Set before anything else so the streaming helper can read it.
@@ -897,6 +920,9 @@ class ExecutionLoop:
 
                 for tool_call in response.tool_calls:
                     self.on_event("tool_call", {"name": tool_call.name, "input": tool_call.input})
+                    # Record for the per-turn interaction_log (sequential pre-pass — safe
+                    # before the thread-pool dispatch below).
+                    self._last_tool_calls.append(tool_call.name)
 
                     # Lazy tool loading: the model unlocks an optional group for the
                     # rest of this turn; the handler only confirms — state lives here.
@@ -999,6 +1025,10 @@ class ExecutionLoop:
                     self.memory.complete_task(
                         user_input_for_turn, f"Suspended: {suspend_exc.reason}"
                     )
+                    # Surface the structured wait condition to the caller so the gateway
+                    # can persist RunState(WAITING) + arm the registry (P0-1). Without this
+                    # the wait_kind/wait_key were lost inside the return string.
+                    self._last_suspend = suspend_exc
                     return f"[WORKFLOW SUSPENDED] {suspend_exc.reason}"
 
             self.on_event(

@@ -104,6 +104,11 @@ class SessionCreateResponse(BaseModel):
 class SessionMessageRequest(BaseModel):
     prompt: str
     attachment_ids: list[str] = []
+    # Optional ingress idempotency token (AUDIT P0-3). When supplied — preferably via the
+    # ``Idempotency-Key`` HTTP header, with this body field as a fallback — a duplicate
+    # POST with the same key replays the prior turn's response instead of re-running the
+    # turn (no double spend / duplicate side effects). The header takes precedence.
+    idempotency_key: str | None = None
 
 
 class SessionMessageResponse(BaseModel):
@@ -341,6 +346,27 @@ def _error_response(
     )
 
 
+def _resolve_session_store() -> Any:
+    """Return the process-wide ``SessionStore`` (preferred) or a fresh fallback, else None.
+
+    Mirrors the ``ProcessSharedServices`` access pattern used elsewhere in this module so
+    durable ingress idempotency (AUDIT P0-3) reads/writes the same database the rest of the
+    gateway uses. Patched in tests to point at an isolated DB.
+    """
+    try:
+        from hachi.gateway.shared_services import ProcessSharedServices
+
+        shared = ProcessSharedServices.instance()
+        store = getattr(shared, "session_store", None) if shared is not None else None
+        if store is not None:
+            return store
+        from hachi.core.session_store import SessionStore
+
+        return SessionStore()
+    except Exception:  # pragma: no cover - store is best-effort; never break the turn
+        return None
+
+
 def create_gateway_app(
     control_plane: GatewayControlPlane,
     auth_token: str | None = None,
@@ -499,9 +525,7 @@ def create_gateway_app(
     # (it is a subclass).  HTTP 410 Gone tells the frontend the session existed but
     # is no longer active, and the client should create a new session.
     @app.exception_handler(SessionExpiredError)
-    async def _session_expired_handler(
-        _request: Request, exc: SessionExpiredError
-    ) -> JSONResponse:
+    async def _session_expired_handler(_request: Request, exc: SessionExpiredError) -> JSONResponse:
         return _error_response(
             status_code=410,
             code=exc.code,
@@ -806,12 +830,26 @@ def create_gateway_app(
     )
     def post_message(session_id: str, payload: SessionMessageRequest, request: Request) -> Any:
         _check_session_ownership(session_id, _require_auth(request))
+        # Ingress idempotency (AUDIT P0-3 / Theme A): a duplicate POST — client retry,
+        # reconnect, or double-click — carrying the same key replays the prior turn's
+        # response instead of re-running the whole turn (no double spend, no duplicate
+        # side effects). The header wins over the body field; an absent key disables it.
+        idem_key = (request.headers.get("Idempotency-Key") or payload.idempotency_key or "").strip()
+        store = _resolve_session_store() if idem_key else None
+        if store is not None:
+            prior = store.get_idempotent_response(session_id, idem_key)
+            if prior is not None:
+                return prior
         # Step 7: intercept slash commands before the LLM.
         slash_result = _handle_slash_command(session_id, payload.prompt)
         if slash_result is not None:
             return slash_result
         augmented = _build_augmented_prompt(payload.prompt, payload.attachment_ids)
-        return control_plane.send_message(session_id=session_id, prompt=augmented)
+        result = control_plane.send_message(session_id=session_id, prompt=augmented)
+        # Persist only on success (send_message raises on failure → left retryable).
+        if store is not None:
+            store.save_idempotent_response(session_id, idem_key, result)
+        return result
 
     @sessions.delete("/{session_id}", response_model=SessionCloseResponse)
     async def delete_session(session_id: str, request: Request) -> Any:
@@ -1985,9 +2023,7 @@ def create_gateway_app(
                         return {"ok": False, "message": "No Telegram bot token stored."}
                     import httpx
 
-                    resp = httpx.get(
-                        f"https://api.telegram.org/bot{token}/getMe", timeout=8.0
-                    )
+                    resp = httpx.get(f"https://api.telegram.org/bot{token}/getMe", timeout=8.0)
                     if resp.status_code == 200 and resp.json().get("ok"):
                         name = resp.json().get("result", {}).get("username", "bot")
                         return {"ok": True, "message": f"Telegram bot @{name} reachable."}

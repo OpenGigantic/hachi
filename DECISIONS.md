@@ -504,3 +504,186 @@ The Vite dev server (HMR) does pick up frontend edits live, but it was talking t
 - `ruff` clean on all changed files; OpenAPI re-exported + `schema.d.ts` regenerated + frontend
   `tsc` clean + 56 vitest pass; targeted backend suite **462 passed / 0 failed**; full `pytest -q`
   re-run for cross-cutting regressions.
+
+---
+
+## Reassessment P0 sweep (2026-06-24) — closing the idempotency deficit (AUDIT Theme A / P0-3)
+
+The 2026-06-23 `AUDIT.md` was independently re-verified against HEAD `4063e41` (all 4 P0s + key
+P1s still open by direct grep; HEAD's "live bug-fix round" was orthogonal to the architectural
+backlog). Began executing the 30-day roadmap **trust-first**, starting with the audit's named
+"single most corrosive gap": duplicate side effects on retry. One tested change at a time.
+
+**Why this first.** North star is trust; an assistant that *acts on your behalf* must never do so
+twice. Three independent auditors flagged the same hole — no idempotency anywhere a side effect
+happens. Closed in three layers.
+
+### P0-3a — outbound messaging dedup (`core/idempotency.py` + `tools/messaging_tools.py`)
+- **Found:** the 4 `send_*` tools (Slack/Discord/WhatsApp/Telegram) had zero dedup — an LLM retry,
+  the 4-worker tool pool, or a turn resume re-sends the identical message.
+- **Changed:** new `IdempotencyGuard` (thread-safe, TTL, `begin`/`finish`/`abort`; mirrors the
+  `lease_manager` house style but caches+replays the prior **success** result). Wired into all four
+  tools. **Scope = one guard per session** (per `register_messaging_tools` call): covers every
+  in-session retry path, but never suppresses a genuinely distinct send from another concurrent
+  session. Only **successful** sends are deduped — a failed attempt `abort()`s its reservation so a
+  real retry still goes through.
+- **Gotcha caught by a test:** `IdempotencyGuard.__len__` makes an empty guard *falsy*, so the
+  `guard or IdempotencyGuard()` idiom silently discarded an injected guard → fixed to an explicit
+  `is None` check (commented so it isn't reintroduced).
+- **Tests:** `test_idempotency.py` (11, incl. fake-clock TTL expiry + a 50-thread race proving
+  exactly one `begin` wins) + 8 tool-layer dedup tests. Fixed a pre-existing `_telegram_send` mypy
+  `no-any-return` while in the file.
+
+### P0-3b — scheduler dedup (`jobs/scheduler.py`)
+- **Found:** `Scheduler.add()` minted a fresh `uuid4` every call → a retried `create_schedule`
+  produced a duplicate **recurring** job (fires forever).
+- **Changed:** a windowed fingerprint scan (`_find_recent_duplicate`, default 60 s) — a retry with
+  the same logical identity (name/task/kind/timing/delivery) inside the window returns the existing
+  schedule instead of a duplicate. Scans the **live store** (the schedules dict *is* the dedup
+  record — no parallel bookkeeping that can drift). Keys on persisted `created_at`, so dedup also
+  holds across a restart between the two creates.
+- **Tests:** 5 in `test_scheduler.py` (within-window, past-window, distinct-identity, window=0
+  disable, and an across-restart case).
+
+### P0-3c — ingress idempotency (`core/session_store.py` + `gateway/fastapi_app.py` + `frontend/chat.ts`)
+- **Found:** `POST /sessions/{id}/messages` had no `Idempotency-Key` — a client retry / reconnect /
+  double-click re-runs the **whole turn** (double spend + every side effect again).
+- **Changed:** durable `idempotency_keys` table in SessionStore (`PRIMARY KEY (session_id, idem_key)`,
+  `INSERT OR IGNORE` = first-write-wins, survives restart) + `get/save_idempotent_response`. The
+  route reads `Idempotency-Key` (header preferred, `idempotency_key` body field fallback), replays
+  the stored response on a hit, and persists **only on success** (`send_message` raises on failure →
+  left retryable). Frontend keys each turn on the stable assistant-bubble id (`turn-${hachiMsgId}`);
+  `retryLastMessage` already reuses that id, so a retry/double-submit replays server-side with zero
+  extra state. `control_plane` untouched (uses injected callbacks, no store handle) — store resolved
+  in the route via the existing `ProcessSharedServices` pattern (`_resolve_session_store`, patchable).
+- **Tests:** `test_ingress_idempotency.py` (9: 5 durable-store incl. restart + first-write-wins +
+  per-session scoping; 4 route incl. same-key-replays-without-rerunning via an `on_chat` call
+  counter, distinct-keys, no-key, body-field fallback). OpenAPI re-exported + `schema.d.ts`
+  regenerated; frontend `tsc` clean + 56 vitest pass.
+- **Honest scope:** outbound + scheduler dedup are in-process/short-window (the realistic automatic
+  retry paths); ingress is durable. Concurrent *in-flight* duplicates (same key, truly simultaneous)
+  are suppressed for outbound (the guard's pending reservation) but for ingress two simultaneous
+  first-time posts could both run before either stores — `INSERT OR IGNORE` still keeps the replay
+  consistent. Provider-native idempotency keys (where a provider supports them) remain a future
+  upgrade over content-hash dedup.
+
+**Verification:** consolidated workstream run **155 passed / 0 failed**; `ruff` + `mypy` clean on all
+changed modules; OpenAPI + frontend contract regenerated and consistent.
+
+### P0-2 — `interaction_log`, the keystone of the eval loop (`session_store.py` + `loop.py` + `orchestrator.py`)
+- **Found:** no durable per-interaction record existed — SessionStore persisted only flat `messages`
+  rows, and per-turn cost was reconstructed by scanning the last 500 in-memory events (lost on
+  restart). No row-level ground truth → no rating, no failure mining, no per-turn audit, no
+  output-regression net. The audit's biggest world-class gap (eval maturity) was *unbuildable*
+  without this.
+- **Changed (three small pieces):**
+  1. **Storage** — `interaction_log` table `{id, session_id, turn_id, ts, user_input, agent_output,
+     tool_calls(JSON), memory_hits(JSON), model_used, token_cost, tokens, rating, notes}` +
+     `log_interaction` / `get_interactions` / `set_interaction_rating`. `session_store.py` is in the
+     **strict mypy gate** and stays clean. `rating`/`notes` are NULL until a future `/review`
+     surface fills them (the write side, `set_interaction_rating`, already exists).
+  2. **Per-turn tool capture** — `ExecutionLoop` now records `last_tool_calls` (names, in call order),
+     reset at the top of each `run()` and appended in the sequential pre-pass (thread-safe, before the
+     pool dispatch). Exposed as a copy via a property.
+  3. **Write site** — extracted `AgentSession._write_interaction_log` (a testable seam) called once
+     per turn from `_chat_impl_inner`, mapping in-scope values: recalled facts → `memory_hits`,
+     `loop.last_tool_calls`, `self.model_name`, and **per-turn** cost/token deltas (added
+     `_last_recorded_tokens` to mirror the existing `_last_recorded_cost_usd`). Best-effort — a
+     logging failure never breaks a turn.
+- **Tests (14):** 8 store (round-trip, JSON decode, per-session scoping, ordering+limit, rating
+  set/preserve/unknown, restart-durability) + 3 loop (batch order, empty-before-run, reset-per-run via
+  the `ScriptedLLMClient` harness) + 3 write-site (field mapping, no-op without store, swallows store
+  errors). No real `boot_agent` turn harness exists in the suite, so the write site is covered via the
+  extracted seam rather than a full boot.
+- **Verification:** 57-test P0-2 regression green; `ruff` clean; **zero new mypy errors** (loop.py
+  10→10, orchestrator.py 34→34, both pre-existing-advisory and not in the strict gate; session_store
+  strict-gated and clean). Deferred to a later increment: the `/review` UI + thumbs endpoint + a
+  trajectory-eval suite that *consume* this table (now unblocked).
+
+### P0-1 — wiring the suspend producer (`loop.py` + `orchestrator.py`)
+- **Found:** a dead marquee feature. `loop.py` caught `SuspendWorkflow`, ran
+  `return "[WORKFLOW SUSPENDED] {reason}"`, and **discarded the structured wait condition**. No
+  `RunState(WAITING)` was ever created, so the *entire* consumer subsystem — wake (`POST /runs/{id}/wake`),
+  boot-recover (`_boot_recover_runs`), the 30 s timeout sweep, and `GET /runs` — had **zero inputs**
+  and was permanently empty. The suspend tool's own docstring *claimed* "the gateway layer persists
+  RunState(WAITING) + arms the registry" — that wiring did not exist. Tests asserted only the
+  exception contract, so CI stayed green over a feature that did nothing.
+- **Changed (the missing connection, both halves now meet):**
+  1. `ExecutionLoop` now surfaces the structured suspend via `last_suspend` (the `SuspendWorkflow`
+     itself), reset each `run()` and set in the suspend branch — mirroring the `last_tool_calls`
+     pattern. The return string is unchanged (no contract break for existing callers).
+  2. `AgentSession._persist_suspended_run_if_any(turn_id)` runs right after `loop.run()`: maps
+     `wait_kind`→`WaitKind` (unknown → `USER`, the safe default), builds a `WaitCondition`, and
+     `RunStateStore().upsert(RunState(status=WAITING, …))` + `get_wait_registry().arm(run_id, wait)`,
+     then emits the existing `run.suspended` event. Best-effort (never breaks a turn); no-op on a
+     normal turn. `resume_cursor=0` for now — a warm wake resumes the live in-memory session; precise
+     cursor + cold-start replay remain the separately-tracked deferred resume work.
+- **Tests (5):** 2 loop (`last_suspend` set with the right wait_kind/key on suspend via the
+  `ScriptedLLMClient`; None on a normal turn) + 3 producer (`test_suspend_workflow.py`: creates a
+  durable WAITING run **and** arms the registry so `resolve(key)` returns the run_id; unknown
+  wait_kind → USER; no-op when not suspended). These assert the **durable side effect** the prior
+  tests never did. 108-test producer+consumer regression green (`test_durable_store/waits/runtime_*`).
+- **Verification:** `ruff` clean; **zero new mypy errors** (loop 10→10, orchestrator 34→34).
+
+### P0-4 — making the Docker self-host recipe actually run (`frontend/` + `Dockerfile` + compose + CI)
+- **Found:** `docker compose up` failed on first invocation. (1) `frontend` service built `./frontend`
+  with `dockerfile: Dockerfile` — which **did not exist** → immediate build failure. (2) The backend
+  runs non-root `USER hachi` (uid 10001) but volumes mounted to `/root/.config/hachi` etc. — paths the
+  non-root user **cannot write**. (3) `test_docker_assets.py` only asserted the string `"8787"` was
+  present, so CI was falsely green over all of it.
+- **Changed:**
+  - **frontend image (new):** `frontend/Dockerfile` (multi-stage — `node:22` build → `nginx:1.27`
+    serve), `frontend/nginx.conf.template`, `frontend/docker-entrypoint.sh`, `frontend/.dockerignore`.
+    nginx serves the built SPA on 5173 and reverse-proxies `/api/` → the gateway, **mirroring the dev
+    Vite proxy**: trailing-slash `proxy_pass` strips the `/api` prefix, the bearer token is injected
+    server-side (read from the mounted secret by the entrypoint → `envsubst` into the config, so the
+    browser never holds it), and `proxy_buffering off` keeps SSE streaming. SPA `try_files` fallback
+    for client-side routing.
+  - **writable volumes:** switched the four backend volumes from `/root/...` bind mounts to **named
+    volumes** targeting `/home/hachi/...` (the platformdirs paths for that user). The Dockerfile now
+    pre-creates those XDG dirs `chown`ed to `hachi`, so each named volume **inherits hachi ownership**
+    on first init and the non-root user can write. (A host bind mount would be created root-owned and
+    re-break writes — hence named volumes, the standard non-root pattern.)
+  - **honest tests + CI:** replaced the string-only `test_docker_assets.py` with 10 structural guards
+    (frontend Dockerfile exists/builds/serves; volumes target `/home/hachi` not `/root`; named volumes
+    declared; Dockerfile pre-creates+chowns the dirs; nginx proxies `/api` with prefix-strip + token +
+    SSE; entrypoint reads the secret). Added a `docker-smoke` CI job (`docker compose config` +
+    `docker compose build` of **both** images) so a missing/broken Dockerfile can't pass green again.
+  - `.gitignore`: ignore `.hachi/` (holds the local gateway-token secret).
+- **Verification:** `docker compose config` **valid** (volumes resolve to `/home/hachi`, both contexts
+  build); compose + ci YAML parse-validated; 10 structural tests green. A live `docker compose build`
+  could **not** be run locally — Docker Desktop's Linux engine went down mid-session — so the live
+  build is verified by the new `docker-smoke` CI job (stable Linux Docker), exactly the audit's
+  prescribed verification path. Honest gap: the running container has not been hit with a real browser
+  request locally; the proxy/token/SSE wiring is asserted structurally + mirrors the proven dev proxy.
+
+### Google Workspace config resolution (2026-06-24, user-reported: "configured in .env but does it work?")
+- **Found (proven by reproduction):** `core/oauth.py` captured the OAuth client id/secret as
+  **module-level globals at import time** — `GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")`.
+  So a value present in `.env` but merged into the environment *after* this module was first imported
+  (a different import order, a non-CLI entrypoint, or a `.env` in a directory the loader didn't read)
+  was **never seen**: every Google tool failed "Missing GOOGLE_CLIENT_ID" despite being configured.
+  Two compounding gaps: (a) `register_google_tools` gated the real-vs-stub decision on bare
+  `os.environ`, and (b) `hachi setup` persists keys to `config_dir/.env`, but the startup loader only
+  read `cwd/.env` — so a wizard-configured credential was written to disk and never loaded next run.
+- **Changed (three layers, so "configure → it works" is reliably true):**
+  1. **Lazy resolution** (`oauth.py`): replaced the import-time globals with `_resolve_env()` (read at
+     call time: process env first, then `cwd/.env`, then `config_dir/.env`) behind `_google_client_id()`
+     / `_google_client_secret()`; updated `_require_google_client_id` + the browser/refresh flows.
+  2. **Consistent gate** (`google_tools.py`): `register_google_tools` now uses `_google_client_id()`
+     (same resolver), so a credential configured in *any* `.env` location mounts the real hub, not the
+     "not configured" stub.
+  3. **Root cause** (`cli/main.py`): the startup loader now also merges `config_dir/.env` (where the
+     setup wizard writes) into `os.environ` — `cwd/.env` still wins on conflicts. Fixes Google **and**
+     every other wizard-configured credential (SMTP/Telegram/…) being silently ignored on the next run.
+- **Not changed (by design):** the first-time consent still uses the local-server browser flow
+  (`webbrowser.open` + loopback redirect). On a headless gateway the intended path is to run
+  `hachi auth google` once (browser, consent, token persisted); the gateway then uses the saved token
+  and refreshes silently. A first Google call in a headless context with no saved token still blocks
+  ~120 s on the browser flow — noted as a follow-up (a non-interactive guard that returns
+  "run `hachi auth google`" instead of hanging).
+- **Tests (9):** 4 oauth regression (value set after import is resolved; env beats .env; .env
+  fallback; dotenv parsing) + updated 4 patch sites to the resolver + 4 "no-credentials" stub tests
+  now force the resolver to None (clearing only `os.environ` no longer suffices in a repo that ships a
+  `.env`) + 1 new "mounts the real hub when the id is only in `.env`". 213-test Google/OAuth/credential/
+  deployment regression green; `ruff` clean; **zero new mypy errors** (oauth 19→19, cli/main 121→121).
