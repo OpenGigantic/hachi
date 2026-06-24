@@ -1913,6 +1913,8 @@ export interface components {
              * @default []
              */
             attachment_ids: string[];
+            /** Idempotency Key */
+            idempotency_key?: string | null;
         };
         /** SessionMessageResponse */
         SessionMessageResponse: {

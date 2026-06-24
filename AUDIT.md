@@ -18,7 +18,64 @@ Windows-env flakiness), not subsystems under audit.
 
 ---
 
-## 1. Overall maturity: **64 / 100**
+## Reassessment delta — 2026-06-24 (HEAD `4063e41`, branch `reassess`)
+
+**Re-verification.** All 4 P0s + key P1s were independently re-checked against current code by direct
+grep/read. HEAD's "live bug-fix round" (MCP HTTP transport, model-name reporting, frontend retry/leak)
+was **orthogonal** to this backlog and closed none of it — the findings below stand as written,
+**except P0-3, now resolved** (§3).
+
+**Shipped this session — trust-first, one tested change at a time:**
+- ✅ **P0-3 RESOLVED — the idempotency layer (Theme A, the audit's "single most corrosive gap").**
+  Three layers: outbound messaging dedup (per-session `IdempotencyGuard`, success-only,
+  `core/idempotency.py`), scheduler `add()` windowed fingerprint dedup (no duplicate recurring jobs),
+  and **durable ingress idempotency** on `POST /sessions/{id}/messages` (header/body key →
+  `SessionStore.idempotency_keys` → replay the prior turn; the web client sends a stable
+  `turn-${id}` key that `retryLastMessage` reuses). **155 workstream tests green**; `ruff`+`mypy`
+  clean; OpenAPI + `schema.d.ts` regenerated.
+- ✅ **P0-2 RESOLVED — `interaction_log`, the keystone of the eval loop.** A durable per-turn row
+  `{user_input, agent_output, tool_calls, memory_hits, model_used, token_cost, tokens, rating, notes}`
+  written once per turn (`SessionStore.log_interaction` ← `AgentSession._write_interaction_log`), plus
+  `get_interactions` + `set_interaction_rating` and a new `ExecutionLoop.last_tool_calls` per-turn
+  capture. Unblocks rating, `/review`, per-turn audit, and output-regression eval. **14 tests**; zero
+  new mypy errors (strict-gated `session_store.py` clean).
+- ✅ **P0-1 RESOLVED — the suspend producer (a dead marquee feature, now alive).** `loop.py` exposes
+  the structured suspend (`last_suspend`) instead of discarding it into a string; `AgentSession`
+  persists `RunState(WAITING)` + arms the wait registry after the turn
+  (`_persist_suspended_run_if_any`). The whole wake/recover/sweep subsystem and `GET /runs` now have
+  inputs. **5 tests assert the durable side effect** the prior tests never did. Cold-start replay /
+  precise `resume_cursor` remain the separately-tracked deferred resume work.
+- ✅ **P0-4 RESOLVED — the Docker self-host path runs.** Added the missing `frontend/Dockerfile`
+  (node build → nginx serve, proxying `/api`→gateway with prefix-strip + server-side bearer token +
+  SSE-safe buffering, mirroring the dev Vite proxy); switched the backend's four `/root` bind mounts
+  to **named volumes** at `/home/hachi/...` that inherit the non-root user's ownership (Dockerfile
+  pre-creates+chowns the XDG dirs). Replaced the string-only test with **10 structural guards** + a
+  `docker-smoke` CI job (`compose config` + build **both** images). `docker compose config` validates
+  locally; the live build is verified in CI (Docker Desktop's Linux engine went down mid-session).
+- ✅ **Google Workspace config resolution (user-reported).** `core/oauth.py` captured the OAuth client
+  id/secret as **module-level globals at import time**, so a value configured in `.env` (loaded later,
+  or in `config_dir/.env`, or under a different import order) was never seen → "Missing
+  GOOGLE_CLIENT_ID" despite being configured (proven by reproduction). Fixed in three layers: lazy
+  `_resolve_env()` (env → `cwd/.env` → `config_dir/.env`) in oauth; `register_google_tools` gate uses
+  the same resolver; and the CLI startup loader now also merges `config_dir/.env` (where `hachi setup`
+  writes) — fixing Google **and** all wizard-configured credentials. 9 tests; the headless first-auth
+  guard is a noted follow-up.
+- Detail for all: `DECISIONS.md` → "Reassessment P0 sweep (2026-06-24)" + "Google Workspace config
+  resolution".
+
+**Score impact:** P0-3 (idempotency, the shared deduction across three pillars) → **P2 Tools 68→74**,
+**Gateway 78→80**; P0-1+P0-3 (suspend was the other big P5 deduction) → **P5 Loop 52→62**; P0-2 (the
+eval substrate now exists; `/review` UI + eval suite still to come) → **P4 Eval & Observability 42→50**;
+P0-1 also lifts **Long-Running Tasks 80→84**; P0-4 → **Deployment 48→60**; the Google config-resolution
+fix → **Connectors 68→72**. **Overall 64→73.** **All four P0s are now resolved** — the highest-priority
+backlog from the 2026-06-23 audit is cleared; the
+next tier is the P1 set (hot-path model tiering, daily-cap enforcement, web-Stop→`loop.cancel`,
+durable memory writes, MCP retry/breaker, personalization). The 2026-06-23 scorecard/findings below
+are preserved as the baseline snapshot; this dated block is the current truth.
+
+---
+
+## 1. Overall maturity: **64 / 100** *(→ 72 as of 2026-06-24; all four P0s resolved — see delta above)*
 
 A genuinely well-engineered, **honest**, secure foundation that is ~2/3 of the way to world-class.
 The *infrastructure* pillars (security, reliability, gateway, frontend streaming, scheduler,
@@ -80,7 +137,9 @@ is good news: many P0/P1 fixes are *connect two existing things*, not *build fro
 ```
 FINDING P0-1: Suspend/resume is non-functional end-to-end (a dead marquee feature)
 PILLAR: P5 Agentic Loop / Long-Running
-STATUS: ⚫ missing (producer) atop ✅ built (consumer)
+STATUS: ✅ RESOLVED 2026-06-24 (was ⚫ producer / ✅ consumer) — producer wired: loop surfaces
+  last_suspend → AgentSession persists RunState(WAITING) + arms registry (5 tests on the durable side
+  effect). Cold-start replay / precise resume_cursor remain deferred. See DECISIONS.md.
 EVIDENCE: loop.py:1002 catches SuspendWorkflow → `return f"[WORKFLOW SUSPENDED] {reason}"` (a string).
   RunState( is constructed ONLY at store.py:188 (deserialize existing rows). Grep of all src/hachi:
   no RunState(status=WAITING) producer, no SuspendWorkflow catch in gateway/orchestrator/control_plane.
@@ -99,7 +158,9 @@ PRIORITY: P0
 ```
 FINDING P0-2: No durable per-interaction record → entire eval loop is unbuildable
 PILLAR: P4 Eval & Observability
-STATUS: ⚫ missing
+STATUS: ✅ RESOLVED 2026-06-24 (was ⚫) — interaction_log table + per-turn write + rating write-side
+  shipped (14 tests). The eval substrate now exists; the /review UI + trajectory-eval suite that
+  consume it remain follow-ups. See DECISIONS.md "Reassessment P0 sweep".
 EVIDENCE: session_store.py:91-114 persists two flat `messages` rows (session_id, role, content,
   tool_name, ts). The target interaction_log {id, ts, user_input, agent_output, tool_calls,
   memory_hits, model_used, token_cost, rating, notes} does not exist. memory_hits (recalled facts,
@@ -119,7 +180,8 @@ PRIORITY: P0
 ```
 FINDING P0-3: Duplicate side effects on any retry (the idempotency deficit — Theme A)
 PILLAR: P2 Tools / P5 Loop / Gateway
-STATUS: 🔴 not-production-ready
+STATUS: ✅ RESOLVED 2026-06-24 (was 🔴) — idempotency layer shipped across all three layers
+  (outbound tools + scheduler + durable ingress); 155 tests. See DECISIONS.md "Reassessment P0 sweep".
 EVIDENCE: messaging_tools.py:56-206 (no idempotency/dedup on Slack/Discord/WhatsApp/Telegram send);
   scheduler.py:551-571 (add() mints fresh uuid4 per call, no name dedup); fastapi_app.py:1239,1301
   (POST /messages has no Idempotency-Key; grep src → zero). Turn-granular resume re-injects + re-runs
@@ -136,7 +198,9 @@ PRIORITY: P0
 ```
 FINDING P0-4: Docker Compose does not run (the headline self-host path is broken)
 PILLAR: Deployment
-STATUS: 🔴 not-production-ready
+STATUS: ✅ RESOLVED 2026-06-24 (was 🔴) — added frontend/Dockerfile (nginx + /api proxy), switched
+  to writable named volumes at /home/hachi, 10 structural tests + a docker-smoke CI build job. Live
+  build verified in CI (local daemon was down). See DECISIONS.md.
 EVIDENCE: docker-compose.yml:21-24 builds ./frontend with dockerfile: Dockerfile, but
   `find frontend -iname Dockerfile*` → ZERO. Backend runs USER hachi (uid 10001, Dockerfile:9,20)
   while compose mounts volumes to /root/.config/hachi etc. (docker-compose.yml:15-18) — paths the
@@ -319,10 +383,10 @@ foundations.
 ## 8. Rolling roadmap (highest-leverage first)
 
 ### 30 days — close the trust-critical P0s + the cheapest last-mile wins
-1. **Idempotency layer** (P0-3): keys on side-effecting tools + `Idempotency-Key` on `POST /messages`. *Kills Theme A.*
-2. **Wire the suspend producer** (P0-1): catch `SuspendWorkflow` in `AgentSession` → persist `RunState(WAITING)` + `arm()`. *Brings the whole runs subsystem alive; ~1 connection.*
-3. **`interaction_log` table** (P0-2): one row/turn from `_chat_impl_inner`. *Unlocks rating, /review, regression eval, per-turn audit.*
-4. **Fix Docker Compose** (P0-4): real `frontend/Dockerfile` + writable volumes + compose-build smoke test.
+1. ~~**Idempotency layer** (P0-3): keys on side-effecting tools + `Idempotency-Key` on `POST /messages`. *Kills Theme A.*~~ ✅ **DONE 2026-06-24.**
+2. ~~**Wire the suspend producer** (P0-1): catch `SuspendWorkflow` in `AgentSession` → persist `RunState(WAITING)` + `arm()`. *Brings the whole runs subsystem alive; ~1 connection.*~~ ✅ **DONE 2026-06-24** (loop surfaces `last_suspend`; producer persists + arms; 5 tests).
+3. ~~**`interaction_log` table** (P0-2): one row/turn from `_chat_impl_inner`. *Unlocks rating, /review, regression eval, per-turn audit.*~~ ✅ **DONE 2026-06-24** (table + per-turn write + rating write-side; `/review` UI still to come).
+4. ~~**Fix Docker Compose** (P0-4): real `frontend/Dockerfile` + writable volumes + compose-build smoke test.~~ ✅ **DONE 2026-06-24.**
 5. **Bridge web Stop → `loop.cancel()`** (P1-4) and **enforce the daily cap** (P1-3). *Both near-one-liners against existing code.*
 6. **Add `windows-latest` to CI** (P1-9) — catch the 2 known failures + Windows regressions on the dev platform.
 
@@ -355,12 +419,12 @@ foundations.
 
 | Rank | Change | Effort | Impact | Why |
 |------|--------|:------:|:------:|-----|
-| 1 | Idempotency on tools + `POST /messages` | M | P0 | Removes the #1 trust risk (duplicate sends/turns) |
-| 2 | Wire suspend producer | S | P0 | Resurrects an entire built-but-dead subsystem with one connection |
-| 3 | `interaction_log` table | S–M | P0 | Keystone for rating/review/eval/per-turn audit |
+| 1 | ~~Idempotency on tools + `POST /messages`~~ ✅ done | M | P0 | Removed the #1 trust risk (duplicate sends/turns) |
+| 2 | ~~Wire suspend producer~~ ✅ done | S | P0 | Resurrected an entire built-but-dead subsystem |
+| 3 | ~~`interaction_log` table~~ ✅ done | S–M | P0 | Keystone for rating/review/eval/per-turn audit |
 | 4 | Enforce daily cap | S | P1 | One-line-ish; makes the settings-UI promise real |
 | 5 | Bridge web Stop → loop.cancel | S | P1 | Stops cost accruing after the user hits Stop |
-| 6 | Fix Docker Compose + smoke test | S–M | P0 | Makes the headline self-host path actually work |
+| 6 | ~~Fix Docker Compose + smoke test~~ ✅ done | S–M | P0 | Makes the headline self-host path actually work |
 | 7 | Hot-path model tiering | M | P1 | Cost/latency on personal devices + user-turn failover |
 
 > Items 2–6 are **last-mile wiring** (Theme B): small effort, large effect, because the hard parts

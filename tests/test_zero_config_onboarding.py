@@ -173,6 +173,8 @@ def test_best_provider_ollama_when_no_keys(tmp_path: Path, monkeypatch) -> None:
         "TOGETHER_API_KEY",
         "DEEPSEEK_API_KEY",
         "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_AI_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
     with mock.patch("shutil.which", return_value="/usr/bin/ollama"):
@@ -190,6 +192,8 @@ def test_best_provider_returns_none_when_nothing_detected(tmp_path: Path, monkey
         "TOGETHER_API_KEY",
         "DEEPSEEK_API_KEY",
         "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_AI_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
     with mock.patch("shutil.which", return_value=None):

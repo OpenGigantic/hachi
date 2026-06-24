@@ -261,7 +261,10 @@ def test_compose_enforces_auth_persistence_and_restart_contract() -> None:
     text = Path("docker-compose.yml").read_text(encoding="utf-8")
 
     assert "HACHI_GATEWAY_API_TOKEN_FILE" in text
-    assert "./.hachi/state:/root/.local/state/hachi" in text
-    assert "./.hachi/config:/root/.config/hachi" in text
+    # P0-4: persistent state/config now use NAMED volumes targeting the non-root user's
+    # home. The previous `/root` bind mounts were unwritable by the non-root container user
+    # (uid 10001), so `docker compose up` could not actually persist anything.
+    assert "hachi-state:/home/hachi/.local/state/hachi" in text
+    assert "hachi-config:/home/hachi/.config/hachi" in text
     assert "HACHI_GATEWAY_BASE_URL: http://hachi:8787" in text
     assert text.count("restart: unless-stopped") >= 2

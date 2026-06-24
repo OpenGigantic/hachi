@@ -13,6 +13,7 @@ Reads use WAL mode for concurrent non-blocking access.
 """
 
 import datetime
+import json
 import logging
 import sqlite3
 import threading
@@ -111,6 +112,43 @@ class SessionStore:
                 total_cost_usd  REAL NOT NULL DEFAULT 0.0,
                 updated_at  REAL NOT NULL
             );
+
+            -- Ingress idempotency (AUDIT P0-3): maps a client-supplied Idempotency-Key to
+            -- the COMPLETED turn response, so a retried / reconnected / double-clicked
+            -- POST /messages replays the stored result instead of re-running the whole turn
+            -- (no double spend, no duplicate side effects). Scoped per session; first write
+            -- wins. Durable, so it also survives a gateway restart between the two POSTs.
+            CREATE TABLE IF NOT EXISTS idempotency_keys (
+                session_id     TEXT NOT NULL,
+                idem_key       TEXT NOT NULL,
+                response_json  TEXT NOT NULL,
+                created_at     REAL NOT NULL,
+                PRIMARY KEY (session_id, idem_key)
+            );
+
+            -- Per-interaction eval/audit log (AUDIT P0-2): one row per completed turn — the
+            -- row-level ground truth that unlocks good/bad rating, failure mining, per-turn
+            -- audit, and output-regression eval. Written best-effort (never blocks a turn).
+            -- tool_calls / memory_hits are JSON arrays; rating + notes are filled later via a
+            -- /review surface (NULL until then).
+            CREATE TABLE IF NOT EXISTS interaction_log (
+                id            TEXT PRIMARY KEY,
+                session_id    TEXT NOT NULL,
+                turn_id       TEXT,
+                ts            TEXT NOT NULL,
+                user_input    TEXT,
+                agent_output  TEXT,
+                tool_calls    TEXT,
+                memory_hits   TEXT,
+                model_used    TEXT,
+                token_cost    REAL,
+                tokens        INTEGER,
+                rating        TEXT,
+                notes         TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_interaction_session
+                ON interaction_log(session_id);
         """)
         self._conn.commit()
         self._migrate_schema()
@@ -337,6 +375,150 @@ class SessionStore:
             return 0.0
         val: float = row["total_cost_usd"] or 0.0
         return val
+
+    # ------------------------------------------------------------------
+    # Ingress idempotency (AUDIT P0-3 / Theme A)
+    # ------------------------------------------------------------------
+
+    def get_idempotent_response(self, session_id: str, idem_key: str) -> dict[str, Any] | None:
+        """Return the stored response for a prior completed turn with this key, or None.
+
+        Used by ``POST /sessions/{id}/messages`` to replay the result of a duplicate
+        request (client retry / reconnect / double-click) instead of re-running the turn.
+
+        Args:
+            session_id: The session the request targets.
+            idem_key: The client-supplied ``Idempotency-Key``.
+
+        Returns:
+            The previously stored response dict, or ``None`` if this key is unseen (or the
+            stored payload is unreadable — in which case the turn is safely re-run).
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT response_json FROM idempotency_keys WHERE session_id = ? AND idem_key = ?",
+                (session_id, idem_key),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            data: dict[str, Any] = json.loads(row["response_json"])
+        except (ValueError, TypeError):
+            return None
+        return data
+
+    def save_idempotent_response(
+        self, session_id: str, idem_key: str, response: dict[str, Any]
+    ) -> None:
+        """Persist a completed turn's response under ``(session_id, idem_key)`` for replay.
+
+        ``INSERT OR IGNORE`` makes this first-write-wins: if two concurrent duplicates both
+        complete, the first stored response is the one that replays — never a mix.
+        """
+        payload = json.dumps(response)
+        now_ts = time.time()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO idempotency_keys "
+                "(session_id, idem_key, response_json, created_at) VALUES (?, ?, ?, ?)",
+                (session_id, idem_key, payload, now_ts),
+            )
+            self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Interaction log — per-turn eval/audit ground truth (AUDIT P0-2)
+    # ------------------------------------------------------------------
+
+    def log_interaction(
+        self,
+        *,
+        session_id: str,
+        turn_id: str | None,
+        user_input: str,
+        agent_output: str,
+        tool_calls: list[str] | None = None,
+        memory_hits: list[str] | None = None,
+        model_used: str | None = None,
+        token_cost: float | None = None,
+        tokens: int | None = None,
+        rating: str | None = None,
+        notes: str | None = None,
+    ) -> str:
+        """Append one ``interaction_log`` row (one completed turn). Returns the new row id.
+
+        This is the keystone of the eval loop: a durable, queryable record of what the user
+        asked, what Hachi answered, which tools/memories it used, the model, and the per-turn
+        cost — so turns can be rated, mined for failures, audited, and used as a regression
+        baseline. ``tool_calls`` and ``memory_hits`` are stored as JSON arrays.
+        """
+        row_id = str(uuid.uuid4())
+        ts = datetime.datetime.now(datetime.UTC).isoformat()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO interaction_log (id, session_id, turn_id, ts, user_input, "
+                "agent_output, tool_calls, memory_hits, model_used, token_cost, tokens, "
+                "rating, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row_id,
+                    session_id,
+                    turn_id,
+                    ts,
+                    user_input,
+                    agent_output,
+                    json.dumps(tool_calls or []),
+                    json.dumps(memory_hits or []),
+                    model_used,
+                    token_cost,
+                    tokens,
+                    rating,
+                    notes,
+                ),
+            )
+            self._conn.commit()
+        return row_id
+
+    def get_interactions(
+        self, session_id: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return recent ``interaction_log`` rows (newest first), optionally per session.
+
+        ``tool_calls`` / ``memory_hits`` are decoded back into lists. Powers a future
+        ``/review`` surface and trajectory-eval suite.
+        """
+        with self._lock:
+            if session_id is not None:
+                rows = self._conn.execute(
+                    "SELECT * FROM interaction_log WHERE session_id = ? ORDER BY ts DESC LIMIT ?",
+                    (session_id, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM interaction_log ORDER BY ts DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            rec = dict(row)
+            rec["tool_calls"] = json.loads(rec["tool_calls"]) if rec.get("tool_calls") else []
+            rec["memory_hits"] = json.loads(rec["memory_hits"]) if rec.get("memory_hits") else []
+            out.append(rec)
+        return out
+
+    def set_interaction_rating(
+        self, interaction_id: str, rating: str, notes: str | None = None
+    ) -> bool:
+        """Set a turn's ``rating`` (and optionally ``notes``); returns True if a row matched.
+
+        The write side of a thumbs-up/down review. ``notes`` is only overwritten when a
+        non-None value is supplied (``COALESCE``), so rating and notes can be set separately.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE interaction_log SET rating = ?, notes = COALESCE(?, notes) WHERE id = ?",
+                (rating, notes, interaction_id),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
 
     def get_sessions_missing_title(self, limit: int = 1000) -> list[dict[str, Any]]:
         """Return sessions that have no title yet (oldest first), for backfill.

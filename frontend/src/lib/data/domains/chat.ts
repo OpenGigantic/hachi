@@ -791,7 +791,10 @@ export async function startTaskLive(
   const postPromise = apiSend<{ session_id: string; response: string }>(
     "POST",
     `/sessions/${sessionId}/messages`,
-    { prompt: text, attachment_ids: attachmentIds },
+    // Ingress idempotency (AUDIT P0-3): key the turn on the (stable) assistant-bubble id.
+    // retryLastMessage reuses the same hachiMsgId, so a retry or double-submit replays the
+    // prior turn server-side instead of double-spending; distinct turns get distinct keys.
+    { prompt: text, attachment_ids: attachmentIds, idempotency_key: `turn-${hachiMsgId}` },
     signal
   ).then((res) => {
     // If SSE didn't deliver a completed event (e.g. gateway closed stream early),

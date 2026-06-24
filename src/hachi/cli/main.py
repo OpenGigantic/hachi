@@ -123,6 +123,16 @@ def _load_dotenv_into_environ(dotenv_path: Path) -> None:
 
 
 _load_dotenv_into_environ(Path.cwd() / ".env")
+# Also merge the user config-dir .env — that is where `hachi setup` persists API keys and
+# OAuth client ids. Without this, a credential configured via the wizard was written to disk
+# but never loaded on the next run (the loader only read cwd/.env), so Google and other
+# integrations reported "not configured" despite being set. cwd/.env above wins on conflicts.
+try:
+    from hachi.core.paths import get_hachi_paths as _get_hachi_paths
+
+    _load_dotenv_into_environ(_get_hachi_paths().config_dir / ".env")
+except Exception:
+    pass  # path resolution must never abort the CLI
 
 # ---------------------------------------------------------------------------
 # Task 6d — TOKOBOROS_ → HACHI_ back-compat shim
@@ -896,9 +906,7 @@ class _InProcessGatewayRuntime:
             self._og_engine_cache = engine
             return engine
         except Exception:
-            logging.getLogger(__name__).warning(
-                "standalone OG engine build failed", exc_info=True
-            )
+            logging.getLogger(__name__).warning("standalone OG engine build failed", exc_info=True)
             return None
 
     def get_authoring_targets(self) -> list[dict]:
@@ -4231,9 +4239,7 @@ def cred_set(
             raise typer.Exit(1)
 
         if key not in KNOWN_CREDENTIAL_KEYS:
-            console.print(
-                f"[yellow]Warning:[/yellow] unknown key {key!r} — storing anyway."
-            )
+            console.print(f"[yellow]Warning:[/yellow] unknown key {key!r} — storing anyway.")
 
         vault.set_token(key, value)
         table.add_row("[green]Saved:[/green]", f"[cyan]{key}[/cyan]")

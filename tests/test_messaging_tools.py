@@ -38,6 +38,7 @@ from hachi.channels.whatsapp import (
     build_meta_request,
     build_twilio_request,
 )
+from hachi.core.idempotency import IdempotencyGuard
 from hachi.core.loop import ToolRegistry
 from hachi.tools.messaging_tools import register_messaging_tools
 
@@ -534,3 +535,117 @@ def test_send_telegram_redacts_secrets(monkeypatch) -> None:
     out = registry._tools["send_telegram_message"]("key=AKIA1234567890ABCDEF msg")
     # Either the raw key was redacted or the send succeeded without leaking it
     assert "failed" not in out.lower() or "redact" in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# Idempotency — duplicate side effects must not happen on retry (AUDIT P0-3)
+# ---------------------------------------------------------------------------
+
+
+def test_send_slack_tool_dedups_identical_resend() -> None:
+    registry = ToolRegistry()
+    poster = RecordingPoster(200, json.dumps({"ok": True}))
+    register_messaging_tools(registry, slack_sender=SlackSender(bot_token="xoxb-1", poster=poster))
+    tool = registry._tools["send_slack_message"]
+    first = tool("hello", "#ops")
+    second = tool("hello", "#ops")  # an LLM retry / pool re-dispatch resending
+    assert "Sent message to Slack" in first
+    assert "idempotent" in second.lower()
+    assert len(poster.calls) == 1  # the network send happened exactly once
+
+
+def test_send_slack_tool_failed_send_stays_retryable() -> None:
+    # A failed attempt must NOT be deduped — a genuine retry has to be allowed through.
+    registry = ToolRegistry()
+    poster = RecordingPoster(200, json.dumps({"ok": False, "error": "not_in_channel"}))
+    register_messaging_tools(registry, slack_sender=SlackSender(bot_token="xoxb-1", poster=poster))
+    tool = registry._tools["send_slack_message"]
+    first = tool("hello", "#ops")
+    second = tool("hello", "#ops")
+    assert "Slack send failed" in first
+    assert "Slack send failed" in second  # re-attempted, not suppressed
+    assert len(poster.calls) == 2
+
+
+def test_send_slack_tool_distinct_messages_both_send() -> None:
+    registry = ToolRegistry()
+    poster = RecordingPoster(200, json.dumps({"ok": True}))
+    register_messaging_tools(registry, slack_sender=SlackSender(bot_token="xoxb-1", poster=poster))
+    tool = registry._tools["send_slack_message"]
+    tool("hello", "#ops")
+    tool("a different message", "#ops")  # distinct payload → genuinely sent
+    assert len(poster.calls) == 2
+
+
+def test_send_discord_tool_dedups_identical_resend() -> None:
+    registry = ToolRegistry()
+    poster = RecordingPoster(204, "")
+    sender = DiscordSender(webhook_url="https://discord.com/api/webhooks/1/a", poster=poster)
+    register_messaging_tools(registry, discord_sender=sender)
+    tool = registry._tools["send_discord_message"]
+    tool("hello")
+    second = tool("hello")
+    assert "idempotent" in second.lower()
+    assert len(poster.calls) == 1
+
+
+def test_send_whatsapp_tool_dedups_identical_resend() -> None:
+    poster = RecordingPoster(200, json.dumps({}))
+    sender = WhatsAppSender(meta_token="tok", meta_phone_number_id="pid", poster=poster)
+    registry = ToolRegistry()
+    register_messaging_tools(registry, whatsapp_sender=sender)
+    tool = registry._tools["send_whatsapp_message"]
+    tool("hello", "+447900000001")
+    second = tool("hello", "+447900000001")
+    assert "idempotent" in second.lower()
+    assert len(poster.calls) == 1
+
+
+def test_send_telegram_tool_dedups_identical_resend(monkeypatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot:token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+    calls: list[tuple] = []
+
+    def _fake_sender(token: str, chat_id: str, text: str) -> dict:
+        calls.append((token, chat_id, text))
+        return {"ok": True}
+
+    registry = ToolRegistry()
+    register_messaging_tools(registry, telegram_sender=_fake_sender)
+    tool = registry._tools["send_telegram_message"]
+    tool("Hello")
+    second = tool("Hello")
+    assert "idempotent" in second.lower()
+    assert len(calls) == 1
+
+
+def test_separate_registrations_have_independent_guards() -> None:
+    # Two sessions (two register calls) get independent guards: an identical message in a
+    # genuinely different session is NOT suppressed.
+    poster1 = RecordingPoster(200, json.dumps({"ok": True}))
+    poster2 = RecordingPoster(200, json.dumps({"ok": True}))
+    reg1 = ToolRegistry()
+    reg2 = ToolRegistry()
+    register_messaging_tools(reg1, slack_sender=SlackSender(bot_token="t", poster=poster1))
+    register_messaging_tools(reg2, slack_sender=SlackSender(bot_token="t", poster=poster2))
+    reg1._tools["send_slack_message"]("hello", "#ops")
+    reg2._tools["send_slack_message"]("hello", "#ops")
+    assert len(poster1.calls) == 1
+    assert len(poster2.calls) == 1
+
+
+def test_injected_shared_guard_dedups_across_registrations() -> None:
+    guard = IdempotencyGuard()
+    poster = RecordingPoster(200, json.dumps({"ok": True}))
+    reg1 = ToolRegistry()
+    reg2 = ToolRegistry()
+    register_messaging_tools(
+        reg1, slack_sender=SlackSender(bot_token="t", poster=poster), guard=guard
+    )
+    register_messaging_tools(
+        reg2, slack_sender=SlackSender(bot_token="t", poster=poster), guard=guard
+    )
+    reg1._tools["send_slack_message"]("hello", "#ops")
+    second = reg2._tools["send_slack_message"]("hello", "#ops")
+    assert "idempotent" in second.lower()
+    assert len(poster.calls) == 1

@@ -378,7 +378,7 @@ def _register_search_if_available(deps: Any) -> None:
             "search: web_search is UNAVAILABLE (no ProviderRegistry at boot). "
             "browse_web/Playwright is the active fallback. "
             "To enable Tavily: set TAVILY_API_KEY env var or configure "
-            "[search] provider = \"tavily\" in settings.toml, then restart."
+            '[search] provider = "tavily" in settings.toml, then restart.'
         )
         return
 
@@ -388,7 +388,7 @@ def _register_search_if_available(deps: Any) -> None:
             "search: web_search is UNAVAILABLE (no SearchProvider registered). "
             "browse_web/Playwright is the active fallback. "
             "To enable Tavily: set TAVILY_API_KEY env var or configure "
-            "[search] provider = \"tavily\" in settings.toml, then restart."
+            '[search] provider = "tavily" in settings.toml, then restart.'
         )
         return
 
@@ -527,6 +527,8 @@ class AgentSession:
         # Tracks the cumulative cost after the previous turn so we can compute the
         # per-turn delta for the daily spend ledger (CostTracker is cumulative).
         self._last_recorded_cost_usd: float = 0.0
+        # Same idea for tokens, so the interaction_log records a per-turn token count.
+        self._last_recorded_tokens: int = 0
 
         # Resume support: prior-session turns replayed for TUI transcript rendering.
         # (role, content) pairs, oldest first; empty unless booted with resume.
@@ -1117,6 +1119,7 @@ class AgentSession:
         _tracker = getattr(self.loop, "cost_tracker", None)
         try:
             import inspect as _inspect
+
             _sig = _inspect.signature(generate_title)
             if "cost_tracker" in _sig.parameters:
                 title = generate_title(
@@ -1267,6 +1270,95 @@ class AgentSession:
         ):
             return self._chat_impl_inner(user_input, turn_id=turn_id, surface=surface)
 
+    def _write_interaction_log(
+        self,
+        *,
+        turn_id: str,
+        user_input: str,
+        response: str,
+        recalled: list[dict[str, Any]],
+        turn_cost_usd: float,
+        turn_tokens: int,
+    ) -> None:
+        """Append the per-turn ``interaction_log`` row (AUDIT P0-2) — best-effort.
+
+        Maps the live turn's in-scope values (recalled facts → ``memory_hits``, the loop's
+        per-turn tool names, the active model, the per-turn cost/token deltas) onto one
+        durable eval/audit row. A logging failure is swallowed: it must never break a turn.
+        """
+        if not (self._session_store and self._session_id):
+            return
+        try:
+            self._session_store.log_interaction(
+                session_id=self._session_id,
+                turn_id=turn_id,
+                user_input=user_input,
+                agent_output=response,
+                tool_calls=getattr(self.loop, "last_tool_calls", []),
+                memory_hits=[r.get("content", "") for r in (recalled or [])],
+                model_used=self.model_name or None,
+                token_cost=turn_cost_usd,
+                tokens=turn_tokens,
+            )
+        except Exception:
+            logger.warning(
+                "_chat_impl: failed to write interaction_log for turn %s", turn_id, exc_info=True
+            )
+
+    def _persist_suspended_run_if_any(self, *, turn_id: str) -> None:
+        """If the turn ended by ``core_suspend_workflow``, record a durable WAITING run and
+        arm its wait condition — the producer half of the durable-run subsystem (AUDIT P0-1).
+
+        Before this, the loop returned a ``[WORKFLOW SUSPENDED]`` string and the structured
+        wait condition was lost, so no ``RunState(WAITING)`` was ever created: the
+        wake/recover/sweep machinery and ``GET /runs`` had zero inputs. Best-effort — a
+        persistence failure must never break the turn.
+        """
+        suspend = getattr(self.loop, "last_suspend", None)
+        if suspend is None or not self._session_id:
+            return
+        try:
+            import uuid as _uuid
+
+            from hachi.core.runtime.state import RunState, RunStatus, WaitCondition, WaitKind
+            from hachi.core.runtime.store import RunStateStore
+            from hachi.core.runtime.waits import get_wait_registry
+            from hachi.core.runtime_events import RUN_SUSPENDED, now_iso
+
+            now = now_iso()
+            try:
+                kind = WaitKind(suspend.wait_kind)
+            except ValueError:
+                # Unknown wait_kind from the model → safest default is human approval.
+                kind = WaitKind.USER
+            wait = WaitCondition(kind=kind, key=suspend.wait_key, created_at=now)
+            run = RunState(
+                run_id=str(_uuid.uuid4()),
+                session_id=self._session_id,
+                status=RunStatus.WAITING,
+                wait=wait,
+                # resume_cursor=0: a warm wake resumes the still-live in-memory session.
+                # Precise cursor + cold-start replay are the separate deferred resume work.
+                resume_cursor=0,
+                payload={"reason": suspend.reason},
+                updated_at=now,
+            )
+            RunStateStore().upsert(run)
+            get_wait_registry().arm(run.run_id, wait)
+            self._emit_event(
+                RUN_SUSPENDED,
+                {
+                    "run_id": run.run_id,
+                    "session_id": self._session_id,
+                    "turn_id": turn_id,
+                    "wait_kind": kind.value,
+                    "wait_key": suspend.wait_key,
+                    "reason": suspend.reason,
+                },
+            )
+        except Exception:
+            logger.warning("failed to persist suspended run for turn %s", turn_id, exc_info=True)
+
     def _chat_impl_inner(self, user_input: str, *, turn_id: str, surface: str) -> str:
         """Inner implementation body (runs inside the agent.turn root span)."""
         self._emit_event(
@@ -1325,6 +1417,11 @@ class AgentSession:
         # FIX medium: loop.run() may return None (e.g. empty content path); normalise to str
         response: str = self.loop.run(turn_context=turn_context) or ""
 
+        # 5b. If the loop suspended this turn, persist a durable WAITING run + arm its wait
+        #     condition — the producer that gives the wake/recover/sweep subsystem and
+        #     GET /runs their inputs (AUDIT P0-1). No-op on a normal turn.
+        self._persist_suspended_run_if_any(turn_id=turn_id)
+
         # 6. Queue prefetch for the NEXT turn
         self._enqueue_prefetch_job(user_input, turn_id)
 
@@ -1349,6 +1446,8 @@ class AgentSession:
 
             # Persist cumulative cost/token totals for this session and update the
             # rolling daily spend ledger with the per-turn delta.
+            _turn_cost_usd = 0.0
+            _turn_tokens = 0
             try:
                 tracker = getattr(self.loop, "cost_tracker", None)
                 if tracker is not None:
@@ -1362,6 +1461,9 @@ class AgentSession:
                     # daily ledger accumulates exactly what this turn spent.
                     turn_delta = snap.estimated_cost_usd - self._last_recorded_cost_usd
                     self._last_recorded_cost_usd = snap.estimated_cost_usd
+                    _turn_cost_usd = max(0.0, turn_delta)
+                    _turn_tokens = max(0, snap.total_tokens - self._last_recorded_tokens)
+                    self._last_recorded_tokens = snap.total_tokens
                     if turn_delta > 0:
                         self._session_store.record_daily_cost(_date.today().isoformat(), turn_delta)
             except Exception:
@@ -1371,6 +1473,17 @@ class AgentSession:
                     self._session_id,
                     exc_info=True,
                 )
+
+            # 8. Append the per-turn interaction_log row (AUDIT P0-2): row-level eval/audit
+            #    ground truth (rateable, mineable, auditable).
+            self._write_interaction_log(
+                turn_id=turn_id,
+                user_input=user_input,
+                response=response or "",
+                recalled=recalled,
+                turn_cost_usd=_turn_cost_usd,
+                turn_tokens=_turn_tokens,
+            )
 
             # Generate a session title once, from the opening exchange. Runs on the
             # job queue so it never blocks this turn (drained at the next turn /
@@ -1639,7 +1752,8 @@ def _configure_mcp_servers(
         except Exception:
             emit(MCP_SERVER_FAILED, {"server": server_name, "reason": "invalid TOML config"})
             logger.warning(
-                "_configure_mcp_servers: failed to parse TOML entry for %r", server_name,
+                "_configure_mcp_servers: failed to parse TOML entry for %r",
+                server_name,
                 exc_info=True,
             )
             continue
