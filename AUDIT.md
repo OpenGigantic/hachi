@@ -117,11 +117,26 @@ errored-turn detection, top failing tools, per-model cost/down breakdown) + a re
 hardcodes pass) + `hachi eval report`/`run` CLI; 38 tests incl an anti-fake proof (an unsatisfiable
 assertion must yield `passed=False`). (E3) a `/review` web screen listing each turn's trajectory with
 thumbs-up/down + notes (real gateway round-trip; honesty guard so a failed fetch shows empty, never
-fixtures-as-real); typecheck + 82 vitest + production build + `check:api` green. Honest gaps: `hachi eval
-run` reports "not wired" until a record/replay `turn_fn` is added (faking a pass was explicitly rejected);
-the weekly-failure-report automation + a curated regression corpus are the natural next increments. Score
-impact: **P4 Eval & Observability 50→62** (the eval half went from ~12 to a real, usable loop). **Overall
-~84→~85.**
+fixtures-as-real); typecheck + 82 vitest + production build + `check:api` green. Honest gaps (E1–E3, now CLOSED by E4–E5 below): `hachi eval run` reported "not wired"; the
+weekly-failure-report automation + a curated regression corpus were the natural next increments. Score
+impact (E1–E3): **P4 Eval & Observability 50→62** (the eval half went from ~12 to a real, usable loop).
+**Overall ~84→~85.**
+
+**Eval flywheel completed (E4–E5, 2026-06-24):** (E4) `hachi eval run` is now REAL and CI-able — a
+deterministic record/replay harness (`core/eval/replay.py`) drives the PRODUCTION `ExecutionLoop` via a
+`ScriptedLLMClient` (only the LLM transport is stubbed), runs a curated `DEFAULT_REPLAY_SUITE`, and exits
+non-zero on any failure; the anti-fake guarantee is preserved (`run_replay_suite`→`run_case`, proven by a
+test where an unsatisfiable assertion forces exit 1). (E5) weekly failure-report automation — a decoupled
+`core/eval/scheduled_report.py` writes timestamped `.md`+`.json` artifacts, surfaced by an opt-in resident
+daemon (`[eval_reports] enabled`, default OFF, mirrors the proven `_start_timeout_sweep` pattern; the
+load-bearing agent-turn scheduler is untouched) + a `hachi eval snapshot` manual/cron command + an
+`eval.report.generated` event. 54 new tests; full `pytest` **3758 pass / 0 fail**. Verified live on the
+REAL store: `eval run` 5/5, `eval report` over 29 real turns, `eval snapshot` artifact written. The
+flywheel immediately surfaced one real finding — every logged turn shows **$0.00 cost** (per-turn cost is
+not captured into `interaction_log`; a pre-existing P0-2 instrumentation gap, now the top evidence-based
+next-hardening candidate). Remaining eval gaps are CONTENT/OPS not machinery: the replay corpus is a 5-case
+seed (not comprehensive), `eval run` is not yet a blocking CI job, and there is no live-record mode
+(fixtures are hand-authored). Score impact: **P4 Eval & Observability 62→70.** **Overall ~85→~86.**
 
 The 2026-06-23 scorecard/findings below are preserved as the baseline snapshot; this dated block is the current truth.
 
