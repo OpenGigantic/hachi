@@ -55,6 +55,7 @@ from hachi.core.rest_adapter import UniversalRestAdapter
 from hachi.core.runtime_events import (
     BOOT_COMPLETE,
     BOOT_PROGRESS,
+    BUDGET_EXCEEDED,
     MCP_SERVER_FAILED,
     MCP_SERVER_READY,
     MCP_SERVER_STARTING,
@@ -529,6 +530,10 @@ class AgentSession:
         self._last_recorded_cost_usd: float = 0.0
         # Same idea for tokens, so the interaction_log records a per-turn token count.
         self._last_recorded_tokens: int = 0
+
+        # Rolling calendar-day spend cap (P1-3).  Set by boot_agent from [limits] config /
+        # HACHI_MAX_DAILY_COST_USD env.  None means unlimited (default — safe fail-open).
+        self._max_daily_cost_usd: float | None = None
 
         # Resume support: prior-session turns replayed for TUI transcript rendering.
         # (role, content) pairs, oldest first; empty unless booted with resume.
@@ -1359,6 +1364,29 @@ class AgentSession:
         except Exception:
             logger.warning("failed to persist suspended run for turn %s", turn_id, exc_info=True)
 
+    def _daily_cap_exceeded(self) -> str | None:
+        """Return a reason string if today's rolling spend cap is hit, else ``None``.
+
+        Best-effort: if ``_session_store`` is absent or the read fails, returns ``None``
+        so the turn always runs rather than crashing (safe fail-open).  The cap is only
+        checked when ``_max_daily_cost_usd`` is set to a positive value.
+        """
+        if not self._max_daily_cost_usd:
+            return None
+        if self._session_store is None:
+            return None
+        try:
+            today = _date.today().isoformat()
+            spent = self._session_store.get_daily_spend(today)
+            if spent >= self._max_daily_cost_usd:
+                return f"daily cost cap reached (~${spent:.4f} >= ${self._max_daily_cost_usd:.2f})"
+        except Exception:
+            logger.warning(
+                "_daily_cap_exceeded: failed to read daily spend — skipping cap check",
+                exc_info=True,
+            )
+        return None
+
     def _chat_impl_inner(self, user_input: str, *, turn_id: str, surface: str) -> str:
         """Inner implementation body (runs inside the agent.turn root span)."""
         self._emit_event(
@@ -1371,6 +1399,13 @@ class AgentSession:
         )
 
         self._drain_job_queue()
+
+        # 1b. Enforce the rolling daily spend cap (P1-3) before spending any more tokens.
+        #     Best-effort: a store read failure falls through (safe fail-open).
+        daily_cap_reason = self._daily_cap_exceeded()
+        if daily_cap_reason:
+            self._emit_event(BUDGET_EXCEEDED, {"reason": daily_cap_reason})
+            return f"[BUDGET LIMIT REACHED] {daily_cap_reason}"
 
         self._memory_snapshot = self._build_frozen_snapshot()
 
@@ -2818,6 +2853,9 @@ def boot_agent(
     # Per-session safety caps (0 = unlimited): stop a runaway loop from draining the
     # user's API budget. Read from the optional [limits] config section, else env vars.
     limits_cfg = config.get("limits", {}) if isinstance(config.get("limits"), dict) else {}
+    max_daily_cost_usd = _coerce_float(
+        limits_cfg.get("max_daily_cost_usd"), os.environ.get("HACHI_MAX_DAILY_COST_USD")
+    )
     max_session_cost_usd = _coerce_float(
         limits_cfg.get("max_session_cost_usd"), os.environ.get("HACHI_MAX_SESSION_COST_USD")
     )
@@ -2887,6 +2925,9 @@ def boot_agent(
     )
     session.set_vault(vault)
     session.set_session_store(session_store, model=model_name)
+    # P1-3: propagate the daily cap to the session so _daily_cap_exceeded() can enforce it.
+    if max_daily_cost_usd:
+        session._max_daily_cost_usd = max_daily_cost_usd
     if resume_session_id:
         try:
             seeded = session.resume_from_session(resume_session_id)
