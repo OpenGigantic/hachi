@@ -105,6 +105,254 @@ def _is_substantive_fact(fact: str) -> bool:
     return True
 
 
+def extract_facts(
+    text: str,
+    *,
+    vault: Any,
+    llm_client: Any,
+    memory_writer: Any = None,
+    session_id: str = "",
+) -> str:
+    """Extract permanent facts from a conversation exchange and write them to the vault.
+
+    This is the shared extraction core called by both:
+      - ``MemoryManager._run_fact_extraction`` / ``_run_typed_extraction`` (in-process,
+        legacy synchronous path when no job queue is configured)
+      - ``handle_extract_fact`` in ``job_handlers.py`` (durable path — reconstructs
+        services from config so the job survives a process restart)
+
+    When ``memory_writer`` is provided, uses the M1 schema-constrained tool-call path
+    (``_run_typed_extraction`` equivalent) that writes typed OG nodes.  Otherwise falls
+    back to the flat JSON bucket extraction that writes directly to Chroma.
+
+    The function is intentionally crash-safe: individual vault writes are guarded with
+    try/except so a partial failure does not abort the rest of the extraction.
+
+    Args:
+        text:          Combined user+assistant exchange text (already truncated at call site).
+        vault:         A MemoryVault instance with ``upsert_user_fact`` / ``upsert_fact``
+                       / ``upsert_agent_fact`` methods.
+        llm_client:    A BaseLLMClient with a ``.generate()`` method.
+        memory_writer: Optional MemoryWriter for the M1 typed-node path.  When None the
+                       flat JSON bucket path is used.
+        session_id:    Session identifier forwarded to typed MemoryNodes (for journal routing).
+
+    Returns:
+        A short status string suitable for use as a job output, e.g.
+        ``"extracted:3"`` or ``"extracted_typed:2"``.
+    """
+    import os
+
+    from hachi.core.llm import Message as _LLMMessage
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        logger.debug("extract_facts: ANTHROPIC_API_KEY not set — skipping")
+        return "skipped:no_api_key"
+
+    if not text or len(text.strip()) < 10:
+        return "skipped:too_short"
+
+    snippet = text[:3000]
+
+    if memory_writer is not None:
+        # ---- M1 typed path (mirrors _run_typed_extraction) ----
+        from hachi.core.memory_writer import MemoryNode, _slugify
+
+        _EXTRACT_TOOL: dict[str, Any] = {
+            "name": "extract_memory_nodes",
+            "description": (
+                "Extract durable memory nodes from a conversation exchange. "
+                "Only extract facts that should persist across sessions. "
+                "Omit transient commands, status, and single-use instructions."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "nodes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description": "Unique slug for this node (kebab-case)",
+                                },
+                                "role": {
+                                    "type": "string",
+                                    "enum": [
+                                        "fact",
+                                        "preference",
+                                        "event",
+                                        "rule",
+                                        "task",
+                                        "person",
+                                    ],
+                                    "description": (
+                                        "fact=technical/workspace; preference=user identity/style; "
+                                        "event=something that happened; "
+                                        "rule=agent behavior correction; "
+                                        "task=work item; person=info about a person"
+                                    ),
+                                },
+                                "dense": {
+                                    "type": "string",
+                                    "description": "One concise sentence (≤20 words) for the fact.",
+                                },
+                                "keywords": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "2-5 search keywords",
+                                },
+                                "project_slug": {
+                                    "type": "string",
+                                    "description": (
+                                        "For fact/task nodes: kebab-case project name. "
+                                        "Omit for personal facts."
+                                    ),
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["open", "done", "blocked", ""],
+                                    "description": "For task nodes: current status.",
+                                },
+                                "edges": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": (
+                                        "Typed relationship edges in ->[:key=value] format. "
+                                        "Examples: ->[:about=billing-db-migration], "
+                                        "->[:involves=alice]. Omit if no relationships apply."
+                                    ),
+                                },
+                            },
+                            "required": ["name", "role", "dense"],
+                        },
+                    }
+                },
+                "required": ["nodes"],
+            },
+        }
+
+        response = llm_client.generate(
+            messages=[_LLMMessage(role="user", content=f"Extract memory from:\n\n{snippet}")],
+            system_prompt=(
+                "You are a precision memory extraction engine. "
+                "Extract ONLY durable facts worth keeping across sessions. "
+                "Use the extract_memory_nodes tool. "
+                "Return an empty nodes list if nothing is worth extracting."
+            ),
+            tools=[_EXTRACT_TOOL],
+        )
+
+        raw_nodes: list[dict[str, Any]] = []
+        for tc in response.tool_calls or []:
+            if tc.name == "extract_memory_nodes":
+                raw_nodes = (tc.input or {}).get("nodes", [])
+                break
+
+        if not raw_nodes:
+            logger.debug("extract_facts (typed): no nodes extracted")
+            return "extracted_typed:0"
+
+        nodes: list[MemoryNode] = []
+        for raw in raw_nodes:
+            role = raw.get("role", "fact")
+            if role not in ("fact", "preference", "event", "rule", "task", "person"):
+                role = "fact"
+            name = _slugify(raw.get("name", "") or raw.get("dense", "node")[:40])
+            nodes.append(
+                MemoryNode(
+                    name=name,
+                    role=role,
+                    dense=str(raw.get("dense", ""))[:200],
+                    keywords=list(raw.get("keywords", [])),
+                    session_id=session_id,
+                    project_slug=_slugify(raw.get("project_slug", "")),
+                    status=str(raw.get("status", "")),
+                    edges=[str(e) for e in raw.get("edges", []) if e],
+                )
+            )
+
+        written = memory_writer.write_nodes(nodes, session_id=session_id)
+        logger.debug("extract_facts (typed): wrote %d nodes", written)
+
+        # Parallel write to Chroma so existing semantic search continues to work
+        for node in nodes:
+            try:
+                if node.role == "preference":
+                    vault.upsert_user_fact(node.dense)
+                elif node.role == "rule":
+                    vault.upsert_agent_fact(node.dense)
+                else:
+                    vault.upsert_fact(node.dense, category=node.role)
+            except Exception:
+                logger.debug("extract_facts (typed): Chroma parallel-write failed", exc_info=True)
+
+        return f"extracted_typed:{written}"
+
+    else:
+        # ---- Flat JSON bucket path (mirrors _run_fact_extraction) ----
+        prompt = (
+            "Extract ONLY permanent facts from this exchange into three buckets.\n\n"
+            "user_facts: Things about the USER's identity — name, role, timezone, "
+            "preferences, habits, relationships, communication style.\n"
+            "workspace_facts: Technical/environment facts — architecture decisions, "
+            "project structure, API endpoints, tool configurations.\n"
+            "agent_facts: BEHAVIORAL CORRECTIONS. Did the user tell YOU (the agent) to change your "
+            "behavior? (e.g., 'stop apologizing', 'make it shorter', 'don't use emojis'). "
+            "Extract these as clear rules (e.g. 'I do not use emojis').\n\n"
+            "Rules:\n"
+            "- Each fact must be a single atomic sentence.\n"
+            "- Do NOT extract tasks, commands, or transient status.\n"
+            "- If nothing is worth extracting, return empty arrays.\n\n"
+            'Return ONLY valid JSON: {"user_facts": [...], "workspace_facts": [...], '
+            '"agent_facts": [...]}\n\n'
+            f"Exchange:\n{snippet}"
+        )
+
+        response = llm_client.generate(
+            messages=[_LLMMessage(role="user", content=prompt)],
+            system_prompt="You are a fact extraction engine. Output pure JSON only.",
+        )
+
+        text_out = response.content.strip()
+        if text_out.startswith("```json"):
+            text_out = text_out.split("```json", 1)[1].split("```", 1)[0].strip()
+        elif text_out.startswith("```"):
+            text_out = text_out.split("```", 1)[1].split("```", 1)[0].strip()
+
+        data = json.loads(text_out)
+
+        count = 0
+        for fact in data.get("user_facts", []):
+            if isinstance(fact, str) and _is_substantive_fact(fact):
+                try:
+                    vault.upsert_user_fact(fact)
+                    count += 1
+                except Exception:
+                    logger.debug("extract_facts: upsert_user_fact failed", exc_info=True)
+
+        for fact in data.get("workspace_facts", []):
+            if isinstance(fact, str) and _is_substantive_fact(fact):
+                try:
+                    vault.upsert_fact(fact, category="auto_synced")
+                    count += 1
+                except Exception:
+                    logger.debug("extract_facts: upsert_fact failed", exc_info=True)
+
+        for fact in data.get("agent_facts", []):
+            if isinstance(fact, str) and _is_substantive_fact(fact):
+                try:
+                    vault.upsert_agent_fact(fact)
+                    count += 1
+                except Exception:
+                    logger.debug("extract_facts: upsert_agent_fact failed", exc_info=True)
+
+        if count:
+            logger.debug("extract_facts: extracted %d facts", count)
+        return f"extracted:{count}"
+
+
 # Estimated-token threshold above which prepare_for_turn() losslessly clears large,
 # re-fetchable tool outputs from older turns. Set high so ordinary short conversations
 # are never touched — only genuinely large contexts. Exposed at module level so tests
@@ -236,23 +484,29 @@ class MemoryManager:
         if self.job_queue:
             # Route through the durable queue so failures are visible in jobs/failed
             # and surfaced as TUI badge warnings — never silently swallowed.
+            #
+            # P1-5: Use the durable handler_name="extract_fact" path so the job
+            # survives a process restart.  Payload contains only JSON-serializable
+            # primitives (str / bool) — no live closures, no vault/client references.
+            # The handler rebuilds services from config via build_job_context.
             from hachi.jobs.queue import Job, JobStatus
 
-            # M1 typed extraction (P2-05): preferred when MemoryWriter is attached
-            extraction_func = (
-                self._run_typed_extraction if self._memory_writer else self._run_fact_extraction
-            )
+            session_id_val: str = getattr(self, "_session_id", "") or ""
             job = Job(
                 job_id="",  # Assigned by queue
                 name="fact_extraction",
+                handler_name="extract_fact",
+                payload={
+                    "session_id": session_id_val,
+                    "text": combined,
+                    "typed": bool(self._memory_writer),
+                },
                 status=JobStatus.PENDING,
-                func=extraction_func,
-                args=(combined,),
                 job_type="sync",
             )
             try:
                 job_id = self.job_queue.enqueue(job)
-                logger.debug("Enqueued fact extraction job %s", job_id)
+                logger.debug("Enqueued durable fact extraction job %s", job_id)
             except Exception as e:
                 # Enqueue failure is itself a visible error — do NOT fall back to a
                 # thread that would swallow subsequent errors silently.
@@ -270,238 +524,51 @@ class MemoryManager:
     def _run_fact_extraction(self, combined: str) -> None:
         """LLM-powered fact extraction from a user/assistant exchange.
 
-        Produces two buckets:
-          - user_facts: routed to vault.upsert_user_fact() (bounded profile)
-          - workspace_facts: routed to vault.upsert_fact() (unbounded store)
+        Legacy/synchronous path — called directly (without a job queue) when the
+        no-queue fallback branch runs.  The durable path (job queue present) now uses
+        ``handle_extract_fact`` in ``job_handlers.py``, which calls the shared
+        ``extract_facts()`` module-level function.
 
-        MED-022 / G3-T6: Reuses the shared LLM client via _resolve_llm_client()
-        instead of constructing a new instance on every call.
+        Delegates to ``extract_facts()`` so extraction logic lives in exactly one place.
+        MED-022 / G3-T6: Reuses the shared LLM client via _resolve_llm_client().
         """
-        import os
-
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            logger.debug("Skipping fact extraction: ANTHROPIC_API_KEY not set")
-            return
-
-        from hachi.core.llm import Message as LLMMessage
-
         client = self._resolve_llm_client()
         if client is None:
+            logger.debug("Skipping fact extraction: no LLM client available")
             return
-
-        # Truncate to avoid burning tokens on massive tool outputs
-        snippet = combined[:3000]
-
-        prompt = (
-            "Extract ONLY permanent facts from this exchange into three buckets.\n\n"
-            "user_facts: Things about the USER's identity — name, role, timezone, "
-            "preferences, habits, relationships, communication style.\n"
-            "workspace_facts: Technical/environment facts — architecture decisions, "
-            "project structure, API endpoints, tool configurations.\n"
-            "agent_facts: BEHAVIORAL CORRECTIONS. Did the user tell YOU (the agent) to change your "
-            "behavior? (e.g., 'stop apologizing', 'make it shorter', 'don't use emojis'). "
-            "Extract these as clear rules (e.g. 'I do not use emojis').\n\n"
-            "Rules:\n"
-            "- Each fact must be a single atomic sentence.\n"
-            "- Do NOT extract tasks, commands, or transient status.\n"
-            "- If nothing is worth extracting, return empty arrays.\n\n"
-            'Return ONLY valid JSON: {"user_facts": [...], "workspace_facts": [...], '
-            '"agent_facts": [...]}\n\n'
-            f"Exchange:\n{snippet}"
+        if not self.vault:
+            return
+        extract_facts(
+            combined,
+            vault=self.vault,
+            llm_client=client,
+            memory_writer=None,  # flat path for legacy in-process call
         )
-
-        response = client.generate(
-            messages=[LLMMessage(role="user", content=prompt)],
-            system_prompt="You are a fact extraction engine. Output pure JSON only.",
-        )
-
-        text = response.content.strip()
-        if text.startswith("```json"):
-            text = text.split("```json", 1)[1].split("```", 1)[0].strip()
-        elif text.startswith("```"):
-            text = text.split("```", 1)[1].split("```", 1)[0].strip()
-
-        data = json.loads(text)
-
-        for fact in data.get("user_facts", []):
-            if isinstance(fact, str) and _is_substantive_fact(fact):
-                self.vault.upsert_user_fact(fact)
-
-        for fact in data.get("workspace_facts", []):
-            if isinstance(fact, str) and _is_substantive_fact(fact):
-                self.vault.upsert_fact(fact, category="auto_synced")
-
-        for fact in data.get("agent_facts", []):
-            if isinstance(fact, str) and _is_substantive_fact(fact):
-                self.vault.upsert_agent_fact(fact)
-
-        extracted = (
-            len(data.get("user_facts", []))
-            + len(data.get("workspace_facts", []))
-            + len(data.get("agent_facts", []))
-        )
-        if extracted:
-            logger.debug("sync_turn extracted %d facts", extracted)
 
     def _run_typed_extraction(self, combined: str, session_id: str = "") -> None:
         """M1 write-side: schema-constrained tool-call extraction → typed OG nodes.
 
-        Uses the Anthropic tool_use mechanism so the LLM is forced to emit a
-        validated structure instead of free-form JSON.  Falls back to flat
-        ``fact`` nodes when the model returns an empty or malformed tool call.
+        Legacy/synchronous path — called directly when no job queue is configured
+        AND a memory_writer is attached.  The durable path (job queue present) now uses
+        ``handle_extract_fact`` in ``job_handlers.py``, which calls the shared
+        ``extract_facts()`` module-level function.
 
-        Runs in the background via the durable job queue (P2-02).
-        Also forwards facts to Chroma via the legacy upsert path so existing
-        semantic search continues to work during the M1 migration.
+        Delegates to ``extract_facts()`` so extraction logic lives in exactly one place.
         """
-        import os
-
         if not self._memory_writer:
             return
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            logger.debug("Skipping typed extraction: ANTHROPIC_API_KEY not set")
-            return
-
-        from hachi.core.llm import Message as LLMMessage
-        from hachi.core.memory_writer import MemoryNode, _slugify
-
-        _EXTRACT_TOOL: dict[str, Any] = {
-            "name": "extract_memory_nodes",
-            "description": (
-                "Extract durable memory nodes from a conversation exchange. "
-                "Only extract facts that should persist across sessions. "
-                "Omit transient commands, status, and single-use instructions."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "nodes": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "name": {
-                                    "type": "string",
-                                    "description": "Unique slug for this node (kebab-case)",
-                                },
-                                "role": {
-                                    "type": "string",
-                                    "enum": [
-                                        "fact",
-                                        "preference",
-                                        "event",
-                                        "rule",
-                                        "task",
-                                        "person",
-                                    ],
-                                    "description": (
-                                        "fact=technical/workspace; preference=user identity/style; "
-                                        "event=something that happened; "
-                                        "rule=agent behavior correction; "
-                                        "task=work item; person=info about a person"
-                                    ),
-                                },
-                                "dense": {
-                                    "type": "string",
-                                    "description": "One concise sentence (≤20 words) for the fact.",
-                                },
-                                "keywords": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": "2-5 search keywords",
-                                },
-                                "project_slug": {
-                                    "type": "string",
-                                    "description": (
-                                        "For fact/task nodes: kebab-case project name. "
-                                        "Omit for personal facts."
-                                    ),
-                                },
-                                "status": {
-                                    "type": "string",
-                                    "enum": ["open", "done", "blocked", ""],
-                                    "description": "For task nodes: current status.",
-                                },
-                                "edges": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": (
-                                        "Typed relationship edges in ->[:key=value] format. "
-                                        "Examples: ->[:about=billing-db-migration], "
-                                        "->[:involves=alice], ->[:blocks=deploy-task], "
-                                        "->[:supersedes=old-decision], ->[:caused_by=incident-x]. "
-                                        "Omit if no meaningful relationships apply."
-                                    ),
-                                },
-                            },
-                            "required": ["name", "role", "dense"],
-                        },
-                    }
-                },
-                "required": ["nodes"],
-            },
-        }
-
-        snippet = combined[:3000]
         client = self._resolve_llm_client()
         if client is None:
             return
-        response = client.generate(
-            messages=[LLMMessage(role="user", content=f"Extract memory from:\n\n{snippet}")],
-            system_prompt=(
-                "You are a precision memory extraction engine. "
-                "Extract ONLY durable facts worth keeping across sessions. "
-                "Use the extract_memory_nodes tool. "
-                "Return an empty nodes list if nothing is worth extracting."
-            ),
-            tools=[_EXTRACT_TOOL],
-        )
-
-        # Pull out the tool call result
-        raw_nodes: list[dict[str, Any]] = []
-        for tc in response.tool_calls or []:
-            if tc.name == "extract_memory_nodes":
-                raw_nodes = (tc.input or {}).get("nodes", [])
-                break
-
-        if not raw_nodes:
-            logger.debug("Typed extraction: no nodes extracted from exchange")
+        if not self.vault:
             return
-
-        nodes: list[MemoryNode] = []
-        for raw in raw_nodes:
-            role = raw.get("role", "fact")
-            if role not in ("fact", "preference", "event", "rule", "task", "person"):
-                role = "fact"
-            name = _slugify(raw.get("name", "") or raw.get("dense", "node")[:40])
-            nodes.append(
-                MemoryNode(
-                    name=name,
-                    role=role,
-                    dense=str(raw.get("dense", ""))[:200],
-                    keywords=list(raw.get("keywords", [])),
-                    session_id=session_id,
-                    project_slug=_slugify(raw.get("project_slug", "")),
-                    status=str(raw.get("status", "")),
-                    edges=[str(e) for e in raw.get("edges", []) if e],
-                )
-            )
-
-        written = self._memory_writer.write_nodes(nodes, session_id=session_id)
-        logger.debug("Typed extraction: wrote %d nodes", written)
-
-        # Parallel write to Chroma so existing semantic search continues to work
-        if self.vault:
-            for node in nodes:
-                try:
-                    if node.role == "preference":
-                        self.vault.upsert_user_fact(node.dense)
-                    elif node.role == "rule":
-                        self.vault.upsert_agent_fact(node.dense)
-                    else:
-                        self.vault.upsert_fact(node.dense, category=node.role)
-                except Exception:
-                    logger.debug("Typed extraction: Chroma parallel-write failed", exc_info=True)
+        extract_facts(
+            combined,
+            vault=self.vault,
+            llm_client=client,
+            memory_writer=self._memory_writer,
+            session_id=session_id,
+        )
 
     def write_episode(
         self, session_id: str, summary: str, keywords: list[str] | None = None
