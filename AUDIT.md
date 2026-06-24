@@ -520,3 +520,46 @@ foundations.
 
 > Items 2–6 are **last-mile wiring** (Theme B): small effort, large effect, because the hard parts
 > already exist and are tested. Start there.
+
+---
+
+## Session delta — 2026-06-25 (HEAD `67a5196`, branch `reassess`)
+
+Memory-depth + sandbox hardening (orchestrated Sonnet 4.6 subagents, Opus verifies + commits + gates).
+
+- ✅ **M1 — Episodic memory store** (`26f3042`, pushed). New `episodic_memory` Chroma collection;
+  `MemoryVault.upsert_episode` (deterministic per-session id, MemoryGuard scan→quarantine, `_vault_lock`
+  + `_assert_open`, `_redact_results`) + `search_episodic` (top_k≤0 guard). Orchestrator captures a
+  per-session digest (`build_episode_summary`) at shutdown and merges past-session recall into each
+  turn (guarded by `episodic_top_k`, off-able). Replaces the old LIKE-scan with real semantic recall.
+- ✅ **M2 — Memory decay** (`cc2fde8`, pushed). Optional recency re-ranking inside `_query_collection`:
+  multiplicative `score = distance / 0.5**(age_days/half_life)` (parameter-free beyond the half-life),
+  off by default (`memory.decay_half_life_days=None`). Over-fetch → distance-gate (unchanged, on RAW
+  distance — never resurrects a filtered fact) → decay-rank → top_k, re-rank wrapped to fall back to
+  relevance order on any error. `apply_decay=False` on `search_user_profile` (identity is timeless);
+  `get_recent_facts`/`search_delegations` untouched. `_decay_score` is total/exception-free.
+- ✅ **S1 — Pluggable sandbox backend + hardened Docker container** (`67a5196`, pushed). `SandboxBackend`
+  ABC; `SandboxExecutor` is the `process` backend (preserved exactly, dev-grade); new
+  `ContainerSandboxExecutor` runs scripts in an ephemeral container with `--network none --read-only
+  --cap-drop ALL --security-opt no-new-privileges` non-root `--user`, memory/pids/cpus/tmpfs limits,
+  script mounted read-only at `/work` (command built as a list, never `shell=True`). `create_sandbox_backend`
+  selects via `HACHI_SANDBOX_BACKEND` and **fails fast** (never silent-downgrades) when `container` is
+  selected without Docker. `sandbox_audit_finding` makes the audit honest: container+Docker → finding
+  cleared; container without Docker → **HIGH** `sandbox.container_unavailable`; process/default → the
+  existing **medium** `sandbox.process_backend`. 37 new tests (mock subprocess; no live daemon — a
+  docker-smoke live job is the follow-up). `core/sandbox.py` stays strict-mypy 0.
+
+**Verification.** Each shipped behind: targeted tests + strict-mypy-gate (36 files, 0) + ruff + a full
+`pytest` gate. M1 gate 3809/0; M2 gate green (memory path). S1 full gate: **1 failed / 3867 passed** —
+the single failure is `test_cockpit_gaps::TestMemoryCRUD` (a live in-process-gateway memory-CRUD test
+that boots real gateways + creates live sessions; a *different* test in the class fails on isolated re-run
+→ pre-existing live/timing flakiness, S1 touches no gateway/session/memory code).
+
+**Deferred (captured) — test-suite hermeticity/isolation (`flake-wip` branch + follow-up chip).** A
+test-hermeticity hardening (gate the import-time `.env` autoload so the suite stops pulling the dev's real
+secrets/keys; `os.environ` + `chromadb` `sys.modules` restore fixtures; skip live-gateway tests without a
+key) was built across FLAKE-1/2/3 but exposed a deep multi-layer pre-existing coupling (a tokoboros-shim
+env leak; a `test_file_platform` `MagicMock` poisoning `sys.modules["chromadb"]`; a deeper module-level
+chromadb import cache still unresolved). Rather than land a half-understood test-infra refactor or block
+M2/S1 on it, it was reverted off `reassess` (clean at M2) and preserved on `flake-wip` for a dedicated
+effort. The live-gateway test flakiness above is part of that same package.
