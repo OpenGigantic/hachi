@@ -333,6 +333,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sessions/{session_id}/interrupt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Interrupt Session
+         * @description Cancel the in-progress turn for a live session.
+         *
+         *     Delivers a cancellation signal to the session's ``ExecutionLoop`` via
+         *     ``ExecutionLoop.cancel()`` (a thread-safe ``threading.Event``). The current
+         *     LLM chunk and any in-progress tool call finish first; the loop exits cleanly
+         *     at the top of the following iteration, preserving message-history integrity.
+         *
+         *     Returns ``{"interrupted": true}`` when the signal was delivered to a live
+         *     session, ``{"interrupted": false}`` when the session is not live or no
+         *     in-process runtime is attached (safe — never raises a 5xx).
+         */
+        post: operations["interrupt_session_sessions__session_id__interrupt_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sessions/cleanup-empty": {
         parameters: {
             query?: never;
@@ -1904,6 +1933,14 @@ export interface components {
             /** Next Sequence */
             next_sequence: number;
         };
+        /**
+         * SessionInterruptResponse
+         * @description Response for POST /sessions/{session_id}/interrupt (P1-4).
+         */
+        SessionInterruptResponse: {
+            /** Interrupted */
+            interrupted: boolean;
+        };
         /** SessionMessageRequest */
         SessionMessageRequest: {
             /** Prompt */
@@ -2595,6 +2632,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionMessageResponse"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    interrupt_session_sessions__session_id__interrupt_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInterruptResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */

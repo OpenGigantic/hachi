@@ -360,6 +360,30 @@ class _InProcessGatewayRuntime:
         with session_lock:
             return agent.chat(prompt)
 
+    def interrupt_session(self, session_id: str) -> dict:
+        """Signal the live session's execution loop to stop at its next iteration.
+
+        P1-4: sets the ``threading.Event`` inside ``ExecutionLoop`` so the loop exits
+        cleanly at the top of the next iteration (after the current LLM chunk / tool call
+        finishes).  Thread-safe; safe to call even when no turn is in progress.
+
+        Args:
+            session_id: The gateway session to interrupt.
+
+        Returns:
+            ``{"interrupted": True}`` when the signal was delivered;
+            ``{"interrupted": False}`` when the session is not found.
+        """
+        with self._agents_lock:
+            agent = self._agents.get(session_id)
+        if agent is None:
+            return {"interrupted": False}
+        try:
+            agent.loop.cancel()
+            return {"interrupted": True}
+        except Exception:
+            return {"interrupted": False}
+
     def read_events(self, session_id: str, after: int, limit: int) -> list[GatewayEvent]:
         snapshots = self._get_agent(session_id).snapshot_events_since(after, limit)
         return [
@@ -2320,6 +2344,8 @@ def _build_gateway_control_plane(
         test_provider_connection=support.test_provider_connection,
         list_all_models=support.list_all_models,
         probe_provider=support.probe_provider,
+        # P1-4 — server-side turn interrupt
+        on_interrupt=runtime.interrupt_session if runtime else None,
         max_active_sessions=max_active_sessions,
         max_prompt_chars=max_prompt_chars,
     )

@@ -854,6 +854,57 @@
         ]
       }
     },
+    "/sessions/{session_id}/interrupt": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Interrupt Session",
+        "description": "Cancel the in-progress turn for a live session.\n\nDelivers a cancellation signal to the session's ``ExecutionLoop`` via\n``ExecutionLoop.cancel()`` (a thread-safe ``threading.Event``). The current\nLLM chunk and any in-progress tool call finish first; the loop exits cleanly\nat the top of the following iteration, preserving message-history integrity.\n\nReturns ``{\"interrupted\": true}`` when the signal was delivered to a live\nsession, ``{\"interrupted\": false}`` when the session is not live or no\nin-process runtime is attached (safe \u2014 never raises a 5xx).",
+        "operationId": "interrupt_session_sessions__session_id__interrupt_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInterruptResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/sessions/cleanup-empty": {
       "post": {
         "tags": [
@@ -4656,6 +4707,20 @@
           "next_sequence"
         ],
         "title": "SessionEventsResponse"
+      },
+      "SessionInterruptResponse": {
+        "properties": {
+          "interrupted": {
+            "type": "boolean",
+            "title": "Interrupted"
+          }
+        },
+        "type": "object",
+        "required": [
+          "interrupted"
+        ],
+        "title": "SessionInterruptResponse",
+        "description": "Response for POST /sessions/{session_id}/interrupt (P1-4)."
       },
       "SessionMessageRequest": {
         "properties": {

@@ -139,6 +139,12 @@ class SessionCloseResponse(BaseModel):
     closed: bool
 
 
+class SessionInterruptResponse(BaseModel):
+    """Response for POST /sessions/{session_id}/interrupt (P1-4)."""
+
+    interrupted: bool
+
+
 class RuntimeEventsResponseItem(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -856,6 +862,26 @@ def create_gateway_app(
         _check_session_ownership(session_id, _require_auth(request))
         return control_plane.close_session(session_id)
 
+    # P1-4 — POST /sessions/{session_id}/interrupt
+    # Signals the live execution loop to stop at its next iteration boundary so that
+    # a browser Stop button or SSE disconnect actually cancels the server-side turn
+    # instead of only closing the coroutine while the worker thread keeps running.
+    @sessions.post("/{session_id}/interrupt", response_model=SessionInterruptResponse)
+    async def interrupt_session(session_id: str, request: Request) -> Any:
+        """Cancel the in-progress turn for a live session.
+
+        Delivers a cancellation signal to the session's ``ExecutionLoop`` via
+        ``ExecutionLoop.cancel()`` (a thread-safe ``threading.Event``). The current
+        LLM chunk and any in-progress tool call finish first; the loop exits cleanly
+        at the top of the following iteration, preserving message-history integrity.
+
+        Returns ``{"interrupted": true}`` when the signal was delivered to a live
+        session, ``{"interrupted": false}`` when the session is not live or no
+        in-process runtime is attached (safe — never raises a 5xx).
+        """
+        _check_session_ownership(session_id, _require_auth(request))
+        return control_plane.interrupt(session_id)
+
     # Issue 12 — POST /sessions/cleanup-empty
     # Deletes session rows that have no messages (ghost sessions accumulated before
     # the lazy-row-creation fix landed).  Requires auth; returns {"removed": <int>}.
@@ -968,6 +994,9 @@ def create_gateway_app(
                     _wake.clear()
 
                     if await request.is_disconnected():
+                        # P1-4: on browser disconnect also cancel the server-side turn so
+                        # the worker thread stops, not just the coroutine awaiting it.
+                        control_plane.interrupt(session_id)
                         break
                     try:
                         batch = control_plane.read_session_events(
@@ -1362,6 +1391,8 @@ def create_gateway_app(
 
                     if await request.is_disconnected():
                         turn_task.cancel()
+                        # P1-4: also cancel the worker thread, not just the coroutine.
+                        control_plane.interrupt(session_id)
                         return
 
                     batch = control_plane.read_session_events(
