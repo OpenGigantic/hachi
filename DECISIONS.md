@@ -2393,3 +2393,123 @@ python -m mypy --config-file mypy-strict-gate.ini
 python -m ruff check src/hachi/core/memory_vault.py src/hachi/core/memory_provider.py src/hachi/core/settings.py src/hachi/gateway/orchestrator.py tests/test_memory_decay.py
 # All checks passed!
 ```
+
+---
+
+## Container sandbox backend — S1 (2026-06-25)
+
+**Found.**
+`src/hachi/core/sandbox.py` contained a single concrete class (`SandboxExecutor`) with no
+abstraction layer, making it impossible to slot in a hardened execution backend without
+rewriting callers. `security-audit` emitted an unconditional `medium` finding
+`sandbox.process_backend` regardless of the runtime configuration — even if an operator had
+already deployed a hardened alternative. The module docstring marked container isolation as
+"TODO".
+
+**Decided/Changed.**
+
+### `SandboxBackend` ABC  
+Added `SandboxBackend(ABC)` with abstract `execute()`. Both concrete implementations
+subclass it, exposing typed `name: str` and `is_hardened: bool` class attributes so
+callers can branch without isinstance checks.
+
+### Process backend (back-compat)
+`SandboxExecutor` now subclasses `SandboxBackend`; it sets `name = "process"`,
+`is_hardened = False`. **All existing methods and their signatures are byte-for-byte
+preserved** (`__init__`, `_resolve_uv`, `_validate_dependencies`, `_generate_env_hash`,
+`execute`). The body of `_validate_dependencies` delegates to the new module-level
+`validate_dependencies()` function (so the container backend reuses the same logic);
+the method itself is kept so `test_phase7_integrations_mcp_sandbox_deployment.py` can
+still call `SandboxExecutor._validate_dependencies(executor)` directly.
+
+### Container backend (`ContainerSandboxExecutor`)  
+`name = "container"`, `is_hardened = True`. All config read from environment variables
+with safe defaults:
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `HACHI_SANDBOX_IMAGE` | `python:3.12-slim` | Docker image |
+| `HACHI_SANDBOX_MEMORY` | `512m` | `--memory` + `--memory-swap` (no swap) |
+| `HACHI_SANDBOX_PIDS` | `256` | `--pids-limit` |
+| `HACHI_SANDBOX_CPUS` | `1.0` | `--cpus` |
+| `HACHI_SANDBOX_NETWORK` | `none` | `--network` |
+| `HACHI_SANDBOX_USER` | `65534:65534` | `--user` (nobody:nogroup) |
+
+Every `docker run` invocation is built as a list (never `shell=True`) and includes:
+`--rm`, `--network none`, `--read-only`, `--cap-drop ALL`,
+`--security-opt no-new-privileges`, `--user 65534:65534`,
+`--memory 512m`, `--memory-swap 512m`, `--pids-limit 256`, `--cpus 1.0`,
+`--tmpfs /tmp:rw,size=64m`, `-v <exec_dir>:/work:ro`, `-w /work`.
+
+Deps + `--network none` → immediate `SandboxResult(success=False, exit_code=-1)` with
+an explanatory message (suggest `HACHI_SANDBOX_NETWORK=bridge` or baking deps into the
+image). Timeout → best-effort `docker kill` then `exit_code=124`.
+
+### Fail-fast factory  
+`create_sandbox_backend(backend=None, *, sandbox_root=None)` resolves the backend from
+the `HACHI_SANDBOX_BACKEND` env var (default `"process"`). When `"container"` is
+selected but Docker is absent: raises `OSError` immediately — **never silently downgrades
+to the process backend**, as that would be a security surprise.
+
+### Audit-honesty helper  
+`sandbox_audit_finding(backend, docker_available) -> tuple | None`:
+- `("container", True)` → `None` (hardened backend active, no finding emitted)  
+- `("container", False)` → `("high", "sandbox.container_unavailable", …)`  
+- Any other value → `("medium", "sandbox.process_backend", …)` (existing wording)  
+
+`cli/main.py::security_audit` replaced the unconditional `add_finding(medium, sandbox.process_backend, …)`
+with a call to this helper — the finding disappears when a working container backend is
+configured, and escalates to HIGH when container is selected but Docker is missing.
+
+### `sandbox_tools.py` update  
+Lazy `_executor` list now typed as `list[SandboxBackend]`; initialises via
+`create_sandbox_backend()`. Registration-time CRITICAL log is now conditional:
+process backend → CRITICAL; container backend → WARNING. Per-invocation log matches the
+active backend's `is_hardened` attribute.
+
+### Tests  
+`tests/test_sandbox_backend.py` — 37 new unit tests, no live Docker required:
+factory routing (default/process/container/missing-docker/unknown/env-var), container
+command flag assertions (`--rm`, `--network`, `--read-only`, `--cap-drop ALL`,
+`--security-opt no-new-privileges`, `--user`, `--memory`, `--pids-limit`, `--cpus`,
+`--tmpfs`, image, `python`), stdout/exit-code flow, timeout → 124,
+deps+network=none short-circuits without calling docker-run,
+`validate_dependencies` cases, `sandbox_audit_finding` matrix (8 cases),
+`container_backend_available`, backward-compat `_validate_dependencies` method.
+
+**Strict mypy gate:** `sandbox.py` is in `mypy-strict-gate.ini`; 0 errors after S1.
+**Ruff:** all checks passed on all four changed files.
+
+**Why.**  
+Operators who deploy into Docker-capable environments now have a production-grade,
+kernel-enforced isolation path without changing any call sites. The process backend
+remains the default (zero behaviour change for existing deployments). The audit finding
+is now an honest reflection of the runtime posture rather than a standing false-alarm.
+The fail-fast factory prevents silent security regressions where a misconfigured
+container backend would transparently fall back to the weaker process backend.
+
+**Note on live container execution.** Unit tests mock `subprocess.run` and `shutil.which`.
+A live end-to-end run requires Docker and should be exercised via an operator opt-in job
+similar to the existing `docker-smoke` CI job (a follow-up, not part of S1 unit scope).
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `src/hachi/core/sandbox.py` | `SandboxBackend` ABC; module-level `validate_dependencies()`; `SandboxExecutor` subclasses `SandboxBackend` (back-compat preserved); new `ContainerSandboxExecutor`; `container_backend_available()`; `create_sandbox_backend()` factory; `sandbox_audit_finding()` helper; updated module docstring |
+| `src/hachi/tools/sandbox_tools.py` | `_executor` typed as `list[SandboxBackend]`; lazy init via `create_sandbox_backend()`; registration-time log conditional on backend; per-invocation log conditional on `is_hardened` |
+| `src/hachi/cli/main.py` | Replace unconditional `add_finding(medium, sandbox.process_backend)` with `sandbox_audit_finding()` + conditional `add_finding(*_sb_finding)` |
+| `tests/test_sandbox_backend.py` | New: 37 unit tests (factory, container command flags, timeout, deps+network, audit helper, availability probe, backward-compat method) |
+| `DECISIONS.md` | This entry |
+
+**Verification.**
+```
+python -m pytest tests/test_sandbox_backend.py tests/test_g4_security_depth.py tests/test_phase7_integrations_mcp_sandbox_deployment.py -p no:randomly -q
+# 60 passed
+
+python -m mypy --config-file mypy-strict-gate.ini
+# Success: no issues found in 36 source files
+
+python -m ruff check src/hachi/core/sandbox.py src/hachi/tools/sandbox_tools.py src/hachi/cli/main.py tests/test_sandbox_backend.py
+# All checks passed!
+```

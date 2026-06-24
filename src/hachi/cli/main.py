@@ -4132,12 +4132,12 @@ def security_audit(
             "Unset HACHI_REST_ALLOW_PRIVATE or set it to false.",
         )
 
-    add_finding(
-        "medium",
-        "sandbox.process_backend",
-        "Current sandbox backend is process-isolation only and development-grade.",
-        "Use a container-backed sandbox for production deployments.",
-    )
+    from hachi.core.sandbox import container_backend_available, sandbox_audit_finding
+
+    _sb_backend = os.environ.get("HACHI_SANDBOX_BACKEND", "process")
+    _sb_finding = sandbox_audit_finding(_sb_backend, container_backend_available())
+    if _sb_finding is not None:
+        add_finding(*_sb_finding)
 
     for cap_name, state in cfg.capabilities.items():
         if state.enabled and not state.secret_ref:
