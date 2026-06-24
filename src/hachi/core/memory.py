@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from typing import TYPE_CHECKING, Any
 
 from hachi.core.llm import Message
@@ -191,6 +192,13 @@ class MemoryManager:
         # window-size before the background job completes and the flag clears.
         # The flag is cleared by the background job wrapper _run_and_clear_summary_job().
         self._compaction_in_flight: bool = False
+        # Concurrency: _history is mutated on the main turn thread (inside
+        # _sliding_window_compact / add_message / etc.) and read-modified by the
+        # background summary job (_run_and_clear_summary_job).  A plain Lock is
+        # sufficient — no caller holds it while calling back into MemoryManager, so
+        # there is no re-entrancy and therefore no deadlock risk.  Critical sections
+        # are intentionally tiny (single list assignment or a short sentinel scan).
+        self._history_lock: threading.Lock = threading.Lock()
 
     def set_vault(self, vault):
         """Bind the Long-Term Memory Vault to the manager for auto-flushing."""
@@ -976,7 +984,8 @@ class MemoryManager:
             content=f"[CONTEXT CHECKPOINT — REFERENCE ONLY, DO NOT RESPOND TO THIS]\n{summary}",
         )
 
-        self._history = anchor + [checkpoint] + recent
+        with self._history_lock:
+            self._history = anchor + [checkpoint] + recent
         self._skill_start_index = min(self._skill_start_index, len(self._history))
 
     def _find_safe_sliding_boundary(self, candidate_cut: int) -> int:
@@ -1087,27 +1096,72 @@ class MemoryManager:
 
         return _get_llm_client()
 
-    def _run_and_clear_summary_job(self, messages: list) -> str:
-        """Background job wrapper: generate a structured summary then clear the in-flight flag.
+    # Sentinel substring embedded in the placeholder checkpoint content.
+    # There is at most one placeholder in flight at a time (enforced by
+    # _compaction_in_flight), so this substring is sufficient to locate it.
+    _COMPACTION_PLACEHOLDER_SENTINEL: str = "[Context compacted asynchronously."
 
-        This wrapper exists solely so the ``_compaction_in_flight`` flag is cleared
-        when the job completes (success *or* exception propagated to the JobWorker).
-        The summary string is returned for auditing via job.result.output but is not
-        applied back to the live history — the lightweight placeholder inserted by
-        ``_sliding_window_compact`` is sufficient for model continuity.
+    def _run_and_clear_summary_job(self, messages: list) -> str:
+        """Background job wrapper: generate a structured summary then apply it back.
+
+        Generates the real structured summary via ``_generate_structured_summary``,
+        then replaces the placeholder checkpoint that ``_sliding_window_compact``
+        inserted into ``_history`` with the real checkpoint content.
+
+        Concurrency contract:
+          - This method runs on the background worker thread.
+          - ``_history`` is mutated by the main turn thread while this runs.
+          - We hold ``_history_lock`` only during the tiny read-modify of the
+            placeholder scan + content replace.  The LLM call (potentially seconds)
+            runs outside the lock so the main thread is never stalled.
+          - Replacing ``.content`` on a Message already in ``_history`` is safe: the
+            object identity is stable across list reassignments on the main thread, but
+            we locate it by sentinel match under the lock to avoid races where the list
+            was rebuilt (re-compaction).  If the placeholder is gone, we skip silently.
 
         Correctness semantics:
-          - The flag is cleared unconditionally in a ``finally`` block so a job
+          - ``_compaction_in_flight`` is cleared unconditionally in ``finally`` so a
             failure never permanently blocks future compactions.
-          - While the flag is set, the context window may grow up to one extra
-            ``max_active_messages`` window before the next compaction is permitted.
-            This is intentional: it bounds context growth while preventing duplicate
-            expensive LLM calls.
+          - If the placeholder checkpoint was already removed by a subsequent
+            compaction before this job ran, the apply-back is a no-op (logged at
+            DEBUG).  We never append a stray summary in that case.
         """
         try:
-            return self._generate_structured_summary(messages)
+            summary = self._generate_structured_summary(messages)
+            self._apply_summary_to_history(summary)
+            return summary
         finally:
             self._compaction_in_flight = False
+
+    def _apply_summary_to_history(self, summary: str) -> None:
+        """Replace the placeholder checkpoint in ``_history`` with ``summary``.
+
+        Scans ``_history`` under ``_history_lock`` for the single placeholder
+        checkpoint identified by ``_COMPACTION_PLACEHOLDER_SENTINEL``.  When found,
+        replaces its ``.content`` in place with the real structured checkpoint text
+        (same ``[CONTEXT CHECKPOINT — REFERENCE ONLY...]`` framing).  If the
+        placeholder is absent (history was re-compacted since the job was enqueued),
+        logs at DEBUG and returns without side-effects.
+
+        Args:
+            summary: The real structured summary string from ``_generate_structured_summary``.
+        """
+        new_content = f"[CONTEXT CHECKPOINT — REFERENCE ONLY, DO NOT RESPOND TO THIS]\n{summary}"
+        with self._history_lock:
+            for msg in self._history:
+                if (
+                    isinstance(msg.content, str)
+                    and self._COMPACTION_PLACEHOLDER_SENTINEL in msg.content
+                ):
+                    msg.content = new_content
+                    logger.debug("Compaction summary applied back to live history checkpoint.")
+                    return
+        # Placeholder absent — a subsequent compaction replaced the history list.
+        # This is normal under high-throughput: skip gracefully.
+        logger.debug(
+            "Compaction summary job completed but placeholder checkpoint was no longer "
+            "present in history (re-compacted). Summary discarded."
+        )
 
     def _flush_facts_to_vault(self, messages: list) -> None:
         """Extract permanent facts from dropped messages and save to vault.

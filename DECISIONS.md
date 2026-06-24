@@ -954,3 +954,72 @@ uv run ruff check src/hachi/core/mcp_client.py tests/test_mcp_resilience.py
 uv run ruff format --check src/hachi/core/mcp_client.py tests/test_mcp_resilience.py
 uv run mypy src/hachi/core/mcp_client.py src/hachi/core/resilience.py src/hachi/core/errors.py --ignore-missing-imports   # 0 errors across all three
 ```
+
+---
+
+### P1-6 — apply compaction summary back into history
+
+**Found.** `MemoryManager._run_and_clear_summary_job` generated a real structured
+summary via `_generate_structured_summary(messages)` but discarded it — only returning
+it as a job audit value. The placeholder string inserted by `_sliding_window_compact`
+(`"[Context compacted asynchronously. Permanent facts are being flushed…]"`) stayed in
+`_history` permanently. On provider failover or resume the model received the useless
+placeholder instead of the real compacted context (Active Task / Completed Actions /
+Key Decisions / Active State / Blocked).
+
+**Changed.**
+
+- `src/hachi/core/memory.py` — 3 logical edits:
+  1. Added `import threading` to the import block.
+  2. Added `self._history_lock: threading.Lock = threading.Lock()` in `__init__` with a
+     comment explaining the concurrency contract.
+  3. Wrapped `self._history = anchor + [checkpoint] + recent` in `_sliding_window_compact`
+     with `with self._history_lock:` (tiny critical section — single list assignment).
+  4. Rewrote `_run_and_clear_summary_job`: after generating the real summary it now calls
+     `self._apply_summary_to_history(summary)` before returning.
+  5. Added new method `_apply_summary_to_history(summary)`: acquires `_history_lock`,
+     scans `_history` for the placeholder checkpoint by `_COMPACTION_PLACEHOLDER_SENTINEL`,
+     replaces its `.content` **in place** with the real checkpoint text (same framing
+     header), then releases the lock. If no placeholder is found (re-compacted in the
+     meantime), logs at DEBUG and returns without side-effects.
+  6. Added class-level constant `_COMPACTION_PLACEHOLDER_SENTINEL = "[Context compacted
+     asynchronously."` so tests and the scanner share one canonical string.
+
+- `tests/test_compaction_summary_applyback.py` — new file, 4 focused tests.
+
+**Concurrency approach — why it is safe.**
+
+`_history` is mutated by the main turn thread (in `_sliding_window_compact`,
+`add_message`, etc.) and read-modified by the background worker thread (in
+`_apply_summary_to_history`). A plain `threading.Lock` (non-reentrant) is sufficient:
+
+- No caller holds `_history_lock` while calling back into `MemoryManager`, so
+  there is no re-entrancy and therefore no deadlock risk.
+- The lock is held for the duration of a single list assignment (`_sliding_window_compact`)
+  or a short linear scan + one attribute set (`_apply_summary_to_history`) — never across
+  the LLM network call (which takes seconds and runs outside the lock).
+- Replacing `msg.content` on a `Message` object that is still referenced by `_history`
+  is safe: Pydantic `BaseModel` fields are mutable; no list reordering occurs.
+- If `_history` was rebuilt by a second compaction before `_apply_summary_to_history`
+  runs, the scan finds no sentinel (because the new list was constructed with a fresh
+  placeholder Message object that also contains the sentinel if an in-flight job is still
+  pending — but `_compaction_in_flight` guard prevents a second job, so only one
+  placeholder + one job exist at a time). In the rare case that the history was reset/
+  cleared entirely between enqueue and execution, the sentinel scan returns no match
+  and the method is a no-op.
+
+**Why.**  The real structured summary (Active Task / Completed Actions / Key Decisions /
+Active State / Blocked) is critical for model continuity across context compactions.
+Without it, every resumed session or provider failover sees only the opaque placeholder
+rather than the dense checkpoint the background job worked to produce.
+
+**Verify.**
+```
+uv run pytest tests/test_compaction_summary_applyback.py tests/test_conversation_memory.py tests/test_memory_tools_queue.py tests/test_p2_02_job_queue.py tests/test_g3_compaction.py tests/test_memory_fixes.py -q
+uv run ruff check src/hachi/core/memory.py tests/test_compaction_summary_applyback.py
+uv run ruff format --check src/hachi/core/memory.py tests/test_compaction_summary_applyback.py
+uv run mypy src/hachi/core/memory.py --ignore-missing-imports  # 16 errors before, 16 errors after
+```
+
+Results (2026-06-24): 4/4 new tests pass; 231/231 memory+compact+job tests pass;
+ruff check + format clean; mypy 16→16 (no regression).
