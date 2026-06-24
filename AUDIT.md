@@ -134,9 +134,20 @@ load-bearing agent-turn scheduler is untouched) + a `hachi eval snapshot` manual
 REAL store: `eval run` 5/5, `eval report` over 29 real turns, `eval snapshot` artifact written. The
 flywheel immediately surfaced one real finding — every logged turn showed **$0.00 cost / 0 tokens** (a
 pre-existing P0-2 instrumentation gap, NOT introduced by E4/E5), which was then root-caused and **FIXED
-(COST-1, below)**. Remaining eval gaps are CONTENT/OPS not machinery: the replay corpus is a 5-case seed
-(not comprehensive), `eval run` is not yet a blocking CI job, and there is no live-record mode (fixtures are
-hand-authored). Score impact: **P4 Eval & Observability 62→70.** **Overall ~85→~86.**
+(COST-1, below)**. Remaining eval gaps are CONTENT/OPS not machinery, and **E6/E7 (below) closed two of the three**: a
+live-record mode is still absent (fixtures are hand-authored). Score impact: **P4 Eval & Observability
+62→70.** **Overall ~85→~86.**
+
+**E6/E7 — eval corpus hardened into a real CI gate (2026-06-24):** the replay corpus grew from a 5-case
+smoke seed to **14 loop-mechanics regression cases** that pin the ReAct loop's control-flow contracts
+(tool-error recovery, unregistered-tool handling, max-iteration cap → `[INCOMPLETE]` at exactly 10 calls,
+empty/degraded response, argument passing, parallel tool calls, ordered multi-step, no-sentinel-leak in
+clean output), backed by 3 new precise assertion kinds (`tool_call_count`, `output_not_contains`,
+`tool_called_in_order`). Exercising every edge case **found no loop bugs** — the loop is robust. `eval run`
+is now a **blocking CI job** (exits non-zero on any regression) so these contracts are enforced on every
+push/PR. Full `pytest` **3793 pass / 0 fail**. The only remaining eval increment is a live-record mode
+(record real LLM responses into replay fixtures); the corpus is otherwise a genuine regression net, not a
+seed.
 
 **COST-1 — OpenAI-compat streaming usage fix (2026-06-24, surfaced by the eval flywheel above):**
 `OpenAICompatibleClient.generate_stream` set `stream=True` but never sent
