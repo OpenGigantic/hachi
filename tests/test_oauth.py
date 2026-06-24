@@ -54,6 +54,7 @@ def test_oauth_callback_rejects_state_mismatch() -> None:
 def test_google_browser_flow_fails_when_callback_port_8080_is_in_use(monkeypatch) -> None:
     monkeypatch.setattr("hachi.core.oauth._google_client_id", lambda: "client-id")
     monkeypatch.setattr("hachi.core.oauth._google_client_secret", lambda: None)
+    monkeypatch.delenv("HACHI_OAUTH_NONINTERACTIVE", raising=False)  # hermetic vs flag pollution
     monkeypatch.setattr(
         "hachi.core.oauth.HTTPServer",
         lambda *_a, **_k: (_ for _ in ()).throw(OSError("Address already in use")),
@@ -78,6 +79,7 @@ def test_google_browser_flow_fails_closed_when_consent_is_cancelled(monkeypatch)
 
     monkeypatch.setattr("hachi.core.oauth._google_client_id", lambda: "client-id")
     monkeypatch.setattr("hachi.core.oauth._google_client_secret", lambda: None)
+    monkeypatch.delenv("HACHI_OAUTH_NONINTERACTIVE", raising=False)  # hermetic vs flag pollution
     monkeypatch.setattr("hachi.core.oauth.HTTPServer", _FakeServer)
     monkeypatch.setattr("hachi.core.oauth.webbrowser.open", lambda *_a, **_k: True)
 
@@ -154,3 +156,22 @@ def test_read_dotenv_value_ignores_comments_and_missing(tmp_path) -> None:
     assert oauth._read_dotenv_value(p, "BAZ") == "qux"
     assert oauth._read_dotenv_value(p, "MISSING") is None
     assert oauth._read_dotenv_value(tmp_path / "nope.env", "FOO") is None
+
+
+def test_browser_flow_fails_fast_when_noninteractive(monkeypatch) -> None:
+    # In a headless server (gateway/serve sets HACHI_OAUTH_NONINTERACTIVE), a first-time
+    # Google auth must raise a clear "run hachi auth google" error immediately — never open
+    # a browser or block on a local callback server.
+    monkeypatch.setattr("hachi.core.oauth._google_client_id", lambda: "client-id")
+    monkeypatch.setenv("HACHI_OAUTH_NONINTERACTIVE", "1")
+    monkeypatch.setattr(
+        "hachi.core.oauth.HTTPServer",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("server must not start")),
+    )
+    monkeypatch.setattr(
+        "hachi.core.oauth.webbrowser.open",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("browser must not open")),
+    )
+    manager = OAuthManager(secret_store=_MemorySecretStore())
+    with pytest.raises(RuntimeError, match="hachi auth google"):
+        manager._run_google_browser_flow(["openid"])

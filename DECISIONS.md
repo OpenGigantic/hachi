@@ -687,3 +687,30 @@ changed modules; OpenAPI + frontend contract regenerated and consistent.
   now force the resolver to None (clearing only `os.environ` no longer suffices in a repo that ships a
   `.env`) + 1 new "mounts the real hub when the id is only in `.env`". 213-test Google/OAuth/credential/
   deployment regression green; `ruff` clean; **zero new mypy errors** (oauth 19→19, cli/main 121→121).
+
+### Connector hardening (2026-06-24, "check if something is left") — Google write-tool idempotency + headless auth
+Completeness sweep after the P0/Google commit (`4fc85b2`) surfaced two real residual items (the rest
+of the backlog is the roadmapped P1 tier). Both closed:
+- **In-turn idempotency for Google writes (Theme A completion).** Ingress idempotency covers full-turn
+  *client* retries, and the messaging tools got per-call guards — but an LLM-retry / tool-pool
+  re-dispatch *within* a turn could double-send an email or double-create an event. Added an **opt-in**
+  guard to `GoogleHTTPClient.post` (`idempotency_key` param; refactored the body into `_post_raw`): a
+  duplicate POST with the same key replays the prior JSON response. Per-client (= per-session) guard.
+  **Only side-effecting leaf tools pass a key** — `gmail.send_email`, `gmail.reply_thread`,
+  `calendar.create_event`, `calendar.create_recurring_event` — keyed on the **logical** identity
+  (to/subject/body, thread/body, title/start/end[/RRULE]), NOT the serialized body (MIME boundaries +
+  Meet `requestId` are random). Reads / batch / freeBusy pass no key and are never deduped. Failures
+  `abort()` (stay retryable). The 4 test `FakeGoogleClient.post` stand-ins were updated to accept (and
+  ignore) the kwarg. *Deliberately scoped to outbound/notifying ops; in-account creates (draft, task,
+  contact, file upload) are reversible and can adopt the same one-line pattern later.*
+- **Headless first-auth fail-fast.** A first Google call in the gateway with no saved token used to
+  open a browser + block ~120 s on a dead loopback redirect. The `gateway`/`serve` server now
+  `setdefault`s `HACHI_OAUTH_NONINTERACTIVE=1`; `_run_google_browser_flow` checks it and raises a clear
+  "run `hachi auth google`" error immediately. `hachi auth google` runs in its own interactive process
+  (flag unset) so the real consent still works. Gotcha caught: `test_cli_gateway_command` invokes the
+  `gateway` command → sets the flag **process-wide** for the suite, so the existing browser-flow tests
+  were made hermetic (`delenv`).
+- **Tests (8):** `test_google_idempotency.py` (6: keyed-post replays/sends-once, no-key never dedups,
+  failure retryable, distinct keys, + 2 `send_email` leaf-level dedup/distinct) + 1 headless-guard +
+  hermetic fixes. Full Google/OAuth/gateway regression green; `ruff` clean; **zero new mypy errors**
+  (oauth 19→19, cli/main 121→121; client.py actually 5→4).

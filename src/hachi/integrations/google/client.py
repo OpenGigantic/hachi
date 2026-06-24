@@ -6,11 +6,13 @@ It abstracts away the OAuth token lifecycle and provides clean HTTP verbs
 so that individual services (Gmail, Drive) can focus purely on business logic.
 """
 
+import json
 import time
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from hachi.core.idempotency import IdempotencyGuard
 from hachi.core.oauth import OAuthManager
 
 if TYPE_CHECKING:
@@ -40,6 +42,10 @@ class GoogleHTTPClient:
         # Optional approver wired by the hub at session boot.  When set, destructive
         # actions call require_approval() before proceeding.
         self.approver: ActionApprover | None = None
+        # Per-client (= per-session) dedup of opt-in side-effecting writes, so an LLM retry
+        # or tool-pool re-dispatch within a turn cannot double-send an email / double-create
+        # an event. Only POSTs that pass an idempotency_key are guarded (AUDIT Theme A).
+        self._idem_guard = IdempotencyGuard()
 
     def _get_headers(self) -> dict[str, str]:
         """
@@ -164,15 +170,45 @@ class GoogleHTTPClient:
         endpoint: str,
         json_data: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        *,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        """Executes an authenticated POST request."""
+        """Executes an authenticated POST request.
+
+        When ``idempotency_key`` is supplied — by side-effecting create/send leaf tools —
+        a duplicate POST with the same key inside the short dedup window replays the prior
+        response instead of re-sending, so an LLM retry or tool-pool re-dispatch within a
+        turn cannot double-send an email or double-create an event. Read/batch POSTs omit
+        the key and are never deduped (they must always return fresh data).
+        """
+        if idempotency_key is None:
+            return self._post_raw(endpoint, json_data, params)
+        is_dup, prior = self._idem_guard.begin(idempotency_key)
+        if is_dup:
+            # Replay the prior success; an in-flight concurrent duplicate has no result yet.
+            return json.loads(prior) if prior else {}
+        try:
+            result = self._post_raw(endpoint, json_data, params)
+        except Exception:
+            self._idem_guard.abort(idempotency_key)  # failed → leave it retryable
+            raise
+        self._idem_guard.finish(idempotency_key, json.dumps(result))
+        return result
+
+    def _post_raw(
+        self,
+        endpoint: str,
+        json_data: dict[str, Any] | None,
+        params: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         with httpx.Client(base_url=self.BASE_URL, headers=self._get_headers()) as client:
             response = self._request_with_retry(
                 client, "POST", endpoint, json=json_data, params=params
             )
             if not response.content:
                 return {}
-            return response.json()
+            result: dict[str, Any] = response.json()
+            return result
 
     def patch(
         self,

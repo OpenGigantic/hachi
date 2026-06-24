@@ -253,6 +253,17 @@ class OAuthManager:
 
     def _run_google_browser_flow(self, scopes: list[str]) -> str:
         """Spins up local server, opens browser, gets code, trades for token."""
+        # Fail fast in a non-interactive process (the gateway/serve server sets this flag):
+        # there is no display to complete the consent, and blocking ~120s on a dead browser
+        # redirect would stall a web turn. The one-time consent is done via `hachi auth
+        # google` in a terminal; the server then uses the saved token + silent refresh.
+        if os.environ.get("HACHI_OAUTH_NONINTERACTIVE"):
+            raise RuntimeError(
+                "Google needs a one-time browser sign-in, but Hachi is running "
+                "non-interactively (gateway/server). Run `hachi auth google` once in a "
+                "terminal to connect your account; the server will then use the saved token "
+                "and refresh it automatically."
+            )
         print("  [oauth] Connecting to Google...")
         print("  [oauth] A browser window will open to complete authentication.")
 

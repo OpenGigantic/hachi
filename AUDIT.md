@@ -58,10 +58,15 @@ was **orthogonal** to this backlog and closed none of it — the findings below 
   GOOGLE_CLIENT_ID" despite being configured (proven by reproduction). Fixed in three layers: lazy
   `_resolve_env()` (env → `cwd/.env` → `config_dir/.env`) in oauth; `register_google_tools` gate uses
   the same resolver; and the CLI startup loader now also merges `config_dir/.env` (where `hachi setup`
-  writes) — fixing Google **and** all wizard-configured credentials. 9 tests; the headless first-auth
-  guard is a noted follow-up.
+  writes) — fixing Google **and** all wizard-configured credentials. 9 tests.
+- ✅ **Connector hardening (completeness sweep).** Closed the two residual items a "what's left" check
+  surfaced: (a) **in-turn idempotency for Google writes** — an opt-in guard in `GoogleHTTPClient.post`
+  applied to `send_email`/`reply_thread`/`create_event`/`create_recurring_event` (Theme A now covers
+  the connector send/create path, not just messaging + ingress); (b) **headless first-auth fail-fast**
+  — the gateway/serve server marks itself non-interactive so a first Google call raises "run `hachi
+  auth google`" instead of hanging ~120 s on a browser. 8 tests.
 - Detail for all: `DECISIONS.md` → "Reassessment P0 sweep (2026-06-24)" + "Google Workspace config
-  resolution".
+  resolution" + "Connector hardening".
 
 **Score impact:** P0-3 (idempotency, the shared deduction across three pillars) → **P2 Tools 68→74**,
 **Gateway 78→80**; P0-1+P0-3 (suspend was the other big P5 deduction) → **P5 Loop 52→62**; P0-2 (the

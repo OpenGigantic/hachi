@@ -2120,6 +2120,12 @@ def _run_gateway_http_server(host: str, port: int, attach_runtime: bool) -> None
     # P3-07: enable rotating log when running as daemon (log path from env or default).
     import os as _os
 
+    # Mark this (headless server) process non-interactive so a first-time Google OAuth call
+    # fails fast with a "run `hachi auth google`" message instead of opening a browser and
+    # blocking ~120s on a server with no display. `hachi auth google` runs in its own
+    # interactive process and is unaffected.
+    _os.environ.setdefault("HACHI_OAUTH_NONINTERACTIVE", "1")
+
     from hachi.daemon import _default_log_path, setup_rotating_log
 
     _daemon_log = _os.environ.get("HACHI_DAEMON_LOG")
@@ -3140,6 +3146,10 @@ def serve(
 
     Use ``hachi gateway`` if you want the backend API without the frontend.
     """
+    # Headless server → fail fast on a first-time Google OAuth call (run `hachi auth google`)
+    # instead of opening a browser and blocking ~120s on a display-less server.
+    os.environ.setdefault("HACHI_OAUTH_NONINTERACTIVE", "1")
+
     # Locate the pre-built frontend distribution directory.
     _frontend_dist: Path | None = None
     if not no_frontend:
