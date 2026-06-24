@@ -28,6 +28,7 @@ from rich.rule import Rule
 
 from hachi.cli.commands.channel import channel_app
 from hachi.cli.commands.daemon import daemon_app
+from hachi.cli.commands.eval import eval_app
 from hachi.cli.commands.jobs import jobs_app
 from hachi.cli.commands.mcp import mcp_app
 from hachi.cli.commands.memory import memory_app
@@ -81,6 +82,7 @@ app.add_typer(session_app, name="session")
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(ogpack_app, name="pack")
 app.add_typer(jobs_app, name="jobs")
+app.add_typer(eval_app, name="eval")
 
 # Sub-apps defined later in this file — registered here so they appear in --help
 keys_app = typer.Typer(help="Manage named API keys and credentials in the secure vault.")
