@@ -1173,3 +1173,81 @@ python -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml')); print(
 
 Results (2026-06-24): 59/59 tests pass; ruff check + format clean; mypy main.py 122 errors
 (baseline was already 122 — no regression); connector_registry.py 0 errors; ci.yml YAML valid.
+
+---
+
+### P1-7 — personalization substrate (UserProfileStore + CorrectionLog + save tool)
+
+**Found.**
+The `user_profile` ChromaDB collection (bounded to 25 entries via `MemoryVault.upsert_user_fact /
+search_user_profile`) provided raw fact storage, but there was NO structured facade exposing
+grouped read/write/correct/export semantics. Corrections were handled destructively (delete +
+re-write) with no audit trail — a wrong fact silently vanished. The existing `core_save_user_profile`
+tool accepted the old flat `{content, category}` list and the old vault category set
+(name/role/preference/habit/…) without grouping into the four P1-7 schema buckets
+(identity/preferences/routines/knowledge). No onboarding-wizard changes were in scope.
+
+**Changed.**
+
+- **`src/hachi/core/user_profile.py`** — new module; zero additions to existing files:
+  - `PROFILE_CATEGORIES = frozenset({"identity","preferences","routines","knowledge"})` — the
+    four P1-7 schema buckets.
+  - `_resolve_read_category(vault_category)` — maps old vault categories (name→identity,
+    preference→preferences, habit→routines, relationship→knowledge, …) so existing entries
+    surface correctly under the new schema without a migration.
+  - `CorrectionLog` — durable, append-only SQLite store backed by a `profile_corrections` table
+    in the existing `sessions.db` file. Schema: `{id, ts, category, old_value, new_value, reason}`.
+    There is NO UPDATE or DELETE path on rows — only INSERT. The table survives process restarts
+    because it lives in the same WAL-mode SQLite file as the rest of the durable store. Thread
+    safety via a reentrant lock.
+  - `UserProfileStore` — structured facade over `MemoryVault`'s user_profile collection:
+    - `get() -> dict[str, list]` — reads all user_collection entries and groups by P1-7 category.
+    - `set(category, value) -> str` — validates category, writes via `_vault._guarded_write` to
+      stamp the P1-7 category in metadata (bypassing `upsert_user_fact`'s legacy normalisation
+      that would remap unknown categories to "preference").
+    - `correct(old_value_or_id, new_value, *, reason="") -> dict` — non-destructive: (1) appends
+      a CorrectionLog entry preserving old_value, (2) deletes the superseded fact from the vault,
+      (3) writes the replacement. The old value is NEVER silently lost.
+    - `export() -> dict` — returns `{profile: grouped, corrections: all log entries, stats: vault
+      capacity}`.
+
+- **`src/hachi/tools/memory_tools.py`** — minimal additions only:
+  - `register_memory_tools` signature extended with optional `profile_store=None`; auto-builds a
+    `UserProfileStore` from the live vault when omitted (backward-compat — existing callers pass
+    zero new args).
+  - `save_user_profile_structured(category, value) -> str` — new tool handler that calls
+    `UserProfileStore.set` and returns a human-readable result string.
+  - `core_save_user_profile_structured` registered with the LLM tool schema (category enum:
+    identity|preferences|routines|knowledge, value string).
+
+- **`tests/test_user_profile_store.py`** — new test file, 18 tests.
+
+**CorrectionLog backing choice — SQLite table in sessions.db.**
+Rationale: (1) SQLite is the existing house pattern for append-heavy audit data
+(`interaction_log`, `idempotency_keys` — same file, same approach). (2) Corrections are a
+structured log, not a semantic search target — a relational table is a better fit than ChromaDB.
+(3) The file already exists on every install; no new dependency or DB file is introduced.
+(4) Append-only is enforced by having no UPDATE/DELETE code path — only INSERT.
+
+**Backward compatibility with existing user_profile writes.**
+The `category` metadata field written by old code (name/role/preference/habit/…) is preserved
+verbatim in ChromaDB; `UserProfileStore.get()` runs every entry through `_resolve_read_category`
+at read time — no migration required, no re-write, no risk of data loss. New writes via
+`UserProfileStore.set` stamp P1-7 category strings directly (identity/preferences/routines/knowledge).
+The vault's existing `upsert_user_fact` and `memory_tools.py:save_user_profile` are untouched
+and continue to write the old category strings; they and the new tool coexist without conflict.
+
+**Deferred (out-of-scope follow-ups).**
+- Onboarding wizard step / `SetupStep` flow change capturing the four P1-7 buckets during setup.
+- Frontend / web UI for displaying and editing the structured profile.
+- Implicit learning / PII-minimisation (P2-4 scope).
+- Wrapping `memory_exporter.chroma_to_files` to include corrections in the `.og` export
+  (profile.og currently exports raw Chroma entries, not the CorrectionLog).
+
+**Verify.**
+```
+PYTHONPATH=src uv run --with pytest --no-project pytest tests/test_user_profile_store.py tests/test_memory_tools_queue.py tests/test_conversation_memory.py -q
+uv run ruff check src/hachi/core/user_profile.py src/hachi/tools/memory_tools.py tests/test_user_profile_store.py
+uv run ruff format --check src/hachi/core/user_profile.py src/hachi/tools/memory_tools.py tests/test_user_profile_store.py
+uv run mypy src/hachi/core/user_profile.py src/hachi/tools/memory_tools.py --ignore-missing-imports
+```
