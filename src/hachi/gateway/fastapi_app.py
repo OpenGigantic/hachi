@@ -83,6 +83,7 @@ class ReadinessResponse(BaseModel):
     status: str
     ready: bool
     blockers: list[str]
+    checks: dict[str, str] = Field(default_factory=dict)
     active_connections: int
     time: str
 
