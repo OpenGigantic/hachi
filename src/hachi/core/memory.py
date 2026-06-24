@@ -42,6 +42,67 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# M1 — Episode summary builder (pure, deterministic, no LLM)
+# ---------------------------------------------------------------------------
+
+
+def build_episode_summary(
+    interactions: list[dict[str, Any]], *, max_chars: int = 1500
+) -> str:
+    """Build a rich, deterministic episode summary from interaction_log rows.
+
+    Produces a plain-text digest suitable for storage in the ``episodic_memory``
+    ChromaDB collection.  NO LLM call is made — the output is deterministic and
+    zero-cost so it can always run at session close.
+
+    The summary format is:
+        Episode: <N> turns
+        - User: <truncated user_input>
+          Agent: <truncated agent_output head>
+          Tools: <comma-joined tool names, if any>
+
+    Args:
+        interactions: Rows from ``SessionStore.get_interactions()`` — each row is
+                      a dict with at least ``user_input``, ``agent_output``, and
+                      ``tool_calls`` (list[str]) keys.  Must be ordered
+                      oldest-first (caller reverses the newest-first DB order
+                      before passing here, or passes a raw slice — we treat the
+                      list order as the turn order).
+        max_chars:    Hard length cap; the summary is truncated with an ellipsis
+                      note if it exceeds this limit.
+
+    Returns:
+        A plain-text summary string, or ``""`` for an empty interaction list.
+    """
+    if not interactions:
+        return ""
+
+    lines: list[str] = [f"Episode: {len(interactions)} turn(s)"]
+    for row in interactions:
+        user_in = (row.get("user_input") or "").strip()
+        agent_out = (row.get("agent_output") or "").strip()
+        tool_calls: list[str] = row.get("tool_calls") or []
+
+        # Truncate individual fields so one verbose turn cannot dominate.
+        user_snippet = user_in[:120] + ("…" if len(user_in) > 120 else "")
+        agent_snippet = agent_out[:120] + ("…" if len(agent_out) > 120 else "")
+
+        turn_line = f"- User: {user_snippet}\n  Agent: {agent_snippet}"
+        if tool_calls:
+            tools_str = ", ".join(str(t) for t in tool_calls[:10])
+            turn_line += f"\n  Tools: {tools_str}"
+        lines.append(turn_line)
+
+    summary = "\n".join(lines)
+
+    if len(summary) > max_chars:
+        summary = summary[:max_chars] + "\n[… truncated]"
+
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # FIX 4 — Write-quality gate helpers for auto-sync fact extraction.
 #
