@@ -1452,3 +1452,61 @@ uv run mypy src/hachi/jobs/queue.py --ignore-missing-imports
 uv run mypy src/hachi/cli/main.py --ignore-missing-imports
 # → 122 errors (unchanged from baseline)
 ```
+
+---
+
+### P2-5 — Behavioral tests for brain.og hard constraints
+
+**Found.**
+`tests/test_prompt_composer.py` only asserted structural shape (ordering, section headers,
+which fragments appear in cacheable vs dynamic split) — it used a hardcoded `_BRAIN =
+"STABLE_BRAIN_CONTENT"` fixture and never touched the shipped `brain.og`.  Deleting any
+constraint line from `src/hachi/default_skills/brain.og` would not fail any test.
+
+**Changed.**
+Added `tests/test_brain_constraints.py` (11 new tests; 0 source file changes).
+
+Two test layers:
+
+*Source-level (7 tests)* — read the raw shipped brain.og and assert each guardrail is
+present as text.  These fail the moment the line is deleted from the source.
+
+*Composition-level (4 tests)* — render brain.og through the full production pipeline
+(`parse_og_file` → `_render_brain_prompt` → `build_stable_base`) and assert each
+constraint survives into the composed prompt string.  A composer bug that silently drops
+a node type (e.g. skipping all `::warning` blocks) would be caught here even if the
+source is intact.
+
+Invariants guarded:
+
+| Test | brain.og guardrail | Why it matters |
+|---|---|---|
+| `test_brain_og_no_hallucination_rule_present` + `test_no_hallucination_rule_survives_composition` | `::warning` in `execution-principles`: "NEVER hallucinate tool outputs" | Core honesty constraint — without it the agent may fabricate tool results |
+| `test_brain_og_no_claim_without_tool_use_rule_present` | `::warning`: "NEVER claim you completed a task without actually using tools" | Grounding rule — prevents false success confirmations |
+| `test_brain_og_destructive_command_confirmation_rule_present` + `test_destructive_command_rule_survives_composition` | `tool-philosophy::full`: "Never run destructive commands without explicit user confirmation" | Irreversible-action safeguard — rm -rf / format protection |
+| `test_brain_og_execution_engine_identity_present` + `test_execution_engine_identity_survives_composition` | `identity::full`: "You are NOT a chatbot. You are an execution engine" | Identity anchor — prevents the agent drifting to passive advice-giving |
+| `test_brain_og_skill_search_first_rule_present` | `tool-philosophy` + `skill-routing::full`: "ALWAYS check for relevant skills before improvising" | Core .og moat — agent must load skill blueprints before improvising |
+| `test_brain_og_warning_blocks_are_hard_constraints_rule_present` | `skill-routing::full`: "::warning blocks, treat them as hard constraints — never violate them" | Meta-rule — makes all other warnings mandatory rather than advisory |
+| `test_hard_constraints_section_present_in_composed_prompt` | `--- HARD CONSTRAINTS ---` header emitted by `_render_brain_prompt` Layer 2 | Guards the renderer's warning-aggregation loop specifically |
+
+Matching strategy: case-insensitive substring search on a few distinctive keywords per
+constraint (e.g. `"hallucinate" + "tool"`), not exact full-line matches, so trivial
+rewording does not produce false failures while deletion still causes failure.
+
+**Why.**
+The audit (P2-5) identified that CI had no behavioral coverage of safety guardrails.  A
+refactor or brand-rename PR that accidentally truncated a node, or a composer change that
+dropped the warning-block rendering layer, would ship silently.
+
+**Verify.**
+```
+PYTHONPATH=src uv run --with pytest --no-project pytest \
+    tests/test_brain_constraints.py tests/test_prompt_composer.py -q
+# → 26 passed
+
+uv run ruff check tests/test_brain_constraints.py
+# → All checks passed
+
+uv run ruff format --check tests/test_brain_constraints.py
+# → 1 file already formatted
+```
