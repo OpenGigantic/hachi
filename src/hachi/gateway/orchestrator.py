@@ -547,6 +547,10 @@ class AgentSession:
         # [jobs] durable_handlers=true.
         self._durable_title: bool = False
 
+        # M1: number of past-session episodes to inject per turn (0 = disabled).
+        # Set by boot_agent from memory settings (episodic_top_k).
+        self._episodic_top_k: int = 3
+
     @property
     def resumed_transcript(self) -> list[tuple[str, str]]:
         """User/assistant turns carried over from a resumed session (oldest first)."""
@@ -1428,6 +1432,25 @@ class AgentSession:
                 )
                 recalled = []
 
+        # 2b. M1: episodic recall — fetch past-session episodes and merge with semantic results.
+        #     Guarded by episodic_top_k > 0 and vault availability.  Never raises on error.
+        if self._episodic_top_k > 0 and self.vault:
+            try:
+                episodic = self.vault.search_episodic(user_input, top_k=self._episodic_top_k)
+                if episodic:
+                    # Merge by ID to avoid duplicates with semantic_search results,
+                    # then append episodic results that are not already present.
+                    existing_ids = {r.get("id") for r in recalled}
+                    for ep in episodic:
+                        if ep.get("id") not in existing_ids:
+                            recalled.append(ep)
+            except Exception:
+                logger.debug(
+                    "_chat_impl_inner: episodic recall failed for turn %s (non-fatal)",
+                    turn_id,
+                    exc_info=True,
+                )
+
         # 3. Build the dynamic recall injection
         recall_block = ""
         if recalled:
@@ -1585,6 +1608,39 @@ class AgentSession:
             except Exception:
                 # HIGH-012: episode write failures should be visible.
                 logger.warning("shutdown: failed to write episode node", exc_info=True)
+
+        # M1: capture rich episodic summary into the ChromaDB episodic_memory collection.
+        #     Uses interaction_log rows so the digest reflects actual tool use and content,
+        #     not just the last 3 history entries.  Wrapped so it NEVER breaks shutdown.
+        if self._session_id and self.vault:
+            try:
+                from hachi.core.memory import build_episode_summary
+
+                _interactions: list[dict[str, Any]] = []
+                if self._session_store:
+                    # get_interactions returns newest-first; reverse for chronological order.
+                    _interactions = list(
+                        reversed(
+                            self._session_store.get_interactions(
+                                session_id=self._session_id, limit=50
+                            )
+                        )
+                    )
+                _ep_summary = build_episode_summary(_interactions)
+                if _ep_summary:
+                    _started_at = getattr(self._session_store, "_current_started_at", "") or ""
+                    self.vault.upsert_episode(
+                        session_id=self._session_id,
+                        summary=_ep_summary,
+                        started_at=_started_at,
+                    )
+                    logger.debug(
+                        "shutdown: episodic summary captured for session %s (%d chars)",
+                        self._session_id,
+                        len(_ep_summary),
+                    )
+            except Exception:
+                logger.warning("shutdown: failed to capture episodic summary", exc_info=True)
 
         # End the persistent session
         if self._session_store and self._session_id:
@@ -3012,6 +3068,8 @@ def boot_agent(
             )
     session._sub_agent_client = sub_agent_client  # closed on shutdown alongside the main client
     session._browser_controller = browser_controller  # closed on shutdown (no-op if never used)
+    # M1: episodic recall top-k from memory settings (0 = disabled).
+    session._episodic_top_k = _memory_settings.episodic_top_k
     # Slice 2.2: activate durable title job path when the flag is on.
     if _jobs_cfg.durable_handlers:
         session._durable_title = True

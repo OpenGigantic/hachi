@@ -254,6 +254,10 @@ class MemoryVault:
             "memory_quarantine",
             "Blocked memory writes with threat metadata for review",
         ),
+        "episodic_collection": (
+            "episodic_memory",
+            "Rich per-session episode summaries for cross-session recall",
+        ),
     }
 
     def __init__(
@@ -454,6 +458,10 @@ class MemoryVault:
     @property
     def quarantine_collection(self) -> Any:
         return self._lazy_collection("quarantine_collection")
+
+    @property
+    def episodic_collection(self) -> Any:
+        return self._lazy_collection("episodic_collection")
 
     # ==========================================
     # Lifecycle
@@ -1410,7 +1418,7 @@ class MemoryVault:
                     }
                 )
 
-        return formatted
+        return _redact_results(formatted)
 
     def get_delegation_stats(self) -> dict[str, Any]:
         """Return aggregate stats from the delegation log.
@@ -1461,3 +1469,108 @@ class MemoryVault:
             "by_role": role_counts,
             "by_status": status_counts,
         }
+
+    # ==========================================
+    # Episodic Memory (M1 — cross-session recall)
+    # ==========================================
+
+    def upsert_episode(
+        self,
+        *,
+        session_id: str,
+        summary: str,
+        started_at: str,
+        keywords: list[str] | None = None,
+    ) -> str:
+        """Store a rich session-close episode summary in the episodic_memory collection.
+
+        Uses a deterministic ``session_id``-derived ID so re-capturing the same
+        session overwrites the previous entry (upsert semantics — no duplicates).
+
+        All writes pass through MemoryGuard (via ``_guarded_write``) so prompt-
+        injection attempts in agent outputs are blocked before reaching the vector
+        store.
+
+        HIGH-021: acquires ``_vault_lock`` via ``_guarded_write``.
+        H12: raises ``RuntimeError`` if the vault has been closed.
+        PERF-05: lazy collection init happens under the lock.
+
+        Args:
+            session_id:  Unique identifier for the session (used as the dedup key).
+            summary:     Rich plain-text summary of what happened in the session.
+            started_at:  ISO timestamp of when the session started.
+            keywords:    Optional list of topic keywords; stored as a space-joined
+                         string in metadata (Chroma requires scalar metadata values).
+
+        Returns:
+            The episode entry ID on success, or a ``'BLOCKED:<threat>'`` string
+            if ``MemoryGuard`` rejects the content.
+        """
+        from hachi.core.memory_guard import scan as guard_scan
+
+        is_safe, threat_id = guard_scan(summary)
+        if not is_safe:
+            self._quarantine_write(summary, "episode", threat_id or "unknown")
+            logger.warning(
+                "MemoryGuard blocked episode write: threat=%s session=%s",
+                threat_id,
+                session_id,
+            )
+            return f"BLOCKED:{threat_id}"
+
+        # Deterministic ID keyed on session_id so re-upserting the same session
+        # overwrites rather than duplicating.
+        entry_id = self._generate_id(f"episode:{session_id}")
+        keywords_str = " ".join(keywords) if keywords else ""
+        now = self._now_iso()
+
+        with self._vault_lock:
+            self._assert_open()
+            coll = self._get_collection("episodic_collection")
+            coll.upsert(
+                ids=[entry_id],
+                documents=[summary],
+                metadatas=[
+                    {
+                        "session_id": session_id,
+                        "started_at": started_at,
+                        "keywords": keywords_str,
+                        "timestamp": now,
+                        "category": "episode",
+                    }
+                ],
+            )
+
+        logger.debug(
+            "upsert_episode: stored episode for session=%s id=%s",
+            session_id,
+            entry_id[:12],
+        )
+        return entry_id
+
+    def search_episodic(self, query: str, top_k: int = 3) -> list[dict[str, Any]]:
+        """Semantic search across past-session episode summaries.
+
+        MED-009 / M1: Results are passed through ``_redact_results()`` before
+        return — the same invariant as ``semantic_search`` and ``search_user_profile``.
+
+        Returns ``[]`` when ``top_k <= 0`` or the collection is empty, so the
+        orchestrator can call this unconditionally without special-casing an
+        empty/new vault.
+
+        HIGH-021: acquires ``_vault_lock`` via ``_query_collection``.
+        H12: raises ``RuntimeError`` if the vault has been closed.
+
+        Args:
+            query:  Natural language query describing past sessions to find.
+            top_k:  Maximum number of episodes to return.
+
+        Returns:
+            Ranked list of episode dicts with ``id``, ``content``, ``category``,
+            ``timestamp``, ``raw_content`` fields — the same shape as
+            ``semantic_search`` so the orchestrator can merge them uniformly.
+            Returns ``[]`` on ChromaDB error or when top_k <= 0.
+        """
+        if top_k <= 0:
+            return []
+        return _redact_results(self._query_collection("episodic_collection", query, top_k))

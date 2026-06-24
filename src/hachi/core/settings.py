@@ -93,6 +93,9 @@ class MemorySettings(BaseModel):
     #     are pruned once exceeded so the store cannot grow unbounded. Default 1000.
     recall_distance_max: float | None = 0.85
     core_memory_max_entries: int = 1000
+    # M1: number of past-session episodes to inject into each turn's recall block.
+    #     Set to 0 to disable episodic recall entirely.
+    episodic_top_k: int = 3
 
 
 class LimitsSettings(BaseModel):

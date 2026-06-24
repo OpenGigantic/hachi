@@ -2213,3 +2213,99 @@ uv run mypy src/hachi/core/eval --ignore-missing-imports
 uv run hachi eval run
 # 14 passed / 0 failed  out of 14 total  (exit code 0)
 ```
+
+---
+
+### M1 — Episodic memory store (2026-06-25)
+
+**Gap.**
+Episode nodes were written to `memory/journal/<session>.og` at session close with a
+near-useless 3×80-char summary derived from the last 3 history messages. The
+`interaction_log` data — which captures actual `user_input`, `agent_output`, and
+`tool_calls` per turn — was never used for recall. There was no ChromaDB episodic
+collection, so past-session content was invisible to semantic recall; each session
+started blind to everything that happened in previous sessions.
+
+Additionally, `search_delegations` did not apply `_redact_results()` to its output,
+breaking the invariant that all recall paths redact secrets (MED-009).
+
+**Design (implemented exactly).**
+
+1. **New ChromaDB collection** `episodic_memory` added to `_COLLECTION_SPECS` with lazy
+   init (same pattern as `delegation_log`, `user_profile`, etc.). Existing `_FakeCollection`
+   tests that bypass `__init__` are unaffected because they only touch collections they
+   explicitly declare.
+
+2. **Capture** — `build_episode_summary(interactions, *, max_chars=1500)` in `memory.py`:
+   a pure, deterministic, zero-cost function (no LLM call). Produces a header line + a
+   bulleted list of per-turn `user_input` (truncated to 120 chars) → `agent_output` head
+   → tool names. Length-capped at `max_chars` with a graceful truncation note. Returns `""`
+   for empty lists (caller skips the vault write). The vault upsert is done in the
+   orchestrator `shutdown()` block alongside the existing `.og` episode write, NOT inside
+   `MemoryManager.write_episode`, so `write_episode`'s existing tests stay green without
+   modification.
+
+3. **Recall** — `search_episodic(query, top_k)` on `MemoryVault`: delegates to
+   `_query_collection("episodic_collection", ...)` and applies `_redact_results()`.
+   Returns the same dict shape as `semantic_search` so the orchestrator can merge uniformly.
+   Guarded: `top_k <= 0` returns `[]` immediately.
+
+4. **Orchestrator wiring:**
+   - *Turn start*: after existing semantic recall, calls `vault.search_episodic(user_input,
+     top_k=self._episodic_top_k)` and merges into `recalled` (deduped by ID). Wrapped in
+     try/except — never raises.
+   - *Shutdown*: fetches `session_store.get_interactions(session_id, limit=50)`, reverses
+     to chronological order, calls `build_episode_summary`, calls `vault.upsert_episode`
+     with deterministic `session_id`-derived ID (upsert semantics, no duplicates). Wrapped
+     in try/except — never breaks shutdown.
+   - `_episodic_top_k` default 3, set in `__init__`, overridden by `boot_agent` from
+     `_memory_settings.episodic_top_k`.
+
+5. **Part D fix** — `search_delegations` now calls `_redact_results()` on its return path,
+   matching `semantic_search` and `search_user_profile`.
+
+**Settings** (`src/hachi/core/settings.py` — strict-gated):
+`episodic_top_k: int = 3` added to `MemorySettings`. Set to 0 to disable episodic recall.
+
+**Invariants preserved.**
+- `_redact_results` applied on ALL recall outputs: episodic + delegations (Part D fix).
+- `_assert_open()` + `_vault_lock` on every new collection-access method.
+- Lazy collection init — `episodic_collection` is None until first access; `_FakeCollection`
+  tests that set `_collections` manually to 5 keys are unaffected (they never touch
+  `episodic_collection`).
+- Episodic capture and recall both wrapped in try/except — never break a turn or shutdown.
+- `get_recent_facts` and existing session_store.py unchanged.
+
+**Files changed.**
+| File | Change |
+|------|--------|
+| `src/hachi/core/memory_vault.py` | Add `episodic_memory` to `_COLLECTION_SPECS`; add `episodic_collection` lazy property; add `upsert_episode()` + `search_episodic()`; fix `search_delegations` to call `_redact_results()` |
+| `src/hachi/core/memory.py` | Add `build_episode_summary()` pure function (module level) |
+| `src/hachi/core/settings.py` | Add `episodic_top_k: int = 3` to `MemorySettings` |
+| `src/hachi/gateway/orchestrator.py` | Add `self._episodic_top_k = 3` in `__init__`; wire episodic recall in turn start; wire episodic capture in `shutdown()`; set `session._episodic_top_k = _memory_settings.episodic_top_k` in `boot_agent` |
+| `tests/test_episodic_memory.py` | New: 19 tests covering `build_episode_summary`, round-trip upsert/search, redaction, top_k=0 guard, idempotency, search_delegations redaction (Part D) |
+
+**Capture-cadence limitation.** Episodes are captured exactly once per session, at shutdown.
+For long-lived sessions (multi-hour conversations), the episode reflects the full
+interaction_log at close time (up to 50 rows), which is correct. However, if a session
+crashes without a clean shutdown, no episode is captured for that session — the `.og`
+journal write has the same gap. A periodic in-session summarizer (triggered after every N
+turns or on a time interval) is a documented follow-up.
+
+**Verification.**
+```
+uv run pytest tests/test_episodic_memory.py tests/test_memory_fixes.py tests/test_memory_vault_close.py tests/test_memory_provider.py -q
+# 61 passed in 8.92s
+
+uv run ruff check src/hachi/core/memory_vault.py src/hachi/core/memory.py src/hachi/core/settings.py src/hachi/gateway/orchestrator.py tests/test_episodic_memory.py
+# All checks passed!
+
+uv run mypy src/hachi/core/memory_vault.py src/hachi/core/settings.py --ignore-missing-imports
+# Success: no issues found in 2 source files
+
+uv run python -m mypy --config-file mypy-strict-gate.ini
+# Success: no issues found in 36 source files
+
+uv run mypy src/hachi/gateway/orchestrator.py --ignore-missing-imports
+# Found 34 errors (all pre-existing; zero new errors from M1)
+```
