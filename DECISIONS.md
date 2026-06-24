@@ -1023,3 +1023,69 @@ uv run mypy src/hachi/core/memory.py --ignore-missing-imports  # 16 errors befor
 
 Results (2026-06-24): 4/4 new tests pass; 231/231 memory+compact+job tests pass;
 ruff check + format clean; mypy 16→16 (no regression).
+
+---
+
+### P1-5 — durable fact-extraction
+
+**Found.**
+`MemoryManager.sync_turn()` (memory.py ~line 236) enqueued fact-extraction jobs with
+`func=extraction_func, args=(combined,)` — a closure over the live `self` (vault, LLM client,
+memory_writer). The SQLiteJobQueue `_recover_running()` logic (queue.py ~line 624) explicitly
+discards orphaned func-only jobs on restart: any extraction job in-flight at process death is
+silently dropped. `handle_extract_fact` in `job_handlers.py` existed as a stub seam and performed
+no actual extraction. `JobContext.llm_client` and `JobContext.memory_writer` fields were absent.
+
+**Changed.**
+1. **`src/hachi/core/memory.py`** — Added module-level `extract_facts(text, *, vault, llm_client,
+   memory_writer=None, session_id="") -> str` containing the shared extraction core (flat JSON-bucket
+   path and M1 typed tool-call path). Both `_run_fact_extraction` and `_run_typed_extraction` now
+   delegate to it. `sync_turn` with a queue now enqueues `Job(handler_name="extract_fact",
+   payload={"session_id": str, "text": str, "typed": bool})` — no `func=`, no closures.
+
+2. **`src/hachi/core/runtime/job_handlers.py`** — `JobContext` gains `llm_client` and
+   `memory_writer` fields. `build_job_context` resolves: (a) vault via `get_memory_vault()`,
+   (b) LLM client via `memory_vault._get_llm_client()` (the module-level singleton used by the
+   vault itself), (c) MemoryWriter via `MemoryWriter(get_hachi_paths().memory_dir)` only when
+   `typed=True`. All three accept injected factory callables for test isolation.
+   `handle_extract_fact` is now real: resolves context, guards against None vault/client (returns
+   `"skipped:..."` — never raises), calls `extract_facts`, catches LLM exceptions (returns
+   `"error:..."` — never raises).
+
+3. **`tests/test_durable_fact_extraction.py`** — 11 new tests: real extraction via injected fakes,
+   durable enqueue assertion (handler_name not func=), JSON-serializable payload, graceful
+   degradation on missing services (5 cases), end-to-end worker dispatch through registry.
+
+4. **`tests/test_memory_tools_queue.py`** — Updated `test_sync_turn_rapid_enqueues_are_processed_once_each`
+   to use a `JobRegistry` with an injected fake handler (previously monkey-patched `_run_fact_extraction`
+   which the durable path no longer calls).
+
+**How LLM client is resolved in the handler.**
+`build_job_context` calls `memory_vault._get_llm_client()` — the same module-level shared
+`AnthropicClient` singleton that vault LLM calls already use (MED-022). It is stateless and safe
+to call from any worker process with `ANTHROPIC_API_KEY` set. If absent, returns `None` and the
+handler returns `"skipped:no_llm_client"` without raising.
+
+**Flush job (`_flush_facts_to_vault`) — deferred.**
+`_flush_facts_to_vault` takes `messages: list[Message]` — live Pydantic objects. Serializing these
+would require a full transcript schema with tool-use/tool-result block handling. The flush job runs
+only from sliding-window compaction (rarely triggered), making the risk/reward unfavorable in this
+sprint. It remains on `func=` (ephemeral in-process only) and is a follow-up item. A proper
+conversion would introduce a `flush_facts` handler with a serialized transcript payload.
+
+**No double-extraction guarantee.**
+`sync_turn` with a queue enqueues exactly one job per turn (the `typed` bool selects the path,
+not two separate jobs). Without a queue, extraction is skipped entirely. `_run_fact_extraction`
+and `_run_typed_extraction` are only reachable via direct call (never from the queue path). The
+handler calls `extract_facts` once inside a single try/except.
+
+**Verify.**
+```
+PYTHONPATH=src uv run --with pytest --no-project pytest tests/test_durable_fact_extraction.py tests/test_memory_tools_queue.py tests/test_p2_02_job_queue.py tests/test_conversation_memory.py tests/test_durable_store.py tests/test_durable_waits.py tests/test_job_queue.py tests/test_memory_fixes.py tests/test_memory_loud_failures.py tests/test_memory_reliability.py -q
+uv run ruff check src/hachi/core/memory.py src/hachi/core/runtime/job_handlers.py tests/test_durable_fact_extraction.py tests/test_memory_tools_queue.py
+uv run ruff format --check src/hachi/core/memory.py src/hachi/core/runtime/job_handlers.py tests/test_durable_fact_extraction.py tests/test_memory_tools_queue.py
+uv run mypy src/hachi/core/memory.py src/hachi/core/runtime/job_handlers.py --ignore-missing-imports
+```
+
+Results (2026-06-24): 120/120 tests pass; ruff check + format clean; mypy before=18 errors (16+2),
+after=15 (13+2) — net improvement of 3 (refactored methods removed some pre-existing errors). No regression.

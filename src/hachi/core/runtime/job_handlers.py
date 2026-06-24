@@ -29,25 +29,95 @@ class JobContext:
     # Lazily resolved services — populated by build_job_context
     vault: Any = None
     memory_manager: Any = None
+    # P1-5: LLM client reconstructed from config for durable fact-extraction.
+    llm_client: Any = None
+    # P1-5: MemoryWriter reconstructed from paths for the M1 typed-node path.
+    memory_writer: Any = None
 
 
-def build_job_context(payload: dict[str, Any]) -> JobContext:
+def build_job_context(
+    payload: dict[str, Any],
+    *,
+    _llm_client_factory: Any = None,
+    _vault_factory: Any = None,
+    _memory_writer_factory: Any = None,
+) -> JobContext:
     """Reconstruct a JobContext from a serialisable payload dict.
 
     Imports are deferred to avoid circular dependencies at module load time.
-    Services that are unavailable (e.g., vault not configured) are left as None
-    and handlers are expected to guard against None.
+    Services that are unavailable (e.g., vault not configured, API key missing)
+    are left as None — handlers are expected to guard against None.
+
+    The ``_llm_client_factory``, ``_vault_factory``, and ``_memory_writer_factory``
+    keyword arguments are injection points for tests.  When provided they are called
+    with no arguments and their return value is used instead of the real service.
+    This avoids monkeypatching module globals and keeps tests hermetic.
+
+    Args:
+        payload:                 Serialisable job payload dict (``session_id``, etc.).
+        _llm_client_factory:     Optional 0-arg callable that returns a fake LLM client.
+        _vault_factory:          Optional 0-arg callable that returns a fake vault.
+        _memory_writer_factory:  Optional 0-arg callable that returns a fake MemoryWriter.
+
+    Returns:
+        A populated :class:`JobContext` (any unresolvable services remain ``None``).
     """
     session_id = payload.get("session_id")
     ctx = JobContext(session_id=session_id)
 
-    # Lazily import vault to avoid circular imports
-    try:
-        from hachi.core.memory_vault import get_memory_vault
+    # --- vault ---
+    if _vault_factory is not None:
+        try:
+            ctx.vault = _vault_factory()
+        except Exception:
+            logger.debug("build_job_context: injected vault factory failed")
+    else:
+        try:
+            from hachi.core.memory_vault import get_memory_vault
 
-        ctx.vault = get_memory_vault()
-    except Exception:
-        logger.debug("build_job_context: memory vault not available")
+            ctx.vault = get_memory_vault()
+        except Exception:
+            logger.debug("build_job_context: memory vault not available")
+
+    # --- LLM client (P1-5) ---
+    # Reconstructed from app config so fact-extraction survives a restart.
+    # Uses the same module-level shared client that MemoryVault already uses
+    # (memory_vault._get_llm_client), which is stateless and safe to call from any
+    # process that has ANTHROPIC_API_KEY in its environment.
+    if _llm_client_factory is not None:
+        try:
+            ctx.llm_client = _llm_client_factory()
+        except Exception:
+            logger.debug("build_job_context: injected LLM client factory failed")
+    else:
+        try:
+            from hachi.core.memory_vault import _get_llm_client
+
+            ctx.llm_client = _get_llm_client()
+        except Exception:
+            logger.debug("build_job_context: LLM client not available")
+
+    # --- MemoryWriter for the M1 typed path (P1-5) ---
+    # Only constructed when the caller signals typed=True in the payload, because
+    # MemoryWriter opens .og files on disk and is non-trivial to build.
+    typed = bool(payload.get("typed"))
+    if typed:
+        if _memory_writer_factory is not None:
+            try:
+                ctx.memory_writer = _memory_writer_factory()
+            except Exception:
+                logger.debug("build_job_context: injected MemoryWriter factory failed")
+        else:
+            try:
+                from hachi.core.memory_writer import MemoryWriter
+                from hachi.core.paths import get_hachi_paths
+
+                paths = get_hachi_paths()
+                ctx.memory_writer = MemoryWriter(paths.memory_dir)
+            except Exception:
+                logger.debug(
+                    "build_job_context: MemoryWriter not available — falling back to flat path"
+                )
 
     return ctx
 
@@ -60,38 +130,90 @@ def build_job_context(payload: dict[str, Any]) -> JobContext:
 def handle_extract_fact(
     session_id: str = "",
     text: str = "",
+    typed: bool = False,
     group: str = "core_memory",
+    _llm_client_factory: Any = None,
+    _vault_factory: Any = None,
+    _memory_writer_factory: Any = None,
     **_kwargs: Any,
 ) -> str:
-    """Durable handler for background fact extraction into memory vault.
+    """Durable handler for background fact extraction into the memory vault.
 
-    NOTE: This is a **seam handler** for the durable job path.  The real
-    ``MemoryManager._run_fact_extraction`` and ``_run_typed_extraction`` closures
-    require a live LLM client and vault that are not serializable into the job
-    payload.  Converting those closures faithfully to a durable handler requires
-    injecting the LLM client via ``JobContext`` (design amendment A3) — that work
-    is deferred to slice 2.3 when ``JobContext`` service-locator is fully wired.
+    P1-5: This handler is now REAL — it rebuilds vault + LLM client from config via
+    ``build_job_context`` so jobs survive a process restart.  No closures or live
+    runtime state are captured in the job payload.
 
-    For now this handler is registered in the ``JobRegistry`` so the registry is
-    complete and the durable path is testable end-to-end, but the actual
-    fact-extraction jobs in ``memory.py:sync_turn`` remain on the ``func=`` path
-    (not converted) so that LLM-client access is preserved.  The gate test
-    (GATE-DURABLE) verifies registry dispatch round-trips; memory-write behavior
-    is unchanged.
+    Service resolution order (all lazy, guarded):
+      1. vault    — ``get_memory_vault()`` (ChromaDB, reconstructed from paths).
+      2. llm_client — ``memory_vault._get_llm_client()`` (AnthropicClient built from
+                      ANTHROPIC_API_KEY; the same module-level singleton used by the
+                      vault's own LLM calls).
+      3. memory_writer — ``MemoryWriter(paths.memory_dir)`` only when ``typed=True``;
+                         omitted on the flat-JSON path to avoid unnecessary I/O.
+
+    Graceful degradation: if vault OR llm_client cannot be resolved (API key absent,
+    ChromaDB not installed, etc.) the handler logs a WARNING and returns a
+    ``"skipped:..."`` status — it does NOT raise.  A raise would mark the job FAILED
+    and trigger an unhelpful retry loop on every restart.
+
+    Injection points (for tests — pass as keyword args):
+      _llm_client_factory:     0-arg callable returning a fake LLM client.
+      _vault_factory:          0-arg callable returning a fake vault.
+      _memory_writer_factory:  0-arg callable returning a fake MemoryWriter.
     """
     if not text:
         logger.debug("handle_extract_fact: empty text — skipping")
-        return "skipped: empty text"
-    # Seam: log and succeed so tests can verify registry dispatch.
-    # Real LLM extraction is NOT performed here (no client available).
-    logger.info(
-        "handle_extract_fact: seam invoked for session=%r group=%r len=%d "
-        "(LLM extraction requires func= path until JobContext is wired in slice 2.3)",
-        session_id,
-        group,
-        len(text),
+        return "skipped:empty_text"
+
+    payload: dict[str, Any] = {"session_id": session_id, "typed": typed}
+    ctx = build_job_context(
+        payload,
+        _llm_client_factory=_llm_client_factory,
+        _vault_factory=_vault_factory,
+        _memory_writer_factory=_memory_writer_factory,
     )
-    return f"seam:extract_fact:session={session_id}:group={group}"
+
+    if ctx.vault is None:
+        logger.warning(
+            "handle_extract_fact: vault not available (ChromaDB not configured?) — skipping. "
+            "session=%r text_len=%d",
+            session_id,
+            len(text),
+        )
+        return "skipped:no_vault"
+
+    if ctx.llm_client is None:
+        logger.warning(
+            "handle_extract_fact: LLM client not available (ANTHROPIC_API_KEY not set?) — "
+            "skipping. session=%r text_len=%d",
+            session_id,
+            len(text),
+        )
+        return "skipped:no_llm_client"
+
+    try:
+        from hachi.core.memory import extract_facts
+
+        result: str = extract_facts(
+            text,
+            vault=ctx.vault,
+            llm_client=ctx.llm_client,
+            memory_writer=ctx.memory_writer,
+            session_id=session_id or "",
+        )
+        logger.debug("handle_extract_fact: completed session=%r result=%r", session_id, result)
+        return result
+    except Exception as exc:
+        # Catch-all so a transient LLM error doesn't permanently fail the job.
+        # The exception is logged at WARNING (not ERROR) so operators see it without
+        # triggering high-severity alerts for routine API hiccups.
+        logger.warning(
+            "handle_extract_fact: extraction failed session=%r — %s",
+            session_id,
+            exc,
+            exc_info=True,
+        )
+        return f"error:{type(exc).__name__}"
 
 
 # ---------------------------------------------------------------------------
@@ -245,9 +367,7 @@ def handle_auto_extract(
         return f"extracted:{file_id}"
 
     except Exception as exc:
-        logger.error(
-            "handle_auto_extract: failed for file_id=%r — %s", file_id, exc, exc_info=True
-        )
+        logger.error("handle_auto_extract: failed for file_id=%r — %s", file_id, exc, exc_info=True)
         # Mark as failed in the meta store (best-effort).
         try:
             from hachi.core.files.store import FileMetaStore
@@ -259,9 +379,7 @@ def handle_auto_extract(
         return f"error:{file_id}:{exc}"
 
 
-def _try_index_attachment(
-    file_id: str, name: str, raw_text: str, guarded_text: str
-) -> None:
+def _try_index_attachment(file_id: str, name: str, raw_text: str, guarded_text: str) -> None:
     """Index extracted text chunks into the ``attachments`` Chroma collection.
 
     Uses the RRF fusion seam (memory_vault.py:785) — inserted into a
@@ -303,9 +421,7 @@ def _try_index_attachment(
         logger.debug("handle_auto_extract: index failed (non-fatal)", exc_info=True)
 
 
-def _emit_file_extracted(
-    file_id: str, name: str, media_type: str, sidecar_id: str
-) -> None:
+def _emit_file_extracted(file_id: str, name: str, media_type: str, sidecar_id: str) -> None:
     """Publish ``file.extracted`` via a fresh in-process EventBus call."""
     try:
         from hachi.core.event_bus import EventBus
