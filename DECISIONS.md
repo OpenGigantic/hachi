@@ -1374,3 +1374,81 @@ uv run ruff format --check src/hachi/core/memory.py tests/test_token_window_mana
 uv run mypy src/hachi/core/memory.py --ignore-missing-imports
 # → 11 errors (baseline was 13 — net improvement of 2)
 ```
+
+
+---
+
+### P2-7 — job-queue dead-letter + re-drive
+
+**Found.**
+`JobStatus` had no dead-letter state. When a job's retry count was exhausted (the `else` branch in
+`JobWorker.execute_one` at ~line 473 of `queue.py`), it was set to `FAILED`. The
+`cleanup_completed` method deleted jobs in `(COMPLETED, FAILED, CANCELLED)` after the retention
+window, so a retry-exhausted durable job — e.g. a memory fact-extraction during an extended
+provider outage — would be silently and permanently lost. Additionally the retry path called
+`update_status(PENDING)` which for SQLiteJobQueue only updated the `status` column, NOT `attempt`
+or `scheduled_for`, so the attempt counter in the DB never incremented and the job looped
+forever in "attempt 1 < max_retries" without ever reaching the exhausted branch.
+
+**Changed.**
+
+*`src/hachi/jobs/queue.py`*
+- Added `DEAD_LETTER = "dead_letter"` to `JobStatus` — semantically: retry-exhausted but handler
+  exists; re-driveable.
+- Retry path (`execute_one`): changed `update_status(PENDING)` call to `update_attempt()` for
+  SQLiteJobQueue (falls back to `update_status` for InMemoryJobQueue). This persists `attempt` and
+  `scheduled_for` to the DB so the counter actually increments between reads.
+- Dead-letter routing: the retry-exhausted `else` branch (line ~473, `job.attempt >= max_retries`,
+  handler exists) now sets `result.status = DEAD_LETTER` and emits `"job.dead_letter"` event
+  instead of `FAILED`. Structurally-unexecutable path (line ~369, no callable and no handler in
+  registry) stays terminal `FAILED` — retrying would just hit the same wall.
+- `cleanup_completed` (both `InMemoryJobQueue` and `SQLiteJobQueue`): now only deletes
+  `COMPLETED`, `FAILED`, and `CANCELLED`. `DEAD_LETTER` is explicitly preserved.
+- `redrive_dead_letter() -> int`: added to both implementations and the abstract base `JobQueue`.
+  Resets every `DEAD_LETTER` job to `PENDING` with `attempt=0`, clears `completed_at` and result
+  columns, returns the count. SQLite implementation does a single `UPDATE … WHERE status =
+  'dead_letter'` so it's atomic and durable.
+- `update_status` in `SQLiteJobQueue`: clears `_func_table` entry on `DEAD_LETTER` (same as
+  `FAILED`/`COMPLETED`/`CANCELLED`).
+
+*`src/hachi/core/runtime_read_models.py`*
+- `RuntimeReadModelStore.consume_event`: added `"job.dead_letter"` alongside `"job.failed"` in
+  the failure-projection branch so dead-lettered jobs appear in `failed_jobs()` / the web UI
+  "Needs attention" panel.
+
+*`src/hachi/cli/commands/jobs.py`* (new file)
+- `hachi jobs dead-letter`: lists current dead-letter jobs (table or JSON).
+- `hachi jobs redrive`: calls `queue.redrive_dead_letter()`, prints count.
+- Opens the production `SQLiteJobQueue` via `PlatformDirs("hachi", "opengigantic")` / `jobs.db`.
+
+*`src/hachi/cli/main.py`*
+- Imports and registers `jobs_app` under `"jobs"`.
+
+*`tests/test_job_queue.py`*
+- Updated `test_failed_job_reaches_read_model_projection`: event name is now `"job.dead_letter"`
+  (max_retries=1, handler exists → dead-letter, not terminal FAILED).
+
+**Why.**
+A retry-exhausted job represents a transient/resolvable failure (e.g. provider outage, ChromaDB
+unavailable). Silently deleting it after cleanup discards durable work with no recovery path.
+Dead-lettering preserves the job + its payload/error until an operator explicitly re-drives it
+(`hachi jobs redrive`) or until the underlying problem is fixed. Structurally-unexecutable jobs
+(no handler registered) remain terminal FAILED because re-driving them would just fail again.
+
+**Verify.**
+```
+PYTHONPATH=src uv run --with pytest --no-project pytest \
+    tests/test_job_dead_letter.py tests/test_p2_02_job_queue.py tests/test_job_queue.py -q
+# → 41 passed
+
+uv run ruff check src/hachi/jobs/queue.py src/hachi/cli/main.py \
+    src/hachi/cli/commands/jobs.py src/hachi/core/runtime_read_models.py \
+    tests/test_job_dead_letter.py tests/test_job_queue.py
+# → All checks passed
+
+uv run mypy src/hachi/jobs/queue.py --ignore-missing-imports
+# → 3 errors (unchanged from baseline)
+
+uv run mypy src/hachi/cli/main.py --ignore-missing-imports
+# → 122 errors (unchanged from baseline)
+```
