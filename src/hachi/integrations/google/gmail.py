@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from hachi.core.idempotency import make_idempotency_key
 from hachi.core.loop import ToolRegistry
 from hachi.core.untrusted_content import guard_untrusted
 from hachi.core.validators import validate_email, validate_emails
@@ -309,7 +310,16 @@ class GmailService(GoogleService):
                     )
 
         raw_msg = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-        self.client.post("/gmail/v1/users/me/messages/send", json_data={"raw": raw_msg})
+        # Key on the LOGICAL message, not raw_msg: MIME boundaries are randomized when
+        # attachments are present, so the serialized bytes are not stable across a retry.
+        idem = make_idempotency_key(
+            "gmail.send", to, f"{subject}\x00{body}\x00{','.join(attachment_paths or [])}"
+        )
+        self.client.post(
+            "/gmail/v1/users/me/messages/send",
+            json_data={"raw": raw_msg},
+            idempotency_key=idem,
+        )
         return f"Email successfully sent to {to}."
 
     def list_recent_emails(
@@ -538,6 +548,7 @@ class GmailService(GoogleService):
         self.client.post(
             "/gmail/v1/users/me/messages/send",
             json_data={"raw": raw_msg, "threadId": thread_id},
+            idempotency_key=make_idempotency_key("gmail.reply", thread_id, body),
         )
         return f"Successfully replied to thread {thread_id}."
 
