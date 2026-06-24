@@ -2149,3 +2149,67 @@ uv run ruff check src/hachi/core/llm.py tests/test_streaming.py
 uv run mypy src/hachi/core/llm.py --ignore-missing-imports
 # Success: no issues found in 1 source file
 ```
+
+### E6 — Eval regression corpus + precise assertions (2026-06-24)
+
+**Loop invariants now protected by the corpus (14 cases):**
+- Plain text reply passes through verbatim (output_contains)
+- Single tool call fires + final reply appears (tool_called, output_contains)
+- Two-tool trajectory across separate iterations (tool_called × 2)
+- Multi-turn smoke — 3 LLM turns finishes without error
+- output_contains baseline smoke (no tools)
+- **Tool error recovery**: `_execute_single_tool` catches tool raises, feeds the error
+  string back to the LLM as `is_error=True`; the TURN itself does not raise — `no_error()` passes.
+- **Unregistered tool**: `ToolRegistry.execute()` returns the string
+  `"Error: Tool '…' is not registered."` (no exception) — turn continues gracefully.
+- **Max-iterations cap**: scripted LLM always calls a tool, never emits text — loop
+  terminates at `max_iterations=10` returning `[INCOMPLETE]`; `tool_call_count(10)` confirms
+  exactly 10 dispatches.
+- **Empty/degraded response**: `LLMResponse(content="")` + no tool_calls → loop exits cleanly
+  (`not assistant_content` branch at loop.py line 947); `no_error()` + `tool_call_count(0)` pass.
+- **Tool with arguments**: `ToolCall.input` is unpacked as `**kwargs` into the callable — verified.
+- **Parallel tool calls**: all `ToolCall`s in one `LLMResponse` are submitted to the thread
+  pool concurrently (loop.py lines 1013-1017); both tools appear in `tool_calls`; order
+  reflects the pre-pass iteration order.
+- **Three-tool ordered trajectory**: `tool_called_in_order(["plan","execute","verify"])` +
+  `tool_call_count(3)`.
+- **Clean reply zero tools**: `tool_call_count(0)` + `output_not_contains("[error]")`.
+- **No internal loop sentinel markers in clean output**: checks `[CANCELLED]`, `[TIME LIMIT
+  REACHED]`, `[BUDGET LIMIT REACHED]`, `[WORKFLOW SUSPENDED]`, `[INCOMPLETE]` are absent.
+
+**Three new assertion kinds added to `runner.py`:**
+1. `ToolCallCountAssertion(count: int)` / `tool_call_count(n)` — `len(trajectory.tool_calls) == count`.
+2. `OutputNotContainsAssertion(substr: str)` / `output_not_contains(s)` — `substr not in trajectory.output`.
+3. `ToolOrderAssertion(names: tuple[str,...])` / `tool_called_in_order([...])` — `names` is
+   an ordered subsequence of `trajectory.tool_calls` (not necessarily contiguous).
+
+**Honest framing:**
+- This is a loop-mechanics regression suite, not a model-quality suite.
+- `ScriptedLLMClient` replaces only the LLM transport boundary; all ReAct loop, tool dispatch,
+  and memory code is production `ExecutionLoop`.
+- `cost_usd` is always `0.0` (no real cost meter); `max_cost_usd` assertions are absent.
+
+**Surprising loop behaviors confirmed by reading source:**
+- Parallel tool calls are supported in a single `LLMResponse` (the loop iterates all
+  `response.tool_calls` twice — pre-pass for side-effects, then pool submit — so order
+  in `last_tool_calls` is the pre-pass iteration order, which matches `ToolCall` list order).
+- Tool errors are silently absorbed: `_execute_single_tool` returns a tuple, never re-raises
+  tool exceptions as loop-level exceptions (only `SuspendWorkflow` propagates).
+- An empty `LLMResponse` (no content, no tool_calls) is a CLEAN FINISH, not an error.
+- `ToolRegistry.execute()` returns a string for unregistered tools — no exception path.
+- No candidate loop bugs were found. All expected-pass cases passed on first run.
+
+**Verification:**
+```
+uv run pytest tests/test_eval_replay.py tests/test_eval_runner.py tests/test_eval_assertions.py -q
+# 64 passed in 5.19s
+
+uv run ruff check src/hachi/core/eval tests/test_eval_replay.py tests/test_eval_runner.py tests/test_eval_assertions.py
+# All checks passed!
+
+uv run mypy src/hachi/core/eval --ignore-missing-imports
+# Success: no issues found in 6 source files
+
+uv run hachi eval run
+# 14 passed / 0 failed  out of 14 total  (exit code 0)
+```

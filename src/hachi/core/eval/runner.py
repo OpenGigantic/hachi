@@ -122,8 +122,90 @@ class MaxCostAssertion:
         )
 
 
+@dataclass(frozen=True)
+class ToolCallCountAssertion:
+    """Assert that the total number of tool calls equals ``count``.
+
+    Catches double-execution and skipped-execution regressions: if the loop
+    dispatches a tool twice (or not at all) when the script expects exactly one,
+    this assertion fires before a ``tool_called`` check can surface the problem.
+    """
+
+    count: int
+
+    def check(self, trajectory: TurnTrajectory) -> str | None:
+        """Return None on pass, or a failure reason string."""
+        actual = len(trajectory.tool_calls)
+        if actual == self.count:
+            return None
+        return (
+            f"tool_call_count({self.count}): expected {self.count} tool call(s) "
+            f"but got {actual}: {trajectory.tool_calls}"
+        )
+
+
+@dataclass(frozen=True)
+class OutputNotContainsAssertion:
+    """Assert that the agent's output does NOT contain the given substring.
+
+    Catches raw error markers and internal junk leaking into user-facing output
+    (e.g. ``[INCOMPLETE]``, ``Tool Execution Error:``, stack traces).
+    """
+
+    substr: str
+
+    def check(self, trajectory: TurnTrajectory) -> str | None:
+        """Return None on pass, or a failure reason string."""
+        if self.substr not in trajectory.output:
+            return None
+        idx = trajectory.output.find(self.substr)
+        ctx = trajectory.output[max(0, idx - 20) : idx + len(self.substr) + 20]
+        return (
+            f"output_not_contains({self.substr!r}): substring found in output; "
+            f"context: {ctx!r}"
+        )
+
+
+@dataclass(frozen=True)
+class ToolOrderAssertion:
+    """Assert that ``names`` appears as an ordered subsequence of the tool_calls list.
+
+    Catches multi-step sequencing regressions: if the loop executes tools in the
+    wrong order the subsequence check fails even if all tools were called.
+
+    ``names`` does NOT have to be a contiguous slice — other tool calls may
+    interleave.  Every element of ``names`` must appear in ``trajectory.tool_calls``
+    in order (each match consumes one position).
+    """
+
+    names: tuple[str, ...]  # frozen dataclasses require hashable fields
+
+    def check(self, trajectory: TurnTrajectory) -> str | None:
+        """Return None on pass, or a failure reason string."""
+        calls = trajectory.tool_calls
+        it = iter(calls)
+        for required in self.names:
+            for actual in it:
+                if actual == required:
+                    break
+            else:
+                return (
+                    f"tool_called_in_order({list(self.names)!r}): ordered subsequence "
+                    f"not found in {calls}"
+                )
+        return None
+
+
 # Typed union of all assertion kinds.
-EvalAssertion = ToolCalledAssertion | OutputContainsAssertion | NoErrorAssertion | MaxCostAssertion
+EvalAssertion = (
+    ToolCalledAssertion
+    | OutputContainsAssertion
+    | NoErrorAssertion
+    | MaxCostAssertion
+    | ToolCallCountAssertion
+    | OutputNotContainsAssertion
+    | ToolOrderAssertion
+)
 
 
 def tool_called(name: str) -> EvalAssertion:
@@ -144,6 +226,21 @@ def no_error() -> EvalAssertion:
 def max_cost_usd(x: float) -> EvalAssertion:
     """Convenience constructor: assert turn cost <= x USD."""
     return MaxCostAssertion(max_usd=x)
+
+
+def tool_call_count(n: int) -> EvalAssertion:
+    """Convenience constructor: assert exactly n tool calls were made."""
+    return ToolCallCountAssertion(count=n)
+
+
+def output_not_contains(s: str) -> EvalAssertion:
+    """Convenience constructor: assert output does NOT contain substring s."""
+    return OutputNotContainsAssertion(substr=s)
+
+
+def tool_called_in_order(names: list[str]) -> EvalAssertion:
+    """Convenience constructor: assert names appears as an ordered subsequence of tool_calls."""
+    return ToolOrderAssertion(names=tuple(names))
 
 
 # ---------------------------------------------------------------------------
