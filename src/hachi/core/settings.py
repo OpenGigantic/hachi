@@ -222,6 +222,31 @@ class JobsSettings(BaseModel):
     worker_count: int = 1
 
 
+class EvalReportSettings(BaseModel):
+    """Optional ``[eval_reports]`` config section — weekly failure-report automation.
+
+    When ``enabled=True`` the gateway boots a resident daemon thread that wakes
+    every ``interval_seconds`` (default: one week), reads the interaction_log via
+    the live :class:`~hachi.core.session_store.SessionStore`, builds a failure
+    report, and writes both ``eval-report-<stamp>.md`` and
+    ``eval-report-<stamp>.json`` to ``state_dir/eval-reports/``.
+
+    Default is ``False`` so the feature is completely dormant unless the operator
+    opts in by setting ``[eval_reports] enabled = true`` in ``settings.toml``.
+
+    Attributes:
+        enabled:          Master switch.  Defaults to ``False`` (opt-in).
+        interval_seconds: Seconds between report runs.  Default 604800 (1 week).
+        limit:            Maximum interaction rows loaded per run.  Default 1000.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    interval_seconds: int = 604800  # 1 week
+    limit: int = 1000
+
+
 class VoiceSettings(BaseModel):
     """Optional ``[voice]`` config section (Initiative F — Voice Platform).
 

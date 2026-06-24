@@ -1946,6 +1946,66 @@ def _start_timeout_sweep(
     logger.info("_start_timeout_sweep: started (interval=%ds)", _SWEEP_INTERVAL_SECONDS)
 
 
+# ==========================================
+# E5 — Weekly failure-report scheduler
+# ==========================================
+
+
+def _start_eval_report_scheduler(
+    store: Any,
+    paths: Any,
+    settings: Any,
+    emit: Any,
+) -> None:
+    """Start a background daemon thread that generates weekly failure reports (E5).
+
+    Mirrors :func:`_start_timeout_sweep` exactly: daemon thread, sleep loop,
+    try/except that logs at debug level and never raises.  The thread wakes at
+    most every ``min(interval_seconds, 3600)`` seconds so a 1-week interval does
+    not leave the process unkillable for an hour if the thread gets stuck.
+
+    Args:
+        store:    :class:`~hachi.core.session_store.SessionStore` already open
+                  in the calling ``boot_agent`` scope.
+        paths:    :class:`~hachi.core.paths.HachiPaths` from ``get_hachi_paths()``.
+        settings: :class:`~hachi.core.settings.EvalReportSettings` validated from
+                  config.
+        emit:     The ``emit_runtime_event`` callable already in scope in
+                  ``boot_agent``.
+    """
+    import threading as _threading
+    import time as _time
+
+    from hachi.core.eval.scheduled_report import maybe_generate_report
+
+    out_dir = paths.state_dir / "eval-reports"
+    marker_path = out_dir / ".last_report.json"
+    sleep_seconds = min(settings.interval_seconds, 3600)
+
+    def _report_loop() -> None:
+        while True:
+            _time.sleep(sleep_seconds)
+            try:
+                maybe_generate_report(
+                    store,
+                    out_dir=out_dir,
+                    marker_path=marker_path,
+                    interval_seconds=settings.interval_seconds,
+                    limit=settings.limit,
+                    emit=lambda name, payload: emit(name, payload),
+                )
+            except Exception:
+                logger.debug("_start_eval_report_scheduler: tick failed", exc_info=True)
+
+    t = _threading.Thread(target=_report_loop, name="hachi-eval-report", daemon=True)
+    t.start()
+    logger.info(
+        "_start_eval_report_scheduler: started (interval=%ds, sleep=%ds)",
+        settings.interval_seconds,
+        sleep_seconds,
+    )
+
+
 def _sweep_once(
     job_queue: "JobQueue",
     now: "Any | None" = None,
@@ -2246,7 +2306,7 @@ def boot_agent(
     # are identical to the original direct-call code path, registered in the
     # same order, so SSE/TUI output is byte-identical by construction.
     # ------------------------------------------------------------------
-    from hachi.core.settings import EventsSettings, JobsSettings
+    from hachi.core.settings import EvalReportSettings, EventsSettings, JobsSettings
 
     _events_cfg = EventsSettings.model_validate(config.get("events", {}))
     _jobs_cfg = JobsSettings.model_validate(config.get("jobs", {}))
@@ -3050,6 +3110,17 @@ def boot_agent(
     # ------------------------------------------------------------------
     if _jobs_cfg.durable_handlers:
         _start_timeout_sweep(job_queue, _job_registry, emit_runtime_event)
+
+    # ------------------------------------------------------------------
+    # E5 — Weekly failure-report scheduler (opt-in, default off).
+    # Mirrors _start_timeout_sweep: daemon thread, sleep loop, never raises.
+    # Gated by [eval_reports] enabled = true in settings.toml.
+    # ------------------------------------------------------------------
+    _eval_cfg = EvalReportSettings.model_validate(config.get("eval_reports", {}))
+    if _eval_cfg.enabled:
+        _start_eval_report_scheduler(
+            session_store, get_hachi_paths(), _eval_cfg, emit_runtime_event
+        )
 
     emit_runtime_event(
         BOOT_COMPLETE,
