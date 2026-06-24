@@ -179,6 +179,30 @@ def test_default_replay_suite_all_pass() -> None:
         )
 
 
+def test_default_replay_suite_has_minimum_cases() -> None:
+    """DEFAULT_REPLAY_SUITE must contain at least 12 meaningful cases.
+
+    This guards against accidental corpus shrinkage: the E6 expansion grew the
+    suite to 14 cases covering real loop-mechanics invariants.  Any PR that drops
+    below 12 cases will fail this test.
+    """
+    assert len(DEFAULT_REPLAY_SUITE) >= 12, (
+        f"Expected at least 12 cases but found {len(DEFAULT_REPLAY_SUITE)}. "
+        "Do not remove corpus cases without a deliberate decision."
+    )
+
+
+def test_default_replay_suite_case_names_are_unique() -> None:
+    """All case names in DEFAULT_REPLAY_SUITE must be unique.
+
+    Duplicate names make scorecard output ambiguous and can hide failures.
+    """
+    names = [rc.case.name for rc in DEFAULT_REPLAY_SUITE]
+    assert len(names) == len(set(names)), (
+        f"Duplicate case names found: {[n for n in names if names.count(n) > 1]}"
+    )
+
+
 def test_default_replay_suite_tool_case_has_tool_in_trajectory() -> None:
     """The 'single_tool_call' corpus case must have the tool in trajectory.tool_calls.
 
