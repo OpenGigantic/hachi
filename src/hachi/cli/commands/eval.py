@@ -3,23 +3,23 @@
 Commands
 --------
 ``hachi eval report``  — Query the interaction_log and print an analytics report.
-``hachi eval run``     — Run the regression suite against a booted agent turn.
+``hachi eval run``     — Run the regression suite via record/replay and print a scorecard.
 
 Design note
 -----------
 ``eval report`` is fully functional: it reads real rows from the default
 SessionStore and builds a real EvalReport via ``build_failure_report``.
 
-``eval run`` honestly reports when no booted turn_fn is wired (see the
-command docstring for why) rather than faking a pass.  The suite itself
-and the runner logic are fully tested in ``tests/test_eval_runner.py``.
+``eval run`` is a REAL, deterministic, CI-able command backed by a record/replay
+harness (see ``hachi.core.eval.replay``).  It drives a production ``ExecutionLoop``
+with a ``ScriptedLLMClient`` that replays pre-recorded ``LLMResponse`` objects —
+no live API key required.  It exits non-zero if any case fails.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
 import json
-import sys
 from typing import TYPE_CHECKING
 
 import typer
@@ -198,40 +198,43 @@ def eval_run(
     suite_path: str | None = typer.Option(
         None,
         "--suite",
-        help="Path to a JSON or .py file defining a list[EvalCase]. "
-             "Omit to use the built-in DEFAULT_SUITE.",
+        help="Path to a .py file defining SUITE: list[ReplayCase].  "
+             "Omit to use the built-in DEFAULT_REPLAY_SUITE.",
     ),
 ) -> None:
-    """Run the regression suite against a real agent turn and print a scorecard.
+    """Run the replay regression suite and print a scorecard.
 
-    Each case in the suite is executed via a booted agent ExecutionLoop and
-    its structural assertions checked against the REAL trajectory.
+    Every case is executed via a real ``ExecutionLoop`` driven by a scripted LLM
+    client — no live API key required.  Assertions are checked against the REAL
+    trajectory produced by running production loop code.
 
-    STATUS — turn_fn wiring
-    -----------------------
-    Wiring a full booted ``AgentSession`` (workspace init, LLM client config,
-    skills load) in the CLI command is heavy and would require live credentials
-    that are not guaranteed in CI.  Instead, ``eval run`` currently reports
-    "not wired" rather than faking a pass.  This is the honest behaviour:
+    Exits with code 0 when every case passes; exits with code 1 when any case
+    fails (so this command can serve as a CI gate).
 
-    - ``eval report`` is fully functional (no live connection needed).
-    - ``eval run`` as a CI gate requires a separately wired turn_fn (e.g. a
-      fixture that boots a minimal session against a scripted/stub LLM).
-    - The runner itself is fully tested in ``tests/test_eval_runner.py`` using
-      a real ``ExecutionLoop`` driven by a scripted LLM — proving it can fail.
+    Custom suites
+    -------------
+    Pass ``--suite path/to/my_suite.py`` where the file defines::
 
-    To wire a real turn_fn here, import ``boot_agent`` from
-    ``hachi.gateway.orchestrator``, boot a session, and pass
-    ``lambda msg: run_one_turn(session, msg)`` as the ``turn_fn``.
+        SUITE: list[ReplayCase] = [...]
+
+    Bare ``EvalCase`` objects are not directly runnable via ``eval run`` — wrap
+    them in a ``ReplayCase`` with an appropriate ``llm_script``.
+
+    JSON suites are not yet supported (use a ``.py`` file).
 
     Examples::
 
         hachi eval run
-        hachi eval run --suite path/to/my_suite.json
+        hachi eval run --suite path/to/my_suite.py
     """
-    from hachi.core.eval.runner import DEFAULT_SUITE
+    from hachi.core.eval.corpus import DEFAULT_REPLAY_SUITE
+    from hachi.core.eval.replay import ReplayCase, run_replay_suite
 
+    # ------------------------------------------------------------------ #
     # Load suite
+    # ------------------------------------------------------------------ #
+    suite: list[ReplayCase]
+
     if suite_path is not None:
         import importlib.util
         import pathlib
@@ -247,33 +250,56 @@ def eval_run(
                 raise typer.Exit(code=1)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
-            suite = getattr(mod, "SUITE", None) or getattr(mod, "DEFAULT_SUITE", None)
-            if suite is None:
+            loaded = getattr(mod, "SUITE", None) or getattr(mod, "DEFAULT_SUITE", None)
+            if loaded is None:
                 console.print(
-                    "[red]Error:[/red] suite .py must define SUITE or DEFAULT_SUITE."
+                    "[red]Error:[/red] suite .py must define SUITE or DEFAULT_SUITE "
+                    "(a list[ReplayCase])."
                 )
                 raise typer.Exit(code=1)
+            suite = loaded
         else:
-            # Assume JSON: list of dicts {name, user_input, assertions: [...]}
+            # JSON suites not yet supported — be honest rather than faking.
             console.print(
                 "[yellow]JSON suite loading not yet implemented — "
-                "use a .py file that defines SUITE: list[EvalCase].[/yellow]"
+                "use a .py file that defines SUITE: list[ReplayCase].[/yellow]"
             )
             raise typer.Exit(code=1)
     else:
-        suite = DEFAULT_SUITE
+        suite = DEFAULT_REPLAY_SUITE
 
-    # --- Turn function ---
-    # Wiring a fully booted AgentSession in the CLI is deferred (see docstring).
-    # Print an honest "not wired" status instead of faking pass.
+    # ------------------------------------------------------------------ #
+    # Run the suite via the record/replay harness
+    # ------------------------------------------------------------------ #
+    console.rule(f"[bold]hachi eval run[/bold] — {len(suite)} case(s)")
+
+    results = run_replay_suite(suite)
+
+    # ------------------------------------------------------------------ #
+    # Print scorecard
+    # ------------------------------------------------------------------ #
+    passed_count = 0
+    failed_count = 0
+
+    for result in results:
+        if result.passed:
+            passed_count += 1
+            status = "[bold green]PASS[/bold green]"
+        else:
+            failed_count += 1
+            status = "[bold red]FAIL[/bold red]"
+
+        console.print(f"  {status}  {result.name}")
+        for reason in result.failures:
+            console.print(f"         [dim]↳ {reason}[/dim]")
+
+    console.rule()
+
+    summary_color = "green" if failed_count == 0 else "red"
     console.print(
-        "[yellow]hachi eval run[/yellow]: real agent turn_fn is not wired in this release.\n"
-        "The runner and all assertion kinds are fully tested in "
-        "[bold]tests/test_eval_runner.py[/bold] against a scripted ExecutionLoop.\n\n"
-        "To use this command as a CI gate:\n"
-        "  1. Import boot_agent from hachi.gateway.orchestrator\n"
-        "  2. Boot a minimal session (can use a scripted LLM client)\n"
-        "  3. Pass a turn_fn that calls session.run_turn(user_input)\n\n"
-        f"Suite has [bold]{len(suite)}[/bold] case(s) ready to run once wired."
+        f"[{summary_color}]{passed_count} passed / {failed_count} failed[/{summary_color}]"
+        f"  out of {len(results)} total"
     )
-    sys.exit(0)
+
+    if failed_count > 0:
+        raise typer.Exit(code=1)
