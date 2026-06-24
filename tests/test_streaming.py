@@ -237,6 +237,7 @@ def _make_openai_client() -> Any:
     client.model = "gpt-test"
     client.api_key = "sk-test"
     client.max_tokens = 1024
+    client._stream_usage = True  # mirror __init__ default (True = request include_usage)
     client._http = MagicMock()
     return client
 
@@ -336,6 +337,102 @@ def test_openai_stream_empty_lines_ignored() -> None:
 
     assert chunks == []
     assert final.content == ""
+
+
+# ---------------------------------------------------------------------------
+# stream_usage / stream_options tests (COST-1 fix)
+# ---------------------------------------------------------------------------
+
+
+def test_openai_stream_default_sends_stream_options() -> None:
+    """generate_stream default: payload must include stream_options={"include_usage": True}."""
+    client = _make_openai_client()  # _stream_usage=True is set by the helper
+
+    body = _sse_lines("ok")
+    mock_resp = _make_mock_stream_response(body)
+    client._http.stream = MagicMock(return_value=mock_resp)
+
+    drain_stream(client.generate_stream(messages=[Message(role="user", content="hi")]))
+
+    call_kwargs = client._http.stream.call_args
+    sent_payload = call_kwargs[1]["json"]  # keyword arg: json=payload
+    assert sent_payload.get("stream") is True
+    assert sent_payload.get("stream_options") == {"include_usage": True}
+
+
+def test_openai_stream_opt_out_omits_stream_options() -> None:
+    """When stream_usage=False the payload must NOT contain stream_options."""
+    from hachi.core.llm import OpenAICompatibleClient
+
+    # Build via __init__ so stream_usage=False is wired through the normal code path.
+    client = OpenAICompatibleClient(
+        base_url="https://api.example.com/v1",
+        model="gpt-test",
+        api_key="sk-test",
+        max_tokens=1024,
+        stream_usage=False,
+    )
+    client._http = MagicMock()
+
+    body = _sse_lines("ok")
+    mock_resp = _make_mock_stream_response(body)
+    client._http.stream = MagicMock(return_value=mock_resp)
+
+    drain_stream(client.generate_stream(messages=[Message(role="user", content="hi")]))
+
+    call_kwargs = client._http.stream.call_args
+    sent_payload = call_kwargs[1]["json"]
+    assert sent_payload.get("stream") is True
+    assert "stream_options" not in sent_payload
+
+    client.close()
+
+
+def test_openai_stream_usage_captured_from_final_chunk() -> None:
+    """Simulate a stream whose FINAL chunk has empty choices + usage; verify usage captured."""
+    client = _make_openai_client()  # _stream_usage=True is set by the helper
+
+    # Two content chunks, then a usage-only final chunk, then [DONE]
+    content_chunks = [
+        json.dumps({"choices": [{"delta": {"content": "Hello"}, "index": 0}]}),
+        json.dumps({"choices": [{"delta": {"content": " world"}, "index": 0}]}),
+        # Final usage-only chunk: empty choices list + usage field (OpenAI spec)
+        json.dumps({"choices": [], "usage": {"prompt_tokens": 123, "completion_tokens": 45}}),
+        "[DONE]",
+    ]
+    sse_body = "\n".join(f"data: {line}" for line in content_chunks)
+
+    mock_resp = _make_mock_stream_response(sse_body)
+    client._http.stream = MagicMock(return_value=mock_resp)
+
+    chunks, final = drain_stream(
+        client.generate_stream(messages=[Message(role="user", content="hi")])
+    )
+
+    assert chunks == ["Hello", " world"]
+    assert final.content == "Hello world"
+    assert final.usage.input_tokens == 123
+    assert final.usage.output_tokens == 45
+
+
+def test_openai_stream_no_usage_chunk_returns_zeros() -> None:
+    """A stream with NO usage chunk must still return a valid LLMResponse with usage zeros."""
+    client = _make_openai_client()  # _stream_usage=True is set by the helper
+
+    body = _sse_lines("pong")
+    mock_resp = _make_mock_stream_response(body)
+    client._http.stream = MagicMock(return_value=mock_resp)
+
+    chunks, final = drain_stream(
+        client.generate_stream(messages=[Message(role="user", content="ping")])
+    )
+
+    assert chunks == ["pong"]
+    assert final.content == "pong"
+    # No usage chunk → graceful zero fallback
+    assert final.usage == TokenUsage()
+    assert final.usage.input_tokens == 0
+    assert final.usage.output_tokens == 0
 
 
 # ---------------------------------------------------------------------------
