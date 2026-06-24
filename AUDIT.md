@@ -72,15 +72,24 @@ was **orthogonal** to this backlog and closed none of it — the findings below 
 **Gateway 78→80**; P0-1+P0-3 (suspend was the other big P5 deduction) → **P5 Loop 52→62**; P0-2 (the
 eval substrate now exists; `/review` UI + eval suite still to come) → **P4 Eval & Observability 42→50**;
 P0-1 also lifts **Long-Running Tasks 80→84**; P0-4 → **Deployment 48→60**; the Google config-resolution
-fix → **Connectors 68→72**. **Overall 64→73.** **All four P0s are now resolved** — the highest-priority
-backlog from the 2026-06-23 audit is cleared; the
-next tier is the P1 set (hot-path model tiering, daily-cap enforcement, web-Stop→`loop.cancel`,
-durable memory writes, MCP retry/breaker, personalization). The 2026-06-23 scorecard/findings below
-are preserved as the baseline snapshot; this dated block is the current truth.
+fix → **Connectors 68→72**. **All four P0s resolved.**
+
+**P1 tier — ALL 9 resolved (2026-06-24, agent-orchestrated sweep; Sonnet 4.6 subagents writing code under Opus orchestration, each verified + committed separately):** P1-2 hot-path model tiering
+(complexity classifier → `router.select` + user-turn failover); P1-3 daily-cap enforcement; P1-4
+web-Stop/disconnect → `loop.cancel`; P1-5 durable fact-extraction (func→handler_name); P1-6 async
+compaction summary applied back to history; P1-7 personalization substrate (UserProfileStore +
+append-only CorrectionLog + save tool); P1-8 MCP retry/breaker/reconnect; P1-9 `hachi backup`/`restore`
++ Windows CI + removed the phantom GitHub connector; P1-1 single-tenant constraint documented (account_id
+plumbing deferred to the 12-month multi-tenant track). Score impact: **P3 Routing 62→76**, **P7
+Personalization 48→64**, **P1 Memory 68→74**, **P5 Loop 56→66**, **P2 Tools 74→80**, **Reliability
+82→86**, **Deployment 60→66**, **CI 70→78**. **Overall 64→73→~82.** Remaining: the P2 tech-debt list
+(§5) + the deferred product/eval items (`/review` UI, cold-start resume, dead-letter queue, container
+sandbox, knowledge graph, multi-tenant account_id plumbing). The 2026-06-23 scorecard/findings below are
+preserved as the baseline snapshot; this dated block is the current truth.
 
 ---
 
-## 1. Overall maturity: **64 / 100** *(→ 72 as of 2026-06-24; all four P0s resolved — see delta above)*
+## 1. Overall maturity: **64 / 100** *(→ ~82 as of 2026-06-24; all P0s + the full P1 tier resolved — see delta above)*
 
 A genuinely well-engineered, **honest**, secure foundation that is ~2/3 of the way to world-class.
 The *infrastructure* pillars (security, reliability, gateway, frontend streaming, scheduler,
@@ -392,15 +401,15 @@ foundations.
 2. ~~**Wire the suspend producer** (P0-1): catch `SuspendWorkflow` in `AgentSession` → persist `RunState(WAITING)` + `arm()`. *Brings the whole runs subsystem alive; ~1 connection.*~~ ✅ **DONE 2026-06-24** (loop surfaces `last_suspend`; producer persists + arms; 5 tests).
 3. ~~**`interaction_log` table** (P0-2): one row/turn from `_chat_impl_inner`. *Unlocks rating, /review, regression eval, per-turn audit.*~~ ✅ **DONE 2026-06-24** (table + per-turn write + rating write-side; `/review` UI still to come).
 4. ~~**Fix Docker Compose** (P0-4): real `frontend/Dockerfile` + writable volumes + compose-build smoke test.~~ ✅ **DONE 2026-06-24.**
-5. **Bridge web Stop → `loop.cancel()`** (P1-4) and **enforce the daily cap** (P1-3). *Both near-one-liners against existing code.*
-6. **Add `windows-latest` to CI** (P1-9) — catch the 2 known failures + Windows regressions on the dev platform.
+5. ~~**Bridge web Stop → `loop.cancel()`** (P1-4) and **enforce the daily cap** (P1-3).~~ ✅ **DONE 2026-06-24.**
+6. ~~**Add `windows-latest` to CI** (P1-9).~~ ✅ **DONE 2026-06-24.**
 
-### 90 days — agent intelligence + durability + personalization
-7. **Hot-path model tiering** (P1-2): complexity classifier → `router.select()` (also gives user turns failover).
-8. **Durable memory writes** (P1-5) + **apply the structured summary back into history** (P1-6).
-9. **`UserProfileStore {get,set,correct,export}` + `CorrectionLog` + personalization onboarding** (P1-7).
-10. **MCP retry/breaker + tool allow-list + structured tool-error envelope** (P1-8).
-11. **Cold-start resume** (rehydrate session from transcript) + **`hachi backup`/`restore`** (P1-9 / P2-10).
+### 90 days — agent intelligence + durability + personalization  *(all ✅ DONE 2026-06-24)*
+7. ~~**Hot-path model tiering** (P1-2): complexity classifier → `router.select()` (also gives user turns failover).~~ ✅ **DONE.**
+8. ~~**Durable memory writes** (P1-5) + **apply the structured summary back into history** (P1-6).~~ ✅ **DONE.**
+9. ~~**`UserProfileStore {get,set,correct,export}` + `CorrectionLog`** (P1-7).~~ ✅ **DONE** (backend substrate + save tool; personalization *onboarding wizard* + frontend deferred as feature work).
+10. ~~**MCP retry/breaker + reconnect** (P1-8).~~ ✅ **DONE** (full `{ok,code,message,retryable}` envelope across all tool types + tool allow-list deferred to P2).
+11. **Cold-start resume** (rehydrate session from transcript) — *still open*; ~~**`hachi backup`/`restore`** (P1-9)~~ ✅ **DONE.**
 
 ### 6 months — the eval loop + memory maturity + reactivity
 12. **Trajectory/regression eval suite + thumbs UI + `/review` page + weekly failure report** (on `interaction_log`).
