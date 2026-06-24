@@ -2645,6 +2645,7 @@ def boot_agent(
                 brain_dir=str(get_hachi_paths().data_dir),
                 recall_distance_max=_memory_settings.recall_distance_max,
                 core_memory_max_entries=_memory_settings.core_memory_max_entries,
+                decay_half_life_days=_memory_settings.decay_half_life_days,
             )
         else:
             _provider.initialize(brain_dir=str(get_hachi_paths().data_dir))

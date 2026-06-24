@@ -96,6 +96,11 @@ class MemorySettings(BaseModel):
     # M1: number of past-session episodes to inject into each turn's recall block.
     #     Set to 0 to disable episodic recall entirely.
     episodic_top_k: int = 3
+    # M2: optional recency weighting for recall. Half-life in DAYS — a fact this old
+    #     ranks as if twice as cosine-distant. None disables (pure relevance order).
+    #     Only re-ranks relevance-gated core/episodic recall; NEVER user_profile or
+    #     get_recent_facts. A reasonable starting value if enabled is ~30.0.
+    decay_half_life_days: float | None = None
 
 
 class LimitsSettings(BaseModel):
