@@ -715,6 +715,71 @@ of the backlog is the roadmapped P1 tier). Both closed:
   hermetic fixes. Full Google/OAuth/gateway regression green; `ruff` clean; **zero new mypy errors**
   (oauth 19→19, cli/main 121→121; client.py actually 5→4).
 
+### P1-2 — hot-path model tiering (`core/routing/classifier.py` + `core/loop.py`)
+
+- **Found:** `ExecutionLoop.__init__` stores `self.router` (optional `ModelRouter`) but `self.router`
+  is **never used** in the generate path. Both `_generate_with_retry` and `_stream_generate` always
+  call `self.llm_client` — the fixed default client. Net effect: 100% of user turns use the default
+  model with no complexity-based tiering and no cross-provider failover chain, even when a
+  `ModelRouter` is wired in by `boot_agent`.
+
+- **Changed:**
+
+  1. **`src/hachi/core/routing/classifier.py` (new):** Pure `classify_turn_capability(user_input: str)
+     -> Capability` function. No LLM calls. Rules (top-to-bottom, first match wins):
+     - **LONG\_CONTEXT** — prompt ≥ 16 000 chars (~4 000 tokens) OR long-doc phrase detected
+       ("entire file", "whole codebase", "all pages", "full document", etc.).
+     - **CODING** — code fence (`` ``` ``) found OR ≥ 2 coding keywords present
+       (`def `, `class `, `import `, `function`, `implement`, `refactor`, `debug`, `bug`, `error`,
+       `exception`, `syntax`, `compile`, `build`, `test`, `unittest`, `pytest`, `lint`,
+       `type hint`, `type annotation`).
+     - **SUMMARIZATION** — `summarize`/`summarise`, `tl;dr`, `tldr`, `key points`, `main points`,
+       or `abstract` detected.
+     - **REASONING** — analytical phrase detected (`step by step`, `explain`, `analyse`/`analyze`,
+       `compare`, `evaluate`, `pros and cons`, `trade-off`, `why`, `reasoning`, `cause`,
+       `because`, `therefore`, `conclusion`) **and** prompt is ≥ 200 chars (short "why?" stays default).
+     - **REASONING (default)** — all other turns (REASONING is the widest capability net:
+       all Anthropic models support it so the router always has candidates).
+
+  2. **`src/hachi/core/loop.py`:**
+     - Added `self._turn_client: BaseLLMClient = llm_client` instance attribute (set in `__init__`,
+       default = `llm_client` so router=None path is byte-for-byte unchanged).
+     - Added `_resolve_turn_client(user_input)` method: calls `router.new_turn()` (clears the A12
+       sticky cache), calls `classify_turn_capability(user_input)`, then `router.select(capability)`.
+       On `NoRouteError` or any routing exception: logs at DEBUG and falls back to `llm_client`.
+       Sets `self._turn_client` to the resolved/fallback client.
+     - In `run()`, after `user_input_for_turn` is resolved: resets `self._turn_client = self.llm_client`
+       then calls `self._resolve_turn_client(user_input_for_turn)` when `self.router is not None`.
+     - Replaced `self.llm_client.generate` → `self._turn_client.generate` in `_generate_with_retry`.
+     - Replaced `self.llm_client.generate_stream` → `self._turn_client.generate_stream` in
+       `_stream_generate`.
+     - Updated the model-name lookups (`_llm_model` for span + `model_name` for cost tracking) from
+       `self.llm_client` → `self._turn_client` (accurate telemetry for the actual generating model).
+
+- **Why:** ModelRouter already builds a `ResilientClient` fallback chain per `(capability,
+  constraints)`. By routing the main turn through it we get: (a) cheaper models for simple turns,
+  (b) reasoning-class models for multi-step/complex turns, (c) automatic cross-provider failover if
+  the primary is down — all with zero additional LLM calls. The heuristic mis-routes are safely
+  degraded (wrong tier, not wrong answer) and the back-compat guarantee means existing sessions with
+  no router see zero behavior change.
+
+- **Sticky-per-turn:** `router.new_turn()` is called once at the top of each `run()` call so the A12
+  sticky-route cache is cleared and the turn re-selects independently. Within a single run() the
+  `_resolve_turn_client` selection is stable; the router's own sticky cache handles repeated `select()`
+  calls (e.g. from sub-tool routing within the same turn).
+
+- **Verify (2026-06-24):**
+  - `uv run pytest tests/test_hot_path_routing.py tests/test_e2e_loop.py tests/test_routing_compat.py
+    tests/test_routing_router.py tests/test_routing_capability.py tests/test_routing_policy.py
+    tests/test_provider_registry.py tests/test_routing_registry.py -q` → **119 passed / 0 failed**.
+  - `uv run ruff check src/hachi/core/loop.py src/hachi/core/routing/classifier.py
+    tests/test_hot_path_routing.py` → **All checks passed**.
+  - `uv run ruff format --check` (same three files) → **already formatted / clean**.
+  - `uv run mypy src/hachi/core/loop.py --ignore-missing-imports` → **10 errors (baseline = 10,
+    no new errors introduced)**.
+  - `uv run mypy src/hachi/gateway/orchestrator.py --ignore-missing-imports` → **34 errors (baseline =
+    34, untouched)**.
+
 ---
 
 ### P1-3 — enforce daily spend cap
