@@ -714,3 +714,48 @@ of the backlog is the roadmapped P1 tier). Both closed:
   failure retryable, distinct keys, + 2 `send_email` leaf-level dedup/distinct) + 1 headless-guard +
   hermetic fixes. Full Google/OAuth/gateway regression green; `ruff` clean; **zero new mypy errors**
   (oauth 19→19, cli/main 121→121; client.py actually 5→4).
+
+---
+
+### P1-3 — enforce daily spend cap
+
+**Found.** `max_daily_cost_usd` was declared in `LimitSettings` (`core/settings.py:117`),
+displayed in the CLI `/spend/daily` route (`cli/main.py:1441`), and stored in the daily
+ledger via `SessionStore.record_daily_cost` — but never read back to block a turn.
+`get_daily_spend` had exactly one caller (the display path). The per-session and per-turn
+caps in `core/loop.py` were enforced (`_budget_exceeded` / `_turn_budget_exceeded`) but
+the calendar-day cap was silently ignored.
+
+**Changed.**
+- `src/hachi/gateway/orchestrator.py` — three minimal edits:
+  1. Added `_max_daily_cost_usd: float | None = None` instance attribute to
+     `AgentSession.__init__` with a comment noting the P1-3 source.
+  2. Added `AgentSession._daily_cap_exceeded() -> str | None` helper (before
+     `_chat_impl_inner`): reads `_session_store.get_daily_spend(date.today().isoformat())`,
+     compares against `_max_daily_cost_usd`, returns a reason string on breach or `None`.
+     Wraps the read in `try/except` — a store failure returns `None` (safe fail-open).
+  3. In `_chat_impl_inner` (after `_drain_job_queue`, before `_memory_snapshot` build):
+     calls `_daily_cap_exceeded()`; if truthy, emits `BUDGET_EXCEEDED` event and returns
+     `[BUDGET LIMIT REACHED] daily cost cap reached (~$X.XXXX >= $Y.YY)` — same format
+     as `loop.py`'s per-session/per-turn refusals.
+  4. In `boot_agent`: reads `max_daily_cost_usd` from `limits_cfg` /
+     `HACHI_MAX_DAILY_COST_USD` env (same pattern as session/turn caps), assigns to
+     `session._max_daily_cost_usd` after `set_session_store`.
+  5. Added `BUDGET_EXCEEDED` import from `hachi.core.runtime_events`.
+- `tests/test_daily_cap_enforcement.py` — new file; 12 focused tests covering all cases:
+  cap not set / zero / store None (all return None), under cap, at cap, over cap, store
+  read error (fail-open), date key alignment, and `_chat_impl_inner` refusal message +
+  event emission.
+
+**Why.** Minimum-correct fix: the check lives in the orchestrator (not the loop) because
+that is where `_session_store` and the config-derived cap are both visible at turn start.
+No loop state is mutated. Abort-only (no model-downgrade) per the P1-3 scope; downgrade
+is a separate P1-2 finding. `BUDGET_EXCEEDED = "budget.exceeded"` was already in the
+runtime event taxonomy — no new event invented.
+
+**Verify.**
+```
+uv run pytest tests/test_daily_cap_enforcement.py tests/test_daily_spend_ledger.py -q
+uv run ruff check src/hachi/gateway/orchestrator.py
+uv run mypy src/hachi/gateway/orchestrator.py --ignore-missing-imports
+```
