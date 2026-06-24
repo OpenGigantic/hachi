@@ -107,6 +107,22 @@ operating protocol these are **flagged, not auto-built**. The leash approve/deny
 serialization precludes the concurrent-identical-request race it guards against — flagged for a future
 cross-stack pass rather than auto-built.
 
+**Eval loop — the trust flywheel now closes (2026-06-24, user-greenlit feature build on the P0-2 substrate).**
+With `interaction_log` already capturing one row/turn, the consume side is now shipped end-to-end:
+(E1) gateway read/rating API — `GET /interactions` (ownership-filtered like `list_sessions`) + `PUT
+/interactions/{id}/rating` (typed up/down + notes), backed by the REAL store; `fastapi_app.py` still
+strict-mypy-0; 23 tests. (E2) `core/eval/` — a PURE `build_failure_report()` (totals, failure-rate,
+errored-turn detection, top failing tools, per-model cost/down breakdown) + a regression-runner scaffold
+(`EvalCase` + structural assertions checked against a REAL `ExecutionLoop` trajectory — `run_case` never
+hardcodes pass) + `hachi eval report`/`run` CLI; 38 tests incl an anti-fake proof (an unsatisfiable
+assertion must yield `passed=False`). (E3) a `/review` web screen listing each turn's trajectory with
+thumbs-up/down + notes (real gateway round-trip; honesty guard so a failed fetch shows empty, never
+fixtures-as-real); typecheck + 82 vitest + production build + `check:api` green. Honest gaps: `hachi eval
+run` reports "not wired" until a record/replay `turn_fn` is added (faking a pass was explicitly rejected);
+the weekly-failure-report automation + a curated regression corpus are the natural next increments. Score
+impact: **P4 Eval & Observability 50→62** (the eval half went from ~12 to a real, usable loop). **Overall
+~84→~85.**
+
 The 2026-06-23 scorecard/findings below are preserved as the baseline snapshot; this dated block is the current truth.
 
 ---
@@ -434,7 +450,7 @@ foundations.
 11. ~~**Cold-start resume** (rehydrate session from transcript)~~ ✅ **DONE 2026-06-24** (P2-10); ~~**`hachi backup`/`restore`** (P1-9)~~ ✅ **DONE.**
 
 ### 6 months — the eval loop + memory maturity + reactivity
-12. **Trajectory/regression eval suite + thumbs UI + `/review` page + weekly failure report** (on `interaction_log`).
+12. ~~**Trajectory/regression eval suite + thumbs UI + `/review` page**~~ ✅ **DONE 2026-06-24** (E1 read/rating API + E2 eval report/runner + E3 /review screen); the **weekly failure report** automation + a record/replay `eval run` corpus remain as the next increments.
 13. ~~**Token-budget window management** (P2-1) — remove the context-limit cliff.~~ ✅ **DONE 2026-06-24.**
 14. **Memory decay/recency + LRU eviction + episodic `{summary,entities,sentiment,outcome}` store** (P2-2/3).
 15. **Reactive EventBus automations** (inbound email/message triggers) (P2-6).
