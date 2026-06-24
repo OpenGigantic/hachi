@@ -106,7 +106,9 @@ def test_failed_job_reaches_read_model_projection() -> None:
     assert failures[0].job_id == job.job_id
     assert failures[0].label == "explode-job"
     assert failures[0].error == "kaput"
-    assert read_models.runtime_events(limit=10)[-1].name == "job.failed"
+    # max_retries=1 → retry-exhausted → dead-letter (not terminal FAILED), so the
+    # event is "job.dead_letter"; the read-model still surfaces it via failed_jobs().
+    assert read_models.runtime_events(limit=10)[-1].name == "job.dead_letter"
 
 
 def test_pending_job_cannot_be_claimed_twice() -> None:
