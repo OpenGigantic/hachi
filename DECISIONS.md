@@ -1611,3 +1611,210 @@ uv run mypy src/hachi/gateway/fastapi_app.py src/hachi/cli/main.py \
     --ignore-missing-imports  # fastapi_app MUST be 0; cli/main stays at 122
 python -c "import yaml; yaml.safe_load(open('docker-compose.yml')); print('compose valid')"
 ```
+
+### P2-10 — cold-start resume
+
+**Found.**
+`resume.py` `_do_resume()` tried `GatewayControlPlane.instance().get_session(session_id)`
+— but `GatewayControlPlane` has no `instance()` singleton method and no `get_session()`
+method, so the code NEVER reached the live-session path and always fell through to
+`HonestResumeError("Replay not implemented for cold-start resume (slice 2.4 scope)")`.
+A WAITING run woken after a gateway restart therefore always raised, even though all
+the rehydration machinery (`resume_from_session`, `boot_agent(resume_session_id=…)`,
+`_boot_session_agent`) was already present and functional.
+
+**Changed.**
+
+| File | Change |
+|------|--------|
+| `src/hachi/cli/main.py` | Added `_ACTIVE_RUNTIME: _InProcessGatewayRuntime \| None = None` module-level slot (alongside `_GATEWAY_RESIDENT_WORKER`). `_start_gateway_server` and the `gateway` command set it when a runtime is created. Added `rehydrate_session(session_id) → AgentSession \| None` method to `_InProcessGatewayRuntime`: boots a fresh agent via the REAL `_boot_session_agent(session_id, resume_session_id=session_id)` path and registers it in `_agents`. |
+| `src/hachi/core/runtime/resume.py` | Rewrote `_do_resume`. Now reads `_ACTIVE_RUNTIME` from `hachi.cli.main` via `getattr()` at call time (so monkeypatching works). Hot path: session is in `_agents` → `agent.chat(inject_text)` directly. Cold path: session absent → `runtime.rehydrate_session(session_id)` → chat on the rehydrated agent. No-runtime path: `_ACTIVE_RUNTIME is None` → `HonestResumeError` (honest fail preserved). |
+| `tests/test_cold_start_resume.py` | 5 new tests (see below). |
+
+**Rehydration wire (how it connects to existing machinery).**
+`resume.py._do_resume` calls `runtime.rehydrate_session(session_id)` in
+`src/hachi/cli/main.py` (line ~329), which calls
+`self._boot_session_agent(session_id, resume_session_id=session_id)` (line ~266),
+which calls `boot_agent(resume_session_id=session_id)` in
+`src/hachi/gateway/orchestrator.py` (~line 2128).  `boot_agent` creates an
+`AgentSession`, then `AgentSession.resume_from_session(source_session_id, max_messages=40)`
+(~line 571) loads the SQLite transcript via `SessionStore.get_session_messages` and
+seeds it into the `MemoryManager`.  This is the SAME path used by
+`_start_gateway_server(resume_session_id=…)` → `_pending_resume_session_id` →
+`register_connection(resume_session_id=…)` for normal session-resume-on-connect.
+
+**How the tests prove rehydration is REAL (not faked).**
+The key assertion in `TestColdStartResume.test_cold_start_rehydrates_and_resumes_turn` is:
+```python
+assert agent.seen_resume_session_id == prior_sid
+```
+The `_fake_boot_agent` captures the `resume_session_id` argument that `boot_agent` was
+called with.  `_ScriptedAgent.replayed_messages` is populated by calling
+`session_store.get_session_messages(resume_session_id, …)` on the REAL store — so the
+test also verifies that two transcript messages written before the run was created are
+returned in order.  A fake session that bypassed `boot_agent` would have
+`seen_resume_session_id=None` and `replayed_messages=[]`, failing both assertions.
+
+**What still HonestResumeError-s.**
+When `_ACTIVE_RUNTIME is None` (standalone `hachi run` CLI, `uv run hachi` without
+`--runtime`, or any context where the gateway was never started), `_do_resume` raises
+`HonestResumeError("_ACTIVE_RUNTIME is None …")`. Tested by
+`TestNoRuntimeHonestFail.test_raises_honest_resume_error_when_no_runtime`. The run is
+rolled back to WAITING (not FAILED) so the operator can wake it again after starting
+the gateway.
+
+**Idempotency preservation.**
+`resume_run` guards `WAITING→RUNNING` at the top; all other statuses (RUNNING,
+COMPLETED, CANCELLED, FAILED) return `"no-op: status is …"` immediately without
+calling `_do_resume`. Tested by `TestIdempotency.test_double_wake_is_noop_for_completed`
+and `test_double_wake_is_noop_for_running`.
+
+**Verify.**
+```
+cd /d/OpenGigantic/hachi
+PYTHONPATH=src uv run --with pytest --no-project pytest \
+    tests/test_cold_start_resume.py tests/test_durable_store.py \
+    tests/test_durable_waits.py tests/test_suspend_workflow.py \
+    tests/test_gateway_runtime_validation.py -q
+
+uv run ruff check src/hachi/core/runtime/resume.py src/hachi/cli/main.py \
+    tests/test_cold_start_resume.py
+uv run ruff format --check src/hachi/core/runtime/resume.py \
+    src/hachi/cli/main.py tests/test_cold_start_resume.py
+uv run mypy src/hachi/core/runtime/resume.py src/hachi/gateway/orchestrator.py \
+    src/hachi/cli/main.py src/hachi/gateway/control_plane.py \
+    --ignore-missing-imports
+# resume.py/control_plane.py MUST be 0 errors; orchestrator stays at 34; cli/main stays at 122
+```
+
+---
+
+### P2-10b — direct test for resume_from_session (real replay proof)
+
+**Found:** `AgentSession.resume_from_session` (orchestrator.py ~571) had zero test coverage.
+Searching `tests/` for `resume_from_session` returned no matches.  The method is the
+substance of cold-start resume — it reads a prior session's transcript from SQLite,
+filters to user/assistant rows, seeds them into `MemoryManager`, and caches the pairs
+in `_resumed_transcript` for the UI.  Despite its criticality, no test ever called it
+directly; the only adjacent coverage was `test_cold_start_resume.py` which stubs out
+`boot_agent` entirely and never exercises the replay internals.
+
+**Changed:** Added `tests/test_resume_from_session.py` — 18 tests across 6 classes,
+no mocks on the memory or store path.
+
+**Why / design choices:**
+
+- Construction pattern copied verbatim from `tests/test_interaction_log.py` (line 121):
+  `sess = AgentSession.__new__(AgentSession)` then set only `_session_store`, `memory`,
+  and `_resumed_transcript`.  This avoids boot_agent and its 30+ required dependencies
+  while still exercising the production code path.
+
+- `MemoryManager()` is constructed with no arguments (bare defaults) — sufficient for
+  `seed_history`, which only appends to `_history` and sets `_last_user_query`.
+
+- Real `SessionStore(db_path=str(tmp_path / "…"))` with `start_session()` + `flush_sync()`
+  before every read — matches the pattern already established in the session_store tests.
+
+- History inspection via `mm.history` (the public `@property` at memory.py ~629) which
+  returns `self._history` — the exact list extended by `seed_history`.
+
+- `seed_history` nuances accommodated:
+  1. It uses `extend()`, not prepend — so pre-existing history comes BEFORE resumed
+     messages (locked in by `TestSeedHistoryNuances::test_seed_history_appends_not_prepends`).
+  2. It scans reversed to set `_last_user_query` to the most-recent user content
+     (locked in by `test_last_user_query_updated_after_resume`).
+  3. Returns `len(messages)` so the count == number of user+assistant rows passed.
+
+- `get_session_messages` returns oldest-first within its `limit=` cap, and the cap
+  selects the N most-recent rows from the DB — so `max_messages=2` on a 4-row session
+  yields the final pair (locked in by `TestMaxMessagesCap::test_max_messages_pulls_most_recent`).
+
+**Verify:**
+```
+PYTHONPATH=src uv run --with pytest --no-project pytest tests/test_resume_from_session.py -q
+# 18 passed in 4.43s
+
+uv run ruff check tests/test_resume_from_session.py
+# All checks passed!
+
+uv run ruff format --check tests/test_resume_from_session.py
+# 1 file already formatted
+```
+
+**Bug found:** None.  The implementation matches its documented contract exactly.
+The empty-content guard (`content = row.get("content") or ""` + `not content` check)
+correctly drops both None and `""` content; the tool-row filter is exact-set membership.
+
+---
+
+### P2-13 — perf/latency regression guard (recall + compaction)
+
+**Found.** No CI guard existed to catch unbounded/excessive work in the two hot paths:
+(1) `MemoryManager._sliding_window_compact` — the post-compaction tightening loop was
+bounded at `_MAX_COMPACT_PASSES=3` in code but never covered by a regression test asserting
+on the call-count bound; (2) `MemoryVault._query_collection` — always called with a bounded
+`n_results=top_k` but no test verified the argument reached the ChromaDB collection; (3) lazy
+ChromaDB init (`_chroma_client=None` after `__init__`) was covered in `test_g3_vault_lazy.py`
+but not expressed as an explicit perf-regression assertion in a dedicated file.
+
+**Changed.** New file `tests/test_perf_regression.py` — 13 deterministic structural tests, zero
+wall-clock assertions (no flaky CI thresholds). Four test classes:
+
+- **`TestCompactionPassBound`** (2 tests): spies on `_generate_structured_summary` via a call-
+  through wrapper and asserts `call_count <= 3` even when `max_active_tokens=1` (every pass still
+  over budget). Seam: `_MAX_COMPACT_PASSES = 3` local constant at `memory.py:1013`,
+  `for _pass in range(_MAX_COMPACT_PASSES):` at `memory.py:1029`.
+
+- **`TestCompactionPerTurnWorkBounded`** (2 tests): spies on `_sliding_window_compact` itself
+  and asserts (a) adding one overflow message triggers at most one compaction call, and (b) 20
+  sequential `add_message` calls trigger at most 20 compaction calls total (linear, not O(N²)).
+  Seam: `add_message()` at `memory.py:638`, compaction trigger at `memory.py:659-665`.
+
+- **`TestHistoryBoundedAfterManyAdds`** (2 tests): after 100 `add_message` calls, token
+  estimate stays under `2 × budget` (generous tolerance for the post-append measurement window)
+  and message count stays within `max_active_messages + 4`. Locks in the "cliff removed"
+  behavior. No spy needed — asserts directly on `estimate_token_count()` and `len(_history)`.
+
+- **`TestRecallBoundedTopK`** (4 tests): uses `_FakeCollection.query_calls` (recording spy
+  baked into the fake) to assert `n_results == top_k` for `semantic_search(top_k=5)`,
+  `search_user_profile(top_k=10)`, and a custom `top_k=3` call. Seam:
+  `collection.query(n_results=top_k, ...)` at `memory_vault.py:774`. A fourth test asserts
+  `n_results` is never `None` for any recorded call.
+
+- **`TestVaultLazyInit`** (3 tests): asserts `_chroma_client is None` after `__init__`,
+  all `_collections` slots are `None` after `__init__`, and `PersistentClient` is never called
+  during `__init__`. Uses `patch.dict(sys.modules, {"chromadb": mock_chroma, ...})` — same
+  pattern as `test_g3_vault_lazy.py`. Seam: `self._chroma_client: Any = None` at
+  `memory_vault.py:335` and `_collections` dict at `memory_vault.py:339`.
+
+**Why structural, not wall-clock.**
+Wall-clock threshold tests are muted or skipped in CI within weeks (flaky on runner variance).
+Structural assertions catch the same regressions: if someone removes the `_MAX_COMPACT_PASSES`
+bound, `call_count <= 3` fails; if `query` is called without `n_results`, the recording spy
+catches it; if `__init__` starts eagerly opening ChromaDB, `_chroma_client is None` fails.
+
+**Spy technique.** Compaction tests wrap the REAL method via a nonlocal counter closure and
+reassign `mm._generate_structured_summary = _counting_generate`, then call through
+to `original_generate(messages)` so behavior is unchanged and the assertion reflects real
+execution — not a reimplementation. Recall tests use a `_FakeCollection` that accumulates
+`query_calls` on every `.query()` invocation, which pre-populates the stubbed vault's
+`_collections` dict (same technique as `test_memory_fixes.py`).
+
+**ChromaDB dependency.** Zero tests in this file require a real ChromaDB installation.
+All vault tests use `MemoryVault.__new__` + pre-populated `_collections` dict. The lazy-init
+tests use `patch.dict(sys.modules)` to inject a `MagicMock` chromadb module.
+
+**Real perf bug found.** None. All three guards validated as already correct in source.
+
+**Verify.**
+```
+PYTHONPATH=src uv run --with pytest --no-project pytest tests/test_perf_regression.py -q
+# 13 passed in 3.67s
+
+PYTHONPATH=src uv run --with pytest --no-project pytest \
+    tests/test_token_window_management.py tests/test_compaction_summary_applyback.py -q
+# 16 passed — no shared-state collision
+
+uv run ruff check tests/test_perf_regression.py   # All checks passed!
+uv run ruff format --check tests/test_perf_regression.py  # 1 file already formatted
+```

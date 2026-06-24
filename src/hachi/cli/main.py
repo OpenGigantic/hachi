@@ -326,6 +326,39 @@ class _InProcessGatewayRuntime:
             except Exception:
                 pass
 
+    def rehydrate_session(self, session_id: str) -> "AgentSession | None":
+        """Boot a fresh session that replays *session_id*'s transcript (cold-start resume).
+
+        Called by :func:`~hachi.core.runtime.resume._do_resume` when the live-session
+        map has no entry for *session_id* (gateway restarted).  Boots a fresh
+        :class:`AgentSession` with ``resume_session_id=session_id`` so the prior
+        SQLite transcript is replayed into the new agent's memory before the first
+        turn — exactly the same path taken by a normal session-resume at connect time.
+
+        The new session is registered under the SAME *session_id* so that subsequent
+        resume_run calls (and any concurrent gateway requests) find it in the map.
+
+        Returns:
+            The freshly booted and registered :class:`AgentSession`, or ``None``
+            when boot fails (error is logged; caller should fallback to HonestResumeError).
+        """
+        try:
+            agent = self._boot_session_agent(session_id, resume_session_id=session_id)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "rehydrate_session: failed to boot agent for session %r",
+                session_id,
+                exc_info=True,
+            )
+            return None
+        with self._agents_lock:
+            self._agents[session_id] = agent
+            if session_id not in self._chat_locks:
+                self._chat_locks[session_id] = threading.Lock()
+        return agent
+
     def _reload_agents(self) -> None:
         """Reboot cached session agents so provider/credential changes apply live.
 
@@ -2136,6 +2169,13 @@ def _gateway_readiness_probe() -> tuple[bool, list[str], dict[str, str]]:
 #: session is booted; inspected by :func:`_gateway_readiness_probe`.
 _GATEWAY_RESIDENT_WORKER: "ResidentWorkerThread | None" = None
 
+#: Module-level slot for the most-recently-created in-process gateway runtime.
+#: Set by :func:`_start_gateway_server` and the ``gateway`` command so that
+#: :func:`~hachi.core.runtime.resume._do_resume` can call
+#: :meth:`_InProcessGatewayRuntime.rehydrate_session` on cold-start resume
+#: without importing the CLI or threading a runtime reference through every layer.
+_ACTIVE_RUNTIME: "_InProcessGatewayRuntime | None" = None
+
 
 def _wait_until_interrupted() -> None:
     """Keep process alive until Ctrl+C without busy looping."""
@@ -2353,6 +2393,10 @@ def _start_gateway_server(
     if runtime is not None and resume_session_id is not None:
         runtime._pending_resume_session_id = resume_session_id
     support = runtime or _InProcessGatewayRuntime()
+    # Publish the active runtime so resume.py can rehydrate cold-start sessions.
+    if runtime is not None:
+        global _ACTIVE_RUNTIME  # noqa: PLW0603
+        _ACTIVE_RUNTIME = runtime
 
     server = GatewayHTTPServer(
         _build_gateway_control_plane(runtime=runtime, support=support),
@@ -3305,6 +3349,9 @@ def serve(
     try:
         auth_token = _resolve_gateway_auth_token(host)
         runtime = _InProcessGatewayRuntime()
+        # Publish the active runtime so resume.py can rehydrate cold-start sessions.
+        global _ACTIVE_RUNTIME  # noqa: PLW0603
+        _ACTIVE_RUNTIME = runtime
 
         server = GatewayHTTPServer(
             _build_gateway_control_plane(runtime=runtime, support=runtime),
