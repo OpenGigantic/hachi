@@ -2513,3 +2513,65 @@ python -m mypy --config-file mypy-strict-gate.ini
 python -m ruff check src/hachi/core/sandbox.py src/hachi/tools/sandbox_tools.py src/hachi/cli/main.py tests/test_sandbox_backend.py
 # All checks passed!
 ```
+
+---
+
+## FLAKE — full-suite hermeticity + determinism (2026-06-25, commit `afe8138`)
+
+Re-diagnosed from scratch on `reassess`; the `flake-wip` branch's fixes were superseded (it never
+cracked layer 3 and its layer-4 fix was wrong). Full suite: **3867 passed / 21 skipped / 0 failed**,
+deterministic, 4:40 (was a ~40-min crawl while leaked keys drove real LLM calls).
+
+### Layer 1 — import-time `.env` autoload (secret leak + nondeterminism)
+**Found.** `cli/main.py::_load_dotenv_into_environ()` runs at import time, merging `<cwd>/.env` +
+config-dir `.env` into `os.environ`. During pytest collection this pulls the dev's real
+`ANTHROPIC_API_KEY` etc. into the process, which (a) flips import-time `@skipif(not getenv(...))`
+guards so live-gateway tests RUN — and `test_cockpit_chat_live` then makes **billed** LLM calls every
+suite run — and (b) leaks secrets into the test process.
+**Changed.** Guard the merge behind `HACHI_DISABLE_DOTENV_AUTOLOAD`; `tests/conftest.py` sets it
+(`setdefault`, before any hachi import). Production default unchanged (autoload on). New
+`tests/test_dotenv_hermeticity.py` regression-guards the flag + the conftest default.
+
+### Layer 2 — `os.environ` leak past monkeypatch
+**Found.** `_apply_tokoboros_shim()` writes `HACHI_*` straight into `os.environ`; a test that triggers
+it (`test_shim_covers_all_renames`) leaks those keys because monkeypatch only undoes vars it set.
+Order-dependent failures in later email/SMTP tests.
+**Changed.** Autouse diff-based `_restore_os_environ` fixture in conftest — snapshot `dict(os.environ)`
+before, restore after (remove added keys, restore changed/deleted). Diff-based (not `clear()`) so
+concurrent in-process-gateway threads never observe an empty env mid-test.
+
+### Layer 3 — chromadb native-extension "poison" (the real unsolved layer) **[ADR]**
+**Found.** `patch.dict(sys.modules, {...})` snapshots sys.modules on enter and restores on exit,
+**dropping any module first-imported inside the block**. `test_file_platform`'s
+`test_pdf_without_pypdf_returns_none_from_find_extractor` runs `_build_extractor_chain()` inside a
+`patch.dict(sys.modules, {"pypdf": None})` block; that chain lazily first-imports `chromadb`. On exit,
+patch.dict wipes all `chromadb.*` entries it added — including the **PyO3 native submodule**. A native
+extension *cannot be re-initialized once unloaded*: CPython raises `ImportError: cannot load module more
+than once per process`. Every later `import chromadb` in the process then fails, and the guarded
+`except ImportError` in `memory_vault` / `enable_embedding_rank` swallows it as "chromadb not installed"
+→ vault/embedding tests silently fail. `flake-wip`'s `_restore_chromadb_modules` fixture *deleted real
+chromadb submodules on teardown*, so it **caused** this failure rather than fixing it.
+**Decided.** (a) Warm `import chromadb` + `import chromadb.config` once at `conftest.py` import, so
+chromadb is present in *every* `patch.dict` enter-snapshot and survives the restore. (b) Fix the
+offending `test_search_without_chromadb_returns_error` to use a `None`-sentinel restore — never install
+a `MagicMock` stub (the original installed one when chromadb was absent, which poisoned
+`from chromadb.config import Settings` with "chromadb is not a package"). (c) Do NOT add a
+chromadb-restoring fixture — removing chromadb from sys.modules is the hazard, not the cure.
+**Why.** Warming is a one-line, order-independent neutralizer for the whole class of
+patch.dict-wipes-native-import bugs; it costs one import already paid by most runs.
+
+### Layer 4 — "cockpit flakiness" is a boot timeout, not a key issue
+**Found.** `test_cockpit_gaps::TestMemoryCRUD` (the S1 gate's 1 failure) fails at `_create_session` →
+`POST /sessions transport error: timed out`, NOT at any memory assertion. 12/13 tests in the class pass
+with **no** API key — memory CRUD needs no LLM. `POST /sessions` does heavy synchronous skill-engine +
+ChromaDB vault init that exceeds `GatewayClient.DEFAULT_TIMEOUT = 15s` on a cold Windows process
+(uncached imports) or under full-suite load (Nth PersistentClient).
+**Changed.** `GatewayClient.__init__` gains a `timeout` arg; absent that, it reads
+`HACHI_GATEWAY_CLIENT_TIMEOUT` (else the 15s default). conftest grants 90s for the test process.
+Production default unchanged. Rejected `flake-wip`'s `@skipif(not ANTHROPIC_API_KEY)` on the whole
+class — empirically wrong (would skip 12 passing keyless tests) and would hide real regressions.
+
+### Files changed
+`src/hachi/cli/main.py` (dotenv guard) · `src/hachi/client/gateway.py` (configurable timeout) ·
+`tests/conftest.py` (flags + chromadb warm + env-restore fixture; removed harmful chromadb fixture) ·
+`tests/test_file_platform.py` (sentinel restore) · `tests/test_dotenv_hermeticity.py` (new).

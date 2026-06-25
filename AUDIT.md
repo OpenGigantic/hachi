@@ -555,11 +555,23 @@ the single failure is `test_cockpit_gaps::TestMemoryCRUD` (a live in-process-gat
 that boots real gateways + creates live sessions; a *different* test in the class fails on isolated re-run
 → pre-existing live/timing flakiness, S1 touches no gateway/session/memory code).
 
-**Deferred (captured) — test-suite hermeticity/isolation (`flake-wip` branch + follow-up chip).** A
-test-hermeticity hardening (gate the import-time `.env` autoload so the suite stops pulling the dev's real
-secrets/keys; `os.environ` + `chromadb` `sys.modules` restore fixtures; skip live-gateway tests without a
-key) was built across FLAKE-1/2/3 but exposed a deep multi-layer pre-existing coupling (a tokoboros-shim
-env leak; a `test_file_platform` `MagicMock` poisoning `sys.modules["chromadb"]`; a deeper module-level
-chromadb import cache still unresolved). Rather than land a half-understood test-infra refactor or block
-M2/S1 on it, it was reverted off `reassess` (clean at M2) and preserved on `flake-wip` for a dedicated
-effort. The live-gateway test flakiness above is part of that same package.
+**RESOLVED — test-suite hermeticity/isolation (FLAKE, commit `afe8138`).** The deferred pass landed,
+re-diagnosed from scratch on `reassess` (the `flake-wip` branch's fixes were superseded — see below).
+Full suite now **3867 passed / 21 skipped / 0 failed**, deterministic, ~8× faster (4:40 vs the
+leaked-key baseline crawl). Four independently root-caused layers:
+1. **Secret leak / nondeterminism** — import-time `.env` autoload pulled real keys into `os.environ`,
+   flipping import-time skipif guards *and* making `test_cockpit_chat_live` issue billed LLM calls every
+   run. Gated behind `HACHI_DISABLE_DOTENV_AUTOLOAD` (prod default unchanged); conftest sets it.
+2. **`os.environ` leak** — tokoboros shim writes `HACHI_*` past monkeypatch's undo → diff-based
+   `os.environ` restore fixture in conftest.
+3. **chromadb "poison"** — the real root cause `flake-wip` never cracked: `patch.dict(sys.modules, …)`
+   drops modules *first-imported inside the block*; `_build_extractor_chain` lazily first-imports
+   chromadb there, wiping its **PyO3 native submodules** — and a native ext cannot re-init (`cannot load
+   module more than once per process`), so later vault/embedding tests silently degrade. `flake-wip`'s
+   `_restore_chromadb_modules` fixture was *causing* this, not fixing it. Fix: warm chromadb at conftest
+   import (so it survives every snapshot) + fix the offending test to never restore a `MagicMock`.
+4. **"Cockpit flakiness"** — NOT a key issue (12/13 pass keyless); `POST /sessions` cold-boot exceeds
+   GatewayClient's 15s timeout. Made the client timeout env-configurable
+   (`HACHI_GATEWAY_CLIENT_TIMEOUT`; prod stays 15s); conftest grants 90s. This fixes the S1 gate's
+   single `test_cockpit_gaps` failure noted above. `flake-wip`'s blanket `skipif` was wrong — it would
+   have skipped 12 passing tests. Per-layer detail in `DECISIONS.md`.
