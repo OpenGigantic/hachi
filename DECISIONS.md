@@ -2575,3 +2575,56 @@ class — empirically wrong (would skip 12 passing keyless tests) and would hide
 `src/hachi/cli/main.py` (dotenv guard) · `src/hachi/client/gateway.py` (configurable timeout) ·
 `tests/conftest.py` (flags + chromadb warm + env-restore fixture; removed harmful chromadb fixture) ·
 `tests/test_file_platform.py` (sentinel restore) · `tests/test_dotenv_hermeticity.py` (new).
+
+---
+
+## Feature tier — EventBus / knowledge-graph / query-cache (2026-06-25)
+
+Three user-greenlit features, each "activate dormant scaffolding" not greenfield.
+Orchestrate-verify-gate via Sonnet 4.6 subagents; Opus designed, verified, committed.
+
+### EventBus reactivity (`73199b7`) **[ADR]**
+**Found.** A complete `EventBus` + a byte-identical funnel existed behind default-off
+`[events] bus_funnel`; the reactive architecture (Initiative C) was dormant. Reactive
+`file.uploaded→auto_extract` was double-gated (needed BOTH `bus_funnel` AND
+`[jobs] durable_handlers`).
+**Decided.** Default `bus_funnel` True (byte-identical proven by `test_slice22_wiring`).
+DECOUPLE the reactive subscription from `durable_handlers`: subscribe whenever the bus
+is on — async/durable when the JobRegistry is on, else sync-inline (file.uploaded is
+emitted only by FilePipeline.ingest / POST /files, never the turn hot path, so inline is
+safe and cannot orphan a job). Wire ObservabilitySink (no-op when tracing off). Promote
+leaked literals to the existing typed constants (unifies the budget event name with the
+daily-cap path). Did NOT default `durable_handlers` on (bigger subsystem; out of scope).
+**Why.** Completes the migration to the bus as the event path with the full suite as the
+byte-identical safety net, without forcing durable execution semantics on every user.
+
+### Knowledge-graph memory (`0518255`)
+**Found.** `memory_graph.py` (≤2-hop typed-edge expansion + supersession) was complete but
+had NO caller. Crucially, the edge data already exists and is fresh: MemoryManager's typed
+extraction writes nodes WITH `->[:key=value]` edges to `.og` files via MemoryWriter on the
+normal write path — so graph recall reads them with ZERO new billed calls. (The vault→.og
+*exporter* writes no edges, a red herring; the *typed writer* does.)
+**Decided.** New `core/graph_recall.py::build_graph_recall_section` (pure helper), wired in
+`orchestrator._chat_impl_inner` step 3b to APPEND a `[Related memory (graph)]` section to
+the semantic recall block — additive (never replaces the floor), `[memory] graph_recall`
+flag (default True), broad try/except (a recall enhancement must never break a turn),
+degrades to "" without edges. Perf: process-LRU keyed `(memory_dir, max .og mtime_ns)` so
+the rglob+parse runs only on actual file change — not every turn (stat-only probe).
+**Why.** Structured graph traversal (project→tasks, causal chains, supersession) on top of
+flat semantic recall, free and safe, gated by the full suite.
+
+### Frontend query-cache (`1475a52`)
+**Found.** Route loaders fired once per path per session (binary `_loaded` Set in
+`useRouteLoaders`) and never refetched — data went stale until a full reload.
+**Decided.** New `lib/data/cache.ts`: `loadCached(key, loader, {ttlMs, force})` with
+stale-while-revalidate (fresh→no-op; stale→deduped loader via existing `dedupe.ts`; stamp
+only on success so failures retry) + `invalidate`/`invalidateAll` + `DEFAULT_TTL_MS=30s` +
+a `_setNow` test seam. Rewired `useRouteLoaders` to domain-keyed `loadCached` (approvals
+10s, spend 60s); invalidate after memory/approval mutations. Frozen foundation
+(client/sse/live/store) untouched; no gateway routes → OpenAPI contract unchanged.
+**Why.** Revisits now refresh on a TTL while the store keeps showing prior data (SWR),
+without adopting a heavy query lib inconsistent with the custom data layer.
+
+### Gate results
+EventBus 3887 pass / KG 3907 pass / query-cache vitest 94 pass — each 0 fail, ruff +
+strict-mypy (36) clean, frontend typecheck + build green. All pushed to `reassess`.
