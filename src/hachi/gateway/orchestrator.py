@@ -551,6 +551,10 @@ class AgentSession:
         # Set by boot_agent from memory settings (episodic_top_k).
         self._episodic_top_k: int = 3
 
+        # Stage-C graph expansion: when True, each turn appends a concise graph-expanded
+        # memory section to the recall block.  Set by boot_agent from memory.graph_recall.
+        self._graph_recall: bool = True
+
     @property
     def resumed_transcript(self) -> list[tuple[str, str]]:
         """User/assistant turns carried over from a resumed session (oldest first)."""
@@ -1460,6 +1464,29 @@ class AgentSession:
                 + "\n".join(lines)
                 + "\n"
             )
+
+        # 3b. Stage-C graph expansion — appends a graph-traversed section to recall_block.
+        #     Additive only; never replaces the semantic/episodic floor.  Wrapped in a
+        #     broad try/except so a graph failure never breaks a turn.
+        if self._graph_recall:
+            try:
+                from hachi.core.graph_recall import build_graph_recall_section
+                from hachi.core.paths import get_hachi_paths
+
+                _graph_section = build_graph_recall_section(
+                    user_input=user_input,
+                    memory_dir=getattr(self.memory, "memory_dir", None)
+                    or get_hachi_paths().memory_dir,
+                    existing_recall=recall_block,
+                )
+                if _graph_section:
+                    recall_block += _graph_section
+            except Exception:
+                logger.debug(
+                    "_chat_impl_inner: graph recall failed for turn %s (non-fatal)",
+                    turn_id,
+                    exc_info=True,
+                )
 
         # 4. Create immutable TurnContext (Phase 1)
         # This replaces the mutation of loop.base_system_prompt
@@ -3075,6 +3102,8 @@ def boot_agent(
     session._browser_controller = browser_controller  # closed on shutdown (no-op if never used)
     # M1: episodic recall top-k from memory settings (0 = disabled).
     session._episodic_top_k = _memory_settings.episodic_top_k
+    # Stage-C: graph recall enabled flag from memory settings (default True).
+    session._graph_recall = _memory_settings.graph_recall
     # Slice 2.2: activate durable title job path when the flag is on.
     if _jobs_cfg.durable_handlers:
         session._durable_title = True

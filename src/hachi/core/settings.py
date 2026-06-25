@@ -101,6 +101,10 @@ class MemorySettings(BaseModel):
     #     Only re-ranks relevance-gated core/episodic recall; NEVER user_profile or
     #     get_recent_facts. A reasonable starting value if enabled is ~30.0.
     decay_half_life_days: float | None = None
+    # Stage-C graph expansion: when True, each turn appends a concise graph-expanded
+    # memory section to the recall block (≤400 tokens, additive, gracefully degrades
+    # to empty on any error).  Default True (enabled).  Set False to opt out entirely.
+    graph_recall: bool = True
 
 
 class LimitsSettings(BaseModel):
