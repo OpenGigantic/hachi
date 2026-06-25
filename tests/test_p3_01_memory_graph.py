@@ -232,9 +232,15 @@ def test_extractor_schema_has_edges_field() -> None:
     """The M1 extraction tool schema must include the edges field for P3-01."""
     import inspect
 
+    import hachi.core.memory as memory_mod
     from hachi.core.memory import MemoryManager
 
-    source = inspect.getsource(MemoryManager._run_typed_extraction)  # type: ignore[attr-defined]
+    # The schema (including the edges field + edge-format docstring) lives in the
+    # module-level extract_facts function.  Fall back to _run_typed_extraction so
+    # the test stays green if the code is ever reorganised again.
+    source = inspect.getsource(memory_mod.extract_facts)
+    if "edges" not in source:
+        source += inspect.getsource(MemoryManager._run_typed_extraction)  # type: ignore[attr-defined]
     assert "edges" in source, "Extractor tool schema missing 'edges' field"
     assert "->[:key=value]" in source or "->[:about=" in source, (
         "Extractor schema should document edge format"

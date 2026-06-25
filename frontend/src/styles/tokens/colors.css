@@ -34,6 +34,14 @@
   --hachi-success-tint: #DEF0E6;
   --hachi-danger-tint:  #F6DEDB;
 
+  /* — code blocks (always dark, bg/text/icon are theme-invariant) — */
+  --hachi-code-bg:         #13121A;
+  --hachi-code-text:       rgba(255,255,255,0.82);
+  --hachi-code-icon:       rgba(255,255,255,0.50);
+  /* copied feedback: green in light theme (visible on both bg and page) */
+  --hachi-code-copied:     #22c55e;
+  --hachi-code-copied-bg:  rgba(34,197,94,0.15);
+
   /* — semantic aliases — */
   --text-default:       var(--hachi-ink);
   --text-muted:         var(--hachi-muted);
@@ -72,6 +80,10 @@
     --hachi-danger-tint:  #321E1C;
     --hachi-danger-fg:    #E07068;  /* danger text on dark danger-tint bg */
 
+    /* copied feedback: blue in dark theme — bright enough on #13121A code-bg */
+    --hachi-code-copied:    #7aa2f7;
+    --hachi-code-copied-bg: rgba(76,110,245,0.18);
+
     color-scheme: dark;
   }
 }
@@ -92,5 +104,6 @@
   --hachi-canvas: #16151A; --hachi-surface: #201E25; --hachi-cream: #2A2730;
   --hachi-working-tint:#34281A; --hachi-trust-tint:#1E2735; --hachi-success-tint:#182A22; --hachi-danger-tint:#321E1C;
   --hachi-danger-fg: #E07068;
+  --hachi-code-copied: #7aa2f7; --hachi-code-copied-bg: rgba(76,110,245,0.18);
   color-scheme: dark;
 }

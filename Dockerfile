@@ -6,7 +6,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # G-A6: Create a dedicated non-root user before installing the package.
 # UID 10001 is a conventional non-root UID that avoids conflicts with well-known
 # system UIDs (0-999 on Debian/Ubuntu) while being below the 65535 nobody range.
-RUN useradd --create-home --uid 10001 hachi
+#
+# Pre-create the XDG dirs Hachi uses (platformdirs → ~/.config|.local/share|.local/state
+# |.cache /hachi) owned by the non-root user. The compose recipe mounts NAMED volumes onto
+# these paths; a named volume initialises from the image directory it covers, so it inherits
+# this `hachi` ownership and the non-root user can actually write to it. (A host bind mount
+# would be created root-owned and break writes for uid 10001 — hence named volumes.)
+RUN useradd --create-home --uid 10001 hachi \
+ && mkdir -p /home/hachi/.config/hachi \
+             /home/hachi/.local/share/hachi \
+             /home/hachi/.local/state/hachi \
+             /home/hachi/.cache/hachi \
+ && chown -R hachi:hachi /home/hachi
 
 WORKDIR /app
 

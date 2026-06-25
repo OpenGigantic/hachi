@@ -15,6 +15,7 @@
 
 import { apiGet, apiSend, USE_MOCKS } from "../client";
 import { registerLoader } from "../live";
+import { invalidate } from "../cache";
 import { useStore } from "../../store/store";
 import type { MemGroup, BlockedItem, ProposedChange, RecallHit } from "../types";
 
@@ -198,7 +199,8 @@ export async function addFact(groupId: string, text: string): Promise<void> {
   if (raw?.id && (raw.id.startsWith("BLOCKED:") || raw.id === "LIMIT_REACHED")) {
     throw new Error(raw.id === "LIMIT_REACHED" ? "Memory limit reached" : `Blocked: ${raw.id.slice(8)}`);
   }
-  // Re-hydrate so the new content-hash id appears in the list
+  // Bust the cache so the next route visit refetches, then reload immediately.
+  invalidate("memory");
   await loadMemory();
 }
 
@@ -232,10 +234,12 @@ export async function saveFact(
         text: newText.trim(),
       });
     }
-    // Re-hydrate so the new content-hash id is accurate
+    // Bust the cache so the next route visit refetches, then reload immediately.
+    invalidate("memory");
     await loadMemory();
   } catch {
     // Network errors surface the reconnecting banner via client.ts callback.
+    invalidate("memory");
     void loadMemory(); // best-effort revert to server state
   }
 }
@@ -250,10 +254,12 @@ export async function delFact(groupId: string, factId: string): Promise<void> {
   if (USE_MOCKS) return; // store action already ran optimistically
   try {
     await apiSend<GatewayFactDeleteResponse>("DELETE", `/memory/facts/${factId}`);
-    // Re-hydrate for consistency (server may have recomputed group structure)
+    // Bust the cache so the next route visit refetches, then reload immediately.
+    invalidate("memory");
     await loadMemory();
   } catch {
     // Network errors surface the reconnecting banner via client.ts callback.
+    invalidate("memory");
     void loadMemory(); // best-effort revert — puts the fact back if it still exists
   }
 }

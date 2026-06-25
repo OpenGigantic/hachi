@@ -291,6 +291,25 @@ class OpenAICompatibleSpeechProvider:
 
 _ELEVENLABS_API_BASE = "https://api.elevenlabs.io/v1"
 _ELEVENLABS_DEFAULT_VOICE = "21m00Tcm4TlvDq8ikWAM"  # "Rachel" — always present
+_ELEVENLABS_DEFAULT_MODEL = "eleven_turbo_v2_5"
+
+# Shared httpx client for ElevenLabs — lazily created, reuses TCP/TLS connections.
+# Never opened at import time; no eager sockets.
+_el_shared_client: Any = None
+
+
+def _get_el_http_client() -> Any:
+    """Return (or create) the shared ElevenLabs httpx.Client."""
+    import httpx
+
+    global _el_shared_client  # noqa: PLW0603
+    if _el_shared_client is None:
+        _el_shared_client = httpx.Client(
+            timeout=60.0,
+            follow_redirects=False,
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        )
+    return _el_shared_client
 
 
 class ElevenLabsSpeechProvider:
@@ -309,11 +328,13 @@ class ElevenLabsSpeechProvider:
         *,
         api_key: str | None = None,
         voice_id: str | None = None,
+        model_id: str | None = None,
         retry_policy: RetryPolicy | None = None,
         provider_name: str = "elevenlabs-speech",
     ) -> None:
         self._api_key = api_key or None
         self._voice_id = voice_id or _ELEVENLABS_DEFAULT_VOICE
+        self._model_id = model_id or _ELEVENLABS_DEFAULT_MODEL
         self._policy = retry_policy or RetryPolicy()
         self._recorder = HealthRecorder(provider_name, self._policy)
         self.name = provider_name
@@ -361,6 +382,7 @@ class ElevenLabsSpeechProvider:
 
         resolved_voice = voice or self._voice_id
         api_key = self._api_key  # local for closure capture
+        model_id = self._model_id  # local for closure capture
 
         # Map common format names to ElevenLabs output_format values.
         _fmt_map = {
@@ -373,12 +395,10 @@ class ElevenLabsSpeechProvider:
         el_fmt = _fmt_map.get(fmt.lower(), "mp3_44100_128")
 
         def _call() -> bytes:
-            import httpx
-
             url = f"{_ELEVENLABS_API_BASE}/text-to-speech/{resolved_voice}"
             payload = {
                 "text": text,
-                "model_id": "eleven_monolingual_v1",
+                "model_id": model_id,
                 "output_format": el_fmt,
             }
             headers = {
@@ -386,8 +406,8 @@ class ElevenLabsSpeechProvider:
                 "Content-Type": "application/json",
                 "Accept": "audio/mpeg",
             }
-            with httpx.Client(timeout=120.0, follow_redirects=False) as client:
-                resp = client.post(url, json=payload, headers=headers)
+            client = _get_el_http_client()
+            resp = client.post(url, json=payload, headers=headers)
             if resp.status_code != 200:
                 detail = resp.text[:200] if resp.text else ""
                 raise RuntimeError(f"ElevenLabs TTS returned HTTP {resp.status_code}: {detail}")
@@ -442,7 +462,8 @@ class ElevenLabsSpeechProvider:
                 try:
                     cfg = voice_cfg.model_dump()
                 except AttributeError:
-                    for attr in ("elevenlabs_api_key_env", "elevenlabs_voice_id"):
+                    for attr in ("elevenlabs_api_key_env", "elevenlabs_voice_id",
+                                 "elevenlabs_model"):
                         val = getattr(voice_cfg, attr, None)
                         if val is not None:
                             cfg[attr] = val
@@ -458,8 +479,14 @@ class ElevenLabsSpeechProvider:
         voice_id: str | None = cfg.get("elevenlabs_voice_id") or os.environ.get(
             "HACHI_ELEVENLABS_VOICE_ID"
         )
+        # Model: read from config field (contract C-VOICECFG), fallback to default.
+        model_id: str | None = (
+            cfg.get("elevenlabs_model")
+            or getattr(voice_cfg, "elevenlabs_model", None)
+            or os.environ.get("HACHI_ELEVENLABS_MODEL")
+        )
 
-        return cls(api_key=api_key, voice_id=voice_id, retry_policy=retry_policy)
+        return cls(api_key=api_key, voice_id=voice_id, model_id=model_id, retry_policy=retry_policy)
 
 
 # ---------------------------------------------------------------------------

@@ -35,13 +35,32 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
+from hachi.core.errors import MCPError
 from hachi.core.loop import ToolRegistry
+from hachi.core.resilience import HealthRecorder, RetryPolicy, resilient_call
 from hachi.core.untrusted_content import guard_untrusted
 
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Private exception for transient MCP transport failures
+# ---------------------------------------------------------------------------
+
+
+class _MCPTimeoutError(TimeoutError):
+    """Raised by ``_call_tool_once`` when the server returns no response (timeout or dead
+    transport).
+
+    Inherits from ``TimeoutError`` so that ``resilience._is_transient`` recognises it as
+    a retryable condition (the name contains "Timeout").  This keeps the retry heuristic
+    in resilience.py stable and avoids coupling MCPError (which can also be non-retryable)
+    into the transient-detection path.
+    """
+
 
 # MED-004: Hard cap on MCP tool response size to prevent context flooding.
 # Responses larger than this are truncated with a visible marker so the LLM
@@ -768,6 +787,9 @@ class HttpTransport(MCPTransport):
         self._boot_timeout_seconds = float(boot_timeout_seconds or 30.0)
         self._client: Any = None
         self._alive: bool = False
+        # Streamable-HTTP: the server assigns a session id on initialize (returned in
+        # the Mcp-Session-Id response header) that must be echoed on later requests.
+        self._session_id: str | None = None
 
     def start(self) -> bool:
         """Verify the endpoint is reachable (HEAD/GET probe).
@@ -779,7 +801,14 @@ class HttpTransport(MCPTransport):
             import httpx
 
             self._client = httpx.Client(
-                headers={"Content-Type": "application/json", **self._headers},
+                headers={
+                    "Content-Type": "application/json",
+                    # MCP streamable-HTTP requires the client to accept BOTH a single
+                    # JSON response and an SSE stream. Hosted servers (e.g. Tavily's
+                    # mcp.tavily.com) return 406 Not Acceptable without text/event-stream.
+                    "Accept": "application/json, text/event-stream",
+                    **self._headers,
+                },
                 timeout=self._request_timeout_seconds,
             )
             self._alive = True
@@ -800,7 +829,10 @@ class HttpTransport(MCPTransport):
         if not self._client:
             return
         try:
-            self._client.post(self._url, json=message, timeout=self._request_timeout_seconds)
+            _headers = {"Mcp-Session-Id": self._session_id} if self._session_id else None
+            self._client.post(
+                self._url, json=message, timeout=self._request_timeout_seconds, headers=_headers
+            )
         except Exception as exc:
             logger.warning("[mcp/http] %s: send error: %s", self._name, exc)
 
@@ -835,27 +867,53 @@ class HttpTransport(MCPTransport):
         if not self._client:
             return None
         try:
+            _headers = {"Mcp-Session-Id": self._session_id} if self._session_id else None
             resp = self._client.post(
-                self._url, json=message, timeout=self._request_timeout_seconds
+                self._url, json=message, timeout=self._request_timeout_seconds, headers=_headers
             )
             resp.raise_for_status()
-            text = resp.text.strip()
-            # Handle NDJSON streaming response: take the last non-empty JSON line.
-            if "\n" in text:
-                for line in reversed(text.splitlines()):
-                    line = line.strip()
-                    if line:
-                        try:
-                            parsed: dict[str, Any] = json.loads(line)
-                            return parsed
-                        except json.JSONDecodeError:
-                            continue
-                return None
-            result: dict[str, Any] = json.loads(text)
-            return result
+            # Capture the session id assigned on initialize for subsequent requests.
+            _sid = resp.headers.get("Mcp-Session-Id") or resp.headers.get("mcp-session-id")
+            if _sid:
+                self._session_id = _sid
+            return self._parse_response_body(resp.text)
         except Exception as exc:
             logger.warning("[mcp/http] %s: send_and_receive error: %s", self._name, exc)
             return {"error": {"message": str(exc)}}
+
+    @staticmethod
+    def _parse_response_body(text: str) -> dict[str, Any] | None:
+        """Parse a streamable-HTTP response body.
+
+        The body may be a single JSON object, NDJSON, or an SSE stream
+        (``event: message\\ndata: {json}\\n\\n``). Scan lines from the end for the
+        last JSON-RPC object, stripping an optional ``data:`` SSE prefix and skipping
+        SSE control lines.
+        """
+        text = (text or "").strip()
+        if not text:
+            return None
+        if "\n" in text or text.startswith("data:"):
+            for raw in reversed(text.splitlines()):
+                line = raw.strip()
+                if not line or line.startswith((":", "event:", "id:", "retry:")):
+                    continue
+                if line.startswith("data:"):
+                    line = line[len("data:") :].strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict):
+                    return obj
+            return None
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        return obj if isinstance(obj, dict) else None
 
     def close(self) -> None:
         """Close the HTTP client."""
@@ -935,6 +993,26 @@ class MCPServerConnection:
         self._request_id = 0
         self._id_lock = threading.Lock()
         self._tools: list[dict[str, Any]] = []
+
+        # Issue 4: per-server error tracking and transient loading state.
+        # _last_error is set when a server fails to start; status is exposed
+        # via get_inventory() so operator views can surface the failure reason.
+        self._last_error: str | None = None
+        # _loading is True while setup_from_config's boot thread is running.
+        self._loading: bool = False
+
+        # P1-8: per-server resilience — one HealthRecorder + RetryPolicy per connection
+        # so one dead server's breaker never affects peers.
+        self._retry_policy: RetryPolicy = RetryPolicy(
+            max_attempts=3,
+            backoff_base_s=0.25,
+            timeout_s=float(request_timeout_seconds),
+            breaker_threshold=5,
+            breaker_cooldown_s=30.0,
+        )
+        self._health_recorder: HealthRecorder = HealthRecorder(name, self._retry_policy)
+        # Serialise reconnect attempts so parallel tool calls don't all reconnect.
+        self._reconnect_lock: threading.Lock = threading.Lock()
 
         self._transport: MCPTransport = self._make_transport()
 
@@ -1016,11 +1094,9 @@ class MCPServerConnection:
         t.join(timeout=boot_timeout)
 
         if t.is_alive():
-            logger.warning(
-                "[mcp] %s: boot timed out after %.1fs (UC-DEV-001).",
-                self.name,
-                boot_timeout,
-            )
+            msg = f"boot timed out after {boot_timeout:.1f}s (UC-DEV-001)"
+            logger.warning("[mcp] %s: %s", self.name, msg)
+            self._last_error = msg
             # Kill subprocess if one was spawned
             try:
                 proc = self._process
@@ -1033,12 +1109,15 @@ class MCPServerConnection:
             return False
 
         if exc_holder:
-            logger.warning(
-                "[mcp] %s: unexpected error during boot: %s", self.name, exc_holder[0]
-            )
+            msg = str(exc_holder[0])
+            logger.warning("[mcp] %s: unexpected error during boot: %s", self.name, msg)
+            self._last_error = msg
             return False
 
-        return result_holder[0] if result_holder else False
+        success = result_holder[0] if result_holder else False
+        if not success and self._last_error is None:
+            self._last_error = "server failed to start (check command/url and server logs)"
+        return success
 
     def _start_inner(self) -> bool:
         """Run the MCP boot sequence (called inside the timed boot thread).
@@ -1093,7 +1172,105 @@ class MCPServerConnection:
         return self._transport.is_alive
 
     def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> str:
-        """Call a tool on this MCP server.
+        """Call a tool on this MCP server with retry, circuit-breaker, and reconnect.
+
+        Wraps the raw transport call in the shared ``resilient_call`` / ``HealthRecorder``
+        machinery (P1-8) so that:
+
+        - Transient I/O failures are retried with exponential backoff.
+        - A dead server trips the per-server circuit breaker; subsequent calls
+          fast-fail without hammering the transport.
+        - If the transport is detected as dead on the first attempt, exactly ONE
+          reconnect is attempted before the retry loop gives up.
+
+        Args:
+            tool_name:  The name of the tool to call.
+            arguments:  The arguments to pass to the tool.
+
+        Returns:
+            The tool's response as a string.  On unrecoverable failure, returns an
+            ``[MCP ERROR]``-prefixed string so the LLM can see the failure reason
+            (the loop sets ``is_error`` on tool exceptions; callers that catch
+            exceptions should expect ``MCPError``).
+
+        Raises:
+            MCPError: When the circuit breaker is open (fast-fail path), so the loop
+                sets ``is_error=True`` on the tool_result block.
+        """
+        # Fast-fail when the breaker is open: surface a typed MCPError so the
+        # execution loop marks is_error=True on the tool_result block.
+        health = self._health_recorder.snapshot()
+        if not health.is_usable():
+            raise MCPError(
+                f"MCP server '{self.name}' circuit breaker is open "
+                f"(too many consecutive failures); will retry after cooldown",
+                context={"server": self.name},
+            )
+
+        # Reconnect-on-dead: if the transport is already known-dead before we
+        # even try, attempt one reconnect so a mid-session restart succeeds.
+        if not self._transport.is_alive:
+            self._try_reconnect()
+
+        def _attempt() -> str:
+            # Inner reconnect: if the transport died between the outer liveness
+            # check and now (e.g. a prior call killed it), reconnect once.
+            if not self._transport.is_alive:
+                self._try_reconnect()
+                if not self._transport.is_alive:
+                    raise MCPError(
+                        f"MCP server '{self.name}' transport is not alive and reconnect failed",
+                        context={"server": self.name},
+                    )
+            return self._call_tool_once(tool_name, arguments)
+
+        try:
+            result: str = resilient_call(
+                _attempt,
+                self._retry_policy,
+                self._health_recorder,
+                on_failover=lambda attempt, exc: logger.warning(
+                    "[mcp] %s: tool '%s' attempt %d failed (%s); retrying",
+                    self.name,
+                    tool_name,
+                    attempt,
+                    type(exc).__name__,
+                ),
+            )
+            return result
+        except MCPError:
+            raise
+        except Exception as exc:
+            raise MCPError(
+                f"MCP server '{self.name}' tool '{tool_name}' failed: {exc}",
+                context={"server": self.name, "tool": tool_name},
+            ) from exc
+
+    def _try_reconnect(self) -> None:
+        """Attempt a single transport reconnect (serialised; idempotent if transport is alive).
+
+        Called when the transport is detected as dead before or during a ``call_tool``
+        invocation.  Uses a lock so concurrent callers don't all spawn a reconnect
+        simultaneously — only the first thread reconnects; subsequent threads re-check
+        ``is_alive`` after acquiring the lock.
+        """
+        with self._reconnect_lock:
+            if self._transport.is_alive:
+                return  # Another thread already reconnected.
+            logger.info("[mcp] %s: transport dead; attempting reconnect", self.name)
+            try:
+                self._transport.close()
+            except Exception:
+                pass
+            self._transport = self._make_transport()
+            ok = self._start_inner()
+            if ok:
+                logger.info("[mcp] %s: reconnect succeeded", self.name)
+            else:
+                logger.warning("[mcp] %s: reconnect failed", self.name)
+
+    def _call_tool_once(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        """Single-shot tool invocation (no retry).  Called by ``call_tool`` via resilient_call.
 
         Args:
             tool_name:  The name of the tool to call.
@@ -1101,15 +1278,26 @@ class MCPServerConnection:
 
         Returns:
             The tool's response as a string.
+
+        Raises:
+            _MCPTimeoutError: When the server returns no response (transient; will be retried).
+            MCPError: On a JSON-RPC error response (non-transient; will NOT be retried).
         """
         response = self._send_request("tools/call", {"name": tool_name, "arguments": arguments})
 
         if not response:
-            return f"Error: No response from MCP server '{self.name}'"
+            # Raise a TimeoutError subclass so resilience._is_transient recognises it as
+            # retryable (name contains "Timeout").  MCPError alone is NOT transient.
+            raise _MCPTimeoutError(
+                f"No response from MCP server '{self.name}' (timeout or dead transport)",
+            )
 
         if "error" in response:
             error = response["error"]
-            return f"MCP Error: {error.get('message', 'Unknown error')}"
+            raise MCPError(
+                f"MCP server '{self.name}' returned error: {error.get('message', 'Unknown error')}",
+                context={"server": self.name, "tool": tool_name, "rpc_error": error},
+            )
 
         result = response.get("result", {})
         content = result.get("content", [])
@@ -1237,7 +1425,6 @@ class MCPServerConnection:
             transport, (StdioTransport, SseTransport, HttpTransport)
         ):
             transport._boot_timeout_seconds = value
-
 
 
 # ---------------------------------------------------------------------------
@@ -1369,6 +1556,11 @@ class MCPManager:
         API, the config is persisted and then this method is called to bring the
         server online without a gateway restart.
 
+        The server is registered immediately with ``_loading=True`` so that
+        :meth:`get_inventory` surfaces a transient "starting" status while the
+        boot thread runs.  Once boot completes the flag is cleared and the status
+        reflects the real outcome.
+
         Args:
             cfg: A fully populated :class:`MCPServerConfig`.
 
@@ -1386,10 +1578,19 @@ class MCPManager:
             url=cfg.url,
             headers=cfg.headers,
         )
-        if server.start():
-            self._servers[cfg.name] = server
-            return True
-        return False
+        # Mark as loading so inventory shows "starting" during boot.
+        server._loading = True
+        # Optimistically register so get_inventory returns an entry immediately.
+        self._servers[cfg.name] = server
+        try:
+            ok = server.start()
+        finally:
+            server._loading = False
+        if not ok:
+            # Keep the failed entry in _servers so get_inventory can surface the
+            # error; the gateway can call shutdown() to remove it if desired.
+            pass
+        return ok
 
     def register_tools(self, registry: ToolRegistry) -> None:
         """Register all discovered MCP tools into the Hachi ToolRegistry.
@@ -1425,17 +1626,13 @@ class MCPManager:
 
             schema = {
                 "name": namespaced_name,
-                "description": tool.get(
-                    "description", f"Tool from MCP server '{server_name}'"
-                ),
+                "description": tool.get("description", f"Tool from MCP server '{server_name}'"),
                 "input_schema": tool.get(
                     "inputSchema", {"type": "object", "properties": {}, "required": []}
                 ),
             }
 
-            def make_handler(
-                srv: MCPServerConnection, original_name: str
-            ) -> Any:
+            def make_handler(srv: MCPServerConnection, original_name: str) -> Any:
                 def handler(**kwargs: Any) -> str:
                     raw = srv.call_tool(original_name, kwargs)
                     guarded, _flagged = guard_untrusted(
@@ -1466,22 +1663,40 @@ class MCPManager:
         """Return a structured MCP inventory snapshot for operator views.
 
         Each entry includes the server ``name``, ``transport``, ``status``,
-        ``tool_count``, and the list of tool names (``tools``).
+        ``tool_count``, the list of tool names (``tools``), and an optional
+        ``err`` string populated when the server failed to start (Issue 4).
+
+        Status values:
+          - ``"starting"`` — boot thread is still running (transient).
+          - ``"ready"``    — transport is alive and tools were discovered.
+          - ``"failed"``   — server failed to start; see ``err`` for reason.
+          - ``"stopped"``  — previously alive but transport is no longer alive.
 
         Returns:
             List of inventory dicts, one per registered server.
         """
         rows: list[dict[str, Any]] = []
         for name, server in self._servers.items():
-            rows.append(
-                {
-                    "name": name,
-                    "transport": server.transport_kind,
-                    "status": "ready" if server.is_alive else "stopped",
-                    "tool_count": len(server.tools),
-                    "tools": [tool.get("name", "") for tool in server.tools if tool.get("name")],
-                }
-            )
+            loading = getattr(server, "_loading", False)
+            last_err: str | None = getattr(server, "_last_error", None)
+            if loading:
+                status = "starting"
+            elif server.is_alive:
+                status = "ready"
+            elif last_err is not None:
+                status = "failed"
+            else:
+                status = "stopped"
+
+            entry: dict[str, Any] = {
+                "name": name,
+                "transport": server.transport_kind,
+                "status": status,
+                "tool_count": len(server.tools),
+                "tools": [tool.get("name", "") for tool in server.tools if tool.get("name")],
+                "err": last_err,
+            }
+            rows.append(entry)
         return rows
 
     @property

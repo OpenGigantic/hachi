@@ -69,6 +69,9 @@ class MCPServerSnapshot:
     tool_count: int
     tools: tuple[str, ...]
     transport: str = "stdio"
+    # Failure reason when status is "failed"/"stopped" (e.g. bad command/url, server
+    # crashed on start). Surfaced to the UI so "not reachable" shows WHY (Issue 4).
+    err: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,7 +328,7 @@ class RuntimeReadModelStore:
                     status=str(event.payload.get("status", "completed")),
                 )
 
-            if event.name == "job.failed":
+            if event.name in ("job.failed", "job.dead_letter"):
                 job_id = str(event.payload.get("job_id", "job:unknown"))
                 current = self._jobs.get(job_id)
                 kind = current.kind if current else str(event.payload.get("kind", "generic"))

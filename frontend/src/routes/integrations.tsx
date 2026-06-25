@@ -16,6 +16,7 @@ import {
   connectIntegration,
   disconnectIntegration,
   submitCredentials,
+  testCredentials,
   addMcpServer,
   validateMcpServerInput,
   subscribeActionStatus,
@@ -23,7 +24,7 @@ import {
   getDisconnectStatus,
   ALLOWED_MCP_COMMANDS,
 } from '../lib/data/domains/integrations'
-import type { McpCommand, McpTransport, CredentialFieldSpec } from '../lib/data/domains/integrations'
+import type { McpCommand, McpTransport, CredentialFieldSpec, CredentialTestResult } from '../lib/data/domains/integrations'
 
 // ---- status meta --------------------------------------------------------
 
@@ -61,6 +62,12 @@ const mcpMeta: Record<string, StatusMeta> = {
     fg: '#2C7A50',
     dot: 'var(--hachi-success)',
     text: 'connected',
+  },
+  loading: {
+    bg: 'var(--hachi-trust-tint)',
+    fg: '#1A5CAE',
+    dot: 'var(--hachi-trust)',
+    text: 'loading',
   },
   starting: {
     bg: 'var(--hachi-working-tint)',
@@ -143,11 +150,13 @@ interface CredentialDialogProps {
   connectorId: string
   connectorName: string
   fields: CredentialFieldSpec[]
+  /** Where existing credentials live — "vault" | "env" | null (not configured). */
+  connectorSource?: "vault" | "env" | null
   onClose: () => void
   onSaved: () => void
 }
 
-function CredentialDialog({ connectorId, connectorName, fields, onClose, onSaved }: CredentialDialogProps) {
+function CredentialDialog({ connectorId, connectorName, fields, connectorSource, onClose, onSaved }: CredentialDialogProps) {
   const trapRef = useFocusTrap<HTMLDivElement>(true)
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(fields.map((f) => [f.key, '']))
@@ -156,6 +165,10 @@ function CredentialDialog({ connectorId, connectorName, fields, onClose, onSaved
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({})
+  // Test connection state: null = not tested / unavailable, "testing" = in-flight, result otherwise.
+  const [testResult, setTestResult] = useState<CredentialTestResult | null | 'testing'>(null)
+  // Whether the test endpoint is available (404 means hide the button).
+  const [testAvailable, setTestAvailable] = useState<boolean | null>(null)
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -164,6 +177,35 @@ function CredentialDialog({ connectorId, connectorName, fields, onClose, onSaved
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onClose, submitting])
+
+  // Probe once on open whether the test endpoint is available (404 → hide button).
+  useEffect(() => {
+    let cancelled = false
+    testCredentials(connectorId).then((result) => {
+      if (cancelled) return
+      // null means 404 (not available); non-null means endpoint exists.
+      setTestAvailable(result !== null)
+    }).catch(() => {
+      if (!cancelled) setTestAvailable(true) // non-404 error → endpoint exists
+    })
+    return () => { cancelled = true }
+  }, [connectorId])
+
+  async function handleTestConnection() {
+    setTestResult('testing')
+    try {
+      const result = await testCredentials(connectorId)
+      if (result === null) {
+        setTestAvailable(false)
+        setTestResult(null)
+      } else {
+        setTestResult(result)
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Test failed'
+      setTestResult({ ok: false, message: msg })
+    }
+  }
 
   function validate(): boolean {
     const errors: Record<string, string> = {}
@@ -278,10 +320,39 @@ function CredentialDialog({ connectorId, connectorName, fields, onClose, onSaved
         {/* Form */}
         <form onSubmit={handleSubmit} noValidate>
           <div style={{ padding: '16px 22px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+            {/* Currently configured hint */}
+            {connectorSource === 'vault' && (
+              <div
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 7, fontSize: 12,
+                  color: '#2C7A50', background: 'var(--hachi-success-tint)',
+                  padding: '7px 10px', borderRadius: 8,
+                }}
+              >
+                <Icon name="key" size={13} style={{ flexShrink: 0 }} />
+                Credentials already configured — enter new values to update.
+              </div>
+            )}
+            {connectorSource === 'env' && (
+              <div
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 7, fontSize: 12,
+                  color: 'var(--hachi-trust)', background: 'var(--hachi-trust-tint)',
+                  padding: '7px 10px', borderRadius: 8,
+                }}
+              >
+                <Icon name="terminal" size={13} style={{ flexShrink: 0 }} />
+                Credentials loaded from environment — set here to override.
+              </div>
+            )}
+
             {fields.map((field) => {
               const hasError = Boolean(fieldErrors[field.key])
               const isSecret = field.secret
               const showPlain = showSecrets[field.key] ?? false
+              // When a secret is already configured, show masked placeholder until user types.
+              const maskedPlaceholder = isSecret && connectorSource != null ? '••••••••' : field.placeholder
               return (
                 <div key={field.key} style={fieldWrapStyle}>
                   <label htmlFor={`cred-${field.key}`} style={labelStyle}>
@@ -291,6 +362,17 @@ function CredentialDialog({ connectorId, connectorName, fields, onClose, onSaved
                     )}
                     {field.optional && (
                       <span style={{ color: 'var(--hachi-muted)', fontWeight: 400, marginLeft: 4 }}>(optional)</span>
+                    )}
+                    {connectorSource === 'env' && (
+                      <span
+                        style={{
+                          marginLeft: 6, fontSize: 10, fontWeight: 500,
+                          color: 'var(--hachi-trust)', background: 'var(--hachi-trust-tint)',
+                          padding: '1px 6px', borderRadius: 999,
+                        }}
+                      >
+                        from environment
+                      </span>
                     )}
                   </label>
                   <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
@@ -302,7 +384,7 @@ function CredentialDialog({ connectorId, connectorName, fields, onClose, onSaved
                         setValues((prev) => ({ ...prev, [field.key]: e.target.value }))
                         if (hasError) setFieldErrors((prev) => ({ ...prev, [field.key]: '' }))
                       }}
-                      placeholder={field.placeholder}
+                      placeholder={maskedPlaceholder}
                       disabled={submitting}
                       aria-invalid={hasError}
                       aria-describedby={hasError ? `cred-err-${field.key}` : undefined}
@@ -337,6 +419,48 @@ function CredentialDialog({ connectorId, connectorName, fields, onClose, onSaved
                 </div>
               )
             })}
+
+            {/* Test connection */}
+            {testAvailable && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <button
+                  type="button"
+                  onClick={() => void handleTestConnection()}
+                  disabled={submitting || testResult === 'testing'}
+                  style={{
+                    alignSelf: 'flex-start',
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    height: 32, padding: '0 12px', borderRadius: 8,
+                    border: '0.5px solid var(--hachi-line)',
+                    background: 'var(--hachi-canvas)', color: 'var(--hachi-ink)',
+                    font: '500 12.5px var(--font-body)',
+                    cursor: submitting || testResult === 'testing' ? 'not-allowed' : 'pointer',
+                    opacity: submitting || testResult === 'testing' ? 0.65 : 1,
+                  }}
+                >
+                  <Icon name="zap" size={13} />
+                  {testResult === 'testing' ? 'Testing…' : 'Test connection'}
+                </button>
+                {testResult !== null && testResult !== 'testing' && (
+                  <div
+                    style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 12,
+                      color: testResult.ok ? '#2C7A50' : 'var(--hachi-danger-fg)',
+                      background: testResult.ok ? 'var(--hachi-success-tint)' : 'var(--hachi-danger-tint)',
+                      padding: '7px 10px', borderRadius: 8,
+                    }}
+                    role="status"
+                  >
+                    <Icon
+                      name={testResult.ok ? 'check' : 'alert'}
+                      size={13}
+                      style={{ marginTop: 1, flexShrink: 0 }}
+                    />
+                    {testResult.message}
+                  </div>
+                )}
+              </div>
+            )}
 
             {submitError && (
               <div
@@ -1802,6 +1926,7 @@ function IntCardWithStatus({ integration: i }: IntCardWithStatusProps) {
           connectorId={i.id}
           connectorName={i.name}
           fields={credentialFields}
+          connectorSource={(i as Partial<IntegrationExtended>).source ?? null}
           onClose={() => setShowCredDialog(false)}
           onSaved={() => {
             setShowCredDialog(false)
@@ -1871,6 +1996,27 @@ function Integrations() {
             gap: 24,
           }}
         >
+          {/* ---- Tavily fallback notice (C-SEARCHFALLBACK) ---- */}
+          {integrations.some((i) => (i as Partial<IntegrationExtended>).fallback_active) && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '10px 14px',
+                borderRadius: 10,
+                background: 'var(--hachi-working-tint)',
+                border: '0.5px solid var(--hachi-working)',
+                fontSize: 13,
+                color: '#7C5108',
+              }}
+              role="status"
+            >
+              <Icon name="alert" size={15} style={{ flexShrink: 0 }} />
+              Using Playwright fallback — Tavily not reachable. Configure Tavily below to restore full web search.
+            </div>
+          )}
+
           {/* ---- Your accounts ---- */}
           <div>
             <h2

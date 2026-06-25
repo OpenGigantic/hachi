@@ -9,11 +9,15 @@ meant to give the user live feedback on spend, not billing-grade accuracy.
 
 from __future__ import annotations
 
+import datetime
+import logging
 import threading
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from hachi.core.llm import TokenUsage
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -27,13 +31,137 @@ class _PricingProvider(Protocol):
 # USD per 1,000,000 tokens, as (input, output). Prefix match on the model id so
 # dated variants (e.g. "claude-opus-4-8-20260101") resolve to the family price.
 MODEL_PRICING: dict[str, tuple[float, float]] = {
+    # Claude 4 family
     "claude-opus-4": (15.0, 75.0),
     "claude-sonnet-4": (3.0, 15.0),
     "claude-haiku-4": (1.0, 5.0),
+    # Explicit model ids (resolved before prefix match via longer key).
+    # NOTE: do not add a "claude-haiku-4-5" override here — it must prefix-match
+    # "claude-haiku-4" → (1.0, 5.0) (see tests/test_cost_tracking.py). A divergent
+    # per-variant price is a separate, deliberate pricing-accuracy change.
+    "claude-opus-4-8": (15.0, 75.0),
+    # OpenAI
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4o": (2.50, 10.0),
+    "gpt-4": (30.0, 60.0),
+    "gpt-3.5-turbo": (0.50, 1.50),
 }
 _DEFAULT_PRICING = (1.0, 5.0)
+
+# ---------------------------------------------------------------------------
+# Voice / modality pricing (Issue 9)
+# ---------------------------------------------------------------------------
+
+# STT: USD per minute of audio.
+# TTS: USD per 1,000 characters.
+# Prefix-matched on model id (longest prefix wins, like MODEL_PRICING).
+#
+# Sources (best-effort estimates, not billing-grade):
+#   whisper-1:          $0.006 / min   (OpenAI Whisper)
+#   tts-1:              $0.015 / 1k chars
+#   tts-1-hd:           $0.030 / 1k chars
+#   eleven_turbo_v2_5:  $0.30  / 1k chars  (ElevenLabs Turbo, ~0.3 USD/1k)
+#   eleven_multilingual_v2: $0.30 / 1k chars
+VOICE_PRICING: dict[str, dict[str, float]] = {
+    # STT models — keyed by model id prefix, value = { "per_minute": <float> }
+    "whisper-1": {"per_minute": 0.006},
+    "whisper": {"per_minute": 0.006},
+    # TTS models — keyed by model id prefix, value = { "per_1k_chars": <float> }
+    "tts-1-hd": {"per_1k_chars": 0.030},
+    "tts-1": {"per_1k_chars": 0.015},
+    "eleven_turbo_v2_5": {"per_1k_chars": 0.30},
+    "eleven_turbo_v2": {"per_1k_chars": 0.30},
+    "eleven_multilingual_v2": {"per_1k_chars": 0.30},
+    "eleven": {"per_1k_chars": 0.30},
+}
+
+_VOICE_LOCK = threading.Lock()
+
+
+def _voice_cost(modality: Literal["stt", "tts"], model: str, units: float) -> float:
+    """Compute the USD cost for a voice operation without side-effects.
+
+    Args:
+        modality: ``"stt"`` (units = minutes) or ``"tts"`` (units = chars).
+        model: Model identifier. Prefix-matched against :data:`VOICE_PRICING`.
+        units: Quantity — minutes for STT, character count for TTS.
+
+    Returns:
+        Estimated cost in USD (0.0 on pricing miss).
+    """
+    model_lower = (model or "").lower()
+    best_entry: dict[str, float] | None = None
+    best_len = -1
+    for prefix, entry in VOICE_PRICING.items():
+        if model_lower.startswith(prefix) and len(prefix) > best_len:
+            best_entry, best_len = entry, len(prefix)
+
+    if best_entry is None:
+        return 0.0
+
+    if modality == "stt":
+        rate = best_entry.get("per_minute", 0.0)
+        return units * rate
+    else:  # tts
+        rate = best_entry.get("per_1k_chars", 0.0)
+        return units * rate / 1_000.0
+
+
+def record_voice_usage(
+    modality: Literal["stt", "tts"],
+    model: str,
+    units: float,
+) -> float:
+    """Record a voice operation into the daily spend ledger and return its cost.
+
+    Integrates with the same ``SessionStore.record_daily_cost`` path used by LLM
+    turns so ``/spend/daily`` and per-modality breakdowns include voice spend.
+
+    Args:
+        modality: ``"stt"`` (units = minutes of audio) or
+                  ``"tts"`` (units = number of characters synthesised).
+        model: Model identifier (e.g. ``"whisper-1"``, ``"tts-1"``,
+               ``"eleven_turbo_v2_5"``).  Prefix-matched against
+               :data:`VOICE_PRICING`.
+        units: Quantity for the billing unit (minutes or chars — see *modality*).
+
+    Returns:
+        Estimated cost in USD.  Returns ``0.0`` on pricing miss or any error —
+        never raises.
+    """
+    try:
+        cost = _voice_cost(modality, model, units)
+        if cost > 0:
+            # Record into the same daily ledger used by LLM turns.
+            # Import lazily to avoid a circular import at module load time.
+            from hachi.core.session_store import SessionStore
+
+            date_str = datetime.date.today().isoformat()
+            # Use the module-level singleton if available (gateway process), else
+            # open a short-lived connection.  Both paths call record_daily_cost
+            # which is atomic (INSERT OR IGNORE + UPDATE).
+            try:
+                from hachi.gateway.orchestrator import _get_session_store
+
+                store = _get_session_store()
+                if store is not None:
+                    store.record_daily_cost(date_str, cost)
+                else:
+                    raise RuntimeError("no shared store")
+            except Exception:
+                # Fallback: open a dedicated connection (unit-test / CLI context).
+                store = SessionStore()
+                store.record_daily_cost(date_str, cost)
+        return cost
+    except Exception as exc:
+        logger.warning(
+            "record_voice_usage: failed to record %s/%s cost (units=%.3f): %s",
+            modality,
+            model,
+            units,
+            exc,
+        )
+        return 0.0
 
 # Anthropic prompt-cache multipliers relative to the base input price.
 _CACHE_READ_MULTIPLIER = 0.1

@@ -68,6 +68,15 @@ htmlcov/
 credentials.json
 token.json
 
+# ==========================================
+# Hachi user settings (contain credentials)
+# ==========================================
+settings.toml
+**/.hachi/settings.toml
+# Local Docker self-host runtime dir — holds the gateway token secret the compose recipe
+# reads (./.hachi/gateway_api_token.txt). Never commit it.
+.hachi/
+
 # Claude Design handoff bundle (reference only)
 .design-bundle/
 

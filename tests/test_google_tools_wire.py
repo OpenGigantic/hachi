@@ -51,7 +51,10 @@ def _make_fake_hub(tool_names: list[str]) -> MagicMock:
 
 class TestRegisterGoogleToolsNoCredentials:
     def test_returns_false_when_no_client_id(self, monkeypatch) -> None:
+        # Force "not configured" deterministically: the resolver also reads a project
+        # .env, so clearing only os.environ is no longer sufficient in a repo that ships one.
         monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+        monkeypatch.setattr("hachi.core.oauth._google_client_id", lambda: None)
         from hachi.tools.google_tools import register_google_tools
 
         registry = _FakeRegistry()
@@ -59,7 +62,10 @@ class TestRegisterGoogleToolsNoCredentials:
         assert result is False
 
     def test_registers_stub_when_no_client_id(self, monkeypatch) -> None:
+        # Force "not configured" deterministically: the resolver also reads a project
+        # .env, so clearing only os.environ is no longer sufficient in a repo that ships one.
         monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+        monkeypatch.setattr("hachi.core.oauth._google_client_id", lambda: None)
         from hachi.tools.google_tools import register_google_tools
 
         registry = _FakeRegistry()
@@ -67,7 +73,10 @@ class TestRegisterGoogleToolsNoCredentials:
         assert "google_not_configured" in registry._tools
 
     def test_stub_tagged_google_group(self, monkeypatch) -> None:
+        # Force "not configured" deterministically: the resolver also reads a project
+        # .env, so clearing only os.environ is no longer sufficient in a repo that ships one.
         monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+        monkeypatch.setattr("hachi.core.oauth._google_client_id", lambda: None)
         from hachi.tools.google_tools import register_google_tools
 
         registry = _FakeRegistry()
@@ -75,7 +84,10 @@ class TestRegisterGoogleToolsNoCredentials:
         assert registry._tools["google_not_configured"]["group"] == "google"
 
     def test_stub_returns_helpful_message(self, monkeypatch) -> None:
+        # Force "not configured" deterministically: the resolver also reads a project
+        # .env, so clearing only os.environ is no longer sufficient in a repo that ships one.
         monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+        monkeypatch.setattr("hachi.core.oauth._google_client_id", lambda: None)
         from hachi.tools.google_tools import register_google_tools
 
         registry = _FakeRegistry()
@@ -95,6 +107,22 @@ class TestRegisterGoogleToolsWithCredentials:
             registry = _FakeRegistry()
             result = google_tools.register_google_tools(registry)
         assert result is True
+
+    def test_mounts_hub_when_client_id_only_in_dotenv(self, monkeypatch, tmp_path) -> None:
+        # config_dir/.env scenario: GOOGLE_CLIENT_ID is NOT in os.environ but IS in a project
+        # .env (e.g. written by `hachi setup`). Registration must still mount the real hub —
+        # the regression fix: it now resolves the same lazy way the OAuth flow does.
+        monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+        (tmp_path / ".env").write_text("GOOGLE_CLIENT_ID=dotenv-only-id\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        fake_hub = _make_fake_hub(["google_send_email"])
+        with patch("hachi.integrations.google.GoogleIntegrationHub", return_value=fake_hub):
+            from hachi.tools import google_tools
+
+            registry = _FakeRegistry()
+            result = google_tools.register_google_tools(registry)
+        assert result is True
+        assert "google_send_email" in registry._tools
 
     def test_mounts_hub_tools_when_client_id_set(self, monkeypatch) -> None:
         monkeypatch.setenv("GOOGLE_CLIENT_ID", "fake-client-id")

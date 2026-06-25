@@ -55,6 +55,7 @@ from hachi.core.rest_adapter import UniversalRestAdapter
 from hachi.core.runtime_events import (
     BOOT_COMPLETE,
     BOOT_PROGRESS,
+    BUDGET_EXCEEDED,
     MCP_SERVER_FAILED,
     MCP_SERVER_READY,
     MCP_SERVER_STARTING,
@@ -374,11 +375,22 @@ def _register_search_if_available(deps: Any) -> None:
     """
     registry = deps.provider_registry
     if registry is None:
+        logger.warning(
+            "search: web_search is UNAVAILABLE (no ProviderRegistry at boot). "
+            "browse_web/Playwright is the active fallback. "
+            "To enable Tavily: set TAVILY_API_KEY env var or configure "
+            '[search] provider = "tavily" in settings.toml, then restart.'
+        )
         return
 
     provider = registry.get_search()
     if provider is None:
-        logger.debug("search: no SearchProvider in registry — tools not registered")
+        logger.warning(
+            "search: web_search is UNAVAILABLE (no SearchProvider registered). "
+            "browse_web/Playwright is the active fallback. "
+            "To enable Tavily: set TAVILY_API_KEY env var or configure "
+            '[search] provider = "tavily" in settings.toml, then restart.'
+        )
         return
 
     from hachi.core.rate_limit import OutboundRateLimiter
@@ -516,6 +528,12 @@ class AgentSession:
         # Tracks the cumulative cost after the previous turn so we can compute the
         # per-turn delta for the daily spend ledger (CostTracker is cumulative).
         self._last_recorded_cost_usd: float = 0.0
+        # Same idea for tokens, so the interaction_log records a per-turn token count.
+        self._last_recorded_tokens: int = 0
+
+        # Rolling calendar-day spend cap (P1-3).  Set by boot_agent from [limits] config /
+        # HACHI_MAX_DAILY_COST_USD env.  None means unlimited (default — safe fail-open).
+        self._max_daily_cost_usd: float | None = None
 
         # Resume support: prior-session turns replayed for TUI transcript rendering.
         # (role, content) pairs, oldest first; empty unless booted with resume.
@@ -528,6 +546,14 @@ class AgentSession:
         # func= so the job survives a restart.  Set by boot_agent when
         # [jobs] durable_handlers=true.
         self._durable_title: bool = False
+
+        # M1: number of past-session episodes to inject per turn (0 = disabled).
+        # Set by boot_agent from memory settings (episodic_top_k).
+        self._episodic_top_k: int = 3
+
+        # Stage-C graph expansion: when True, each turn appends a concise graph-expanded
+        # memory section to the recall block.  Set by boot_agent from memory.graph_recall.
+        self._graph_recall: bool = True
 
     @property
     def resumed_transcript(self) -> list[tuple[str, str]]:
@@ -768,6 +794,7 @@ class AgentSession:
                 tool_count=int(row.get("tool_count", 0)),
                 tools=tuple(row.get("tools", [])),
                 transport=row.get("transport", "stdio"),
+                err=row.get("err"),
             )
             for row in inventory_rows
         )
@@ -983,16 +1010,28 @@ class AgentSession:
         if agent_persona:
             parts.append(agent_persona)
 
-        # Top workspace facts (general context)
+        # Top workspace facts (general context).
+        # Issue 10: use get_recent_facts() instead of a biased semantic_search probe so
+        # the fixed query "important context" no longer skews which facts surface here.
+        # Contract C-RECENT: vault.get_recent_facts(collection="core_memory", limit=8) -> list[str]
         try:
-            top_facts = self.vault.semantic_search("important context", top_k=8)
-            if top_facts:
-                lines = [f"- {f['raw_content']}" for f in top_facts]
+            if hasattr(self.vault, "get_recent_facts"):
+                top_fact_texts: list[str] = self.vault.get_recent_facts(
+                    collection="core_memory", limit=8
+                )
+            else:
+                # Graceful fallback when another lane has not yet landed the contract.
+                raw_facts = self.vault.semantic_search("important context", top_k=8)
+                top_fact_texts = [
+                    f.get("raw_content", "") for f in raw_facts if f.get("raw_content")
+                ]
+            if top_fact_texts:
+                lines = [f"- {t}" for t in top_fact_texts if t]
                 parts.append("## Known Context\n" + "\n".join(lines))
         except Exception:
             # HIGH-012: vault recall failures must be visible, not silently dropped.
             logger.warning(
-                "_build_frozen_snapshot: vault semantic_search failed; "
+                "_build_frozen_snapshot: get_recent_facts failed; "
                 "workspace context will be absent this turn",
                 exc_info=True,
             )
@@ -1086,7 +1125,23 @@ class AgentSession:
         # Prefer the cheaper sub-agent client (a smaller model on Anthropic);
         # fall back to the main loop client when no sub-agent client is wired.
         client = getattr(self, "_sub_agent_client", None) or getattr(self.loop, "llm_client", None)
-        title = generate_title(user_input, assistant_response, llm_client=client)
+        # Issue 11 (contract C-TITLER-COST): pass cost_tracker so title-generation tokens are
+        # counted in the session's cumulative spend.  The titler signature gains an optional
+        # ``cost_tracker`` kwarg — another lane implements this; guarded with inspect so a
+        # missing parameter never breaks title generation.
+        _tracker = getattr(self.loop, "cost_tracker", None)
+        try:
+            import inspect as _inspect
+
+            _sig = _inspect.signature(generate_title)
+            if "cost_tracker" in _sig.parameters:
+                title = generate_title(
+                    user_input, assistant_response, llm_client=client, cost_tracker=_tracker
+                )
+            else:
+                title = generate_title(user_input, assistant_response, llm_client=client)
+        except Exception:
+            title = generate_title(user_input, assistant_response, llm_client=client)
         if self._session_store:
             try:
                 self._session_store.set_session_title(session_id, title)
@@ -1213,7 +1268,12 @@ class AgentSession:
         _trace_ctx = TraceContext(
             trace_id=turn_id,
             session_id=self._session_id or "unknown",
-            principal="session",  # placeholder; real user id when auth grows
+            # SINGLE-TENANT: "session" is a hardcoded placeholder — account_id is intentionally
+            # unplumbed; safe only under one-operator-per-install (AUDIT P1-1). Before supporting
+            # a 2nd principal/tenant, plumb the authenticated principal → account_id into BOTH
+            # MemoryVault construction AND the ProcessSharedServices fingerprint (see
+            # src/hachi/core/memory_vault.py docstring ADV-023 and SECURITY.md "Trust model").
+            principal="session",
             surface=surface,
         )
 
@@ -1228,6 +1288,118 @@ class AgentSession:
         ):
             return self._chat_impl_inner(user_input, turn_id=turn_id, surface=surface)
 
+    def _write_interaction_log(
+        self,
+        *,
+        turn_id: str,
+        user_input: str,
+        response: str,
+        recalled: list[dict[str, Any]],
+        turn_cost_usd: float,
+        turn_tokens: int,
+    ) -> None:
+        """Append the per-turn ``interaction_log`` row (AUDIT P0-2) — best-effort.
+
+        Maps the live turn's in-scope values (recalled facts → ``memory_hits``, the loop's
+        per-turn tool names, the active model, the per-turn cost/token deltas) onto one
+        durable eval/audit row. A logging failure is swallowed: it must never break a turn.
+        """
+        if not (self._session_store and self._session_id):
+            return
+        try:
+            self._session_store.log_interaction(
+                session_id=self._session_id,
+                turn_id=turn_id,
+                user_input=user_input,
+                agent_output=response,
+                tool_calls=getattr(self.loop, "last_tool_calls", []),
+                memory_hits=[r.get("content", "") for r in (recalled or [])],
+                model_used=self.model_name or None,
+                token_cost=turn_cost_usd,
+                tokens=turn_tokens,
+            )
+        except Exception:
+            logger.warning(
+                "_chat_impl: failed to write interaction_log for turn %s", turn_id, exc_info=True
+            )
+
+    def _persist_suspended_run_if_any(self, *, turn_id: str) -> None:
+        """If the turn ended by ``core_suspend_workflow``, record a durable WAITING run and
+        arm its wait condition — the producer half of the durable-run subsystem (AUDIT P0-1).
+
+        Before this, the loop returned a ``[WORKFLOW SUSPENDED]`` string and the structured
+        wait condition was lost, so no ``RunState(WAITING)`` was ever created: the
+        wake/recover/sweep machinery and ``GET /runs`` had zero inputs. Best-effort — a
+        persistence failure must never break the turn.
+        """
+        suspend = getattr(self.loop, "last_suspend", None)
+        if suspend is None or not self._session_id:
+            return
+        try:
+            import uuid as _uuid
+
+            from hachi.core.runtime.state import RunState, RunStatus, WaitCondition, WaitKind
+            from hachi.core.runtime.store import RunStateStore
+            from hachi.core.runtime.waits import get_wait_registry
+            from hachi.core.runtime_events import RUN_SUSPENDED, now_iso
+
+            now = now_iso()
+            try:
+                kind = WaitKind(suspend.wait_kind)
+            except ValueError:
+                # Unknown wait_kind from the model → safest default is human approval.
+                kind = WaitKind.USER
+            wait = WaitCondition(kind=kind, key=suspend.wait_key, created_at=now)
+            run = RunState(
+                run_id=str(_uuid.uuid4()),
+                session_id=self._session_id,
+                status=RunStatus.WAITING,
+                wait=wait,
+                # resume_cursor=0: a warm wake resumes the still-live in-memory session.
+                # Precise cursor + cold-start replay are the separate deferred resume work.
+                resume_cursor=0,
+                payload={"reason": suspend.reason},
+                updated_at=now,
+            )
+            RunStateStore().upsert(run)
+            get_wait_registry().arm(run.run_id, wait)
+            self._emit_event(
+                RUN_SUSPENDED,
+                {
+                    "run_id": run.run_id,
+                    "session_id": self._session_id,
+                    "turn_id": turn_id,
+                    "wait_kind": kind.value,
+                    "wait_key": suspend.wait_key,
+                    "reason": suspend.reason,
+                },
+            )
+        except Exception:
+            logger.warning("failed to persist suspended run for turn %s", turn_id, exc_info=True)
+
+    def _daily_cap_exceeded(self) -> str | None:
+        """Return a reason string if today's rolling spend cap is hit, else ``None``.
+
+        Best-effort: if ``_session_store`` is absent or the read fails, returns ``None``
+        so the turn always runs rather than crashing (safe fail-open).  The cap is only
+        checked when ``_max_daily_cost_usd`` is set to a positive value.
+        """
+        if not self._max_daily_cost_usd:
+            return None
+        if self._session_store is None:
+            return None
+        try:
+            today = _date.today().isoformat()
+            spent = self._session_store.get_daily_spend(today)
+            if spent >= self._max_daily_cost_usd:
+                return f"daily cost cap reached (~${spent:.4f} >= ${self._max_daily_cost_usd:.2f})"
+        except Exception:
+            logger.warning(
+                "_daily_cap_exceeded: failed to read daily spend — skipping cap check",
+                exc_info=True,
+            )
+        return None
+
     def _chat_impl_inner(self, user_input: str, *, turn_id: str, surface: str) -> str:
         """Inner implementation body (runs inside the agent.turn root span)."""
         self._emit_event(
@@ -1240,6 +1412,13 @@ class AgentSession:
         )
 
         self._drain_job_queue()
+
+        # 1b. Enforce the rolling daily spend cap (P1-3) before spending any more tokens.
+        #     Best-effort: a store read failure falls through (safe fail-open).
+        daily_cap_reason = self._daily_cap_exceeded()
+        if daily_cap_reason:
+            self._emit_event(BUDGET_EXCEEDED, {"reason": daily_cap_reason})
+            return f"[BUDGET LIMIT REACHED] {daily_cap_reason}"
 
         self._memory_snapshot = self._build_frozen_snapshot()
 
@@ -1257,6 +1436,25 @@ class AgentSession:
                 )
                 recalled = []
 
+        # 2b. M1: episodic recall — fetch past-session episodes and merge with semantic results.
+        #     Guarded by episodic_top_k > 0 and vault availability.  Never raises on error.
+        if self._episodic_top_k > 0 and self.vault:
+            try:
+                episodic = self.vault.search_episodic(user_input, top_k=self._episodic_top_k)
+                if episodic:
+                    # Merge by ID to avoid duplicates with semantic_search results,
+                    # then append episodic results that are not already present.
+                    existing_ids = {r.get("id") for r in recalled}
+                    for ep in episodic:
+                        if ep.get("id") not in existing_ids:
+                            recalled.append(ep)
+            except Exception:
+                logger.debug(
+                    "_chat_impl_inner: episodic recall failed for turn %s (non-fatal)",
+                    turn_id,
+                    exc_info=True,
+                )
+
         # 3. Build the dynamic recall injection
         recall_block = ""
         if recalled:
@@ -1266,6 +1464,29 @@ class AgentSession:
                 + "\n".join(lines)
                 + "\n"
             )
+
+        # 3b. Stage-C graph expansion — appends a graph-traversed section to recall_block.
+        #     Additive only; never replaces the semantic/episodic floor.  Wrapped in a
+        #     broad try/except so a graph failure never breaks a turn.
+        if self._graph_recall:
+            try:
+                from hachi.core.graph_recall import build_graph_recall_section
+                from hachi.core.paths import get_hachi_paths
+
+                _graph_section = build_graph_recall_section(
+                    user_input=user_input,
+                    memory_dir=getattr(self.memory, "memory_dir", None)
+                    or get_hachi_paths().memory_dir,
+                    existing_recall=recall_block,
+                )
+                if _graph_section:
+                    recall_block += _graph_section
+            except Exception:
+                logger.debug(
+                    "_chat_impl_inner: graph recall failed for turn %s (non-fatal)",
+                    turn_id,
+                    exc_info=True,
+                )
 
         # 4. Create immutable TurnContext (Phase 1)
         # This replaces the mutation of loop.base_system_prompt
@@ -1285,6 +1506,11 @@ class AgentSession:
         self.loop.add_user_message(user_input)
         # FIX medium: loop.run() may return None (e.g. empty content path); normalise to str
         response: str = self.loop.run(turn_context=turn_context) or ""
+
+        # 5b. If the loop suspended this turn, persist a durable WAITING run + arm its wait
+        #     condition — the producer that gives the wake/recover/sweep subsystem and
+        #     GET /runs their inputs (AUDIT P0-1). No-op on a normal turn.
+        self._persist_suspended_run_if_any(turn_id=turn_id)
 
         # 6. Queue prefetch for the NEXT turn
         self._enqueue_prefetch_job(user_input, turn_id)
@@ -1310,6 +1536,8 @@ class AgentSession:
 
             # Persist cumulative cost/token totals for this session and update the
             # rolling daily spend ledger with the per-turn delta.
+            _turn_cost_usd = 0.0
+            _turn_tokens = 0
             try:
                 tracker = getattr(self.loop, "cost_tracker", None)
                 if tracker is not None:
@@ -1323,6 +1551,9 @@ class AgentSession:
                     # daily ledger accumulates exactly what this turn spent.
                     turn_delta = snap.estimated_cost_usd - self._last_recorded_cost_usd
                     self._last_recorded_cost_usd = snap.estimated_cost_usd
+                    _turn_cost_usd = max(0.0, turn_delta)
+                    _turn_tokens = max(0, snap.total_tokens - self._last_recorded_tokens)
+                    self._last_recorded_tokens = snap.total_tokens
                     if turn_delta > 0:
                         self._session_store.record_daily_cost(_date.today().isoformat(), turn_delta)
             except Exception:
@@ -1333,6 +1564,17 @@ class AgentSession:
                     exc_info=True,
                 )
 
+            # 8. Append the per-turn interaction_log row (AUDIT P0-2): row-level eval/audit
+            #    ground truth (rateable, mineable, auditable).
+            self._write_interaction_log(
+                turn_id=turn_id,
+                user_input=user_input,
+                response=response or "",
+                recalled=recalled,
+                turn_cost_usd=_turn_cost_usd,
+                turn_tokens=_turn_tokens,
+            )
+
             # Generate a session title once, from the opening exchange. Runs on the
             # job queue so it never blocks this turn (drained at the next turn /
             # shutdown); falls back to inline generation when no queue is wired.
@@ -1340,12 +1582,31 @@ class AgentSession:
                 self._title_generated = True
                 self._enqueue_title_job(self._session_id, user_input, response or "")
 
+        # Issue 9: populate the ``model`` field (contract C-MODEL) so the frontend
+        # can display the "last used model" badge without a separate API call.
+        _cost_snap = None
+        try:
+            _tracker = getattr(self.loop, "cost_tracker", None)
+            if _tracker is not None:
+                _cost_snap = _tracker.snapshot()
+        except Exception:
+            pass
+
         self._emit_event(
             SESSION_CHAT_COMPLETED,
             {
                 "turn_id": turn_id,
                 "session_id": self._session_id,
                 "response_preview": (response or "")[:180],
+                # C-MODEL: actual model id for the last turn (None before first turn).
+                "model": self.model_name or None,
+                # Token split for per-turn usage display.
+                "input_tokens": _cost_snap.input_tokens if _cost_snap else None,
+                "output_tokens": _cost_snap.output_tokens if _cost_snap else None,
+                "total_tokens": _cost_snap.total_tokens if _cost_snap else None,
+                "estimated_cost_usd": (
+                    round(_cost_snap.estimated_cost_usd, 6) if _cost_snap else None
+                ),
             },
         )
 
@@ -1374,6 +1635,39 @@ class AgentSession:
             except Exception:
                 # HIGH-012: episode write failures should be visible.
                 logger.warning("shutdown: failed to write episode node", exc_info=True)
+
+        # M1: capture rich episodic summary into the ChromaDB episodic_memory collection.
+        #     Uses interaction_log rows so the digest reflects actual tool use and content,
+        #     not just the last 3 history entries.  Wrapped so it NEVER breaks shutdown.
+        if self._session_id and self.vault:
+            try:
+                from hachi.core.memory import build_episode_summary
+
+                _interactions: list[dict[str, Any]] = []
+                if self._session_store:
+                    # get_interactions returns newest-first; reverse for chronological order.
+                    _interactions = list(
+                        reversed(
+                            self._session_store.get_interactions(
+                                session_id=self._session_id, limit=50
+                            )
+                        )
+                    )
+                _ep_summary = build_episode_summary(_interactions)
+                if _ep_summary:
+                    _started_at = getattr(self._session_store, "_current_started_at", "") or ""
+                    self.vault.upsert_episode(
+                        session_id=self._session_id,
+                        summary=_ep_summary,
+                        started_at=_started_at,
+                    )
+                    logger.debug(
+                        "shutdown: episodic summary captured for session %s (%d chars)",
+                        self._session_id,
+                        len(_ep_summary),
+                    )
+            except Exception:
+                logger.warning("shutdown: failed to capture episodic summary", exc_info=True)
 
         # End the persistent session
         if self._session_store and self._session_id:
@@ -1477,9 +1771,15 @@ def _configure_mcp_servers(
     mcp_manager: MCPManager,
     gate: PermissionGate,
     emit: Callable[[str, dict[str, Any]], None],
+    config: dict[str, Any] | None = None,
 ):
-    """
-    Start MCP servers with permissions-aware configuration.
+    """Start MCP servers with permissions-aware configuration.
+
+    Issue 4: in addition to ``.og`` nodes with ``role=mcp``, also boots servers
+    declared under ``[mcp_servers]`` in ``settings.toml`` so API-registered
+    servers (written by ``POST /runtime/mcp/register``) survive a gateway restart.
+    Duplicate names (declared in both sources) are de-duped: the ``.og`` definition
+    takes precedence and the TOML entry is skipped.
 
     The filesystem MCP server's allowed directories are pulled dynamically from
     the PermissionGate instead of being hardcoded in mcp-services.og.
@@ -1489,8 +1789,16 @@ def _configure_mcp_servers(
         skill_engine: The loaded skill engine containing MCP node definitions.
         mcp_manager: The MCP manager to start servers on.
         gate: The PermissionGate loaded from device-permissions.og.
+        emit: Event emitter callback for boot-progress events.
+        config: Optional raw config dict (the same dict returned by
+            :func:`~hachi.gateway.workspace.load_config`).  When provided,
+            ``config.get("mcp_servers", {})`` entries are parsed and started
+            after the ``.og`` pass, subject to the same permission gate.
     """
     packs_root = str(get_hachi_paths().skills_dir / "packs")
+    # Track which server names were launched from .og nodes so TOML entries for
+    # the same name are skipped (de-dup: .og wins).
+    og_server_names: set[str] = set()
     for node in skill_engine.get_nodes_by_role("mcp"):
         emit(MCP_SERVER_STARTING, {"server": node.name})
         if node.name == "filesystem_mcp":
@@ -1525,6 +1833,7 @@ def _configure_mcp_servers(
 
         # Start the server (filesystem with dynamic paths, or other MCP servers unchanged)
         started = mcp_manager.setup_from_node(node)
+        og_server_names.add(node.name)
         if started:
             emit(
                 MCP_SERVER_READY,
@@ -1541,6 +1850,58 @@ def _configure_mcp_servers(
                     "reason": "startup failed",
                 },
             )
+
+    # Issue 4: load TOML [mcp_servers] entries so servers registered via the API
+    # (written to settings.toml by POST /runtime/mcp/register) survive a restart.
+    toml_mcp_entries: dict[str, Any] = {}
+    if config is not None:
+        _raw = config.get("mcp_servers")
+        if isinstance(_raw, dict):
+            toml_mcp_entries = _raw
+
+    for server_name, entry in toml_mcp_entries.items():
+        if not isinstance(entry, dict):
+            continue
+        if server_name in og_server_names:
+            # .og definition takes precedence — skip the TOML duplicate.
+            logger.debug(
+                "_configure_mcp_servers: TOML entry %r skipped (already started from .og)",
+                server_name,
+            )
+            continue
+        emit(MCP_SERVER_STARTING, {"server": server_name})
+        try:
+            cfg = MCPServerConfig.from_toml_entry(server_name, entry)
+        except Exception:
+            emit(MCP_SERVER_FAILED, {"server": server_name, "reason": "invalid TOML config"})
+            logger.warning(
+                "_configure_mcp_servers: failed to parse TOML entry for %r",
+                server_name,
+                exc_info=True,
+            )
+            continue
+
+        # TOML [mcp_servers] entries are USER-authored config — added by the user via the
+        # UI/CLI or by editing settings.toml directly — so they are trusted by definition,
+        # unlike community-pack .og servers (which are web-installed code and must be
+        # tier-gated). Without trusted=True, a UI-registered server is silently DENIED under
+        # the default "guided" tier and never appears in the conversation (Issue 4).
+        decision = gate.is_mcp_server_allowed(server_name, trusted=True)
+        if not decision.allowed:
+            emit(MCP_SERVER_FAILED, {"server": server_name, "reason": decision.reason})
+            continue
+
+        started = mcp_manager.setup_from_config(cfg)
+        if started:
+            emit(
+                MCP_SERVER_READY,
+                {
+                    "server": server_name,
+                    "tool_count": mcp_manager.get_server_tool_count(server_name),
+                },
+            )
+        else:
+            emit(MCP_SERVER_FAILED, {"server": server_name, "reason": "startup failed"})
 
 
 # ==========================================
@@ -1666,6 +2027,66 @@ def _start_timeout_sweep(
     t = _threading.Thread(target=_sweep_loop, name="hachi-timeout-sweep", daemon=True)
     t.start()
     logger.info("_start_timeout_sweep: started (interval=%ds)", _SWEEP_INTERVAL_SECONDS)
+
+
+# ==========================================
+# E5 — Weekly failure-report scheduler
+# ==========================================
+
+
+def _start_eval_report_scheduler(
+    store: Any,
+    paths: Any,
+    settings: Any,
+    emit: Any,
+) -> None:
+    """Start a background daemon thread that generates weekly failure reports (E5).
+
+    Mirrors :func:`_start_timeout_sweep` exactly: daemon thread, sleep loop,
+    try/except that logs at debug level and never raises.  The thread wakes at
+    most every ``min(interval_seconds, 3600)`` seconds so a 1-week interval does
+    not leave the process unkillable for an hour if the thread gets stuck.
+
+    Args:
+        store:    :class:`~hachi.core.session_store.SessionStore` already open
+                  in the calling ``boot_agent`` scope.
+        paths:    :class:`~hachi.core.paths.HachiPaths` from ``get_hachi_paths()``.
+        settings: :class:`~hachi.core.settings.EvalReportSettings` validated from
+                  config.
+        emit:     The ``emit_runtime_event`` callable already in scope in
+                  ``boot_agent``.
+    """
+    import threading as _threading
+    import time as _time
+
+    from hachi.core.eval.scheduled_report import maybe_generate_report
+
+    out_dir = paths.state_dir / "eval-reports"
+    marker_path = out_dir / ".last_report.json"
+    sleep_seconds = min(settings.interval_seconds, 3600)
+
+    def _report_loop() -> None:
+        while True:
+            _time.sleep(sleep_seconds)
+            try:
+                maybe_generate_report(
+                    store,
+                    out_dir=out_dir,
+                    marker_path=marker_path,
+                    interval_seconds=settings.interval_seconds,
+                    limit=settings.limit,
+                    emit=lambda name, payload: emit(name, payload),
+                )
+            except Exception:
+                logger.debug("_start_eval_report_scheduler: tick failed", exc_info=True)
+
+    t = _threading.Thread(target=_report_loop, name="hachi-eval-report", daemon=True)
+    t.start()
+    logger.info(
+        "_start_eval_report_scheduler: started (interval=%ds, sleep=%ds)",
+        settings.interval_seconds,
+        sleep_seconds,
+    )
 
 
 def _sweep_once(
@@ -1968,7 +2389,7 @@ def boot_agent(
     # are identical to the original direct-call code path, registered in the
     # same order, so SSE/TUI output is byte-identical by construction.
     # ------------------------------------------------------------------
-    from hachi.core.settings import EventsSettings, JobsSettings
+    from hachi.core.settings import EvalReportSettings, EventsSettings, JobsSettings
 
     _events_cfg = EventsSettings.model_validate(config.get("events", {}))
     _jobs_cfg = JobsSettings.model_validate(config.get("jobs", {}))
@@ -1987,6 +2408,10 @@ def boot_agent(
 
         _event_bus.subscribe("*", _read_models_sink, mode="sync", name="read-models")
         _event_bus.subscribe("*", _surface_sink, mode="sync", name="surface")
+
+        from hachi.core.obs.sink import ObservabilitySink
+
+        _event_bus.subscribe("*", ObservabilitySink().handle, mode="sync", name="observability")
 
         # Rebind emit_runtime_event to publish through the bus.
         def emit_runtime_event(  # type: ignore[misc]  # noqa: F811
@@ -2082,8 +2507,9 @@ def boot_agent(
     )
 
     # 4. Initialize MCP Manager (dynamically configured from permissions)
+    # Issue 4: pass the raw config dict so TOML [mcp_servers] entries are also started.
     mcp_manager = MCPManager()
-    _configure_mcp_servers(skill_engine, mcp_manager, gate, emit_runtime_event)
+    _configure_mcp_servers(skill_engine, mcp_manager, gate, emit_runtime_event, config=config)
     mcp_tool_count = mcp_manager.total_tool_count
 
     emit_runtime_event(
@@ -2242,7 +2668,18 @@ def boot_agent(
         _provider = ChromaMemoryProvider(vault=vault)
     else:
         _provider = resolve_provider(_memory_settings)
-        _provider.initialize(brain_dir=str(get_hachi_paths().data_dir))
+        # Issue 10: pass the recall-distance threshold and core-memory cap from the
+        # [memory] config into the ChromaDB vault so settings.toml actually controls
+        # retrieval behaviour. Non-Chroma backends keep the plain initialize() signature.
+        if isinstance(_provider, ChromaMemoryProvider):
+            _provider.initialize(
+                brain_dir=str(get_hachi_paths().data_dir),
+                recall_distance_max=_memory_settings.recall_distance_max,
+                core_memory_max_entries=_memory_settings.core_memory_max_entries,
+                decay_half_life_days=_memory_settings.decay_half_life_days,
+            )
+        else:
+            _provider.initialize(brain_dir=str(get_hachi_paths().data_dir))
         vault = _provider.vault if isinstance(_provider, ChromaMemoryProvider) else None
     memory.set_vault(vault)
 
@@ -2569,6 +3006,9 @@ def boot_agent(
     # Per-session safety caps (0 = unlimited): stop a runaway loop from draining the
     # user's API budget. Read from the optional [limits] config section, else env vars.
     limits_cfg = config.get("limits", {}) if isinstance(config.get("limits"), dict) else {}
+    max_daily_cost_usd = _coerce_float(
+        limits_cfg.get("max_daily_cost_usd"), os.environ.get("HACHI_MAX_DAILY_COST_USD")
+    )
     max_session_cost_usd = _coerce_float(
         limits_cfg.get("max_session_cost_usd"), os.environ.get("HACHI_MAX_SESSION_COST_USD")
     )
@@ -2589,9 +3029,22 @@ def boot_agent(
     if _model_router is not None:
         try:
             _loop_client = _model_router.default_client()
-        except Exception:
-            logger.debug(
-                "Routing: default_client() failed; falling back to direct client", exc_info=True
+            # Issue 11/9: routing succeeded — report the routed default model as the
+            # session model so the "last used model" badge and /spend reflect what
+            # actually runs (previously these reported provider.model = the primary).
+            model_name = _routing_policy.default_model or model_name
+        except Exception as _route_exc:
+            # The routed default model's provider is not usable (missing API key,
+            # unknown/misspelled model id, etc.). Fall back to the primary client but
+            # do NOT misreport the model — keep model_name as the primary provider's
+            # model and warn loudly so the user learns their selection didn't take effect.
+            logger.warning(
+                "Routing: requested default model %r is not usable (%s) — falling back "
+                "to %r. Configure that provider's API key or fix the model id in "
+                "[routing]/[providers].",
+                getattr(_routing_policy, "default_model", "?"),
+                _route_exc,
+                model_name,
             )
             _loop_client = client
 
@@ -2625,6 +3078,9 @@ def boot_agent(
     )
     session.set_vault(vault)
     session.set_session_store(session_store, model=model_name)
+    # P1-3: propagate the daily cap to the session so _daily_cap_exceeded() can enforce it.
+    if max_daily_cost_usd:
+        session._max_daily_cost_usd = max_daily_cost_usd
     if resume_session_id:
         try:
             seeded = session.resume_from_session(resume_session_id)
@@ -2644,6 +3100,10 @@ def boot_agent(
             )
     session._sub_agent_client = sub_agent_client  # closed on shutdown alongside the main client
     session._browser_controller = browser_controller  # closed on shutdown (no-op if never used)
+    # M1: episodic recall top-k from memory settings (0 = disabled).
+    session._episodic_top_k = _memory_settings.episodic_top_k
+    # Stage-C: graph recall enabled flag from memory settings (default True).
+    session._graph_recall = _memory_settings.graph_recall
     # Slice 2.2: activate durable title job path when the flag is on.
     if _jobs_cfg.durable_handlers:
         session._durable_title = True
@@ -2675,23 +3135,6 @@ def boot_agent(
         _job_registry.register("resume_run", handle_resume_run)
         _job_registry.register("auto_extract", handle_auto_extract)
 
-        # Initiative E: wire reactive file.uploaded → auto_extract via EventBus.
-        # When the EventBus funnel is active (_event_bus is not None) we subscribe
-        # the auto_extract handler in async mode so extraction runs as a durable job.
-        # When the funnel is off (bus is None) the FilePipeline still emits the event
-        # but no subscriber is present — extraction is triggered manually or via
-        # the standalone gateway POST /files route which calls the handler directly.
-        if _event_bus is not None:
-            from hachi.core.runtime_events import FILE_UPLOADED as _FILE_UPLOADED_EVT
-
-            _event_bus.subscribe(
-                _FILE_UPLOADED_EVT,
-                handle_auto_extract,  # type: ignore[arg-type]
-                mode="async",
-                name="auto_extract",
-            )
-            logger.info("boot_agent: file.uploaded → auto_extract subscription registered")
-
         # Expose the WaitConditionRegistry on the process singleton so the
         # scheduler sweep and /runs/{id}/wake endpoint share one registry.
         _wait_registry = get_wait_registry()
@@ -2701,6 +3144,59 @@ def boot_agent(
         _boot_recover_runs(job_queue, _job_registry, _wait_registry, emit_runtime_event)
 
         logger.info("boot_agent: JobRegistry active with 4 handlers (durable_handlers=true)")
+
+    # Initiative E: wire reactive file.uploaded → auto_extract via EventBus.
+    #
+    # Decoupled from durable_handlers so reactive extraction fires whenever the
+    # bus is active, regardless of whether the durable job registry is on.
+    #
+    # Dispatch mode:
+    #   async  — when durable_handlers is on: runs as a durable JobRegistry job
+    #            (survives restarts; the handler name "auto_extract" is registered
+    #            above in _job_registry).
+    #   sync   — when durable_handlers is off: runs inline on the file-upload
+    #            thread.  NOT on the turn hot path; acceptable for light workloads.
+    #            The handler degrades gracefully (returns a status string on error).
+    #
+    # When the bus is off (_event_bus is None) no subscription is created; the
+    # FilePipeline event fires into the void and extraction is triggered manually
+    # or via the standalone gateway POST /files route.
+    if _event_bus is not None:
+        from hachi.core.runtime.job_handlers import handle_auto_extract as _handle_auto_extract
+        from hachi.core.runtime_events import FILE_UPLOADED as _FILE_UPLOADED_EVT
+
+        if _jobs_cfg.durable_handlers:
+            # Async: JobRegistry routes handler_name="auto_extract" to the callable.
+            _event_bus.subscribe(
+                _FILE_UPLOADED_EVT,
+                _handle_auto_extract,  # type: ignore[arg-type]
+                mode="async",
+                name="auto_extract",
+            )
+            _auto_extract_mode = "async (durable)"
+        else:
+            # Sync inline: wrap the event into kwargs the handler expects.
+            def _auto_extract_sync_wrapper(event: RuntimeEvent) -> None:  # noqa: E306
+                """Inline sync adapter: unpacks RuntimeEvent into handle_auto_extract kwargs."""
+                _handle_auto_extract(
+                    event_name=event.name,
+                    event_payload=event.payload,
+                    event_timestamp=event.timestamp,
+                    event_sequence=0,
+                )
+
+            _event_bus.subscribe(
+                _FILE_UPLOADED_EVT,
+                _auto_extract_sync_wrapper,
+                mode="sync",
+                name="auto_extract",
+            )
+            _auto_extract_mode = "sync (inline)"
+
+        logger.info(
+            "boot_agent: file.uploaded → auto_extract subscription registered (mode=%s)",
+            _auto_extract_mode,
+        )
 
     # Start the resident job worker so background jobs (fact extraction, prefetch,
     # title generation) execute without blocking the turn path.
@@ -2742,6 +3238,17 @@ def boot_agent(
     # ------------------------------------------------------------------
     if _jobs_cfg.durable_handlers:
         _start_timeout_sweep(job_queue, _job_registry, emit_runtime_event)
+
+    # ------------------------------------------------------------------
+    # E5 — Weekly failure-report scheduler (opt-in, default off).
+    # Mirrors _start_timeout_sweep: daemon thread, sleep loop, never raises.
+    # Gated by [eval_reports] enabled = true in settings.toml.
+    # ------------------------------------------------------------------
+    _eval_cfg = EvalReportSettings.model_validate(config.get("eval_reports", {}))
+    if _eval_cfg.enabled:
+        _start_eval_report_scheduler(
+            session_store, get_hachi_paths(), _eval_cfg, emit_runtime_event
+        )
 
     emit_runtime_event(
         BOOT_COMPLETE,

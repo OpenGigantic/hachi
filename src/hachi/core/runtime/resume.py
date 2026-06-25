@@ -106,50 +106,69 @@ def resume_run(run_id: str, result: dict[str, Any]) -> str:
 
 
 def _do_resume(session_id: str, context: dict[str, Any], cursor: int) -> str:
-    """Internal: find the gateway session and start a new turn.
+    """Internal: find or rehydrate the gateway session and start a new turn.
 
-    Attempts to use the gateway's shared session registry.  If unavailable,
-    raises HonestResumeError with a clear message.
+    Hot path: the session is live in the active runtime → chat() directly.
+    Cold path: the session is GONE (gateway restarted) → rehydrate from the
+    SQLite transcript via :meth:`~hachi.cli.main._InProcessGatewayRuntime.rehydrate_session`,
+    then inject the wait result and run a new turn.  The rehydration reuses
+    the same ``boot_agent(resume_session_id=…)`` machinery as a normal session
+    resume so the transcript replay is REAL, not faked.
+
+    No-runtime path: no active runtime is attached (standalone CLI) →
+    ``HonestResumeError`` so callers get a clear, honest failure.
     """
+    # Resolve the active in-process runtime (set by _start_gateway_server / gateway command).
+    # Read via the module object so monkeypatching and late writes are visible at call time.
     try:
-        from hachi.gateway.shared_services import ProcessSharedServices
+        import hachi.cli.main as _main_mod
 
-        shared = ProcessSharedServices.instance()
-        if shared is None:
-            raise HonestResumeError(
-                "resume_run: no active gateway process "  # noqa: E501
-                f"(ProcessSharedServices.instance() is None). "
-                f"Resume requires a running gateway for session_id={session_id!r}. "
-                "Trigger via POST /runs/{run_id}/wake after starting the gateway."
-            )
+        runtime = getattr(_main_mod, "_ACTIVE_RUNTIME", None)
     except ImportError as exc:
         raise HonestResumeError(
-            "resume_run: gateway module not available in current context. "
+            "resume_run: hachi.cli.main not available in current context. "
             "Start the gateway server to enable suspend/resume."
         ) from exc
+    if runtime is None:
+        raise HonestResumeError(
+            "resume_run: no active in-process runtime "
+            f"(_ACTIVE_RUNTIME is None) for session_id={session_id!r}. "
+            "Cold-start resume requires a running gateway (--runtime flag). "
+            "Trigger via POST /runs/{run_id}/wake after starting the gateway."
+        )
 
-    # Build injection message from the wait result
+    # Build the injection message from the wait result
     wait_result = context.get("wait_result", {})
     inject_text = f"[RESUME] Wait condition satisfied. Result: {wait_result}"
 
-    # Use the gateway control plane's session if available
-    try:
-        from hachi.gateway.control_plane import GatewayControlPlane
+    # --- Hot path: session is already live ---
+    with runtime._agents_lock:
+        agent_session = runtime._agents.get(session_id)
 
-        cp = GatewayControlPlane.instance()
-        if cp is not None:
-            agent_session = cp.get_session(session_id)
-            if agent_session is not None:
-                response: str = agent_session.chat(inject_text)
-                return response
-    except (ImportError, AttributeError):
-        pass
+    if agent_session is not None:
+        logger.info("_do_resume: hot path — session %r is live, injecting turn", session_id)
+        response: str = agent_session.chat(inject_text)
+        return response
 
-    raise HonestResumeError(
-        f"resume_run: session {session_id!r} not found in active gateway. "
-        f"The session may have ended or the gateway restarted. "
-        f"Replay not implemented for cold-start resume (slice 2.4 scope)."
+    # --- Cold path: session not live (gateway restarted) → rehydrate ---
+    logger.info(
+        "_do_resume: cold path — session %r not in live map; rehydrating from transcript",
+        session_id,
     )
+    rehydrated = runtime.rehydrate_session(session_id)
+    if rehydrated is None:
+        raise HonestResumeError(
+            f"resume_run: cold-start rehydration failed for session_id={session_id!r}. "
+            "The transcript may be empty or the agent boot may have errored. "
+            "Check gateway logs for details."
+        )
+
+    logger.info(
+        "_do_resume: rehydration succeeded for session %r; injecting resumed turn",
+        session_id,
+    )
+    response = rehydrated.chat(inject_text)
+    return response
 
 
 def _try_emit(event_name: str, payload: dict[str, Any]) -> None:

@@ -68,14 +68,17 @@ def _fake_token_response() -> dict[str, Any]:
 class TestConnectorRegistry:
     def test_all_connectors_have_ids(self) -> None:
         connectors = list_connectors()
-        assert len(connectors) >= 5  # google, slack, discord, notion, github, whatsapp
+        assert len(connectors) >= 4  # google, slack, discord, notion (github removed — no backend)
         ids = [c.id for c in connectors]
         assert "google" in ids
         assert "slack" in ids
         assert "discord" in ids
         assert "notion" in ids
-        assert "github" in ids
         assert "whatsapp" in ids
+        # GitHub OAuth registration removed: there is no github tool backend yet.
+        # Adding it back as a dead UI affordance (connect with nothing to use) was
+        # confusing. Re-add to CONNECTORS once src/hachi/integrations/github/ exists.
+        assert "github" not in ids
 
     def test_get_connector_known(self) -> None:
         c = get_connector("google")
@@ -101,8 +104,10 @@ class TestConnectorRegistry:
             assert conn.client_id_env, f"{conn.id} missing client_id_env"
 
     def test_is_configured_false_without_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Ensure the env var is absent.
+        # Ensure the env var is absent — including the legacy bare-name alias
+        # (GOOGLE_CLIENT_ID) that is_configured() now also honours (Issue 6a).
         monkeypatch.delenv("HACHI_OAUTH_GOOGLE_CLIENT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
         c = get_connector("google")
         assert c is not None
         assert not c.is_configured()
@@ -220,10 +225,9 @@ class TestOAuthStart:
         with pytest.raises(ValueError, match="does not use OAuth2"):
             oauth_start("whatsapp")
 
-    def test_raises_lookup_error_when_not_configured(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_raises_lookup_error_when_not_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("HACHI_OAUTH_GOOGLE_CLIENT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
         with pytest.raises(LookupError, match="not configured"):
             oauth_start("google")
 
@@ -417,9 +421,10 @@ class TestConnectorStatus:
     def test_status_configured_when_creds_present_but_no_token(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("HACHI_OAUTH_GITHUB_CLIENT_ID", "some-id")
+        # Test with notion (same pattern as github used to exercise — oauth2, no token).
+        monkeypatch.setenv("HACHI_OAUTH_NOTION_CLIENT_ID", "some-id")
         with patch.object(OAuthTokenStore, "is_connected", return_value=False):
-            status = connector_status("github")
+            status = connector_status("notion")
         assert status["status"] == "configured"
         assert status["configured"] is True
         assert status["connected"] is False
@@ -460,6 +465,7 @@ class TestIntegrationsRoutes:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("HACHI_OAUTH_GOOGLE_CLIENT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
         resp = self._client().post("/integrations/google/oauth/start")
         assert resp.status_code == 409
         assert resp.json()["code"] == "credentials_not_configured"
@@ -468,9 +474,7 @@ class TestIntegrationsRoutes:
         resp = self._client().post("/integrations/notarealconnector/oauth/start")
         assert resp.status_code == 404
 
-    def test_post_oauth_start_200_when_configured(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_post_oauth_start_200_when_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("HACHI_OAUTH_GOOGLE_CLIENT_ID", "test-id")
         resp = self._client().post("/integrations/google/oauth/start")
         assert resp.status_code == 200

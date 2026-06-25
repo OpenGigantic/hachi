@@ -41,8 +41,15 @@ class FakeGoogleClient:
         return self._record("GET", endpoint, params=params)
 
     def post(
-        self, endpoint: str, json_data: dict | None = None, params: dict | None = None
+        self,
+        endpoint: str,
+        json_data: dict | None = None,
+        params: dict | None = None,
+        *,
+        idempotency_key: str | None = None,
     ) -> dict:
+        # idempotency_key accepted (the real client dedups on it) but not recorded, so
+        # existing .calls assertions stay stable.
         return self._record("POST", endpoint, json_data=json_data, params=params)
 
     def patch(

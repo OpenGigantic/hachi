@@ -15,6 +15,7 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from hachi.core.cost import CostTracker
     from hachi.core.llm import BaseLLMClient
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ def generate_title(
     user_message: str,
     assistant_message: str = "",
     llm_client: "BaseLLMClient | None" = None,
+    cost_tracker: "CostTracker | None" = None,
 ) -> str:
     """Produce a concise title for a session from its first exchange.
 
@@ -82,6 +84,10 @@ def generate_title(
         assistant_message: The agent's first reply, used as extra context.
         llm_client: Provider client for the title call. When ``None``, or when
             the call fails, a deterministic :func:`fallback_title` is returned.
+        cost_tracker: Optional :class:`~hachi.core.cost.CostTracker`. When
+            provided, the token usage from the title-generation LLM call is
+            recorded so it is counted in the session cost totals. The model
+            used is the one returned by the LLM response object.
 
     Returns:
         A non-empty, length-capped title string. Never raises.
@@ -107,6 +113,14 @@ def generate_title(
             messages=[Message(role="user", content=prompt)],
             system_prompt=_TITLE_SYSTEM_PROMPT,
         )
+        # Record token usage via the cost tracker when one is provided so that
+        # title-generation cost is counted in session/daily spend totals.
+        if cost_tracker is not None and hasattr(response, "usage") and response.usage is not None:
+            try:
+                model_id = getattr(response, "model", "") or getattr(llm_client, "model", "")
+                cost_tracker.record(str(model_id), response.usage)
+            except Exception as track_exc:
+                logger.debug("generate_title: cost tracking failed: %s", track_exc)
         title = _clean_title(response.content or "")
         return title or fallback_title(user_message)
     except Exception as exc:  # network / SDK / provider errors must never bubble up

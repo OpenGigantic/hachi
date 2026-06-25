@@ -14,6 +14,12 @@ export interface paths {
         /**
          * Get Integrations
          * @description List all connectors with their auth_type, configured, connected, and status fields.
+         *
+         *     Issue 5: the Tavily/search connector entry also carries ``fallback_active``
+         *     (True when no web_search provider is registered, so browse_web/Playwright is the
+         *     active fallback). The frontend reads this off GET /integrations to show a
+         *     "web search unavailable — using Playwright fallback" notice. Computed here so
+         *     GET /integrations and the POST /credentials response agree.
          */
         get: operations["get_integrations_integrations_get"];
         put?: never;
@@ -108,6 +114,32 @@ export interface paths {
          *     Returns HTTP 422 if the connector is not an apikey connector.
          */
         delete: operations["delete_credentials_integrations__connector_id__credentials_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/{connector_id}/credentials/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Credentials Test
+         * @description Validate a connector's stored credentials with a bounded live probe.
+         *
+         *     Issue 6b (contract C-CREDTEST). Returns ``{"ok": bool, "message": str}``.
+         *     Never echoes the secret and never raises — a failed or timed-out probe yields
+         *     ``ok: false`` with a short message. Connectors without a cheap probe report
+         *     ``ok: true`` with a "stored; live test not available" message so the UI still
+         *     confirms the credential was saved.
+         */
+        post: operations["post_credentials_test_integrations__connector_id__credentials_test_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -295,6 +327,61 @@ export interface paths {
         put?: never;
         /** Post Message */
         post: operations["post_message_sessions__session_id__messages_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sessions/{session_id}/interrupt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Interrupt Session
+         * @description Cancel the in-progress turn for a live session.
+         *
+         *     Delivers a cancellation signal to the session's ``ExecutionLoop`` via
+         *     ``ExecutionLoop.cancel()`` (a thread-safe ``threading.Event``). The current
+         *     LLM chunk and any in-progress tool call finish first; the loop exits cleanly
+         *     at the top of the following iteration, preserving message-history integrity.
+         *
+         *     Returns ``{"interrupted": true}`` when the signal was delivered to a live
+         *     session, ``{"interrupted": false}`` when the session is not live or no
+         *     in-process runtime is attached (safe — never raises a 5xx).
+         */
+        post: operations["interrupt_session_sessions__session_id__interrupt_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sessions/cleanup-empty": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cleanup Empty Sessions
+         * @description Delete all empty sessions (no messages) from the SQLite store.
+         *
+         *     Safe to call at any time.  Sessions that are currently booting (in-memory
+         *     but with no messages yet) are not affected — they have no DB row yet.
+         *
+         *     Returns:
+         *         ``{"removed": <count>}`` — the number of rows deleted.
+         */
+        post: operations["cleanup_empty_sessions_sessions_cleanup_empty_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -755,6 +842,29 @@ export interface paths {
          * @description Best-effort connectivity test for a provider.
          */
         post: operations["post_provider_test_config_providers__name__test_connection_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/config/providers/probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Provider Probe
+         * @description Probe an unsaved provider spec: connectivity + available models.
+         *
+         *     Returns ``{ok, detail, models}`` so the add/edit dialog can verify a key
+         *     and populate a model picker before the provider is saved.
+         */
+        post: operations["post_provider_probe_config_providers_probe_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1464,6 +1574,11 @@ export interface paths {
         /**
          * Synthesize text via TTS provider
          * @description Synthesize text to audio via the configured TTS backend.
+         *
+         *     Uses :func:`~hachi.gateway.voice_endpoints.speak_stream` to pipe bytes
+         *     through a generator so the first bytes reach the client before the full
+         *     clip is produced (FIX P1).  Falls back to the buffered path automatically
+         *     for providers that don't support streaming.
          */
         post: operations["route_voice_speak_voice_speak_post"];
         delete?: never;
@@ -1489,6 +1604,60 @@ export interface paths {
          * @description Persist voice config fields and return the updated summary.
          */
         put: operations["route_voice_set_config_voice_config_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/interactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Interactions
+         * @description Return interaction_log rows newest-first, optionally scoped to one session.
+         *
+         *     Ownership rules (mirrors ``list_sessions``):
+         *     - If ``session_id`` is supplied: ownership-check that session before querying.
+         *     - If not supplied: return rows across all sessions owned by the caller
+         *       (legacy NULL-owner sessions included for back-compat); no-auth returns all.
+         *
+         *     Args:
+         *         session_id: Optional session filter.
+         *         limit: Maximum rows to return (1–500; default 100).
+         */
+        get: operations["get_interactions_interactions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/interactions/{interaction_id}/rating": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Put Interaction Rating
+         * @description Set the thumbs-up / thumbs-down rating (and optional notes) for a turn.
+         *
+         *     Ownership check: looks up the row's ``session_id`` first, then verifies the
+         *     caller owns that session before allowing the write.
+         *
+         *     Returns 404 if ``interaction_id`` does not exist.
+         */
+        put: operations["put_interaction_rating_interactions__interaction_id__rating_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1613,6 +1782,49 @@ export interface components {
             protocol_version: string;
             /** Time */
             time: string;
+        };
+        /**
+         * InteractionListResponse
+         * @description Response for ``GET /interactions``.
+         */
+        InteractionListResponse: {
+            /** Interactions */
+            interactions: components["schemas"]["InteractionRecord"][];
+        };
+        /**
+         * InteractionRecord
+         * @description One row from ``interaction_log`` — the per-turn eval ground truth.
+         *
+         *     ``tool_calls`` and ``memory_hits`` are decoded JSON arrays (lists of strings).
+         *     Numeric fields are optional because they may be NULL for older rows.
+         */
+        InteractionRecord: {
+            /** Id */
+            id: string;
+            /** Session Id */
+            session_id: string;
+            /** Turn Id */
+            turn_id?: string | null;
+            /** Ts */
+            ts: string;
+            /** User Input */
+            user_input?: string | null;
+            /** Agent Output */
+            agent_output?: string | null;
+            /** Tool Calls */
+            tool_calls?: string[];
+            /** Memory Hits */
+            memory_hits?: string[];
+            /** Model Used */
+            model_used?: string | null;
+            /** Token Cost */
+            token_cost?: number | null;
+            /** Tokens */
+            tokens?: number | null;
+            /** Rating */
+            rating?: string | null;
+            /** Notes */
+            notes?: string | null;
         };
         /**
          * LimitsRequest
@@ -1747,6 +1959,27 @@ export interface components {
             /** Api Key */
             api_key?: string | null;
         };
+        /**
+         * RatingRequest
+         * @description Body for ``PUT /interactions/{interaction_id}/rating``.
+         */
+        RatingRequest: {
+            /**
+             * Rating
+             * @enum {string}
+             */
+            rating: "up" | "down";
+            /** Notes */
+            notes?: string | null;
+        };
+        /**
+         * RatingResponse
+         * @description Response for ``PUT /interactions/{interaction_id}/rating``.
+         */
+        RatingResponse: {
+            /** Ok */
+            ok: boolean;
+        };
         /** ReadinessResponse */
         ReadinessResponse: {
             /** Status */
@@ -1755,6 +1988,10 @@ export interface components {
             ready: boolean;
             /** Blockers */
             blockers: string[];
+            /** Checks */
+            checks?: {
+                [key: string]: string;
+            };
             /** Active Connections */
             active_connections: number;
             /** Time */
@@ -1818,6 +2055,14 @@ export interface components {
             /** Next Sequence */
             next_sequence: number;
         };
+        /**
+         * SessionInterruptResponse
+         * @description Response for POST /sessions/{session_id}/interrupt (P1-4).
+         */
+        SessionInterruptResponse: {
+            /** Interrupted */
+            interrupted: boolean;
+        };
         /** SessionMessageRequest */
         SessionMessageRequest: {
             /** Prompt */
@@ -1827,6 +2072,8 @@ export interface components {
              * @default []
              */
             attachment_ids: string[];
+            /** Idempotency Key */
+            idempotency_key?: string | null;
         };
         /** SessionMessageResponse */
         SessionMessageResponse: {
@@ -2039,6 +2286,44 @@ export interface operations {
         };
     };
     delete_credentials_integrations__connector_id__credentials_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_credentials_test_integrations__connector_id__credentials_test_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -2486,6 +2771,71 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    interrupt_session_sessions__session_id__interrupt_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInterruptResponse"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cleanup_empty_sessions_sessions_cleanup_empty_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -3433,6 +3783,46 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_provider_probe_config_providers_probe_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProviderUpsertRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -4787,6 +5177,87 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_interactions_interactions_get: {
+        parameters: {
+            query?: {
+                session_id?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InteractionListResponse"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_interaction_rating_interactions__interaction_id__rating_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                interaction_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RatingRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RatingResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */
