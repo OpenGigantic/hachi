@@ -26,8 +26,22 @@ from hachi.core.memory_vault import MemoryVault
 logger = logging.getLogger(__name__)
 
 
-def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=None) -> None:
-    """Mount all memory operations into the LLM's active toolset."""
+def register_memory_tools(
+    registry: ToolRegistry,
+    vault: MemoryVault,
+    job_queue=None,
+    profile_store=None,
+) -> None:
+    """Mount all memory operations into the LLM's active toolset.
+
+    Args:
+        registry:     The tool registry to populate.
+        vault:        A live ``MemoryVault`` instance (may be ``None`` for in-memory mode).
+        job_queue:    Optional durable job queue; ``core_save_memory`` requires it.
+        profile_store: Optional ``UserProfileStore`` instance for the structured profile tool.
+            When ``None`` and ``vault`` is live, one is constructed automatically so
+            callers that only pass ``vault`` get the full tool surface for free.
+    """
 
     # ==========================================
     # Shared Helpers
@@ -134,7 +148,20 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=
                     for s_content in data.get("save_contents", [content]):
                         vault.upsert_fact(s_content, category)
                 except Exception:
-                    vault.upsert_fact(content, category)
+                    # FIX 3: Do NOT fall back to a bare upsert_fact here.
+                    # The bare fallback bypassed _smart_upsert consolidation/dedup
+                    # on any exception (e.g. LLM error, JSON parse failure) and
+                    # silently wrote the raw compound fact — creating near-duplicate
+                    # entries that _smart_upsert was designed to prevent.
+                    # Log at WARNING so operators can diagnose consolidation failures,
+                    # but skip the write so we never create a known near-duplicate.
+                    logger.warning(
+                        "_smart_upsert: consolidation failed for fact %.80r — "
+                        "skipping write to avoid near-duplicate. "
+                        "Retry core_save_memory to persist this fact.",
+                        content,
+                        exc_info=True,
+                    )
 
         job_id = _enqueue_memory_job("memory_smart_upsert", _smart_upsert, (facts,))
         if job_id is None:
@@ -496,6 +523,103 @@ def register_memory_tools(registry: ToolRegistry, vault: MemoryVault, job_queue=
             },
         },
         delete_user_profile,
+    )
+
+    # ==========================================
+    # Structured User Profile (P1-7)
+    # ==========================================
+
+    # Lazily resolve or construct the UserProfileStore so callers that don't
+    # pass profile_store explicitly still get the tool when vault is live.
+    _profile_store = profile_store
+    if _profile_store is None and vault is not None:
+        try:
+            from hachi.core.user_profile import UserProfileStore
+
+            _profile_store = UserProfileStore(vault)
+        except Exception as _ps_err:
+            logger.warning("register_memory_tools: could not build UserProfileStore: %s", _ps_err)
+
+    def save_user_profile_structured(category: str, value: str) -> str:
+        """Save a structured user profile fact under one of the four P1-7 categories.
+
+        Writes through to ``UserProfileStore.set``, which stamps the P1-7 category
+        in metadata and enforces the vault's 25-entry cap and MemoryGuard scanning.
+
+        Args:
+            category: One of identity | preferences | routines | knowledge.
+            value: The atomic profile fact to store.
+
+        Returns:
+            Human-readable result string.
+        """
+        if not _profile_store:
+            return (
+                "Structured user profile is not available "
+                "(vault not connected or profile store unavailable)."
+            )
+        try:
+            result = _profile_store.set(category, value)
+        except ValueError as exc:
+            return f"Invalid category: {exc}"
+        except Exception as exc:
+            logger.error("save_user_profile_structured: unexpected error: %s", exc)
+            return f"Failed to save profile fact: {exc}"
+
+        if result == "LIMIT_REACHED":
+            stats = vault.get_profile_stats() if vault else {}
+            entries = stats.get("entries", "?")
+            max_e = stats.get("max_entries", 25)
+            return (
+                f"Profile is full ({entries}/{max_e} entries). "
+                "Use core_search_user_profile to find outdated facts and "
+                "core_delete_user_profile to remove them before saving new ones."
+            )
+        if result.startswith("BLOCKED:"):
+            return f"Content rejected by security scanner: {result}"
+        if result.startswith("ERROR:"):
+            return f"Storage error: {result}"
+        return (
+            f"Saved [{category}] profile fact (id: {result[:12]}…). "
+            "This will be recalled in future sessions."
+        )
+
+    registry.register(
+        {
+            "name": "core_save_user_profile_structured",
+            "description": (
+                "Save a structured user profile fact under one of the four P1-7 categories: "
+                "identity (name, role, location), preferences (tools, style, dark mode), "
+                "routines (recurring habits, schedule patterns), or "
+                "knowledge (domain expertise the user has declared). "
+                "Use this instead of core_save_user_profile when you want the fact "
+                "categorised for structured retrieval. "
+                "The profile is bounded (max 25 entries total) — be precise and atomic."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": (
+                            "Category bucket: identity | preferences | routines | knowledge."
+                        ),
+                        "enum": ["identity", "preferences", "routines", "knowledge"],
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": (
+                            "The atomic profile fact "
+                            '(e.g. "User\'s name is Aarav", '
+                            '"User prefers TypeScript over JavaScript", '
+                            '"User holds a daily standup at 9 am").'
+                        ),
+                    },
+                },
+                "required": ["category", "value"],
+            },
+        },
+        save_user_profile_structured,
     )
 
 

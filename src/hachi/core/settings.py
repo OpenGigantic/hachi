@@ -85,6 +85,26 @@ class MemorySettings(BaseModel):
     backend: MemoryBackend = "chroma"
     # P2-04: M0 — FTS5 index over memory/*.og files, merged via RRF with Chroma.
     graph: bool = False
+    # Issue 10 — retrieval-quality controls, consumed by MemoryVault:
+    #   recall_distance_max: cosine-distance ceiling in [0, 2]; per-turn recall results
+    #     above it are dropped so unrelated facts are never injected into context.
+    #     Set to None to disable the filter (legacy "top-k always" behaviour). Default 0.85.
+    #   core_memory_max_entries: soft cap on the core_memory collection; oldest entries
+    #     are pruned once exceeded so the store cannot grow unbounded. Default 1000.
+    recall_distance_max: float | None = 0.85
+    core_memory_max_entries: int = 1000
+    # M1: number of past-session episodes to inject into each turn's recall block.
+    #     Set to 0 to disable episodic recall entirely.
+    episodic_top_k: int = 3
+    # M2: optional recency weighting for recall. Half-life in DAYS — a fact this old
+    #     ranks as if twice as cosine-distant. None disables (pure relevance order).
+    #     Only re-ranks relevance-gated core/episodic recall; NEVER user_profile or
+    #     get_recent_facts. A reasonable starting value if enabled is ~30.0.
+    decay_half_life_days: float | None = None
+    # Stage-C graph expansion: when True, each turn appends a concise graph-expanded
+    # memory section to the recall block (≤400 tokens, additive, gracefully degrades
+    # to empty on any error).  Default True (enabled).  Set False to opt out entirely.
+    graph_recall: bool = True
 
 
 class LimitsSettings(BaseModel):
@@ -155,17 +175,22 @@ class ResilienceSettings(BaseModel):
 class EventsSettings(BaseModel):
     """Optional ``[events]`` config section (Slice 2.2 — EventBus funnel).
 
-    When ``bus_funnel=true``, ``emit_runtime_event`` / ``relay_event`` publish
-    through the ``EventBus`` singleton instead of calling consumers directly.
-    Back-compat: the same two sync subscribers (read-models append + SSE surface)
-    are registered in the same order, so output is byte-identical by construction.
+    The EventBus is the **default** event path.  ``emit_runtime_event`` /
+    ``relay_event`` publish through the ``EventBus`` singleton, which fans out
+    to all registered subscribers (read-models, SSE surface, observability sink,
+    and any reactive handlers such as ``file.uploaded → auto_extract``).
 
-    Default is ``False`` so the old path stays active until the flag is set.
+    Back-compat: the two primary sync subscribers (read-models append + SSE
+    surface) are registered in the same order as the old direct-call path, so
+    output is byte-identical by construction.
+
+    Set ``bus_funnel = false`` in the ``[events]`` config section to opt out of
+    the bus and fall back to the legacy direct-call path.
     """
 
     model_config = ConfigDict(extra="ignore")
 
-    bus_funnel: bool = False
+    bus_funnel: bool = True
 
 
 class ObservabilitySettings(BaseModel):
@@ -214,6 +239,31 @@ class JobsSettings(BaseModel):
     worker_count: int = 1
 
 
+class EvalReportSettings(BaseModel):
+    """Optional ``[eval_reports]`` config section — weekly failure-report automation.
+
+    When ``enabled=True`` the gateway boots a resident daemon thread that wakes
+    every ``interval_seconds`` (default: one week), reads the interaction_log via
+    the live :class:`~hachi.core.session_store.SessionStore`, builds a failure
+    report, and writes both ``eval-report-<stamp>.md`` and
+    ``eval-report-<stamp>.json`` to ``state_dir/eval-reports/``.
+
+    Default is ``False`` so the feature is completely dormant unless the operator
+    opts in by setting ``[eval_reports] enabled = true`` in ``settings.toml``.
+
+    Attributes:
+        enabled:          Master switch.  Defaults to ``False`` (opt-in).
+        interval_seconds: Seconds between report runs.  Default 604800 (1 week).
+        limit:            Maximum interaction rows loaded per run.  Default 1000.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    interval_seconds: int = 604800  # 1 week
+    limit: int = 1000
+
+
 class VoiceSettings(BaseModel):
     """Optional ``[voice]`` config section (Initiative F — Voice Platform).
 
@@ -234,10 +284,10 @@ class VoiceSettings(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    stt_model: str | None = None
+    stt_model: str = "whisper-1"
     stt_base_url: str | None = None
     stt_api_key_env: str | None = None
-    tts_model: str | None = None
+    tts_model: str = "tts-1"
     tts_base_url: str | None = None
     tts_api_key_env: str | None = None
     tts_voice: str | None = None
@@ -249,6 +299,8 @@ class VoiceSettings(BaseModel):
     # ElevenLabs (TTS only) — used when ``tts_provider == "elevenlabs"``.
     elevenlabs_api_key_env: str | None = None
     elevenlabs_voice_id: str | None = None
+    # ElevenLabs model id. Defaults to eleven_turbo_v2_5 (low-latency, high quality).
+    elevenlabs_model: str = "eleven_turbo_v2_5"
 
 
 class RoutingSettings(BaseModel):
@@ -360,6 +412,11 @@ class ResolvedConfig(BaseModel):
     search: SearchSettings = Field(default_factory=SearchSettings)
     # Optional [files] section — absent = default 50 MB cap, all types allowed.
     files: FileSettings = Field(default_factory=FileSettings)
+    # [mcp_servers.<name>] sections — Model Context Protocol servers registered via the
+    # UI/CLI. Kept as raw dicts (parsed by MCPServerConfig.from_toml_entry at boot) so the
+    # section survives model_dump() — without this field it was silently dropped and
+    # TOML-registered MCP servers never loaded.
+    mcp_servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 def default_config() -> ResolvedConfig:

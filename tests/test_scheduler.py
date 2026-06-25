@@ -169,3 +169,77 @@ def test_persistence_and_cancel_round_trip(tmp_path: Path) -> None:
 
     assert reloaded.cancel(s.schedule_id) is True
     assert Scheduler(ScheduleStore(path)).get(s.schedule_id) is None
+
+
+# ---- idempotent add(): no duplicate schedules on retry (AUDIT P0-3) ----
+
+
+def test_add_dedups_identical_within_window(tmp_path: Path) -> None:
+    sched = _scheduler(tmp_path)
+    t0 = datetime(2026, 6, 24, 12, 0, tzinfo=UTC)
+    a = sched.add(name="standup", task="post standup", kind="cron", cron="0 9 * * *", now=t0)
+    # A retry 5s later with identical args must return the SAME schedule, not a duplicate.
+    b = sched.add(
+        name="standup",
+        task="post standup",
+        kind="cron",
+        cron="0 9 * * *",
+        now=t0 + timedelta(seconds=5),
+    )
+    assert b.schedule_id == a.schedule_id
+    assert len(sched.list_schedules()) == 1
+
+
+def test_add_creates_new_after_window(tmp_path: Path) -> None:
+    sched = _scheduler(tmp_path)
+    t0 = datetime(2026, 6, 24, 12, 0, tzinfo=UTC)
+    a = sched.add(name="standup", task="post standup", kind="cron", cron="0 9 * * *", now=t0)
+    # Past the window, a genuinely intentional re-creation is honored.
+    b = sched.add(
+        name="standup",
+        task="post standup",
+        kind="cron",
+        cron="0 9 * * *",
+        now=t0 + timedelta(seconds=61),
+    )
+    assert b.schedule_id != a.schedule_id
+    assert len(sched.list_schedules()) == 2
+
+
+def test_add_distinct_identity_is_not_deduped(tmp_path: Path) -> None:
+    sched = _scheduler(tmp_path)
+    t0 = datetime(2026, 6, 24, 12, 0, tzinfo=UTC)
+    sched.add(name="standup", task="post standup", kind="cron", cron="0 9 * * *", now=t0)
+    # A different task within the window is a genuinely distinct schedule.
+    sched.add(
+        name="standup",
+        task="a different instruction",
+        kind="cron",
+        cron="0 9 * * *",
+        now=t0 + timedelta(seconds=5),
+    )
+    assert len(sched.list_schedules()) == 2
+
+
+def test_add_dedup_disabled_with_zero_window(tmp_path: Path) -> None:
+    sched = _scheduler(tmp_path)
+    t0 = datetime(2026, 6, 24, 12, 0, tzinfo=UTC)
+    sched.add(name="x", task="t", kind="cron", cron="0 9 * * *", now=t0, dedup_window_seconds=0)
+    sched.add(name="x", task="t", kind="cron", cron="0 9 * * *", now=t0, dedup_window_seconds=0)
+    assert len(sched.list_schedules()) == 2
+
+
+def test_add_dedups_against_persisted_schedule_after_restart(tmp_path: Path) -> None:
+    # Dedup must survive a process restart — it keys on the persisted created_at, not on
+    # any in-memory bookkeeping.
+    store_path = tmp_path / "schedules.json"
+    t0 = datetime(2026, 6, 24, 12, 0, tzinfo=UTC)
+    first = Scheduler(ScheduleStore(store_path)).add(
+        name="standup", task="post", kind="cron", cron="0 9 * * *", now=t0
+    )
+    reloaded = Scheduler(ScheduleStore(store_path))  # simulates a restart
+    again = reloaded.add(
+        name="standup", task="post", kind="cron", cron="0 9 * * *", now=t0 + timedelta(seconds=10)
+    )
+    assert again.schedule_id == first.schedule_id
+    assert len(reloaded.list_schedules()) == 1

@@ -8,18 +8,62 @@ Each entry drives:
 
 Adding a new connector: add an entry to ``CONNECTORS`` — nothing else needs changing.
 
-Env var naming convention for OAuth2 connectors:
+Env var naming convention for OAuth2 connectors (canonical):
     HACHI_OAUTH_{PROVIDER_UPPER}_CLIENT_ID
     HACHI_OAUTH_{PROVIDER_UPPER}_CLIENT_SECRET
 
-Example for Google:
+Example for Google (canonical):
     HACHI_OAUTH_GOOGLE_CLIENT_ID=<your-client-id>
     HACHI_OAUTH_GOOGLE_CLIENT_SECRET=<your-client-secret>
+
+Legacy / bare env aliases (see ``OAUTH2_CLIENT_ID_ALIASES`` below):
+    GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+    SLACK_CLIENT_ID  / SLACK_CLIENT_SECRET
+    DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET
+    NOTION_CLIENT_ID / NOTION_CLIENT_SECRET
+
+Either form is accepted.  Canonical names take precedence.  When either is set,
+``is_configured()`` returns ``True`` and ``connector_status()`` reports
+``source="env"``.
 
 The ``redirect_uri`` registered in the provider's OAuth app must be:
     <HACHI_OAUTH_REDIRECT_BASE>/integrations/oauth/callback
     Default base: http://localhost:8787
     Full default: http://localhost:8787/integrations/oauth/callback
+
+Env-var → connector → UI-state mapping
+---------------------------------------
+The table below documents every recognised env var and the resulting UI state.
+A checkmark in "configured" means the connector shows "Ready to connect" in the
+integrations panel.
+
+OAuth2 connectors (client_id is the minimum requirement):
+
+  Connector  | Canonical env var                       | Legacy alias
+  -----------+-----------------------------------------+-----------------------------
+  google     | HACHI_OAUTH_GOOGLE_CLIENT_ID            | GOOGLE_CLIENT_ID
+  google     | HACHI_OAUTH_GOOGLE_CLIENT_SECRET        | GOOGLE_CLIENT_SECRET
+  slack      | HACHI_OAUTH_SLACK_CLIENT_ID             | SLACK_CLIENT_ID
+  slack      | HACHI_OAUTH_SLACK_CLIENT_SECRET         | SLACK_CLIENT_SECRET
+  discord    | HACHI_OAUTH_DISCORD_CLIENT_ID           | DISCORD_CLIENT_ID
+  discord    | HACHI_OAUTH_DISCORD_CLIENT_SECRET       | DISCORD_CLIENT_SECRET
+  notion     | HACHI_OAUTH_NOTION_CLIENT_ID            | NOTION_CLIENT_ID
+  notion     | HACHI_OAUTH_NOTION_CLIENT_SECRET        | NOTION_CLIENT_SECRET
+
+NOTE: GitHub OAuth is intentionally absent from this registry.  The OAuth flow
+itself (authorize → token) would work, but there is no hachi GitHub tool backend
+to invoke after connecting — surfacing a "Connect GitHub" button with no callable
+tools would be a dead UI affordance.  Add a GitHub entry here once a
+``src/hachi/integrations/github/`` tool module exists (see DECISIONS.md P1-9).
+
+API-key connectors (field_key.upper() is already the conventional env var):
+
+  Connector  | Field key              | Env var
+  -----------+------------------------+----------------------
+  telegram   | telegram_bot_token     | TELEGRAM_BOT_TOKEN
+  tavily     | tavily_api_key         | TAVILY_API_KEY
+  whatsapp   | META_WHATSAPP_TOKEN    | META_WHATSAPP_TOKEN
+  whatsapp   | META_WHATSAPP_PHONE_ID | META_WHATSAPP_PHONE_ID
 """
 
 from __future__ import annotations
@@ -32,6 +76,25 @@ from typing import Any, Literal
 # ---------------------------------------------------------------------------
 
 AuthType = Literal["oauth2", "apikey", "none"]
+
+# ---------------------------------------------------------------------------
+# Legacy / bare env-var alias map for OAuth2 connectors
+# ---------------------------------------------------------------------------
+
+# Maps connector_id → (legacy_client_id_env, legacy_client_secret_env).
+# When the canonical ``HACHI_OAUTH_<NAME>_*`` env vars are absent, resolution
+# falls back to these aliases so that a plain ``.env`` with ``GOOGLE_CLIENT_ID``
+# still satisfies ``is_configured()`` without any migration step.
+#
+# Keys must exactly match the ``id`` field of the corresponding :class:`ConnectorDef`.
+# Values are 2-tuples of ``(client_id_env_alias, client_secret_env_alias)``.
+# Set either element to ``""`` when no alias exists for that field.
+OAUTH2_CLIENT_ID_ALIASES: dict[str, tuple[str, str]] = {
+    "google": ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"),
+    "slack": ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET"),
+    "discord": ("DISCORD_CLIENT_ID", "DISCORD_CLIENT_SECRET"),
+    "notion": ("NOTION_CLIENT_ID", "NOTION_CLIENT_SECRET"),
+}
 
 
 class CredentialFieldSpec(dict[str, Any]):
@@ -123,25 +186,53 @@ class ConnectorDef:
         self.credential_fields: list[CredentialFieldSpec] = credential_fields or []
 
     def client_id(self) -> str | None:
-        """Return the OAuth2 client ID from env, or None if not configured."""
-        if not self.client_id_env:
-            return None
-        return os.environ.get(self.client_id_env) or None
+        """Return the OAuth2 client ID from env, or None if not configured.
+
+        Resolution order:
+        1. Canonical env var (``client_id_env``, e.g. ``HACHI_OAUTH_GOOGLE_CLIENT_ID``).
+        2. Legacy alias from :data:`OAUTH2_CLIENT_ID_ALIASES` (e.g. ``GOOGLE_CLIENT_ID``).
+        """
+        if self.client_id_env:
+            val = os.environ.get(self.client_id_env) or None
+            if val:
+                return val
+        alias_pair = OAUTH2_CLIENT_ID_ALIASES.get(self.id)
+        if alias_pair:
+            alias_env = alias_pair[0]
+            if alias_env:
+                return os.environ.get(alias_env) or None
+        return None
 
     def client_secret(self) -> str | None:
-        """Return the OAuth2 client secret from env, or None if not set."""
-        if not self.client_secret_env:
-            return None
-        return os.environ.get(self.client_secret_env) or None
+        """Return the OAuth2 client secret from env, or None if not set.
+
+        Resolution order:
+        1. Canonical env var (``client_secret_env``, e.g. ``HACHI_OAUTH_GOOGLE_CLIENT_SECRET``).
+        2. Legacy alias from :data:`OAUTH2_CLIENT_ID_ALIASES` (e.g. ``GOOGLE_CLIENT_SECRET``).
+        """
+        if self.client_secret_env:
+            val = os.environ.get(self.client_secret_env) or None
+            if val:
+                return val
+        alias_pair = OAUTH2_CLIENT_ID_ALIASES.get(self.id)
+        if alias_pair:
+            alias_env = alias_pair[1]
+            if alias_env:
+                return os.environ.get(alias_env) or None
+        return None
 
     def is_configured(self) -> bool:
         """Return True iff the minimum client credentials are present in env.
 
         For oauth2 connectors the client_id is the minimum requirement
-        (some providers allow public clients without a secret).
-        For non-oauth2 connectors always returns False (not applicable via OAuth flow).
-        Apikey connectors use :func:`is_apikey_connector_configured` in ``oauth_flow``
-        which checks the vault; this method only checks env for OAuth2.
+        (some providers allow public clients without a secret).  Both the
+        canonical ``HACHI_OAUTH_<NAME>_CLIENT_ID`` env var and any legacy alias
+        registered in :data:`OAUTH2_CLIENT_ID_ALIASES` are accepted.
+
+        For non-oauth2 connectors always returns False (not applicable via OAuth
+        flow).  Apikey connectors use :func:`is_apikey_connector_configured` in
+        ``oauth_flow`` which checks the vault; this method only checks env for
+        OAuth2.
         """
         if self.auth_type != "oauth2":
             return False
@@ -233,21 +324,6 @@ CONNECTORS: list[ConnectorDef] = [
         client_secret_env="HACHI_OAUTH_NOTION_CLIENT_SECRET",
         needs_offline=False,  # Notion tokens are long-lived
         extra_auth_params={"owner": "user"},
-    ),
-    # --- GitHub ---
-    ConnectorDef(
-        id="github",
-        name="GitHub",
-        category="development",
-        auth_type="oauth2",
-        authorize_url="https://github.com/login/oauth/authorize",
-        token_url="https://github.com/login/oauth/access_token",
-        revoke_url="",  # GitHub revocation is done via API, not standard endpoint
-        default_scopes=["repo", "read:user", "read:org"],
-        client_id_env="HACHI_OAUTH_GITHUB_CLIENT_ID",
-        client_secret_env="HACHI_OAUTH_GITHUB_CLIENT_SECRET",
-        needs_offline=False,  # GitHub tokens are long-lived
-        extra_auth_params={},
     ),
     # --- WhatsApp (Meta Business API) — not standard OAuth2; listed as apikey ---
     # Users must provision a permanent token via Meta Business Suite.

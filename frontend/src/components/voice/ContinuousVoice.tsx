@@ -48,8 +48,10 @@ interface ContinuousVoiceProps {
 
 // RMS below this (0–255 Uint8 analyser scale) counts as silence.
 const SILENCE_THRESHOLD = 12
-// Consecutive silent frames before an utterance is considered finished (~1s).
-const SILENCE_HANGOVER_FRAMES = 40
+// Consecutive silent frames before an utterance is considered finished (~625ms at 60fps).
+// Reduced from 40 → 25 (FIX P3: cut ~250ms tail on VAD hangover).
+// Exported so the VAD regression test can assert the value without rendering the component.
+export const SILENCE_HANGOVER_FRAMES = 25
 // Hard cap on a single utterance so a silent mic can never trap the loop.
 const MAX_UTTERANCE_MS = 15_000
 
@@ -109,6 +111,11 @@ export default function ContinuousVoice({
 
   // ── teardown helpers ──
 
+  /**
+   * Stop the current MediaRecorder + VAD loop but KEEP the shared MediaStream
+   * and AudioContext alive for the next utterance (FIX P2: stream reuse).
+   * Only tears down the cheap per-utterance objects.
+   */
   const stopGatewayCapture = useCallback(() => {
     if (maxUtteranceTimerRef.current !== null) {
       clearTimeout(maxUtteranceTimerRef.current)
@@ -126,6 +133,17 @@ export default function ContinuousVoice({
       }
     }
     mediaRecorderRef.current = null
+    // NOTE: streamRef / audioContextRef / analyserRef are NOT closed here —
+    // they are shared across utterances and only closed by teardownGatewayAudio.
+    isAcquiringRef.current = false
+  }, [])
+
+  /**
+   * Full teardown of the shared MediaStream + AudioContext.
+   * Call only on voice session end (handleEnd / close).
+   */
+  const teardownGatewayAudio = useCallback(() => {
+    stopGatewayCapture()
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop())
       streamRef.current = null
@@ -139,8 +157,7 @@ export default function ContinuousVoice({
       audioContextRef.current = null
       analyserRef.current = null
     }
-    isAcquiringRef.current = false
-  }, [])
+  }, [stopGatewayCapture])
 
   const stopBrowserCapture = useCallback(() => {
     if (recognizerRef.current) {
@@ -162,10 +179,10 @@ export default function ContinuousVoice({
   }, [])
 
   const stopEverything = useCallback(() => {
-    stopGatewayCapture()
+    teardownGatewayAudio()
     stopBrowserCapture()
     stopTts()
-  }, [stopGatewayCapture, stopBrowserCapture, stopTts])
+  }, [teardownGatewayAudio, stopBrowserCapture, stopTts])
 
   // forward declaration via ref so callbacks can call the latest startListening
   const startListeningRef = useRef<() => void>(() => {})
@@ -227,7 +244,20 @@ export default function ContinuousVoice({
       silenceCountRef.current++
     } else {
       silenceCountRef.current = 0
-      heardSpeechRef.current = true
+      if (!heardSpeechRef.current) {
+        // FIX P3: First speech detected — arm the max-utterance timer now
+        // (not before, so leading silence never counts toward the timeout and
+        // the recording is never sent to STT if only silence was captured).
+        heardSpeechRef.current = true
+        if (maxUtteranceTimerRef.current === null) {
+          maxUtteranceTimerRef.current = setTimeout(() => {
+            maxUtteranceTimerRef.current = null
+            if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+              mediaRecorderRef.current.stop()
+            }
+          }, MAX_UTTERANCE_MS)
+        }
+      }
     }
     if (silenceCountRef.current >= SILENCE_HANGOVER_FRAMES && heardSpeechRef.current) {
       if (maxUtteranceTimerRef.current !== null) {
@@ -249,48 +279,49 @@ export default function ContinuousVoice({
     silenceCountRef.current = 0
     heardSpeechRef.current = false
 
-    let stream: MediaStream
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    } catch {
-      isAcquiringRef.current = false
-      setErrorText('Microphone access denied')
-      return
-    }
-    if (!openRef.current || mutedRef.current) {
-      stream.getTracks().forEach((t) => t.stop())
-      isAcquiringRef.current = false
-      return
-    }
-    streamRef.current = stream
+    // FIX P2: Reuse the existing MediaStream + AudioContext across utterances.
+    // Only acquire getUserMedia when we don't already have a live stream.
+    if (!streamRef.current || streamRef.current.getTracks().every((t) => t.readyState === 'ended')) {
+      let stream: MediaStream
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      } catch {
+        isAcquiringRef.current = false
+        setErrorText('Microphone access denied')
+        return
+      }
+      if (!openRef.current || mutedRef.current) {
+        stream.getTracks().forEach((t) => t.stop())
+        isAcquiringRef.current = false
+        return
+      }
+      streamRef.current = stream
 
-    const ctx = new AudioContext()
-    audioContextRef.current = ctx
-    const analyser = ctx.createAnalyser()
-    analyser.fftSize = 512
-    analyserRef.current = analyser
-    ctx.createMediaStreamSource(stream).connect(analyser)
+      // Build AudioContext + Analyser once per stream acquisition.
+      const ctx = new AudioContext()
+      audioContextRef.current = ctx
+      const analyser = ctx.createAnalyser()
+      analyser.fftSize = 512
+      analyserRef.current = analyser
+      ctx.createMediaStreamSource(stream).connect(analyser)
+    }
 
+    // Resume a suspended AudioContext (browser may suspend on tab switch).
+    if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+      try {
+        await audioContextRef.current.resume()
+      } catch { /* ignore */ }
+    }
+
+    // Build a fresh MediaRecorder from the shared stream (cheap — no getUserMedia).
     const mimeType = pickAudioMime()
-    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+    const recorder = new MediaRecorder(streamRef.current!, mimeType ? { mimeType } : undefined)
     mediaRecorderRef.current = recorder
     recorder.ondataavailable = (e) => {
       if (e.data.size > 0) chunksRef.current.push(e.data)
     }
+    // onstop: do NOT stop stream tracks — they are reused next utterance.
     recorder.onstop = () => {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => t.stop())
-        streamRef.current = null
-      }
-      if (audioContextRef.current) {
-        try {
-          void audioContextRef.current.close()
-        } catch {
-          /* ignore */
-        }
-        audioContextRef.current = null
-        analyserRef.current = null
-      }
       void handleGatewayStop()
     }
     recorder.start(200)
@@ -301,13 +332,17 @@ export default function ContinuousVoice({
     setStatusText('Listening…')
     setCaptionText("Say something — I'm listening.")
 
-    if (maxUtteranceTimerRef.current !== null) clearTimeout(maxUtteranceTimerRef.current)
-    maxUtteranceTimerRef.current = setTimeout(() => {
+    // FIX P3: Pre-speech gate — only start the max-utterance timer once we
+    // have heard actual speech (heardSpeechRef.current = true).  The VAD loop
+    // sets heardSpeechRef before calling this, but for the initial "open" call
+    // we defer the timer start to the first detected speech event instead of
+    // starting it unconditionally here.
+    // The timer is armed inside pollSilence when heardSpeechRef first flips.
+    // Clear any stale timer from a previous utterance.
+    if (maxUtteranceTimerRef.current !== null) {
+      clearTimeout(maxUtteranceTimerRef.current)
       maxUtteranceTimerRef.current = null
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-        mediaRecorderRef.current.stop()
-      }
-    }, MAX_UTTERANCE_MS)
+    }
 
     rafRef.current = requestAnimationFrame(pollSilence)
   }, [handleGatewayStop, pollSilence])

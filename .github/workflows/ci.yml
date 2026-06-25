@@ -8,13 +8,14 @@ on:
 
 jobs:
   test:
-    # Verify the suite passes on both Linux and macOS so macOS-specific
-    # regressions (paths, subprocess env, notifier/audio backends) are caught.
+    # Verify the suite passes on Linux, macOS, and Windows so platform-specific
+    # regressions (paths, subprocess env, notifier/audio backends, Windows encoding)
+    # are caught. windows-latest covers the primary dev platform.
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -178,6 +179,31 @@ jobs:
       - name: ObjectGraph benchmark (token-savings + M1 retrieval)
         run: uv run hachi skill benchmark --suite fast --json --threshold 0.80
 
+  eval:
+    # Regression gate for the agent loop (P4 Eval). Replays the curated eval
+    # corpus (DEFAULT_REPLAY_SUITE) through the REAL ExecutionLoop driven by a
+    # scripted LLM — deterministic, no API key needed — and FAILS if any case
+    # regresses. `hachi eval run` exits non-zero on any case failure, so this
+    # job blocks merges that break the loop's control-flow contracts.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Run eval regression suite
+        run: uv run hachi eval run
+
   frontend-contract:
     runs-on: ubuntu-latest
     steps:
@@ -211,3 +237,24 @@ jobs:
 
       - name: Frontend typecheck
         run: npm run --prefix frontend typecheck
+
+  docker-smoke:
+    # Real verification of the Docker self-host recipe (AUDIT P0-4): the compose file must
+    # be valid and BOTH images must build — the previous string-only test stayed green over
+    # a missing frontend/Dockerfile and unwritable /root volumes. ubuntu-latest ships Docker
+    # + compose v2.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Provide a dummy gateway token secret
+        run: |
+          mkdir -p .hachi
+          echo "ci-smoke-token" > .hachi/gateway_api_token.txt
+
+      - name: Validate compose config
+        run: docker compose config
+
+      - name: Build images (backend + frontend)
+        run: docker compose build

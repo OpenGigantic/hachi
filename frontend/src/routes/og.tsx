@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { createFileRoute } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
@@ -85,11 +86,30 @@ function OgExplainerBanner() {
   )
 }
 
+const TOOLTIP_W = 260
+
 function WhyTooltip() {
   const [visible, setVisible] = useState(false)
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null)
+  const triggerRef = useRef<HTMLSpanElement>(null)
+
+  const measure = useCallback(() => {
+    if (!triggerRef.current) return
+    const r = triggerRef.current.getBoundingClientRect()
+    const vw = window.innerWidth
+    // Start tooltip left-aligned with the trigger, then clamp so it stays on screen
+    const rawLeft = r.left
+    const left = Math.min(rawLeft, vw - TOOLTIP_W - 8)
+    setCoords({ top: r.bottom + 6, left: Math.max(8, left) })
+  }, [])
+
+  const show = useCallback(() => { measure(); setVisible(true) }, [measure])
+  const hide = useCallback(() => setVisible(false), [])
+
   return (
     <>
       <span
+        ref={triggerRef}
         tabIndex={0}
         aria-describedby="og-why-tooltip"
         role="button"
@@ -99,26 +119,25 @@ function WhyTooltip() {
           borderBottom: '1px dashed var(--hachi-brand)',
           outline: 'none',
         }}
-        onFocus={() => setVisible(true)}
-        onBlur={() => setVisible(false)}
-        onMouseEnter={() => setVisible(true)}
-        onMouseLeave={() => setVisible(false)}
+        onFocus={show}
+        onBlur={hide}
+        onMouseEnter={show}
+        onMouseLeave={hide}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') setVisible((v) => !v)
+          if (e.key === 'Enter' || e.key === ' ') visible ? hide() : show()
         }}
       >
         Why?
       </span>
-      {visible && (
+      {visible && coords && createPortal(
         <span
           id="og-why-tooltip"
           role="tooltip"
           style={{
-            position: 'absolute',
-            bottom: '100%',
-            left: 0,
-            marginBottom: 6,
-            zIndex: 100,
+            position: 'fixed',
+            top: coords.top,
+            left: coords.left,
+            zIndex: 9999,
             background: 'var(--hachi-surface)',
             border: '0.5px solid var(--hachi-line)',
             borderRadius: 10,
@@ -126,16 +145,18 @@ function WhyTooltip() {
             fontSize: 12,
             color: 'var(--hachi-muted)',
             lineHeight: '18px',
-            width: 260,
-            boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+            width: TOOLTIP_W,
+            boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
             whiteSpace: 'normal',
+            pointerEvents: 'none',
           }}
         >
           LLM context is expensive. Loading 30-token index passes for 50 skill
           nodes costs ~1 500 tokens; loading full files would cost ~50 000+. The
           agent reads deeper (dense → full) only when it confirms a node is
           relevant.
-        </span>
+        </span>,
+        document.body,
       )}
     </>
   )

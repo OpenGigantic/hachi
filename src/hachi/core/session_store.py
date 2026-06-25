@@ -13,6 +13,7 @@ Reads use WAL mode for concurrent non-blocking access.
 """
 
 import datetime
+import json
 import logging
 import sqlite3
 import threading
@@ -111,6 +112,43 @@ class SessionStore:
                 total_cost_usd  REAL NOT NULL DEFAULT 0.0,
                 updated_at  REAL NOT NULL
             );
+
+            -- Ingress idempotency (AUDIT P0-3): maps a client-supplied Idempotency-Key to
+            -- the COMPLETED turn response, so a retried / reconnected / double-clicked
+            -- POST /messages replays the stored result instead of re-running the whole turn
+            -- (no double spend, no duplicate side effects). Scoped per session; first write
+            -- wins. Durable, so it also survives a gateway restart between the two POSTs.
+            CREATE TABLE IF NOT EXISTS idempotency_keys (
+                session_id     TEXT NOT NULL,
+                idem_key       TEXT NOT NULL,
+                response_json  TEXT NOT NULL,
+                created_at     REAL NOT NULL,
+                PRIMARY KEY (session_id, idem_key)
+            );
+
+            -- Per-interaction eval/audit log (AUDIT P0-2): one row per completed turn — the
+            -- row-level ground truth that unlocks good/bad rating, failure mining, per-turn
+            -- audit, and output-regression eval. Written best-effort (never blocks a turn).
+            -- tool_calls / memory_hits are JSON arrays; rating + notes are filled later via a
+            -- /review surface (NULL until then).
+            CREATE TABLE IF NOT EXISTS interaction_log (
+                id            TEXT PRIMARY KEY,
+                session_id    TEXT NOT NULL,
+                turn_id       TEXT,
+                ts            TEXT NOT NULL,
+                user_input    TEXT,
+                agent_output  TEXT,
+                tool_calls    TEXT,
+                memory_hits   TEXT,
+                model_used    TEXT,
+                token_cost    REAL,
+                tokens        INTEGER,
+                rating        TEXT,
+                notes         TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_interaction_session
+                ON interaction_log(session_id);
         """)
         self._conn.commit()
         self._migrate_schema()
@@ -137,6 +175,11 @@ class SessionStore:
         if "owner_token_hash" not in existing:
             self._conn.execute("ALTER TABLE sessions ADD COLUMN owner_token_hash TEXT")
             self._conn.commit()
+        # NOTE(issue12): no automatic ghost-cleanup runs here. Silently deleting
+        # message-less session rows on every DB open is dangerous (it would also
+        # remove legacy rows a caller still expects). Cleanup is explicit instead —
+        # via delete_empty_sessions(), the POST /sessions/cleanup-empty route, and
+        # `hachi doctor`.
 
     # ==========================================
     # Session Lifecycle
@@ -144,6 +187,17 @@ class SessionStore:
 
     def start_session(self, model: str = "unknown") -> str:
         """Begin a new session and return its unique ID.
+
+        The ``sessions`` row is inserted and committed synchronously so the
+        foreign-key constraint holds for subsequent message writes and the row is
+        immediately visible to other connections (callers read session state right
+        after creation, e.g. per-session cost recording).
+
+        Ghost (zero-message) sessions are NOT prevented by deferring this insert —
+        deferral removed FK-integrity and synchronous-commit guarantees that other
+        code and tests rely on. Instead, empty sessions are hidden from the UI by
+        :meth:`get_recent_sessions` and removed on demand by
+        :meth:`delete_empty_sessions` (Issue 12; rationale in DECISIONS.md).
 
         Args:
             model: The LLM model name used for this session.
@@ -153,14 +207,12 @@ class SessionStore:
         """
         session_id = uuid.uuid4().hex[:16]
         now = datetime.datetime.now(datetime.UTC).isoformat()
-
         with self._lock:
             self._conn.execute(
                 "INSERT INTO sessions (id, started_at, model) VALUES (?, ?, ?)",
                 (session_id, now, model),
             )
             self._conn.commit()
-
         logger.debug("Session started: %s (model=%s)", session_id, model)
         return session_id
 
@@ -324,6 +376,150 @@ class SessionStore:
         val: float = row["total_cost_usd"] or 0.0
         return val
 
+    # ------------------------------------------------------------------
+    # Ingress idempotency (AUDIT P0-3 / Theme A)
+    # ------------------------------------------------------------------
+
+    def get_idempotent_response(self, session_id: str, idem_key: str) -> dict[str, Any] | None:
+        """Return the stored response for a prior completed turn with this key, or None.
+
+        Used by ``POST /sessions/{id}/messages`` to replay the result of a duplicate
+        request (client retry / reconnect / double-click) instead of re-running the turn.
+
+        Args:
+            session_id: The session the request targets.
+            idem_key: The client-supplied ``Idempotency-Key``.
+
+        Returns:
+            The previously stored response dict, or ``None`` if this key is unseen (or the
+            stored payload is unreadable — in which case the turn is safely re-run).
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT response_json FROM idempotency_keys WHERE session_id = ? AND idem_key = ?",
+                (session_id, idem_key),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            data: dict[str, Any] = json.loads(row["response_json"])
+        except (ValueError, TypeError):
+            return None
+        return data
+
+    def save_idempotent_response(
+        self, session_id: str, idem_key: str, response: dict[str, Any]
+    ) -> None:
+        """Persist a completed turn's response under ``(session_id, idem_key)`` for replay.
+
+        ``INSERT OR IGNORE`` makes this first-write-wins: if two concurrent duplicates both
+        complete, the first stored response is the one that replays — never a mix.
+        """
+        payload = json.dumps(response)
+        now_ts = time.time()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO idempotency_keys "
+                "(session_id, idem_key, response_json, created_at) VALUES (?, ?, ?, ?)",
+                (session_id, idem_key, payload, now_ts),
+            )
+            self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Interaction log — per-turn eval/audit ground truth (AUDIT P0-2)
+    # ------------------------------------------------------------------
+
+    def log_interaction(
+        self,
+        *,
+        session_id: str,
+        turn_id: str | None,
+        user_input: str,
+        agent_output: str,
+        tool_calls: list[str] | None = None,
+        memory_hits: list[str] | None = None,
+        model_used: str | None = None,
+        token_cost: float | None = None,
+        tokens: int | None = None,
+        rating: str | None = None,
+        notes: str | None = None,
+    ) -> str:
+        """Append one ``interaction_log`` row (one completed turn). Returns the new row id.
+
+        This is the keystone of the eval loop: a durable, queryable record of what the user
+        asked, what Hachi answered, which tools/memories it used, the model, and the per-turn
+        cost — so turns can be rated, mined for failures, audited, and used as a regression
+        baseline. ``tool_calls`` and ``memory_hits`` are stored as JSON arrays.
+        """
+        row_id = str(uuid.uuid4())
+        ts = datetime.datetime.now(datetime.UTC).isoformat()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO interaction_log (id, session_id, turn_id, ts, user_input, "
+                "agent_output, tool_calls, memory_hits, model_used, token_cost, tokens, "
+                "rating, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row_id,
+                    session_id,
+                    turn_id,
+                    ts,
+                    user_input,
+                    agent_output,
+                    json.dumps(tool_calls or []),
+                    json.dumps(memory_hits or []),
+                    model_used,
+                    token_cost,
+                    tokens,
+                    rating,
+                    notes,
+                ),
+            )
+            self._conn.commit()
+        return row_id
+
+    def get_interactions(
+        self, session_id: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return recent ``interaction_log`` rows (newest first), optionally per session.
+
+        ``tool_calls`` / ``memory_hits`` are decoded back into lists. Powers a future
+        ``/review`` surface and trajectory-eval suite.
+        """
+        with self._lock:
+            if session_id is not None:
+                rows = self._conn.execute(
+                    "SELECT * FROM interaction_log WHERE session_id = ? ORDER BY ts DESC LIMIT ?",
+                    (session_id, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM interaction_log ORDER BY ts DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            rec = dict(row)
+            rec["tool_calls"] = json.loads(rec["tool_calls"]) if rec.get("tool_calls") else []
+            rec["memory_hits"] = json.loads(rec["memory_hits"]) if rec.get("memory_hits") else []
+            out.append(rec)
+        return out
+
+    def set_interaction_rating(
+        self, interaction_id: str, rating: str, notes: str | None = None
+    ) -> bool:
+        """Set a turn's ``rating`` (and optionally ``notes``); returns True if a row matched.
+
+        The write side of a thumbs-up/down review. ``notes`` is only overwritten when a
+        non-None value is supplied (``COALESCE``), so rating and notes can be set separately.
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE interaction_log SET rating = ?, notes = COALESCE(?, notes) WHERE id = ?",
+                (rating, notes, interaction_id),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
     def get_sessions_missing_title(self, limit: int = 1000) -> list[dict[str, Any]]:
         """Return sessions that have no title yet (oldest first), for backfill.
 
@@ -371,8 +567,9 @@ class SessionStore:
         content = content[:50_000] if content else ""
 
         with self._lock:
-            # Synchronous INSERT: a bad session_id raises immediately (foreign-key
-            # enforcement) and same-connection reads see the row without a flush.
+            # Synchronous INSERT: an unknown session_id raises immediately (foreign-key
+            # enforcement — start_session must have created the row) and same-connection
+            # reads see the row without a flush.
             self._conn.execute(
                 "INSERT INTO messages (session_id, role, content, tool_name, timestamp) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -484,10 +681,16 @@ class SessionStore:
         # Make recently-logged messages visible so derived title/turns are accurate.
         self.flush_sync()
         with self._lock:
+            # Issue 12: hide ghost sessions (nothing logged) but keep any session with
+            # real signal — messages, recorded cost, a stored title, or counted turns.
             rows = self._conn.execute(
                 "SELECT id, started_at, ended_at, model, total_turns, title, "
                 "total_tokens, total_cost_usd "
-                "FROM sessions ORDER BY started_at DESC LIMIT ?",
+                "FROM sessions "
+                "WHERE (EXISTS (SELECT 1 FROM messages WHERE messages.session_id = sessions.id) "
+                "OR COALESCE(total_cost_usd, 0) > 0 OR title IS NOT NULL "
+                "OR COALESCE(total_turns, 0) > 0) "
+                "ORDER BY started_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
 
@@ -621,6 +824,40 @@ class SessionStore:
             )
             self._conn.commit()
         return len(ids)
+
+    def delete_empty_sessions(self) -> int:
+        """Delete all sessions that have no messages and return the count deleted.
+
+        A session is an "abandoned ghost" only when it has NO real signal at all —
+        no messages, no recorded cost, no title, and no turns. Sessions with any of
+        those are preserved (mirrors the get_recent_sessions visibility predicate).
+
+        Called by the gateway's maintenance route and the CLI ``doctor`` command.
+
+        Returns:
+            Number of session rows deleted (0 if none found).
+        """
+        with self._lock:
+            ghost_ids = [
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT id FROM sessions "
+                    "WHERE NOT EXISTS "
+                    "(SELECT 1 FROM messages WHERE messages.session_id = sessions.id) "
+                    "AND COALESCE(total_cost_usd, 0) = 0 AND title IS NULL "
+                    "AND COALESCE(total_turns, 0) = 0"
+                ).fetchall()
+            ]
+            if not ghost_ids:
+                return 0
+            placeholders = ",".join("?" * len(ghost_ids))
+            self._conn.execute(
+                f"DELETE FROM sessions WHERE id IN ({placeholders})",  # noqa: S608
+                ghost_ids,
+            )
+            self._conn.commit()
+        logger.info("delete_empty_sessions: removed %d ghost session(s)", len(ghost_ids))
+        return len(ghost_ids)
 
     def backup(self, dest: Path) -> None:
         """Create an online hot-backup of the database to *dest*.

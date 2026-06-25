@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
 
 from hachi.core.loop import SuspendWorkflow
@@ -138,3 +141,80 @@ class TestRegisterWorkflowTools:
         exc = exc_info.value
         assert exc.wait_kind == "event"
         assert exc.wait_key == "session.*"
+
+
+# ---------------------------------------------------------------------------
+# Producer: AgentSession persists a durable WAITING run + arms the registry (P0-1)
+# ---------------------------------------------------------------------------
+
+
+def _suspending_session(tmp_path, suspend):
+    """A minimally-constructed AgentSession wired for _persist_suspended_run_if_any."""
+    from hachi.gateway.orchestrator import AgentSession
+
+    sess = AgentSession.__new__(AgentSession)
+    sess._session_id = "sess-9"
+    sess._emit_event = lambda *a, **k: None
+    sess.loop = SimpleNamespace(last_suspend=suspend)
+    return sess
+
+
+class TestSuspendProducer:
+    """The producer half the audit found missing: a suspend must create a durable
+    RunState(WAITING) and arm the wait registry, or the wake/recover/sweep subsystem and
+    GET /runs have zero inputs."""
+
+    def test_persist_creates_waiting_run_and_arms(self, tmp_path) -> None:
+        from hachi.core.runtime.state import RunStatus, WaitKind
+        from hachi.core.runtime.store import RunStateStore
+        from hachi.core.runtime.waits import WaitConditionRegistry
+
+        store = RunStateStore(db_path=tmp_path / "runs.db")
+        registry = WaitConditionRegistry()
+        sess = _suspending_session(
+            tmp_path,
+            SuspendWorkflow("await boss", wait_kind="event", wait_key="email:boss"),
+        )
+        with (
+            patch("hachi.core.runtime.store.RunStateStore", return_value=store),
+            patch("hachi.core.runtime.waits.get_wait_registry", return_value=registry),
+        ):
+            sess._persist_suspended_run_if_any(turn_id="t1")
+
+        waiting = store.waiting()
+        assert len(waiting) == 1
+        run = waiting[0]
+        assert run.status == RunStatus.WAITING
+        assert run.session_id == "sess-9"
+        assert run.wait is not None
+        assert run.wait.kind == WaitKind.EVENT
+        assert run.wait.key == "email:boss"
+        # Armed → resolving the key returns this run_id: the wake path now has an input.
+        assert registry.resolve("email:boss", {}) == run.run_id
+
+    def test_unknown_wait_kind_defaults_to_user(self, tmp_path) -> None:
+        from hachi.core.runtime.state import WaitKind
+        from hachi.core.runtime.store import RunStateStore
+        from hachi.core.runtime.waits import WaitConditionRegistry
+
+        store = RunStateStore(db_path=tmp_path / "runs.db")
+        registry = WaitConditionRegistry()
+        sess = _suspending_session(
+            tmp_path, SuspendWorkflow("hmm", wait_kind="bogus", wait_key="k")
+        )
+        with (
+            patch("hachi.core.runtime.store.RunStateStore", return_value=store),
+            patch("hachi.core.runtime.waits.get_wait_registry", return_value=registry),
+        ):
+            sess._persist_suspended_run_if_any(turn_id="t2")
+        run = store.waiting()[0]
+        assert run.wait is not None and run.wait.kind == WaitKind.USER
+
+    def test_noop_when_not_suspended(self, tmp_path) -> None:
+        from hachi.core.runtime.store import RunStateStore
+
+        store = RunStateStore(db_path=tmp_path / "runs.db")
+        sess = _suspending_session(tmp_path, None)
+        with patch("hachi.core.runtime.store.RunStateStore", return_value=store):
+            sess._persist_suspended_run_if_any(turn_id="t3")
+        assert store.waiting() == []

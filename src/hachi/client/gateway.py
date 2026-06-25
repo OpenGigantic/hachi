@@ -19,6 +19,7 @@ Context-manager support::
 
 from __future__ import annotations
 
+import os
 import threading
 from types import TracebackType
 from typing import Any
@@ -71,11 +72,29 @@ class GatewayClient:
 
     DEFAULT_TIMEOUT = 15.0
 
-    def __init__(self, base_url: str, token: str | None = None) -> None:
+    def __init__(
+        self, base_url: str, token: str | None = None, timeout: float | None = None
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = token
         self._client: httpx.Client | None = None
         self._lock = threading.Lock()
+        # Resolve the request timeout. Explicit arg > HACHI_GATEWAY_CLIENT_TIMEOUT env
+        # > DEFAULT_TIMEOUT. The env override exists so the test harness can grant a
+        # generous timeout for cold/loaded in-process gateway boots (POST /sessions
+        # does heavy synchronous skill-engine + vault init that can exceed 15s on a
+        # cold Windows process or under full-suite load) without changing the
+        # production default. See tests/conftest.py.
+        if timeout is None:
+            _env_timeout = os.environ.get("HACHI_GATEWAY_CLIENT_TIMEOUT", "").strip()
+            if _env_timeout:
+                try:
+                    timeout = float(_env_timeout)
+                except ValueError:
+                    timeout = self.DEFAULT_TIMEOUT
+            else:
+                timeout = self.DEFAULT_TIMEOUT
+        self._timeout = timeout
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -91,7 +110,7 @@ class GatewayClient:
                 self._client = httpx.Client(
                     base_url=self._base_url,
                     headers=headers,
-                    timeout=self.DEFAULT_TIMEOUT,
+                    timeout=self._timeout,
                 )
         return self._client
 

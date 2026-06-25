@@ -28,6 +28,8 @@ from rich.rule import Rule
 
 from hachi.cli.commands.channel import channel_app
 from hachi.cli.commands.daemon import daemon_app
+from hachi.cli.commands.eval import eval_app
+from hachi.cli.commands.jobs import jobs_app
 from hachi.cli.commands.mcp import mcp_app
 from hachi.cli.commands.memory import memory_app
 from hachi.cli.commands.pack import ogpack_app
@@ -63,6 +65,7 @@ from hachi.gateway.workspace import (
     run_permissions_wizard,
     show_current_permissions,
 )
+from hachi.jobs import ResidentWorkerThread
 
 app = typer.Typer(
     help="Hachi - The Autonomous Agent Engine powered by ObjectGraph",
@@ -78,6 +81,14 @@ app.add_typer(memory_app, name="memory")
 app.add_typer(session_app, name="session")
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(ogpack_app, name="pack")
+app.add_typer(jobs_app, name="jobs")
+app.add_typer(eval_app, name="eval")
+
+# Sub-apps defined later in this file — registered here so they appear in --help
+keys_app = typer.Typer(help="Manage named API keys and credentials in the secure vault.")
+og_app = typer.Typer(help="Manage ObjectGraph (.og) skill version history.")
+app.add_typer(keys_app, name="keys")
+app.add_typer(og_app, name="og")
 
 # On Windows the default console encoding is often cp1252, which cannot represent
 # Unicode arrows/dashes used throughout CLI output.  Reconfigure stdout/stderr to
@@ -99,7 +110,15 @@ def _load_dotenv_into_environ(dotenv_path: Path) -> None:
     This ensures SMTP / Telegram / Slack credentials set in .env are visible to
     all tools that read os.environ directly — not just the provider API-key path
     in core/llm.py which has its own .env fallback.
+
+    Set ``HACHI_DISABLE_DOTENV_AUTOLOAD=1`` to skip the merge entirely. The pytest
+    harness sets this in ``tests/conftest.py`` so the suite never pulls the
+    developer's real provider keys into the process — that previously flipped
+    import-time skipif guards on live-gateway tests (flaky, order-dependent) and
+    leaked real secrets into the test process.
     """
+    if os.environ.get("HACHI_DISABLE_DOTENV_AUTOLOAD", "").strip() == "1":
+        return
     if not dotenv_path.exists():
         return
     try:
@@ -117,6 +136,52 @@ def _load_dotenv_into_environ(dotenv_path: Path) -> None:
 
 
 _load_dotenv_into_environ(Path.cwd() / ".env")
+# Also merge the user config-dir .env — that is where `hachi setup` persists API keys and
+# OAuth client ids. Without this, a credential configured via the wizard was written to disk
+# but never loaded on the next run (the loader only read cwd/.env), so Google and other
+# integrations reported "not configured" despite being set. cwd/.env above wins on conflicts.
+try:
+    from hachi.core.paths import get_hachi_paths as _get_hachi_paths
+
+    _load_dotenv_into_environ(_get_hachi_paths().config_dir / ".env")
+except Exception:
+    pass  # path resolution must never abort the CLI
+
+# ---------------------------------------------------------------------------
+# Task 6d — TOKOBOROS_ → HACHI_ back-compat shim
+# ---------------------------------------------------------------------------
+
+_logger = logging.getLogger(__name__)
+
+_TOKOBOROS_RENAMES: dict[str, str] = {
+    "TOKOBOROS_STT_API_KEY": "HACHI_STT_API_KEY",
+    "TOKOBOROS_TTS_API_KEY": "HACHI_TTS_API_KEY",
+    "TOKOBOROS_SMTP_USER": "HACHI_SMTP_USER",
+    "TOKOBOROS_SMTP_PASSWORD": "HACHI_SMTP_PASSWORD",
+    "TOKOBOROS_SMTP_HOST": "HACHI_SMTP_HOST",
+    "TOKOBOROS_SMTP_PORT": "HACHI_SMTP_PORT",
+    "TOKOBOROS_SMTP_FROM": "HACHI_SMTP_FROM",
+}
+
+
+def _apply_tokoboros_shim() -> None:
+    """Copy deprecated TOKOBOROS_* env vars to their HACHI_* equivalents.
+
+    Only copies when the old var is present and the new var is NOT already set.
+    Logs a deprecation warning for each migrated key so operators know to
+    update their environment.
+    """
+    for old, new in _TOKOBOROS_RENAMES.items():
+        if old in os.environ and new not in os.environ:
+            os.environ[new] = os.environ[old]
+            _logger.warning(
+                "Deprecated env var %r — rename to %r in your .env or environment.",
+                old,
+                new,
+            )
+
+
+_apply_tokoboros_shim()
 
 console = Console()
 
@@ -208,7 +273,14 @@ class _InProcessGatewayRuntime:
         Returns:
             A booted :class:`AgentSession` ready to receive user input.
         """
-        return boot_agent(resume_session_id=resume_session_id)
+        agent = boot_agent(resume_session_id=resume_session_id)
+        # Expose the resident worker to the module-level readiness probe so it
+        # can check worker liveness without coupling probe ↔ runtime instance.
+        global _GATEWAY_RESIDENT_WORKER  # noqa: PLW0603
+        worker = getattr(agent, "_resident_worker", None)
+        if worker is not None:
+            _GATEWAY_RESIDENT_WORKER = worker
+        return agent
 
     def _get_agent(self, session_id: str) -> AgentSession:
         with self._agents_lock:
@@ -264,6 +336,39 @@ class _InProcessGatewayRuntime:
             except Exception:
                 pass
 
+    def rehydrate_session(self, session_id: str) -> "AgentSession | None":
+        """Boot a fresh session that replays *session_id*'s transcript (cold-start resume).
+
+        Called by :func:`~hachi.core.runtime.resume._do_resume` when the live-session
+        map has no entry for *session_id* (gateway restarted).  Boots a fresh
+        :class:`AgentSession` with ``resume_session_id=session_id`` so the prior
+        SQLite transcript is replayed into the new agent's memory before the first
+        turn — exactly the same path taken by a normal session-resume at connect time.
+
+        The new session is registered under the SAME *session_id* so that subsequent
+        resume_run calls (and any concurrent gateway requests) find it in the map.
+
+        Returns:
+            The freshly booted and registered :class:`AgentSession`, or ``None``
+            when boot fails (error is logged; caller should fallback to HonestResumeError).
+        """
+        try:
+            agent = self._boot_session_agent(session_id, resume_session_id=session_id)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "rehydrate_session: failed to boot agent for session %r",
+                session_id,
+                exc_info=True,
+            )
+            return None
+        with self._agents_lock:
+            self._agents[session_id] = agent
+            if session_id not in self._chat_locks:
+                self._chat_locks[session_id] = threading.Lock()
+        return agent
+
     def _reload_agents(self) -> None:
         """Reboot cached session agents so provider/credential changes apply live.
 
@@ -307,6 +412,30 @@ class _InProcessGatewayRuntime:
             return agent.chat(prompt)
         with session_lock:
             return agent.chat(prompt)
+
+    def interrupt_session(self, session_id: str) -> dict:
+        """Signal the live session's execution loop to stop at its next iteration.
+
+        P1-4: sets the ``threading.Event`` inside ``ExecutionLoop`` so the loop exits
+        cleanly at the top of the next iteration (after the current LLM chunk / tool call
+        finishes).  Thread-safe; safe to call even when no turn is in progress.
+
+        Args:
+            session_id: The gateway session to interrupt.
+
+        Returns:
+            ``{"interrupted": True}`` when the signal was delivered;
+            ``{"interrupted": False}`` when the session is not found.
+        """
+        with self._agents_lock:
+            agent = self._agents.get(session_id)
+        if agent is None:
+            return {"interrupted": False}
+        try:
+            agent.loop.cancel()
+            return {"interrupted": True}
+        except Exception:
+            return {"interrupted": False}
 
     def read_events(self, session_id: str, after: int, limit: int) -> list[GatewayEvent]:
         snapshots = self._get_agent(session_id).snapshot_events_since(after, limit)
@@ -854,9 +983,7 @@ class _InProcessGatewayRuntime:
             self._og_engine_cache = engine
             return engine
         except Exception:
-            logging.getLogger(__name__).warning(
-                "standalone OG engine build failed", exc_info=True
-            )
+            logging.getLogger(__name__).warning("standalone OG engine build failed", exc_info=True)
             return None
 
     def get_authoring_targets(self) -> list[dict]:
@@ -1301,21 +1428,76 @@ class _InProcessGatewayRuntime:
                     }
                 )
 
-        # Model totals from snapshot_usage().
+        # Issue 9: real per-model breakdown from the cost tracker (a session that
+        # routed to e.g. opus + haiku now shows BOTH, instead of one collapsed entry).
+        # Each row carries both the legacy keys (name/tokens/cost — read by the work
+        # tab) and the C-SPEND keys (model/cost_usd/input_tokens/output_tokens — read
+        # by the Spend settings breakdown), so both consumers are satisfied.
         config = load_effective_config()
         usage = agent.snapshot_usage()
+        tracker = getattr(getattr(agent, "loop", None), "cost_tracker", None)
         models: list[dict] = []
-        if usage:
+        if tracker is not None and hasattr(tracker, "per_model_snapshot"):
+            try:
+                for mid, snap in tracker.per_model_snapshot().items():
+                    _cost = round(float(snap.estimated_cost_usd), 6)
+                    models.append(
+                        {
+                            "name": mid,
+                            "model": mid,
+                            "tokens": int(snap.input_tokens + snap.output_tokens),
+                            "input_tokens": int(snap.input_tokens),
+                            "output_tokens": int(snap.output_tokens),
+                            "cost": _cost,
+                            "cost_usd": _cost,
+                            "color": "",  # Client assigns color.
+                        }
+                    )
+            except Exception:
+                models = []
+        if not models and usage:
+            # Fallback: single aggregate entry (no per-model attribution available yet).
+            _cost = round(float(usage.get("estimated_cost_usd", 0) or 0), 6)
             models.append(
                 {
                     "name": config.provider.model,
+                    "model": config.provider.model,
                     "tokens": int(usage.get("total_tokens", 0) or 0),
-                    "cost": float(usage.get("estimated_cost_usd", 0) or 0),
-                    "color": "",  # Client assigns color.
+                    "input_tokens": int(usage.get("input_tokens", 0) or 0),
+                    "output_tokens": int(usage.get("output_tokens", 0) or 0),
+                    "cost": _cost,
+                    "cost_usd": _cost,
+                    "color": "",
                 }
             )
 
-        return {"turns": turns, "tidies": tidies, "models": models}
+        # C-SPEND: per-modality / per-session / cumulative breakdown for the Spend UI.
+        # Text cost = sum of per-model LLM costs. Voice cost is recorded into the daily
+        # ledger (cost.record_voice_usage) but is not yet attributed per-session, so the
+        # per-session modality split lists text only. TODO(issue9): modality-tagged ledger.
+        text_cost = round(sum(float(m["cost_usd"]) for m in models), 6)
+        session_total = (
+            round(float(usage.get("estimated_cost_usd", 0) or 0), 6) if usage else text_cost
+        )
+        cumulative_usd = session_total
+        try:
+            _daily = self.get_spend_daily()
+            cumulative_usd = round(float(_daily.get("spent_usd", session_total) or 0), 6)
+        except Exception:
+            pass
+
+        return {
+            "turns": turns,
+            "tidies": tidies,
+            "models": models,
+            "modalities": {"text": text_cost},
+            "session": {
+                "session_id": session_id or "",
+                "cost_usd": session_total,
+                "turns": len(turns),
+            },
+            "cumulative_usd": cumulative_usd,
+        }
 
     def get_spend_daily(self) -> dict:
         """Return today's accumulated spend plus configured caps (GET /spend/daily).
@@ -1849,7 +2031,13 @@ class _InProcessGatewayRuntime:
         """
         from hachi.gateway.provider_admin import set_routing as _set_routing
 
-        return _set_routing(default_model, capabilities)
+        result = _set_routing(default_model, capabilities)
+        # Issue 11: re-boot live agents so the new routing (default_model + per-capability
+        # model lists) takes effect immediately. Without this, running sessions keep the
+        # ModelRouter baked at the previous boot and a routing change in the UI appears to
+        # do nothing (mirrors add_or_update_provider, which already reloads).
+        self._reload_agents()
+        return result
 
     def test_provider_connection(self, name: str) -> dict:
         """Best-effort connectivity test for a provider.
@@ -1874,18 +2062,129 @@ class _InProcessGatewayRuntime:
 
         return _list_all_models()
 
+    def probe_provider(self, spec: dict) -> dict:
+        """Probe an unsaved provider spec (POST /config/providers/probe).
 
-def _gateway_readiness_probe() -> tuple[bool, list[str]]:
-    """Derive readiness blockers for local gateway clients."""
+        Args:
+            spec: ``{kind, base_url, api_key, headers, name}``.
+
+        Returns:
+            ``{"ok": bool, "detail": str, "models": list[str]}``.
+        """
+        from hachi.gateway.provider_admin import probe_provider as _probe
+
+        return _probe(spec)
+
+
+def _gateway_readiness_probe() -> tuple[bool, list[str], dict[str, str]]:
+    """Derive readiness blockers for the gateway with per-check detail.
+
+    Checks performed (all fast + side-effect-free; no paid API calls):
+    - ``config_file`` — global settings TOML is present.
+    - ``permissions_file`` — device-permissions .og file is present.
+    - ``provider_configured`` — an LLM provider API key is resolvable from
+      env / keyring (skipped for keyless providers such as Ollama).
+    - ``session_store_writable`` — the parent directory for the SQLite
+      sessions DB is writable (create + unlink a sentinel file).
+    - ``job_worker`` — if a ResidentWorkerThread has been registered with the
+      ``_GATEWAY_RESIDENT_WORKER`` module-level slot, it must be alive.
+
+    Returns:
+        A three-tuple ``(ready, blockers, checks)`` where:
+        - ``ready`` is *False* when any critical check fails,
+        - ``blockers`` lists the names of failing checks (empty ↔ ready),
+        - ``checks`` maps every check name to a short human-readable reason.
+    """
+    import os as _os
+    import tempfile
+
     paths = get_hachi_paths()
+    checks: dict[str, str] = {}
     blockers: list[str] = []
 
-    if not paths.global_config_toml.exists():
-        blockers.append("config_missing")
-    if not paths.permissions_file.exists():
-        blockers.append("device_permissions_missing")
+    # --- 1. Config file present ---
+    if paths.global_config_toml.exists():
+        checks["config_file"] = "ok"
+    else:
+        checks["config_file"] = "global config TOML missing"
+        blockers.append("config_file")
 
-    return (len(blockers) == 0, blockers)
+    # --- 2. Permissions file present ---
+    if paths.permissions_file.exists():
+        checks["permissions_file"] = "ok"
+    else:
+        checks["permissions_file"] = "device-permissions file missing"
+        blockers.append("permissions_file")
+
+    # --- 3. Provider API key resolvable (no live API call) ---
+    try:
+        cfg = load_effective_config()
+        kind = (getattr(cfg.provider, "kind", None) or "anthropic").strip().lower()
+        _keyless = {"ollama"}
+        if kind in _keyless:
+            checks["provider_configured"] = f"ok (keyless: {kind})"
+        else:
+            api_key_env = getattr(cfg.provider, "api_key_env", None)
+            env_name = api_key_env or default_api_key_env_for(kind) or ""
+            resolved = _os.environ.get(env_name) if env_name else None
+            if not resolved and env_name:
+                try:
+                    resolved = create_default_secret_store().get(env_name)
+                except Exception:
+                    pass
+            if resolved:
+                checks["provider_configured"] = f"ok ({env_name})"
+            else:
+                checks["provider_configured"] = (
+                    f"no API key for {kind!r} (expected env {env_name!r})"
+                )
+                blockers.append("provider_configured")
+    except Exception as exc:  # config load failure is also a blocker
+        checks["provider_configured"] = f"config load error: {exc}"
+        blockers.append("provider_configured")
+
+    # --- 4. Session-store directory writable ---
+    try:
+        store_dir = paths.sessions_db.parent
+        store_dir.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=store_dir, prefix=".readiness-")
+        try:
+            _os.close(fd)
+        finally:
+            try:
+                _os.unlink(tmp_path)
+            except OSError:
+                pass
+        checks["session_store_writable"] = "ok"
+    except Exception as exc:
+        checks["session_store_writable"] = f"not writable: {exc}"
+        blockers.append("session_store_writable")
+
+    # --- 5. Job-worker thread alive (if one has been registered) ---
+    worker = _GATEWAY_RESIDENT_WORKER
+    if worker is not None:
+        if worker.is_running:
+            checks["job_worker"] = "ok"
+        else:
+            checks["job_worker"] = "resident worker thread is not alive"
+            blockers.append("job_worker")
+    else:
+        checks["job_worker"] = "not started"  # not a blocker — pre-session startup
+
+    return (len(blockers) == 0, blockers, checks)
+
+
+#: Module-level slot for the ResidentWorkerThread started by the in-process
+#: gateway runtime.  Set by :class:`_InProcessGatewayRuntime` once an agent
+#: session is booted; inspected by :func:`_gateway_readiness_probe`.
+_GATEWAY_RESIDENT_WORKER: "ResidentWorkerThread | None" = None
+
+#: Module-level slot for the most-recently-created in-process gateway runtime.
+#: Set by :func:`_start_gateway_server` and the ``gateway`` command so that
+#: :func:`~hachi.core.runtime.resume._do_resume` can call
+#: :meth:`_InProcessGatewayRuntime.rehydrate_session` on cold-start resume
+#: without importing the CLI or threading a runtime reference through every layer.
+_ACTIVE_RUNTIME: "_InProcessGatewayRuntime | None" = None
 
 
 def _wait_until_interrupted() -> None:
@@ -1996,6 +2295,12 @@ def _run_gateway_http_server(host: str, port: int, attach_runtime: bool) -> None
     # P3-07: enable rotating log when running as daemon (log path from env or default).
     import os as _os
 
+    # Mark this (headless server) process non-interactive so a first-time Google OAuth call
+    # fails fast with a "run `hachi auth google`" message instead of opening a browser and
+    # blocking ~120s on a server with no display. `hachi auth google` runs in its own
+    # interactive process and is unaffected.
+    _os.environ.setdefault("HACHI_OAUTH_NONINTERACTIVE", "1")
+
     from hachi.daemon import _default_log_path, setup_rotating_log
 
     _daemon_log = _os.environ.get("HACHI_DAEMON_LOG")
@@ -2098,6 +2403,10 @@ def _start_gateway_server(
     if runtime is not None and resume_session_id is not None:
         runtime._pending_resume_session_id = resume_session_id
     support = runtime or _InProcessGatewayRuntime()
+    # Publish the active runtime so resume.py can rehydrate cold-start sessions.
+    if runtime is not None:
+        global _ACTIVE_RUNTIME  # noqa: PLW0603
+        _ACTIVE_RUNTIME = runtime
 
     server = GatewayHTTPServer(
         _build_gateway_control_plane(runtime=runtime, support=support),
@@ -2189,6 +2498,9 @@ def _build_gateway_control_plane(
         set_routing=support.set_routing,
         test_provider_connection=support.test_provider_connection,
         list_all_models=support.list_all_models,
+        probe_provider=support.probe_provider,
+        # P1-4 — server-side turn interrupt
+        on_interrupt=runtime.interrupt_session if runtime else None,
         max_active_sessions=max_active_sessions,
         max_prompt_chars=max_prompt_chars,
     )
@@ -3015,6 +3327,10 @@ def serve(
 
     Use ``hachi gateway`` if you want the backend API without the frontend.
     """
+    # Headless server → fail fast on a first-time Google OAuth call (run `hachi auth google`)
+    # instead of opening a browser and blocking ~120s on a display-less server.
+    os.environ.setdefault("HACHI_OAUTH_NONINTERACTIVE", "1")
+
     # Locate the pre-built frontend distribution directory.
     _frontend_dist: Path | None = None
     if not no_frontend:
@@ -3043,6 +3359,9 @@ def serve(
     try:
         auth_token = _resolve_gateway_auth_token(host)
         runtime = _InProcessGatewayRuntime()
+        # Publish the active runtime so resume.py can rehydrate cold-start sessions.
+        global _ACTIVE_RUNTIME  # noqa: PLW0603
+        _ACTIVE_RUNTIME = runtime
 
         server = GatewayHTTPServer(
             _build_gateway_control_plane(runtime=runtime, support=runtime),
@@ -3821,12 +4140,12 @@ def security_audit(
             "Unset HACHI_REST_ALLOW_PRIVATE or set it to false.",
         )
 
-    add_finding(
-        "medium",
-        "sandbox.process_backend",
-        "Current sandbox backend is process-isolation only and development-grade.",
-        "Use a container-backed sandbox for production deployments.",
-    )
+    from hachi.core.sandbox import container_backend_available, sandbox_audit_finding
+
+    _sb_backend = os.environ.get("HACHI_SANDBOX_BACKEND", "process")
+    _sb_finding = sandbox_audit_finding(_sb_backend, container_backend_available())
+    if _sb_finding is not None:
+        add_finding(*_sb_finding)
 
     for cap_name, state in cfg.capabilities.items():
         if state.enabled and not state.secret_ref:
@@ -4023,6 +4342,571 @@ def memoir(
         console.print(f"[green]Memoir written to[/green] {output}")
     else:
         console.print(Markdown(human_text))
+
+
+# ---------------------------------------------------------------------------
+# Task 6c — Credential management commands
+# ---------------------------------------------------------------------------
+
+KNOWN_CREDENTIAL_KEYS: dict[str, str] = {
+    "ANTHROPIC_API_KEY": "Anthropic LLM provider",
+    "OPENAI_API_KEY": "OpenAI-compatible provider",
+    "GOOGLE_CLIENT_ID": "Google OAuth client ID (legacy)",
+    "GOOGLE_CLIENT_SECRET": "Google OAuth client secret (legacy)",
+    "HACHI_OAUTH_GOOGLE_CLIENT_ID": "Google connector client ID",
+    "HACHI_OAUTH_GOOGLE_CLIENT_SECRET": "Google connector client secret",
+    "HACHI_OAUTH_SLACK_CLIENT_ID": "Slack connector client ID",
+    "HACHI_OAUTH_SLACK_CLIENT_SECRET": "Slack connector client secret",
+    "HACHI_OAUTH_DISCORD_CLIENT_ID": "Discord connector client ID",
+    "HACHI_OAUTH_DISCORD_CLIENT_SECRET": "Discord connector client secret",
+    "HACHI_OAUTH_NOTION_CLIENT_ID": "Notion connector client ID",
+    "HACHI_OAUTH_NOTION_CLIENT_SECRET": "Notion connector client secret",
+    "HACHI_OAUTH_GITHUB_CLIENT_ID": "GitHub connector client ID",
+    "HACHI_OAUTH_GITHUB_CLIENT_SECRET": "GitHub connector client secret",
+    "telegram_bot_token": "Telegram bot token",
+    "tavily_api_key": "Tavily web search API key",
+    "META_WHATSAPP_TOKEN": "WhatsApp Meta access token",
+    "META_WHATSAPP_PHONE_ID": "WhatsApp phone number ID",
+    "TWILIO_ACCOUNT_SID": "Twilio account SID (WhatsApp optional)",
+    "TWILIO_AUTH_TOKEN": "Twilio auth token (WhatsApp optional)",
+    "HACHI_STT_API_KEY": "Speech-to-text API key",
+    "HACHI_TTS_API_KEY": "Text-to-speech API key",
+    "HACHI_SECRET_PASSPHRASE": "Passphrase for encrypted file secret store",
+}
+
+
+def _mask_secret(value: str) -> str:
+    """Return a masked representation of a secret value.
+
+    Shows first 4 and last 4 characters with ellipsis in between.
+    For short values (< 8 chars), masks everything.
+    """
+    if len(value) >= 8:
+        return f"{value[:4]}…{value[-4:]}"
+    return "****"
+
+
+def _get_vault() -> CredentialVault:
+    """Instantiate a CredentialVault using the default backing store."""
+    return CredentialVault()
+
+
+# -- hachi set KEY=value [KEY2=value2 ...] ------------------------------------
+
+
+@app.command(name="set")
+def cred_set(
+    pairs: list[str] = typer.Argument(  # noqa: B008
+        ...,
+        metavar="KEY=value",
+        help="One or more KEY=value pairs to store in the credential vault.",
+    ),
+) -> None:
+    """Store one or more named credentials in the secure vault.
+
+    Each argument must be in KEY=value form.  The key is validated against
+    KNOWN_CREDENTIAL_KEYS; unknown keys are accepted with a warning.
+
+    Example::
+
+        hachi set ANTHROPIC_API_KEY=sk-abc123 tavily_api_key=tv-xyz
+    """
+    from rich.table import Table
+
+    vault = _get_vault()
+    table = Table(show_header=False, box=None, padding=(0, 1))
+
+    for pair in pairs:
+        if "=" not in pair:
+            console.print(
+                f"[red]Error:[/red] {pair!r} is not a KEY=value pair — "
+                "each argument must contain '='."
+            )
+            raise typer.Exit(1)
+
+        key, value = pair.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+
+        if not key:
+            console.print("[red]Error:[/red] Empty key in argument — provide KEY=value.")
+            raise typer.Exit(1)
+
+        if key not in KNOWN_CREDENTIAL_KEYS:
+            console.print(f"[yellow]Warning:[/yellow] unknown key {key!r} — storing anyway.")
+
+        vault.set_token(key, value)
+        table.add_row("[green]Saved:[/green]", f"[cyan]{key}[/cyan]")
+
+    console.print(table)
+
+
+# -- hachi get KEY ------------------------------------------------------------
+
+
+@app.command(name="get")
+def cred_get(
+    key: str = typer.Argument(..., metavar="KEY", help="Credential key to retrieve."),
+) -> None:
+    """Retrieve a credential from the vault and print it masked.
+
+    The full value is NEVER printed.  Use this to confirm a key is set
+    without exposing it in terminal history.
+    """
+    vault = _get_vault()
+    value: str | None = None
+    try:
+        value = vault.get_token(key)
+    except Exception:
+        value = None
+
+    if value is None:
+        console.print(f"[yellow]{key}[/yellow]: [dim]\\[not set][/dim]")
+    else:
+        console.print(f"[cyan]{key}[/cyan]: {_mask_secret(value)}")
+
+
+# -- hachi list-keys ----------------------------------------------------------
+
+
+@app.command(name="list-keys")
+def cred_list_keys() -> None:
+    """List all known credential keys with their current status.
+
+    Checks the vault first, then falls back to environment variables.
+    Extra vault keys not in the built-in schema are appended at the bottom.
+    """
+    from rich.table import Table
+
+    vault = _get_vault()
+
+    # Collect vault metadata to detect extra keys
+    try:
+        vault_meta = vault.list_token_metadata()
+        vault_keys_present: set[str] = {m["name"] for m in vault_meta}
+    except Exception:
+        vault_keys_present = set()
+
+    table = Table(title="Credential Keys", show_header=True, header_style="bold")
+    table.add_column("Key", style="cyan", no_wrap=True)
+    table.add_column("Description")
+    table.add_column("Status")
+
+    shown: set[str] = set()
+
+    for key, description in KNOWN_CREDENTIAL_KEYS.items():
+        shown.add(key)
+        # Check vault first
+        vault_has: bool = key in vault_keys_present
+        env_has: bool = key in os.environ
+
+        if vault_has:
+            status = "[green]SET (vault)[/green]"
+        elif env_has:
+            status = "[yellow]SET (env)[/yellow]"
+        else:
+            status = "[dim]not set[/dim]"
+
+        table.add_row(key, description, status)
+
+    # Append any extra vault keys not already in KNOWN_CREDENTIAL_KEYS
+    extra_keys = vault_keys_present - shown
+    for key in sorted(extra_keys):
+        table.add_row(key, "[dim](custom)[/dim]", "[green]SET (vault)[/green]")
+
+    console.print(table)
+
+
+# -- hachi unset KEY ----------------------------------------------------------
+
+
+@app.command(name="unset")
+def cred_unset(
+    key: str = typer.Argument(..., metavar="KEY", help="Credential key to remove."),
+) -> None:
+    """Remove a credential from the vault.
+
+    If an environment variable of the same name is still set in the current
+    shell session, a warning is printed because the env var will continue to
+    shadow any future vault writes until the shell is restarted.
+    """
+    vault = _get_vault()
+    try:
+        vault.delete_token(key)
+        console.print(f"[green]Removed:[/green] [cyan]{key}[/cyan]")
+    except Exception as exc:
+        console.print(f"[yellow]Warning:[/yellow] could not remove {key!r} from vault: {exc}")
+
+    if key in os.environ:
+        console.print(
+            f"[yellow]Note:[/yellow] environment variable [cyan]{key}[/cyan] is still set "
+            "in the current shell session and will continue to shadow the vault entry "
+            "until you restart your shell or unset it manually."
+        )
+
+
+# -- keys sub-app aliases (hachi keys set/get/list/unset) ---------------------
+
+
+@keys_app.command(name="set")
+def keys_set(
+    pairs: list[str] = typer.Argument(  # noqa: B008
+        ...,
+        metavar="KEY=value",
+        help="One or more KEY=value pairs to store in the credential vault.",
+    ),
+) -> None:
+    """Store one or more named credentials (alias of ``hachi set``)."""
+    cred_set(pairs)
+
+
+@keys_app.command(name="get")
+def keys_get(
+    key: str = typer.Argument(..., metavar="KEY", help="Credential key to retrieve."),
+) -> None:
+    """Retrieve a masked credential value (alias of ``hachi get``)."""
+    cred_get(key)
+
+
+@keys_app.command(name="list")
+def keys_list() -> None:
+    """List all credential keys and their status (alias of ``hachi list-keys``)."""
+    cred_list_keys()
+
+
+@keys_app.command(name="unset")
+def keys_unset(
+    key: str = typer.Argument(..., metavar="KEY", help="Credential key to remove."),
+) -> None:
+    """Remove a credential from the vault (alias of ``hachi unset``)."""
+    cred_unset(key)
+
+
+# ---------------------------------------------------------------------------
+# Task 8c — ObjectGraph version history and rollback
+# ---------------------------------------------------------------------------
+
+
+@og_app.command(name="history")
+def og_history_cmd(
+    name: str = typer.Argument(..., metavar="NAME", help="Skill name (without .og extension)."),
+) -> None:
+    """Show the version history of an ObjectGraph skill file.
+
+    Reads from the append-only .og-history sidecar in the skills directory.
+    """
+    from rich.table import Table
+
+    from hachi.core.og_history import list_versions
+
+    skills_dir = get_hachi_paths().skills_dir
+    versions = list_versions(name, skills_dir=skills_dir)
+
+    if not versions:
+        console.print(f"[yellow]No history found for skill:[/yellow] {name!r}")
+        raise typer.Exit(0)
+
+    table = Table(title=f"Version history: {name}", show_header=True, header_style="bold")
+    table.add_column("Version", style="cyan", justify="right")
+    table.add_column("Timestamp")
+    table.add_column("Author")
+    table.add_column("Summary")
+
+    for entry in versions:
+        table.add_row(
+            str(entry.get("version", "?")),
+            str(entry.get("timestamp", "")),
+            str(entry.get("author", "")),
+            str(entry.get("summary", "")),
+        )
+
+    console.print(table)
+
+
+@og_app.command(name="rollback")
+def og_rollback_cmd(
+    name: str = typer.Argument(..., metavar="NAME", help="Skill name (without .og extension)."),
+    version: int = typer.Option(
+        ..., "--version", "-v", help="Version number to roll back to.", show_default=False
+    ),
+) -> None:
+    """Roll back an ObjectGraph skill to a previous version.
+
+    Retrieves the snapshot from history, writes it back to the skills
+    directory (overwriting the current file), and records the rollback as
+    a new history entry so the audit trail is preserved.
+    """
+    from hachi.core.og_history import get_version, record_version
+
+    skills_dir = get_hachi_paths().skills_dir
+
+    # Retrieve the historical snapshot
+    content = get_version(name, version, skills_dir=skills_dir)
+    if content is None:
+        console.print(
+            f"[red]Error:[/red] version {version} of skill {name!r} not found in history."
+        )
+        raise typer.Exit(1)
+
+    # Write the snapshot back to the skills dir (match the naming convention used
+    # by upsert_skill: top-level .og for hand-authored, learned/<name>.og for
+    # agent-authored).  We write to whichever location already has the file;
+    # if neither exists yet, we use the top-level skills dir.
+    candidate_paths: list[Path] = []
+    if skills_dir.exists():
+        candidate_paths = [
+            skills_dir / f"{name}.og",
+            skills_dir / "learned" / f"{name}.og",
+        ]
+
+    target: Path | None = None
+    for p in candidate_paths:
+        if p.exists():
+            target = p
+            break
+
+    if target is None:
+        # Skill file doesn't exist yet — write to top-level skills dir
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        target = skills_dir / f"{name}.og"
+
+    # Atomic write via tempfile + replace to avoid corruption
+    import tempfile
+
+    tmp_fd, tmp_path_str = tempfile.mkstemp(
+        dir=target.parent, prefix=f".{name}_rollback_", suffix=".og.tmp"
+    )
+    tmp_path = Path(tmp_path_str)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        tmp_path.replace(target)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+    # Record the rollback as a new human-authored version
+    new_version = record_version(
+        name,
+        content,
+        author="human",
+        summary=f"rollback to v{version}",
+        skills_dir=skills_dir,
+    )
+
+    console.print(
+        f"[green]Rolled back[/green] [cyan]{name}[/cyan] to v{version} "
+        f"→ written to [dim]{target}[/dim] (recorded as v{new_version})."
+    )
+
+
+@app.command("backup")
+def backup(
+    dest: Path = typer.Option(  # noqa: B008
+        None,
+        "--dest",
+        help=(
+            "Parent directory for the backup. Defaults to a 'backups' sub-dir of the Hachi"
+            " state dir."
+        ),
+        show_default=False,
+    ),
+) -> None:
+    """Create a timestamped backup of session history and the memory vault.
+
+    Backs up (1) the sessions SQLite database via an online hot-backup, (2) the
+    ChromaDB memory-vault directory via a directory copy, and (3) the config-dir
+    files ``settings.toml`` and ``device-permissions.og`` (non-secret config only).
+
+    Secrets (.env files) are intentionally excluded because they contain credentials
+    that should be managed through your secret manager, not copied into backup dirs.
+
+    The backup is written to a timestamped sub-directory:
+        <dest>/hachi-backup-<YYYYMMDD-HHMMSS>/
+    """
+    import shutil
+    from datetime import datetime
+
+    paths = get_hachi_paths()
+
+    # Resolve destination directory: default to <state_dir>/backups/
+    if dest is None:
+        dest = paths.state_dir / "backups"
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_dir = dest / f"hachi-backup-{timestamp}"
+
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        console.print(f"[red]Backup directory already exists: {backup_dir}[/red]")
+        raise typer.Exit(1) from None
+    except OSError as exc:
+        console.print(f"[red]Cannot create backup directory {backup_dir}: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    manifest: list[str] = []
+    errors: list[str] = []
+
+    # 1. Sessions database (online hot-backup — safe while gateway is running).
+    sessions_src = paths.sessions_db
+    sessions_dest = backup_dir / "sessions.db"
+    if sessions_src.exists():
+        try:
+            store = SessionStore(db_path=sessions_src)
+            try:
+                store.backup(sessions_dest)
+            finally:
+                store.shutdown()
+            manifest.append(f"  sessions.db  ({sessions_src})")
+        except Exception as exc:
+            errors.append(f"sessions.db: {exc}")
+    else:
+        manifest.append("  sessions.db  (skipped — not yet created)")
+
+    # 2. ChromaDB memory vault (directory copy — stop-the-world snapshot).
+    chroma_src = paths.chroma_dir
+    chroma_dest = backup_dir / "chroma_vault"
+    if chroma_src.exists():
+        try:
+            shutil.copytree(str(chroma_src), str(chroma_dest))
+            manifest.append(f"  chroma_vault/ ({chroma_src})")
+        except Exception as exc:
+            errors.append(f"chroma_vault: {exc}")
+    else:
+        manifest.append("  chroma_vault/ (skipped — not yet created)")
+
+    # 3. Config files (non-secret): settings.toml + device-permissions.og
+    for config_file in (paths.global_config_toml, paths.permissions_file):
+        if config_file.exists():
+            try:
+                shutil.copy2(str(config_file), str(backup_dir / config_file.name))
+                manifest.append(f"  {config_file.name}  ({config_file})")
+            except Exception as exc:
+                errors.append(f"{config_file.name}: {exc}")
+
+    # Secrets are explicitly excluded — note it in the output.
+    manifest.append("  .env files   (excluded — contain secrets; manage separately)")
+
+    if errors:
+        console.print("[yellow]Backup completed with errors:[/yellow]")
+        for err in errors:
+            console.print(f"  [red]ERROR:[/red] {err}")
+
+    console.print(
+        Panel(
+            f"[bold green]Backup created:[/bold green] {backup_dir}\n\n"
+            "Contents:\n" + "\n".join(manifest),
+            title="hachi backup",
+            border_style="green",
+        )
+    )
+
+
+@app.command("restore")
+def restore(
+    src: Path = typer.Argument(  # noqa: B008
+        ...,
+        help="Path to a backup directory created by `hachi backup`.",
+    ),
+    yes: bool = typer.Option(  # noqa: B008
+        False,
+        "--yes",
+        "-y",
+        help="Skip the confirmation prompt (required for non-interactive / CI use).",
+    ),
+) -> None:
+    """Restore session history and memory vault from a backup directory.
+
+    WARNING: This operation overwrites live data.  The current sessions database and
+    memory vault will be replaced with the contents of the backup.  Any data created
+    after the backup was taken will be lost.
+
+    Requires ``--yes`` or interactive confirmation to proceed.
+
+    The gateway must not be running when restoring the memory vault (ChromaDB does
+    not support concurrent writers); the sessions database can be restored safely
+    (the hot-backup copy is consistent).
+    """
+    import shutil
+
+    paths = get_hachi_paths()
+    src = Path(src)
+
+    if not src.exists() or not src.is_dir():
+        console.print(f"[red]Source backup directory not found: {src}[/red]")
+        raise typer.Exit(1)
+
+    # Guard: require explicit confirmation before overwriting live data.
+    if not yes:
+        confirm = typer.confirm(
+            f"This will overwrite your live Hachi data with the backup at:\n  {src}\nContinue?",
+            default=False,
+        )
+        if not confirm:
+            console.print("[yellow]Restore cancelled.[/yellow]")
+            raise typer.Exit(0)
+
+    restored: list[str] = []
+    errors: list[str] = []
+
+    # 1. Sessions database.
+    sessions_src = src / "sessions.db"
+    sessions_dest = paths.sessions_db
+    if sessions_src.exists():
+        try:
+            sessions_dest.parent.mkdir(parents=True, exist_ok=True)
+            import shutil as _shutil
+
+            _shutil.copy2(str(sessions_src), str(sessions_dest))
+            restored.append(f"  sessions.db  → {sessions_dest}")
+        except Exception as exc:
+            errors.append(f"sessions.db: {exc}")
+    else:
+        restored.append("  sessions.db  (not in backup — skipped)")
+
+    # 2. ChromaDB memory vault.
+    chroma_src = src / "chroma_vault"
+    chroma_dest = paths.chroma_dir
+    if chroma_src.exists():
+        try:
+            if chroma_dest.exists():
+                shutil.rmtree(str(chroma_dest))
+            shutil.copytree(str(chroma_src), str(chroma_dest))
+            restored.append(f"  chroma_vault/ → {chroma_dest}")
+        except Exception as exc:
+            errors.append(f"chroma_vault: {exc}")
+    else:
+        restored.append("  chroma_vault/ (not in backup — skipped)")
+
+    # 3. Config files (non-secret).
+    for config_name in ("settings.toml", "device-permissions.og"):
+        config_src = src / config_name
+        config_dest = paths.config_dir / config_name
+        if config_src.exists():
+            try:
+                config_dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(config_src), str(config_dest))
+                restored.append(f"  {config_name}  → {config_dest}")
+            except Exception as exc:
+                errors.append(f"{config_name}: {exc}")
+
+    if errors:
+        console.print("[yellow]Restore completed with errors:[/yellow]")
+        for err in errors:
+            console.print(f"  [red]ERROR:[/red] {err}")
+        raise typer.Exit(1)
+
+    console.print(
+        Panel(
+            "[bold green]Restore complete.[/bold green]\n\nRestored:\n" + "\n".join(restored),
+            title="hachi restore",
+            border_style="green",
+        )
+    )
 
 
 if __name__ == "__main__":

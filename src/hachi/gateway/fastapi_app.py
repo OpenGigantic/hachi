@@ -41,6 +41,7 @@ from hachi.gateway.control_plane import (
     GatewayControlPlane,
     GatewayProtocolError,
     GatewayUnavailableError,
+    SessionExpiredError,
 )
 
 _APPROVALS_AVAILABLE = True
@@ -82,6 +83,7 @@ class ReadinessResponse(BaseModel):
     status: str
     ready: bool
     blockers: list[str]
+    checks: dict[str, str] = Field(default_factory=dict)
     active_connections: int
     time: str
 
@@ -103,6 +105,11 @@ class SessionCreateResponse(BaseModel):
 class SessionMessageRequest(BaseModel):
     prompt: str
     attachment_ids: list[str] = []
+    # Optional ingress idempotency token (AUDIT P0-3). When supplied — preferably via the
+    # ``Idempotency-Key`` HTTP header, with this body field as a fallback — a duplicate
+    # POST with the same key replays the prior turn's response instead of re-running the
+    # turn (no double spend / duplicate side effects). The header takes precedence.
+    idempotency_key: str | None = None
 
 
 class SessionMessageResponse(BaseModel):
@@ -131,6 +138,12 @@ class SessionEventsResponse(BaseModel):
 class SessionCloseResponse(BaseModel):
     session_id: str
     closed: bool
+
+
+class SessionInterruptResponse(BaseModel):
+    """Response for POST /sessions/{session_id}/interrupt (P1-4)."""
+
+    interrupted: bool
 
 
 class RuntimeEventsResponseItem(BaseModel):
@@ -326,6 +339,52 @@ class ApprovalActionRequest(BaseModel):
     rationale: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Eval loop — interaction read/rating models (E1)
+# ---------------------------------------------------------------------------
+
+
+class InteractionRecord(BaseModel):
+    """One row from ``interaction_log`` — the per-turn eval ground truth.
+
+    ``tool_calls`` and ``memory_hits`` are decoded JSON arrays (lists of strings).
+    Numeric fields are optional because they may be NULL for older rows.
+    """
+
+    id: str
+    session_id: str
+    turn_id: str | None = None
+    ts: str
+    user_input: str | None = None
+    agent_output: str | None = None
+    tool_calls: list[str] = Field(default_factory=list)
+    memory_hits: list[str] = Field(default_factory=list)
+    model_used: str | None = None
+    token_cost: float | None = None
+    tokens: int | None = None
+    rating: str | None = None
+    notes: str | None = None
+
+
+class InteractionListResponse(BaseModel):
+    """Response for ``GET /interactions``."""
+
+    interactions: list[InteractionRecord]
+
+
+class RatingRequest(BaseModel):
+    """Body for ``PUT /interactions/{interaction_id}/rating``."""
+
+    rating: Literal["up", "down"]
+    notes: str | None = None
+
+
+class RatingResponse(BaseModel):
+    """Response for ``PUT /interactions/{interaction_id}/rating``."""
+
+    ok: bool
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
@@ -338,6 +397,27 @@ def _error_response(
         status_code=status_code,
         content=ErrorResponse(code=code, message=message, details=details).model_dump(mode="json"),
     )
+
+
+def _resolve_session_store() -> Any:
+    """Return the process-wide ``SessionStore`` (preferred) or a fresh fallback, else None.
+
+    Mirrors the ``ProcessSharedServices`` access pattern used elsewhere in this module so
+    durable ingress idempotency (AUDIT P0-3) reads/writes the same database the rest of the
+    gateway uses. Patched in tests to point at an isolated DB.
+    """
+    try:
+        from hachi.gateway.shared_services import ProcessSharedServices
+
+        shared = ProcessSharedServices.instance()
+        store = getattr(shared, "session_store", None) if shared is not None else None
+        if store is not None:
+            return store
+        from hachi.core.session_store import SessionStore
+
+        return SessionStore()
+    except Exception:  # pragma: no cover - store is best-effort; never break the turn
+        return None
 
 
 def create_gateway_app(
@@ -494,9 +574,23 @@ def create_gateway_app(
         # storing or comparing the raw bearer value.
         return hashlib.sha256(raw_token.encode()).hexdigest()
 
+    # Issue 1: SessionExpiredError must be registered BEFORE GatewayProtocolError
+    # (it is a subclass).  HTTP 410 Gone tells the frontend the session existed but
+    # is no longer active, and the client should create a new session.
+    @app.exception_handler(SessionExpiredError)
+    async def _session_expired_handler(_request: Request, exc: SessionExpiredError) -> JSONResponse:
+        return _error_response(
+            status_code=410,
+            code=exc.code,
+            message=str(exc),
+            details={"session_id": exc.session_id},
+        )
+
     @app.exception_handler(GatewayProtocolError)
     async def _protocol_error_handler(_request: Request, exc: GatewayProtocolError) -> JSONResponse:
-        return _error_response(status_code=400, code="protocol_error", message=str(exc))
+        return _error_response(
+            status_code=400, code=getattr(exc, "code", "protocol_error"), message=str(exc)
+        )
 
     @app.exception_handler(GatewayUnavailableError)
     async def _unavailable_error_handler(
@@ -789,17 +883,83 @@ def create_gateway_app(
     )
     def post_message(session_id: str, payload: SessionMessageRequest, request: Request) -> Any:
         _check_session_ownership(session_id, _require_auth(request))
+        # Ingress idempotency (AUDIT P0-3 / Theme A): a duplicate POST — client retry,
+        # reconnect, or double-click — carrying the same key replays the prior turn's
+        # response instead of re-running the whole turn (no double spend, no duplicate
+        # side effects). The header wins over the body field; an absent key disables it.
+        idem_key = (request.headers.get("Idempotency-Key") or payload.idempotency_key or "").strip()
+        store = _resolve_session_store() if idem_key else None
+        if store is not None:
+            prior = store.get_idempotent_response(session_id, idem_key)
+            if prior is not None:
+                return prior
         # Step 7: intercept slash commands before the LLM.
         slash_result = _handle_slash_command(session_id, payload.prompt)
         if slash_result is not None:
             return slash_result
         augmented = _build_augmented_prompt(payload.prompt, payload.attachment_ids)
-        return control_plane.send_message(session_id=session_id, prompt=augmented)
+        result = control_plane.send_message(session_id=session_id, prompt=augmented)
+        # Persist only on success (send_message raises on failure → left retryable).
+        if store is not None:
+            store.save_idempotent_response(session_id, idem_key, result)
+        return result
 
     @sessions.delete("/{session_id}", response_model=SessionCloseResponse)
     async def delete_session(session_id: str, request: Request) -> Any:
         _check_session_ownership(session_id, _require_auth(request))
         return control_plane.close_session(session_id)
+
+    # P1-4 — POST /sessions/{session_id}/interrupt
+    # Signals the live execution loop to stop at its next iteration boundary so that
+    # a browser Stop button or SSE disconnect actually cancels the server-side turn
+    # instead of only closing the coroutine while the worker thread keeps running.
+    @sessions.post("/{session_id}/interrupt", response_model=SessionInterruptResponse)
+    async def interrupt_session(session_id: str, request: Request) -> Any:
+        """Cancel the in-progress turn for a live session.
+
+        Delivers a cancellation signal to the session's ``ExecutionLoop`` via
+        ``ExecutionLoop.cancel()`` (a thread-safe ``threading.Event``). The current
+        LLM chunk and any in-progress tool call finish first; the loop exits cleanly
+        at the top of the following iteration, preserving message-history integrity.
+
+        Returns ``{"interrupted": true}`` when the signal was delivered to a live
+        session, ``{"interrupted": false}`` when the session is not live or no
+        in-process runtime is attached (safe — never raises a 5xx).
+        """
+        _check_session_ownership(session_id, _require_auth(request))
+        return control_plane.interrupt(session_id)
+
+    # Issue 12 — POST /sessions/cleanup-empty
+    # Deletes session rows that have no messages (ghost sessions accumulated before
+    # the lazy-row-creation fix landed).  Requires auth; returns {"removed": <int>}.
+    @sessions.post("/cleanup-empty")
+    async def cleanup_empty_sessions() -> Any:
+        """Delete all empty sessions (no messages) from the SQLite store.
+
+        Safe to call at any time.  Sessions that are currently booting (in-memory
+        but with no messages yet) are not affected — they have no DB row yet.
+
+        Returns:
+            ``{"removed": <count>}`` — the number of rows deleted.
+        """
+        removed = 0
+        try:
+            from hachi.gateway.shared_services import ProcessSharedServices
+
+            _shared = ProcessSharedServices.instance()
+            if _shared is not None and hasattr(_shared, "session_store"):
+                _store = _shared.session_store
+                if _store is not None and hasattr(_store, "delete_empty_sessions"):
+                    removed = _store.delete_empty_sessions()
+            else:
+                # Fallback: instantiate a fresh store (same DB file).
+                from hachi.core.session_store import SessionStore
+
+                _store = SessionStore()
+                removed = _store.delete_empty_sessions()
+        except Exception:
+            _log.warning("cleanup_empty_sessions: failed to delete empty sessions", exc_info=True)
+        return {"removed": removed}
 
     # G1-T4 — POST /sessions/{session_id}/permissions/always-allow
     # The frontend posts to /sessions/current/permissions/always-allow — "current" is a
@@ -881,6 +1041,9 @@ def create_gateway_app(
                     _wake.clear()
 
                     if await request.is_disconnected():
+                        # P1-4: on browser disconnect also cancel the server-side turn so
+                        # the worker thread stops, not just the coroutine awaiting it.
+                        control_plane.interrupt(session_id)
                         break
                     try:
                         batch = control_plane.read_session_events(
@@ -1144,6 +1307,16 @@ def create_gateway_app(
             raise HTTPException(status_code=422, detail="invalid provider name")
         return await anyio.to_thread.run_sync(lambda: control_plane.test_provider_connection(name))
 
+    @config.post("/providers/probe")
+    async def post_provider_probe(payload: ProviderUpsertRequest) -> Any:
+        """Probe an unsaved provider spec: connectivity + available models.
+
+        Returns ``{ok, detail, models}`` so the add/edit dialog can verify a key
+        and populate a model picker before the provider is saved.
+        """
+        spec = payload.model_dump(mode="python", exclude_none=True)
+        return await anyio.to_thread.run_sync(lambda: control_plane.probe_provider(spec))
+
     @config.get("/routing")
     async def get_routing() -> Any:
         """Return the capability routing matrix (synthesized when absent)."""
@@ -1265,6 +1438,8 @@ def create_gateway_app(
 
                     if await request.is_disconnected():
                         turn_task.cancel()
+                        # P1-4: also cancel the worker thread, not just the coroutine.
+                        control_plane.interrupt(session_id)
                         return
 
                     batch = control_plane.read_session_events(
@@ -1622,10 +1797,34 @@ def create_gateway_app(
 
     @integrations_router.get("")
     async def get_integrations() -> Any:
-        """List all connectors with their auth_type, configured, connected, and status fields."""
+        """List all connectors with their auth_type, configured, connected, and status fields.
+
+        Issue 5: the Tavily/search connector entry also carries ``fallback_active``
+        (True when no web_search provider is registered, so browse_web/Playwright is the
+        active fallback). The frontend reads this off GET /integrations to show a
+        "web search unavailable — using Playwright fallback" notice. Computed here so
+        GET /integrations and the POST /credentials response agree.
+        """
         from hachi.integrations.oauth_flow import all_connector_statuses
 
-        return all_connector_statuses()
+        statuses = await anyio.to_thread.run_sync(all_connector_statuses)
+
+        fallback_active = True
+        try:
+            from hachi.gateway.shared_services import ProcessSharedServices
+
+            _shared = ProcessSharedServices.instance()
+            if _shared is not None:
+                _pr = getattr(_shared, "provider_registry", None)
+                if _pr is not None and hasattr(_pr, "get_search"):
+                    fallback_active = _pr.get_search() is None
+        except Exception:
+            pass
+
+        for entry in statuses:
+            if isinstance(entry, dict) and entry.get("id") == "tavily":
+                entry["fallback_active"] = fallback_active
+        return statuses
 
     @integrations_router.post("/{connector_id}/oauth/start")
     async def post_oauth_start(connector_id: str) -> Any:
@@ -1786,16 +1985,141 @@ def create_gateway_app(
         def _store_all() -> None:
             for key, value in fields_payload.items():
                 store_apikey_credential(connector_id, key, value.strip())
+            # Issue 5 — Tavily-first: when the Tavily connector is configured via the UI,
+            # also persist [search] provider = "tavily" to settings.toml so the search
+            # provider activates at next boot without manual config edits.
+            # Contract C-SEARCHFALLBACK: the search.provider field drives auto-registration
+            # in registry.py (another lane); we only persist the TOML value here.
+            if connector_id == "tavily":
+                try:
+                    from hachi.core.config_loader import load_effective_config, write_global_config
+
+                    _cfg = load_effective_config()
+                    if _cfg.search.provider != "tavily":
+                        _new_search = _cfg.search.model_copy(update={"provider": "tavily"})
+                        _new_cfg = _cfg.model_copy(update={"search": _new_search})
+                        write_global_config(_new_cfg)
+                        _log.info(
+                            "post_credentials: persisted [search] provider='tavily'"
+                            " to settings.toml"
+                        )
+                except Exception:
+                    # Non-fatal: credential is stored, TOML update is best-effort.
+                    _log.warning(
+                        "post_credentials: failed to persist [search] provider for tavily",
+                        exc_info=True,
+                    )
 
         await anyio.to_thread.run_sync(_store_all)
+
+        # Issue 5 — expose search fallback status for the UI (contract C-SEARCHFALLBACK).
+        # ``fallback_active=True`` means no SearchProvider is registered and browse_web
+        # (Playwright) is the current fallback.  The frontend uses this to show a
+        # "web search unavailable" badge on the Tavily integration card.
+        _fallback_active = True
+        try:
+            from hachi.gateway.shared_services import ProcessSharedServices
+
+            _shared = ProcessSharedServices.instance()
+            if _shared is not None:
+                # A ProviderRegistry on the shared services has a registered search
+                # provider when Tavily is active; absence means fallback is in use.
+                _pr = getattr(_shared, "provider_registry", None)
+                if _pr is not None and hasattr(_pr, "get_search"):
+                    _fallback_active = _pr.get_search() is None
+        except Exception:
+            pass
 
         status_info = await anyio.to_thread.run_sync(lambda: connector_status(connector_id))
         return {
             "id": connector.id,
             "name": connector.name,
             "category": connector.category,
+            "fallback_active": _fallback_active,
             **status_info,
         }
+
+    @integrations_router.post("/{connector_id}/credentials/test")
+    async def post_credentials_test(connector_id: str) -> Any:
+        """Validate a connector's stored credentials with a bounded live probe.
+
+        Issue 6b (contract C-CREDTEST). Returns ``{"ok": bool, "message": str}``.
+        Never echoes the secret and never raises — a failed or timed-out probe yields
+        ``ok: false`` with a short message. Connectors without a cheap probe report
+        ``ok: true`` with a "stored; live test not available" message so the UI still
+        confirms the credential was saved.
+        """
+        import re
+
+        from hachi.integrations.connector_registry import get_connector
+
+        if not re.match(r"^[a-z0-9_-]+$", connector_id):
+            return _error_response(400, "invalid_connector_id", "Connector id is not valid")
+        connector = get_connector(connector_id)
+        if connector is None:
+            return _error_response(404, "unknown_connector", f"Unknown connector: {connector_id!r}")
+
+        def _resolve_secret(*names: str) -> str | None:
+            # Vault first, then environment (canonical + UPPER) — never logged.
+            try:
+                from hachi.core.credential_vault import CredentialVault
+
+                _v = CredentialVault()
+                for n in names:
+                    val = _v.get_token(n)
+                    if val:
+                        return str(val)
+            except Exception:
+                pass
+            for n in names:
+                val = os.environ.get(n) or os.environ.get(n.upper())
+                if val:
+                    return val
+            return None
+
+        def _probe() -> dict[str, Any]:
+            try:
+                if connector_id == "tavily":
+                    key = _resolve_secret("tavily_api_key")
+                    if not key:
+                        return {"ok": False, "message": "No Tavily API key stored."}
+                    import httpx
+
+                    resp = httpx.post(
+                        "https://api.tavily.com/search",
+                        json={"api_key": key, "query": "ping", "max_results": 1},
+                        timeout=8.0,
+                    )
+                    if resp.status_code == 200:
+                        return {"ok": True, "message": "Tavily reachable — API key is valid."}
+                    if resp.status_code in (401, 403):
+                        return {"ok": False, "message": "Tavily rejected the API key."}
+                    return {"ok": False, "message": f"Tavily returned HTTP {resp.status_code}."}
+                if connector_id == "telegram":
+                    token = _resolve_secret("telegram_bot_token")
+                    if not token:
+                        return {"ok": False, "message": "No Telegram bot token stored."}
+                    import httpx
+
+                    resp = httpx.get(f"https://api.telegram.org/bot{token}/getMe", timeout=8.0)
+                    if resp.status_code == 200 and resp.json().get("ok"):
+                        name = resp.json().get("result", {}).get("username", "bot")
+                        return {"ok": True, "message": f"Telegram bot @{name} reachable."}
+                    return {"ok": False, "message": "Telegram rejected the bot token."}
+                # Generic: confirm a credential is present; no live probe available.
+                from hachi.integrations.oauth_flow import connector_status
+
+                st = connector_status(connector_id)
+                if st.get("status") in {"connected", "configured"}:
+                    return {
+                        "ok": True,
+                        "message": "Credential stored; live test not available for this connector.",
+                    }
+                return {"ok": False, "message": "No credential configured for this connector."}
+            except Exception as exc:  # never leak secrets or stack traces to the client
+                return {"ok": False, "message": f"Test failed: {type(exc).__name__}"}
+
+        return await anyio.to_thread.run_sync(_probe)
 
     @integrations_router.delete("/{connector_id}/credentials")
     async def delete_credentials(connector_id: str) -> Any:
@@ -2130,7 +2454,7 @@ def create_gateway_app(
         set_voice_config as _voice_set_config,
     )
     from hachi.gateway.voice_endpoints import (
-        speak as _voice_speak,
+        speak_stream as _voice_speak_stream,
     )
     from hachi.gateway.voice_endpoints import (
         transcribe as _voice_transcribe,
@@ -2170,12 +2494,16 @@ def create_gateway_app(
 
     @voice_router.post("/speak", summary="Synthesize text via TTS provider")
     async def route_voice_speak(body: VoiceSpeakBody) -> Any:
-        """Synthesize text to audio via the configured TTS backend."""
-        import io
+        """Synthesize text to audio via the configured TTS backend.
 
+        Uses :func:`~hachi.gateway.voice_endpoints.speak_stream` to pipe bytes
+        through a generator so the first bytes reach the client before the full
+        clip is produced (FIX P1).  Falls back to the buffered path automatically
+        for providers that don't support streaming.
+        """
         try:
-            audio_bytes, media_type = await anyio.to_thread.run_sync(
-                lambda: _voice_speak(
+            chunk_iter, media_type = await anyio.to_thread.run_sync(
+                lambda: _voice_speak_stream(
                     body.text,
                     voice=body.voice,
                     model=body.model,
@@ -2190,7 +2518,7 @@ def create_gateway_app(
             return _error_response(
                 500, "synthesis_error", "Synthesis failed, check voice provider configuration"
             )
-        return StreamingResponse(io.BytesIO(audio_bytes), media_type=media_type)
+        return StreamingResponse(chunk_iter, media_type=media_type)
 
     @voice_router.get("/config", summary="Get voice configuration")
     async def route_voice_config() -> Any:
@@ -2204,6 +2532,89 @@ def create_gateway_app(
             return await anyio.to_thread.run_sync(lambda: _voice_set_config(patch))
         except Exception as exc:  # noqa: BLE001
             return _error_response(500, "config_write_error", str(exc))
+
+    # ==========================================
+    # Eval loop — interaction read/rating (E1)
+    # ==========================================
+
+    interactions_router = APIRouter(
+        prefix="/interactions", tags=["interactions"], dependencies=protected_dependencies
+    )
+
+    @interactions_router.get("", response_model=InteractionListResponse)
+    async def get_interactions(
+        request: Request,
+        session_id: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> InteractionListResponse:
+        """Return interaction_log rows newest-first, optionally scoped to one session.
+
+        Ownership rules (mirrors ``list_sessions``):
+        - If ``session_id`` is supplied: ownership-check that session before querying.
+        - If not supplied: return rows across all sessions owned by the caller
+          (legacy NULL-owner sessions included for back-compat); no-auth returns all.
+
+        Args:
+            session_id: Optional session filter.
+            limit: Maximum rows to return (1–500; default 100).
+        """
+        caller_hash = _require_auth(request)
+        store = _resolve_session_store()
+        if store is None:
+            raise HTTPException(status_code=503, detail="session store unavailable")
+
+        if session_id is not None:
+            # Ownership-check before querying to avoid leaking row existence.
+            _check_session_ownership(session_id, caller_hash)
+            rows = store.get_interactions(session_id=session_id, limit=limit)
+        else:
+            # Pull all rows then filter to owned sessions.
+            rows = store.get_interactions(session_id=None, limit=limit)
+            if caller_hash is not None:
+                def _owned_session(sid: str) -> bool:
+                    owner = control_plane.get_session_owner(sid)
+                    return owner is None or secrets.compare_digest(owner, caller_hash)
+
+                rows = [r for r in rows if _owned_session(r.get("session_id") or "")]
+
+        records = [InteractionRecord(**row) for row in rows]
+        return InteractionListResponse(interactions=records)
+
+    @interactions_router.put("/{interaction_id}/rating", response_model=RatingResponse)
+    async def put_interaction_rating(
+        interaction_id: str,
+        payload: RatingRequest,
+        request: Request,
+    ) -> RatingResponse:
+        """Set the thumbs-up / thumbs-down rating (and optional notes) for a turn.
+
+        Ownership check: looks up the row's ``session_id`` first, then verifies the
+        caller owns that session before allowing the write.
+
+        Returns 404 if ``interaction_id`` does not exist.
+        """
+        caller_hash = _require_auth(request)
+        store = _resolve_session_store()
+        if store is None:
+            raise HTTPException(status_code=503, detail="session store unavailable")
+
+        # Look up the row to discover its session_id for the ownership check.
+        existing = store.get_interactions(session_id=None, limit=10_000)
+        row = next((r for r in existing if r.get("id") == interaction_id), None)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Interaction {interaction_id!r} not found")
+
+        # Ownership-check the owning session before mutating.
+        row_session_id: str = row.get("session_id") or ""
+        if row_session_id:
+            _check_session_ownership(row_session_id, caller_hash)
+
+        updated = store.set_interaction_rating(
+            interaction_id, rating=payload.rating, notes=payload.notes
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Interaction {interaction_id!r} not found")
+        return RatingResponse(ok=True)
 
     app.include_router(integrations_router)
     app.include_router(integrations_callback_router)
@@ -2223,6 +2634,7 @@ def create_gateway_app(
     app.include_router(runs_router)
     app.include_router(files_router)
     app.include_router(voice_router)
+    app.include_router(interactions_router)
 
     if _auth_enabled:
         # Inject the bearer security scheme into the exported OpenAPI spec so

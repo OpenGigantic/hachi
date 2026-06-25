@@ -20,12 +20,41 @@ import { ensureNotificationPermission, notifyApprovalPending } from "../../notif
 import type { Session, ActionCard } from "../types";
 
 // ============================================================
-// 1. Module-level session id (NOT persisted to store)
-//    Reuse a single live session across the page lifetime.
+// 1. Module-level session id — persisted to sessionStorage (FIX 2)
+//    Reusing across same-tab refreshes reconnects to the same session.
 // ============================================================
 
-let _liveSessionId: string | null = null;
+const SESSION_STORAGE_KEY = "hachi.liveSessionId";
+
+function persistSessionId(id: string | null): void {
+  try {
+    if (id) {
+      sessionStorage.setItem(SESSION_STORAGE_KEY, id);
+    } else {
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    }
+  } catch {
+    // private browsing / storage disabled — ignore
+  }
+}
+
+function readPersistedSessionId(): string | null {
+  try {
+    return sessionStorage.getItem(SESSION_STORAGE_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Rehydrate from sessionStorage on module load so a same-tab refresh
+// reconnects to the existing session instead of always creating a new one.
+let _liveSessionId: string | null = readPersistedSessionId();
 let _sseAbort: AbortController | null = null;
+// The session id that the *currently open* SSE stream belongs to.
+// Set right before opening a new stream; cleared when it closes or is aborted.
+// Guards against a stale/previous stream writing into the active session's store
+// (the "Aditya Dhanraj" cross-session leak scenario).
+let _streamSessionId: string | null = null;
 // Highest event sequence consumed so far. Persists ACROSS turns: the session is
 // reused, and the gateway stream replays every event after this cursor, so each
 // new turn must resume from the last consumed sequence — otherwise turn 2 would
@@ -308,6 +337,7 @@ async function ensureSession(): Promise<string> {
     capabilities: [],
   });
   _liveSessionId = res.session_id;
+  persistSessionId(_liveSessionId); // FIX 2: persist for same-tab refresh
   _cursor = 0; // fresh session → fresh event log
   return _liveSessionId;
 }
@@ -510,6 +540,20 @@ function driveRunSlice(eventType: string, payload: Record<string, unknown>): voi
 // ============================================================
 
 function handleSseMessage(eventType: string, payload: Record<string, unknown>): void {
+  // FIX 2: Drop events from a stale/foreign stream.
+  // _streamSessionId is the session this stream was opened for;
+  // _liveSessionId is the currently active session.
+  // If they've diverged (e.g. user switched sessions while a stream was in-flight),
+  // or the event itself carries a session_id that doesn't match, discard it.
+  const eventSessionId =
+    typeof payload.session_id === "string" ? payload.session_id : null;
+  if (eventSessionId !== null && eventSessionId !== _liveSessionId) {
+    return;
+  }
+  if (_streamSessionId !== null && _streamSessionId !== _liveSessionId) {
+    return;
+  }
+
   const store = useStore.getState();
   const isLive = store.dataMode === "live";
 
@@ -592,6 +636,13 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
           ...(isLive ? { runSpent: Math.round(turnDelta * 1000) / 1000 } : {}),
         });
       }
+      // FIX 4: also consume model from usage.updated as a fallback
+      // (contract C-MODEL — backend may send it here instead of chat.completed)
+      const usageModel =
+        typeof payload.model === "string" && payload.model ? payload.model : null;
+      if (usageModel) {
+        store.hydrate({ lastUsedModel: usageModel });
+      }
       // totalTokens surfaced but no dedicated UI field currently
       void totalTokens;
       break;
@@ -601,11 +652,27 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
       // Flush any remaining buffered text BEFORE ending streaming state, so
       // the final message is complete when the UI transitions out of streaming.
       flushDeltaBufferSync();
+      // FIX 4: capture the model id from this event (contract C-MODEL).
+      // The field may be absent; default to null if missing (defensive).
+      const completedModel =
+        typeof payload.model === "string" && payload.model
+          ? payload.model
+          : null;
+      if (completedModel) {
+        store.hydrate({ lastUsedModel: completedModel });
+      }
       // Turn is done — end streaming state
       store.hydrate({ streaming: false });
       // Reconcile today's spend with the durable backend ledger (GET /spend/daily)
       // so the live SSE-accumulated value can never drift from backend truth.
       void loadDailySpend();
+      // FIX 3: refresh the session list so the auto-generated title shows up without a
+      // manual navigation. The titler runs asynchronously AFTER the turn completes, so
+      // re-fetch once now and again shortly after to catch the title once it lands.
+      void loadSessions();
+      setTimeout(() => {
+        void loadSessions();
+      }, 2500);
       _hachiMsgId = null;
       // Clear the run buffers after a short delay (so the user sees "✓ done")
       // but only if a newer run hasn't started in the meantime.
@@ -699,6 +766,11 @@ export async function startTaskLive(
     return;
   }
 
+  // FIX 2: bind this SSE stream to its session so handleSseMessage can drop events
+  // that arrive after the user switched sessions (this is what actually prevents the
+  // cross-session/cross-section leak — the guard at the top of handleSseMessage reads it).
+  _streamSessionId = sessionId;
+
   // Resume from the module-level cursor so a reused session only streams the
   // NEW turn's events (see _cursor docs above), not the whole session history.
   const startAfter = _cursor;
@@ -719,7 +791,10 @@ export async function startTaskLive(
   const postPromise = apiSend<{ session_id: string; response: string }>(
     "POST",
     `/sessions/${sessionId}/messages`,
-    { prompt: text, attachment_ids: attachmentIds },
+    // Ingress idempotency (AUDIT P0-3): key the turn on the (stable) assistant-bubble id.
+    // retryLastMessage reuses the same hachiMsgId, so a retry or double-submit replays the
+    // prior turn server-side instead of double-spending; distinct turns get distinct keys.
+    { prompt: text, attachment_ids: attachmentIds, idempotency_key: `turn-${hachiMsgId}` },
     signal
   ).then((res) => {
     // If SSE didn't deliver a completed event (e.g. gateway closed stream early),
@@ -742,6 +817,40 @@ export async function startTaskLive(
     }
   }).catch((err: unknown) => {
     // POST failed — surface the error to the user and clean up.
+
+    // FIX 2: Handle session expiry / unknown session robustly.
+    // "session_expired" → create a new session and show a friendly notice.
+    // Any "Unknown session" / corrupted-id case → silently reset and create new.
+    const isSessionExpired =
+      err instanceof ApiError &&
+      (err.message === "session_expired" ||
+        (typeof (err as ApiError & { code?: string }).code === "string" &&
+          (err as ApiError & { code?: string }).code === "session_expired"));
+    const isUnknownSession =
+      err instanceof ApiError &&
+      (err.message === "Unknown session_id" ||
+        err.message?.toLowerCase().includes("unknown session"));
+
+    if (isSessionExpired || isUnknownSession) {
+      // Drop stale session id so next ensureSession() mints a fresh one
+      _liveSessionId = null;
+      persistSessionId(null);
+      _cursor = 0;
+
+      // Update sessions list so the stale active marker is cleared
+      const store = useStore.getState();
+      store.hydrate({
+        sessions: store.sessions.map((s) => ({ ...s, active: false })),
+      });
+
+      if (isSessionExpired) {
+        // Show a friendly inline notice for the user (contract C-SESSION)
+        store.showToast("This session expired — started a fresh one.", "success");
+      }
+      // For unknown session (corrupted id) — silently reset with no visible error.
+      return;
+    }
+
     const store = useStore.getState();
     if (store.streaming && _hachiMsgId === hachiMsgId) {
       // HACHI-010: abort the SSE reader so it doesn't linger until idle timeout.
@@ -838,6 +947,15 @@ export async function startTaskLive(
 export function stopStreamingLive(): void {
   // Flush any pending delta before aborting so the partial text is preserved
   flushDeltaBufferSync();
+  // P1-4: fire-and-forget interrupt so the server-side worker thread also stops,
+  // not just the SSE coroutine. abortSse() closes the stream first so the server
+  // can see is_disconnected(); the explicit interrupt guarantees the worker stops
+  // even on HTTP/1.1 where disconnect detection may lag.
+  if (_liveSessionId) {
+    apiSend<{ interrupted: boolean }>("POST", `/sessions/${_liveSessionId}/interrupt`).catch(
+      () => void 0 // fire-and-forget — never block the UI
+    );
+  }
   abortSse();
   _hachiMsgId = null;
   resetDeltaBuffer();
@@ -1137,7 +1255,10 @@ export async function loadConversationHistory(): Promise<void> {
   // Advance cursor so the next live turn only streams new events
   if (lastSeq > _cursor) _cursor = lastSeq;
   // Also sync the live session id so the SSE stream uses the right session
-  if (!_liveSessionId) _liveSessionId = sessionId;
+  if (!_liveSessionId) {
+    _liveSessionId = sessionId;
+    persistSessionId(sessionId); // FIX 2: persist rehydrated id
+  }
 
   if (reconstructed.length === 0) {
     // Nothing to restore — leave the store as-is (welcome screen is correct)
@@ -1163,6 +1284,7 @@ export async function switchSessionLive(sessionId: string): Promise<void> {
 
   // 2. Switch session id and reset cursor
   _liveSessionId = sessionId;
+  persistSessionId(sessionId); // FIX 2
   _cursor = 0;
   _lastKnownCumCost = 0;
   _costCumAtTurnStart = 0;
@@ -1204,21 +1326,9 @@ export async function switchSessionLive(sessionId: string): Promise<void> {
   // Advance cursor so the next live turn only sees new events
   _cursor = lastSeq;
 
-  // Hydrate the reconstructed history; if nothing was reconstructed, show a
-  // "resumed" note so the user sees honest state rather than a blank screen.
-  if (reconstructed.length === 0) {
-    useStore.getState().hydrate({
-      messages: [{
-        id: Date.now(),
-        role: "hachi" as const,
-        text: "(session resumed — no message history found)",
-        cards: [],
-        routine: null,
-      }],
-    });
-  } else {
-    useStore.getState().hydrate({ messages: reconstructed });
-  }
+  // FIX 3: if no messages were reconstructed, treat it as an empty/fresh
+  // conversation silently (don't show a misleading "no history found" note).
+  useStore.getState().hydrate({ messages: reconstructed });
 }
 
 /**
@@ -1239,6 +1349,7 @@ export async function deleteSessionLive(sessionId: string): Promise<boolean> {
     abortSse();
     resetDeltaBuffer();
     _liveSessionId = null;
+    persistSessionId(null); // FIX 2
     _cursor = 0;
     _hachiMsgId = null;
     _textLineActive = false;
@@ -1264,6 +1375,7 @@ export function newSessionLive(): void {
   abortSse();
   resetDeltaBuffer();
   _liveSessionId = null;
+  persistSessionId(null); // FIX 2: clear persisted id
   _cursor = 0;
   _hachiMsgId = null;
   _textLineActive = false;
@@ -1279,6 +1391,21 @@ export function newSessionLive(): void {
 }
 
 // ============================================================
+// 11a. Cleanup: POST /sessions/cleanup-empty (FIX 3)
+//     Asks the backend to remove 0-message sessions, then refreshes the list.
+// ============================================================
+
+export async function cleanupEmptySessionsLive(): Promise<void> {
+  if (USE_MOCKS) return;
+  try {
+    await apiSend<unknown>("POST", "/sessions/cleanup-empty");
+  } catch {
+    // Best-effort — even if the route doesn't exist yet, refresh the list.
+  }
+  await loadSessions();
+}
+
+// ============================================================
 // 11. Loader: GET /sessions?limit=10 → UI Session[]
 // ============================================================
 
@@ -1287,7 +1414,11 @@ export async function loadSessions(): Promise<void> {
   try {
     const raw = await apiGet<GatewaySession[]>("/sessions", { limit: 10 });
     const list = Array.isArray(raw) ? raw : [];
-    const adapted = list.map(adaptSession);
+    // FIX 4: mark the live session active so `activeSessionId` resolves (otherwise the
+    // picker stays empty and loadConversationHistory never fires for the current chat).
+    const adapted = list
+      .map(adaptSession)
+      .map((s) => (s.id === _liveSessionId ? { ...s, active: true } : s));
     // NOTE: today's spend (`spent`) is the SINGLE source of truth from the
     // durable backend ledger, hydrated via loadDailySpend() (GET /spend/daily).
     // We deliberately do NOT also sum session costs here — that produced a
@@ -1295,9 +1426,9 @@ export async function loadSessions(): Promise<void> {
     useStore.getState().hydrate({ sessions: adapted });
     useStore.getState().setReconnecting(false);
   } catch {
-    // In live mode, do NOT silently present stale fixture sessions as real.
-    // Clear the session slice to show an honest empty/reconnecting state.
-    useStore.getState().hydrate({ sessions: [] });
+    // FIX 4: do NOT wipe the list on a transient error — a stale list beats an empty
+    // one. Wiping to [] on any blip is what made the previous-sessions list flicker
+    // between visible and empty. Just flag reconnecting and keep what we have.
     useStore.getState().setReconnecting(true);
   }
 }

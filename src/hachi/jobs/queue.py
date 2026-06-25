@@ -28,6 +28,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from hachi.core.runtime_events import JOB_RETRY
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,7 +39,8 @@ class JobStatus(StrEnum):
     PENDING = "pending"  # Queued, waiting to execute
     RUNNING = "running"  # Currently executing
     COMPLETED = "completed"  # Successfully finished
-    FAILED = "failed"  # Failed after retries exhausted
+    FAILED = "failed"  # Structurally unexecutable (terminal, no handler)
+    DEAD_LETTER = "dead_letter"  # Retry-exhausted but handler exists; re-driveable
     CANCELLED = "cancelled"  # Explicitly cancelled
 
 
@@ -166,7 +169,20 @@ class JobQueue(ABC):
 
     @abstractmethod
     def cleanup_completed(self, older_than_hours: int = 24) -> int:
-        """Remove completed/failed jobs older than N hours. Returns count removed."""
+        """Remove completed/failed jobs older than N hours. Returns count removed.
+
+        DEAD_LETTER jobs are NOT removed by this method — they persist until
+        explicitly re-driven or purged.
+        """
+        pass
+
+    @abstractmethod
+    def redrive_dead_letter(self) -> int:
+        """Reset all DEAD_LETTER jobs to PENDING (attempt=0) so they run again.
+
+        Returns:
+            The number of jobs re-queued.
+        """
         pass
 
     @abstractmethod
@@ -250,9 +266,7 @@ class InMemoryJobQueue(JobQueue):
             if status == JobStatus.RUNNING and not job.started_at:
                 job.started_at = datetime.now(UTC).isoformat()
 
-            if status == JobStatus.COMPLETED:
-                job.completed_at = datetime.now(UTC).isoformat()
-            elif status == JobStatus.FAILED:
+            if status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.DEAD_LETTER):
                 job.completed_at = datetime.now(UTC).isoformat()
 
             return True
@@ -275,7 +289,11 @@ class InMemoryJobQueue(JobQueue):
             return failed[:limit]
 
     def cleanup_completed(self, older_than_hours: int = 24) -> int:
-        """Remove old completed/failed jobs."""
+        """Remove old completed or terminal-structural-failed jobs.
+
+        DEAD_LETTER jobs are intentionally preserved — they hold state needed for
+        re-drive and must only be removed by explicit purge or ``redrive_dead_letter``.
+        """
         with self._lock:
             cutoff = datetime.now(UTC) - timedelta(hours=older_than_hours)
             count = 0
@@ -294,6 +312,24 @@ class InMemoryJobQueue(JobQueue):
                 self._pending_queue = [jid for jid in self._pending_queue if jid != job_id]
 
         logger.debug(f"Cleaned up {count} old jobs")
+        return count
+
+    def redrive_dead_letter(self) -> int:
+        """Reset all DEAD_LETTER jobs to PENDING with attempt=0 so they run again.
+
+        Returns:
+            The number of jobs re-queued.
+        """
+        with self._lock:
+            count = 0
+            for job in self._jobs.values():
+                if job.status == JobStatus.DEAD_LETTER:
+                    job.status = JobStatus.PENDING
+                    job.attempt = 0
+                    job.completed_at = None
+                    job.scheduled_for = datetime.now(UTC).isoformat()
+                    count += 1
+        logger.info("InMemoryJobQueue: re-drove %d dead-letter job(s)", count)
         return count
 
     def shutdown(self) -> None:
@@ -423,9 +459,16 @@ class JobWorker:
                     f"Will retry in {backoff:.1f}s"
                 )
                 job.scheduled_for = (datetime.now(UTC) + timedelta(seconds=backoff)).isoformat()
-                self.queue.update_status(job.job_id, JobStatus.PENDING)
+                # Persist the incremented attempt counter and backoff timestamp.
+                # SQLiteJobQueue exposes update_attempt for this; fall back to
+                # update_status for the in-memory backend which tracks it in-object.
+                _update_attempt = getattr(self.queue, "update_attempt", None)
+                if callable(_update_attempt):
+                    _update_attempt(job.job_id, job.attempt, job.scheduled_for)
+                else:
+                    self.queue.update_status(job.job_id, JobStatus.PENDING)
                 self.on_job_event(
-                    "job.retry",
+                    JOB_RETRY,
                     {
                         "job_id": job.job_id,
                         "job_name": job.name,
@@ -437,21 +480,28 @@ class JobWorker:
                     },
                 )
             else:
-                # Exhausted retries
+                # Retries exhausted and the handler exists — route to dead-letter so
+                # the job is preserved for re-drive rather than silently discarded.
+                # (Structurally-unexecutable jobs — no handler — stay terminal FAILED.)
                 result = JobResult(
-                    status=JobStatus.FAILED,
+                    status=JobStatus.DEAD_LETTER,
                     error=str(e),
                     exception=f"{type(e).__name__}: {str(e)}",
                     duration_seconds=duration,
                 )
-                logger.error(f"Job {job.name} failed after {job.attempt} attempts: {e}")
+                logger.error(
+                    "Job %r moved to dead-letter after %d attempt(s): %s",
+                    job.name,
+                    job.attempt,
+                    e,
+                )
                 self.on_job_event(
-                    "job.failed",
+                    "job.dead_letter",
                     {
                         "job_id": job.job_id,
                         "job_name": job.name,
                         "kind": job.job_type,
-                        "status": JobStatus.FAILED.value,
+                        "status": JobStatus.DEAD_LETTER.value,
                         "label": job.name,
                         "attempt": job.attempt,
                         "error": str(e),
@@ -818,8 +868,13 @@ class SQLiteJobQueue(JobQueue):
                         "UPDATE jobs SET status = ? WHERE job_id = ?",
                         (status.value, job_id),
                     )
-                # A terminal job no longer needs its in-process callable retained.
-                if status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+                # A terminal or dead-lettered job no longer needs its callable retained.
+                if status in (
+                    JobStatus.COMPLETED,
+                    JobStatus.FAILED,
+                    JobStatus.DEAD_LETTER,
+                    JobStatus.CANCELLED,
+                ):
                     self._func_table.pop(job_id, None)
                 return True
 
@@ -855,6 +910,11 @@ class SQLiteJobQueue(JobQueue):
         return [self._row_to_job(r) for r in rows]
 
     def cleanup_completed(self, older_than_hours: int = 24) -> int:
+        """Remove completed or terminal-structural-failed jobs older than N hours.
+
+        DEAD_LETTER jobs are intentionally excluded — they hold state needed for
+        re-drive and must only be removed by explicit purge or ``redrive_dead_letter``.
+        """
         cutoff = (datetime.now(UTC) - timedelta(hours=older_than_hours)).isoformat()
         with self._conn() as conn:
             cur = conn.execute(
@@ -870,6 +930,32 @@ class SQLiteJobQueue(JobQueue):
         logger.debug("SQLiteJobQueue: cleaned up %d old jobs", count)
         return count
 
+    def redrive_dead_letter(self) -> int:
+        """Reset all DEAD_LETTER rows to PENDING with attempt=0 so they run again.
+
+        The ``completed_at`` and ``result_*`` columns are cleared so the job looks
+        fresh to the worker.  Returns the count of rows updated.
+        """
+        with self._conn() as conn:
+            cur = conn.execute(
+                """
+                UPDATE jobs
+                SET status = 'pending',
+                    attempt = 0,
+                    completed_at = NULL,
+                    scheduled_for = ?,
+                    result_status = NULL,
+                    result_output = NULL,
+                    result_error = NULL,
+                    result_duration = NULL
+                WHERE status = 'dead_letter'
+                """,
+                (datetime.now(UTC).isoformat(),),
+            )
+            count = int(cur.rowcount)
+        logger.info("SQLiteJobQueue: re-drove %d dead-letter job(s)", count)
+        return count
+
     def shutdown(self) -> None:
         with self._lock:
             # Best-effort: drop our own un-drained func jobs so they do not linger
@@ -878,8 +964,7 @@ class SQLiteJobQueue(JobQueue):
             try:
                 with self._conn() as conn:
                     conn.execute(
-                        "DELETE FROM jobs WHERE owner_id = ? "
-                        "AND status IN ('pending', 'running')",
+                        "DELETE FROM jobs WHERE owner_id = ? AND status IN ('pending', 'running')",
                         (self._instance_id,),
                     )
             except Exception:

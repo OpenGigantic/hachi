@@ -1,17 +1,25 @@
-// VoiceSettings — settings card for STT/TTS provider configuration.
+// VoiceSettings — the "Voice" settings panel.
 //
-// Reads from GET /voice/config, saves via PUT /voice/config.
-// Matches the card style of settings.tsx (cardStyle / sectionHeadingStyle).
+// Friendly front: a status hero with a one-click "Test voice", a provider toggle,
+// and a voice picker you can audition (click a voice to hear it). The technical
+// bits — API-key env-var names, models, custom base URLs — collapse under
+// "Advanced". One "Save voice settings" button persists the whole form.
+//
+// Data: GET/PUT /voice/config, POST /voice/speak (preview/test). UI-only redesign.
 
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react';
 import {
   getVoiceConfig,
   setVoiceConfig,
+  speakText,
   type VoiceConfig,
   type VoiceConfigPatch,
-} from '../../lib/data/domains/voice'
+} from '../../lib/data/domains/voice';
+import { Icon } from '../icons/Icon';
+import { cardStyle, sectionHeadingStyle, inputStyle, labelStyle, PanelHeader } from './shared';
 
-// ---- Inline field component ----
+const OPENAI_VOICES = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
+const SAMPLE_TEXT = "Hi, I'm Hachi. This is how I'll sound.";
 
 function Field({
   label,
@@ -21,379 +29,518 @@ function Field({
   placeholder,
   hint,
 }: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  type?: string
-  placeholder?: string
-  hint?: string
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type?: string;
+  placeholder?: string;
+  hint?: string;
 }) {
-  const inputStyle: React.CSSProperties = {
-    width: '100%',
-    height: 40,
-    padding: '0 12px',
-    borderRadius: 10,
-    border: '0.5px solid var(--hachi-line)',
-    background: 'var(--hachi-canvas)',
-    font: '14px var(--font-mono)',
-    color: 'var(--hachi-ink)',
-    outline: 'none',
-    boxSizing: 'border-box',
-  }
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-      <label
-        style={{ fontSize: 12, color: 'var(--hachi-muted)', fontWeight: 500 }}
-      >
-        {label}
-      </label>
+      <label style={{ ...labelStyle, marginBottom: 0, fontWeight: 500 }}>{label}</label>
       <input
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         style={inputStyle}
-        onFocus={(e) =>
-          ((e.currentTarget as HTMLInputElement).style.borderColor = 'var(--hachi-trust)')
-        }
-        onBlur={(e) =>
-          ((e.currentTarget as HTMLInputElement).style.borderColor = 'var(--hachi-line)')
-        }
+        onFocus={(e) => (e.currentTarget.style.borderColor = 'var(--hachi-trust)')}
+        onBlur={(e) => (e.currentTarget.style.borderColor = 'var(--hachi-line)')}
       />
-      {hint && (
-        <span style={{ fontSize: 11, color: 'var(--hachi-muted)', marginTop: 2 }}>
-          {hint}
-        </span>
-      )}
+      {hint && <span style={{ fontSize: 11, color: 'var(--hachi-muted)' }}>{hint}</span>}
     </div>
-  )
+  );
 }
-
-function SelectField({
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  options: string[]
-}) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-      <label
-        style={{ fontSize: 12, color: 'var(--hachi-muted)', fontWeight: 500 }}
-      >
-        {label}
-      </label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        style={{
-          height: 40,
-          padding: '0 12px',
-          borderRadius: 10,
-          border: '0.5px solid var(--hachi-line)',
-          background: 'var(--hachi-canvas)',
-          color: 'var(--hachi-ink)',
-          font: '14px var(--font-body)',
-          outline: 'none',
-          cursor: 'pointer',
-        }}
-      >
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
-    </div>
-  )
-}
-
-// ---- Main component ----
 
 export default function VoiceSettings() {
-  const [config, setConfig] = useState<VoiceConfig | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState<string | null>(null)
-  const [saveOk, setSaveOk] = useState(false)
+  const [config, setConfig] = useState<VoiceConfig | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveOk, setSaveOk] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
-  // Local editable state
-  const [ttsProvider, setTtsProvider] = useState('openai')
-  const [ttsVoice, setTtsVoice] = useState('alloy')
-  const [sttModel, setSttModel] = useState('')
-  const [ttsModel, setTtsModel] = useState('')
-  const [sttBaseUrl, setSttBaseUrl] = useState('')
-  const [ttsBaseUrl, setTtsBaseUrl] = useState('')
-  const [sttApiKeyEnv, setSttApiKeyEnv] = useState('')
-  const [ttsApiKeyEnv, setTtsApiKeyEnv] = useState('')
-  const [elApiKeyEnv, setElApiKeyEnv] = useState('')
-  const [elVoiceId, setElVoiceId] = useState('')
+  // Editable fields
+  const [ttsProvider, setTtsProvider] = useState('openai');
+  const [ttsVoice, setTtsVoice] = useState('alloy');
+  const [sttModel, setSttModel] = useState('');
+  const [ttsModel, setTtsModel] = useState('');
+  const [sttBaseUrl, setSttBaseUrl] = useState('');
+  const [ttsBaseUrl, setTtsBaseUrl] = useState('');
+  const [sttApiKeyEnv, setSttApiKeyEnv] = useState('');
+  const [ttsApiKeyEnv, setTtsApiKeyEnv] = useState('');
+  const [elApiKeyEnv, setElApiKeyEnv] = useState('');
+  const [elVoiceId, setElVoiceId] = useState('');
+
+  // Preview/test playback
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const urlRef = useRef<string | null>(null);
+  const [previewing, setPreviewing] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   useEffect(() => {
-    let cancelled = false
-    setLoading(true)
+    let cancelled = false;
+    setLoading(true);
     getVoiceConfig()
       .then((cfg) => {
-        if (cancelled) return
-        setConfig(cfg)
-        setTtsProvider(cfg.tts_provider)
-        setTtsVoice(cfg.tts_voice)
-        setSttModel(cfg.stt_model ?? '')
-        setTtsModel(cfg.tts_model ?? '')
-        setElVoiceId(cfg.elevenlabs_voice_id ?? '')
+        if (cancelled) return;
+        setConfig(cfg);
+        setTtsProvider(cfg.tts_provider);
+        setTtsVoice(cfg.tts_voice);
+        setSttModel(cfg.stt_model ?? '');
+        setTtsModel(cfg.tts_model ?? '');
+        setElVoiceId(cfg.elevenlabs_voice_id ?? '');
       })
-      .catch(() => { /* gateway may be offline; show empty form */ })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [])
+      .catch(() => {
+        /* gateway may be offline; show empty form */
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  async function handleSave() {
-    setSaving(true)
-    setSaveError(null)
-    setSaveOk(false)
-    const patch: VoiceConfigPatch = {}
-    if (ttsProvider) patch.tts_provider = ttsProvider
-    if (ttsVoice) patch.tts_voice = ttsVoice
-    if (sttModel.trim()) patch.stt_model = sttModel.trim()
-    if (ttsModel.trim()) patch.tts_model = ttsModel.trim()
-    if (sttBaseUrl.trim()) patch.stt_base_url = sttBaseUrl.trim()
-    if (ttsBaseUrl.trim()) patch.tts_base_url = ttsBaseUrl.trim()
-    if (sttApiKeyEnv.trim()) patch.stt_api_key_env = sttApiKeyEnv.trim()
-    if (ttsApiKeyEnv.trim()) patch.tts_api_key_env = ttsApiKeyEnv.trim()
-    if (elApiKeyEnv.trim()) patch.elevenlabs_api_key_env = elApiKeyEnv.trim()
-    if (elVoiceId.trim()) patch.elevenlabs_voice_id = elVoiceId.trim()
+  function stopAudio() {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    if (urlRef.current) {
+      URL.revokeObjectURL(urlRef.current);
+      urlRef.current = null;
+    }
+    setPreviewing(null);
+  }
+
+  // Cleanup on unmount.
+  useEffect(() => () => stopAudio(), []);
+
+  async function play(key: string, voice: string) {
+    setPreviewError(null);
+    if (previewing === key) {
+      stopAudio();
+      return;
+    }
+    stopAudio();
+    setPreviewing(key);
     try {
-      const updated = await setVoiceConfig(patch)
-      setConfig(updated)
-      setSaveOk(true)
-      setTimeout(() => setSaveOk(false), 2500)
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Could not save voice settings'
-      setSaveError(msg)
-    } finally {
-      setSaving(false)
+      const url = await speakText(SAMPLE_TEXT, { provider: ttsProvider, voice });
+      urlRef.current = url;
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => stopAudio();
+      audio.onerror = () => {
+        setPreviewError('Could not play the audio.');
+        stopAudio();
+      };
+      await audio.play();
+    } catch (e: unknown) {
+      setPreviewError(
+        e instanceof Error ? e.message : 'Could not play — check your API key under Advanced.'
+      );
+      setPreviewing(null);
     }
   }
 
-  // Card styles matching settings.tsx
-  const cardStyle: React.CSSProperties = {
-    background: 'var(--hachi-surface)',
-    border: '0.5px solid var(--hachi-line)',
-    borderRadius: 16,
-    padding: 22,
+  async function handleSave() {
+    setSaving(true);
+    setSaveError(null);
+    setSaveOk(false);
+    const patch: VoiceConfigPatch = {};
+    if (ttsProvider) patch.tts_provider = ttsProvider;
+    if (ttsVoice) patch.tts_voice = ttsVoice;
+    if (sttModel.trim()) patch.stt_model = sttModel.trim();
+    if (ttsModel.trim()) patch.tts_model = ttsModel.trim();
+    if (sttBaseUrl.trim()) patch.stt_base_url = sttBaseUrl.trim();
+    if (ttsBaseUrl.trim()) patch.tts_base_url = ttsBaseUrl.trim();
+    if (sttApiKeyEnv.trim()) patch.stt_api_key_env = sttApiKeyEnv.trim();
+    if (ttsApiKeyEnv.trim()) patch.tts_api_key_env = ttsApiKeyEnv.trim();
+    if (elApiKeyEnv.trim()) patch.elevenlabs_api_key_env = elApiKeyEnv.trim();
+    if (elVoiceId.trim()) patch.elevenlabs_voice_id = elVoiceId.trim();
+    try {
+      const updated = await setVoiceConfig(patch);
+      setConfig(updated);
+      setSaveOk(true);
+      setTimeout(() => setSaveOk(false), 2500);
+    } catch (err: unknown) {
+      setSaveError(err instanceof Error ? err.message : 'Could not save voice settings');
+    } finally {
+      setSaving(false);
+    }
   }
 
-  const sectionHeadingStyle: React.CSSProperties = {
-    margin: '0 0 16px',
-    fontFamily: 'var(--font-display)',
-    fontWeight: 500,
-    fontSize: 17,
+  const configured = config?.configured ?? false;
+  const ttsProviders = config?.available?.tts_providers ?? ['openai', 'elevenlabs'];
+  const voices = config?.available?.voices ?? OPENAI_VOICES;
+  const spokenVoice = ttsProvider === 'elevenlabs' ? elVoiceId || 'default voice' : ttsVoice;
+
+  if (loading) {
+    return (
+      <div>
+        <PanelHeader title="Voice" subtitle="Talk to Hachi, and let it talk back." />
+        <div style={{ ...cardStyle, fontSize: 13, color: 'var(--hachi-muted)' }}>
+          Loading voice config…
+        </div>
+      </div>
+    );
   }
 
   return (
-    <div style={cardStyle}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-        <span style={{ fontSize: 20 }}>🎙</span>
-        <h2 style={{ ...sectionHeadingStyle, margin: 0 }}>Voice</h2>
-        {config?.configured && (
-          <span
+    <div>
+      <PanelHeader title="Voice" subtitle="Talk to Hachi, and let it talk back." />
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+        {/* Status hero */}
+        <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', gap: 14 }}>
+          <div
             style={{
-              fontSize: 11,
-              fontWeight: 500,
-              color: 'var(--hachi-trust)',
-              background: 'var(--hachi-trust-tint)',
-              padding: '3px 9px',
-              borderRadius: 999,
+              width: 44,
+              height: 44,
+              borderRadius: 12,
+              background: configured ? 'var(--hachi-success-tint)' : 'var(--hachi-cream)',
+              color: configured ? 'var(--hachi-success)' : 'var(--hachi-muted)',
+              display: 'grid',
+              placeItems: 'center',
+              flexShrink: 0,
             }}
           >
-            configured
-          </span>
-        )}
-      </div>
-      <div
-        style={{ fontSize: 13, color: 'var(--hachi-muted)', marginBottom: 20 }}
-      >
-        Gateway-powered speech-to-text (OpenAI Whisper) and text-to-speech
-        (OpenAI or ElevenLabs). Set the env-var names that hold your API keys
-        — keys are never stored in settings directly.
-      </div>
-
-      {loading ? (
-        <div style={{ fontSize: 13, color: 'var(--hachi-muted)', padding: '12px 0' }}>
-          Loading voice config…
+            <Icon name="mic" size={22} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 500 }}>
+              {configured ? 'Voice is ready' : "Voice isn't set up yet"}
+            </div>
+            <div style={{ fontSize: 12.5, color: 'var(--hachi-muted)', marginTop: 2 }}>
+              {configured
+                ? `Listening with Whisper · speaking with ${spokenVoice} (${ttsProvider})`
+                : 'Add an API key under Advanced to enable speech.'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void play('__test__', ttsProvider === 'elevenlabs' ? elVoiceId : ttsVoice)}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              height: 34,
+              padding: '0 14px',
+              borderRadius: 10,
+              border: '0.5px solid var(--hachi-line)',
+              background: 'var(--hachi-canvas)',
+              color: 'var(--hachi-ink)',
+              font: '500 13px var(--font-body)',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            <Icon name={previewing === '__test__' ? 'volume-2' : 'play'} size={14} />
+            {previewing === '__test__' ? 'Playing…' : 'Test voice'}
+          </button>
         </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* STT section */}
+
+        {/* Hachi's voice (TTS) */}
+        <div style={cardStyle}>
+          <h3 style={{ ...sectionHeadingStyle, marginBottom: 14 }}>Hachi's voice</h3>
+
+          <div style={{ fontSize: 12, color: 'var(--hachi-muted)', marginBottom: 8 }}>Provider</div>
           <div
             style={{
-              fontSize: 12,
-              fontWeight: 600,
-              color: 'var(--hachi-muted)',
-              textTransform: 'uppercase',
-              letterSpacing: '0.06em',
-              paddingBottom: 6,
-              borderBottom: '0.5px solid var(--hachi-line)',
+              display: 'inline-flex',
+              border: '0.5px solid var(--hachi-line)',
+              borderRadius: 10,
+              overflow: 'hidden',
+              marginBottom: 18,
             }}
           >
-            Speech-to-text (STT)
+            {ttsProviders.map((p, i) => {
+              const sel = ttsProvider === p;
+              return (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => {
+                    setTtsProvider(p);
+                    stopAudio();
+                  }}
+                  style={{
+                    padding: '8px 18px',
+                    border: 'none',
+                    borderLeft: i > 0 ? '0.5px solid var(--hachi-line)' : 'none',
+                    background: sel ? 'var(--hachi-brand)' : 'var(--hachi-surface)',
+                    color: sel ? '#fff' : 'var(--hachi-muted)',
+                    font: `${sel ? 500 : 400} 13px var(--font-body)`,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {p}
+                </button>
+              );
+            })}
           </div>
-          <Field
-            label="STT provider"
-            value="openai (Whisper)"
-            onChange={() => { /* read-only — openai is the only STT option */ }}
-            placeholder="openai"
-            hint="Only OpenAI-compatible Whisper is supported for STT."
-          />
-          <Field
-            label="STT API key env var"
-            value={sttApiKeyEnv}
-            onChange={setSttApiKeyEnv}
-            placeholder="OPENAI_API_KEY"
-            hint="Name of the environment variable that holds the STT key. Defaults to OPENAI_API_KEY."
-          />
-          <Field
-            label="STT model"
-            value={sttModel}
-            onChange={setSttModel}
-            placeholder="whisper-1"
-            hint="Leave blank for the default (whisper-1)."
-          />
-          <Field
-            label="STT base URL"
-            value={sttBaseUrl}
-            onChange={setSttBaseUrl}
-            placeholder="https://api.openai.com/v1"
-            hint="Override for self-hosted or compatible endpoints."
-          />
 
-          {/* TTS section */}
-          <div
-            style={{
-              fontSize: 12,
-              fontWeight: 600,
-              color: 'var(--hachi-muted)',
-              textTransform: 'uppercase',
-              letterSpacing: '0.06em',
-              paddingBottom: 6,
-              borderBottom: '0.5px solid var(--hachi-line)',
-              marginTop: 8,
-            }}
-          >
-            Text-to-speech (TTS)
-          </div>
-          <SelectField
-            label="TTS provider"
-            value={ttsProvider}
-            onChange={setTtsProvider}
-            options={config?.available?.tts_providers ?? ['openai', 'elevenlabs']}
-          />
-
-          {ttsProvider === 'openai' && (
-            <>
-              <SelectField
-                label="Voice"
-                value={ttsVoice}
-                onChange={setTtsVoice}
-                options={config?.available?.voices ?? ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']}
-              />
-              <Field
-                label="TTS API key env var"
-                value={ttsApiKeyEnv}
-                onChange={setTtsApiKeyEnv}
-                placeholder="OPENAI_API_KEY"
-                hint="Name of the environment variable that holds the TTS key. Defaults to OPENAI_API_KEY."
-              />
-              <Field
-                label="TTS model"
-                value={ttsModel}
-                onChange={setTtsModel}
-                placeholder="tts-1"
-                hint="Leave blank for the default (tts-1)."
-              />
-              <Field
-                label="TTS base URL"
-                value={ttsBaseUrl}
-                onChange={setTtsBaseUrl}
-                placeholder="https://api.openai.com/v1"
-                hint="Override for self-hosted or compatible endpoints."
-              />
-            </>
-          )}
-
-          {ttsProvider === 'elevenlabs' && (
-            <>
-              <Field
-                label="ElevenLabs API key env var"
-                value={elApiKeyEnv}
-                onChange={setElApiKeyEnv}
-                placeholder="ELEVENLABS_API_KEY"
-                hint="Name of the env var holding your ElevenLabs API key."
-              />
+          {ttsProvider === 'elevenlabs' ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               <Field
                 label="ElevenLabs voice ID"
                 value={elVoiceId}
                 onChange={setElVoiceId}
                 placeholder="21m00Tcm4TlvDq8ikWAM"
-                hint='Voice ID from the ElevenLabs dashboard. Default: "Rachel".'
+                hint='Find voice IDs in your ElevenLabs dashboard. Default: "Rachel".'
               />
+              <button
+                type="button"
+                onClick={() => void play('voice:el', elVoiceId)}
+                style={{
+                  alignSelf: 'flex-start',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  height: 32,
+                  padding: '0 13px',
+                  borderRadius: 9,
+                  border: '0.5px solid var(--hachi-line)',
+                  background: 'var(--hachi-canvas)',
+                  color: 'var(--hachi-ink)',
+                  font: '500 12.5px var(--font-body)',
+                  cursor: 'pointer',
+                }}
+              >
+                <Icon name={previewing === 'voice:el' ? 'volume-2' : 'play'} size={13} />
+                {previewing === 'voice:el' ? 'Playing…' : 'Preview voice'}
+              </button>
+            </div>
+          ) : (
+            <>
+              <div style={{ fontSize: 12, color: 'var(--hachi-muted)', marginBottom: 8 }}>
+                Voice <span style={{ opacity: 0.8 }}>— click one to hear it</span>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {voices.map((v) => {
+                  const sel = ttsVoice === v;
+                  const isPlaying = previewing === `voice:${v}`;
+                  return (
+                    <button
+                      key={v}
+                      type="button"
+                      aria-pressed={sel}
+                      onClick={() => {
+                        setTtsVoice(v);
+                        void play(`voice:${v}`, v);
+                      }}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 7,
+                        padding: '7px 12px',
+                        borderRadius: 9,
+                        border: `1px solid ${sel ? 'var(--hachi-brand)' : 'var(--hachi-line)'}`,
+                        background: sel ? 'var(--hachi-brand-tint)' : 'var(--hachi-canvas)',
+                        color: sel ? 'var(--hachi-brand)' : 'var(--hachi-ink)',
+                        font: `${sel ? 500 : 400} 12.5px var(--font-body)`,
+                        cursor: 'pointer',
+                        textTransform: 'capitalize',
+                      }}
+                    >
+                      <Icon
+                        name={isPlaying ? 'volume-2' : 'play'}
+                        size={13}
+                        style={{ color: sel ? 'var(--hachi-brand)' : 'var(--hachi-muted)' }}
+                      />
+                      {v}
+                    </button>
+                  );
+                })}
+              </div>
             </>
           )}
 
-          {/* Save controls */}
-          <div
+          {previewError && (
+            <div style={{ fontSize: 12, color: 'var(--hachi-danger)', marginTop: 12 }}>
+              {previewError}
+            </div>
+          )}
+        </div>
+
+        {/* Understanding you (STT) */}
+        <div style={cardStyle}>
+          <h3 style={{ ...sectionHeadingStyle, marginBottom: 14 }}>Understanding you</h3>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
+            <span style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}>
+              <Icon name="mic" size={18} />
+            </span>
+            <div style={{ flex: 1, fontSize: 13 }}>
+              Speech recognition uses OpenAI Whisper. Tap the mic in the conversation composer to
+              talk instead of type.
+            </div>
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 500,
+                color: 'var(--hachi-trust)',
+                background: 'var(--hachi-trust-tint)',
+                padding: '3px 9px',
+                borderRadius: 999,
+                flexShrink: 0,
+              }}
+            >
+              On
+            </span>
+          </div>
+        </div>
+
+        {/* Advanced */}
+        <div style={cardStyle}>
+          <button
+            type="button"
+            onClick={() => setAdvancedOpen((v) => !v)}
+            aria-expanded={advancedOpen}
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: 12,
-              marginTop: 8,
+              gap: 11,
+              width: '100%',
+              background: 'transparent',
+              border: 'none',
+              padding: 0,
+              cursor: 'pointer',
+              textAlign: 'left',
             }}
           >
-            <button
-              type="button"
-              onClick={() => void handleSave()}
-              disabled={saving}
-              style={{
-                height: 36,
-                padding: '0 18px',
-                borderRadius: 10,
-                border: 'none',
-                background: 'var(--hachi-brand-hover)',
-                color: 'var(--hachi-canvas)',
-                font: '500 13px var(--font-body)',
-                cursor: saving ? 'default' : 'pointer',
-                opacity: saving ? 0.6 : 1,
-              }}
-              onMouseEnter={(e) => {
-                if (!saving)
-                  (e.currentTarget as HTMLButtonElement).style.background =
-                    'var(--hachi-brand-active)'
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.background =
-                  'var(--hachi-brand-hover)'
-              }}
-            >
-              {saving ? 'Saving…' : 'Save voice settings'}
-            </button>
-            {saveOk && (
-              <span style={{ fontSize: 13, color: 'var(--hachi-trust)' }}>
-                Saved
-              </span>
-            )}
-            {saveError && (
-              <span style={{ fontSize: 13, color: 'var(--hachi-danger)' }}>
-                {saveError}
-              </span>
-            )}
-          </div>
+            <span style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}>
+              <Icon name="settings" size={17} />
+            </span>
+            <div style={{ flex: 1 }}>
+              <div style={{ ...sectionHeadingStyle, fontSize: 15 }}>Advanced</div>
+              <div style={{ fontSize: 12, color: 'var(--hachi-muted)', marginTop: 2 }}>
+                API key env vars, models, custom endpoints
+              </div>
+            </div>
+            <Icon name={advancedOpen ? 'chevron-down' : 'chevron-right'} size={16} />
+          </button>
+
+          {advancedOpen && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 18 }}>
+              <div style={{ fontSize: 12.5, color: 'var(--hachi-muted)' }}>
+                Keys are referenced by the name of the environment variable that holds them — they
+                are never stored in settings directly.
+              </div>
+
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: 'var(--hachi-muted)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.06em',
+                }}
+              >
+                Speech-to-text (Whisper)
+              </div>
+              <Field
+                label="STT API key env var"
+                value={sttApiKeyEnv}
+                onChange={setSttApiKeyEnv}
+                placeholder="OPENAI_API_KEY"
+                hint="Defaults to OPENAI_API_KEY."
+              />
+              <Field
+                label="STT model"
+                value={sttModel}
+                onChange={setSttModel}
+                placeholder="whisper-1"
+              />
+              <Field
+                label="STT base URL"
+                value={sttBaseUrl}
+                onChange={setSttBaseUrl}
+                placeholder="https://api.openai.com/v1"
+                hint="Override for self-hosted or compatible endpoints."
+              />
+
+              {ttsProvider === 'openai' ? (
+                <>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: 'var(--hachi-muted)',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.06em',
+                      marginTop: 4,
+                    }}
+                  >
+                    Text-to-speech (OpenAI)
+                  </div>
+                  <Field
+                    label="TTS API key env var"
+                    value={ttsApiKeyEnv}
+                    onChange={setTtsApiKeyEnv}
+                    placeholder="OPENAI_API_KEY"
+                    hint="Defaults to OPENAI_API_KEY."
+                  />
+                  <Field label="TTS model" value={ttsModel} onChange={setTtsModel} placeholder="tts-1" />
+                  <Field
+                    label="TTS base URL"
+                    value={ttsBaseUrl}
+                    onChange={setTtsBaseUrl}
+                    placeholder="https://api.openai.com/v1"
+                  />
+                </>
+              ) : (
+                <>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: 'var(--hachi-muted)',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.06em',
+                      marginTop: 4,
+                    }}
+                  >
+                    Text-to-speech (ElevenLabs)
+                  </div>
+                  <Field
+                    label="ElevenLabs API key env var"
+                    value={elApiKeyEnv}
+                    onChange={setElApiKeyEnv}
+                    placeholder="ELEVENLABS_API_KEY"
+                    hint="Name of the env var holding your ElevenLabs API key."
+                  />
+                </>
+              )}
+            </div>
+          )}
         </div>
-      )}
+
+        {/* Save */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={saving}
+            style={{
+              height: 38,
+              padding: '0 18px',
+              borderRadius: 10,
+              border: 'none',
+              background: 'var(--hachi-brand-hover)',
+              color: 'var(--hachi-canvas)',
+              font: '500 13px var(--font-body)',
+              cursor: saving ? 'default' : 'pointer',
+              opacity: saving ? 0.6 : 1,
+            }}
+          >
+            {saving ? 'Saving…' : 'Save voice settings'}
+          </button>
+          {saveOk && <span style={{ fontSize: 13, color: 'var(--hachi-trust)' }}>Saved</span>}
+          {saveError && <span style={{ fontSize: 13, color: 'var(--hachi-danger)' }}>{saveError}</span>}
+        </div>
+      </div>
     </div>
-  )
+  );
 }

@@ -42,7 +42,13 @@ from hachi.core.obs.trace import (
     copy_otel_context,
     detach_otel_context,
 )
-from hachi.core.runtime_events import SESSION_ITERATION_LIMIT, TOOL_RESULT_PREVIEW_MAX
+from hachi.core.runtime_events import (
+    BUDGET_EXCEEDED,
+    LLM_RETRY,
+    SESSION_ITERATION_LIMIT,
+    SESSION_TIME_LIMIT,
+    TOOL_RESULT_PREVIEW_MAX,
+)
 from hachi.core.tool_results import ToolResultBlocks
 from hachi.core.tracing import span
 from hachi.core.turn_context import TurnContext
@@ -330,6 +336,9 @@ class ExecutionLoop:
         self.cost_tracker = cost_tracker
         # Optional ModelRouter — when None, loop uses llm_client directly (back-compat).
         self.router = router
+        # Per-turn LLM client: resolved at run() start via router.select() when a router
+        # is present; falls back to llm_client for back-compat when router is None.
+        self._turn_client: BaseLLMClient = llm_client
         # Per-session safety caps (0 = unlimited). Enforced between iterations so a
         # runaway tool-calling loop can't silently drain the user's API budget.
         self.max_cost_usd = max_cost_usd
@@ -442,6 +451,45 @@ class ExecutionLoop:
             return tc.cacheable_system, (tc.dynamic_system or None)
         return self._build_system_prompt(), None
 
+    def _resolve_turn_client(self, user_input: str) -> None:
+        """Classify *user_input* and resolve a capability-tiered client via the router.
+
+        Sets :attr:`_turn_client` for this turn.  Falls back to :attr:`llm_client`
+        if the router raises (e.g. :class:`~hachi.core.routing.router.NoRouteError`
+        or any unexpected error) so the turn always completes.
+
+        Called at the start of :meth:`run` only when :attr:`router` is not ``None``.
+        """
+        from hachi.core.routing.classifier import classify_turn_capability
+        from hachi.core.routing.router import NoRouteError
+
+        # Reset the sticky cache so this turn re-selects independently.
+        self.router.new_turn()
+
+        capability = classify_turn_capability(user_input)
+        try:
+            resolved = self.router.select(capability)
+            self._turn_client = resolved.client
+            logger.debug(
+                "hot-path routing: capability=%s primary=%s",
+                capability,
+                resolved.descriptor.id,
+            )
+        except NoRouteError as exc:
+            logger.debug(
+                "hot-path routing: NoRouteError for capability=%s — using llm_client: %s",
+                capability,
+                exc,
+            )
+            self._turn_client = self.llm_client
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "hot-path routing: unexpected error for capability=%s — using llm_client: %s",
+                capability,
+                exc,
+            )
+            self._turn_client = self.llm_client
+
     def _generate_with_retry(self, **kwargs: Any):
         """Call the LLM with bounded exponential-backoff retry on transient errors.
 
@@ -452,7 +500,7 @@ class ExecutionLoop:
         delay = _LLM_RETRY_BASE_DELAY
         for attempt in range(1, _MAX_LLM_RETRIES + 1):
             try:
-                return self.llm_client.generate(**kwargs)
+                return self._turn_client.generate(**kwargs)
             except Exception as exc:
                 if attempt >= _MAX_LLM_RETRIES or not _is_retryable_llm_error(exc):
                     raise
@@ -463,7 +511,7 @@ class ExecutionLoop:
                     exc,
                     delay,
                 )
-                self.on_event("llm_retry", {"attempt": attempt, "error": str(exc)})
+                self.on_event(LLM_RETRY, {"attempt": attempt, "error": str(exc)})
                 time.sleep(delay)
                 delay *= 2
 
@@ -499,7 +547,7 @@ class ExecutionLoop:
             chunks_yielded = 0
             streamed_parts: list[str] = []
             try:
-                gen = self.llm_client.generate_stream(**kwargs)
+                gen = self._turn_client.generate_stream(**kwargs)
                 while True:
                     try:
                         chunk = next(gen)
@@ -531,7 +579,7 @@ class ExecutionLoop:
                     exc,
                     delay,
                 )
-                self.on_event("llm_retry", {"attempt": attempt, "error": str(exc)})
+                self.on_event(LLM_RETRY, {"attempt": attempt, "error": str(exc)})
                 time.sleep(delay)
                 delay *= 2
         return LLMResponse()  # unreachable; satisfies type checker
@@ -614,6 +662,24 @@ class ExecutionLoop:
             )
         return None
 
+    @property
+    def last_tool_calls(self) -> list[str]:
+        """Tool names invoked during the most recent ``run()``, in call order.
+
+        Powers the per-turn ``interaction_log`` (P0-2). Returns an empty list before the
+        first run. A copy, so callers can't mutate loop state.
+        """
+        return list(getattr(self, "_last_tool_calls", []))
+
+    @property
+    def last_suspend(self) -> "SuspendWorkflow | None":
+        """The ``SuspendWorkflow`` if the most recent ``run()`` ended by suspension, else None.
+
+        Lets the caller persist a durable WAITING run + arm the wait registry (P0-1).
+        Reset at the start of every ``run()``.
+        """
+        return getattr(self, "_last_suspend", None)
+
     def run(self, max_iterations: int = 15, turn_context: TurnContext | None = None) -> str:
         """
         Execute the autonomous loop until the model stops calling tools or hits the limit.
@@ -640,11 +706,24 @@ class ExecutionLoop:
         else:
             user_input_for_turn = getattr(self.memory, "_last_user_query", "")
 
+        # P1-2: Classify the turn and resolve a (possibly tiered) client via the router.
+        # Runs once per turn; sticky-per-turn caching inside ModelRouter means subsequent
+        # select() calls for the same capability within this turn hit the cache.
+        # When router is None, _turn_client stays as llm_client (byte-for-byte back-compat).
+        self._turn_client = self.llm_client
+        if self.router is not None:
+            self._resolve_turn_client(user_input_for_turn)
+
         # Only "core" tools are sent until the model unlocks groups this turn.
         self._active_groups = set()
         # Reset per-run state.
         self._cancel_event.clear()
         self._partial_text = []
+        # Per-turn tool-call record (names, in call order) for the interaction_log (P0-2).
+        self._last_tool_calls: list[str] = []
+        # Set when this run() ends by suspension, so the caller (AgentSession) can persist
+        # a durable WAITING run + arm the wait registry (P0-1). None on a normal turn.
+        self._last_suspend: SuspendWorkflow | None = None
 
         # Wall-clock deadline for this run() call (None when disabled).
         # Set before anything else so the streaming helper can read it.
@@ -693,7 +772,7 @@ class ExecutionLoop:
                 if self._wall_deadline is not None and time.monotonic() >= self._wall_deadline:
                     partial = "".join(self._partial_text)
                     self.on_event(
-                        "session_time_limit",
+                        SESSION_TIME_LIMIT,
                         {
                             "elapsed_s": self.max_wall_seconds,
                             "partial_text": partial,
@@ -713,7 +792,7 @@ class ExecutionLoop:
                 # Stop before spending more if a per-session budget cap was hit.
                 budget_reason = self._budget_exceeded()
                 if budget_reason:
-                    self.on_event("budget_exceeded", {"reason": budget_reason})
+                    self.on_event(BUDGET_EXCEEDED, {"reason": budget_reason})
                     self.memory.complete_task(user_input_for_turn, f"Stopped: {budget_reason}")
                     return f"[BUDGET LIMIT REACHED] {budget_reason}"
 
@@ -721,7 +800,7 @@ class ExecutionLoop:
                 ceiling_reason = self._safety_ceiling_exceeded()
                 if ceiling_reason:
                     self.on_event(
-                        "budget_exceeded",
+                        BUDGET_EXCEEDED,
                         {"reason": ceiling_reason, "status": "safety_ceiling"},
                     )
                     self.memory.complete_task(user_input_for_turn, f"Stopped: {ceiling_reason}")
@@ -777,7 +856,7 @@ class ExecutionLoop:
                     self.on_event("text_delta", {"text": chunk})
 
                 try:
-                    _llm_model = getattr(self.llm_client, "model", "unknown")
+                    _llm_model = getattr(self._turn_client, "model", "unknown")
                     with span("llm.generate", model=_llm_model):
                         response = self._stream_generate(on_delta=_on_delta, **gen_kwargs)
                         if response is None:
@@ -821,7 +900,7 @@ class ExecutionLoop:
                 except _StreamTimedOut as exc:
                     partial = "".join(self._partial_text) + exc.partial_text
                     self.on_event(
-                        "session_time_limit",
+                        SESSION_TIME_LIMIT,
                         {
                             "elapsed_s": self.max_wall_seconds,
                             "partial_text": partial,
@@ -840,14 +919,14 @@ class ExecutionLoop:
 
                 # Account for token usage / estimated cost and surface it live.
                 if self.cost_tracker is not None:
-                    model_name = getattr(self.llm_client, "model", "unknown")
+                    model_name = getattr(self._turn_client, "model", "unknown")
                     self.cost_tracker.record(model_name, response.usage)
                     self.on_event("usage", self.cost_tracker.snapshot().to_dict())
 
                 # Stop this turn if a per-turn budget cap is now exceeded.
                 turn_budget_reason = self._turn_budget_exceeded()
                 if turn_budget_reason:
-                    self.on_event("budget_exceeded", {"reason": turn_budget_reason})
+                    self.on_event(BUDGET_EXCEEDED, {"reason": turn_budget_reason})
                     self.memory.complete_task(user_input_for_turn, f"Stopped: {turn_budget_reason}")
                     return f"[BUDGET LIMIT REACHED] {turn_budget_reason}"
 
@@ -897,6 +976,9 @@ class ExecutionLoop:
 
                 for tool_call in response.tool_calls:
                     self.on_event("tool_call", {"name": tool_call.name, "input": tool_call.input})
+                    # Record for the per-turn interaction_log (sequential pre-pass — safe
+                    # before the thread-pool dispatch below).
+                    self._last_tool_calls.append(tool_call.name)
 
                     # Lazy tool loading: the model unlocks an optional group for the
                     # rest of this turn; the handler only confirms — state lives here.
@@ -999,6 +1081,10 @@ class ExecutionLoop:
                     self.memory.complete_task(
                         user_input_for_turn, f"Suspended: {suspend_exc.reason}"
                     )
+                    # Surface the structured wait condition to the caller so the gateway
+                    # can persist RunState(WAITING) + arm the registry (P0-1). Without this
+                    # the wait_kind/wait_key were lost inside the return string.
+                    self._last_suspend = suspend_exc
                     return f"[WORKFLOW SUSPENDED] {suspend_exc.reason}"
 
             self.on_event(

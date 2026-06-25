@@ -19,6 +19,7 @@ from typing import Any
 from hachi.channels.discord import DiscordError, DiscordSender
 from hachi.channels.slack import SlackError, SlackSender
 from hachi.channels.whatsapp import WhatsAppError, WhatsAppSender
+from hachi.core.idempotency import IdempotencyGuard, make_idempotency_key
 from hachi.core.loop import ToolRegistry
 from hachi.core.secret_scanner import redact_outbound
 
@@ -35,7 +36,8 @@ def _telegram_send(token: str, chat_id: str, text: str) -> dict[str, Any]:
     payload = json.dumps({"chat_id": chat_id, "text": text}).encode()
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
-        return json.loads(resp.read().decode())
+        data: dict[str, Any] = json.loads(resp.read().decode())
+        return data
 
 
 TelegramSender = Callable[[str, str, str], dict[str, Any]]
@@ -53,7 +55,24 @@ def _guard_outbound(text: str) -> tuple[str, str]:
     return safe, note
 
 
-def _make_send_slack(sender: SlackSender | None) -> Callable[[str, str], str]:
+def _duplicate_result(platform: str, target_desc: str, prior: str | None) -> str:
+    """Result string for a duplicate outbound send suppressed by the idempotency guard.
+
+    ``prior`` is the earlier successful result when one exists (the message *was*
+    delivered once — we replay that with a marker so the agent doesn't re-send), or
+    ``None`` when a concurrent duplicate is still in flight.
+    """
+    if prior is not None:
+        return f"{prior} [idempotent: identical message already sent moments ago — not resent]"
+    return (
+        f"Duplicate suppressed: an identical {platform} message to {target_desc} is already "
+        "being sent (idempotency guard) — not sent again."
+    )
+
+
+def _make_send_slack(
+    sender: SlackSender | None, guard: IdempotencyGuard
+) -> Callable[[str, str], str]:
     def send_slack_message(text: str, channel: str = "") -> str:
         text, guard_note = _guard_outbound(text)
         active = sender or SlackSender.from_env()
@@ -62,18 +81,28 @@ def _make_send_slack(sender: SlackSender | None) -> Callable[[str, str], str]:
                 "Slack is not configured. Set SLACK_BOT_TOKEN (and pass a channel) or "
                 "SLACK_WEBHOOK_URL, then try again."
             )
+        key = make_idempotency_key("send_slack_message", channel or "<default>", text)
+        is_dup, prior = guard.begin(key)
+        if is_dup:
+            return _duplicate_result("Slack", channel or "the default channel", prior)
         try:
             result = active.send(text=text, channel=channel)
         except SlackError as exc:
+            guard.abort(key)
             return f"Slack send failed: {exc}"
         except Exception as exc:
+            guard.abort(key)
             return f"Slack send failed: {exc}"
-        return f"Sent message to Slack ({result.get('target')})." + guard_note
+        final = f"Sent message to Slack ({result.get('target')})." + guard_note
+        guard.finish(key, final)
+        return final
 
     return send_slack_message
 
 
-def _make_send_discord(sender: DiscordSender | None) -> Callable[[str, str], str]:
+def _make_send_discord(
+    sender: DiscordSender | None, guard: IdempotencyGuard
+) -> Callable[[str, str], str]:
     def send_discord_message(content: str, channel: str = "") -> str:
         content, guard_note = _guard_outbound(content)
         active = sender or DiscordSender.from_env()
@@ -82,13 +111,21 @@ def _make_send_discord(sender: DiscordSender | None) -> Callable[[str, str], str
                 "Discord is not configured. Set DISCORD_WEBHOOK_URL or DISCORD_BOT_TOKEN "
                 "(and pass a channel id), then try again."
             )
+        key = make_idempotency_key("send_discord_message", channel or "<default>", content)
+        is_dup, prior = guard.begin(key)
+        if is_dup:
+            return _duplicate_result("Discord", channel or "the default channel", prior)
         try:
             result = active.send(content=content, channel=channel)
         except DiscordError as exc:
+            guard.abort(key)
             return f"Discord send failed: {exc}"
         except Exception as exc:
+            guard.abort(key)
             return f"Discord send failed: {exc}"
-        return f"Sent message to Discord ({result.get('target')})." + guard_note
+        final = f"Sent message to Discord ({result.get('target')})." + guard_note
+        guard.finish(key, final)
+        return final
 
     return send_discord_message
 
@@ -134,7 +171,9 @@ SEND_DISCORD_MESSAGE_SCHEMA = {
 }
 
 
-def _make_send_whatsapp(sender: WhatsAppSender | None) -> Callable[[str, str], str]:
+def _make_send_whatsapp(
+    sender: WhatsAppSender | None, guard: IdempotencyGuard
+) -> Callable[[str, str], str]:
     def send_whatsapp_message(text: str, to: str = "") -> str:
         text, guard_note = _guard_outbound(text)
         active = sender or WhatsAppSender.from_env()
@@ -146,14 +185,22 @@ def _make_send_whatsapp(sender: WhatsAppSender | None) -> Callable[[str, str], s
             )
         if not to:
             return "A recipient phone number (`to`) is required to send a WhatsApp message."
+        key = make_idempotency_key("send_whatsapp_message", to, text)
+        is_dup, prior = guard.begin(key)
+        if is_dup:
+            return _duplicate_result("WhatsApp", to, prior)
         try:
             result = active.send(to=to, text=text)
         except WhatsAppError as exc:
+            guard.abort(key)
             return f"WhatsApp send failed: {exc}"
         except Exception as exc:
+            guard.abort(key)
             return f"WhatsApp send failed: {exc}"
         provider = result.get("provider")
-        return f"Sent WhatsApp message to {result.get('to')} via {provider}." + guard_note
+        final = f"Sent WhatsApp message to {result.get('to')} via {provider}." + guard_note
+        guard.finish(key, final)
+        return final
 
     return send_whatsapp_message
 
@@ -179,7 +226,9 @@ SEND_WHATSAPP_MESSAGE_SCHEMA = {
 }
 
 
-def _make_send_telegram(sender: TelegramSender | None) -> Callable[[str, str], str]:
+def _make_send_telegram(
+    sender: TelegramSender | None, guard: IdempotencyGuard
+) -> Callable[[str, str], str]:
     def send_telegram_message(text: str, chat_id: str = "") -> str:
         text, guard_note = _guard_outbound(text)
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -191,17 +240,26 @@ def _make_send_telegram(sender: TelegramSender | None) -> Callable[[str, str], s
             )
         if not target:
             return "No Telegram chat_id provided. Pass `chat_id` or set TELEGRAM_CHAT_ID."
+        key = make_idempotency_key("send_telegram_message", target, text)
+        is_dup, prior = guard.begin(key)
+        if is_dup:
+            return _duplicate_result("Telegram", f"chat {target}", prior)
+        fn = sender or _telegram_send
         try:
-            fn = sender or _telegram_send
             result = fn(token, target, text)
         except urllib.error.HTTPError as exc:
+            guard.abort(key)
             return f"Telegram send failed: HTTP {exc.code} — {exc.reason}"
         except Exception as exc:
+            guard.abort(key)
             return f"Telegram send failed: {exc}"
         if not result.get("ok"):
+            guard.abort(key)
             description = result.get("description", "unknown error")
             return f"Telegram send failed: {description}"
-        return f"Sent Telegram message to chat {target}." + guard_note
+        final = f"Sent Telegram message to chat {target}." + guard_note
+        guard.finish(key, final)
+        return final
 
     return send_telegram_message
 
@@ -237,14 +295,28 @@ def register_messaging_tools(
     discord_sender: DiscordSender | None = None,
     whatsapp_sender: WhatsAppSender | None = None,
     telegram_sender: TelegramSender | None = None,
+    guard: IdempotencyGuard | None = None,
 ) -> None:
     """Register outbound Slack/Discord/WhatsApp/Telegram tools.
 
     Senders are optional — when omitted, credentials are resolved from the environment at
     call time, so the tools register cleanly even before any token is configured (they return
     a friendly "not configured" message until then). Tests inject fake senders.
+
+    ``guard`` is a shared :class:`~hachi.core.idempotency.IdempotencyGuard` that suppresses
+    duplicate *successful* sends inside a short window — defending against an LLM retry,
+    tool-pool re-dispatch, or turn-resume re-sending the same message. One guard is created
+    per call by default, so it is scoped to the session whose tool registry this is (every
+    in-session retry path reuses these same closures); injecting a guard is for tests.
     """
-    registry.register(SEND_SLACK_MESSAGE_SCHEMA, _make_send_slack(slack_sender))
-    registry.register(SEND_DISCORD_MESSAGE_SCHEMA, _make_send_discord(discord_sender))
-    registry.register(SEND_WHATSAPP_MESSAGE_SCHEMA, _make_send_whatsapp(whatsapp_sender))
-    registry.register(SEND_TELEGRAM_MESSAGE_SCHEMA, _make_send_telegram(telegram_sender))
+    # Explicit None check, NOT ``guard or ...``: IdempotencyGuard defines __len__, so an
+    # empty (len 0) injected guard is falsy and ``or`` would silently discard it.
+    active_guard = guard if guard is not None else IdempotencyGuard()
+    registry.register(SEND_SLACK_MESSAGE_SCHEMA, _make_send_slack(slack_sender, active_guard))
+    registry.register(SEND_DISCORD_MESSAGE_SCHEMA, _make_send_discord(discord_sender, active_guard))
+    registry.register(
+        SEND_WHATSAPP_MESSAGE_SCHEMA, _make_send_whatsapp(whatsapp_sender, active_guard)
+    )
+    registry.register(
+        SEND_TELEGRAM_MESSAGE_SCHEMA, _make_send_telegram(telegram_sender, active_guard)
+    )

@@ -105,28 +105,38 @@ def register_sandbox_tools(registry: ToolRegistry, gate: PermissionGate = None) 
         )
         return
 
-    logger.critical(
-        "HACHI_SANDBOX_PRODUCTION=1 is set — python_sandbox tool is ACTIVE. "
-        "This tool provides process-isolation only and grants unrestricted host "
-        "filesystem and network access within the subprocess.  Do NOT use in "
-        "multi-tenant or publicly reachable deployments without additional "
-        "container/syscall isolation."
-    )
+    _active_backend = os.environ.get("HACHI_SANDBOX_BACKEND", "process").strip().lower()
+    if _active_backend == "container":
+        logger.warning(
+            "HACHI_SANDBOX_PRODUCTION=1 is set — python_sandbox tool is ACTIVE "
+            "with the container (Docker) backend. "
+            "Container-isolated execution is enabled; ensure Docker is available."
+        )
+    else:
+        logger.critical(
+            "HACHI_SANDBOX_PRODUCTION=1 is set — python_sandbox tool is ACTIVE. "
+            "This tool provides process-isolation only and grants unrestricted host "
+            "filesystem and network access within the subprocess.  Do NOT use in "
+            "multi-tenant or publicly reachable deployments without additional "
+            "container/syscall isolation."
+        )
 
-    # Executor is constructed lazily on first call so a missing `uv` binary does
-    # not raise during tool registration and block the rest of the registry from mounting.
-    from hachi.core.sandbox import SandboxExecutor
+    # Backend is constructed lazily on first call so a missing binary (uv / docker)
+    # does not raise during tool registration and block the rest of the registry.
+    from hachi.core.sandbox import SandboxBackend, create_sandbox_backend
 
-    _executor: list[SandboxExecutor] = []
+    _executor: list[SandboxBackend] = []
 
     def run_python_sandbox(script_content: str, dependencies: list = None) -> str:
         """
-        Execute Python code in an ephemeral environment managed by uv.
+        Execute Python code in an ephemeral environment.
 
-        IMPORTANT: This tool provides process-isolation only — it is NOT a
-        hardened security sandbox.  Network egress, filesystem access outside
+        The sandbox backend is selected by HACHI_SANDBOX_BACKEND (default: process).
+        With the process backend this tool provides process-isolation only — it is
+        NOT a hardened security sandbox.  Network egress, filesystem access outside
         the execution directory, and environment variable visibility are NOT
-        restricted.  The operator has explicitly enabled this tool by setting
+        restricted.  With the container backend a hardened Docker sandbox is used.
+        The operator has explicitly enabled this tool by setting
         HACHI_SANDBOX_PRODUCTION=1.
         """
         if gate is not None:
@@ -148,7 +158,21 @@ def register_sandbox_tools(registry: ToolRegistry, gate: PermissionGate = None) 
 
         try:
             if not _executor:
-                _executor.append(SandboxExecutor())
+                backend = create_sandbox_backend()
+                if backend.is_hardened:
+                    logger.warning(
+                        "python_sandbox: container-isolated backend is active "
+                        "(backend=%s). Hardened mode enabled.",
+                        backend.name,
+                    )
+                else:
+                    logger.critical(
+                        "python_sandbox: process-isolation backend is active — "
+                        "this grants unrestricted host filesystem and network access "
+                        "within the subprocess.  Do NOT use in multi-tenant or publicly "
+                        "reachable deployments without additional container/syscall isolation."
+                    )
+                _executor.append(backend)
             result = _executor[0].execute(script_content, dependencies)
             return result.formatted_output
         except OSError as e:

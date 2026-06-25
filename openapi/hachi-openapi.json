@@ -11,7 +11,7 @@
           "integrations"
         ],
         "summary": "Get Integrations",
-        "description": "List all connectors with their auth_type, configured, connected, and status fields.",
+        "description": "List all connectors with their auth_type, configured, connected, and status fields.\n\nIssue 5: the Tavily/search connector entry also carries ``fallback_active``\n(True when no web_search provider is registered, so browse_web/Playwright is the\nactive fallback). The frontend reads this off GET /integrations to show a\n\"web search unavailable \u2014 using Playwright fallback\" notice. Computed here so\nGET /integrations and the POST /credentials response agree.",
         "operationId": "get_integrations_integrations_get",
         "responses": {
           "200": {
@@ -224,6 +224,57 @@
               "application/json": {
                 "schema": {
                   "title": "Response Delete Credentials Integrations  Connector Id  Credentials Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/integrations/{connector_id}/credentials/test": {
+      "post": {
+        "tags": [
+          "integrations"
+        ],
+        "summary": "Post Credentials Test",
+        "description": "Validate a connector's stored credentials with a bounded live probe.\n\nIssue 6b (contract C-CREDTEST). Returns ``{\"ok\": bool, \"message\": str}``.\nNever echoes the secret and never raises \u2014 a failed or timed-out probe yields\n``ok: false`` with a short message. Connectors without a cheap probe report\n``ok: true`` with a \"stored; live test not available\" message so the UI still\nconfirms the credential was saved.",
+        "operationId": "post_credentials_test_integrations__connector_id__credentials_test_post",
+        "parameters": [
+          {
+            "name": "connector_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Connector Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Credentials Test Integrations  Connector Id  Credentials Test Post"
                 }
               }
             }
@@ -788,6 +839,87 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/sessions/{session_id}/interrupt": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Interrupt Session",
+        "description": "Cancel the in-progress turn for a live session.\n\nDelivers a cancellation signal to the session's ``ExecutionLoop`` via\n``ExecutionLoop.cancel()`` (a thread-safe ``threading.Event``). The current\nLLM chunk and any in-progress tool call finish first; the loop exits cleanly\nat the top of the following iteration, preserving message-history integrity.\n\nReturns ``{\"interrupted\": true}`` when the signal was delivered to a live\nsession, ``{\"interrupted\": false}`` when the session is not live or no\nin-process runtime is attached (safe \u2014 never raises a 5xx).",
+        "operationId": "interrupt_session_sessions__session_id__interrupt_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInterruptResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/sessions/cleanup-empty": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Cleanup Empty Sessions",
+        "description": "Delete all empty sessions (no messages) from the SQLite store.\n\nSafe to call at any time.  Sessions that are currently booting (in-memory\nbut with no messages yet) are not affected \u2014 they have no DB row yet.\n\nReturns:\n    ``{\"removed\": <count>}`` \u2014 the number of rows deleted.",
+        "operationId": "cleanup_empty_sessions_sessions_cleanup_empty_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Cleanup Empty Sessions Sessions Cleanup Empty Post"
                 }
               }
             }
@@ -2095,6 +2227,56 @@
               "application/json": {
                 "schema": {
                   "title": "Response Post Provider Test Config Providers  Name  Test Connection Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/config/providers/probe": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Post Provider Probe",
+        "description": "Probe an unsaved provider spec: connectivity + available models.\n\nReturns ``{ok, detail, models}`` so the add/edit dialog can verify a key\nand populate a model picker before the provider is saved.",
+        "operationId": "post_provider_probe_config_providers_probe_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderUpsertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Provider Probe Config Providers Probe Post"
                 }
               }
             }
@@ -3740,7 +3922,7 @@
           "voice"
         ],
         "summary": "Synthesize text via TTS provider",
-        "description": "Synthesize text to audio via the configured TTS backend.",
+        "description": "Synthesize text to audio via the configured TTS backend.\n\nUses :func:`~hachi.gateway.voice_endpoints.speak_stream` to pipe bytes\nthrough a generator so the first bytes reach the client before the full\nclip is produced (FIX P1).  Falls back to the buffered path automatically\nfor providers that don't support streaming.",
         "operationId": "route_voice_speak_voice_speak_post",
         "requestBody": {
           "content": {
@@ -3839,6 +4021,137 @@
               "application/json": {
                 "schema": {
                   "title": "Response Route Voice Set Config Voice Config Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/interactions": {
+      "get": {
+        "tags": [
+          "interactions"
+        ],
+        "summary": "Get Interactions",
+        "description": "Return interaction_log rows newest-first, optionally scoped to one session.\n\nOwnership rules (mirrors ``list_sessions``):\n- If ``session_id`` is supplied: ownership-check that session before querying.\n- If not supplied: return rows across all sessions owned by the caller\n  (legacy NULL-owner sessions included for back-compat); no-auth returns all.\n\nArgs:\n    session_id: Optional session filter.\n    limit: Maximum rows to return (1\u2013500; default 100).",
+        "operationId": "get_interactions_interactions_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InteractionListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/interactions/{interaction_id}/rating": {
+      "put": {
+        "tags": [
+          "interactions"
+        ],
+        "summary": "Put Interaction Rating",
+        "description": "Set the thumbs-up / thumbs-down rating (and optional notes) for a turn.\n\nOwnership check: looks up the row's ``session_id`` first, then verifies the\ncaller owns that session before allowing the write.\n\nReturns 404 if ``interaction_id`` does not exist.",
+        "operationId": "put_interaction_rating_interactions__interaction_id__rating_put",
+        "parameters": [
+          {
+            "name": "interaction_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Interaction Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RatingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RatingResponse"
                 }
               }
             }
@@ -4096,6 +4409,149 @@
         ],
         "title": "HealthResponse"
       },
+      "InteractionListResponse": {
+        "properties": {
+          "interactions": {
+            "items": {
+              "$ref": "#/components/schemas/InteractionRecord"
+            },
+            "type": "array",
+            "title": "Interactions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "interactions"
+        ],
+        "title": "InteractionListResponse",
+        "description": "Response for ``GET /interactions``."
+      },
+      "InteractionRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn Id"
+          },
+          "ts": {
+            "type": "string",
+            "title": "Ts"
+          },
+          "user_input": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Input"
+          },
+          "agent_output": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Output"
+          },
+          "tool_calls": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tool Calls"
+          },
+          "memory_hits": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Memory Hits"
+          },
+          "model_used": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Used"
+          },
+          "token_cost": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Cost"
+          },
+          "tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tokens"
+          },
+          "rating": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "session_id",
+          "ts"
+        ],
+        "title": "InteractionRecord",
+        "description": "One row from ``interaction_log`` \u2014 the per-turn eval ground truth.\n\n``tool_calls`` and ``memory_hits`` are decoded JSON arrays (lists of strings).\nNumeric fields are optional because they may be NULL for older rows."
+      },
       "LimitsRequest": {
         "properties": {
           "per_task_cap_usd": {
@@ -4348,6 +4804,49 @@
         "title": "ProviderUpsertRequest",
         "description": "Body for POST /config/providers (add) and PUT /config/providers/{name} (update)."
       },
+      "RatingRequest": {
+        "properties": {
+          "rating": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down"
+            ],
+            "title": "Rating"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rating"
+        ],
+        "title": "RatingRequest",
+        "description": "Body for ``PUT /interactions/{interaction_id}/rating``."
+      },
+      "RatingResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "title": "RatingResponse",
+        "description": "Response for ``PUT /interactions/{interaction_id}/rating``."
+      },
       "ReadinessResponse": {
         "properties": {
           "status": {
@@ -4364,6 +4863,13 @@
             },
             "type": "array",
             "title": "Blockers"
+          },
+          "checks": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Checks"
           },
           "active_connections": {
             "type": "integer",
@@ -4526,6 +5032,20 @@
         ],
         "title": "SessionEventsResponse"
       },
+      "SessionInterruptResponse": {
+        "properties": {
+          "interrupted": {
+            "type": "boolean",
+            "title": "Interrupted"
+          }
+        },
+        "type": "object",
+        "required": [
+          "interrupted"
+        ],
+        "title": "SessionInterruptResponse",
+        "description": "Response for POST /sessions/{session_id}/interrupt (P1-4)."
+      },
       "SessionMessageRequest": {
         "properties": {
           "prompt": {
@@ -4539,6 +5059,17 @@
             "type": "array",
             "title": "Attachment Ids",
             "default": []
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
           }
         },
         "type": "object",

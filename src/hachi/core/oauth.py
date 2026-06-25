@@ -17,13 +17,66 @@ import time
 import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 import httpx
 
 from hachi.core.secret_store import SecretStore, create_default_secret_store
 
-GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
-GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
+
+def _read_dotenv_value(path: Path, key: str) -> str | None:
+    """Return the value of *key* from a simple ``KEY=VALUE`` .env file, or None."""
+    try:
+        if not path.exists():
+            return None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, v = s.split("=", 1)
+            if k.strip() == key:
+                return v.strip().strip('"').strip("'") or None
+    except Exception:
+        return None
+    return None
+
+
+def _resolve_env(name: str) -> str | None:
+    """Resolve a credential env var **lazily, at call time**.
+
+    Order: the process environment first, then a project ``.env`` (the current working
+    directory, then the Hachi config dir). Resolving lazily — rather than capturing at
+    import time — is what makes a value configured in ``.env`` actually take effect. The
+    previous module-level ``os.environ.get(...)`` ran exactly once when this module was
+    first imported, so a ``.env`` merged into the environment *afterward* (or one living in
+    the config dir, or simply a different import order) was never seen — and every Google
+    tool failed with "Missing GOOGLE_CLIENT_ID" despite being correctly configured.
+    """
+    val = os.environ.get(name)
+    if val:
+        return val
+    candidates = [Path.cwd() / ".env"]
+    try:
+        from hachi.core.paths import get_hachi_paths
+
+        candidates.append(get_hachi_paths().config_dir / ".env")
+    except Exception:
+        pass
+    for path in candidates:
+        val = _read_dotenv_value(path, name)
+        if val:
+            return val
+    return None
+
+
+def _google_client_id() -> str | None:
+    """The configured Google OAuth client id (lazy). See :func:`_resolve_env`."""
+    return _resolve_env("GOOGLE_CLIENT_ID")
+
+
+def _google_client_secret() -> str | None:
+    """The configured Google OAuth client secret (lazy; optional for Desktop clients)."""
+    return _resolve_env("GOOGLE_CLIENT_SECRET")
 
 
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
@@ -86,11 +139,12 @@ class OAuthManager:
 
     @staticmethod
     def _require_google_client_id() -> str:
-        if not GOOGLE_CLIENT_ID:
+        client_id = _google_client_id()
+        if not client_id:
             raise RuntimeError(
                 "Missing GOOGLE_CLIENT_ID. Configure Google OAuth before using Google integrations."
             )
-        return GOOGLE_CLIENT_ID
+        return client_id
 
     @staticmethod
     def _exchange_token(payload: dict[str, str]) -> dict:
@@ -199,6 +253,17 @@ class OAuthManager:
 
     def _run_google_browser_flow(self, scopes: list[str]) -> str:
         """Spins up local server, opens browser, gets code, trades for token."""
+        # Fail fast in a non-interactive process (the gateway/serve server sets this flag):
+        # there is no display to complete the consent, and blocking ~120s on a dead browser
+        # redirect would stall a web turn. The one-time consent is done via `hachi auth
+        # google` in a terminal; the server then uses the saved token + silent refresh.
+        if os.environ.get("HACHI_OAUTH_NONINTERACTIVE"):
+            raise RuntimeError(
+                "Google needs a one-time browser sign-in, but Hachi is running "
+                "non-interactively (gateway/server). Run `hachi auth google` once in a "
+                "terminal to connect your account; the server will then use the saved token "
+                "and refresh it automatically."
+            )
         print("  [oauth] Connecting to Google...")
         print("  [oauth] A browser window will open to complete authentication.")
 
@@ -246,8 +311,9 @@ class OAuthManager:
             "grant_type": "authorization_code",
             "code_verifier": pkce["verifier"],
         }
-        if GOOGLE_CLIENT_SECRET:
-            token_payload["client_secret"] = GOOGLE_CLIENT_SECRET
+        client_secret = _google_client_secret()
+        if client_secret:
+            token_payload["client_secret"] = client_secret
 
         data = self._exchange_token(token_payload)
 
@@ -269,8 +335,9 @@ class OAuthManager:
             "refresh_token": refresh_token,
             "grant_type": "refresh_token",
         }
-        if GOOGLE_CLIENT_SECRET:
-            payload["client_secret"] = GOOGLE_CLIENT_SECRET
+        client_secret = _google_client_secret()
+        if client_secret:
+            payload["client_secret"] = client_secret
 
         data = self._exchange_token(payload)
 

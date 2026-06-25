@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from hachi.core.loop import ToolRegistry
 from hachi.core.memory import MemoryManager
 from hachi.gateway.orchestrator import AgentSession
-from hachi.jobs import InMemoryJobQueue, JobWorker
+from hachi.jobs import InMemoryJobQueue, JobRegistry, JobWorker
 from hachi.tools.memory_tools import register_memory_tools
 
 
@@ -87,16 +87,25 @@ def test_core_save_memory_enqueues_job_when_queue_available() -> None:
 
 
 def test_sync_turn_rapid_enqueues_are_processed_once_each() -> None:
+    # P1-5: sync_turn now enqueues handler_name="extract_fact" (durable path).
+    # The worker needs a registry; we inject a fake handler to track invocations.
     queue = InMemoryJobQueue()
     memory = MemoryManager(job_queue=queue)
     memory.set_vault(_FakeVault())
 
     processed: list[str] = []
 
-    def _fake_extract(combined: str) -> None:
-        processed.append(combined)
+    def _fake_handler(
+        session_id: str = "",
+        text: str = "",
+        typed: bool = False,
+        **_kwargs,
+    ) -> str:
+        processed.append(text)
+        return "extracted:0"
 
-    memory._run_fact_extraction = _fake_extract  # type: ignore[method-assign]
+    registry = JobRegistry()
+    registry.register("extract_fact", _fake_handler)
 
     for idx in range(30):
         memory.sync_turn(
@@ -104,7 +113,7 @@ def test_sync_turn_rapid_enqueues_are_processed_once_each() -> None:
             assistant_content=f"Assistant response {idx} with meaningful context.",
         )
 
-    worker = JobWorker(queue)
+    worker = JobWorker(queue, registry=registry)
     while worker.execute_one():
         continue
 

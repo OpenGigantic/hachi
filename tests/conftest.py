@@ -32,6 +32,43 @@ they construct ``MemoryVault`` directly with ``tmp_path`` and never go through
 
 from __future__ import annotations
 
+import os
+
+# Test hermeticity: hachi.cli.main merges <cwd>/.env and the config-dir .env into
+# os.environ at IMPORT time. During a full pytest run that pulls the developer's
+# real provider keys (ANTHROPIC_API_KEY, etc.) into the process, which flips
+# import-time skipif guards on live-gateway tests (flaky, order-dependent
+# failures) and leaks real secrets into the test process. Disable the autoload
+# before any test module imports hachi.cli.main. Export
+# HACHI_DISABLE_DOTENV_AUTOLOAD=0 to opt back in for a local debugging run.
+os.environ.setdefault("HACHI_DISABLE_DOTENV_AUTOLOAD", "1")
+
+# Cockpit/live-gateway tests boot a real in-process uvicorn + orchestrator and POST
+# /sessions, which does heavy synchronous skill-engine + ChromaDB vault init. On a
+# cold Windows process (uncached imports) or under full-suite load (the Nth
+# PersistentClient in one process), that can exceed GatewayClient's 15s default and
+# raise a transport timeout — the deterministic-looking "cockpit flakiness". Grant a
+# generous client timeout for the test process so session creation reliably
+# completes. Production keeps the 15s default (this only sets the env override).
+os.environ.setdefault("HACHI_GATEWAY_CLIENT_TIMEOUT", "90")
+
+# Warm the chromadb native (Rust/PyO3) extension once at session start. chromadb's
+# native module CANNOT be re-initialized once unloaded — CPython raises
+# "cannot load module more than once per process". Several tests use
+# patch.dict(sys.modules, {...}) to simulate a missing dependency; patch.dict
+# snapshots sys.modules on enter and restores it on exit, DROPPING any module that
+# was first-imported INSIDE the block. When chromadb is first-imported lazily inside
+# such a block (e.g. via the file-extractor chain in test_file_platform), the exit
+# wipes its native submodules and every later `import chromadb` in the process fails
+# — silently degrading vault/embedding tests to "chromadb not installed". Importing
+# it here guarantees chromadb is in every patch.dict enter-snapshot, so it survives
+# the restore. No-op if chromadb is not installed in this environment.
+try:
+    import chromadb  # noqa: F401
+    import chromadb.config  # noqa: F401
+except Exception:  # pragma: no cover - chromadb is optional in some CI envs
+    pass
+
 import pytest
 
 
@@ -52,6 +89,29 @@ def _reset_process_shared_services() -> None:  # type: ignore[return]
         pass
     yield  # run the test
     # No post-test cleanup here — _flush_shared_services_at_session_end handles WAL flush.
+
+
+@pytest.fixture(autouse=True)
+def _restore_os_environ():  # type: ignore[no-untyped-def]
+    """Snapshot os.environ before each test and restore it after.
+
+    Tests occasionally mutate os.environ directly (or trigger production code
+    that does — e.g. the tokoboros→hachi rename shim writes HACHI_* vars), and
+    pytest's monkeypatch only undoes vars IT set. Without this, a leaked var
+    (e.g. HACHI_SMTP_PORT='value-for-...') pollutes later tests and makes the
+    full-suite gate order-dependent. Diff-based restore (no clear()) avoids a
+    window where concurrent in-process-gateway threads observe an empty env.
+    """
+    snapshot = dict(os.environ)
+    yield
+    # Remove keys the test added that weren't present before.
+    for key in list(os.environ.keys()):
+        if key not in snapshot:
+            del os.environ[key]
+    # Restore keys that were changed or deleted during the test.
+    for key, value in snapshot.items():
+        if os.environ.get(key) != value:
+            os.environ[key] = value
 
 
 @pytest.fixture(autouse=True, scope="session")

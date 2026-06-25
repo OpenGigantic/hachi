@@ -14,7 +14,6 @@ the browser consent flow if no cached token exists.
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING
 
 from hachi.core.loop import ToolRegistry
@@ -100,12 +99,17 @@ def register_google_tools(registry: ToolRegistry, approver: ActionApprover | Non
                   keeps backward compatibility — the client will fail-safe (deny) when
                   a destructive action is requested without an approver.
     """
-    if not os.environ.get("GOOGLE_CLIENT_ID"):
+    # Resolve GOOGLE_CLIENT_ID the same lazy way the OAuth flow does — from the process
+    # environment OR a project / config-dir .env — so a value configured anywhere (incl. via
+    # `hachi setup`, which writes config_dir/.env) mounts the real hub, not the stub.
+    from hachi.core.oauth import _google_client_id
+
+    if not _google_client_id():
         registry.register(
             _NOT_CONFIGURED_SCHEMA,
             lambda: (
                 "Google Workspace integration is not configured. "
-                "Set GOOGLE_CLIENT_ID in your environment, then restart Hachi."
+                "Set GOOGLE_CLIENT_ID (in your environment or .env), then restart Hachi."
             ),
             group="google",
         )

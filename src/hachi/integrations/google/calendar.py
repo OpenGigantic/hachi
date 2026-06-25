@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import zoneinfo
 
+from hachi.core.idempotency import make_idempotency_key
 from hachi.core.loop import ToolRegistry
 from hachi.core.validators import (
     validate_emails,
@@ -119,7 +120,14 @@ class CalendarService(GoogleService):
             params["conferenceDataVersion"] = 1
 
         response = self.client.post(
-            "/calendar/v3/calendars/primary/events", params=params, json_data=event
+            "/calendar/v3/calendars/primary/events",
+            params=params,
+            json_data=event,
+            # Key on the logical event (not the body — a Meet requestId is a random uuid),
+            # so a retried create does not produce a duplicate event/invite.
+            idempotency_key=make_idempotency_key(
+                "calendar.create_event", title, f"{start_time_iso}\x00{end_time_iso}"
+            ),
         )
         link = response.get("htmlLink", "")
         meet_link = response.get("hangoutLink", "")
@@ -355,7 +363,15 @@ class CalendarService(GoogleService):
             params["conferenceDataVersion"] = 1
 
         response = self.client.post(
-            "/calendar/v3/calendars/primary/events", params=params, json_data=event
+            "/calendar/v3/calendars/primary/events",
+            params=params,
+            json_data=event,
+            # Key includes the RRULE so a retried create can't duplicate the series.
+            idempotency_key=make_idempotency_key(
+                "calendar.create_recurring",
+                title,
+                f"{start_time_iso}\x00{end_time_iso}\x00{normalized_rule}",
+            ),
         )
         link = response.get("htmlLink", "")
         meet_link = response.get("hangoutLink", "")
