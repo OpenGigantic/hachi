@@ -110,7 +110,15 @@ def _load_dotenv_into_environ(dotenv_path: Path) -> None:
     This ensures SMTP / Telegram / Slack credentials set in .env are visible to
     all tools that read os.environ directly — not just the provider API-key path
     in core/llm.py which has its own .env fallback.
+
+    Set ``HACHI_DISABLE_DOTENV_AUTOLOAD=1`` to skip the merge entirely. The pytest
+    harness sets this in ``tests/conftest.py`` so the suite never pulls the
+    developer's real provider keys into the process — that previously flipped
+    import-time skipif guards on live-gateway tests (flaky, order-dependent) and
+    leaked real secrets into the test process.
     """
+    if os.environ.get("HACHI_DISABLE_DOTENV_AUTOLOAD", "").strip() == "1":
+        return
     if not dotenv_path.exists():
         return
     try:

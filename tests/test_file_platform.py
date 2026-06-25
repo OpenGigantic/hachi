@@ -596,15 +596,24 @@ class TestSearchAttachments:
         import json
         import sys
 
-        # Remove chromadb from sys.modules so the local import raises ImportError.
-        saved = sys.modules.pop("chromadb", MagicMock())
+        # Pop chromadb so _search_attachments re-imports it fresh. CRITICAL: the
+        # default must be None, NOT a MagicMock — a MagicMock left in sys.modules
+        # poisons `chromadb` for every later test (a guarded `import chromadb`
+        # "succeeds" on the stub, then `from chromadb.config import Settings` fails
+        # with "chromadb is not a package", which production code swallows as
+        # "chromadb not installed"). See the _restore_chromadb_modules fixture.
+        saved = sys.modules.pop("chromadb", None)
         try:
             from hachi.tools.file_tools import _search_attachments as _sa
 
             result = json.loads(_sa("query"))
         finally:
-            # Restore whatever was there (or a MagicMock so downstream doesn't break).
-            sys.modules["chromadb"] = saved
+            # Restore the original module if it was present; otherwise leave the key
+            # absent (never install a stub) so later tests import the real chromadb.
+            if saved is not None:
+                sys.modules["chromadb"] = saved
+            else:
+                sys.modules.pop("chromadb", None)
 
         # Should not crash; returns error.
         assert "error" in result or "results" in result
