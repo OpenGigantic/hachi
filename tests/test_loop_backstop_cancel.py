@@ -194,8 +194,8 @@ def test_wall_clock_backstop_emits_event() -> None:
     )
     loop.add_user_message("go")
     loop.run(max_iterations=50)
-    time_limit_events = [e for e in events if e[0] == "session_time_limit"]
-    assert time_limit_events, "Expected at least one session_time_limit event"
+    time_limit_events = [e for e in events if e[0] == "session.time.limit"]
+    assert time_limit_events, "Expected at least one session.time.limit event"
     payload = time_limit_events[0][1]
     assert payload.get("status") == "time_limit"
 
