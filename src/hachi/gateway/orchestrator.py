@@ -2382,6 +2382,10 @@ def boot_agent(
         _event_bus.subscribe("*", _read_models_sink, mode="sync", name="read-models")
         _event_bus.subscribe("*", _surface_sink, mode="sync", name="surface")
 
+        from hachi.core.obs.sink import ObservabilitySink
+
+        _event_bus.subscribe("*", ObservabilitySink().handle, mode="sync", name="observability")
+
         # Rebind emit_runtime_event to publish through the bus.
         def emit_runtime_event(  # type: ignore[misc]  # noqa: F811
             name: str, payload: dict[str, Any] | None = None
@@ -3102,23 +3106,6 @@ def boot_agent(
         _job_registry.register("resume_run", handle_resume_run)
         _job_registry.register("auto_extract", handle_auto_extract)
 
-        # Initiative E: wire reactive file.uploaded → auto_extract via EventBus.
-        # When the EventBus funnel is active (_event_bus is not None) we subscribe
-        # the auto_extract handler in async mode so extraction runs as a durable job.
-        # When the funnel is off (bus is None) the FilePipeline still emits the event
-        # but no subscriber is present — extraction is triggered manually or via
-        # the standalone gateway POST /files route which calls the handler directly.
-        if _event_bus is not None:
-            from hachi.core.runtime_events import FILE_UPLOADED as _FILE_UPLOADED_EVT
-
-            _event_bus.subscribe(
-                _FILE_UPLOADED_EVT,
-                handle_auto_extract,  # type: ignore[arg-type]
-                mode="async",
-                name="auto_extract",
-            )
-            logger.info("boot_agent: file.uploaded → auto_extract subscription registered")
-
         # Expose the WaitConditionRegistry on the process singleton so the
         # scheduler sweep and /runs/{id}/wake endpoint share one registry.
         _wait_registry = get_wait_registry()
@@ -3128,6 +3115,59 @@ def boot_agent(
         _boot_recover_runs(job_queue, _job_registry, _wait_registry, emit_runtime_event)
 
         logger.info("boot_agent: JobRegistry active with 4 handlers (durable_handlers=true)")
+
+    # Initiative E: wire reactive file.uploaded → auto_extract via EventBus.
+    #
+    # Decoupled from durable_handlers so reactive extraction fires whenever the
+    # bus is active, regardless of whether the durable job registry is on.
+    #
+    # Dispatch mode:
+    #   async  — when durable_handlers is on: runs as a durable JobRegistry job
+    #            (survives restarts; the handler name "auto_extract" is registered
+    #            above in _job_registry).
+    #   sync   — when durable_handlers is off: runs inline on the file-upload
+    #            thread.  NOT on the turn hot path; acceptable for light workloads.
+    #            The handler degrades gracefully (returns a status string on error).
+    #
+    # When the bus is off (_event_bus is None) no subscription is created; the
+    # FilePipeline event fires into the void and extraction is triggered manually
+    # or via the standalone gateway POST /files route.
+    if _event_bus is not None:
+        from hachi.core.runtime.job_handlers import handle_auto_extract as _handle_auto_extract
+        from hachi.core.runtime_events import FILE_UPLOADED as _FILE_UPLOADED_EVT
+
+        if _jobs_cfg.durable_handlers:
+            # Async: JobRegistry routes handler_name="auto_extract" to the callable.
+            _event_bus.subscribe(
+                _FILE_UPLOADED_EVT,
+                _handle_auto_extract,  # type: ignore[arg-type]
+                mode="async",
+                name="auto_extract",
+            )
+            _auto_extract_mode = "async (durable)"
+        else:
+            # Sync inline: wrap the event into kwargs the handler expects.
+            def _auto_extract_sync_wrapper(event: RuntimeEvent) -> None:  # noqa: E306
+                """Inline sync adapter: unpacks RuntimeEvent into handle_auto_extract kwargs."""
+                _handle_auto_extract(
+                    event_name=event.name,
+                    event_payload=event.payload,
+                    event_timestamp=event.timestamp,
+                    event_sequence=0,
+                )
+
+            _event_bus.subscribe(
+                _FILE_UPLOADED_EVT,
+                _auto_extract_sync_wrapper,
+                mode="sync",
+                name="auto_extract",
+            )
+            _auto_extract_mode = "sync (inline)"
+
+        logger.info(
+            "boot_agent: file.uploaded → auto_extract subscription registered (mode=%s)",
+            _auto_extract_mode,
+        )
 
     # Start the resident job worker so background jobs (fact extraction, prefetch,
     # title generation) execute without blocking the turn path.

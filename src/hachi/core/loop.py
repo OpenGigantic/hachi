@@ -42,7 +42,13 @@ from hachi.core.obs.trace import (
     copy_otel_context,
     detach_otel_context,
 )
-from hachi.core.runtime_events import SESSION_ITERATION_LIMIT, TOOL_RESULT_PREVIEW_MAX
+from hachi.core.runtime_events import (
+    BUDGET_EXCEEDED,
+    LLM_RETRY,
+    SESSION_ITERATION_LIMIT,
+    SESSION_TIME_LIMIT,
+    TOOL_RESULT_PREVIEW_MAX,
+)
 from hachi.core.tool_results import ToolResultBlocks
 from hachi.core.tracing import span
 from hachi.core.turn_context import TurnContext
@@ -505,7 +511,7 @@ class ExecutionLoop:
                     exc,
                     delay,
                 )
-                self.on_event("llm_retry", {"attempt": attempt, "error": str(exc)})
+                self.on_event(LLM_RETRY, {"attempt": attempt, "error": str(exc)})
                 time.sleep(delay)
                 delay *= 2
 
@@ -573,7 +579,7 @@ class ExecutionLoop:
                     exc,
                     delay,
                 )
-                self.on_event("llm_retry", {"attempt": attempt, "error": str(exc)})
+                self.on_event(LLM_RETRY, {"attempt": attempt, "error": str(exc)})
                 time.sleep(delay)
                 delay *= 2
         return LLMResponse()  # unreachable; satisfies type checker
@@ -766,7 +772,7 @@ class ExecutionLoop:
                 if self._wall_deadline is not None and time.monotonic() >= self._wall_deadline:
                     partial = "".join(self._partial_text)
                     self.on_event(
-                        "session_time_limit",
+                        SESSION_TIME_LIMIT,
                         {
                             "elapsed_s": self.max_wall_seconds,
                             "partial_text": partial,
@@ -786,7 +792,7 @@ class ExecutionLoop:
                 # Stop before spending more if a per-session budget cap was hit.
                 budget_reason = self._budget_exceeded()
                 if budget_reason:
-                    self.on_event("budget_exceeded", {"reason": budget_reason})
+                    self.on_event(BUDGET_EXCEEDED, {"reason": budget_reason})
                     self.memory.complete_task(user_input_for_turn, f"Stopped: {budget_reason}")
                     return f"[BUDGET LIMIT REACHED] {budget_reason}"
 
@@ -794,7 +800,7 @@ class ExecutionLoop:
                 ceiling_reason = self._safety_ceiling_exceeded()
                 if ceiling_reason:
                     self.on_event(
-                        "budget_exceeded",
+                        BUDGET_EXCEEDED,
                         {"reason": ceiling_reason, "status": "safety_ceiling"},
                     )
                     self.memory.complete_task(user_input_for_turn, f"Stopped: {ceiling_reason}")
@@ -894,7 +900,7 @@ class ExecutionLoop:
                 except _StreamTimedOut as exc:
                     partial = "".join(self._partial_text) + exc.partial_text
                     self.on_event(
-                        "session_time_limit",
+                        SESSION_TIME_LIMIT,
                         {
                             "elapsed_s": self.max_wall_seconds,
                             "partial_text": partial,
@@ -920,7 +926,7 @@ class ExecutionLoop:
                 # Stop this turn if a per-turn budget cap is now exceeded.
                 turn_budget_reason = self._turn_budget_exceeded()
                 if turn_budget_reason:
-                    self.on_event("budget_exceeded", {"reason": turn_budget_reason})
+                    self.on_event(BUDGET_EXCEEDED, {"reason": turn_budget_reason})
                     self.memory.complete_task(user_input_for_turn, f"Stopped: {turn_budget_reason}")
                     return f"[BUDGET LIMIT REACHED] {turn_budget_reason}"
 

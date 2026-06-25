@@ -171,17 +171,22 @@ class ResilienceSettings(BaseModel):
 class EventsSettings(BaseModel):
     """Optional ``[events]`` config section (Slice 2.2 — EventBus funnel).
 
-    When ``bus_funnel=true``, ``emit_runtime_event`` / ``relay_event`` publish
-    through the ``EventBus`` singleton instead of calling consumers directly.
-    Back-compat: the same two sync subscribers (read-models append + SSE surface)
-    are registered in the same order, so output is byte-identical by construction.
+    The EventBus is the **default** event path.  ``emit_runtime_event`` /
+    ``relay_event`` publish through the ``EventBus`` singleton, which fans out
+    to all registered subscribers (read-models, SSE surface, observability sink,
+    and any reactive handlers such as ``file.uploaded → auto_extract``).
 
-    Default is ``False`` so the old path stays active until the flag is set.
+    Back-compat: the two primary sync subscribers (read-models append + SSE
+    surface) are registered in the same order as the old direct-call path, so
+    output is byte-identical by construction.
+
+    Set ``bus_funnel = false`` in the ``[events]`` config section to opt out of
+    the bus and fall back to the legacy direct-call path.
     """
 
     model_config = ConfigDict(extra="ignore")
 
-    bus_funnel: bool = False
+    bus_funnel: bool = True
 
 
 class ObservabilitySettings(BaseModel):

@@ -28,6 +28,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from hachi.core.runtime_events import JOB_RETRY
+
 logger = logging.getLogger(__name__)
 
 
@@ -466,7 +468,7 @@ class JobWorker:
                 else:
                     self.queue.update_status(job.job_id, JobStatus.PENDING)
                 self.on_job_event(
-                    "job.retry",
+                    JOB_RETRY,
                     {
                         "job_id": job.job_id,
                         "job_name": job.name,
@@ -962,8 +964,7 @@ class SQLiteJobQueue(JobQueue):
             try:
                 with self._conn() as conn:
                     conn.execute(
-                        "DELETE FROM jobs WHERE owner_id = ? "
-                        "AND status IN ('pending', 'running')",
+                        "DELETE FROM jobs WHERE owner_id = ? AND status IN ('pending', 'running')",
                         (self._instance_id,),
                     )
             except Exception:
