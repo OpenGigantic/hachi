@@ -5,6 +5,7 @@
 
 import { apiGet, apiSend, USE_MOCKS } from "../client";
 import { registerLoader } from "../live";
+import { invalidate } from "../cache";
 import { useStore } from "../../store/store";
 import type { Approval, AuditEntry } from "../types";
 
@@ -218,6 +219,9 @@ async function postDecision(
     // If requestId is unknown (e.g. fixture item), skip the POST — the
     // store action has already updated the UI optimistically.
   }
+  // Mark the approvals domain stale so a revisit to /approvals refetches
+  // the updated pending list rather than showing the now-stale snapshot.
+  invalidate("approvals");
 }
 
 /**
