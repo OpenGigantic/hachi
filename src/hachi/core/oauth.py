@@ -199,8 +199,19 @@ class OAuthManager:
         return {"verifier": verifier, "challenge": challenge, "method": "S256"}
 
     def get_token(self, provider: str) -> dict | None:
-        """Load a saved token from secure storage."""
+        """Load a saved token from secure storage.
+
+        The agent stores tokens under the "oauth." prefix (via :meth:`_key`).
+        The web UI (``integrations/oauth_flow.py``) stores them under the
+        "oauth2." prefix.  Fall back to the web-UI prefix so that a session
+        authenticated through the web UI is immediately visible to the agent
+        without requiring a separate ``hachi google-auth`` run.
+        """
         raw = self._store.get(self._key(provider))
+        if not raw:
+            # BB-10: web UI stores tokens under "oauth2.<provider>"; fall back
+            # so web-authenticated sessions are visible to the agent.
+            raw = self._store.get(f"oauth2.{provider}")
         if raw:
             try:
                 return json.loads(raw)
@@ -255,12 +266,12 @@ class OAuthManager:
         """Spins up local server, opens browser, gets code, trades for token."""
         # Fail fast in a non-interactive process (the gateway/serve server sets this flag):
         # there is no display to complete the consent, and blocking ~120s on a dead browser
-        # redirect would stall a web turn. The one-time consent is done via `hachi auth
-        # google` in a terminal; the server then uses the saved token + silent refresh.
+        # redirect would stall a web turn. The one-time consent is done via `hachi google-auth`
+        # in a terminal; the server then uses the saved token + silent refresh.
         if os.environ.get("HACHI_OAUTH_NONINTERACTIVE"):
             raise RuntimeError(
                 "Google needs a one-time browser sign-in, but Hachi is running "
-                "non-interactively (gateway/server). Run `hachi auth google` once in a "
+                "non-interactively (gateway/server). Run `hachi google-auth` once in a "
                 "terminal to connect your account; the server will then use the saved token "
                 "and refresh it automatically."
             )

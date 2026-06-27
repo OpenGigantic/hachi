@@ -300,7 +300,7 @@ function adaptIntegrationStatus(raw: GatewayIntegrationStatus): IntegrationExten
  * Gateway status values ("connected", "starting", "blocked", etc.) are mapped
  * to the UI's allowed literal union; unknown values fall back to "starting".
  */
-function adaptMcpServer(raw: GatewayMcpServer): McpServerExtended {
+export function adaptMcpServer(raw: GatewayMcpServer): McpServerExtended {
   const rawStatus = (raw.status ?? "").toLowerCase();
   const statusMap: Record<string, McpServer["status"]> = {
     connected: "connected",
@@ -310,7 +310,13 @@ function adaptMcpServer(raw: GatewayMcpServer): McpServerExtended {
     loading: "loading",
     initialising: "loading",
     initializing: "loading",
-    pending: "loading",
+    // BB-16: backend statuses that mean "registered but not running this
+    // session". These must NOT fall through to the "starting" default (a
+    // misleading orange "starting…" that never resolves) — they're idle, not
+    // booting. "pending" renders as "needs restart".
+    pending_restart: "pending",
+    stopped: "pending",
+    pending: "pending",
     blocked: "blocked",
     failed: "blocked",
     error: "blocked",
@@ -769,21 +775,11 @@ export function validateMcpServerInput(input: AddMcpServerInput): McpValidationR
         message: "Args must not contain shell metacharacters (; & | > < ` ${ $(  && ||).",
       };
     }
-    const secretPatterns = [
-      "key", "token", "secret", "password", "passwd", "credential",
-      "private", "auth", "bearer", "apikey", "api_key",
-    ];
-    for (const k of Object.keys(input.envVars ?? {})) {
-      const lower = k.toLowerCase();
-      const isSecret = secretPatterns.some((p) => lower.includes(p));
-      if (isSecret) {
-        return {
-          ok: false,
-          field: "envVars",
-          message: `Env var key "${k}" looks like a secret. Use SecretStore instead.`,
-        };
-      }
-    }
+    // BB-18: secret-looking env keys are NO LONGER rejected here. addMcpServer
+    // transparently stores their values via POST /runtime/secrets and references
+    // them as secret:<name>, so the raw value never reaches settings.toml. (The
+    // old hard rejection made it impossible to register a server that needs an
+    // API key from this dialog.)
   } else {
     // sse or http
     if (!input.url?.trim()) {
@@ -803,6 +799,75 @@ export function validateMcpServerInput(input: AddMcpServerInput): McpValidationR
 interface GatewayMcpRegisterResponse {
   name: string;
   message?: string;
+}
+
+// ============================================================
+// BB-18: transparent secret handling for MCP registration
+//
+// The backend rejects raw secret-looking env/header values (they would land in
+// settings.toml) and instead wants the value stored via POST /runtime/secrets
+// and referenced as secret:<name>. Rather than make the user do that two-step
+// dance, addMcpServer detects secret-looking keys, stores their values first,
+// and rewrites the register payload to use secret:<name> refs.
+// ============================================================
+
+/** Keys whose values are treated as secrets. Mirrors the gateway's _SECRET_PATTERNS. */
+const MCP_SECRET_KEY_PATTERNS = [
+  "key", "token", "secret", "password", "passwd", "credential",
+  "private", "auth", "bearer", "apikey", "api_key",
+];
+
+/** True when an env/header key name looks like it carries a secret value. */
+export function looksLikeMcpSecretKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  return MCP_SECRET_KEY_PATTERNS.some((p) => lower.includes(p));
+}
+
+/** Coerce an arbitrary string into the gateway's secret-name charset (^[\w.\-]+$). */
+function sanitizeSecretName(raw: string): string {
+  return raw.replace(/[^\w.\-]/g, "_");
+}
+
+/**
+ * Store a single user-managed secret via POST /runtime/secrets (stored under the
+ * reserved cred:<name> namespace server-side; the value is never returned).
+ */
+export async function storeSecret(name: string, value: string): Promise<void> {
+  if (USE_MOCKS) return;
+  await apiSend<{ ok: boolean; name: string }>("POST", "/runtime/secrets", { name, value });
+}
+
+/**
+ * Split an env/header map into the payload-safe map (secret-looking raw values
+ * replaced with secret:<name> refs) and the list of secrets to store first.
+ *
+ * Values already in `secret:<name>` form pass through untouched (the user is
+ * referencing an existing credential). Non-secret keys pass through as-is.
+ *
+ * Pure + exported for unit testing.
+ */
+export function extractMcpSecrets(
+  serverName: string,
+  scope: "env" | "header",
+  pairs: Record<string, string>,
+): {
+  sanitized: Record<string, string>;
+  secrets: { name: string; value: string }[];
+} {
+  const sanitized: Record<string, string> = {};
+  const secrets: { name: string; value: string }[] = [];
+  for (const [k, v] of Object.entries(pairs)) {
+    if (typeof v === "string" && v.startsWith("secret:")) {
+      sanitized[k] = v; // already a reference — leave it
+    } else if (v && looksLikeMcpSecretKey(k)) {
+      const name = sanitizeSecretName(`mcp_${serverName}_${scope}_${k}`);
+      secrets.push({ name, value: v });
+      sanitized[k] = `secret:${name}`;
+    } else {
+      sanitized[k] = v;
+    }
+  }
+  return { sanitized, secrets };
 }
 
 /**
@@ -828,15 +893,30 @@ export async function addMcpServer(input: AddMcpServerInput): Promise<void> {
     transport: input.transport,
   };
 
+  // BB-18: transparently store secret-looking env/header values and reference
+  // them as secret:<name> so registration succeeds without the user manually
+  // pre-storing the credential (the raw value never lands in settings.toml).
+  const pendingSecrets: { name: string; value: string }[] = [];
+
   if (input.transport === "stdio") {
     payload.command = input.command;
     payload.args = input.args;
-    payload.env_vars = input.envVars ?? {};
+    const { sanitized, secrets } = extractMcpSecrets(input.name, "env", input.envVars ?? {});
+    pendingSecrets.push(...secrets);
+    payload.env_vars = sanitized;
   } else {
     payload.url = input.url;
     if (input.headers && Object.keys(input.headers).length > 0) {
-      payload.headers = input.headers;
+      const { sanitized, secrets } = extractMcpSecrets(input.name, "header", input.headers);
+      pendingSecrets.push(...secrets);
+      payload.headers = sanitized;
     }
+  }
+
+  // Store every detected secret BEFORE registering so the secret:<name> refs in
+  // the payload resolve server-side (the backend verifies cred:<name> exists).
+  for (const s of pendingSecrets) {
+    await storeSecret(s.name, s.value);
   }
 
   await apiSend<GatewayMcpRegisterResponse>("POST", "/runtime/mcp/register", payload);

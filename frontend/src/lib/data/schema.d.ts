@@ -601,6 +601,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runtime/secrets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Secrets
+         * @description List user-managed credential names (``cred:`` prefix stripped, values never returned).
+         */
+        get: operations["get_secrets_runtime_secrets_get"];
+        put?: never;
+        /**
+         * Post Secret
+         * @description Store a user-managed credential as ``cred:<name>`` in the secret store.
+         */
+        post: operations["post_secret_runtime_secrets_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runtime/secrets/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Secret
+         * @description Delete ``cred:<name>`` (idempotent; system keys are silently ignored).
+         */
+        delete: operations["delete_secret_runtime_secrets__name__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/jobs/active": {
         parameters: {
             query?: never;
@@ -2101,6 +2145,16 @@ export interface components {
             /** Enabled */
             enabled: boolean;
         };
+        /**
+         * SecretStoreRequest
+         * @description Body for POST /runtime/secrets.
+         */
+        SecretStoreRequest: {
+            /** Name */
+            name: string;
+            /** Value */
+            value: string;
+        };
         /** SessionCloseResponse */
         SessionCloseResponse: {
             /** Session Id */
@@ -3274,6 +3328,111 @@ export interface operations {
         };
     };
     delete_mcp_server_runtime_mcp__name__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_secrets_runtime_secrets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    post_secret_runtime_secrets_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecretStoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_secret_runtime_secrets__name__delete: {
         parameters: {
             query?: never;
             header?: never;

@@ -455,9 +455,19 @@ class _InProcessGatewayRuntime:
     def recent_sessions(self, limit: int) -> list[dict]:
         with self._agents_lock:
             agent = next(iter(self._agents.values()), None)
-        if agent is None:
-            return []
-        return [dict(item) for item in agent.query_recent_sessions(limit=limit)]
+        if agent is not None:
+            return [dict(item) for item in agent.query_recent_sessions(limit=limit)]
+        # BB-13: no agent has booted yet (e.g. a fresh server start, before the
+        # first message). Read persisted sessions straight from the SessionStore
+        # so the conversation dropdown isn't empty on boot — the agent path and
+        # this path both delegate to SessionStore.get_recent_sessions, so the
+        # returned shape is identical. (Previously this returned [] when
+        # _agents was empty, hiding every prior conversation until a turn ran.)
+        store = SessionStore(db_path=str(get_hachi_paths().sessions_db))
+        try:
+            return [dict(item) for item in store.get_recent_sessions(limit=limit)]
+        finally:
+            store.shutdown()
 
     def session_messages(self, session_id: str, limit: int = 500) -> list[dict]:
         """Stored transcript for a (possibly historical) session — powers resume."""
@@ -2012,9 +2022,7 @@ class _InProcessGatewayRuntime:
         if name in mcp_section:
             entry = mcp_section[name]
             is_tombstone = (
-                entry.get("enabled") is False
-                and not entry.get("command")
-                and not entry.get("url")
+                entry.get("enabled") is False and not entry.get("command") and not entry.get("url")
             )
             if is_tombstone:
                 was_tombstone = True  # already deleted earlier — keep the tombstone
@@ -2036,9 +2044,7 @@ class _InProcessGatewayRuntime:
 
                 _invalidate_skill_engine_cache(skills_dir)
         except Exception:
-            _logger.warning(
-                "delete_mcp_server: failed to remove mcp-%s.og", name, exc_info=True
-            )
+            _logger.warning("delete_mcp_server: failed to remove mcp-%s.og", name, exc_info=True)
 
         # 4. Bundled / non-deletable .og server → tombstone so it stays gone.
         tombstoned = False
@@ -2163,6 +2169,69 @@ class _InProcessGatewayRuntime:
                 except Exception:
                     results.append(False)
         return {"ok": any(results)}
+
+    # ------------------------------------------------------------------ #
+    # Credential manager (BB-9 / cred: namespace)
+    # ------------------------------------------------------------------ #
+
+    _CRED_PREFIX = "cred:"
+
+    def store_secret(self, name: str, value: str) -> dict:
+        """Store *value* under ``cred:<name>`` in the secret store."""
+        from hachi.core.secret_store import create_default_secret_store
+
+        store = create_default_secret_store()
+        try:
+            store.set(
+                f"{self._CRED_PREFIX}{name}",
+                value,
+                metadata={
+                    "name": f"{self._CRED_PREFIX}{name}",
+                    "labels": {"source": "cred-manager"},
+                },
+            )
+        except RuntimeError as exc:
+            raise GatewayProtocolError(f"secret backend unavailable: {exc}") from exc
+        return {"ok": True, "name": name}
+
+    def list_secret_names(self) -> dict:
+        """Return ``{names: [...]}`` — only ``cred:`` prefixed entries, prefix stripped."""
+        from hachi.core.secret_store import create_default_secret_store
+
+        rows = create_default_secret_store().list_metadata()
+        names = [
+            r["name"][len(self._CRED_PREFIX) :]
+            for r in rows
+            if str(r.get("name", "")).startswith(self._CRED_PREFIX)
+        ]
+        return {"names": sorted(names)}
+
+    def delete_secret(self, name: str) -> dict:
+        """Delete ``cred:<name>`` (idempotent; ignores requests for non-cred: keys)."""
+        from hachi.core.secret_store import create_default_secret_store
+
+        create_default_secret_store().delete(f"{self._CRED_PREFIX}{name}")
+        return {"ok": True}
+
+    def reload_search_tools(self) -> dict:
+        """Re-evaluate search-provider availability after a credential change."""
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return {
+                "ok": True,
+                "live": False,
+                "note": "search tools activate in your next conversation",
+            }
+        try:
+            live = bool(agent.reload_search_provider())
+        except Exception as exc:
+            return {"ok": False, "live": False, "note": str(exc)}
+        return {
+            "ok": True,
+            "live": live,
+            "note": "search tools active" if live else "no search provider configured",
+        }
 
     # ------------------------------------------------------------------
     # Multi-provider admin (provider_admin delegates)
@@ -2703,6 +2772,12 @@ def _build_gateway_control_plane(
         probe_provider=support.probe_provider,
         # P1-4 — server-side turn interrupt
         on_interrupt=runtime.interrupt_session if runtime else None,
+        # Credential manager (BB-9)
+        store_secret=support.store_secret,
+        list_secret_names=support.list_secret_names,
+        delete_secret=support.delete_secret,
+        # Tavily live reload (BB-11)
+        reload_search_tools=support.reload_search_tools,
         max_active_sessions=max_active_sessions,
         max_prompt_chars=max_prompt_chars,
     )

@@ -79,6 +79,15 @@ const mcpMeta: Record<string, StatusMeta> = {
     dot: 'var(--hachi-working)',
     text: 'starting',
   },
+  // BB-16: registered but not connected this session (e.g. a TOML server before
+  // the first conversation, or a stopped server). Distinct from "starting" so it
+  // doesn't read as a boot that never finishes.
+  pending: {
+    bg: 'var(--hachi-muted-tint, rgba(120,120,130,.12))',
+    fg: 'var(--hachi-muted)',
+    dot: 'var(--hachi-muted)',
+    text: 'needs restart',
+  },
   blocked: {
     bg: 'var(--hachi-danger-tint)',
     fg: '#9E2D21',
@@ -942,9 +951,11 @@ function McpServerRow({ server: s, isLast }: McpServerRowProps) {
         {s.uptime}
       </span>
 
-      {/* enable/disable toggle */}
+      {/* enable/disable toggle — BB-17: fixed 40px column (= Switch width =
+          the "Enabled" header width) so cells line up under their headers.
+          Previously this had no width, so every cell after Uptime drifted. */}
       <span
-        style={{ flexShrink: 0 }}
+        style={{ width: 40, flexShrink: 0, display: 'flex', alignItems: 'center' }}
         title={enabled ? 'Disable server' : 'Enable server'}
       >
         <Switch
@@ -965,6 +976,11 @@ function McpServerRow({ server: s, isLast }: McpServerRowProps) {
         title={confirmDelete ? 'Click again to confirm removal' : 'Remove server'}
         style={{
           flexShrink: 0,
+          // BB-17: normal state occupies the same 32px slot the header reserves
+          // (the empty spacer span) so columns align; the confirm state grows to
+          // fit "Remove?" — a transient interaction, not the resting layout.
+          width: confirmDelete ? 'auto' : 32,
+          justifyContent: 'center',
           display: 'flex',
           alignItems: 'center',
           gap: 4,

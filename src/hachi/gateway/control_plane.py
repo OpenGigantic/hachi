@@ -152,6 +152,12 @@ class GatewayControlPlane:
         probe_provider: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         # P1-4 — server-side turn interrupt
         on_interrupt: Callable[[str], dict[str, Any]] | None = None,
+        # Credential manager (cred: namespace)
+        store_secret: Callable[[str, str], dict[str, Any]] | None = None,
+        list_secret_names: Callable[[], dict[str, Any]] | None = None,
+        delete_secret: Callable[[str], dict[str, Any]] | None = None,
+        # Tavily live reload
+        reload_search_tools: Callable[[], dict[str, Any]] | None = None,
         max_active_sessions: int = 100,
         max_prompt_chars: int = 100_000,
     ) -> None:
@@ -217,6 +223,10 @@ class GatewayControlPlane:
         self._list_all_models = list_all_models
         self._probe_provider = probe_provider
         self._on_interrupt = on_interrupt
+        self._store_secret = store_secret
+        self._list_secret_names = list_secret_names
+        self._delete_secret = delete_secret
+        self._reload_search_tools = reload_search_tools
         self._connections: dict[str, dict[str, Any]] = {}
         self._api_sessions: dict[str, str] = {}  # session_key -> session_id (facade sessions)
         self._connections_lock = threading.Lock()
@@ -705,6 +715,39 @@ class GatewayControlPlane:
             sname = sdict.get("name", "")
             sdict["enabled"] = enabled_map.get(sname, True)
             enriched.append(sdict)
+
+        # BB-10: Merge TOML-only servers (persisted but not yet started in this
+        # session) so the inventory is complete even when no agent is live.
+        # "pending_restart" means "not yet attempted in the current session";
+        # a prior session's failure reason is not persisted, so it cannot be shown.
+        try:
+            from hachi.core.paths import get_hachi_paths as _get_paths
+
+            config_toml = _get_paths().global_config_toml
+            if config_toml.exists():
+                import tomlkit as _tomlkit
+
+                _doc = _tomlkit.parse(config_toml.read_text(encoding="utf-8"))
+                live_names = {s.get("name", "") for s in enriched}
+                for sname, sentry in (_doc.get("mcp_servers") or {}).items():
+                    if str(sname) in live_names:
+                        continue
+                    enriched.append(
+                        {
+                            "name": str(sname),
+                            "status": "pending_restart",
+                            "transport": sentry.get("transport", "stdio"),
+                            "tool_count": 0,
+                            "tools": [],
+                            "enabled": enabled_map.get(
+                                str(sname), bool(sentry.get("enabled", True))
+                            ),
+                            "err": None,
+                        }
+                    )
+        except Exception:
+            pass  # Best-effort; live servers are still shown.
+
         raw["servers"] = enriched
         return raw
 
@@ -1179,6 +1222,34 @@ class GatewayControlPlane:
             return result if isinstance(result, dict) else {"interrupted": False}
         except Exception:
             return {"interrupted": False}
+
+    # ------------------------------------------------------------------ #
+    # Credential manager (BB-9 / cred: namespace)
+    # ------------------------------------------------------------------ #
+
+    def store_secret(self, name: str, value: str) -> dict[str, Any]:
+        """Store a user-managed credential under ``cred:<name>``."""
+        handler = self._require_handler(self._store_secret, "store secret")
+        return handler(name, value)
+
+    def list_secret_names(self) -> dict[str, Any]:
+        """List user-managed credential names (``cred:`` prefix stripped from each)."""
+        handler = self._require_handler(self._list_secret_names, "list secret names")
+        return handler()
+
+    def delete_secret(self, name: str) -> dict[str, Any]:
+        """Delete the ``cred:<name>`` credential (idempotent)."""
+        handler = self._require_handler(self._delete_secret, "delete secret")
+        return handler(name)
+
+    def reload_search_tools(self) -> dict[str, Any]:
+        """Re-evaluate search-provider availability after a credential change."""
+        if self._reload_search_tools is None:
+            return {"ok": True, "live": False, "note": "no runtime attached"}
+        try:
+            return self._reload_search_tools()
+        except Exception as exc:
+            return {"ok": False, "live": False, "note": str(exc)}
 
     # Backward-compatible aliases for previous envelope methods.
     def connect(self, payload: dict[str, Any]) -> dict[str, Any]:

@@ -449,9 +449,7 @@ class TestKeyringChunkingNulFreeKeys:
         # Manifest + each chunk must occupy a DISTINCT backing key (no collision).
         assert len(backing) >= 3, f"expected manifest + multiple chunks, got {len(backing)}"
 
-    def test_chunked_delete_clean_under_truncation(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_chunked_delete_clean_under_truncation(self, monkeypatch: pytest.MonkeyPatch) -> None:
         backing: dict[str, str] = {}
         _set, _get, _del = _make_truncating_windows_keyring(backing)
         monkeypatch.setattr("hachi.core.secret_store.keyring.set_password", _set)
@@ -463,3 +461,69 @@ class TestKeyringChunkingNulFreeKeys:
         store.delete("oauth2:google")
         assert backing == {}, f"orphan entries left after delete: {list(backing)}"
         assert store.get("oauth2:google") is None
+
+
+# ---------------------------------------------------------------------------
+# BB-9 — Credential manager gateway API (cred: namespace)
+# ---------------------------------------------------------------------------
+
+
+def _make_file_store(tmp_path: Path) -> EncryptedFileSecretStore:
+    meta = _MetadataStore(tmp_path / "meta.json")
+    return EncryptedFileSecretStore(
+        file_path=tmp_path / "secrets.enc",
+        passphrase="test-pass",
+        metadata_store=meta,
+    )
+
+
+def _patch_store(monkeypatch, store):
+    monkeypatch.setattr("hachi.core.secret_store.create_default_secret_store", lambda: store)
+
+
+class TestSecretStoreGatewayAPI:
+    """Tests for _InProcessGatewayRuntime store_secret / list_secret_names / delete_secret."""
+
+    def test_secret_store_api_roundtrip(self, tmp_path: Path, monkeypatch) -> None:
+        store = _make_file_store(tmp_path)
+        _patch_store(monkeypatch, store)
+        from hachi.cli.main import _InProcessGatewayRuntime
+
+        rt = _InProcessGatewayRuntime()
+        result = rt.store_secret("ctx7key", "some-api-value")
+        assert result["ok"] is True
+        assert result["name"] == "ctx7key"
+
+        names = rt.list_secret_names()
+        assert "ctx7key" in names["names"]
+
+        del_result = rt.delete_secret("ctx7key")
+        assert del_result["ok"] is True
+
+        names_after = rt.list_secret_names()
+        assert "ctx7key" not in names_after["names"]
+
+    def test_secret_list_excludes_system_secrets(self, tmp_path: Path, monkeypatch) -> None:
+        """list_secret_names must never expose system keys."""
+        store = _make_file_store(tmp_path)
+        store.set("ANTHROPIC_API_KEY", "sk-sys")
+        store.set("cred:mytoken", "user-value")
+        _patch_store(monkeypatch, store)
+        from hachi.cli.main import _InProcessGatewayRuntime
+
+        rt = _InProcessGatewayRuntime()
+        names = rt.list_secret_names()
+        assert "mytoken" in names["names"]
+        assert "ANTHROPIC_API_KEY" not in names["names"]
+        assert "cred:mytoken" not in names["names"]
+
+    def test_secret_delete_refuses_system_key(self, tmp_path: Path, monkeypatch) -> None:
+        """delete_secret only ever removes cred: keys; bare system keys are unaffected."""
+        store = _make_file_store(tmp_path)
+        store.set("ANTHROPIC_API_KEY", "sk-sys")
+        _patch_store(monkeypatch, store)
+        from hachi.cli.main import _InProcessGatewayRuntime
+
+        rt = _InProcessGatewayRuntime()
+        rt.delete_secret("ANTHROPIC_API_KEY")  # targets cred:ANTHROPIC_API_KEY — no-op
+        assert store.get("ANTHROPIC_API_KEY") == "sk-sys"

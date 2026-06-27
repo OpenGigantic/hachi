@@ -62,6 +62,69 @@ class _MCPTimeoutError(TimeoutError):
     """
 
 
+class _MissingSecretError(ValueError):
+    """Raised by :func:`_resolve_secret_refs` when a ``secret:<name>`` reference has no
+    matching ``cred:<name>`` entry in the secret store.
+
+    Kept private so callers only need to know about MCP-level errors externally.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Secret-reference resolution (BB-9)
+# ---------------------------------------------------------------------------
+
+_SECRET_REF_PREFIX: str = "secret:"
+
+_cached_secret_store: Any | None = None
+_cached_secret_store_lock = threading.Lock()
+
+
+def _get_module_secret_store() -> Any:
+    """Return a lazily-created, module-level secret store (core→core, layering-clean)."""
+    global _cached_secret_store  # noqa: PLW0603
+    if _cached_secret_store is None:
+        with _cached_secret_store_lock:
+            if _cached_secret_store is None:
+                from hachi.core.secret_store import create_default_secret_store
+
+                _cached_secret_store = create_default_secret_store()
+    return _cached_secret_store
+
+
+def _resolve_secret_refs(mapping: dict[str, str], store: Any) -> dict[str, str]:
+    """Resolve ``secret:<name>`` reference values in *mapping* using the secret store.
+
+    For each value that starts with ``secret:``, the name portion is looked up as
+    ``cred:<name>`` in *store*.  A missing credential raises :exc:`_MissingSecretError`.
+    Values that do not start with ``secret:`` are passed through unchanged.
+
+    Args:
+        mapping: Dict of env-var or header key→value pairs (from :class:`MCPServerConfig`).
+        store:   A :class:`~hachi.core.secret_store.SecretStore` instance.
+
+    Returns:
+        A new dict with all ``secret:`` values replaced by their resolved credentials.
+
+    Raises:
+        _MissingSecretError: When a referenced credential is not found in the store.
+    """
+    out: dict[str, str] = {}
+    for k, v in mapping.items():
+        if isinstance(v, str) and v.startswith(_SECRET_REF_PREFIX):
+            name = v[len(_SECRET_REF_PREFIX) :]
+            resolved = store.get(f"cred:{name}")
+            if resolved is None:
+                raise _MissingSecretError(
+                    f"env/header {k!r} references unknown credential {name!r}. "
+                    f"Store it first via POST /runtime/secrets."
+                )
+            out[k] = resolved
+        else:
+            out[k] = v
+    return out
+
+
 # MED-004: Hard cap on MCP tool response size to prevent context flooding.
 # Responses larger than this are truncated with a visible marker so the LLM
 # knows the output was cut and can ask for a narrower query.
@@ -1561,12 +1624,41 @@ class MCPManager:
         boot thread runs.  Once boot completes the flag is cleared and the status
         reflects the real outcome.
 
+        ``secret:<name>`` references in ``cfg.env`` and ``cfg.headers`` are resolved
+        to their ``cred:<name>`` values before the connection is created.  If a
+        referenced credential is absent the server is registered with status "failed"
+        and *False* is returned (fail-soft — boot continues; BB-9).
+
         Args:
             cfg: A fully populated :class:`MCPServerConfig`.
 
         Returns:
             True if the server started successfully.
         """
+        # Resolve secret: references before constructing the connection so the
+        # real credential reaches the subprocess/transport without touching TOML.
+        from dataclasses import replace as _dc_replace
+
+        try:
+            store = _get_module_secret_store()
+            resolved_env = _resolve_secret_refs(cfg.env, store)
+            resolved_headers = _resolve_secret_refs(cfg.headers, store)
+            cfg = _dc_replace(cfg, env=resolved_env, headers=resolved_headers)
+        except _MissingSecretError as exc:
+            placeholder = MCPServerConnection(
+                name=cfg.name,
+                command=cfg.command,
+                args=cfg.args,
+                env={},
+                transport=cfg.transport,
+                url=cfg.url,
+                headers={},
+            )
+            placeholder._last_error = str(exc)
+            self._servers[cfg.name] = placeholder
+            logger.warning("[mcp] %s: missing secret — %s", cfg.name, exc)
+            return False
+
         server = MCPServerConnection(
             name=cfg.name,
             command=cfg.command,

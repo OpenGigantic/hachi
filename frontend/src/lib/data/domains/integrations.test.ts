@@ -3,12 +3,36 @@
 
 import { describe, it, expect } from 'vitest'
 
-// ---- FIX 1: adaptMcpServer mapping ----
-// adaptMcpServer is not exported so we test the observable contract via the
-// exported types and the publicly-reachable shape of McpServer.  We replicate
-// the exact mapping logic here to guard against regressions.
+import { adaptMcpServer, extractMcpSecrets, looksLikeMcpSecretKey } from './integrations'
 
-type McpStatus = 'connected' | 'starting' | 'blocked' | 'loading'
+// ---- BB-16: real-function regression lock for status mapping ----
+// adaptMcpServer is now exported, so test it directly instead of a replica.
+// The key regression: backend "pending_restart"/"stopped" (registered but not
+// running this session) must NOT render as "starting" (a boot that never ends).
+describe('adaptMcpServer — real mapping (BB-16)', () => {
+  const map = (status: string) => adaptMcpServer({ name: 'x', status }).status
+
+  it('maps "pending_restart" → pending (NOT starting)', () => {
+    expect(map('pending_restart')).toBe('pending')
+  })
+  it('maps "stopped" → pending (NOT starting)', () => {
+    expect(map('stopped')).toBe('pending')
+  })
+  it('maps "ready" → connected', () => {
+    expect(map('ready')).toBe('connected')
+  })
+  it('maps "failed" → blocked', () => {
+    expect(map('failed')).toBe('blocked')
+  })
+  it('maps unknown status → starting (fallback unchanged)', () => {
+    expect(map('something_weird')).toBe('starting')
+  })
+})
+
+// ---- FIX 1: adaptMcpServer mapping (replica kept for the broader matrix) ----
+// Mirrors adaptMcpServer's statusMap. Kept in sync with the real function above.
+
+type McpStatus = 'connected' | 'starting' | 'blocked' | 'loading' | 'pending'
 
 /** Mirrors adaptMcpServer's statusMap exactly (integrations.ts). */
 function mapStatus(rawStatus: string): McpStatus {
@@ -21,7 +45,9 @@ function mapStatus(rawStatus: string): McpStatus {
     loading: 'loading',
     initialising: 'loading',
     initializing: 'loading',
-    pending: 'loading',
+    pending_restart: 'pending',
+    stopped: 'pending',
+    pending: 'pending',
     blocked: 'blocked',
     failed: 'blocked',
     error: 'blocked',
@@ -51,8 +77,8 @@ describe('adaptMcpServer — status mapping', () => {
   it('maps "initializing" → loading', () => {
     expect(mapStatus('initializing')).toBe('loading')
   })
-  it('maps "pending" → loading', () => {
-    expect(mapStatus('pending')).toBe('loading')
+  it('maps "pending" → pending', () => {
+    expect(mapStatus('pending')).toBe('pending')
   })
 
   // ---- blocked/error variants (FIX 1 — err chip) ----
@@ -185,5 +211,55 @@ describe('SpendBreakdown — C-SPEND payload', () => {
     expect(tok(minimal.input_tokens)).toBe('—')
     expect(tok(minimal.output_tokens)).toBe('—')
     expect(usd(minimal.cost_usd)).toBe('$0.0010')
+  })
+})
+
+// ---- BB-18: transparent MCP secret extraction ----
+describe('extractMcpSecrets — transparent secret handling', () => {
+  it('detects secret-looking keys', () => {
+    expect(looksLikeMcpSecretKey('CONTEXT7_API_KEY')).toBe(true)
+    expect(looksLikeMcpSecretKey('Authorization')).toBe(true)
+    expect(looksLikeMcpSecretKey('X-API-Token')).toBe(true)
+    expect(looksLikeMcpSecretKey('REGION')).toBe(false)
+    expect(looksLikeMcpSecretKey('BASE_URL')).toBe(false)
+  })
+
+  it('rewrites a secret-looking raw value to a secret:<name> ref + queues the secret', () => {
+    const { sanitized, secrets } = extractMcpSecrets('context7', 'env', {
+      CONTEXT7_API_KEY: 'ctx7-raw-value',
+    })
+    expect(sanitized.CONTEXT7_API_KEY).toBe('secret:mcp_context7_env_CONTEXT7_API_KEY')
+    expect(secrets).toEqual([
+      { name: 'mcp_context7_env_CONTEXT7_API_KEY', value: 'ctx7-raw-value' },
+    ])
+  })
+
+  it('sanitizes header keys into the gateway secret-name charset', () => {
+    const { sanitized, secrets } = extractMcpSecrets('ctx', 'header', {
+      'X-Api-Key': 'abc',
+    })
+    // The "-" in the header key must be coerced to match ^[\w.\-]+$.
+    expect(secrets[0].name).toMatch(/^[\w.\-]+$/)
+    expect(sanitized['X-Api-Key']).toBe(`secret:${secrets[0].name}`)
+  })
+
+  it('passes non-secret keys through untouched', () => {
+    const { sanitized, secrets } = extractMcpSecrets('s', 'env', { REGION: 'us-east-1' })
+    expect(sanitized).toEqual({ REGION: 'us-east-1' })
+    expect(secrets).toEqual([])
+  })
+
+  it('leaves an existing secret:<name> reference untouched', () => {
+    const { sanitized, secrets } = extractMcpSecrets('s', 'env', {
+      API_KEY: 'secret:my_existing_cred',
+    })
+    expect(sanitized.API_KEY).toBe('secret:my_existing_cred')
+    expect(secrets).toEqual([])
+  })
+
+  it('does not store an empty value', () => {
+    const { sanitized, secrets } = extractMcpSecrets('s', 'env', { API_KEY: '' })
+    expect(secrets).toEqual([])
+    expect(sanitized.API_KEY).toBe('')
   })
 })

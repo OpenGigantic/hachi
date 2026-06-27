@@ -61,6 +61,23 @@ let _streamSessionId: string | null = null;
 // replay turn 1's text deltas into the fresh (empty) message.
 let _cursor = 0;
 
+// ── Per-page-load nonce (BB-12) ───────────────────────────────────────────────
+// store.ts's _id counter resets to 100 on every page load. The gateway session
+// UUID is preserved across refreshes (sessionStorage), so `turn-102` from a
+// prior load would match the idempotency cache and replay the old response
+// instantly. A nonce generated at module-load time breaks that collision while
+// preserving retry behaviour (retryLastMessage reuses the same hachiMsgId and
+// therefore the same nonce+id pair → same key → cache hit, as intended).
+const _PAGE_NONCE: string =
+  typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID().slice(0, 8)
+    : Math.random().toString(36).slice(2, 10);
+
+/** Build the per-turn idempotency key. Exported for unit testing only. */
+export function buildTurnKey(nonce: string, hachiMsgId: number): string {
+  return `turn-${nonce}-${hachiMsgId}`;
+}
+
 // ── Run-slice text coalescing ─────────────────────────────────────────────────
 // We coalesce consecutive text.stream.delta events into a single trailing line
 // rather than pushing one line per token.  _textLineActive is true while the
@@ -808,7 +825,7 @@ export async function startTaskLive(
     // Ingress idempotency (AUDIT P0-3): key the turn on the (stable) assistant-bubble id.
     // retryLastMessage reuses the same hachiMsgId, so a retry or double-submit replays the
     // prior turn server-side instead of double-spending; distinct turns get distinct keys.
-    { prompt: text, attachment_ids: attachmentIds, idempotency_key: `turn-${hachiMsgId}` },
+    { prompt: text, attachment_ids: attachmentIds, idempotency_key: buildTurnKey(_PAGE_NONCE, hachiMsgId) },
     signal
   ).then((res) => {
     // If SSE didn't deliver a completed event (e.g. gateway closed stream early),
