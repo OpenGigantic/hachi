@@ -10,7 +10,7 @@ dimension), each citing real `file:line`; 3 inter-auditor conflicts adjudicated 
 (results below); full `pytest` baseline run. Rubric is the **world-class bar** in the operating
 protocol (ChatGPT / Claude / Gemini / Cursor / Claude Code / Perplexity), **not** a bug-count
 health score — so this score is *not* directly comparable to the prior 44 → 59 → 80 "health"
-numbers in earlier `docs/audit/*` reports.
+numbers from earlier audits.
 
 **Test baseline (this tree, incl. 12 uncommitted in-flight files):** `2 failed, 3355 passed,
 19 skipped` in 7m38s. Both failures are `test_cockpit_*` live/ChromaDB-isolation tests (known
