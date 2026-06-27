@@ -74,8 +74,8 @@ Windows: if a `.exe` shim breaks pytest/mypy (OS error 4551), fall back to `pyth
 - **`ARCHITECTURE.md`** — the map: entry points, loop, memory, permissions, gateway, frontend
   contract, CI, and the **enforced module layering** (`import-linter` blocks new cross-layer
   imports — the engine must not import `cli`/`tui`/`gateway`; `og_engine` stays pure).
-- **`DECISIONS.md`** — settled decisions / ADRs. Don't relitigate; record new ones here.
-- **`ObjectGraph_Complete_Specification.md`** — the `.og` format. Conventions & PR flow:
+- **`docs/DECISIONS.md`** — settled decisions / ADRs. Don't relitigate; record new ones here.
+- **`docs/reference/objectgraph-spec.md`** — the `.og` format. Conventions & PR flow:
   **`CONTRIBUTING.md`**.
 
 ## Out of scope — do not build unless explicitly asked

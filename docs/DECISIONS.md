@@ -21,7 +21,7 @@ fixes were delegated to Sonnet 4.6 subagents; orchestration, decisions, and veri
 
 2. **Stale `.env` comment.** The header comment in `.env` claims "the app does NOT auto-load this
    file." That is now false — `cli/main.py::_load_dotenv_into_environ()` loads it at import time.
-   Documented in `docs/settings.md`; the user should update/remove the misleading comment.
+   Documented in `docs/guides/configuration.md`; the user should update/remove the misleading comment.
 
 ---
 
@@ -194,7 +194,7 @@ literal `Authorization` secret.
 (`HACHI_CONFIG_STRICT=1`) that raises. A **world-writable check** (`mode & 0o002`) warns (aborts under
 strict) on POSIX, best-effort on Windows. `settings.toml` + `**/.hachi/settings.toml` added to
 `.gitignore`; new `settings.example.toml` documents every key (type/default/effect). Full key
-reference in `docs/settings.md`.
+reference in `docs/guides/configuration.md`.
 
 **Why.** [ADR] **Validate loudly, fail safe by default.** Hard-aborting every existing install on an
 unknown key would be hostile to current users, so the default is warn-and-continue with an opt-in
@@ -216,7 +216,7 @@ the real policy. **No secrets found in any `.og` file.** Gaps: `upsert_skill`'s 
 and there is **no content version history** (only an in-file `::changelog` + semver).
 
 **Decided/Changed.**
-- **8b model:** documented tiered trust in `docs/og-security.md` — **Tier 1** engine-enforced,
+- **8b model:** documented tiered trust in `docs/reference/og-security.md` — **Tier 1** engine-enforced,
   never-agent-writable (`device-permissions.og`, `brain.og`); **Tier 2** advisory bundled skills;
   **Tier 3** agent-writable (`learned/*.og`, `mcp-*.og`, guard-scanned + linted on write).
   Recommendation: engine should refuse `upsert_skill` targeting core/system names.
@@ -274,7 +274,7 @@ drop low-similarity hits; conservative default). Add **`get_recent_facts()`** an
 `"important context"` probe with it (orchestrator lane). **Remove the dedup-bypass fallback**
 (`memory_tools.py:137`) — log+skip on consolidation failure. Add a **write-quality filter** for trivial
 extracted facts. Add a **soft cap + prune** for `core_memory`. Architecture written up in
-`docs/memory.md`.
+`docs/guides/memory.md`.
 
 **Why.** [ADR] **A relevance threshold is the highest-leverage fix** — injecting 5 unrelated facts every
 turn both wastes context and degrades answers; returning *fewer, relevant* memories beats *k, always*.
@@ -379,7 +379,7 @@ verification by Opus. Per-lane landed changes and their own test counts:
 - **Seam GAP-2** (Issue 1): verified end-to-end — the gateway's `SessionExpiredError` → HTTP 410 with
   `code="session_expired"`, and `client.ts::parseError` lifts `body.code` into `ApiError.code`, which
   `chat.ts` matches. No change needed.
-- `docs/memory.md` authored; `settings.example.toml` extended with the new memory + `elevenlabs_model` keys.
+- `docs/guides/memory.md` authored; `settings.example.toml` extended with the new memory + `elevenlabs_model` keys.
 
 **Cross-lane contract alignment (verified):** `session_expired` code (gateway↔chat.ts) ✓; `payload.model`
 on `usage.updated` + `session.chat.completed` (A8 emits field, A7 populates, A1 consumes) ✓;

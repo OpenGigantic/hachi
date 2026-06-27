@@ -9,7 +9,7 @@ _Governed personal agent: safety, spend, and self-improvement enforced by code, 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-purple.svg)](https://docs.astral.sh/ruff/)
-[![.og token savings: 97.6%](https://img.shields.io/badge/.og%20token%20savings-97.6%25-brightgreen)](docs/BENCHMARK.md)
+[![.og token savings: 97.6%](https://img.shields.io/badge/.og%20token%20savings-97.6%25-brightgreen)](docs/reference/benchmark.md)
 
 </div>
 
@@ -31,7 +31,7 @@ supervision.  Hachi is built to make both structurally impossible.
 | **Runaway token spend** | Per-session _and_ per-turn cost/token caps enforced between LLM calls; lazy tool groups; prompt-cache-aware breakpoints. The $47-echo-loop story is structurally impossible under a turn cap. |
 | **Ungoverned self-learning** | `save_skill` bumps semver and appends changelog instead of overwriting; lint + dense-budget rejection bounds what the agent may write; `::assertions` make learned procedures machine-checkable before execution; your manual edits are never silently overwritten. |
 | **Exposed attack surface** | Gateway binds loopback with bearer-token support by default; a `security-audit` CLI runs with `--fail-on-medium` in CI; permission tiers gate filesystem/shell/MCP at call time — not as runtime prompts. |
-| **Skill library context bloat** | ObjectGraph `.og` files are queryable at sub-file granularity: agents load a 30-token index, pull only the node a task needs. [Measured: **97.6% fewer tokens** vs dump-all](docs/BENCHMARK.md) (53 nodes, P@5 = 0.97, reproducible). |
+| **Skill library context bloat** | ObjectGraph `.og` files are queryable at sub-file granularity: agents load a 30-token index, pull only the node a task needs. [Measured: **97.6% fewer tokens** vs dump-all](docs/reference/benchmark.md) (53 nodes, P@5 = 0.97, reproducible). |
 
 > **Honest scope caveat:** below ~30 k tokens of total library content, a cached dump-all
 > approach is competitive on token cost. ObjectGraph is built for libraries that grow past
@@ -145,7 +145,7 @@ OpenCode users can point tools at.
 - **ObjectGraph (.og) Engine** — A structured, queryable, agent-native file format with 20+
   semantic tags; typed blocks (`::meta`, `::index`, `::dense`, `::full`, `::assertion`,
   `::edges`, `::steps`, `::changelog`) enable sub-file granular loading and deterministic skill
-  execution. [Benchmark: 97.6% token savings, P@5 = 0.97, reproducible.](docs/BENCHMARK.md)
+  execution. [Benchmark: 97.6% token savings, P@5 = 0.97, reproducible.](docs/reference/benchmark.md)
 - **Permission Gating** — Declarative `device-permissions.og` manifest controlling filesystem,
   terminal, MCP access, and outbound scopes; guards run at call time, not as runtime prompts;
   permission tiers (lightning / guided / strict) for different trust levels.
@@ -202,7 +202,7 @@ OpenCode users can point tools at.
   limits; turn cap enforces hard stop mid-conversation when the budget is reached.
 - **Edit Undo** — File writes are snapshotted; `rollback_changes` restores the previous version.
 
-> See **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** for the full environment-variable and
+> See **[docs/guides/configuration.md](docs/guides/configuration.md)** for the full environment-variable and
 > settings reference.
 
 ---
@@ -476,7 +476,12 @@ hachi/
 ├── docker-compose.yml                    # Gateway + frontend local stack
 ├── Dockerfile                            # Gateway service image
 ├── AGENTS.md                             # Contributor guidance for coding agents
-├── ObjectGraph_Complete_Specification.md   # Full .og format specification
+├── docs/                                  # Documentation (see docs/README.md for the map)
+│   ├── guides/                            # How-to: configuration, cookbook, memory, git-sync, releasing
+│   ├── reference/                         # objectgraph-spec.md, benchmark.md, og-security.md
+│   ├── architecture/                      # Design docs + ADRs (adr/)
+│   ├── DECISIONS.md  ·  AUDIT.md          # Running decision log + architecture review
+│   └── strategy/ · design/ · brand/ · history/ · bug-bank.md
 ├── pyproject.toml                          # Project metadata & dependencies
 ├── CONTRIBUTING.md                         # Contribution guidelines
 └── LICENSE                                 # MIT License
@@ -505,7 +510,7 @@ human-readable and are low-effort to author and port.
 
 ¹ On the bundled 53-node skill set: 97.6% fewer skill-loading tokens vs dump-all (208 vs 8,726
 tokens); P@5 retrieval = 0.97; 77% of queries resolve at Pass 1. Reproducible via
-[`tests/test_og_benchmark.py`](tests/test_og_benchmark.py) — see [docs/BENCHMARK.md](docs/BENCHMARK.md)
+[`tests/test_og_benchmark.py`](tests/test_og_benchmark.py) — see [docs/reference/benchmark.md](docs/reference/benchmark.md)
 for methodology, honest crossover caveat, and full M1/M2/M4/M7 results.
 
 **How is this different from Anthropic Agent Skills or MCP?** Progressive disclosure on its own
@@ -553,7 +558,7 @@ and package metadata into the local project environment.
   ->[:requires] concept-virtualenv
 ```
 
-For the complete specification, see [ObjectGraph_Complete_Specification.md](ObjectGraph_Complete_Specification.md).
+For the complete specification, see [ObjectGraph spec](docs/reference/objectgraph-spec.md).
 
 ---
 

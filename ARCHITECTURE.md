@@ -197,7 +197,7 @@ which returns platformdirs-based paths:
 
 ## Architecture decisions (ADRs)
 
-Settled decisions live in [`DECISIONS.md`](DECISIONS.md) — the running log, newest at the
+Settled decisions live in [`DECISIONS.md`](docs/DECISIONS.md) — the running log, newest at the
 bottom. A *major* architectural choice that needs alternatives analysis and a long-lived
 reference is promoted to a numbered ADR under [`docs/architecture/adr/`](docs/architecture/adr/)
 (`0001…`) and linked from its `DECISIONS.md` entry. The two-tier convention, the copy-me
