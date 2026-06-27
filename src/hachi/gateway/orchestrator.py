@@ -850,6 +850,46 @@ class AgentSession:
         _emit(MCP_SERVER_READY, {"server": cfg.name, "tool_count": tool_count})
         return {"ok": True, "tool_count": tool_count, "status": "ready"}
 
+    def remove_mcp_server_live(self, name: str) -> dict[str, Any]:
+        """Tear down a live MCP server without restarting the gateway.
+
+        Stops the connection and unregisters its tools from the live
+        ToolRegistry so it disappears from ``GET /runtime/mcp/inventory``
+        immediately.  Used by the delete-server control-plane path.
+
+        Args:
+            name: The logical name of the server to remove.
+
+        Returns:
+            Dict with ``ok`` and ``removed_live`` (whether a live server existed).
+        """
+        removed = self.mcp_manager.remove_server(name, self.loop.registry)
+        return {"ok": True, "name": name, "removed_live": removed}
+
+    def set_mcp_tools_active(self, name: str, active: bool) -> dict[str, Any]:
+        """Enable/disable a live MCP server's tools without a gateway restart.
+
+        Disabling unregisters the server's tools from the live ToolRegistry (the
+        connection and inventory entry remain, so it can be re-enabled). Enabling
+        re-registers them.  When the server is not currently live (e.g. it was
+        disabled in a prior session and skipped at boot), this is a no-op live and
+        the change takes effect on the next session boot via the persisted flag.
+
+        Args:
+            name:   The logical name of the server.
+            active: ``True`` to (re-)register tools, ``False`` to unregister them.
+
+        Returns:
+            Dict with ``ok``, ``name``, ``active``, and ``live`` (whether the
+            server was present and the change was applied in-session).
+        """
+        if active:
+            live = self.mcp_manager.register_server_tools(name, self.loop.registry)
+        else:
+            live = name in self.mcp_manager._servers
+            self.mcp_manager.unregister_server_tools(name, self.loop.registry)
+        return {"ok": True, "name": name, "active": active, "live": bool(live)}
+
     def snapshot_active_jobs(self) -> tuple[JobSnapshot, ...]:
         """Active background jobs (delegations and long-running runtime operations)."""
         return self._read_models.active_jobs()
@@ -1796,10 +1836,28 @@ def _configure_mcp_servers(
             after the ``.og`` pass, subject to the same permission gate.
     """
     packs_root = str(get_hachi_paths().skills_dir / "packs")
+
+    # An ``enabled = false`` flag under ``[mcp_servers.NAME]`` in settings.toml acts
+    # as a per-server kill switch / deletion tombstone (written by the disable and
+    # delete control-plane paths). It is honoured for BOTH .og-declared servers and
+    # API-registered TOML servers so a disabled/deleted server does not silently come
+    # back on the next gateway boot.
+    _mcp_enabled_map: dict[str, bool] = {}
+    if config is not None:
+        _raw_for_enabled = config.get("mcp_servers")
+        if isinstance(_raw_for_enabled, dict):
+            for _sname, _sentry in _raw_for_enabled.items():
+                if isinstance(_sentry, dict):
+                    _mcp_enabled_map[str(_sname)] = bool(_sentry.get("enabled", True))
+
     # Track which server names were launched from .og nodes so TOML entries for
     # the same name are skipped (de-dup: .og wins).
     og_server_names: set[str] = set()
     for node in skill_engine.get_nodes_by_role("mcp"):
+        if not _mcp_enabled_map.get(node.name, True):
+            logger.info("_configure_mcp_servers: skipping disabled MCP server %r", node.name)
+            emit(MCP_SERVER_FAILED, {"server": node.name, "reason": "disabled by operator"})
+            continue
         emit(MCP_SERVER_STARTING, {"server": node.name})
         if node.name == "filesystem_mcp":
             # Skip entirely if user disabled MCP filesystem
@@ -1861,6 +1919,10 @@ def _configure_mcp_servers(
 
     for server_name, entry in toml_mcp_entries.items():
         if not isinstance(entry, dict):
+            continue
+        if not entry.get("enabled", True):
+            # Disabled / deleted (tombstone) — do not boot it.
+            logger.info("_configure_mcp_servers: skipping disabled MCP server %r", server_name)
             continue
         if server_name in og_server_names:
             # .og definition takes precedence — skip the TOML duplicate.
@@ -3109,31 +3171,34 @@ def boot_agent(
         session._durable_title = True
 
     # ------------------------------------------------------------------
-    # Slice 2.2 — JobRegistry activation (gated behind [jobs] durable_handlers=true)
+    # JobRegistry activation
     #
-    # When OFF (default): the resident worker runs with registry=None; func= jobs
-    # execute as before; nothing changes.
+    # The four named handlers are pure, self-contained, and degrade gracefully
+    # (they return a "skipped:..."/"error:..." status instead of raising when a
+    # service is unavailable).  MemoryManager ALWAYS enqueues fact extraction via
+    # handler_name="extract_fact" (see memory.py), so the registry MUST exist even
+    # when durable_handlers is off — otherwise every fact-extraction job fails with
+    # "no callable func and handler_name 'extract_fact' is not in registry".
     #
-    # When ON: a JobRegistry is built, the four named handlers are registered,
-    # and the registry is passed to the worker so handler_name= jobs are routed
-    # to the correct implementation.  The scheduler tick also sweeps WAITING runs
-    # past their timeout_at (A4 amendment) and restart recovery re-arms them (§6).
+    # Handler registration is therefore unconditional.  Only the durable-RUN
+    # machinery (the WaitConditionRegistry + restart recovery + timeout sweep)
+    # stays gated behind [jobs] durable_handlers=true.
     # ------------------------------------------------------------------
-    _job_registry: JobRegistry | None = None
-    if _jobs_cfg.durable_handlers:
-        from hachi.core.runtime.job_handlers import (
-            handle_auto_extract,
-            handle_extract_fact,
-            handle_generate_title,
-            handle_resume_run,
-        )
-        from hachi.core.runtime.waits import get_wait_registry
+    from hachi.core.runtime.job_handlers import (
+        handle_auto_extract,
+        handle_extract_fact,
+        handle_generate_title,
+        handle_resume_run,
+    )
 
-        _job_registry = JobRegistry()
-        _job_registry.register("extract_fact", handle_extract_fact)
-        _job_registry.register("generate_title", handle_generate_title)
-        _job_registry.register("resume_run", handle_resume_run)
-        _job_registry.register("auto_extract", handle_auto_extract)
+    _job_registry: JobRegistry = JobRegistry()
+    _job_registry.register("extract_fact", handle_extract_fact)
+    _job_registry.register("generate_title", handle_generate_title)
+    _job_registry.register("resume_run", handle_resume_run)
+    _job_registry.register("auto_extract", handle_auto_extract)
+
+    if _jobs_cfg.durable_handlers:
+        from hachi.core.runtime.waits import get_wait_registry
 
         # Expose the WaitConditionRegistry on the process singleton so the
         # scheduler sweep and /runs/{id}/wake endpoint share one registry.
@@ -3143,7 +3208,9 @@ def boot_agent(
         # A6 (§6): restart recovery — re-arm WAITING runs; transition crash-RUNNING runs.
         _boot_recover_runs(job_queue, _job_registry, _wait_registry, emit_runtime_event)
 
-        logger.info("boot_agent: JobRegistry active with 4 handlers (durable_handlers=true)")
+        logger.info("boot_agent: durable-run machinery active (durable_handlers=true)")
+    else:
+        logger.info("boot_agent: JobRegistry active with 4 handlers (durable-run machinery off)")
 
     # Initiative E: wire reactive file.uploaded → auto_extract via EventBus.
     #

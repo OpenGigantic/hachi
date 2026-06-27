@@ -319,3 +319,12 @@ export async function denyFirstMatching(requestText?: string): Promise<void> {
 
   await decline(target.id);
 }
+
+// ============================================================
+// 9. Real-time Leash sync
+//    chat.ts calls loadApprovals() on the SSE `permission.requested` and
+//    `permission.decided` events so the Leash screen mirrors the authoritative
+//    /approvals registry (real request_ids → cards remain approvable). No
+//    synthetic-id entries are created — the registry is the single source of
+//    truth, which keeps the approve/deny POST (/approvals/{request_id}) working.
+// ============================================================

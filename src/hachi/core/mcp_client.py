@@ -1645,6 +1645,76 @@ class MCPManager:
 
             registry.register(schema, make_handler(server, tool_name))
 
+    def _namespaced_tool_names(self, server_name: str) -> list[str]:
+        """Return the registry tool names (``{server}_{tool}``) for a server."""
+        server = self._servers.get(server_name)
+        if server is None:
+            return []
+        return [f"{server_name}_{t.get('name', '')}" for t in server.tools if t.get("name")]
+
+    def register_server_tools(self, server_name: str, registry: ToolRegistry) -> bool:
+        """(Re-)register a single live server's tools into ``registry``.
+
+        Idempotent: any existing registration for the server's tools is removed
+        first so re-enabling a server never produces duplicate tool schemas.
+        Used by the runtime to bring a disabled server's tools back online
+        without a gateway restart.
+
+        Args:
+            server_name: The logical name of an active MCP server.
+            registry:    The live ToolRegistry to mount the tools onto.
+
+        Returns:
+            ``True`` if the server is present and its tools were registered.
+        """
+        server = self._servers.get(server_name)
+        if server is None:
+            return False
+        registry.unregister(self._namespaced_tool_names(server_name))
+        self._register_server_tools(server_name, server, registry)
+        return True
+
+    def unregister_server_tools(self, server_name: str, registry: ToolRegistry) -> int:
+        """Remove a single live server's tools from ``registry`` (server kept).
+
+        Used to disable a server in-session: its tools stop being offered to the
+        model immediately, but the connection and inventory entry remain so the
+        operator can re-enable it.  Returns the number of tools removed.
+        """
+        removed: int = registry.unregister(self._namespaced_tool_names(server_name))
+        return removed
+
+    def remove_server(self, server_name: str, registry: ToolRegistry | None = None) -> bool:
+        """Tear down a server completely: unregister tools, stop it, drop it.
+
+        Used to delete a server at runtime so it disappears from the live
+        inventory (``get_inventory``) immediately.  Best-effort: transport
+        shutdown errors are logged, not raised.
+
+        Args:
+            server_name: The logical name of the server to remove.
+            registry:    Optional live ToolRegistry to unregister the tools from.
+
+        Returns:
+            ``True`` if the server was present and removed; ``False`` otherwise.
+        """
+        server = self._servers.get(server_name)
+        if server is None:
+            return False
+        if registry is not None:
+            try:
+                registry.unregister(self._namespaced_tool_names(server_name))
+            except Exception:
+                logger.warning(
+                    "[mcp] failed to unregister tools for %r", server_name, exc_info=True
+                )
+        try:
+            server.stop()
+        except Exception:
+            logger.warning("[mcp] failed to stop server %r", server_name, exc_info=True)
+        self._servers.pop(server_name, None)
+        return True
+
     def get_server_tool_count(self, server_name: str) -> int:
         """Return the discovered tool count for a given server.
 

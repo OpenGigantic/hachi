@@ -77,8 +77,12 @@ function adaptTidy(raw: GatewaySpendTidy): SpendTidy {
 }
 
 function adaptModel(raw: GatewaySpendModel, index: number): SpendModel {
+  // The durable-ledger sentinel is emitted when no active session is available;
+  // show it with a readable name in the UI.
+  const rawName = raw.name ?? "unknown";
+  const displayName = rawName === "durable-ledger" ? "Historical (no active session)" : rawName;
   return {
-    name: raw.name ?? "unknown",
+    name: displayName,
     tokens: raw.tokens ?? 0,
     cost: raw.cost ?? 0,
     // Assign a palette color when the backend sends an empty or missing color.

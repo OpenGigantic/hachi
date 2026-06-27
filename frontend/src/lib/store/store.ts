@@ -177,6 +177,8 @@ interface State {
     mode: 'onboard' | 'edit-provider';
     /** True when the backend reports an API key is already configured in the environment */
     keyAlreadySet: boolean;
+    /** Onboarding wizard tier; gates which setup steps + integrations appear. Distinct from `safety`. */
+    tier: 'lightning' | 'recommended' | 'enhanced' | 'power';
   };
   // kennel consent overlay
   kennelConsent: KennelConsentItem | null;
@@ -420,7 +422,7 @@ const domainDefaults = (): Omit<State, "operator" | "theme"> => ({
   reconnecting: false,
   toast: null,
   palette: { open: false, query: "" },
-  setup: { open: false, step: 0, key: "", safety: "standard", routine: true, google: false, channel: false, mode: 'onboard' as const, keyAlreadySet: false },
+  setup: { open: false, step: 0, key: "", safety: "standard", routine: true, google: false, channel: false, mode: 'onboard' as const, keyAlreadySet: false, tier: 'lightning' },
   kennelConsent: null,
   kennelBrowseOpen: false,
   taskCap: 1.0,

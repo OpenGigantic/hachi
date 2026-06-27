@@ -340,15 +340,15 @@ function Memory() {
     // HIGH-011: Navigate to /conversation. The gateway has no dedicated resume
     // endpoint — session history is display-only; the chat module's ensureSession()
     // creates a fresh session when the user sends their first message. For the
-    // active session navigate immediately; for past sessions show an info toast
-    // so the user knows context will not be injected automatically.
+    // active session navigate immediately; for past sessions pass the session id
+    // as a search param so the conversation screen loads that session's transcript.
     resume: () => {
       if (s.active) {
         void navigate({ to: '/conversation' })
         return
       }
       showToast('Opening conversation — context from "' + s.title + '" is shown above for reference', 'info')
-      void navigate({ to: '/conversation' })
+      void navigate({ to: '/conversation', search: { session: s.id } })
     },
   }))
 

@@ -410,6 +410,79 @@ class OpenAICompatibleClient(BaseLLMClient):
             pass
 
     @staticmethod
+    def _adapt_messages(messages: list[Message]) -> list[dict[str, Any]]:
+        """Convert Anthropic-format message history to OpenAI chat/completions format.
+
+        Anthropic stores tool interactions as content blocks (tool_use / tool_result).
+        OpenAI expects tool_calls on assistant messages and role="tool" for results.
+        Plain-string messages pass through unchanged.
+        """
+        adapted: list[dict[str, Any]] = []
+        for msg in messages:
+            if msg.role == "system":
+                continue
+            content = msg.content
+            if isinstance(content, str):
+                adapted.append({"role": msg.role, "content": content})
+                continue
+            if msg.role == "assistant":
+                text_parts: list[str] = []
+                tool_calls: list[dict[str, Any]] = []
+                for block in content:
+                    btype = block.get("type", "")
+                    if btype == "text":
+                        text_parts.append(block.get("text", ""))
+                    elif btype == "tool_use":
+                        tool_calls.append(
+                            {
+                                "id": block["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": block["name"],
+                                    "arguments": json.dumps(block.get("input", {})),
+                                },
+                            }
+                        )
+                out: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": " ".join(text_parts) or None,
+                }
+                if tool_calls:
+                    out["tool_calls"] = tool_calls
+                adapted.append(out)
+            elif msg.role == "user":
+                # tool_result blocks → individual role="tool" messages
+                other_text: list[str] = []
+                for block in content:
+                    btype = block.get("type", "")
+                    if btype == "tool_result":
+                        rc = block.get("content", "")
+                        if isinstance(rc, list):
+                            rc = "\n".join(
+                                b.get("text", "") for b in rc if b.get("type") == "text"
+                            )
+                        adapted.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": block["tool_use_id"],
+                                "content": str(rc),
+                            }
+                        )
+                    elif btype == "text":
+                        other_text.append(block.get("text", ""))
+                if other_text:
+                    adapted.append({"role": "user", "content": " ".join(other_text)})
+            else:
+                # Unexpected role — best-effort pass-through
+                adapted.append(
+                    {
+                        "role": msg.role,
+                        "content": content if isinstance(content, str) else str(content),
+                    }
+                )
+        return adapted
+
+    @staticmethod
     def _adapt_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
         if not tools:
             return []
@@ -444,13 +517,11 @@ class OpenAICompatibleClient(BaseLLMClient):
 
         payload_messages: list[dict[str, Any]] = []
         if system_prompt:
-            content = f"{system_prompt}\n\n{dynamic_system}" if dynamic_system else system_prompt
-            payload_messages.append({"role": "system", "content": content})
-        for msg in messages:
-            if msg.role == "system":
-                continue
-            # msg.content can be either a string OR a list of content blocks (text/image_url).
-            payload_messages.append({"role": msg.role, "content": msg.content})
+            sys_content = (
+                f"{system_prompt}\n\n{dynamic_system}" if dynamic_system else system_prompt
+            )
+            payload_messages.append({"role": "system", "content": sys_content})
+        payload_messages.extend(self._adapt_messages(messages))
 
         payload: dict[str, Any] = {
             "model": self.model,

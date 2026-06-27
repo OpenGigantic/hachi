@@ -961,6 +961,39 @@ def create_gateway_app(
             _log.warning("cleanup_empty_sessions: failed to delete empty sessions", exc_info=True)
         return {"removed": removed}
 
+    # TASK-B — GET /sessions/{session_id}/messages
+    # Returns the durable transcript for a past (or live) session.  Sourced directly
+    # from the SQLite SessionStore so it works even when the session is no longer active.
+    # HTTP 404 when the session_id is unknown or has no persisted messages.
+    @sessions.get("/{session_id}/messages")
+    async def get_session_messages(
+        session_id: str,
+        limit: int = Query(default=200, ge=1, le=1000),
+    ) -> Any:
+        """Return the durable message transcript for *session_id*.
+
+        Sourced from the SQLite ``messages`` table so it works for historical
+        sessions that are no longer active.  Messages are returned in chronological
+        order (oldest first).
+
+        Returns::
+
+            {
+              "session_id": "<id>",
+              "messages": [
+                {"id": <int>, "role": "user"|"assistant"|"tool",
+                 "content": "...", "tool_name": null|"...", "timestamp": "<iso>"},
+                ...
+              ]
+            }
+
+        HTTP 404 when *session_id* is unknown or has no persisted messages.
+        """
+        result = control_plane.session_transcript(session_id=session_id, limit=limit)
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
+        return result
+
     # G1-T4 — POST /sessions/{session_id}/permissions/always-allow
     # The frontend posts to /sessions/current/permissions/always-allow — "current" is a
     # sentinel that the server resolves to the most-recently-booted session (or ignores
@@ -1180,6 +1213,33 @@ def create_gateway_app(
             url=payload.url.strip(),
             headers=dict(payload.headers),
         )
+
+    # CONTRACT-MCP — POST /runtime/mcp/{name}/enable
+    @runtime_ops.post("/runtime/mcp/{name}/enable")
+    async def post_mcp_enable(name: str) -> Any:
+        """Enable the named MCP server (persists ``enabled=true`` to settings.toml).
+
+        Returns ``{"ok": true}`` on success, HTTP 404 if the server is unknown.
+        """
+        return control_plane.set_mcp_enabled(name=name, enabled=True)
+
+    # CONTRACT-MCP — POST /runtime/mcp/{name}/disable
+    @runtime_ops.post("/runtime/mcp/{name}/disable")
+    async def post_mcp_disable(name: str) -> Any:
+        """Disable the named MCP server (persists ``enabled=false`` to settings.toml).
+
+        Returns ``{"ok": true}`` on success, HTTP 404 if the server is unknown.
+        """
+        return control_plane.set_mcp_enabled(name=name, enabled=False)
+
+    # CONTRACT-MCP — DELETE /runtime/mcp/{name}
+    @runtime_ops.delete("/runtime/mcp/{name}")
+    async def delete_mcp_server(name: str) -> Any:
+        """Remove a registered MCP server from settings.toml.
+
+        Returns ``{"ok": true}`` on success, HTTP 404 if the server is unknown.
+        """
+        return control_plane.delete_mcp_server(name=name)
 
     @runtime_ops.get("/jobs/active")
     async def get_active_jobs() -> Any:

@@ -226,24 +226,30 @@ class TestGatewayModelsHTTPRoute:
         ids = [m["id"] for m in data]
         assert "claude-opus-4-8" in ids, f"claude-opus-4-8 missing from HTTP /models: {ids}"
 
-    def test_http_route_no_hardcoded_stale_list(self) -> None:
+    def test_http_route_no_hardcoded_stale_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The route must not silently return a stale list that omits claude-opus-4-8.
 
         This is the primary regression guard for H6: the old list was
         ['claude-haiku-4-5', 'claude-sonnet-4-5'] and missed opus-4-8 entirely.
         """
-        # Use the static fallback by injecting a list_models that returns the real
-        # static default for Anthropic (the one built into _InProcessGatewayRuntime).
+        # Force Anthropic config with no usable API key so the static fallback is
+        # exercised — same isolation pattern as TestGatewayModelsStaticFallback.
+        cfg = _cfg(model="claude-sonnet-4-6")
+        monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
+        monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: object())
+        monkeypatch.setattr(
+            "hachi.core.llm.create_llm_client",
+            lambda *a, **k: (_ for _ in ()).throw(ValueError("no ANTHROPIC_API_KEY")),
+        )
+
         from hachi.cli.main import _InProcessGatewayRuntime
 
-        # Build a minimal support instance without monkeypatching so that the static
-        # fallback is exercised when create_llm_client fails (no ANTHROPIC_API_KEY).
         support = _InProcessGatewayRuntime()
 
         with _build_gateway(list_models_fn=support.list_models) as http_client:
             resp = http_client.get("/models")
 
-        # We only assert shape — either live or static must include opus-4-8.
+        # Static Anthropic fallback must include opus-4-8.
         assert resp.status_code == 200
         data = resp.json()
         ids = [m["id"] for m in data]

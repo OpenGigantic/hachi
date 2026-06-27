@@ -137,6 +137,8 @@ class GatewayControlPlane:
         add_allowed_command: Callable[[str], dict[str, Any]] | None = None,
         add_always_allow: Callable[[str, str, str], dict[str, Any]] | None = None,
         register_mcp_server: (Callable[..., dict[str, Any]] | None) = None,
+        set_mcp_enabled: Callable[[str, bool], dict[str, Any]] | None = None,
+        delete_mcp_server: Callable[[str], dict[str, Any]] | None = None,
         get_kennel: Callable[[], list[dict[str, Any]]] | None = None,
         add_skill: Callable[[str], dict[str, Any]] | None = None,
         # Multi-provider admin handlers
@@ -201,6 +203,8 @@ class GatewayControlPlane:
         self._add_allowed_command = add_allowed_command
         self._add_always_allow = add_always_allow
         self._register_mcp_server = register_mcp_server
+        self._set_mcp_enabled = set_mcp_enabled
+        self._delete_mcp_server = delete_mcp_server
         self._get_kennel = get_kennel
         self._add_skill = add_skill
         # Multi-provider admin handlers
@@ -668,8 +672,41 @@ class GatewayControlPlane:
         return handler(normalized_session_id or None, max(1, min(limit, 500)))
 
     def mcp_inventory(self) -> Any:
+        """Return the MCP server inventory with ``enabled`` state from settings.toml.
+
+        Merges the live agent's inventory (name/status/tools/transport/err) with
+        the persisted ``enabled`` boolean from ``[mcp_servers]`` in settings.toml.
+        Servers not present in settings.toml default to ``enabled=True`` (they were
+        configured via .og / device-permissions.og, not via the register API).
+        """
         handler = self._require_handler(self._get_mcp_inventory, "MCP inventory")
-        return handler()
+        raw: dict[str, Any] = handler()
+
+        # Load enabled-state map from settings.toml.
+        enabled_map: dict[str, bool] = {}
+        try:
+            from hachi.core.paths import get_hachi_paths as _get_paths
+
+            config_toml = _get_paths().global_config_toml
+            if config_toml.exists():
+                import tomlkit as _tomlkit
+
+                doc = _tomlkit.parse(config_toml.read_text(encoding="utf-8"))
+                for sname, sentry in (doc.get("mcp_servers") or {}).items():
+                    enabled_map[str(sname)] = bool(sentry.get("enabled", True))
+        except Exception:
+            pass  # Best-effort; leave enabled_map empty → all default True.
+
+        # Inject enabled field into each server entry.
+        servers = raw.get("servers", [])
+        enriched: list[dict[str, Any]] = []
+        for server in servers:
+            sdict = dict(server) if not isinstance(server, dict) else server
+            sname = sdict.get("name", "")
+            sdict["enabled"] = enabled_map.get(sname, True)
+            enriched.append(sdict)
+        raw["servers"] = enriched
+        return raw
 
     def active_jobs(self) -> Any:
         handler = self._require_handler(self._get_active_jobs, "active jobs")
@@ -800,10 +837,52 @@ class GatewayControlPlane:
         return handler(name, content)
 
     def spend(self, session_id: str | None = None) -> Any:
-        """Return spend analytics for the current or specified session (GET /spend)."""
+        """Return spend analytics for the current or specified session (GET /spend).
+
+        When no active session is available (turns/models are empty), falls back to
+        the durable daily-spend ledger so the Spend tab shows real historical totals
+        even when the gateway is idle.  The ``{turns, tidies, models}`` shape is
+        always preserved; missing breakdowns from the durable source are left empty.
+        """
         if self._get_spend is None:
-            return {"turns": [], "tidies": [], "models": []}
-        return self._get_spend(session_id)
+            live: dict[str, Any] = {"turns": [], "tidies": [], "models": []}
+        else:
+            live = self._get_spend(session_id)
+
+        # If the live session provided turn/model data, return it as-is.
+        if live.get("turns") or live.get("models"):
+            return live
+
+        # No active session: enrich with durable daily spend so the UI isn't blank.
+        try:
+            daily = self.spend_daily()
+            spent_usd: float = float(daily.get("spent_usd") or 0.0)
+            if spent_usd > 0.0:
+                # Surface the daily total as a single synthetic model row so the
+                # Spend UI can at least show "today's spend" without fabricating
+                # per-turn or per-model breakdown we don't have.
+                live = dict(live)
+                live.setdefault("turns", [])
+                live.setdefault("tidies", [])
+                # Only add a synthetic model row when none are present.
+                if not live.get("models"):
+                    live["models"] = [
+                        {
+                            "name": "durable-ledger",
+                            "model": "durable-ledger",
+                            "tokens": 0,
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "cost": round(spent_usd, 6),
+                            "cost_usd": round(spent_usd, 6),
+                            "color": "",
+                        }
+                    ]
+                live["cumulative_usd"] = round(spent_usd, 6)
+        except Exception:
+            pass  # Best-effort fallback; never block the main response.
+
+        return live
 
     def spend_daily(self) -> Any:
         """Return today's accumulated daily spend plus configured caps (GET /spend/daily).
@@ -883,6 +962,126 @@ class GatewayControlPlane:
             url=url,
             headers=headers or {},
         )
+
+    def set_mcp_enabled(self, name: str, enabled: bool) -> Any:
+        """Enable or disable a named MCP server by persisting ``enabled`` to settings.toml.
+
+        Mirrors the ``[mcp_servers.NAME]`` persistence path used by
+        :meth:`register_mcp_server`.  Returns ``{"ok": True}`` on success;
+        raises ``HTTPException(404)`` when the name is unknown.
+
+        Args:
+            name:    Server name as it appears in ``GET /runtime/mcp/inventory``.
+            enabled: ``True`` to enable, ``False`` to disable.
+        """
+        # Prefer the runtime handler: it persists the flag AND applies the change
+        # to the live agent's tool registry (and can create the entry for
+        # .og-declared servers), so a disable/enable takes effect without a restart.
+        if self._set_mcp_enabled is not None:
+            return self._set_mcp_enabled(name, enabled)
+
+        import tomlkit as _tomlkit
+        from fastapi import HTTPException as _HTTPException
+
+        from hachi.core.paths import get_hachi_paths as _get_paths
+
+        paths = _get_paths()
+        config_toml = paths.global_config_toml
+
+        if config_toml.exists():
+            doc = _tomlkit.parse(config_toml.read_text(encoding="utf-8"))
+        else:
+            doc = _tomlkit.document()
+
+        mcp_section = doc.get("mcp_servers", {})
+        if name not in mcp_section:
+            raise _HTTPException(status_code=404, detail=f"MCP server {name!r} not found")
+
+        mcp_section[name]["enabled"] = enabled
+
+        import os as _os
+
+        tmp = config_toml.with_name(f"{config_toml.name}.tmp")
+        tmp.write_text(_tomlkit.dumps(doc), encoding="utf-8")
+        _os.replace(tmp, config_toml)
+
+        return {"ok": True, "name": name, "enabled": enabled}
+
+    def delete_mcp_server(self, name: str) -> Any:
+        """Remove a registered MCP server from settings.toml.
+
+        Deletes the ``[mcp_servers.NAME]`` table entry and atomically rewrites
+        settings.toml.  Returns ``{"ok": True}`` on success; raises
+        ``HTTPException(404)`` when the name is unknown.
+
+        Args:
+            name: Server name exactly as it appears in ``GET /runtime/mcp/inventory``.
+        """
+        # Prefer the runtime handler: it tears down the live connection + tools
+        # (so the server leaves the inventory immediately), removes every persisted
+        # source (settings.toml entry, mcp-<name>.og file, or a tombstone for
+        # bundled servers), and is idempotent (repeat delete → 200, not 404).
+        if self._delete_mcp_server is not None:
+            return self._delete_mcp_server(name)
+
+        import tomlkit as _tomlkit
+        from fastapi import HTTPException as _HTTPException
+
+        from hachi.core.paths import get_hachi_paths as _get_paths
+
+        paths = _get_paths()
+        config_toml = paths.global_config_toml
+
+        if config_toml.exists():
+            doc = _tomlkit.parse(config_toml.read_text(encoding="utf-8"))
+        else:
+            doc = _tomlkit.document()
+
+        mcp_section = doc.get("mcp_servers", {})
+        if name not in mcp_section:
+            raise _HTTPException(status_code=404, detail=f"MCP server {name!r} not found")
+
+        del mcp_section[name]
+
+        import os as _os
+
+        tmp = config_toml.with_name(f"{config_toml.name}.tmp")
+        tmp.write_text(_tomlkit.dumps(doc), encoding="utf-8")
+        _os.replace(tmp, config_toml)
+
+        return {"ok": True, "name": name}
+
+    def session_transcript(self, session_id: str, limit: int = 200) -> dict[str, Any] | None:
+        """Return the durable message transcript for *session_id*, or ``None`` if unknown.
+
+        Fetches directly from the SQLite ``messages`` table via the
+        ``_get_session_messages`` callback (wired from
+        :meth:`~hachi.cli.main._InProcessGatewayRuntime.session_messages`).
+
+        The caller (HTTP layer) converts ``None`` to HTTP 404.
+
+        Args:
+            session_id: Session id to fetch (may be historical / no longer active).
+            limit:      Maximum number of messages to return (oldest-first chronological).
+
+        Returns:
+            ``{"session_id": ..., "messages": [...]}`` on success, or ``None``
+            when the session is unknown / store not wired.
+        """
+        if self._get_session_messages is None:
+            return None
+        try:
+            messages = self._get_session_messages(session_id, limit)
+        except Exception:
+            return None
+        if not messages:
+            return None
+        # Messages from SessionStore have: role, content, tool_name, timestamp.
+        # Include the row id if present (it's an int autoincrement PK).
+        return {
+            "session_id": session_id,
+            "messages": list(messages),
+        }
 
     def kennel(self) -> Any:
         """Return the available skills kennel listing (GET /skills/kennel)."""

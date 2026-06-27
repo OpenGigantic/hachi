@@ -32,7 +32,7 @@ import contextlib
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from hachi.core.llm import BaseLLMClient, LLMResponse, Message, ToolCall
@@ -177,6 +177,32 @@ class ToolRegistry:
             return False
         self._tools[tool_name] = func
         return True
+
+    def unregister(self, tool_names: Iterable[str]) -> int:
+        """Remove the named tools from the registry (handlers, schemas, groups).
+
+        Used to tear down an MCP server's tools when that server is disabled or
+        deleted at runtime, so the model can no longer call them without a
+        gateway restart.  Unknown names are ignored (no-op per name).
+
+        Args:
+            tool_names: The exact (namespaced) tool names to remove, e.g.
+                ``{"gmail_send_email", "gmail_list_inbox"}``.
+
+        Returns:
+            The number of tools actually removed.
+        """
+        targets = set(tool_names)
+        if not targets:
+            return 0
+        removed = 0
+        for name in targets:
+            if self._tools.pop(name, None) is not None:
+                removed += 1
+            self._groups.pop(name, None)
+        if removed:
+            self._schemas = [s for s in self._schemas if s.get("name") not in targets]
+        return removed
 
     def classify(
         self,

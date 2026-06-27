@@ -503,7 +503,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                   height: '40px',
                   borderRadius: '10px',
                   border: '0.5px solid transparent',
-                  background: 'var(--hachi-brand-hover)',
+                  background: 'var(--hachi-brand)',
                   color: 'var(--hachi-canvas)',
                   font: '500 14px var(--font-body)',
                   cursor: 'pointer',
@@ -512,8 +512,8 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                   justifyContent: 'center',
                   gap: '7px',
                 }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-active)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
+                onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand)')}
               >
                 <Icon name="refresh" size={15} />
                 Retry
@@ -658,7 +658,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                 height: '40px',
                 borderRadius: '10px',
                 border: '0.5px solid transparent',
-                background: 'var(--hachi-brand-hover)',
+                background: 'var(--hachi-brand)',
                 color: 'var(--hachi-canvas)',
                 font: '500 14px var(--font-body)',
                 cursor: 'pointer',
@@ -667,8 +667,8 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                 justifyContent: 'center',
                 gap: '7px',
               }}
-              onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-active)')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
+              onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand)')}
             >
               <Icon name="eye" size={15} />
               Watch live
@@ -871,7 +871,10 @@ function SpendLens() {
         </div>
 
         <div style={{ flex: '1 1 240px', minWidth: 0, background: 'var(--hachi-surface)', border: '0.5px solid var(--hachi-line)', borderRadius: '16px', padding: '18px' }}>
-          <div style={{ fontWeight: 500, fontSize: '14px', marginBottom: '14px' }}>Where it went</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '8px', marginBottom: '14px' }}>
+            <span style={{ fontWeight: 500, fontSize: '14px' }}>Where it went</span>
+            <span style={{ fontSize: '11px', color: 'var(--hachi-muted)' }}>this session</span>
+          </div>
           <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '16px', position: 'relative' }}>
             <svg viewBox="0 0 128 128" style={{ width: '140px', height: '140px', display: 'block' }}>
               <g transform="rotate(-90 64 64)">
@@ -1248,13 +1251,13 @@ function Work() {
             padding: '0 14px',
             borderRadius: '10px',
             border: '0.5px solid transparent',
-            background: 'var(--hachi-brand-hover)',
+            background: 'var(--hachi-brand)',
             color: 'var(--hachi-canvas)',
             font: '500 13px var(--font-body)',
             cursor: 'pointer',
           }}
-          onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-active)')}
-          onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
+          onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
+          onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand)')}
         >
           <Icon name="plus" size={15} />
           New task
@@ -1378,76 +1381,26 @@ function Work() {
             {workEmpty && (
               <div style={{
                 textAlign: 'center',
-                padding: '48px 24px',
+                padding: '48px 0',
                 color: 'var(--hachi-muted)',
-                background: 'var(--hachi-surface)',
-                border: '0.5px solid var(--hachi-line)',
-                borderRadius: '14px',
                 fontSize: '14px',
                 lineHeight: '22px',
               }}>
-                {workFilter === 'active' && (
-                  <>
-                    No tasks running right now — Hachi is on watch.{' '}
-                    <button
-                      onClick={goChat}
-                      style={{
-                        border: 'none',
-                        background: 'transparent',
-                        color: 'var(--hachi-trust)',
-                        font: '500 14px var(--font-body)',
-                        cursor: 'pointer',
-                        padding: 0,
-                      }}
-                    >
-                      Start a task
-                    </button>
-                    {' '}to see it here.
-                  </>
-                )}
-                {workFilter === 'routines' && (
-                  <>
-                    No routines set up yet.{' '}
-                    <button
-                      onClick={goChat}
-                      style={{
-                        border: 'none',
-                        background: 'transparent',
-                        color: 'var(--hachi-trust)',
-                        font: '500 14px var(--font-body)',
-                        cursor: 'pointer',
-                        padding: 0,
-                      }}
-                    >
-                      Ask Hachi
-                    </button>
-                    {' '}to run something on a schedule.
-                  </>
-                )}
-                {workFilter === 'history' && (
-                  <>
-                    No finished tasks yet.{' '}
-                    <button
-                      onClick={goChat}
-                      style={{
-                        border: 'none',
-                        background: 'transparent',
-                        color: 'var(--hachi-trust)',
-                        font: '500 14px var(--font-body)',
-                        cursor: 'pointer',
-                        padding: 0,
-                      }}
-                    >
-                      Start a task
-                    </button>
-                    {' '}and completed runs will appear here.
-                  </>
-                )}
-                {workFilter === 'needs' && (
-                  <>
-                    Nothing needs your attention right now — everything is running smoothly.
-                  </>
-                )}
+                Nothing here yet.{' '}
+                <button
+                  onClick={goChat}
+                  style={{
+                    border: 'none',
+                    background: 'transparent',
+                    color: 'var(--hachi-trust)',
+                    font: '500 14px var(--font-body)',
+                    cursor: 'pointer',
+                    padding: 0,
+                  }}
+                >
+                  Start a task
+                </button>
+                {' '}or set up a routine.
               </div>
             )}
           </div>

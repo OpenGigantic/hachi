@@ -323,7 +323,28 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Get Session Messages
+         * @description Return the durable message transcript for *session_id*.
+         *
+         *     Sourced from the SQLite ``messages`` table so it works for historical
+         *     sessions that are no longer active.  Messages are returned in chronological
+         *     order (oldest first).
+         *
+         *     Returns::
+         *
+         *         {
+         *           "session_id": "<id>",
+         *           "messages": [
+         *             {"id": <int>, "role": "user"|"assistant"|"tool",
+         *              "content": "...", "tool_name": null|"...", "timestamp": "<iso>"},
+         *             ...
+         *           ]
+         *         }
+         *
+         *     HTTP 404 when *session_id* is unknown or has no persisted messages.
+         */
+        get: operations["get_session_messages_sessions__session_id__messages_get"];
         put?: never;
         /** Post Message */
         post: operations["post_message_sessions__session_id__messages_post"];
@@ -509,6 +530,72 @@ export interface paths {
          */
         post: operations["post_mcp_register_runtime_mcp_register_post"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runtime/mcp/{name}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Mcp Enable
+         * @description Enable the named MCP server (persists ``enabled=true`` to settings.toml).
+         *
+         *     Returns ``{"ok": true}`` on success, HTTP 404 if the server is unknown.
+         */
+        post: operations["post_mcp_enable_runtime_mcp__name__enable_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runtime/mcp/{name}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Mcp Disable
+         * @description Disable the named MCP server (persists ``enabled=false`` to settings.toml).
+         *
+         *     Returns ``{"ok": true}`` on success, HTTP 404 if the server is unknown.
+         */
+        post: operations["post_mcp_disable_runtime_mcp__name__disable_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runtime/mcp/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Mcp Server
+         * @description Remove a registered MCP server from settings.toml.
+         *
+         *     Returns ``{"ok": true}`` on success, HTTP 404 if the server is unknown.
+         */
+        delete: operations["delete_mcp_server_runtime_mcp__name__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2732,6 +2819,46 @@ export interface operations {
             };
         };
     };
+    get_session_messages_sessions__session_id__messages_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     post_message_sessions__session_id__messages_post: {
         parameters: {
             query?: never;
@@ -3042,6 +3169,120 @@ export interface operations {
                 "application/json": components["schemas"]["McpRegisterRequest"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_mcp_enable_runtime_mcp__name__enable_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_mcp_disable_runtime_mcp__name__disable_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_mcp_server_runtime_mcp__name__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
