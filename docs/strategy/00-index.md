@@ -34,5 +34,5 @@ No code/config changes are made by this engagement — analysis and specs only, 
 
 - Test baseline (2026-06-12, Windows): `uv run --frozen python -m pytest -q` → **1,357 passed / 13 skipped / 60.8 s**.
 - Built-in OG benchmark observed: `nodes=42 | baseline=8991 | 3-pass=253 | savings=97.2%` (methodology caveats in 00-recon §8).
-- arXiv link `arxiv.org/abs/2604.27820` from the brief: ⚠️ UNVERIFIED (ID format implies an April-2026 submission; to be checked during Phase 2/3 web verification, alongside docs/BENCHMARK.md citations).
+- arXiv link `arxiv.org/abs/2604.27820` from the brief: ⚠️ UNVERIFIED (ID format implies an April-2026 submission; to be checked during Phase 2/3 web verification, alongside docs/reference/benchmark.md citations).
 - Evidence markers used throughout: ✅ direct read · Ⓐ subagent-verified · ▶ executed/observed · ⚠️ UNVERIFIED.

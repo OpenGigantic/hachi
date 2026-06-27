@@ -80,7 +80,7 @@ def main() -> int:
             "Hachi guardrails — session warm-up:",
             "• Gate: run `uv run python scripts/preflight.py` and get it GREEN before proposing any push.",
             f"• Branch: {branch} · {len(dirty)} uncommitted file(s). Never push to main without the user's explicit OK.",
-            "• Map: ARCHITECTURE.md · Decisions/ADRs: DECISIONS.md · .og spec: ObjectGraph_Complete_Specification.md",
+            "• Map: ARCHITECTURE.md · Decisions/ADRs: docs/DECISIONS.md · .og spec: docs/reference/objectgraph-spec.md",
             "• Regression law: for every bug, write a failing test FIRST, then fix, then lock it in docs/bug-bank.md.",
         ]
         if avoids:

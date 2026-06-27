@@ -67,7 +67,7 @@ entry in `pyproject.toml` `[tool.importlinter]` and say why in the PR. `deptry` 
 missing deps), `vulture` (dead code), and the ruff complexity counts are **advisory** for
 now — fix what you can; they don't block.
 
-**Architecture decisions.** Settled decisions go in [`DECISIONS.md`](DECISIONS.md); a major
+**Architecture decisions.** Settled decisions go in [`DECISIONS.md`](docs/DECISIONS.md); a major
 architectural choice that warrants alternatives analysis and a long-lived reference gets a
 numbered ADR under [`docs/architecture/adr/`](docs/architecture/adr/) — copy `0000-template.md`
 and add it to the index (the advisory `adr-lint` check verifies both). See the
@@ -120,7 +120,7 @@ If you are contributing new `.og` skill files:
 1. Use the full ObjectGraph tag specification (`::meta`, `::index`, `::dense`, `::full`, `::steps`, `::assertion`, etc.).
 2. Every skill node must have `keywords` for search indexing.
 3. Include `::assertion` blocks where applicable for self-validating execution.
-4. Follow the [ObjectGraph Specification](ObjectGraph_Complete_Specification.md) for tag reference.
+4. Follow the [ObjectGraph Specification](docs/reference/objectgraph-spec.md) for tag reference.
 
 ## Reporting Issues
 

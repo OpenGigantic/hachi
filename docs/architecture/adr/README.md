@@ -8,7 +8,7 @@ citable number.
 
 | Tier | Home | Use it for |
 |------|------|-----------|
-| **Decision log** | [`DECISIONS.md`](../../../DECISIONS.md) (repo root) | Every settled decision — process, tooling, bug-fix rationale, small architectural calls. Newest at the bottom. **This is the default.** |
+| **Decision log** | [`DECISIONS.md`](../../DECISIONS.md) (repo root) | Every settled decision — process, tooling, bug-fix rationale, small architectural calls. Newest at the bottom. **This is the default.** |
 | **Deep ADRs** | `docs/architecture/adr/NNNN-*.md` (here) | A *major* architectural decision that needs alternatives analysis and a long-lived reference. Link it from `DECISIONS.md`. |
 
 Rule of thumb: **write it in `DECISIONS.md` first.** Promote to a numbered ADR only when the

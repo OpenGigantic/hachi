@@ -69,13 +69,13 @@ a never-used skill.
 
 ### 2.4 Citation verification 🌐
 
-docs/BENCHMARK.md cites three papers (BENCHMARK.md:25–38):
+docs/reference/benchmark.md cites three papers (benchmark.md:25–38):
 
 | Citation | Verdict |
 |---|---|
-| `arXiv 2604.27820` — "The ObjectGraph format" | **Exists** 🌐: *"ObjectGraph: From Document Injection to Knowledge Traversal — A Native File Format for the Agentic Era"*, authors **Mohit Dubey and Open Gigantic**, submitted 2026-04-30. It is **first-party** (Open Gigantic owns this repo) but BENCHMARK.md presents it as if independent. Its headline "up to 95.3%" reduction is a figure a prior verification pass (recorded in project memory) found unreliable — the agreed stance was to rely on the reproducible in-repo benchmark instead. ⚠️ The *refutation detail* comes from that earlier pass, not re-verified today; the self-authorship and the 95.3% claim on the abstract page are verified 🌐. |
-| `arXiv 2604.05333` Graph-of-Skills | **Verified** 🌐: title, −56.72% tokens vs full skill-loading, GPT-5.2 Codex all appear as quoted. Genuine third-party support for *category* (dependency-aware structural retrieval), not for `.og` specifically — BENCHMARK.md says this honestly (line 38–41). Note: that paper's retriever is **hybrid semantic-lexical** — precisely the component Hachi lacks (§2.3). |
-| `arXiv 2603.29919` SkillReducer | **Verified** 🌐: 48% description / 39% body compression, ">60% of body content non-actionable" — matches BENCHMARK.md's paraphrase. |
+| `arXiv 2604.27820` — "The ObjectGraph format" | **Exists** 🌐: *"ObjectGraph: From Document Injection to Knowledge Traversal — A Native File Format for the Agentic Era"*, authors **Mohit Dubey and Open Gigantic**, submitted 2026-04-30. It is **first-party** (Open Gigantic owns this repo) but benchmark.md presents it as if independent. Its headline "up to 95.3%" reduction is a figure a prior verification pass (recorded in project memory) found unreliable — the agreed stance was to rely on the reproducible in-repo benchmark instead. ⚠️ The *refutation detail* comes from that earlier pass, not re-verified today; the self-authorship and the 95.3% claim on the abstract page are verified 🌐. |
+| `arXiv 2604.05333` Graph-of-Skills | **Verified** 🌐: title, −56.72% tokens vs full skill-loading, GPT-5.2 Codex all appear as quoted. Genuine third-party support for *category* (dependency-aware structural retrieval), not for `.og` specifically — benchmark.md says this honestly (line 38–41). Note: that paper's retriever is **hybrid semantic-lexical** — precisely the component Hachi lacks (§2.3). |
+| `arXiv 2603.29919` SkillReducer | **Verified** 🌐: 48% description / 39% body compression, ">60% of body content non-actionable" — matches benchmark.md's paraphrase. |
 
 ## 3. Does it actually beat markdown memory? (the honest answer)
 
@@ -163,7 +163,7 @@ short (§7).
 | Session visited-skip (§5.4) | Absent ✅ | Low |
 | "O(1) routing" | Linear substring scan ✅ engine.py:369–372 | Cosmetic now; real at 10k keywords |
 | Dense ≤30 tok discipline | Shipped average 38 ▶ | Medium (credibility) |
-| "Majority of queries complete at Pass 2" (BENCHMARK.md:56) | No instrumentation measures pass-completion depth ✅ | Medium (unsubstantiated public claim) |
+| "Majority of queries complete at Pass 2" (benchmark.md:56) | No instrumentation measures pass-completion depth ✅ | Medium (unsubstantiated public claim) |
 
 ---
 
@@ -188,7 +188,7 @@ the two genuinely independent papers are *stronger* support and are diluted by i
 | P0 | **Make shipped skills exemplary**: add `::meta`+`::index` to all 29, dense ≤30, keywords incl. synonyms ("fx", "exchange rate"…), and ≥1 meaningful `requires` chain per pack. Wire `lint_og_file` over `default_skills/` as a CI job (errors block). | §2.1 | 1–2 d (high) |
 | P1 | **Optional embedding rank** (reuse the ChromaDB dep already shipped): index node dense+keywords at boot; hybrid score = BM25 ⊕ cosine. Off by default for offline mode. | §3.1(d) | 2–4 d (medium) |
 | P1 | **Instrument pass depth** (Pass-1/2/3 counters per query in usage DB) so "most queries stop at Pass 2" becomes a measured claim. | §5 | 0.5–1 d (high) |
-| P1 | **Fix BENCHMARK.md honesty**: disclose 2604.27820 as first-party; drop/replace the 95.3% reliance; add the §3.1(b) cost-model caveat ("below ~30k-token libraries, cached dump-all is competitive — `.og` is built for libraries that outgrow context"). Paradoxically this *strengthens* the pitch. | §2.4, R-c | 0.5 d (high) |
+| P1 | **Fix benchmark.md honesty**: disclose 2604.27820 as first-party; drop/replace the 95.3% reliance; add the §3.1(b) cost-model caveat ("below ~30k-token libraries, cached dump-all is competitive — `.og` is built for libraries that outgrow context"). Paradoxically this *strengthens* the pitch. | §2.4, R-c | 0.5 d (high) |
 | P2 | Implement or delete spec promises (confidence filtering, visited-skip) and correct "O(1)" wording. | §5 | 1–2 d each (med) |
 
 ## 8. Benchmark specification — "OG vs the field" (proposal; runnable design)
@@ -230,7 +230,7 @@ F. **Hybrid**: vector recall → OG peek/load (block-granular).
 | M4 | Latency | Engine op time + (round-trips × configurable RTT, default 800 ms) + measured wall-clock on the live subset. |
 | M5 | Task success | 50-task live-LLM subset (haiku-class): success = the skill's own `::assertions` evaluate true on the produced parameters (machine-scored ✅ assertion_eval) + 3-vote LLM-judge rubric for output quality. Paired across arms, same tasks. |
 | M6 | Distraction cost | Accuracy on 30 *unrelated* QA tasks with each arm's context resident — quantifies dump-all's noise penalty (the Graph-of-Skills effect 🌐) instead of asserting it. |
-| M7 | Pass-depth distribution (arms C/D/F) | % of queries resolved at Pass 1/2/3 — substantiates or kills the BENCHMARK.md:56 claim. |
+| M7 | Pass-depth distribution (arms C/D/F) | % of queries resolved at Pass 1/2/3 — substantiates or kills the benchmark.md:56 claim. |
 
 ### 8.5 Protocol & hygiene
 

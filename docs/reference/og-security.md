@@ -150,4 +150,4 @@ a rogue provider URL or escalate permissions.  Under `HACHI_CONFIG_STRICT=1` (or
 `strict=True` parameter), the loader raises `PermissionError` immediately rather than
 logging a warning.
 
-See `docs/settings.md` for the full settings reference.
+See `docs/guides/configuration.md` for the full settings reference.

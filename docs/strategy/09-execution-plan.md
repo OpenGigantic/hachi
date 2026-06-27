@@ -178,7 +178,7 @@ Add a CI job running `lint_og_file` over `default_skills/` with **errors blockin
 
 ### Lane C — Docs, CI, packaging (files: `docs/`, `.github/`, `pyproject.toml`, `CLAUDE.md`, provider module)
 
-#### P1-10 · BENCHMARK.md honesty pass — ✅
+#### P1-10 · benchmark.md honesty pass — ✅
 **Effort** 0.5d · **Deps** — · **Source** [02 §2.4, §7 P1](02-object-graph-eval.md) · roadmap 30d#7
 **Build.** Disclose arXiv 2604.27820 as first-party (it currently reads as independent); drop any
 reliance on the refuted "95.3%" figure; add the cached-dump-all crossover caveat ("below ~30k-token
@@ -330,7 +330,7 @@ Paired comparisons, medians + IQR, bootstrap CIs; artifacts committed under
 "below crossover, just dump your skills — we measured it" concession). Feeds P2-11; held by D-5.
 **Done:** `benchmarks/og_bench/data/s_real_results_v1.json` frozen (53 nodes, 97.6% savings,
 P@1=0.7742, P@5=0.9677, MRR=0.8548, FPR=0.0, 1 miss; M7 77.4%/19.4%/3.2%; M2 408 tok/$1.22/1k;
-M4 0.217ms engine ops). `docs/BENCHMARK.md` updated with all M1/M2/M4/M7 sections + scope caveat.
+M4 0.217ms engine ops). `docs/reference/benchmark.md` updated with all M1/M2/M4/M7 sections + scope caveat.
 
 ### WS-D — Memory graph M0 + M1
 
