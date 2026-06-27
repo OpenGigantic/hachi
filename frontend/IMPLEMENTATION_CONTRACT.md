@@ -12,9 +12,9 @@ prototype's template-engine internals.
 - Mascot sprite component: `.design-bundle/project/HachiMascot.dc.html`
 - Mascot states reference: `.design-bundle/project/Hachi Mascot States.dc.html`
 - Icon path data: `.design-bundle/project/hachi-icons.js`
-- Design tokens (real CSS, copy these): `Hachi Design System/tokens/*.css`
-- Design-system component sources (for exact look/props): `Hachi Design System/components/`
-- Design-system guide: `Hachi Design System/readme.md`
+- Design tokens (real CSS, copy these): `design-system/tokens/*.css`
+- Design-system component sources (for exact look/props): `design-system/components/`
+- Design-system guide: `design-system/readme.md`
 
 ## 1. Stack, layout, commands
 - **Vite + React 18 + TypeScript (strict)** with **TanStack Router file-based routing**
@@ -107,7 +107,7 @@ e.g. `export function Button(...)`). Props are TypeScript interfaces.
 - `ui/LoyalLoop({ size?: number = 48 })` the figure-8/infinity spinner tracing in Torii red (animate stroke-dashoffset; respect prefers-reduced-motion).
 - `ui/RunCard({ title, status, progress: 0..1, spent: number, budget: number, meta?, onClick? })` status pill + thin Torii-red progress bar + always-visible "spent $x of $y".
 - `ui/Terminal({ lines?: string[], prompt?: string, children?, style? })` dark mono surface (#16151A), JetBrains Mono, red `hachi ▸` prompt with blinking caret. Used by Live run output + CLI blocks.
-- `brand/HachiMark({ size?: number = 24, variant?: 'default'|'knockout', style? })` the two-tone dog mark as inline SVG (port from DS `components/hachi/HachiMark` source or `hachi.svg`). knockout = single-color currentColor.
+- `brand/HachiMark({ size?: number = 24, variant?: 'default'|'knockout', style? })` the two-tone dog mark as inline SVG (port from DS `components/hachi/HachiMark` source or `docs/brand/hachi.svg`). knockout = single-color currentColor.
 - `brand/HachiMascot({ state: 'on-watch'|'working'|'done'|'blocked'|'resting', scale?: number = 3, decor?: boolean = false, reduceMotion?: boolean = false, style? })` the pixel-grid morphing sprite. Port the sprite rows + per-state morph + the loyal-loop overlay (working) + "z" float (resting) + breathe/blink from `HachiMascot.dc.html`. Body uses `var(--hachi-brand)`, face `var(--hachi-cream)`/cream, eyes `var(--hachi-ink)`.
 - `brand/LeashPrompt({ request, why, action?, risk?, onAllowOnce, onAlwaysAllow, onDecline, countdown? })` the signature calm permission card (port from DS `components/hachi/LeashPrompt`). Never looks like an error.
 
