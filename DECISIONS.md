@@ -2628,3 +2628,172 @@ without adopting a heavy query lib inconsistent with the custom data layer.
 ### Gate results
 EventBus 3887 pass / KG 3907 pass / query-cache vitest 94 pass — each 0 fail, ruff +
 strict-mypy (36) clean, frontend typecheck + build green. All pushed to `reassess`.
+
+---
+
+## Regression guardrails — Phase 1 + Memory (2026-06-27) **[ADR]**
+
+Adopted the "guardrails" plan's mechanical floor + memory layer to stop AI-introduced
+regressions/drift. Phase 1 (the Gate + the Locks) + Memory; the Rails (Phase 2) and
+role-agents (Phase 4) are deliberately deferred. Single session, no subagents.
+
+**Found.** Hachi's checks existed only as 8 separate CI jobs — no single local gate, and nothing
+*mechanically* stopped a bad diff landing. ruff + strict-mypy-gate were already green; full-tree
+mypy and `ruff format` were NOT (113 files would reformat).
+
+**Decided / built.**
+- **The Gate — `scripts/preflight.py`** (`uv run python scripts/preflight.py [--quick]`): one
+  command mirroring CI — ruff, strict-mypy-gate, skill-lint, eval, full pytest, frontend
+  (typecheck/vitest/build/openapi-contract). Cross-platform Python runner (no Makefile).
+  - **No global `ruff format --check` step** — the repo is deliberately not fully formatted (113
+    files; a repo-wide reflow is forbidden, Rule 3). The auto-format hook keeps *touched* files clean.
+  - **pytest runs sequentially, NOT `-n auto`** — parallel workers starve wall-clock timing tests
+    (`test_two_sessions_run_concurrently`, notifier non-blocking) → flaky gate. Matches CI and the
+    plan's "run tests sequentially to kill time-based flakiness."
+  - **security-audit is advisory** (mirrors CI continue-on-error on main; 2 pre-existing HIGH
+    config-posture findings remain — not regressions).
+- **The Locks — `.claude/settings.json` + `.claude/hooks/*.py`** (stdlib Python, exec-form
+  invocation → portable across PowerShell / Git Bash / Linux):
+  - `bash_guard.py` (PreToolUse `Bash|PowerShell`): push-lock on main/master via a one-shot
+    `.claude/.push-approved` sentinel; secret-scan on commits (high-confidence patterns + staged
+    `.env`); anti-forge. **Matcher includes PowerShell** — `Bash`-only would let the agent bypass
+    the push-lock on Windows (the primary shell).
+  - `stop_guard.py` (Stop): blocks finishing while `ruff check` is red (fast); the *full* suite is
+    preflight's job, not every Stop. Guards `stop_hook_active`.
+  - `auto_format.py` (PostToolUse Write|Edit|MultiEdit): `ruff format`s the touched `.py`.
+  - `session_start.py` (SessionStart): injects the gate command, branch, and the top
+    `docs/bug-bank.md` **Avoid:** rules so a fresh agent starts warm.
+- **Memory — `docs/bug-bank.md`** (per-bug autopsy + locking test), seeded BB-1..BB-9 from the old
+  CLAUDE.md gotchas + history. The SessionStart hook injects the **Avoid:** lines each session.
+- **Lean CLAUDE.md** — slimmed from 257 lines to the inviolable rules + pointers; detail
+  *relocated* (gotchas→bug-bank, entry-points/frontend-contract→ARCHITECTURE.md, conventions→
+  CONTRIBUTING.md). Nothing dropped.
+
+**Verified.** All 5 hooks unit-checked live this session (15/15 driver checks: push-lock blocks
+main + consumes the sentinel; secret-scan blocks AWS keys / staged `.env` and does NOT self-trip
+on the guardrail files; stop-guard, auto-format, session-start). preflight green on every blocking
+step (ruff / mypy-gate / skill-lint / eval; full pytest 3941 pass, and the 2 timing tests pass
+once sequential). Caught + fixed en route: the PowerShell matcher hole; preflight's cp1252 console
+crash; and **BB-2 was a stale absolute** — `.env` IS autoloaded at the CLI edge, gated by
+`HACHI_DISABLE_DOTENV_AUTOLOAD` and locked by `test_dotenv_hermeticity.py` — corrected in the bug bank.
+
+**Deferred (the plan's phasing).** Phase 2 Rails (vulture dead-code, deptry unused-deps, jscpd
+duplication, ruff `PLR0913` max-params, import-linter boundaries — add to preflight advisory→
+blocking once baselines are clean); Phase 3 formal `docs/adr/` + Mermaid/C4 diagrams; Phase 4
+role-separated subagents + adversarial verification. Uncommitted on `main` at time of writing.
+
+## Regression guardrails — Phase 2: the Rails (2026-06-27) **[ADR]**
+
+Added the mechanical guards against the *architectural-drift* and *code-rot* pains, the layer
+Phase 1 deferred. Three new dev-only tools (`import-linter`, `deptry`, `vulture`) in the `dev`
+extra — never imported by the product — plus ruff complexity rules. Wired into both
+`scripts/preflight.py` and CI's `lint` job so the gate and CI stay in lockstep. No `src` changes.
+
+**Found (the real import graph, measured — not assumed).** The engine layers are *not* pure: `core`
+and `tools` reach up into `gateway`/`cli` in 6 concrete seams (`core.onboarding→gateway.workspace`
+top-level; `core.cost`/`core.runtime.job_handlers`/`core.runtime.resume`/`tools.config_tools`→
+gateway lazily; `core.runtime.resume→cli.main`). `og_engine` *is* already pure. A naïve "domain must
+not import gateway" rule would therefore be red on day one — the wrong move. Baselines: deptry 34
+raw findings (all extras/dev/first-party noise + a few intentional), ruff complexity 178 at strict
+defaults, vulture 8 at confidence ≥80.
+
+**Decided / built.**
+- **Architecture rail — `import-linter` (BLOCKING, green).** Three `forbidden` contracts in
+  `pyproject [tool.importlinter]`: (1) `og_engine` is pure — depends on nothing but `core`; (2) the
+  engine must not import the UI edges (`cli`, `tui`); (3) the engine must not import `gateway`. The 6
+  pre-existing seams are frozen as commented `ignore_imports` — *documented debt to burn down, not a
+  licence to add more*. The gateway contract sets `allow_indirect_imports = true` because the one
+  indirect path (`core→cli.main→gateway.workspace`) is the cli seam already frozen by contract (2),
+  and cli importing the gateway is correct edge→service layering. **Proven to bite:** a temporary
+  direct `core.approvals→gateway.workspace` import flipped the contract to BROKEN; reverted.
+  `unmatched_ignore_imports_alerting` stays at its ERROR default, so a stale ignore (a seam later
+  removed) fails until deleted — the ratchet self-cleans.
+- **Dependency rail — `deptry` (ADVISORY).** `[tool.deptry]` models Hachi's extras truthfully:
+  `known_first_party=["benchmarks"]`, `optional_dependencies_dev_groups=["dev","security"]`, a
+  `package_module_name_map` for distributions whose import name differs (docx/pptx/googleapiclient…),
+  and `per_rule_ignores` freezing only **confirmed** false-positives (tzdata data-pkg; tavily-python
+  via `importlib.import_module`; python-multipart via Starlette). This cut 34→**4 genuine findings**:
+  `slack-sdk`, `notion-client`, `google-auth`, `google-api-python-client` are declared extras whose
+  SDKs are imported **nowhere** in the repo (the integrations use httpx). Left UNfrozen on purpose —
+  surfacing a real signal, not suppressing it; pending a call to drop the extras or keep them as
+  intentional optional installs (then freeze + make deptry blocking).
+- **Dead-code rail — `vulture` (ADVISORY).** `[tool.vulture]` at `min_confidence=80` (skips the noisy
+  60% method/attribute guesses that false-positive on framework entry points) + decorator/name
+  ignores. `exc_type/exc_val/exc_tb` ignored (protocol-required `__exit__` params). 6 findings remain
+  for a human look — incl. an **"unsatisfiable ternary" at `og_engine/engine.py:638`** (possible
+  latent bug; flagged, not silently "fixed" — a real fix needs a failing test first, per the
+  regression law).
+- **Complexity rail — ruff `PLR0911/0912/0913/0915` (ADVISORY).** Thresholds in
+  `[tool.ruff.lint.pylint]` set *above* ruff's strict defaults (max-args 8, branches 15, returns 8,
+  statements 60) so only egregious outliers count: 84 vs 178. Deliberately **NOT** added to the
+  global `select` — the blocking `ruff check` stays green; preflight runs them as a separate
+  `--statistics` step.
+
+**Why advisory-first.** import-linter is green so it blocks today. The other three have non-zero
+pre-existing baselines; making them blocking now would turn the gate red forever — the exact failure
+mode the plan warns against. They are surfaced every run (like security-audit) and ratchet to
+blocking once each baseline reaches zero.
+
+**Verified.** `preflight --quick --no-frontend` green: 5 blocking pass (ruff, mypy-gate, skill-lint,
+**import-linter**, eval), 4 advisory warn (security, deptry, vulture, complexity), 0 blocking fail.
+Negative test confirmed import-linter detects a fresh cross-layer import. Full `pytest` re-run to
+confirm no regression from the pyproject/tooling changes (no `src` touched).
+
+**Deferred.** `jscpd` duplication (Node dep — the one cross-stack add; flagged as optional, not
+built). Ratchet deptry/vulture/complexity advisory→blocking as baselines clear. Decide the 4 unused
+SDK extras. Investigate the `og_engine/engine.py:638` ternary. Phase 3 (docs/adr + diagrams) /
+Phase 4 (role subagents) still deferred. Uncommitted on `main` at time of writing.
+
+## Regression guardrails — Phases 3 & 4: legibility + role subagents (2026-06-27) **[ADR]**
+
+Closed out the guardrails plan's last two phases. No `src` changes — docs, a stdlib docs-lint, and
+Claude Code subagent definitions. Phase 3 makes the architecture and its decisions *legible and
+self-checking*; Phase 4 encodes the three disciplines a hook can't run as reusable subagents.
+
+**Phase 3 — ADR convention + diagrams + a tiny enforcement.**
+- **Two-tier ADR convention, reconciled.** Decisions already lived in two places: the flat
+  `DECISIONS.md` log (this file) and numbered MADR ADRs under `docs/architecture/adr/`
+  (`0001..0005`, from the architecture engagement). Rather than add a third home, `adr/README.md`
+  now states the rule: **`DECISIONS.md` is the default log; a numbered ADR is for a major decision
+  that needs alternatives analysis + a long-lived reference, linked from `DECISIONS.md`.** Added
+  `adr/0000-template.md` (MADR shape matching the existing five) and an **Index** table.
+- **The diagram is the contract.** Converted the Phase-2 ASCII layer block in `ARCHITECTURE.md` to
+  a GitHub-rendered **Mermaid** diagram: the three layers (edges → service → engine), the *allowed*
+  downward deps, and the **forbidden** upward edges (styled red) that `import-linter` blocks. The
+  picture now matches the enforced contract instead of being a stale convention beside it.
+- **adr-lint (`scripts/check_adrs.py`, ADVISORY).** A small stdlib check: every `NNNN-*.md` ADR is
+  indexed in `adr/README.md` (no orphans), filenames are `NNNN-kebab.md` with unique numbers, and
+  each ADR has a `Status:` line + Context/Decision/Consequences. Baseline is **clean** (5/5 pass),
+  so it can ratchet to blocking — kept advisory for one cycle, consistent with the Phase-2 rails.
+  Wired into `preflight` and CI's `lint` job. A docs convention with no check rots; this is the
+  check. The ADR `Status:` lines are left as the engagement wrote them ("Proposed"); the index
+  carries a "statuses may lag — `DECISIONS.md` is the outcome of record" caveat, because rewriting
+  them is a deliberate edit, not a drive-by.
+
+**Phase 4 — role subagents (`.claude/agents/`).** Three committed Claude Code subagents encoding
+the rules a one-shot hook can't (the hooks *block*; these *do the work* the right way):
+- **`regression-guard`** (sonnet, can edit) — the regression law as a ritual: failing test FIRST →
+  minimal code fix → `docs/bug-bank.md` entry; full *sequential* pytest; the BB-1 Windows fallback.
+- **`scope-sentinel`** (inherit, read-only) — reviews a working diff against the contract: scope
+  creep, weakened/missing tests, new deps, layering violations, the security guardrails, tokoboros.
+- **`gate-keeper`** (sonnet, read-only) — runs `scripts/preflight.py` and reports the REAL result
+  (exact pytest counts; never an assumed green; never pushes; never forges the push sentinel).
+- **Self-containment is the load-bearing constraint:** a subagent's body is its *entire* system
+  prompt — it does NOT inherit CLAUDE.md, conversation history, or the main prompt. So each file
+  **restates** its rules; that redundancy with CLAUDE.md is deliberate and must be maintained when a
+  rule changes (`.claude/agents/README.md` documents this).
+
+**Why this completes the plan.** Phase 1 = the gate + the locks + memory; Phase 2 = the static
+rails; Phase 3 = the map/decisions made legible and self-checking; Phase 4 = the workflow roles.
+Every pain (regressions / drift / bugs-returning / same-bug-thrice) now has a *mechanical* counter,
+not just advice in a doc the model can rationalise away.
+
+**Verified.** `preflight --quick` green: blocking checks pass (incl. import-linter), advisory rails
+warn (now incl. adr-lint reporting OK). `check_adrs.py` exits 0 over the 5 existing ADRs + new
+index. No `src` touched, so the full pytest suite (last full run: 3943 passed / 21 skipped / 0
+failed) is unaffected.
+
+**Deferred (unchanged).** `jscpd` duplication rail (the one Node-dep add — still flagged optional;
+the user is weighing it). Ratchet deptry/vulture/complexity/adr-lint advisory→blocking as baselines
+hold. Decide the 4 unused SDK extras. Investigate the `og_engine/engine.py:638` ternary. Uncommitted
+on `main` at time of writing.
