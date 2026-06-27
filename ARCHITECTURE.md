@@ -40,6 +40,22 @@ User input
 
 ---
 
+## Key entry points
+
+| Path | Role |
+|------|------|
+| `src/hachi/cli/main.py` | Typer CLI + in-process gateway runtime |
+| `src/hachi/gateway/orchestrator.py` | Session boot: wires workspace, tools, LLM, memory |
+| `src/hachi/core/loop.py` | ReAct execution loop — drives tool calling |
+| `src/hachi/core/turn_context.py` | Frozen per-turn snapshot (no shared mutable state) |
+| `src/hachi/og_engine/` | ObjectGraph (`.og`) parser and skill indexer |
+| `src/hachi/tools/` | All LLM-callable tool implementations |
+| `src/hachi/tui/app.py` | Textual UI |
+| `src/hachi/gateway/fastapi_app.py` | FastAPI control plane (REST + SSE) |
+| `src/hachi/core/runtime_events.py` | Typed event contract consumed by TUI and gateway |
+
+---
+
 ## Core loop (`src/hachi/core/loop.py`)
 
 The loop implements the **ReAct** (reason + act) pattern:
@@ -147,6 +163,24 @@ Start standalone: `uv run hachi gateway --host 127.0.0.1 --port 8787 --runtime`
 
 ---
 
+## Frontend contract
+
+The `frontend/` app generates TypeScript API types into
+`frontend/src/lib/data/schema.d.ts` from `openapi/hachi-openapi.json` via
+`openapi-typescript`. After **any** gateway route change, regenerate both:
+
+```bash
+uv run hachi gateway-openapi --output openapi/hachi-openapi.json
+npm run --prefix frontend generate:api
+```
+
+CI enforces this via the `frontend-contract` job: `check:api` re-exports the schema and
+`git diff --exit-code`s `schema.d.ts`, then `typecheck`. The hand-authored UI types live
+in `src/lib/data/types.ts`; `schema.d.ts` is the generated transport contract
+(`paths` / `components["schemas"]`). See **BB-4** in `docs/bug-bank.md`.
+
+---
+
 ## Platform paths
 
 All user data goes through `get_hachi_paths()` (`src/hachi/core/paths.py`),
@@ -161,12 +195,67 @@ which returns platformdirs-based paths:
 
 ---
 
+## Architecture decisions (ADRs)
+
+Settled decisions live in [`DECISIONS.md`](DECISIONS.md) — the running log, newest at the
+bottom. A *major* architectural choice that needs alternatives analysis and a long-lived
+reference is promoted to a numbered ADR under [`docs/architecture/adr/`](docs/architecture/adr/)
+(`0001…`) and linked from its `DECISIONS.md` entry. The two-tier convention, the copy-me
+template, and the index are in the [ADR README](docs/architecture/adr/README.md);
+`scripts/check_adrs.py` (advisory in the gate) keeps every ADR well-formed and indexed.
+
+---
+
 ## CI pipeline (`.github/workflows/ci.yml`)
 
 | Job | What it checks |
 |-----|---------------|
-| `test` | `pytest -q` — full test suite |
-| `security` | `hachi security-audit --fail-on-high`; PRs add `--fail-on-medium` |
-| `lint` | `ruff check src tests`; `mypy src` (continue-on-error on main, strict scope TBD) |
-| `skill-lint` | `python scripts/lint_skills.py` — 0 errors across `default_skills/` |
-| `benchmark` | `hachi skill benchmark --json --threshold 0.80` — savings ≥ 80% |
+| `test` | `pytest -q` — full suite, on Linux + macOS + Windows |
+| `security` | `hachi security-audit --fail-on-high` (PRs add `--fail-on-medium`); pip-audit; bandit |
+| `lint` | `ruff check src tests` (blocking); full-tree `mypy` (advisory); `mypy-strict-gate.ini` (blocking on PRs); **the Rails** — `import-linter` layering (blocking) + `deptry`/`vulture`/complexity (advisory) |
+| `skill-lint` | `python scripts/lint_skills.py` — 0 errors across shipped `.og` files |
+| `benchmark` | `hachi skill benchmark --json --threshold 0.80` — token savings ≥ 80% |
+| `eval` | `hachi eval run` — replays the eval corpus through the real loop; blocks loop regressions |
+| `frontend-contract` | re-export OpenAPI, `check:api` diff on `schema.d.ts`, frontend `typecheck` |
+| `docker-smoke` | `docker compose config` + build the backend & frontend images |
+
+`scripts/preflight.py` runs these same checks locally in one command — get it green
+before proposing a push.
+
+### Enforced layering (the architectural rail)
+
+`import-linter` (config in `pyproject.toml` `[tool.importlinter]`) makes the layering
+below a **mechanical contract**, not a convention — a new import that crosses a forbidden
+boundary fails the gate:
+
+```mermaid
+flowchart TB
+    subgraph edges["edges · entry adapters / transports"]
+        direction LR
+        cli; tui; channels
+    end
+    subgraph service["service · the REST surface and its consumers"]
+        direction LR
+        gateway; client; sdk
+    end
+    subgraph engine["engine · the pure foundation"]
+        direction LR
+        core; og_engine; tools; jobs; integrations
+    end
+    edges --> service --> engine
+    edges --> engine
+    engine -. "forbidden by import-linter" .-> service
+    engine -. "forbidden by import-linter" .-> edges
+    linkStyle 3,4 stroke:#d9534f,stroke-width:2px,stroke-dasharray:6 4
+```
+
+Solid arrows are the **allowed** direction of dependency; the red dashed arrows are what
+`import-linter` **blocks** — the engine reaching back up into the service or the edges.
+
+- `og_engine` is **pure** — it may depend on `core` and nothing else in the tree.
+- The engine must not import the UI edges (`cli`, `tui`) or the `gateway` service.
+
+A handful of pre-existing inversion **seams** (e.g. `core.runtime.resume → cli.main`,
+`core.onboarding → gateway.workspace`) are frozen as commented `ignore_imports` entries —
+visible debt to retire behind a `core`-owned control-plane protocol, not new couplings to
+copy. Removing a seam makes its frozen entry error (so the allowlist self-cleans).
