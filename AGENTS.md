@@ -1,71 +1,38 @@
 # AGENTS.md
 
-This file helps coding agents become productive in this repository quickly.
+Cross-tool entrypoint for coding agents working in **Hachi**. The authoritative,
+detailed operating rules live in **[CLAUDE.md](CLAUDE.md)** — read it first. It is the
+single source of truth and **overrides anything here** on conflict; don't duplicate its
+rules into this file.
 
-## Scope
+## Quick start
 
-- Applies to the whole repository.
-- Prefer concise, minimal changes that preserve existing public behavior unless the task asks for behavior changes.
+```bash
+uv sync --extra dev                    # install dev deps
+uv run python scripts/preflight.py     # the gate (lint, types, tests, FE) — must be GREEN before a push
+uv run pytest -q                       # full test suite (the contract)
+uv run hachi run                       # launch the Textual TUI
+uv run hachi doctor                    # diagnostics / resolved paths
+```
 
-## Quick Start Commands
+Windows: if a `.exe` shim breaks `pytest`/`mypy` (OS error 4551), fall back to
+`python -m pytest` / `python -m mypy` — see [docs/bug-bank.md](docs/bug-bank.md) (BB-1).
 
-- Install runtime deps: `uv sync`
-- Install dev deps: `uv sync --extra dev`
-- Run tests: `uv run pytest -q`
-- Lint: `uv run ruff check src tests`
-- Format: `uv run ruff format src tests`
-- Type-check: `uv run mypy src --ignore-missing-imports`
-- Run app (TUI): `uv run hachi run`
-- Run app (REPL fallback): `uv run hachi run --repl`
-- Setup wizard: `uv run hachi setup --tier lightning`
-- Show config: `uv run hachi config --paths`
-- Manage secrets: `uv run hachi secrets --list|--check|--delete <name>`
-- Diagnostics: `uv run hachi doctor`
-- Security audit: `uv run hachi security-audit --json|--fail-on-high|--max-findings N`
+## The rules — see CLAUDE.md
 
-## Architecture Map
+CLAUDE.md is the contract: the gate, the non-negotiable rules (git as the safety net,
+tests-are-a-contract + the regression law, stay-in-scope, verify-library-APIs, be honest
+about state), and the **inviolable security guardrails** (no `subprocess(shell=True)`, lazy
+credential resolution, `TurnContext` for per-turn state, queued background work over
+fire-and-forget threads). They are not repeated here.
 
-- Entry point: `src/hachi/cli/main.py`
-- Session orchestration and boot: `src/hachi/gateway/orchestrator.py`
-- Main loop/tool execution: `src/hachi/core/loop.py`
-- Immutable per-turn context: `src/hachi/core/turn_context.py`
-- Skill parsing/execution: `src/hachi/og_engine/parser.py` and `src/hachi/og_engine/engine.py`
-- Tool implementations: `src/hachi/tools/`
-- Textual UI: `src/hachi/tui/app.py`
-- Runtime event contract: `src/hachi/core/runtime_events.py` and `on_event(event_type: str, data: dict)`
+## Map & source docs (link, don't duplicate)
 
-## Coding Conventions
-
-- Python 3.11+ only.
-- Line length is 100 (Ruff).
-- Add type hints and docstrings for public functions/classes.
-- Keep modules focused on a single responsibility.
-- Use `pathlib.Path` for filesystem paths.
-- Follow Conventional Commits for commit messages.
-
-## Testing Expectations
-
-- Add or update tests under `tests/` for behavior changes.
-- Prefer focused unit tests with `tmp_path` and `monkeypatch` where useful.
-- Run lint + type-check + tests before finishing.
-
-## Security And Runtime Guardrails
-
-- Do not introduce new `subprocess` calls with `shell=True`.
-- Avoid interactive credential prompts during Textual boot; resolve credentials lazily at call time.
-- Do not mutate shared loop prompt state per turn; use `TurnContext` patterns.
-- Prefer queued background work patterns over fire-and-forget threads; use `src/hachi/jobs/queue.py` for durable work when possible.
-
-## Windows Notes
-
-- If editable-install executable lock breaks `uv run pytest`, use:
-  - `PYTHONPATH=src uv run --with pytest --no-project pytest -q`
-
-## Source Docs (Link, Do Not Duplicate)
-
-- Project overview: [README.md](README.md)
-- Contribution process and standards: [CONTRIBUTING.md](CONTRIBUTING.md)
-- Deep architecture and operations: [ARCHITECTURE.md](ARCHITECTURE.md)
-- Historical roadmap & target architecture (pre-rename): [god-tier-plan.md](docs/history/god-tier-plan.md)
-- ObjectGraph spec: [objectgraph-spec.md](docs/reference/objectgraph-spec.md)
+- Architecture & enforced module layering: [ARCHITECTURE.md](ARCHITECTURE.md)
+- Entry point `src/hachi/cli/main.py` → orchestrator → `core/loop.py` → tools → LLM
+- Settled decisions / ADRs: [docs/DECISIONS.md](docs/DECISIONS.md)
+- ObjectGraph (`.og`) spec: [docs/reference/objectgraph-spec.md](docs/reference/objectgraph-spec.md)
+- Contribution process & standards: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Full documentation index: [docs/README.md](docs/README.md)
+- Historical (pre-rename) roadmap: [docs/history/god-tier-plan.md](docs/history/god-tier-plan.md)
 - CI pipeline: [.github/workflows/ci.yml](.github/workflows/ci.yml)
