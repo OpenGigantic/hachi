@@ -1,7 +1,7 @@
 > **Historical document.** Written before the rename to Hachi. References to
 > the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
 > below describe the project **Hachi** (package `hachi`, CLI `hachi`, dist
-> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+> `hachi-og`) and are preserved here as migration history.
 
 Design a terminal-first product experience for Hachi, an operator console for an autonomous AI agent runtime.
 
