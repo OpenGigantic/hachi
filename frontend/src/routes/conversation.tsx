@@ -3,7 +3,7 @@
 // Screen-local view state only in useState; all domain mutations go through useStore.
 
 import React, { useEffect, useRef, useState, useCallback, memo, useMemo } from 'react'
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, useSearch } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
 import { HachiMark } from '../components/brand/HachiMark'
@@ -14,6 +14,7 @@ import type { ChatMessage, ActionCard, Integration, PendingAttachment } from '..
 import {
   loadSessions,
   loadConversationHistory,
+  loadSessionMessages,
   abortSseLive,
   deleteSessionLive,
   cleanupEmptySessionsLive,
@@ -1067,6 +1068,10 @@ function Conversation() {
   // FIX 4: last used model id (from usage SSE event via store)
   const lastUsedModel = useStore((s) => s.lastUsedModel)
 
+  // Optional `?session=<id>` search param — set by memory.tsx when navigating
+  // to a past session so we display that session's transcript instead of the active one.
+  const { session: sessionParam } = useSearch({ from: '/conversation' })
+
   // Memoize the messages array passed to the list: re-create only when length,
   // last id, or streaming flag changes (not on every token flush of the tail).
   // This means the .map() over the list re-runs only on structural changes, not
@@ -1126,13 +1131,46 @@ function Conversation() {
 
   // Restore conversation history on mount and when the active session changes.
   // Guards: skipped in mock mode, skipped if a stream is in-flight.
+  // Skipped when a past-session param is present (handled by the effect below).
   const activeSessionId = sessions.find((s) => s.active)?.id ?? null
   useEffect(() => {
+    if (sessionParam && sessionParam !== activeSessionId) {
+      // Past-session display handled by the sessionParam effect below.
+      return
+    }
     void loadConversationHistory()
   // Re-run whenever the active session id changes (e.g. user switches sessions
   // or the sessions list loads for the first time on a refresh).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSessionId])
+  }, [activeSessionId, sessionParam])
+
+  // When a past session id arrives via ?session=<id>, fetch and display its transcript.
+  // This is display-only: sending a message still goes to the active/new session.
+  useEffect(() => {
+    if (!sessionParam) return
+    if (sessionParam === activeSessionId) {
+      // Same as the live session — just show the normal conversation history.
+      void loadConversationHistory()
+      return
+    }
+    // Load the selected past session's transcript.
+    void loadSessionMessages(sessionParam).then((msgs) => {
+      if (msgs === null) {
+        // 404 or unavailable — fall back to the active session
+        showToast('Session not found — showing current conversation', 'info')
+        void loadConversationHistory()
+      } else if (msgs.length === 0) {
+        useStore.getState().hydrate({ messages: [] })
+      } else {
+        useStore.getState().hydrate({ messages: msgs })
+      }
+    }).catch(() => {
+      showToast('Could not load session history', 'blocked')
+      void loadConversationHistory()
+    })
+  // Only re-run when the session param changes (ignore activeSessionId here).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionParam])
 
   // Abort the SSE stream when the conversation screen unmounts so the reader
   // is released and the idle timeout doesn't keep it alive in the background.
@@ -1178,8 +1216,10 @@ function Conversation() {
   const working = streaming
   const chatState = working ? 'Hachi is working' : 'Hachi is on watch'
 
-  // LOW-020: active session title (most recent session)
-  const activeSession = sessions.find((s) => s.active) ?? sessions[0] ?? null
+  // LOW-020: active session title — only use a session explicitly marked active.
+  // Falling back to sessions[0] would show the previous session's title on a fresh
+  // conversation (newSessionLive clears all active flags but keeps the list).
+  const activeSession = sessions.find((s) => s.active) ?? null
   const sessionLabel = activeSession?.title ?? 'New conversation'
 
   // HIGH-019: filter chat starters to those whose integration is connected (or have no requirement)
@@ -2551,6 +2591,17 @@ function SlashItem({ cmd, desc, active, onPick }: SlashItemProps) {
 
 // ---- Route export (TanStack Router file-based routing) --------------
 
+interface ConversationSearch {
+  session?: string
+}
+
+function validateConversationSearch(search: Record<string, unknown>): ConversationSearch {
+  return {
+    session: typeof search.session === 'string' ? search.session : undefined,
+  }
+}
+
 export const Route = createFileRoute('/conversation')({
+  validateSearch: validateConversationSearch,
   component: Conversation,
 })

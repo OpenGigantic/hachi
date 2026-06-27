@@ -422,8 +422,8 @@ function ApprovalCard({
             borderRadius: 10,
             border: "0.5px solid transparent",
             background: allowHover
-              ? "var(--hachi-brand-active)"
-              : "var(--hachi-brand-hover)",
+              ? "var(--hachi-brand-hover)"
+              : "var(--hachi-brand)",
             color: "var(--hachi-canvas)",
             font: "500 14px var(--font-body)",
             cursor: "pointer",
@@ -768,36 +768,34 @@ function Approvals() {
             </div>
           </div>
 
-          {/* Past decisions — only rendered when history is non-empty */}
-          {history.length > 0 && (
-            <div>
-              <h2
-                style={{
-                  margin: "0 0 12px",
-                  fontFamily: "var(--font-display)",
-                  fontWeight: 500,
-                  fontSize: 16,
-                }}
-              >
-                Past decisions
-              </h2>
-              <div
-                style={{
-                  background: "var(--hachi-surface)",
-                  border: "0.5px solid var(--hachi-line)",
-                  borderRadius: 16,
-                  overflow: "hidden",
-                }}
-              >
-                {history.map((h) => (
-                  <HistoryRow key={h.id} item={h} />
-                ))}
-              </div>
+          {/* Past decisions — always rendered; empty card when no history yet */}
+          <div>
+            <h2
+              style={{
+                margin: "0 0 12px",
+                fontFamily: "var(--font-display)",
+                fontWeight: 500,
+                fontSize: 16,
+              }}
+            >
+              Past decisions
+            </h2>
+            <div
+              style={{
+                background: "var(--hachi-surface)",
+                border: "0.5px solid var(--hachi-line)",
+                borderRadius: 16,
+                overflow: "hidden",
+              }}
+            >
+              {history.map((h) => (
+                <HistoryRow key={h.id} item={h} />
+              ))}
             </div>
-          )}
+          </div>
 
-          {/* Permission audit — operator only; only rendered when auditLog is non-empty */}
-          {operator && auditLog.length > 0 && (
+          {/* Permission audit — operator only; always rendered when operator mode is active */}
+          {operator && (
             <div>
               <div
                 style={{

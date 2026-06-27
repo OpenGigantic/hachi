@@ -852,6 +852,67 @@
             "BearerAuth": []
           }
         ]
+      },
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Get Session Messages",
+        "description": "Return the durable message transcript for *session_id*.\n\nSourced from the SQLite ``messages`` table so it works for historical\nsessions that are no longer active.  Messages are returned in chronological\norder (oldest first).\n\nReturns::\n\n    {\n      \"session_id\": \"<id>\",\n      \"messages\": [\n        {\"id\": <int>, \"role\": \"user\"|\"assistant\"|\"tool\",\n         \"content\": \"...\", \"tool_name\": null|\"...\", \"timestamp\": \"<iso>\"},\n        ...\n      ]\n    }\n\nHTTP 404 when *session_id* is unknown or has no persisted messages.",
+        "operationId": "get_session_messages_sessions__session_id__messages_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Session Messages Sessions  Session Id  Messages Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/sessions/{session_id}/interrupt": {
@@ -1276,6 +1337,159 @@
               "application/json": {
                 "schema": {
                   "title": "Response Post Mcp Register Runtime Mcp Register Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/runtime/mcp/{name}/enable": {
+      "post": {
+        "tags": [
+          "runtime"
+        ],
+        "summary": "Post Mcp Enable",
+        "description": "Enable the named MCP server (persists ``enabled=true`` to settings.toml).\n\nReturns ``{\"ok\": true}`` on success, HTTP 404 if the server is unknown.",
+        "operationId": "post_mcp_enable_runtime_mcp__name__enable_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Mcp Enable Runtime Mcp  Name  Enable Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/runtime/mcp/{name}/disable": {
+      "post": {
+        "tags": [
+          "runtime"
+        ],
+        "summary": "Post Mcp Disable",
+        "description": "Disable the named MCP server (persists ``enabled=false`` to settings.toml).\n\nReturns ``{\"ok\": true}`` on success, HTTP 404 if the server is unknown.",
+        "operationId": "post_mcp_disable_runtime_mcp__name__disable_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Mcp Disable Runtime Mcp  Name  Disable Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/runtime/mcp/{name}": {
+      "delete": {
+        "tags": [
+          "runtime"
+        ],
+        "summary": "Delete Mcp Server",
+        "description": "Remove a registered MCP server from settings.toml.\n\nReturns ``{\"ok\": true}`` on success, HTTP 404 if the server is unknown.",
+        "operationId": "delete_mcp_server_runtime_mcp__name__delete",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Delete Mcp Server Runtime Mcp  Name  Delete"
                 }
               }
             }

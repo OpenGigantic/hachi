@@ -55,6 +55,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=9.0.3",
+    "pytest-xdist>=3.6.1",
     "ruff>=0.15.15",
     "mypy>=1.11.0",
 ]
@@ -138,6 +139,9 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 pythonpath = ["src", "."]
 norecursedirs = ["tokoboros", "*.egg", ".git", ".venv", "node_modules", "build", "dist"]
+# --dist=loadfile keeps all tests from the same file on the same worker, preventing
+# module-level singleton / patch.dict conflicts. Pass -n <N> or -n auto on the CLI.
+addopts = "--dist=loadfile"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hachi"]

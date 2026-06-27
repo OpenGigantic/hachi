@@ -162,39 +162,30 @@ async function _loadSetupImpl(): Promise<void> {
     const store = useStore.getState();
     const currentSetup = store.setup;
 
-    // Derive safety level from the completed_steps / selected_tier.
-    // The gateway does not return the current safety tier directly in
-    // OnboardingState, but if setup is complete we leave the slice's current
-    // value alone (user may have already changed it). Only pre-fill when the
-    // wizard has never been touched (key is empty = wizard hasn't run yet).
-    let safetyFromGateway: SafetyLevel | null = null;
-    const tier = raw.state?.selected_tier ?? null;
-    if (tier) {
-      // Map the setup tier to a sensible default safety level.
-      // "lightning" / "recommended" → standard; "enhanced"/"power" → open.
-      if (tier === "enhanced" || tier === "power") {
-        safetyFromGateway = "open";
-      } else {
-        safetyFromGateway = "standard";
-      }
-    }
-
-    // Only patch the slice if the wizard hasn't been started (key blank means
-    // the user hasn't touched it in this session).
-    const shouldPatch = !currentSetup.key;
+    // The UI safety level (Guarded/Standard/Open) is owned SOLELY by the config
+    // domain, which reads it from permissions.tier — the authoritative device
+    // permission setting (loadConfig → adaptTier). This loader must NOT derive
+    // safety from selected_tier: selected_tier is the *onboarding wizard* tier
+    // (lightning/recommended/enhanced/power), a different axis entirely. Mapping
+    // it to a safety level here (e.g. lightning→standard) clobbered the correct
+    // value hydrated by loadConfig on every boot — that is why picking "Open"
+    // reverted to "Standard". We only carry over the wizard tier (for the
+    // Settings tier picker) and leave safety untouched.
+    const WIZARD_TIERS = ["lightning", "recommended", "enhanced", "power"] as const;
+    const rawTier = raw.state?.selected_tier ?? currentSetup.tier ?? "lightning";
+    const selectedTier = (WIZARD_TIERS as readonly string[]).includes(rawTier)
+      ? (rawTier as (typeof WIZARD_TIERS)[number])
+      : "lightning";
 
     // Determine if an API key is already set in the environment.
     const keyAlreadySet = Boolean(raw.environment?.anthropic_env);
 
-    const patchedSetup = {
-      ...currentSetup,
-      keyAlreadySet,
-      // Pre-set safety from what the gateway reports, only when wizard hasn't been touched.
-      ...(shouldPatch && safetyFromGateway ? { safety: safetyFromGateway } : {}),
-    };
-
     store.hydrate({
-      setup: patchedSetup,
+      setup: {
+        ...currentSetup,
+        keyAlreadySet,
+        tier: selectedTier,
+      },
     });
 
     _hasEverSucceeded = true;
@@ -357,4 +348,49 @@ export async function applyProviderKey(input: {
       show_advanced: false,
     },
   });
+}
+
+// ---- setup tier (Settings picker) ----
+
+export type WizardTier = "lightning" | "recommended" | "enhanced" | "power";
+
+// Mirror of hachi.core.onboarding.TIER_STEP_PLANS. The gateway appends these to
+// completed_steps and records selected_tier = tier; enhanced/power flip
+// show_integrations on so the integrations step + connectors become available.
+const TIER_STEP_PLANS: Record<WizardTier, string[]> = {
+  lightning: ["welcome", "provider", "safety", "finish"],
+  recommended: ["welcome", "provider", "safety", "memory", "finish"],
+  enhanced: ["welcome", "provider", "safety", "memory", "integrations", "finish"],
+  power: ["welcome", "provider", "safety", "memory", "integrations", "advanced", "finish"],
+};
+
+/**
+ * Persist a setup-tier change from Settings WITHOUT re-running the wizard.
+ *
+ * Sends a minimal plan: only `tier` (+ its step plan) with an EMPTY `answers`
+ * object. apply_setup mutates the provider, permission tier, memory flags, and
+ * integrations only when the matching answer keys are present (see
+ * onboarding.apply_setup), so this leaves all of them untouched and simply
+ * records selected_tier = tier. The store is updated optimistically first so the
+ * picker reflects the choice immediately even before the round-trip completes.
+ */
+export async function setTierLive(tier: WizardTier): Promise<void> {
+  const store = useStore.getState();
+  store.hydrate({ setup: { ...store.setup, tier } });
+  if (USE_MOCKS) return;
+  try {
+    await apiSend<GatewayApplyResponse>("POST", "/setup/apply", {
+      plan: {
+        tier,
+        steps: TIER_STEP_PLANS[tier],
+        answers: {},
+        enable_memory: true,
+        show_integrations: tier === "enhanced" || tier === "power",
+        show_advanced: tier === "power",
+      },
+    });
+  } catch {
+    // Non-fatal: optimistic store update already applied. Network errors surface
+    // the reconnecting banner via client.ts callback.
+  }
 }

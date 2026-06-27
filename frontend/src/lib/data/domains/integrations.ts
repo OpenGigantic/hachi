@@ -7,6 +7,9 @@
 //   POST /integrations/{id}/oauth/start → { authorization_url } (OAuth2 connectors)
 //   POST /integrations/{id}/disconnect → disconnect OAuth token
 //   POST /runtime/mcp/register → register new MCP server (stdio/sse/http)
+//   POST /runtime/mcp/{name}/enable  → enable an MCP server
+//   POST /runtime/mcp/{name}/disable → disable an MCP server
+//   DELETE /runtime/mcp/{name}       → remove an MCP server
 // ============================================================
 
 import { apiGet, apiSend, USE_MOCKS } from "../client";
@@ -76,6 +79,8 @@ interface GatewayMcpServer {
   transport?: string;      // "stdio" | "sse" | "http"
   uptime?: string;
   err?: string;
+  /** Whether the server is enabled (new field from backend contract). */
+  enabled?: boolean;
 }
 
 /** Raw response from GET /runtime/mcp/inventory */
@@ -83,6 +88,16 @@ interface GatewayMcpInventory {
   server_count?: number;
   total_tool_count?: number;
   servers?: GatewayMcpServer[];
+}
+
+/**
+ * McpServer extended with the `enabled` field from the backend inventory contract.
+ * The base McpServer type (types.ts) does not carry this field; keep the extension
+ * here so types.ts remains a pure UI-shape and this domain owns the transport contract.
+ */
+export interface McpServerExtended extends McpServer {
+  /** Whether the server is currently enabled. Defaults to true when absent. */
+  enabled: boolean;
 }
 
 /** Response from POST /integrations/{id}/oauth/start */
@@ -285,7 +300,7 @@ function adaptIntegrationStatus(raw: GatewayIntegrationStatus): IntegrationExten
  * Gateway status values ("connected", "starting", "blocked", etc.) are mapped
  * to the UI's allowed literal union; unknown values fall back to "starting".
  */
-function adaptMcpServer(raw: GatewayMcpServer): McpServer {
+function adaptMcpServer(raw: GatewayMcpServer): McpServerExtended {
   const rawStatus = (raw.status ?? "").toLowerCase();
   const statusMap: Record<string, McpServer["status"]> = {
     connected: "connected",
@@ -309,6 +324,7 @@ function adaptMcpServer(raw: GatewayMcpServer): McpServer {
     transport: raw.transport ?? "—",
     uptime: raw.uptime ?? "—",
     err: raw.err,
+    enabled: raw.enabled ?? true,
   };
 }
 
@@ -826,5 +842,65 @@ export async function addMcpServer(input: AddMcpServerInput): Promise<void> {
   await apiSend<GatewayMcpRegisterResponse>("POST", "/runtime/mcp/register", payload);
 
   // Reload inventory so the newly registered server appears (backend hot-reloads).
+  await loadIntegrations();
+}
+
+// ============================================================
+// 7. MCP server lifecycle controls — enable / disable / delete
+// ============================================================
+
+/** Shared response shape for enable / disable / delete endpoints. */
+interface GatewayMcpOkResponse {
+  ok: boolean;
+}
+
+/**
+ * Enable a registered MCP server.
+ *
+ * Contract: POST /runtime/mcp/{name}/enable → { "ok": true }
+ * On success, reloads the MCP inventory.
+ *
+ * @throws ApiError on network failure or 404 (unknown server).
+ */
+export async function enableMcpServer(name: string): Promise<void> {
+  if (USE_MOCKS) return;
+  await apiSend<GatewayMcpOkResponse>(
+    "POST",
+    `/runtime/mcp/${encodeURIComponent(name)}/enable`,
+  );
+  await loadIntegrations();
+}
+
+/**
+ * Disable a registered MCP server (keeps its registration, just stops routing calls to it).
+ *
+ * Contract: POST /runtime/mcp/{name}/disable → { "ok": true }
+ * On success, reloads the MCP inventory.
+ *
+ * @throws ApiError on network failure or 404 (unknown server).
+ */
+export async function disableMcpServer(name: string): Promise<void> {
+  if (USE_MOCKS) return;
+  await apiSend<GatewayMcpOkResponse>(
+    "POST",
+    `/runtime/mcp/${encodeURIComponent(name)}/disable`,
+  );
+  await loadIntegrations();
+}
+
+/**
+ * Permanently delete a registered MCP server.
+ *
+ * Contract: DELETE /runtime/mcp/{name} → { "ok": true }
+ * On success, reloads the MCP inventory so the row disappears.
+ *
+ * @throws ApiError on network failure or 404 (unknown server).
+ */
+export async function deleteMcpServer(name: string): Promise<void> {
+  if (USE_MOCKS) return;
+  await apiSend<GatewayMcpOkResponse>(
+    "DELETE",
+    `/runtime/mcp/${encodeURIComponent(name)}`,
+  );
   await loadIntegrations();
 }

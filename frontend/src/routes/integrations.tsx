@@ -8,9 +8,10 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
 import { ConnectorLogo } from '../components/icons/ConnectorLogo'
+import { Switch } from '../components/ui/Switch'
 import { useFocusTrap } from '../lib/hooks/useFocusTrap'
 import type { Integration, McpServer, McpTool } from '../lib/data/types'
-import type { IntegrationExtended } from '../lib/data/domains/integrations'
+import type { IntegrationExtended, McpServerExtended } from '../lib/data/domains/integrations'
 import {
   loadIntegrations,
   connectIntegration,
@@ -18,6 +19,9 @@ import {
   submitCredentials,
   testCredentials,
   addMcpServer,
+  enableMcpServer,
+  disableMcpServer,
+  deleteMcpServer,
   validateMcpServerInput,
   subscribeActionStatus,
   getConnectStatus,
@@ -797,6 +801,54 @@ interface McpServerRowProps {
 function McpServerRow({ server: s, isLast }: McpServerRowProps) {
   const m = getMcpMeta(s.status)
   const toolCount = s.tools === 0 ? '—' : s.tools
+  const ext = s as Partial<McpServerExtended>
+  // Default enabled=true when the backend hasn't sent the field yet (older gateway).
+  const enabled = ext.enabled ?? true
+  const [toggling, setToggling] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteHover, setDeleteHover] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  async function handleToggle(next: boolean) {
+    if (toggling) return
+    setToggling(true)
+    try {
+      if (next) {
+        await enableMcpServer(s.name)
+      } else {
+        await disableMcpServer(s.name)
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to update MCP server'
+      useStore.getState().showToast(msg, 'blocked')
+    } finally {
+      setToggling(false)
+    }
+  }
+
+  async function handleDelete() {
+    if (!confirmDelete) {
+      setConfirmDelete(true)
+      return
+    }
+    setDeleting(true)
+    setConfirmDelete(false)
+    try {
+      await deleteMcpServer(s.name)
+      useStore.getState().showToast(`Removed ${s.name}`, 'success')
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to remove MCP server'
+      useStore.getState().showToast(msg, 'blocked')
+      setDeleting(false)
+    }
+  }
+
+  // Cancel confirm on blur/mouseleave
+  function handleDeleteMouseLeave() {
+    setDeleteHover(false)
+    setConfirmDelete(false)
+  }
+
   return (
     <div
       className="hachi-mcp-server-row"
@@ -806,6 +858,8 @@ function McpServerRow({ server: s, isLast }: McpServerRowProps) {
         gap: 13,
         padding: '12px 16px',
         borderBottom: isLast ? 'none' : '0.5px solid var(--hachi-line)',
+        opacity: enabled ? 1 : 0.55,
+        transition: 'opacity var(--dur-fast) var(--ease)',
       }}
     >
       {/* name + error */}
@@ -887,6 +941,55 @@ function McpServerRow({ server: s, isLast }: McpServerRowProps) {
       >
         {s.uptime}
       </span>
+
+      {/* enable/disable toggle */}
+      <span
+        style={{ flexShrink: 0 }}
+        title={enabled ? 'Disable server' : 'Enable server'}
+      >
+        <Switch
+          checked={enabled}
+          onChange={handleToggle}
+          disabled={toggling}
+        />
+      </span>
+
+      {/* delete button — single click shows confirm label, second click fires */}
+      <button
+        type="button"
+        onClick={handleDelete}
+        onMouseEnter={() => setDeleteHover(true)}
+        onMouseLeave={handleDeleteMouseLeave}
+        disabled={deleting}
+        aria-label={confirmDelete ? `Confirm remove ${s.name}` : `Remove ${s.name}`}
+        title={confirmDelete ? 'Click again to confirm removal' : 'Remove server'}
+        style={{
+          flexShrink: 0,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 4,
+          height: 26,
+          padding: confirmDelete ? '0 8px' : '0 4px',
+          borderRadius: 7,
+          border: confirmDelete
+            ? '0.5px solid var(--hachi-danger)'
+            : 'none',
+          background: confirmDelete
+            ? 'var(--hachi-danger-tint)'
+            : deleteHover
+            ? 'var(--hachi-cream)'
+            : 'transparent',
+          color: confirmDelete ? 'var(--hachi-danger)' : 'var(--hachi-muted)',
+          cursor: deleting ? 'not-allowed' : 'pointer',
+          opacity: deleting ? 0.5 : 1,
+          font: '500 11.5px var(--font-body)',
+          transition: 'background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease)',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        <Icon name="minus" size={13} />
+        {confirmDelete && <span>Remove?</span>}
+      </button>
     </div>
   )
 }
@@ -2099,6 +2202,8 @@ function Integrations() {
                 <span style={{ width: 64, flexShrink: 0, textAlign: 'right' }}>
                   Uptime
                 </span>
+                <span style={{ width: 40, flexShrink: 0 }}>Enabled</span>
+                <span style={{ width: 32, flexShrink: 0 }}></span>
               </div>
 
               {mcpServers.length === 0 ? (

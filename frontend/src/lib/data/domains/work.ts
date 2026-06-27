@@ -17,7 +17,7 @@
 import { apiGet, apiSend, USE_MOCKS } from "../client";
 import { registerLoader } from "../live";
 import { useStore } from "../../store/store";
-import type { Run, FailedTask, Routine } from "../types";
+import type { Run, FailedTask, FinishedTask, Routine } from "../types";
 
 // ---- Gateway shapes (mirror Python dataclasses / dict exactly) ----
 
@@ -266,6 +266,31 @@ function adaptDurableFailure(raw: GatewayRunStateView): FailedTask | null {
   };
 }
 
+/** Adapt a completed durable run to the FinishedTask shape for the History tab. */
+function adaptDurableFinished(raw: GatewayRunStateView): FinishedTask | null {
+  if (raw.status !== "completed") return null;
+  const numId = _idCounter(raw.run_id);
+  _durableRunIdMap.set(numId, raw.run_id);
+
+  let when = "unknown";
+  try {
+    when = new Date(raw.updated_at).toLocaleTimeString("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    when = raw.updated_at;
+  }
+
+  return {
+    id: numId,
+    title: `Run ${raw.run_id.slice(0, 8)}`,
+    note: raw.wait_kind ? `resumed via ${raw.wait_kind}` : "durable run",
+    when,
+    cost: 0,
+  };
+}
+
 // ---- Loader ----
 
 // Tracks whether this domain has ever received real data from the gateway.
@@ -292,19 +317,24 @@ export async function loadWork(): Promise<void> {
       (rawRuns?.runs ?? [])
         .map(adaptDurableFailure)
         .filter((r): r is FailedTask => r !== null);
+    // Completed durable runs populate the History tab's `finished` slice.
+    const durableFinished =
+      (rawRuns?.runs ?? [])
+        .map(adaptDurableFinished)
+        .filter((r): r is FinishedTask => r !== null);
 
     const seenRunIds = new Set(runs.map((r) => r.id));
     const mergedRuns = runs.concat(durableRuns.filter((r) => !seenRunIds.has(r.id)));
     const seenFailedIds = new Set(failed.map((f) => f.id));
     const mergedFailed = failed.concat(durableFailed.filter((f) => !seenFailedIds.has(f.id)));
 
-    useStore.getState().hydrate({ runs: mergedRuns, failed: mergedFailed, routines });
+    useStore.getState().hydrate({ runs: mergedRuns, failed: mergedFailed, routines, finished: durableFinished });
     _hasEverSucceeded = true;
   } catch {
     if (!_hasEverSucceeded) {
       // First-load failure: clear seeded fixtures so we never present
       // fabricated data as if it were real gateway data.
-      useStore.getState().hydrate({ runs: [], failed: [], routines: [] });
+      useStore.getState().hydrate({ runs: [], failed: [], routines: [], finished: [] });
     }
     // Reconnecting flag is now managed centrally by client.ts via the
     // registered callback — no per-domain setReconnecting calls needed here.

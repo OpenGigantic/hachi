@@ -1866,6 +1866,206 @@ class _InProcessGatewayRuntime:
             "tool_count": live_tool_count,
         }
 
+    def _mcp_live_server_names(self) -> set[str]:
+        """Names of MCP servers currently connected in any live agent."""
+        names: set[str] = set()
+        with self._agents_lock:
+            agents = list(self._agents.values())
+        for agent in agents:
+            mgr = getattr(agent, "mcp_manager", None)
+            if mgr is not None:
+                names.update(getattr(mgr, "_servers", {}).keys())
+        return names
+
+    def _mcp_node_names(self) -> set[str]:
+        """Names of all role=mcp .og nodes known to a live agent's skill engine."""
+        names: set[str] = set()
+        with self._agents_lock:
+            agents = list(self._agents.values())
+        for agent in agents:
+            engine = getattr(agent, "skill_engine", None)
+            if engine is None:
+                continue
+            try:
+                for node in engine.get_nodes_by_role("mcp"):
+                    names.add(node.name)
+            except Exception:
+                continue
+        return names
+
+    def set_mcp_enabled(self, name: str, enabled: bool) -> dict:
+        """Enable/disable an MCP server: persist the flag and apply it live.
+
+        Persists ``enabled`` under ``[mcp_servers.NAME]`` in settings.toml
+        (creating the entry for .og-declared servers so the boot path can honour
+        it) and applies the change to every live agent's tool registry without a
+        gateway restart.  Raises ``HTTPException(404)`` only when the server is
+        unknown across all sources (live connection, settings.toml, .og nodes).
+
+        Args:
+            name:    Server name as it appears in ``GET /runtime/mcp/inventory``.
+            enabled: ``True`` to enable, ``False`` to disable.
+
+        Returns:
+            Dict with ``ok``, ``name``, ``enabled``, and ``applied_live``.
+        """
+        import os as _os
+
+        import tomlkit as _tomlkit
+        from fastapi import HTTPException as _HTTPException
+
+        from hachi.core.paths import get_hachi_paths as _get_paths
+
+        config_toml = _get_paths().global_config_toml
+        if config_toml.exists():
+            doc = _tomlkit.parse(config_toml.read_text(encoding="utf-8"))
+        else:
+            doc = _tomlkit.document()
+        if "mcp_servers" not in doc:
+            doc.add("mcp_servers", _tomlkit.table())
+        mcp_section = doc["mcp_servers"]
+
+        known = (
+            name in mcp_section
+            or name in self._mcp_live_server_names()
+            or name in self._mcp_node_names()
+        )
+        if not known:
+            raise _HTTPException(status_code=404, detail=f"MCP server {name!r} not found")
+
+        # Persist the flag (create a minimal entry for .og-only servers so boot
+        # can honour it).
+        if name in mcp_section:
+            mcp_section[name]["enabled"] = enabled
+        else:
+            entry = _tomlkit.table()
+            entry["enabled"] = enabled
+            mcp_section[name] = entry
+
+        tmp = config_toml.with_name(f"{config_toml.name}.tmp")
+        tmp.write_text(_tomlkit.dumps(doc), encoding="utf-8")
+        _os.replace(tmp, config_toml)
+
+        # Apply live to every agent (tools appear/disappear without a restart).
+        applied_live = False
+        with self._agents_lock:
+            agents = list(self._agents.values())
+        for agent in agents:
+            if hasattr(agent, "set_mcp_tools_active"):
+                try:
+                    res = agent.set_mcp_tools_active(name, enabled)
+                    applied_live = applied_live or bool(res.get("live"))
+                except Exception:
+                    _logger.warning(
+                        "set_mcp_enabled: live apply failed for %r", name, exc_info=True
+                    )
+
+        return {"ok": True, "name": name, "enabled": enabled, "applied_live": applied_live}
+
+    def delete_mcp_server(self, name: str) -> dict:
+        """Delete an MCP server everywhere it lives and tear it down live.
+
+        Idempotent: deleting an unknown / already-deleted server returns
+        ``{"ok": True, "already_absent": True}`` (HTTP 200) rather than 404, so a
+        repeated delete from the UI never surfaces an error.
+
+        Removes the live connection + its tools, the ``[mcp_servers.NAME]``
+        settings.toml entry, and a user-authored ``mcp-<name>.og`` file.  For a
+        bundled / non-deletable .og server, writes an ``enabled = false``
+        tombstone so it does not return on the next boot.
+
+        Args:
+            name: Server name as it appears in ``GET /runtime/mcp/inventory``.
+
+        Returns:
+            Dict describing what was removed.
+        """
+        import os as _os
+
+        import tomlkit as _tomlkit
+
+        from hachi.core.paths import get_hachi_paths as _get_paths
+
+        # 1. Tear down the live connection + tools so the inventory drops it now.
+        removed_live = False
+        with self._agents_lock:
+            agents = list(self._agents.values())
+        for agent in agents:
+            if hasattr(agent, "remove_mcp_server_live"):
+                try:
+                    res = agent.remove_mcp_server_live(name)
+                    removed_live = removed_live or bool(res.get("removed_live"))
+                except Exception:
+                    _logger.warning(
+                        "delete_mcp_server: live teardown failed for %r", name, exc_info=True
+                    )
+
+        # 2. Remove the settings.toml entry (unless it is already a tombstone).
+        config_toml = _get_paths().global_config_toml
+        if config_toml.exists():
+            doc = _tomlkit.parse(config_toml.read_text(encoding="utf-8"))
+        else:
+            doc = _tomlkit.document()
+        mcp_section = doc.get("mcp_servers", {})
+        removed_toml = False
+        was_tombstone = False
+        if name in mcp_section:
+            entry = mcp_section[name]
+            is_tombstone = (
+                entry.get("enabled") is False
+                and not entry.get("command")
+                and not entry.get("url")
+            )
+            if is_tombstone:
+                was_tombstone = True  # already deleted earlier — keep the tombstone
+            else:
+                del mcp_section[name]
+                removed_toml = True
+
+        # 3. Remove a user-authored mcp-<name>.og file (created via add_mcp_server).
+        removed_og = False
+        try:
+            from hachi.gateway.workspace import get_skills_dir
+
+            skills_dir = get_skills_dir()
+            og_file = skills_dir / f"mcp-{name}.og"
+            if og_file.exists():
+                og_file.unlink()
+                removed_og = True
+                from hachi.tools.config_tools import _invalidate_skill_engine_cache
+
+                _invalidate_skill_engine_cache(skills_dir)
+        except Exception:
+            _logger.warning(
+                "delete_mcp_server: failed to remove mcp-%s.og", name, exc_info=True
+            )
+
+        # 4. Bundled / non-deletable .og server → tombstone so it stays gone.
+        tombstoned = False
+        if removed_live and not removed_toml and not removed_og and not was_tombstone:
+            if "mcp_servers" not in doc:
+                doc.add("mcp_servers", _tomlkit.table())
+            tombstone = _tomlkit.table()
+            tombstone["enabled"] = False
+            doc["mcp_servers"][name] = tombstone
+            tombstoned = True
+
+        if removed_toml or tombstoned:
+            tmp = config_toml.with_name(f"{config_toml.name}.tmp")
+            tmp.write_text(_tomlkit.dumps(doc), encoding="utf-8")
+            _os.replace(tmp, config_toml)
+
+        found = removed_live or removed_toml or removed_og or was_tombstone or tombstoned
+        return {
+            "ok": True,
+            "name": name,
+            "removed_live": removed_live,
+            "removed_toml": removed_toml,
+            "removed_og": removed_og,
+            "tombstoned": tombstoned,
+            "already_absent": not found,
+        }
+
     def get_kennel(self) -> list[dict]:
         """Return the skill kennel catalogue (GET /skills/kennel).
 
@@ -2488,6 +2688,8 @@ def _build_gateway_control_plane(
         add_allowed_command=support.add_allowed_command,
         add_always_allow=support.add_always_allow,
         register_mcp_server=support.register_mcp_server,
+        set_mcp_enabled=support.set_mcp_enabled,
+        delete_mcp_server=support.delete_mcp_server,
         get_kennel=support.get_kennel,
         add_skill=support.add_skill_from_kennel,
         # Multi-provider admin:

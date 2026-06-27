@@ -14,7 +14,7 @@ import { apiGet, apiSend, USE_MOCKS, isNetworkError, ApiError } from "../client"
 import { streamSSE } from "../sse";
 import { registerLoader } from "../live";
 import { useStore } from "../../store/store";
-import { approveFirstMatching, denyFirstMatching } from "./approvals";
+import { approveFirstMatching, denyFirstMatching, loadApprovals } from "./approvals";
 import { loadDailySpend } from "./spend";
 import { ensureNotificationPermission, notifyApprovalPending } from "../../notifications";
 import type { Session, ActionCard } from "../types";
@@ -540,16 +540,15 @@ function driveRunSlice(eventType: string, payload: Record<string, unknown>): voi
 // ============================================================
 
 function handleSseMessage(eventType: string, payload: Record<string, unknown>): void {
-  // FIX 2: Drop events from a stale/foreign stream.
-  // _streamSessionId is the session this stream was opened for;
-  // _liveSessionId is the currently active session.
-  // If they've diverged (e.g. user switched sessions while a stream was in-flight),
-  // or the event itself carries a session_id that doesn't match, discard it.
-  const eventSessionId =
-    typeof payload.session_id === "string" ? payload.session_id : null;
-  if (eventSessionId !== null && eventSessionId !== _liveSessionId) {
-    return;
-  }
+  // Guard: drop events from a stale SSE stream (e.g. user switched sessions while
+  // a turn was in-flight).  _streamSessionId is the gateway UUID this stream was
+  // opened for; _liveSessionId is the currently active gateway UUID.  If they
+  // diverge the old stream's events must not pollute the new session's view.
+  //
+  // NOTE: do NOT filter on payload.session_id — the backend stamps events with the
+  // *SQLite* session ID (AgentSession._session_id from store.start_session()), which
+  // is a different ID from the gateway UUID stored in _liveSessionId.  Comparing
+  // them would always mismatch and silently drop every streaming event.
   if (_streamSessionId !== null && _streamSessionId !== _liveSessionId) {
     return;
   }
@@ -608,11 +607,26 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
       });
       // M10: notify the user if they've switched to another tab
       notifyApprovalPending(request);
+      // Also refresh the formal approvals list from the authoritative registry
+      // (GET /approvals) so the Leash screen shows this request in real time with
+      // its REAL request_id — making it approvable there, not just inline. The
+      // backend registers the pending request as it blocks on the approval
+      // handler, so by the time this SSE event reaches the browser the registry
+      // entry exists.
+      void loadApprovals();
       if (isLive) {
         // Also surface on the run view
         store.hydrate({ runLeash: { request, action, why }, runStreaming: false });
         _textLineActive = false;
       }
+      break;
+    }
+
+    case "permission.decided": {
+      // A permission was approved/denied. The backend emits "permission.decided"
+      // (there is no "permission.resolved" event). Refresh the approvals list so
+      // the now-resolved request drops off the Leash screen.
+      void loadApprovals();
       break;
     }
 
@@ -823,12 +837,10 @@ export async function startTaskLive(
     // Any "Unknown session" / corrupted-id case → silently reset and create new.
     const isSessionExpired =
       err instanceof ApiError &&
-      (err.message === "session_expired" ||
-        (typeof (err as ApiError & { code?: string }).code === "string" &&
-          (err as ApiError & { code?: string }).code === "session_expired"));
+      (err.code === "session_expired" || err.message === "session_expired");
     const isUnknownSession =
       err instanceof ApiError &&
-      (err.message === "Unknown session_id" ||
+      (err.code === "unknown_session" ||
         err.message?.toLowerCase().includes("unknown session"));
 
     if (isSessionExpired || isUnknownSession) {
@@ -844,10 +856,11 @@ export async function startTaskLive(
       });
 
       if (isSessionExpired) {
-        // Show a friendly inline notice for the user (contract C-SESSION)
         store.showToast("This session expired — started a fresh one.", "success");
+      } else {
+        // Gateway restarted and lost the in-memory session — user must resend.
+        store.showToast("Connection reset — please send your message again.", "info");
       }
-      // For unknown session (corrupted id) — silently reset with no visible error.
       return;
     }
 
@@ -1232,6 +1245,27 @@ export async function loadConversationHistory(): Promise<void> {
   const store = useStore.getState();
   if (store.streaming) return;
 
+  // No sessions in the store — nothing to display. Reset to a clean slate.
+  // This fires after all sessions are deleted: the activeSessionId effect changes
+  // from a SQLite ID to null, re-running this function, and without this guard the
+  // _liveSessionId fallback (a gateway UUID, a different ID namespace) would fetch
+  // a now-deleted session, get a 4xx, and the catch clause would leave stale
+  // messages on screen ("history unavailable — leave messages intact").
+  if (store.sessions.length === 0) {
+    abortSse();
+    resetDeltaBuffer();
+    _liveSessionId = null;
+    persistSessionId(null);
+    _cursor = 0;
+    _hachiMsgId = null;
+    _textLineActive = false;
+    _lastKnownCumCost = 0;
+    _costCumAtTurnStart = 0;
+    _spentAtTurnStart = 0;
+    useStore.getState().hydrate({ messages: [], streaming: false, inContext: null });
+    return;
+  }
+
   // Find the active session id — prefer the flagged active session, then _liveSessionId.
   const activeSess = store.sessions.find((s) => s.active);
   const sessionId = activeSess?.id ?? _liveSessionId;
@@ -1435,3 +1469,50 @@ export async function loadSessions(): Promise<void> {
 
 // Self-register so bootstrapLiveData() picks this up on app mount.
 registerLoader("chat", loadSessions);
+
+// ============================================================
+// 12. Load a past session's transcript from GET /sessions/{id}/messages
+//     Returns the reconstructed ChatMessage[] for display-only mode.
+//     HTTP 404 resolves to null (unknown session id).
+// ============================================================
+
+interface GatewaySessionMessagesResponse {
+  session_id?: string;
+  messages?: Array<{ role: string; content: string; [key: string]: unknown }>;
+}
+
+/**
+ * Fetch a past session's transcript from `GET /sessions/{id}/messages`
+ * and adapt it into the same ChatMessage[] shape that loadConversationHistory
+ * produces via reconstructMessagesFromEvents.
+ *
+ * Returns null on 404 (unknown session) so the caller can fall back gracefully.
+ * Other errors propagate (the caller should handle them).
+ */
+export async function loadSessionMessages(
+  sessionId: string
+): Promise<import("../types").ChatMessage[] | null> {
+  if (USE_MOCKS) return null;
+
+  let raw: GatewaySessionMessagesResponse;
+  try {
+    raw = await apiGet<GatewaySessionMessagesResponse>(`/sessions/${encodeURIComponent(sessionId)}/messages`);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
+
+  const msgs = Array.isArray(raw.messages) ? raw.messages : [];
+  if (msgs.length === 0) return [];
+
+  // Build a minimal ChatMessage[] from role/content pairs.
+  // Each user message is paired with the following assistant message.
+  const result: import("../types").ChatMessage[] = [];
+  let baseId = Date.now();
+  for (const m of msgs) {
+    const role = m.role === "user" ? "you" as const : "hachi" as const;
+    const text = typeof m.content === "string" ? m.content : "";
+    result.push({ id: baseId++, role, text, cards: [], routine: null });
+  }
+  return result;
+}
