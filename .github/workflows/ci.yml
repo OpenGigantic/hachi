@@ -139,6 +139,34 @@ jobs:
         run: uv run python -m mypy --config-file mypy-strict-gate.ini
         if: github.event_name == 'pull_request'
 
+      # -----------------------------------------------------------------------
+      # Guardrails Phase 2 — the Rails. Mirrors scripts/preflight.py.
+      # import-linter is a HARD gate: the architectural layering is green, so a new
+      # cross-layer import (e.g. the domain importing the gateway) fails CI here.
+      # deptry/vulture/complexity are advisory (continue-on-error) until their
+      # baselines reach zero — see pyproject [tool.importlinter]/[tool.deptry]/
+      # [tool.vulture]/[tool.ruff.lint.pylint].
+      # -----------------------------------------------------------------------
+      - name: Architecture — import-linter (blocking)
+        run: uv run lint-imports
+
+      - name: Dependencies — deptry (advisory)
+        run: uv run deptry src
+        continue-on-error: true
+
+      - name: Dead code — vulture (advisory)
+        run: uv run vulture
+        continue-on-error: true
+
+      - name: Complexity — PLR outliers (advisory)
+        run: uv run ruff check src --select PLR0911,PLR0912,PLR0913,PLR0915 --statistics
+        continue-on-error: true
+
+      # Guardrails Phase 3 — keep the ADRs well-formed and indexed. Advisory (baseline clean).
+      - name: ADR docs — adr-lint (advisory)
+        run: uv run python scripts/check_adrs.py
+        continue-on-error: true
+
   skill-lint:
     runs-on: ubuntu-latest
     steps:

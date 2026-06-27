@@ -14,7 +14,7 @@ export interface HachiMarkProps {
  * Never recolour the two-tone version: it is always Torii red + cream + ink.
  * `variant="knockout"` gives a one-colour silhouette in `currentColor` (16px-safe).
  *
- * Ported from Hachi Design System/components/hachi/HachiMark.jsx.
+ * Ported from design-system/components/hachi/HachiMark.jsx.
  */
 export function HachiMark({
   size = 24,

@@ -10,10 +10,6 @@
 > non-technical *companion* user and a technical *operator*.
 > **Out of scope for v1:** teams / multi-user, multiple workspaces, mobile, billing, a full skill
 > marketplace/publishing, and any API/technical implementation detail.
->
-> Supersedes the older `web-ui-design-brief.md` for web scope (that doc's brand section is stale — it
-> describes a retired "ouroboros/teal" identity; the live brand is the **hound / Torii-red / "leash"**
-> system in `Hachi Design System/`).
 
 ---
 

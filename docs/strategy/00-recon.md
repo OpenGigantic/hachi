@@ -3,7 +3,7 @@
 > **Historical document.** Written before the Hachi rename. References to
 > "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
 > below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
-> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+> `hachi-og`) and are preserved here as migration history.
 
 **Engagement:** Hachi Principal Engineering & Product Strategy
 **Date:** 2026-06-12 · **Branch:** `feat/telegram-setup-and-pypi-release` (clean) · **HEAD:** `cd77a4d`
@@ -54,15 +54,15 @@ hachi/
 ├── docker-compose.yml          # gateway + frontend services, secret-mounted API token Ⓐ
 ├── install.sh / install.ps1    # clone-to-~/.hachi-src + uv bootstrap installers Ⓐ
 ├── README.md                   # public claims: 97.2% token savings, 40+ features Ⓐ
-├── ObjectGraph_Complete_Specification.md   # 76 KB .og whitepaper (12 sections) ✅(headers)
+├── docs/reference/objectgraph-spec.md   # 76 KB .og whitepaper (12 sections) ✅(headers)
 ├── KNOWLEDGE_TRANSFER.md       # 105 KB internal narrative Ⓐ
 ├── QA_TESTING_PLAN.md          # 47 KB, 8 QA phases marked complete Ⓐ
-├── plan.md / re.md             # roadmap + TUI design brief (intentional docs) Ⓐ
+├── god-tier-plan.md / tui-product-brief.md             # roadmap + TUI design brief (intentional docs) Ⓐ
 ├── abvc/ (.gitkeep only), image.png (59 KB, unreferenced)   # stray Ⓐ
 ├── openapi/hachi-openapi.json           # generated gateway contract (38.5 KB) Ⓐ
 ├── docs/
-│   ├── BENCHMARK.md            # the 97.2% methodology Ⓐ (cross-checked vs test ✅)
-│   ├── CONFIGURATION.md, COOKBOOK.md, QA_BUG_REPORT.md
+│   ├── benchmark.md            # the 97.2% methodology Ⓐ (cross-checked vs test ✅)
+│   ├── configuration.md, cookbook.md, QA_BUG_REPORT.md
 │   └── qa/                     # 11 manual QA reports (core-engine, telegram, google, …)
 ├── frontend/                   # TanStack Start + React 19 + Vite (NOT SvelteKit) Ⓐ
 │   └── src/generated/hachi-api.ts       # openapi-typescript output (1,394 lines) Ⓐ
@@ -254,7 +254,7 @@ Pass-1 routing for such files rides on node keywords only. Spec-vs-shipped-conte
 
 ### 6.7 Spec-vs-code deltas already verified (Phase 2 fodder)
 
-| Spec claim (ObjectGraph_Complete_Specification.md) | Code reality |
+| Spec claim (docs/reference/objectgraph-spec.md) | Code reality |
 |---|---|
 | §5.1 engine auto-traverses `->[:requires]` during resolve | Explicitly removed; footer-only — engine.py:505–509 ✅ |
 | §5.3 confidence <0.3 auto-excluded from results | `confidence` parsed but never filters/ranks search — engine.py:348–396 ✅ |
@@ -314,7 +314,7 @@ core/sub_agent.py), role-scoped `SkillEngine` view, reports persisted to `delega
   benchmark assumes candidate #1 is the right node); per-turn tool-call message overhead and the
   3 extra LLM round-trips are not counted; no comparison arm vs. markdown-with-index, embeddings/RAG,
   or hybrid.
-- docs/BENCHMARK.md cites external arXiv research on selective loading — ⚠️ UNVERIFIED; citations will be
+- docs/reference/benchmark.md cites external arXiv research on selective loading — ⚠️ UNVERIFIED; citations will be
   checked in Phase 2/3 (one known-circulating "95.3%" OG paper claim was previously found refuted and must
   not be relied on).
 
@@ -341,6 +341,6 @@ core/sub_agent.py), role-scoped `SkillEngine` view, reports persisted to `delega
 2. Whether the in-memory job queue's synchronous drain-at-turn-start creates latency/durability issues (✅ §7).
 3. WhatsApp channel & community-packs maturity (Ⓐ flagged as thin).
 4. Global node-name collision behavior with user-authored skills (✅ engine.py:323–324).
-5. Verification of BENCHMARK.md's external citations and construction of a fair OG-vs-markdown-vs-RAG
+5. Verification of benchmark.md's external citations and construction of a fair OG-vs-markdown-vs-RAG
    benchmark (⚠️ UNVERIFIED → Phase 2 design).
 6. Frontend ↔ gateway contract drift risk while the CI job is disabled (Ⓐ D3).
