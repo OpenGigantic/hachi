@@ -318,7 +318,7 @@ EVIDENCE: account_id namespacing exists (memory_vault.py:259-353, ADV-023) but i
   singleton keyed on (brain_dir, backend, graph) only (shared_services.py:52-63); principal="session"
   is a placeholder (orchestrator.py:1255). Gateway HAS per-session ownership by token-hash
   (fastapi_app.py:684, control_plane.py:328) and there is one bearer token = one principal, so under
-  the stated single-operator trust model (plan.md: "one trusted operator per machine/VPS; do not claim
+  the stated single-operator trust model (god-tier-plan.md: "one trusted operator per machine/VPS; do not claim
   multi-tenant") there is no breach today.
 ROOT CAUSE: single-tenant assumption never re-examined; primitive built, never wired per-request.
 RISK: the moment a 2nd user/token or hosted tenancy is added, two users share one core_memory /
@@ -444,7 +444,7 @@ PRIORITY: P1
 
 - **Claims honesty (93/100).** 6/6 sampled DECISIONS claims and 4/4 frontend→route mappings verified true against cited lines; the historical "claimed-done-but-absent" regression class is **not** reproduced. DECISIONS.md is self-critical (flags its own `TODO(issue9)`, Whisper-batch-only, deferred wiring). Keep this discipline.
 - **Security (86).** Reference-quality SSRF defense (validate → pin resolved IP → `follow_redirects=False` → Host header, closing scheme/private-IP/redirect/DNS-rebind in one design); fail-closed everywhere (missing OAuth id raises, missing passphrase never writes plaintext, loopback-without-token is a startup error); Fernet+PBKDF2(390k)/OS-keychain secrets; unconditional untrusted-content framing; a `security-audit` command that flags its *own* weak points.
-- **Loop backstops (P5).** Five independent runaway caps (iteration 15 / sub-agent 10; wall-clock 600s checked per-chunk *and* per-iteration; per-session + per-turn token/cost; an always-on 2M-token hard ceiling), each with a distinct event + result prefix, all regression-tested. Per-session serialization (`_chat_lock`) genuinely resolves the plan.md shared-state race. Every `tool_use` is guaranteed a `tool_result` (no Anthropic 400s).
+- **Loop backstops (P5).** Five independent runaway caps (iteration 15 / sub-agent 10; wall-clock 600s checked per-chunk *and* per-iteration; per-session + per-turn token/cost; an always-on 2M-token hard ceiling), each with a distinct event + result prefix, all regression-tested. Per-session serialization (`_chat_lock`) genuinely resolves the god-tier-plan.md shared-state race. Every `tool_use` is guaranteed a `tool_result` (no Anthropic 400s).
 - **Memory engineering.** Tool-pair-safe compaction (`_find_safe_sliding_boundary`), cache-aware prompt split (frozen profile in cacheable prefix, volatile recall after the breakpoint), MemoryGuard prompt-injection scanning on every write, lazy ChromaDB + async prefetch.
 - **Durable scheduler (80) + job queue.** DST-correct dependency-free cron, atomic cross-process-locked persistence, collapse-to-one missed runs, **actually wired to fire `session.chat()`** on a background thread. SQLite queue handles crash recovery + per-instance func-job ownership + WAL.
 - **Multi-provider abstraction.** Exactly two authorized vendor-SDK import sites; 8 OpenAI-compat kinds + Anthropic + Gemini + Ollama, swap by config; real `ResilientClient` (retry + 3-state breaker + ordered fallback chain). This is a genuine competitive edge.
@@ -502,7 +502,7 @@ foundations.
 20. ~~**Job-queue dead-letter + re-drive** (P2-7).~~ ✅ **DONE 2026-06-24.**
 21. **Confidence/uncertainty gate + explicit plan/reflect loop phases** (P5).
 22. **Hosted observability/eval dashboard + connector ecosystem expansion** (close the distribution gap).
-23. **Self-improvement loop** — candidate-skill synthesis from trajectories → human review → publish (plan.md Phase 5).
+23. **Self-improvement loop** — candidate-skill synthesis from trajectories → human review → publish (god-tier-plan.md Phase 5).
 
 ---
 

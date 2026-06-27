@@ -66,6 +66,6 @@ This file helps coding agents become productive in this repository quickly.
 - Project overview: [README.md](README.md)
 - Contribution process and standards: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Deep architecture and operations: [ARCHITECTURE.md](ARCHITECTURE.md)
-- Historical roadmap & target architecture (pre-rename): [plan.md](plan.md)
+- Historical roadmap & target architecture (pre-rename): [god-tier-plan.md](docs/history/god-tier-plan.md)
 - ObjectGraph spec: [ObjectGraph_Complete_Specification.md](ObjectGraph_Complete_Specification.md)
 - CI pipeline: [.github/workflows/ci.yml](.github/workflows/ci.yml)

@@ -9,10 +9,10 @@
 **Inputs:** current TUI structure Ⓐ (Phase 0/1 recon: tui/app.py 3,063 LOC, tabs for
 Permissions/MCP/Jobs/Settings/Memory/Integrations, SlashMenu, ToolCard, modal approvals), the
 read-model layer that already feeds dashboards ✅ orchestrator.py:480–635, the project's own design
-brief ✅ [re.md](../../re.md), and Phase 3 competitor verification 🌐.
+brief ✅ [tui-product-brief.md](../history/tui-product-brief.md), and Phase 3 competitor verification 🌐.
 **Voices:** §1 = What I found · §2–§10 = What I propose.
-**Note on re.md:** it forbids wireframes *for its own consumer* (a Stitch prompt, re.md:152); the
-engagement brief requires them here — included in §6. Everything in re.md's requirement list is
+**Note on tui-product-brief.md:** it forbids wireframes *for its own consumer* (a Stitch prompt, tui-product-brief.md:152); the
+engagement brief requires them here — included in §6. Everything in tui-product-brief.md's requirement list is
 honored; §2 lists where this design goes beyond it.
 
 ---
@@ -24,14 +24,14 @@ honored; §2 lists where this design goes beyond it.
    MCP inventory, jobs, sub-agent reports, tool-call timeline with durations ✅
    orchestrator.py:480–635 + runtime_read_models Ⓐ. The TUI surfaces several as flat tabs Ⓐ.
 2. Two engine gaps cap the experience and are *required* by the project's own brief:
-   **streamed deltas** (re.md:121 vs TD-2: no streaming exists) and **operator interrupt**
-   (re.md:106 vs a synchronous `loop.run()` with no cancellation path ✅ loop.py:362–593 — feasible
+   **streamed deltas** (tui-product-brief.md:121 vs TD-2: no streaming exists) and **operator interrupt**
+   (tui-product-brief.md:106 vs a synchronous `loop.run()` with no cancellation path ✅ loop.py:362–593 — feasible
    as a cooperative flag checked at the top of each iteration, loop.py:407).
 3. Permission approvals already flow through modal screens via `InteractivePermissionGate` Ⓐ — the
    hard part (a real approval pipeline) exists; the UX around it is minimal.
 4. No streaming + whole-reply rendering makes the agent *feel* slower than competitors even at equal
    latency (Phase 1 W3).
-5. re.md covers operator needs thoroughly but does not mention the three surfaces that express the
+5. tui-product-brief.md covers operator needs thoroughly but does not mention the three surfaces that express the
    *positioning*: an `.og` library explorer, a spend/cache economics view, and memory-diff review
    (Phase 4 gardener) — the governance story currently has no face.
 
@@ -55,8 +55,8 @@ P2. **Stream everything; never block the prompt.** Deltas render as they arrive;
     Esc always offers interrupt (cooperative cancel).
 P3. **Every action is a card** (Warp's block insight, already half-built as ToolCard Ⓐ): collapsed =
     one line; expanded = full payload, duration, tokens, related job/permission/event links
-    (re.md:116 "errors actionable by linking").
-P4. **Drill, don't dump** (re.md:137–144): summaries first, payloads on demand — the UI mirrors the
+    (tui-product-brief.md:116 "errors actionable by linking").
+P4. **Drill, don't dump** (tui-product-brief.md:137–144): summaries first, payloads on demand — the UI mirrors the
     3-pass philosophy of the engine.
 P5. **The library is a place.** Skills and memory are browsable, diffable artifacts — the `.og` moat
     must be *seen* to be believed.
@@ -66,7 +66,7 @@ P7. **80 columns is a citizen.** Sidebar collapses (exists Ⓐ); wireframes veri
 
 ## 4. Information architecture (proposal)
 
-Consolidate today's seven flat tabs Ⓐ into five areas (re.md's seven product areas map cleanly):
+Consolidate today's seven flat tabs Ⓐ into five areas (tui-product-brief.md's seven product areas map cleanly):
 
 ```
 Chat (home)      Library            Ops                 Spend            Setup
@@ -77,7 +77,7 @@ approvals inbox  packs (installed)  schedules           per-turn caps    integra
                                     runtime events      budget history   diagnostics/audit
 ```
 
-Global: a **status strip** (always visible — re.md:45–55) and a **command palette** (`ctrl-k`:
+Global: a **status strip** (always visible — tui-product-brief.md:45–55) and a **command palette** (`ctrl-k`:
 actions, sessions, skills, schedules, settings — fuzzy, the Warp pattern). Slash commands remain the
 power path (SlashMenu exists Ⓐ).
 
@@ -93,14 +93,14 @@ power path (SlashMenu exists Ⓐ).
    *what's in context* (system/skills-loaded/history) and compaction events surfaced (events exist ✅
    loop.py:418–431).
 5. **Approvals inbox** — pending + audit trail (read-model exists ✅), approve/once/deny + rationale
-   (re.md:107–111).
+   (tui-product-brief.md:107–111).
 6. **Memory review** — Phase 4 gardener diffs as reviewable cards (approve merge/supersede); recall
    tester ("what would the agent remember about X?").
 7. **Workflow composer view** — the Phase 5 §5 preview card (trigger, steps, scopes, est. cost,
    dry-run) rendered in TUI and Telegram.
 8. **Onboarding** — §7.
 9. **Doctor/diagnostics** — existing `doctor`/security-audit output as a screen with fix-actions
-   (re.md:93–95).
+   (tui-product-brief.md:93–95).
 
 ## 6. Wireframes — top 3 TUI screens (proposal)
 
@@ -185,7 +185,7 @@ findings instead of hiding them.)*
    city>” · “▸ set up a morning briefing” — the second one walks straight into the Workflow Composer
    preview. Success = a scheduled artifact the user can see in Ops.
 4. Channel hookup offer (Telegram guided setup exists ✅ telegram_setup.py) — deferred-able.
-Resumable via onboarding state file ✅ paths.py:33 (re.md:90–92).
+Resumable via onboarding state file ✅ paths.py:33 (tui-product-brief.md:90–92).
 
 ## 8. Error recovery matrix (proposal)
 
