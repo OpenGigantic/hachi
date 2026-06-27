@@ -255,7 +255,7 @@ feature flag with non-streaming fallback. **Verify:** unit tests with fake strea
 single-shot path untouched when flag off.
 
 #### P2-01b · Loop `text_delta` events + cooperative cancel — ✅
-**Source** [01/R3](01-architecture-review.md), [06 §1.2, §10](06-ux-redesign.md) (required by re.md:106/121)
+**Source** [01/R3](01-architecture-review.md), [06 §1.2, §10](06-ux-redesign.md) (required by tui-product-brief.md:106/121)
 Emit `text_delta` runtime events from the loop; add a cancellation flag checked at the top of each
 iteration (loop.py:407 region) — cooperative interrupt, finishes the current tool call, then stops
 gracefully with partial output (pairs with P1-04 semantics). **Verify:** scripted-LLM test asserting

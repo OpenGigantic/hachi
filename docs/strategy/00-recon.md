@@ -57,7 +57,7 @@ hachi/
 ├── ObjectGraph_Complete_Specification.md   # 76 KB .og whitepaper (12 sections) ✅(headers)
 ├── KNOWLEDGE_TRANSFER.md       # 105 KB internal narrative Ⓐ
 ├── QA_TESTING_PLAN.md          # 47 KB, 8 QA phases marked complete Ⓐ
-├── plan.md / re.md             # roadmap + TUI design brief (intentional docs) Ⓐ
+├── god-tier-plan.md / tui-product-brief.md             # roadmap + TUI design brief (intentional docs) Ⓐ
 ├── abvc/ (.gitkeep only), image.png (59 KB, unreferenced)   # stray Ⓐ
 ├── openapi/hachi-openapi.json           # generated gateway contract (38.5 KB) Ⓐ
 ├── docs/

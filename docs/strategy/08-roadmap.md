@@ -51,7 +51,7 @@ capacity is 1 dev.
 
 | # | Item | Rationale | Impact | Effort (conf.) | Deps | Rollout |
 |---|---|---|---|---|---|---|
-| 1 | **Streaming end-to-end** + Esc-interrupt (cooperative cancel) | Largest perceived gap; required by re.md:106/121 → 01/R3, 06 §10 | **H** UX/competitive | 6–10 d (med) | 30d#1 | Flag per provider; TUI first, SSE next, OpenAI-facade `stream:true` last |
+| 1 | **Streaming end-to-end** + Esc-interrupt (cooperative cancel) | Largest perceived gap; required by tui-product-brief.md:106/121 → 01/R3, 06 §10 | **H** UX/competitive | 6–10 d (med) | 30d#1 | Flag per provider; TUI first, SSE next, OpenAI-facade `stream:true` last |
 | 2 | **Durable SQLite job queue + resident worker** (job registry indirection) | Memory promise + always-on → 01/R5 | **H** reliability | 3–4 d (high) | 30d#3 | Migration: drain in-memory on upgrade |
 | 3 | **Benchmark suite v1** (arms A–F, M1/M2/M3/M7; corpora S+M; CI retrieval gate) + **publish results post** | The proof apparatus → 02 §8; growth loop 1 → 07 §4.3 | **H** moat/growth | 8–12 d (med) | 30d#4–6 | Live-LLM subset behind budget flag (decision D-4) |
 | 4 | **Memory graph M0+M1** (FTS5 index over memory/*.og; typed extractor; Chroma import) | Hermes-parity recall + files-as-memory story → 04 §7 | **H** product | 7–12 d (med-high) | #2, 30d#3/#5 | `memory.graph=true` flag; converter on first boot |
