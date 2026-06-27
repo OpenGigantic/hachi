@@ -1515,6 +1515,135 @@
         ]
       }
     },
+    "/runtime/secrets": {
+      "get": {
+        "tags": [
+          "runtime"
+        ],
+        "summary": "Get Secrets",
+        "description": "List user-managed credential names (``cred:`` prefix stripped, values never returned).",
+        "operationId": "get_secrets_runtime_secrets_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Secrets Runtime Secrets Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "runtime"
+        ],
+        "summary": "Post Secret",
+        "description": "Store a user-managed credential as ``cred:<name>`` in the secret store.",
+        "operationId": "post_secret_runtime_secrets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretStoreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Secret Runtime Secrets Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/runtime/secrets/{name}": {
+      "delete": {
+        "tags": [
+          "runtime"
+        ],
+        "summary": "Delete Secret",
+        "description": "Delete ``cred:<name>`` (idempotent; system keys are silently ignored).",
+        "operationId": "delete_secret_runtime_secrets__name__delete",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Delete Secret Runtime Secrets  Name  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/jobs/active": {
       "get": {
         "tags": [
@@ -5140,6 +5269,27 @@
           "enabled"
         ],
         "title": "ScheduleToggleRequest"
+      },
+      "SecretStoreRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[\\w.\\-]+$",
+            "title": "Name"
+          },
+          "value": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Value"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "value"
+        ],
+        "title": "SecretStoreRequest",
+        "description": "Body for POST /runtime/secrets."
       },
       "SessionCloseResponse": {
         "properties": {

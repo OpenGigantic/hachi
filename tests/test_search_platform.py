@@ -143,9 +143,7 @@ class TestSearchInjectionGate:
         register_search_tools(registry, provider, cache=cache, limiter=limiter)
 
         # Use a public URL so SSRF check passes.
-        with patch(
-            "hachi.tools.search_tools.validate_outbound_url"
-        ) as mock_validate:
+        with patch("hachi.tools.search_tools.validate_outbound_url") as mock_validate:
             mock_validate.return_value = MagicMock(ok=True, reason="ok")
             result = registry.call("extract_url", url="http://example.com")
 
@@ -172,9 +170,7 @@ class TestSearchCacheDedup:
 
     def test_identical_search_query_hits_cache(self) -> None:
         provider = _FakeSearchProvider(
-            search_results=[
-                SearchResult(title="R", url="http://example.com", snippet="result")
-            ]
+            search_results=[SearchResult(title="R", url="http://example.com", snippet="result")]
         )
         cache = SearchCache(ttl_seconds=60)
         limiter = OutboundRateLimiter(max_per_window=100, window_seconds=3600)
@@ -335,9 +331,7 @@ class TestSearchResilience:
 
     def test_terminal_error_surfaces_clean_message(self) -> None:
         """A non-transient provider error returns a readable message (no raw traceback)."""
-        provider = _FakeSearchProvider(
-            search_exc=ValueError("Invalid API response format")
-        )
+        provider = _FakeSearchProvider(search_exc=ValueError("Invalid API response format"))
         cache = SearchCache()
         limiter = OutboundRateLimiter(max_per_window=100, window_seconds=3600)
         registry = _FakeToolRegistry()
@@ -401,9 +395,7 @@ class TestGracefulDegradation:
             "hachi.core.providers.tavily_provider._try_import_tavily",
             return_value=mock_tavily,
         ):
-            with patch(
-                "hachi.core.providers.tavily_provider._resolve_api_key", return_value=None
-            ):
+            with patch("hachi.core.providers.tavily_provider._resolve_api_key", return_value=None):
                 with pytest.raises(RuntimeError, match="not configured"):
                     provider.search("test query")
 
@@ -474,10 +466,9 @@ class TestTavilySearchProvider:
         }
         provider = TavilySearchProvider()
 
-        with patch(
-            "hachi.core.providers.tavily_provider._try_import_tavily"
-        ) as mock_import, patch(
-            "hachi.core.providers.tavily_provider._resolve_api_key", return_value="fake-key"
+        with (
+            patch("hachi.core.providers.tavily_provider._try_import_tavily") as mock_import,
+            patch("hachi.core.providers.tavily_provider._resolve_api_key", return_value="fake-key"),
         ):
             mock_tavily = MagicMock()
             mock_tavily.TavilyClient.return_value = mock_client
@@ -506,10 +497,9 @@ class TestTavilySearchProvider:
         }
         provider = TavilySearchProvider()
 
-        with patch(
-            "hachi.core.providers.tavily_provider._try_import_tavily"
-        ) as mock_import, patch(
-            "hachi.core.providers.tavily_provider._resolve_api_key", return_value="fake-key"
+        with (
+            patch("hachi.core.providers.tavily_provider._try_import_tavily") as mock_import,
+            patch("hachi.core.providers.tavily_provider._resolve_api_key", return_value="fake-key"),
         ):
             mock_tavily = MagicMock()
             mock_tavily.TavilyClient.return_value = mock_client
@@ -527,10 +517,9 @@ class TestTavilySearchProvider:
         }
         provider = TavilySearchProvider()
 
-        with patch(
-            "hachi.core.providers.tavily_provider._try_import_tavily"
-        ) as mock_import, patch(
-            "hachi.core.providers.tavily_provider._resolve_api_key", return_value="fake-key"
+        with (
+            patch("hachi.core.providers.tavily_provider._try_import_tavily") as mock_import,
+            patch("hachi.core.providers.tavily_provider._resolve_api_key", return_value="fake-key"),
         ):
             mock_tavily = MagicMock()
             mock_tavily.TavilyClient.return_value = mock_client
@@ -672,3 +661,97 @@ class TestSearchProviderProtocol:
         assert hasattr(provider, "search")
         assert hasattr(provider, "extract")
         assert hasattr(provider, "crawl")
+
+
+# ---------------------------------------------------------------------------
+# BB-11 — Tavily live reload (reload_search_provider)
+# ---------------------------------------------------------------------------
+
+
+class TestTavilyLiveReload:
+    """AgentSession.reload_search_provider() registers search tools without restart."""
+
+    def _make_session(self, tmp_path, monkeypatch):
+        """Build a minimal AgentSession stub for reload testing."""
+        from unittest.mock import MagicMock
+
+        from hachi.core.secret_store import EncryptedFileSecretStore, _MetadataStore
+
+        meta = _MetadataStore(tmp_path / "meta.json")
+        store = EncryptedFileSecretStore(
+            file_path=tmp_path / "secrets.enc",
+            passphrase="test-pass",
+            metadata_store=meta,
+        )
+
+        registry = _FakeToolRegistry()
+        loop = MagicMock()
+        loop.registry = registry
+
+        # Build a minimal AgentSession without calling boot_agent.
+        from hachi.gateway.orchestrator import AgentSession
+
+        session = AgentSession.__new__(AgentSession)
+        session.loop = loop
+        session.permission_gate = MagicMock()
+        session._secret_store = store
+        session._provider_registry = None
+        return session, store, registry
+
+    def test_tavily_reload_registers_search_live(self, tmp_path, monkeypatch) -> None:
+        """reload_search_provider returns True and mounts web_search when key is present."""
+        session, store, registry = self._make_session(tmp_path, monkeypatch)
+
+        # Plant a Tavily key in the store so the registry finds it.
+        store.set("cred:tavily_api_key", "tvly-fake-key")
+        # Also put it in env so ProviderRegistry resolves the search provider.
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-fake-key")
+
+        fake_provider = _FakeSearchProvider()
+
+        fake_registry = MagicMock()
+        fake_registry.get_search.return_value = fake_provider
+
+        with (
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "hachi.core.providers.registry.ProviderRegistry"
+            ) as MockReg,
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "hachi.gateway.orchestrator._register_search_tools_for"
+            ) as mock_register,
+        ):
+            MockReg.from_config.return_value = fake_registry
+            result = session.reload_search_provider()
+
+        assert result is True
+        mock_register.assert_called_once()
+
+    def test_tavily_reload_noop_without_key(self, tmp_path, monkeypatch) -> None:
+        """reload_search_provider returns False when no search provider is resolvable."""
+        session, store, registry = self._make_session(tmp_path, monkeypatch)
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+        fake_registry = MagicMock()
+        fake_registry.get_search.return_value = None  # no provider
+
+        with (
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "hachi.core.providers.registry.ProviderRegistry"
+            ) as MockReg,
+            __import__("unittest.mock", fromlist=["patch"]).patch(
+                "hachi.gateway.orchestrator._register_search_tools_for"
+            ) as mock_register,
+        ):
+            MockReg.from_config.return_value = fake_registry
+            result = session.reload_search_provider()
+
+        assert result is False
+        mock_register.assert_not_called()
+
+    def test_tavily_reload_noop_without_secret_store(self, tmp_path, monkeypatch) -> None:
+        """reload_search_provider returns False when _secret_store is not set (boot-guard)."""
+        session, _, _ = self._make_session(tmp_path, monkeypatch)
+        session._secret_store = None
+
+        result = session.reload_search_provider()
+        assert result is False

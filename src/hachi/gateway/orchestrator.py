@@ -297,7 +297,18 @@ def _build_capability_registry(config: dict[str, Any]) -> CapabilityRegistry:
         payload = caps_cfg.get(cap_id, {}) if isinstance(caps_cfg, dict) else {}
         if not isinstance(payload, dict):
             return False, False
-        return bool(payload.get("enabled", False)), bool(payload.get("configured", False))
+        enabled = bool(payload.get("enabled", False))
+        # BB-11: if the config flag is off but the user already connected via the web UI
+        # (token stored under "oauth2.<cap_id>"), treat the capability as enabled so
+        # tools are registered without requiring a manual config edit or re-auth.
+        if not enabled:
+            try:
+                from hachi.integrations.oauth_flow import OAuthTokenStore
+
+                enabled = OAuthTokenStore().is_connected(cap_id)
+            except Exception:
+                pass
+        return enabled, bool(payload.get("configured", False))
 
     google_enabled, google_configured = cap_flags("google")
     slack_enabled, slack_configured = cap_flags("slack")
@@ -363,11 +374,69 @@ def _build_capability_registry(config: dict[str, Any]) -> CapabilityRegistry:
     )
 
 
+def _register_search_tools_for(
+    provider: Any,
+    tool_registry: ToolRegistry,
+    gate: Any,
+    config: dict[str, Any] | None = None,
+) -> None:
+    """Register ``web_search`` and ``extract_url`` for *provider* onto *tool_registry*.
+
+    Idempotent: if ``web_search`` is already registered the handlers are updated
+    in-place (via :meth:`~hachi.core.loop.ToolRegistry.update_handler`) so schemas
+    are never duplicated.  This is safe to call on a live reload path.
+
+    Args:
+        provider:      A :class:`~hachi.core.providers.search.SearchProvider`.
+        tool_registry: The session's :class:`~hachi.core.loop.ToolRegistry`.
+        gate:          The session's permission gate (passed to register_search_tools).
+        config:        Optional raw config dict for ``[search]`` settings.
+    """
+    from hachi.core.rate_limit import OutboundRateLimiter
+    from hachi.core.search_cache import SearchCache
+    from hachi.core.settings import SearchSettings
+
+    _search_settings = SearchSettings()
+    try:
+        _raw_cfg = config
+        if _raw_cfg is None:
+            import hachi.core.settings as _settings_mod  # noqa: PLC0415
+
+            _raw_cfg = getattr(_settings_mod, "_current_config", None)
+        if _raw_cfg is not None and hasattr(_raw_cfg, "search"):
+            _s = _raw_cfg.search
+            if _s is not None:
+                _search_settings = _s
+    except Exception:
+        pass
+
+    cache = SearchCache(ttl_seconds=_search_settings.cache_ttl_seconds)
+    limiter = OutboundRateLimiter(
+        max_per_window=_search_settings.window_max_calls,
+        window_seconds=_search_settings.window_seconds,
+        max_per_turn=_search_settings.max_calls_per_turn,
+    )
+
+    already = "web_search" in tool_registry._tools
+    if already:
+        # Rebuild handlers bound to the new provider without duplicating schemas.
+        from hachi.tools.search_tools import _make_extract_url, _make_web_search
+
+        tool_registry.update_handler("web_search", _make_web_search(provider, cache, limiter))
+        tool_registry.update_handler("extract_url", _make_extract_url(provider, cache, limiter))
+        logger.info(
+            "search: updated web_search + extract_url handlers via provider=%r", provider.name
+        )
+    else:
+        register_search_tools(tool_registry, provider, cache=cache, limiter=limiter, gate=gate)
+        logger.info("search: registered web_search + extract_url via provider=%r", provider.name)
+
+
 def _register_search_if_available(deps: Any) -> None:
     """Register search tools when a SearchProvider is present in the ProviderRegistry.
 
     Resolves the provider, builds a cache and rate limiter from ``[search]``
-    config, then delegates to :func:`~hachi.tools.search_tools.register_search_tools`.
+    config, then delegates to :func:`_register_search_tools_for`.
     When no provider is configured this is a silent no-op (graceful degradation).
 
     Args:
@@ -393,47 +462,7 @@ def _register_search_if_available(deps: Any) -> None:
         )
         return
 
-    from hachi.core.rate_limit import OutboundRateLimiter
-    from hachi.core.search_cache import SearchCache
-    from hachi.core.settings import SearchSettings
-
-    # Read [search] config for limits — tolerate missing section gracefully.
-    _raw_cfg = None
-    try:
-        _raw_cfg = getattr(deps, "_config", None)
-    except Exception:
-        pass
-
-    _search_settings = SearchSettings()
-    try:
-        # deps doesn't carry _config directly; read from process-level shared
-        # config if available (same pattern as voice/vision feature flags).
-        import hachi.core.settings as _settings_mod  # noqa: PLC0415
-
-        if hasattr(_settings_mod, "_current_config"):
-            _raw_cfg = getattr(_settings_mod, "_current_config", None)
-        if _raw_cfg is not None and hasattr(_raw_cfg, "search"):
-            _s = _raw_cfg.search
-            if _s is not None:
-                _search_settings = _s
-    except Exception:
-        pass
-
-    cache = SearchCache(ttl_seconds=_search_settings.cache_ttl_seconds)
-    limiter = OutboundRateLimiter(
-        max_per_window=_search_settings.window_max_calls,
-        window_seconds=_search_settings.window_seconds,
-        max_per_turn=_search_settings.max_calls_per_turn,
-    )
-
-    register_search_tools(
-        deps.tool_registry,
-        provider,
-        cache=cache,
-        limiter=limiter,
-        gate=deps.gate,
-    )
-    logger.info("search: registered web_search + extract_url via provider=%r", provider.name)
+    _register_search_tools_for(provider, deps.tool_registry, deps.gate)
 
 
 def _register_capability_setup_stub(
@@ -555,6 +584,11 @@ class AgentSession:
         # memory section to the recall block.  Set by boot_agent from memory.graph_recall.
         self._graph_recall: bool = True
 
+        # BB-11: stashed by boot_agent so reload_search_provider() can rebuild the
+        # ProviderRegistry with fresh credentials without a full restart.
+        self._provider_registry: Any = None
+        self._secret_store: Any = None
+
     @property
     def resumed_transcript(self) -> list[tuple[str, str]]:
         """User/assistant turns carried over from a resumed session (oldest first)."""
@@ -565,6 +599,35 @@ class AgentSession:
 
     def set_vault(self, vault: MemoryVault):
         self.vault = vault
+
+    def reload_search_provider(self) -> bool:
+        """Re-evaluate search-provider availability after a credential change (BB-11).
+
+        Rebuilds the :class:`~hachi.core.providers.registry.ProviderRegistry` with
+        the current process environment (which now includes the newly stored key),
+        then registers or updates ``web_search`` / ``extract_url`` on the live tool
+        registry.  Returns *True* when a provider is now active, *False* when no
+        search key is available yet.
+
+        Must only be called after ``boot_agent`` has stashed ``_secret_store`` on
+        this session.  No-op (returns *False*) when the store is not yet attached.
+        """
+        if self._secret_store is None:
+            return False
+        try:
+            from hachi.core.config_loader import load_effective_config
+            from hachi.core.providers.registry import ProviderRegistry
+
+            cfg = load_effective_config()
+            self._provider_registry = ProviderRegistry.from_config(cfg, self._secret_store)
+            provider = self._provider_registry.get_search()
+            if provider is None:
+                return False
+            _register_search_tools_for(provider, self.loop.registry, self.permission_gate)
+            return True
+        except Exception:
+            logger.debug("reload_search_provider: failed", exc_info=True)
+            return False
 
     def set_session_store(self, store: SessionStore, model: str = "unknown"):
         """Bind a SessionStore and start a new persistent session.
@@ -3169,6 +3232,9 @@ def boot_agent(
     # Slice 2.2: activate durable title job path when the flag is on.
     if _jobs_cfg.durable_handlers:
         session._durable_title = True
+    # BB-11: stash for live search-tool reload without restart.
+    session._provider_registry = _provider_registry
+    session._secret_store = secret_store
 
     # ------------------------------------------------------------------
     # JobRegistry activation

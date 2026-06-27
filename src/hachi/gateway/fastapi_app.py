@@ -272,6 +272,13 @@ class AlwaysAllowRequest(BaseModel):
     action: str
 
 
+class SecretStoreRequest(BaseModel):
+    """Body for POST /runtime/secrets."""
+
+    name: str = Field(..., pattern=r"^[\w.\-]+$")
+    value: str = Field(..., min_length=1)
+
+
 class McpRegisterRequest(BaseModel):
     """Body for POST /runtime/mcp/register (G1-T5 / CONTRACT-MCP).
 
@@ -1195,14 +1202,45 @@ def create_gateway_app(
                     ),
                 )
 
-        # Reject secret-looking env var and header keys (mirrors frontend validation).
-        for env_key in list(payload.env_vars) + list(payload.headers):
+        # Reject raw secrets in env_vars/headers; allow secret:<name> references (BB-9).
+        # A key that looks like a secret (contains "key", "token", etc.) is accepted ONLY
+        # when its value is a secret: reference — which resolves at connect time, so the
+        # real credential never touches TOML.  We also verify the cred: entry exists now
+        # so a dangling reference is caught before the config is persisted.
+        all_pairs: list[tuple[str, str]] = list(payload.env_vars.items()) + list(
+            payload.headers.items()
+        )
+        for env_key, env_val in all_pairs:
             lower = env_key.lower()
-            if any(p in lower for p in _SECRET_PATTERNS):
+            key_looks_secret = any(p in lower for p in _SECRET_PATTERNS)
+            val_is_ref = isinstance(env_val, str) and env_val.startswith("secret:")
+            if key_looks_secret and not val_is_ref:
                 raise HTTPException(
                     status_code=422,
-                    detail=(f"key '{env_key}' looks like a secret; use SecretStore instead"),
+                    detail=(
+                        f"key '{env_key}' looks like a secret; "
+                        "store the value via POST /runtime/secrets "
+                        "and reference it as secret:<name>"
+                    ),
                 )
+            if val_is_ref:
+                cred_name = env_val[len("secret:") :]
+                try:
+                    from hachi.core.secret_store import create_default_secret_store as _css
+
+                    if _css().get(f"cred:{cred_name}") is None:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                f"secret reference 'secret:{cred_name}' "
+                                "has no matching credential. "
+                                f"Store it via POST /runtime/secrets name='{cred_name}'."
+                            ),
+                        )
+                except HTTPException:
+                    raise
+                except Exception:
+                    pass  # secret store unavailable — skip validation, fail at connect time
 
         return control_plane.register_mcp_server(
             name=name,
@@ -1240,6 +1278,26 @@ def create_gateway_app(
         Returns ``{"ok": true}`` on success, HTTP 404 if the server is unknown.
         """
         return control_plane.delete_mcp_server(name=name)
+
+    # ------------------------------------------------------------------ #
+    # Credential manager — BB-9
+    # Reserved namespace: cred:<name>  (system keys are never listed/deleted)
+    # ------------------------------------------------------------------ #
+
+    @runtime_ops.post("/runtime/secrets")
+    async def post_secret(payload: SecretStoreRequest) -> Any:
+        """Store a user-managed credential as ``cred:<name>`` in the secret store."""
+        return control_plane.store_secret(payload.name, payload.value)
+
+    @runtime_ops.get("/runtime/secrets")
+    async def get_secrets() -> Any:
+        """List user-managed credential names (``cred:`` prefix stripped, values never returned)."""
+        return control_plane.list_secret_names()
+
+    @runtime_ops.delete("/runtime/secrets/{name}")
+    async def delete_secret(name: str) -> Any:
+        """Delete ``cred:<name>`` (idempotent; system keys are silently ignored)."""
+        return control_plane.delete_secret(name)
 
     @runtime_ops.get("/jobs/active")
     async def get_active_jobs() -> Any:
@@ -1960,6 +2018,12 @@ def create_gateway_app(
             lambda: oauth_callback(str(code), str(state))
         )
         if ok:
+            # BB-11: auto-enable the capability so tools are registered on next boot.
+            # Silently swallow errors (handler absent in tests; unknown cap id is non-fatal).
+            try:
+                control_plane.set_capability_enabled(connector_id, True)
+            except Exception:
+                pass
             html = _callback_html_ok(connector_id)
             return HTMLResponse(content=html, status_code=200)
         else:
@@ -2072,6 +2136,14 @@ def create_gateway_app(
 
         await anyio.to_thread.run_sync(_store_all)
 
+        # BB-11: live-reload search tools when Tavily credentials are stored so the
+        # web_search tool activates in the CURRENT session without a restart.
+        if connector_id == "tavily":
+            try:
+                await anyio.to_thread.run_sync(control_plane.reload_search_tools)
+            except Exception:
+                pass  # non-fatal; tools activate on next boot regardless
+
         # Issue 5 — expose search fallback status for the UI (contract C-SEARCHFALLBACK).
         # ``fallback_active=True`` means no SearchProvider is registered and browse_web
         # (Playwright) is the current fallback.  The frontend uses this to show a
@@ -2140,7 +2212,12 @@ def create_gateway_app(
         def _probe() -> dict[str, Any]:
             try:
                 if connector_id == "tavily":
-                    key = _resolve_secret("tavily_api_key")
+                    # BB-14: the credential dialog stores under the namespaced key
+                    # "apikey.tavily.tavily_api_key"; check it first, then the bare
+                    # name and env. (Reading only "tavily_api_key" made Test
+                    # Connection always report "No Tavily API key stored" even
+                    # right after the key was saved.)
+                    key = _resolve_secret("apikey.tavily.tavily_api_key", "tavily_api_key")
                     if not key:
                         return {"ok": False, "message": "No Tavily API key stored."}
                     import httpx
@@ -2631,6 +2708,7 @@ def create_gateway_app(
             # Pull all rows then filter to owned sessions.
             rows = store.get_interactions(session_id=None, limit=limit)
             if caller_hash is not None:
+
                 def _owned_session(sid: str) -> bool:
                     owner = control_plane.get_session_owner(sid)
                     return owner is None or secrets.compare_digest(owner, caller_hash)

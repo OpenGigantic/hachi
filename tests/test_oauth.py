@@ -173,5 +173,65 @@ def test_browser_flow_fails_fast_when_noninteractive(monkeypatch) -> None:
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("browser must not open")),
     )
     manager = OAuthManager(secret_store=_MemorySecretStore())
-    with pytest.raises(RuntimeError, match="hachi auth google"):
+    with pytest.raises(RuntimeError, match="hachi google-auth"):
         manager._run_google_browser_flow(["openid"])
+
+
+# ---------------------------------------------------------------------------
+# BB-10 regressions: web-UI token key mismatch + wrong CLI command in error
+# ---------------------------------------------------------------------------
+
+
+def test_get_token_finds_web_ui_oauth2_prefix(monkeypatch) -> None:
+    """OAuthManager.get_token("google") must find tokens stored by the web UI
+    under the "oauth2." prefix, not only those stored under "oauth." prefix.
+
+    Root cause: web UI writes "oauth2.google"; agent reads with _key() which
+    returns "oauth.google" — the token was never found, forcing re-auth on
+    every agent turn even after the user had authenticated via the web UI.
+    """
+    store = _MemorySecretStore()
+    # Simulate what the web UI (oauth_flow.py, _TOKEN_KEY_PREFIX="oauth2.") stores:
+    import json
+
+    token_data = {"access_token": "ya29.web-ui-token", "scope": "openid email"}
+    store.set("oauth2.google", json.dumps(token_data))
+
+    manager = OAuthManager(secret_store=store)
+    # Under the bug, this returned None; with the fix it returns the token.
+    result = manager.get_token("google")
+    assert result is not None, (
+        "get_token('google') returned None even though the token was stored under "
+        "'oauth2.google' (the web-UI key prefix). The agent must fall back to the "
+        "'oauth2.' prefix when nothing is stored under 'oauth.'."
+    )
+    assert result["access_token"] == "ya29.web-ui-token"
+
+
+def test_noninteractive_error_mentions_correct_cli_command(monkeypatch) -> None:
+    """When HACHI_OAUTH_NONINTERACTIVE=1 and no saved token exists, the error
+    message must direct the user to `hachi google-auth`, not `hachi auth google`
+    (which does not exist as a CLI command).
+    """
+    monkeypatch.setattr("hachi.core.oauth._google_client_id", lambda: "client-id")
+    monkeypatch.setenv("HACHI_OAUTH_NONINTERACTIVE", "1")
+    monkeypatch.setattr(
+        "hachi.core.oauth.HTTPServer",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("server must not start")),
+    )
+    monkeypatch.setattr(
+        "hachi.core.oauth.webbrowser.open",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("browser must not open")),
+    )
+    manager = OAuthManager(secret_store=_MemorySecretStore())
+    with pytest.raises(RuntimeError) as exc_info:
+        manager._run_google_browser_flow(["openid"])
+    msg = str(exc_info.value)
+    assert "hachi google-auth" in msg, (
+        f"Error message should reference 'hachi google-auth' (the real CLI command) "
+        f"but got: {msg!r}"
+    )
+    assert "hachi auth google" not in msg, (
+        f"Error message must NOT reference the non-existent 'hachi auth google' command, "
+        f"but got: {msg!r}"
+    )

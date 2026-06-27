@@ -570,3 +570,75 @@ class TestCallbackHtml:
         # The raw unsafe chars should not appear in the id embedding
         assert '"go"ogle' not in html
         assert "><bad>" not in html
+
+
+# ---------------------------------------------------------------------------
+# BB-11 regression: successful OAuth never enables capability in config
+# ---------------------------------------------------------------------------
+
+
+class TestOAuthAutoEnablesCapability:
+    """BB-11: completing OAuth must auto-enable the capability so agent tools
+    are registered on next startup.  Symptom: Integrations page showed
+    "connected" but agent reported "Gmail is currently disabled" because
+    capabilities.google.enabled defaulted to False and was never flipped."""
+
+    def test_callback_success_calls_set_capability_enabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GET /integrations/oauth/callback (success) must call
+        control_plane.set_capability_enabled(connector_id, True).
+
+        Under the bug, it did not — the capability flag stayed False even
+        after the user authenticated via the web UI.
+        """
+        monkeypatch.setenv("HACHI_OAUTH_GOOGLE_CLIENT_ID", "cid")
+        cp = GatewayControlPlane()
+
+        with patch.object(cp, "set_capability_enabled") as mock_enable:
+            client = TestClient(create_gateway_app(cp))
+            # Obtain a real state token via the start route.
+            start_resp = client.post("/integrations/google/oauth/start")
+            assert start_resp.status_code == 200
+            from urllib.parse import parse_qs, urlparse
+
+            state = parse_qs(urlparse(start_resp.json()["authorization_url"]).query)["state"][0]
+
+            fake_resp = MagicMock()
+            fake_resp.is_success = True
+            fake_resp.json.return_value = _fake_token_response()
+
+            with (
+                patch("hachi.integrations.oauth_flow.httpx.post", return_value=fake_resp),
+                patch.object(OAuthTokenStore, "save"),
+            ):
+                cb_resp = client.get(f"/integrations/oauth/callback?code=authcode&state={state}")
+
+        assert cb_resp.status_code == 200
+        mock_enable.assert_called_once_with("google", True)
+
+    def test_callback_failure_does_not_enable_capability(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed OAuth callback must NOT enable the capability."""
+        monkeypatch.setenv("HACHI_OAUTH_GOOGLE_CLIENT_ID", "cid")
+        cp = GatewayControlPlane()
+
+        with patch.object(cp, "set_capability_enabled") as mock_enable:
+            client = TestClient(create_gateway_app(cp))
+            start_resp = client.post("/integrations/google/oauth/start")
+            from urllib.parse import parse_qs, urlparse
+
+            state = parse_qs(urlparse(start_resp.json()["authorization_url"]).query)["state"][0]
+
+            fake_resp = MagicMock()
+            fake_resp.is_success = False
+            fake_resp.status_code = 400
+            fake_resp.json.return_value = {"error": "access_denied"}
+            fake_resp.text = "access_denied"
+
+            with patch("hachi.integrations.oauth_flow.httpx.post", return_value=fake_resp):
+                cb_resp = client.get(f"/integrations/oauth/callback?code=badcode&state={state}")
+
+        assert cb_resp.status_code == 400
+        mock_enable.assert_not_called()

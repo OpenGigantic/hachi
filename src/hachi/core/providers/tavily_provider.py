@@ -22,24 +22,34 @@ logger = logging.getLogger(__name__)
 
 _TAVILY_KEY_ENV = "TAVILY_API_KEY"
 _TAVILY_KEY_REF = "tavily_api_key"
+# BB-14: the integrations credential dialog stores the key namespaced as
+# "apikey.tavily.tavily_api_key" (oauth_flow.store_apikey_credential), while
+# `hachi set tavily_api_key=...` stores the bare name. The provider must check
+# BOTH — this list mirrors ProviderRegistry.from_config's detection list, so a
+# key saved via the UI both registers the provider AND resolves at call time
+# (previously only the bare name was read here, so a UI-saved key registered the
+# adapter but every search then failed to find the key → "No Tavily API key").
+_TAVILY_KEY_REFS = ("apikey.tavily.tavily_api_key", "tavily_api_key")
 
 
 def _resolve_api_key(secret_store: Any | None) -> str | None:
     """Resolve the Tavily API key lazily.
 
     Precedence:
-    1. ``secret_store`` (CredentialVault / SecretStore).
+    1. ``secret_store`` (CredentialVault / SecretStore) — both the UI-namespaced
+       key and the bare name (see :data:`_TAVILY_KEY_REFS`).
     2. ``TAVILY_API_KEY`` environment variable.
 
     Returns ``None`` (never raises) when neither is set.
     """
     if secret_store is not None:
-        try:
-            val: str | None = secret_store.get(_TAVILY_KEY_REF)
+        for ref in _TAVILY_KEY_REFS:
+            try:
+                val: str | None = secret_store.get(ref)
+            except Exception:
+                val = None
             if val:
                 return val
-        except Exception:
-            pass
     env_val = os.environ.get(_TAVILY_KEY_ENV)
     return env_val if env_val else None
 

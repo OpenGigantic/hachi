@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { reconstructMessagesFromEvents } from './chat'
+import { buildTurnKey, reconstructMessagesFromEvents } from './chat'
 
 describe('reconstructMessagesFromEvents', () => {
   it('reconstructs text and tool state in event order', () => {
@@ -57,5 +57,21 @@ describe('reconstructMessagesFromEvents', () => {
     expect(result.messages).toHaveLength(20_000)
     expect(result.messages.at(-1)?.text).toBe('xxxxxxxxxx')
     expect(elapsedMs).toBeLessThan(800)
+  })
+})
+
+describe('buildTurnKey', () => {
+  // BB-12: _id in store.ts resets to 100 on every page load. Since the gateway
+  // session UUID is preserved across refreshes (sessionStorage), the key
+  // `turn-102` from a prior load would match the new turn and replay the old
+  // response instantly. The nonce breaks this collision.
+  it('produces different keys for the same hachiMsgId with different page-load nonces', () => {
+    const key1 = buildTurnKey('aaaa', 102)
+    const key2 = buildTurnKey('bbbb', 102)
+    expect(key1).not.toBe(key2)
+  })
+
+  it('produces the same key for the same nonce and id (retry behaviour preserved)', () => {
+    expect(buildTurnKey('aaaa', 102)).toBe(buildTurnKey('aaaa', 102))
   })
 })

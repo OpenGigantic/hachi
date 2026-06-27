@@ -356,6 +356,124 @@ const SYNTAX_COLORS: Record<SyntaxKind, string | undefined> = {
   plain: undefined,
 }
 
+const YAML_KW = new Set(['true', 'false', 'null', 'yes', 'no', 'on', 'off'])
+const BASH_KW = new Set([
+  'if', 'then', 'else', 'elif', 'fi', 'for', 'do', 'done', 'while', 'until',
+  'case', 'esac', 'in', 'function', 'return', 'export', 'local', 'readonly',
+  'source', 'echo', 'printf', 'exit', 'set', 'unset', 'shift', 'eval',
+])
+
+function tokenizeYamlLine(line: string): SyntaxToken[] {
+  const tokens: SyntaxToken[] = []
+  const trimmed = line.trimStart()
+  const indent = line.length - trimmed.length
+
+  if (indent > 0) tokens.push({ t: 'plain', v: line.slice(0, indent) })
+
+  // Comment
+  if (trimmed.startsWith('#')) {
+    tokens.push({ t: 'cmt', v: trimmed })
+    return tokens
+  }
+  // List item marker
+  if (trimmed.startsWith('- ')) {
+    tokens.push({ t: 'builtin', v: '- ' })
+    tokens.push(...tokenizeYamlLine(trimmed.slice(2)))
+    return tokens
+  }
+  // key: value
+  const colonIdx = trimmed.indexOf(': ')
+  if (colonIdx > 0) {
+    const key = trimmed.slice(0, colonIdx)
+    tokens.push({ t: 'fn', v: key }, { t: 'plain', v: ': ' })
+    const rest = trimmed.slice(colonIdx + 2)
+    if (rest.startsWith('"') || rest.startsWith("'")) {
+      tokens.push({ t: 'str', v: rest })
+    } else if (YAML_KW.has(rest.trim())) {
+      tokens.push({ t: 'kw', v: rest })
+    } else {
+      tokens.push({ t: 'plain', v: rest })
+    }
+    return tokens
+  }
+  // bare key with no value (mapping header)
+  if (/^[\w-]+:$/.test(trimmed)) {
+    tokens.push({ t: 'fn', v: trimmed })
+    return tokens
+  }
+  tokens.push({ t: 'plain', v: trimmed })
+  return tokens
+}
+
+function tokenizeBashLine(line: string): SyntaxToken[] {
+  if (line.trimStart().startsWith('#')) return [{ t: 'cmt', v: line }]
+
+  const tokens: SyntaxToken[] = []
+  let i = 0
+  while (i < line.length) {
+    // $VAR or ${VAR}
+    if (line[i] === '$') {
+      let j = i + 1
+      if (line[j] === '{') {
+        j++
+        while (j < line.length && line[j] !== '}') j++
+        if (j < line.length) j++
+      } else {
+        while (j < line.length && /\w/.test(line[j])) j++
+      }
+      tokens.push({ t: 'fn', v: line.slice(i, j) })
+      i = j
+      continue
+    }
+    // Flag (-x / --flag)
+    if (line[i] === '-' && (i === 0 || /\s/.test(line[i - 1]))) {
+      let j = i + 1
+      while (j < line.length && /[\w-]/.test(line[j])) j++
+      if (j > i + 1) { tokens.push({ t: 'builtin', v: line.slice(i, j) }); i = j; continue }
+    }
+    // String
+    if (line[i] === '"' || line[i] === "'") {
+      const q = line[i]; let j = i + 1
+      while (j < line.length && line[j] !== q) { if (line[j] === '\\') j++; j++ }
+      if (j < line.length) j++
+      tokens.push({ t: 'str', v: line.slice(i, j) }); i = j; continue
+    }
+    // Word / keyword
+    if (/[a-zA-Z_]/.test(line[i])) {
+      let j = i
+      while (j < line.length && /[\w-]/.test(line[j])) j++
+      const word = line.slice(i, j)
+      tokens.push({ t: BASH_KW.has(word) ? 'kw' : 'plain', v: word }); i = j; continue
+    }
+    // Comment mid-line
+    if (line[i] === '#') { tokens.push({ t: 'cmt', v: line.slice(i) }); break }
+    tokens.push({ t: 'plain', v: line[i] }); i++
+  }
+  return tokens
+}
+
+function tokenizeTomlLine(line: string): SyntaxToken[] {
+  const trimmed = line.trim()
+  if (trimmed.startsWith('#')) return [{ t: 'cmt', v: line }]
+  if (trimmed.startsWith('[')) return [{ t: 'kw', v: line }]
+  const eqIdx = trimmed.indexOf(' = ')
+  if (eqIdx > 0) {
+    const indent = line.length - line.trimStart().length
+    const key = trimmed.slice(0, eqIdx)
+    const rest = trimmed.slice(eqIdx + 3)
+    const restToken: SyntaxToken = (rest.startsWith('"') || rest.startsWith("'"))
+      ? { t: 'str', v: rest }
+      : { t: 'plain', v: rest }
+    return [
+      { t: 'plain', v: line.slice(0, indent) },
+      { t: 'fn', v: key },
+      { t: 'plain', v: ' = ' },
+      restToken,
+    ]
+  }
+  return [{ t: 'plain', v: line }]
+}
+
 function tokenizeLine(line: string, lang: string): SyntaxToken[] {
   const isPy = lang === 'python' || lang === 'py'
   const isJs =
@@ -365,6 +483,13 @@ function tokenizeLine(line: string, lang: string): SyntaxToken[] {
     lang === 'typescript' ||
     lang === 'jsx' ||
     lang === 'tsx'
+  const isYaml = lang === 'yaml' || lang === 'yml'
+  const isBash = lang === 'bash' || lang === 'sh' || lang === 'shell' || lang === 'zsh'
+  const isToml = lang === 'toml'
+
+  if (isYaml) return tokenizeYamlLine(line)
+  if (isBash) return tokenizeBashLine(line)
+  if (isToml) return tokenizeTomlLine(line)
 
   if (!isPy && !isJs) return [{ t: 'plain', v: line }]
 
@@ -455,15 +580,18 @@ function tokenizeLine(line: string, lang: string): SyntaxToken[] {
 }
 
 function renderHighlighted(code: string, lang: string): ReactNode {
+  const normalizedLang = lang.toLowerCase().trim()
   const highlightable = new Set([
     'python', 'py', 'js', 'javascript', 'ts', 'typescript', 'jsx', 'tsx',
+    'yaml', 'yml', 'bash', 'sh', 'shell', 'zsh', 'toml',
   ])
-  if (!highlightable.has(lang)) return code
+  if (!highlightable.has(normalizedLang)) return code
+  const lang_ = normalizedLang
 
   const lines = code.split('\n')
   return lines.map((line, li) => (
     <span key={li}>
-      {tokenizeLine(line, lang).map((tok, ti) => {
+      {tokenizeLine(line, lang_).map((tok, ti) => {
         const color = SYNTAX_COLORS[tok.t]
         return color ? (
           <span key={ti} style={{ color }}>
@@ -673,7 +801,7 @@ function CodeBlock({ lang, code }: { lang: string; code: string }): JSX.Element 
           color: 'var(--hachi-code-text)',
         }}
       >
-        <code>{renderHighlighted(code, lang)}</code>
+        <code>{renderHighlighted(code, lang.toLowerCase().trim())}</code>
       </pre>
     </div>
   )

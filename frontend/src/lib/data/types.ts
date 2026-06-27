@@ -168,8 +168,13 @@ export interface Integration {
 
 export interface McpServer {
   name: string;
-  /** "loading" is a transient state while the gateway is initialising the server. */
-  status: "connected" | "starting" | "blocked" | "loading";
+  /**
+   * "loading" is a transient state while the gateway is initialising the server.
+   * "pending" means the server is registered but not connected in this session
+   * yet (e.g. a TOML-persisted server before the first conversation boots) — it
+   * is NOT actively starting, so it must render distinctly from "starting".
+   */
+  status: "connected" | "starting" | "blocked" | "loading" | "pending";
   tools: number;
   transport: string;
   uptime: string;

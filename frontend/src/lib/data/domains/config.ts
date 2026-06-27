@@ -148,15 +148,17 @@ async function _loadConfigImpl(): Promise<void> {
     return;
   }
 
+  // BB-15: /config and /models are fetched INDEPENDENTLY. /config is the source
+  // of truth for the safety tier, provider, and caps and is a cheap local read
+  // (~12ms). /models makes a LIVE external provider round-trip (measured ~1.6s)
+  // and is flaky — a rate-limit, expired key, network blip, or a fetch aborted
+  // on navigation will reject it. Previously both were in one Promise.all and a
+  // /models failure dropped into the catch below, which reset safety to
+  // "standard" — silently reverting the user's permission tier even though
+  // /config had the correct value. Decoupling them means a /models failure can
+  // only degrade the model dropdown, never the permission tier.
   try {
-    // Fetch config and models concurrently
-    const [rawConfig, rawModels] = await Promise.all([
-      apiGet<GatewayConfig>("/config"),
-      apiGet<GatewayModel[]>("/models"),
-    ]);
-
-    // Stash models in module-level variable (no new store field needed)
-    _availableModels = Array.isArray(rawModels) ? rawModels : [];
+    const rawConfig = await apiGet<GatewayConfig>("/config");
 
     // Map config → store slice
     const safety = adaptTier(rawConfig?.permissions?.tier);
@@ -184,11 +186,6 @@ async function _loadConfigImpl(): Promise<void> {
       .getState()
       .hydrate({ safety, askRules, provider, taskCap, dailyCap, budget: dailyCap, configLoaded: true });
 
-    // Restore today's real accumulated spend from the daily ledger so the
-    // spend bar reflects the correct value on every page load (not just during
-    // active streaming turns where SSE bumps it in real time).
-    await loadDailySpend();
-
     _hasEverSucceeded = true;
   } catch {
     if (!_hasEverSucceeded) {
@@ -202,6 +199,24 @@ async function _loadConfigImpl(): Promise<void> {
     }
     // Reconnecting flag is now managed centrally by client.ts via the
     // registered callback — no per-domain setReconnecting calls needed here.
+  }
+
+  // Restore today's real accumulated spend from the daily ledger so the spend
+  // bar reflects the correct value on every page load. Independent of /config
+  // and /models — its own failure must not touch safety.
+  try {
+    await loadDailySpend();
+  } catch {
+    /* spend ledger unavailable — the bar degrades, the tier does not */
+  }
+
+  // Model list powers ONLY the provider/model dropdown. Fetched last and on its
+  // own so its (slow, external) failure leaves every config-derived value intact.
+  try {
+    const rawModels = await apiGet<GatewayModel[]>("/models");
+    _availableModels = Array.isArray(rawModels) ? rawModels : [];
+  } catch {
+    /* keep the previous model list; the dropdown degrades, not the tier */
   }
 }
 
