@@ -47,7 +47,7 @@ function fmtCountdown(ms: number): string {
  * Primary slot (Torii red fill) is "Allow once" — the single primary action per view.
  * "Always allow" is ghost; "Decline" is secondary (navy outline).
  *
- * Ported from Hachi Design System/components/hachi/LeashPrompt.jsx + contract §5.
+ * Ported from design-system/components/hachi/LeashPrompt.jsx + contract §5.
  */
 export function LeashPrompt({
   request,

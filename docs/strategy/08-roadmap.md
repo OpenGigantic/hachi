@@ -3,7 +3,7 @@
 > **Historical document.** Written before the Hachi rename. References to
 > "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
 > below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
-> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+> `hachi-og`) and are preserved here as migration history.
 
 **Engagement:** Hachi Principal Engineering & Product Strategy · **Date:** 2026-06-12
 **Consolidates:** [01](01-architecture-review.md) (R1–R20) · [02](02-object-graph-eval.md) (P0s +
@@ -32,7 +32,7 @@ positioning can be falsified.
 | 4 | **Retrieval v2**: stopword guard, stem/prefix match, BM25 rank, confidence tie-break, calibrated no-match | P@1≈23% probe is the moat's falsifier → 02 §2.3, P0 | **H** moat | Med | 3 d (high) | — | A/B via env flag; probe set becomes regression test |
 | 5 | Qualified node IDs + collision error; exclude `brain.og` from skill search | Shipped library self-collides (identity ×6) → 02 §2.2 | **H** moat | Med | 2 d (med-high) | — | Migration shim resolves bare names when unique |
 | 6 | Shipped-skill compliance: ::meta/::index everywhere, dense ≤30, synonym keywords, ≥1 requires chain per pack; `lint default_skills` CI job (errors block) | 23/29 non-compliant; dogfood the format → 02 §2.1, P0 | H moat | Low | 2 d (high) | #5 | Pure content + 1 CI job |
-| 7 | BENCHMARK.md honesty pass: disclose first-party paper, add cached-dump crossover caveat, drop 95.3% reliance | Credibility pre-launch → 02 §2.4/§7 | M trust | Low | 0.5 d (high) | — | Docs only |
+| 7 | benchmark.md honesty pass: disclose first-party paper, add cached-dump crossover caveat, drop 95.3% reliance | Credibility pre-launch → 02 §2.4/§7 | M trust | Low | 0.5 d (high) | — | Docs only |
 | 8 | SECURITY.md + disclosure policy; ARCHITECTURE.md (from 00-recon); `good-first-issue` batch from TD register | Governance project without a security policy → 07 §4.1 | M credibility | Low | 1.5 d (high) | — | Docs only |
 | 9 | Path unification (usage DB, RoleResolver → platformdirs w/ legacy shim) | 01/TD-10 | M correctness | Low | 0.5 d (high) | — | Shim reads legacy dir |
 | 10 | Re-enable `frontend-contract` CI; fix CLAUDE.md (SvelteKit→TanStack, contract claim, memory description) | Doc-vs-code drift D2/D3/D8 → 00 §9 | M DX | Low | 1 d (high) | — | CI may need one type regen |
@@ -51,7 +51,7 @@ capacity is 1 dev.
 
 | # | Item | Rationale | Impact | Effort (conf.) | Deps | Rollout |
 |---|---|---|---|---|---|---|
-| 1 | **Streaming end-to-end** + Esc-interrupt (cooperative cancel) | Largest perceived gap; required by re.md:106/121 → 01/R3, 06 §10 | **H** UX/competitive | 6–10 d (med) | 30d#1 | Flag per provider; TUI first, SSE next, OpenAI-facade `stream:true` last |
+| 1 | **Streaming end-to-end** + Esc-interrupt (cooperative cancel) | Largest perceived gap; required by tui-product-brief.md:106/121 → 01/R3, 06 §10 | **H** UX/competitive | 6–10 d (med) | 30d#1 | Flag per provider; TUI first, SSE next, OpenAI-facade `stream:true` last |
 | 2 | **Durable SQLite job queue + resident worker** (job registry indirection) | Memory promise + always-on → 01/R5 | **H** reliability | 3–4 d (high) | 30d#3 | Migration: drain in-memory on upgrade |
 | 3 | **Benchmark suite v1** (arms A–F, M1/M2/M3/M7; corpora S+M; CI retrieval gate) + **publish results post** | The proof apparatus → 02 §8; growth loop 1 → 07 §4.3 | **H** moat/growth | 8–12 d (med) | 30d#4–6 | Live-LLM subset behind budget flag (decision D-4) |
 | 4 | **Memory graph M0+M1** (FTS5 index over memory/*.og; typed extractor; Chroma import) | Hermes-parity recall + files-as-memory story → 04 §7 | **H** product | 7–12 d (med-high) | #2, 30d#3/#5 | `memory.graph=true` flag; converter on first boot |

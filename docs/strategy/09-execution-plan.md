@@ -3,7 +3,7 @@
 > **Historical document.** Written before the Hachi rename. References to
 > "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
 > below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
-> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+> `hachi-og`) and are preserved here as migration history.
 
 **Derived from:** the completed strategy engagement [00](00-recon.md)–[08](08-roadmap.md) (2026-06-12).
 **Baseline re-verified on `main@a54d242` (2026-06-12):** `frontend-contract` CI still commented out
@@ -178,7 +178,7 @@ Add a CI job running `lint_og_file` over `default_skills/` with **errors blockin
 
 ### Lane C — Docs, CI, packaging (files: `docs/`, `.github/`, `pyproject.toml`, `CLAUDE.md`, provider module)
 
-#### P1-10 · BENCHMARK.md honesty pass — ✅
+#### P1-10 · benchmark.md honesty pass — ✅
 **Effort** 0.5d · **Deps** — · **Source** [02 §2.4, §7 P1](02-object-graph-eval.md) · roadmap 30d#7
 **Build.** Disclose arXiv 2604.27820 as first-party (it currently reads as independent); drop any
 reliance on the refuted "95.3%" figure; add the cached-dump-all crossover caveat ("below ~30k-token
@@ -255,7 +255,7 @@ feature flag with non-streaming fallback. **Verify:** unit tests with fake strea
 single-shot path untouched when flag off.
 
 #### P2-01b · Loop `text_delta` events + cooperative cancel — ✅
-**Source** [01/R3](01-architecture-review.md), [06 §1.2, §10](06-ux-redesign.md) (required by re.md:106/121)
+**Source** [01/R3](01-architecture-review.md), [06 §1.2, §10](06-ux-redesign.md) (required by tui-product-brief.md:106/121)
 Emit `text_delta` runtime events from the loop; add a cancellation flag checked at the top of each
 iteration (loop.py:407 region) — cooperative interrupt, finishes the current tool call, then stops
 gracefully with partial output (pairs with P1-04 semantics). **Verify:** scripted-LLM test asserting
@@ -330,7 +330,7 @@ Paired comparisons, medians + IQR, bootstrap CIs; artifacts committed under
 "below crossover, just dump your skills — we measured it" concession). Feeds P2-11; held by D-5.
 **Done:** `benchmarks/og_bench/data/s_real_results_v1.json` frozen (53 nodes, 97.6% savings,
 P@1=0.7742, P@5=0.9677, MRR=0.8548, FPR=0.0, 1 miss; M7 77.4%/19.4%/3.2%; M2 408 tok/$1.22/1k;
-M4 0.217ms engine ops). `docs/BENCHMARK.md` updated with all M1/M2/M4/M7 sections + scope caveat.
+M4 0.217ms engine ops). `docs/reference/benchmark.md` updated with all M1/M2/M4/M7 sections + scope caveat.
 
 ### WS-D — Memory graph M0 + M1
 

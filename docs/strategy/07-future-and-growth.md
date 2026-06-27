@@ -3,7 +3,7 @@
 > **Historical document.** Written before the Hachi rename. References to
 > "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
 > below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist
-> `hachi-og`) and are preserved here as migration history. See `docs/migration/hachi-rename.md`.
+> `hachi-og`) and are preserved here as migration history.
 
 **Engagement:** Hachi Principal Engineering & Product Strategy · **Date:** 2026-06-12
 **Inputs:** Phases 0–6. **Voices:** §1 = What I found · §2–§5 = What I propose.
