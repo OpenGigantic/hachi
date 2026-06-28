@@ -65,6 +65,17 @@ function isStale(isoDate: string | null | undefined): boolean {
   }
 }
 
+/** Remove duplicate skills by name, keeping the first occurrence (highest use_count when pre-sorted). */
+export function deduplicateSkillsByName<T extends { name?: string }>(skills: T[]): T[] {
+  const seen = new Set<string>();
+  return skills.filter((s) => {
+    const k = s.name ?? "";
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 function adapt(raw: GatewaySkill): Skill {
   const useCount = raw.use_count ?? 0;
   return {
@@ -89,7 +100,7 @@ export async function loadSkills(): Promise<void> {
   if (USE_MOCKS) return; // keep seeded fixtures
   try {
     const raw = await apiGet<GatewaySkill[]>("/skills");
-    useStore.getState().hydrate({ skills: (raw ?? []).map(adapt) });
+    useStore.getState().hydrate({ skills: deduplicateSkillsByName(raw ?? []).map(adapt) });
     _hasEverSucceeded = true;
   } catch {
     if (!_hasEverSucceeded) {

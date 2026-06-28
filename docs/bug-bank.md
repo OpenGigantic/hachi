@@ -444,6 +444,61 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** `tests/test_cost_tracking.py::test_record_background_usage_writes_to_daily_ledger`,
   `::test_extract_facts_records_background_spend`.
 
+### BB-32 — MCP tools invisible to LLM — classified as "integrations" group, never activated
+
+- **Symptom:** LLM says "no skill found" or ignores a connected MCP server entirely; the user
+  says "use the demo MCP" and the agent treats it as an `.og` skill lookup and fails.
+- **Root cause:** Three-part chain. (1) `tool_registry.classify(…, default="integrations")` in
+  `orchestrator.py` stamps all MCP tools (e.g. `demo_list_files`) as group `"integrations"`.
+  (2) `ExecutionLoop._active_groups` starts as `set()` on every `run()` call (only `"core"` is
+  always-on). (3) `get_schemas(active_groups=set())` only returns `"core"` tools, so the LLM
+  never sees MCP tools and cannot call them.
+- **Avoid:** after `classify()`, call `tool_registry.reclassify_by_prefix({f"{name}_": "mcp" …})`
+  for every live MCP server, then set `loop._persistent_groups.add("mcp")`. Do the same in the
+  `add_mcp_server_live()` hot-reload path. Never rely on the user's `use_tools` call to activate
+  "mcp" — MCP tools must be always-on when servers are connected.
+- **Locked by:** `tests/test_mcp_tool_visibility.py::TestMcpToolVisibility` (6 tests).
+
+### BB-33 — `web_search` / `extract_url` invisible to LLM — demoted to "integrations" group by `classify()`
+
+- **Symptom:** agent says "I don't have Tavily or direct internet search capabilities" even when
+  `TAVILY_API_KEY` is set and a `SearchProvider` is registered at boot.
+- **Root cause:** `register_search_tools()` registers both tools with the default `group="core"`.
+  After all TOOL_SPECS are registered, `classify()` runs: for any tool whose current group is
+  `"core"` but that is NOT in `core_names`, it reclassifies to `default="integrations"`.
+  `web_search` and `extract_url` were absent from `_CORE_TOOL_NAMES`, so they got demoted.
+  `"integrations"` is never in `_active_groups`, so `get_schemas()` hides them every turn.
+- **Avoid:** `web_search` and `extract_url` must be in `_CORE_TOOL_NAMES`. They are safe there —
+  they only enter the registry when a SearchProvider exists (no key → no registration → no schema).
+- **Locked by:** `tests/test_search_tool_visibility.py::TestSearchToolVisibility` (4 tests).
+
+### BB-34 — Duplicate skill names → React "same key" warning on the Skills screen
+
+- **Symptom:** browser console: `Warning: Encountered two children with the same key, 'identity'`
+  on the `/skills` route; in edge cases, skill cards may be duplicated or dropped.
+- **Root cause:** `get_skill_inventory()` iterates `_nodes` keyed by `qid`; two `.og` files can
+  define nodes with the same display `name` but different `qid`s. Both rows reach the frontend
+  adapter, which sets `id = raw.name`, producing colliding React keys.
+- **Avoid:** `get_skill_inventory()` must deduplicate by name after sorting (first/highest
+  `use_count` wins). The frontend `loadSkills()` must also call `deduplicateSkillsByName()`
+  as a defensive guard before mapping — never map a raw gateway list where uniqueness is not
+  guaranteed by the schema.
+- **Locked by:** `tests/test_skill_inventory_dedup.py::TestSkillInventoryDedup` (3 tests);
+  `frontend/src/lib/data/domains/skills.test.ts` — deduplicateSkillsByName (4 tests).
+
+### BB-35 — `session_messages()` returns `[]` on cold boot — past-session history empty
+
+- **Symptom:** switching to a previous session in the web UI shows an empty conversation;
+  messages never appear even though the session has a full persisted transcript.
+- **Root cause:** `_InProcessGatewayRuntime.session_messages()` returned `[]` when
+  `_agents` was empty (server just started, no turn has run yet). `recent_sessions()`
+  had the BB-13 SessionStore fallback; `session_messages()` did not. The `/sessions/{id}/events`
+  endpoint synthesises events via `_get_session_messages`, so cold-boot = empty events = empty UI.
+- **Avoid:** whenever you touch `_InProcessGatewayRuntime`, mirror the BB-13 pattern in
+  every method that reads from `_agents`/`_session_store` — fall back to a direct
+  `SessionStore(db_path=get_hachi_paths().sessions_db)` read when `_agents` is empty.
+- **Locked by:** `tests/test_session_messages_cold_boot.py::TestSessionMessagesColdBoot` (2 tests).
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

@@ -200,19 +200,18 @@ export default function PermissionsSection() {
   const removeCommand = useStore((s) => s.removeCommand);
   const toggleOpTool = useStore((s) => s.toggleOpTool);
 
-  // Pin the user's chosen safety value locally so a concurrent loadConfig
-  // re-hydration cannot briefly revert the radio while the PUT is in flight.
+  // Hold the user's chosen value until setSafetyLive's full round-trip
+  // (PUT + re-read) settles. Previously cleared as soon as the optimistic
+  // store update matched pendingSafety — before the PUT response arrived —
+  // which let a concurrent loadConfig() overwrite the UI mid-flight.
   const [pendingSafety, setPendingSafety] = useState<SafetyLevel | null>(null);
-  useEffect(() => {
-    if (pendingSafety !== null && safety === pendingSafety) setPendingSafety(null);
-  }, [safety, pendingSafety]);
 
   const [addingFolder, setAddingFolder] = useState(false);
   const [addingCommand, setAddingCommand] = useState(false);
 
   function handleSetSafety(v: SafetyLevel) {
     setPendingSafety(v);
-    void setSafetyLive(v);
+    void setSafetyLive(v).finally(() => setPendingSafety(null));
   }
   function handleAddFolder(path: string) {
     setAddingFolder(false);

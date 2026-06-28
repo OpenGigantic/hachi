@@ -232,6 +232,12 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
         # delegation: delegate_task / list_roles are lazy under the "delegation" group.
         # web (the common case; richer browser actions are gated under "browser")
         "browse_web",
+        # BB-33: search tools are always-on when a provider is configured;
+        # they're only registered when Tavily (or another SearchProvider) is
+        # present, so they cannot appear without a key — but classify() must
+        # not reclassify them to "integrations" (which is never activated).
+        "web_search",
+        "extract_url",
     }
 )
 
@@ -916,6 +922,11 @@ class AgentSession:
         server = self.mcp_manager._servers.get(cfg.name)
         if server is not None:
             self.mcp_manager._register_server_tools(cfg.name, server, registry)
+        # BB-32: reclassify the new server's tools into "mcp" group and ensure
+        # the group is always-on for the running loop so the LLM sees them
+        # immediately without requiring a use_tools call.
+        registry.reclassify_by_prefix({f"{cfg.name}_": "mcp"})
+        self.loop._persistent_groups.add("mcp")
         _emit(MCP_SERVER_READY, {"server": cfg.name, "tool_count": tool_count})
         return {"ok": True, "tool_count": tool_count, "status": "ready"}
 
@@ -3168,6 +3179,14 @@ def boot_agent(
         default="integrations",
     )
 
+    # BB-32: MCP tools land in "integrations" (never activated) because classify()
+    # doesn't know MCP server names at call time.  Reclassify them into "mcp" so
+    # activating that group exposes them to the LLM.
+    _mcp_prefixes = {f"{name}_": "mcp" for name in mcp_manager._servers}
+    _has_live_mcp = bool(_mcp_prefixes)
+    if _has_live_mcp:
+        tool_registry.reclassify_by_prefix(_mcp_prefixes)
+
     # Tell the model which optional domain groups it can unlock on demand. Skill
     # groups are omitted here — load_skill auto-activates those — so this lists only
     # the static domain groups (e.g. schedule, sandbox, browser, workflow).
@@ -3254,6 +3273,12 @@ def boot_agent(
         router=_model_router,
         routing_store=getattr(_shared, "routing_store", None),
     )
+
+    # BB-32: if live MCP servers were present at boot, persist "mcp" as an
+    # always-on group so MCP tools are visible to the LLM every turn without
+    # requiring a use_tools call.
+    if _has_live_mcp:
+        loop._persistent_groups.add("mcp")
 
     # 10. Create the Session
     session = AgentSession(

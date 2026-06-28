@@ -269,6 +269,34 @@ class ToolRegistry:
                         continue
                 self._groups[name] = default
 
+    def reclassify_by_prefix(self, prefix_groups: dict[str, str]) -> None:
+        """Move tools whose names match a given prefix into a new group.
+
+        Designed as a post-``classify`` step for dynamically-discovered tool
+        namespaces (e.g. MCP servers) whose prefixes are not known at boot-classify
+        time.  Longest prefix wins when multiple prefixes match the same name.
+
+        BB-32: MCP tools land in the ``"integrations"`` default group (never
+        activated), making them invisible to the LLM.  This method lets the
+        orchestrator relocate them into the ``"mcp"`` group immediately after
+        classify, so ``get_schemas(active_groups={"mcp"})`` exposes them.
+
+        Args:
+            prefix_groups: Mapping of prefix string → group name, e.g.
+                ``{"demo_": "mcp", "context7_": "mcp"}``.  An empty dict is a
+                no-op.
+        """
+        if not prefix_groups:
+            return
+        for name in self._tools:
+            match = max(
+                (p for p in prefix_groups if name.startswith(p)),
+                key=len,
+                default=None,
+            )
+            if match is not None:
+                self._groups[name] = prefix_groups[match]
+
     def available_groups(self) -> set[str]:
         """Return the set of groups currently in use (for system-prompt listing)."""
         return set(self._groups.values())
@@ -416,6 +444,10 @@ class ExecutionLoop:
         # Tool groups unlocked for the current turn (besides always-on "core").
         # Reset each run(); mutated when the model calls use_tools / load_skill.
         self._active_groups: set[str] = set()
+        # BB-32: groups that are ALWAYS active for this session (e.g. "mcp").
+        # They are merged into _active_groups at the top of every run() so the
+        # LLM never loses sight of them between turns.
+        self._persistent_groups: set[str] = set()
         # Cooperative cancel: set by cancel(); checked at the top of each iteration.
         self._cancel_event: threading.Event = threading.Event()
         # Text accumulated across iterations (for partial output on cancel).
@@ -802,7 +834,9 @@ class ExecutionLoop:
             self._resolve_turn_client(user_input_for_turn)
 
         # Only "core" tools are sent until the model unlocks groups this turn.
-        self._active_groups = set()
+        # BB-32: seed with persistent groups (e.g. "mcp") so MCP tools are
+        # always visible to the LLM without an explicit use_tools call.
+        self._active_groups = set(self._persistent_groups)
         # Reset per-run state.
         self._cancel_event.clear()
         self._partial_text = []
