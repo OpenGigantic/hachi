@@ -194,4 +194,84 @@ BUNDLED_MODEL_DEFAULTS: list[ModelDescriptor] = [
         pricing=Pricing(input_per_mtok=0.15, output_per_mtok=0.60),
         tier_rank=35,
     ),
+    # ------ GPT-4.1 family ------
+    ModelDescriptor(
+        id="gpt-4.1",
+        provider="openai",
+        capabilities=frozenset(
+            {
+                Capability.REASONING,
+                Capability.CODING,
+                Capability.VISION,
+                Capability.SUMMARIZATION,
+            }
+        ),
+        context_window=1_000_000,
+        max_output=32_768,
+        pricing=Pricing(input_per_mtok=2.0, output_per_mtok=8.0),
+        tier_rank=14,
+    ),
+    ModelDescriptor(
+        id="gpt-4.1-mini",
+        provider="openai",
+        capabilities=frozenset(
+            {
+                Capability.REASONING,
+                Capability.CODING,
+                Capability.TITLE_GENERATION,
+                Capability.COMPACTION,
+                Capability.SUMMARIZATION,
+            }
+        ),
+        context_window=1_000_000,
+        max_output=32_768,
+        pricing=Pricing(input_per_mtok=0.40, output_per_mtok=1.60),
+        tier_rank=34,
+    ),
+    # ------ o-series reasoning models ------
+    ModelDescriptor(
+        id="o3",
+        provider="openai",
+        capabilities=frozenset(
+            {
+                Capability.REASONING,
+                Capability.CODING,
+                Capability.SUMMARIZATION,
+            }
+        ),
+        context_window=200_000,
+        max_output=100_000,
+        pricing=Pricing(input_per_mtok=10.0, output_per_mtok=40.0),
+        tier_rank=10,
+    ),
+    ModelDescriptor(
+        id="o3-mini",
+        provider="openai",
+        capabilities=frozenset(
+            {
+                Capability.REASONING,
+                Capability.CODING,
+                Capability.SUMMARIZATION,
+            }
+        ),
+        context_window=200_000,
+        max_output=65_536,
+        pricing=Pricing(input_per_mtok=1.10, output_per_mtok=4.40),
+        tier_rank=20,
+    ),
+    ModelDescriptor(
+        id="o4-mini",
+        provider="openai",
+        capabilities=frozenset(
+            {
+                Capability.REASONING,
+                Capability.CODING,
+                Capability.SUMMARIZATION,
+            }
+        ),
+        context_window=200_000,
+        max_output=65_536,
+        pricing=Pricing(input_per_mtok=1.10, output_per_mtok=4.40),
+        tier_rank=19,
+    ),
 ]

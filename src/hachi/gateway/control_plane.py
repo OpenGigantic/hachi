@@ -589,7 +589,7 @@ class GatewayControlPlane:
                     {
                         "sequence": seq,
                         "event_type": "session.chat.completed",
-                        "payload": {},
+                        "payload": {"model": msg.get("model")},
                         "time": ts,
                     }
                 )

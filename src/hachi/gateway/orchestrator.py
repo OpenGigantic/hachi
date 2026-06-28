@@ -1622,7 +1622,9 @@ class AgentSession:
         if self._session_store and self._session_id:
             try:
                 self._session_store.log_message(self._session_id, "user", user_input)
-                self._session_store.log_message(self._session_id, "assistant", response or "")
+                self._session_store.log_message(
+                    self._session_id, "assistant", response or "", model=self.model_name or None
+                )
                 self._emit_event(
                     SESSION_PERSISTED,
                     {
@@ -1998,7 +2000,9 @@ def _configure_mcp_servers(
         try:
             cfg = MCPServerConfig.from_toml_entry(server_name, entry)
         except Exception:
-            emit(MCP_SERVER_FAILED, {"server": server_name, "reason": "invalid TOML config"})
+            _reason = "invalid TOML config"
+            emit(MCP_SERVER_FAILED, {"server": server_name, "reason": _reason})
+            mcp_manager.register_boot_failure(server_name, _reason)
             logger.warning(
                 "_configure_mcp_servers: failed to parse TOML entry for %r",
                 server_name,
@@ -2014,6 +2018,7 @@ def _configure_mcp_servers(
         decision = gate.is_mcp_server_allowed(server_name, trusted=True)
         if not decision.allowed:
             emit(MCP_SERVER_FAILED, {"server": server_name, "reason": decision.reason})
+            mcp_manager.register_boot_failure(server_name, decision.reason)
             continue
 
         started = mcp_manager.setup_from_config(cfg)
@@ -2501,6 +2506,36 @@ def boot_agent(
     # 1. Load Local Configuration and Brain
     config = load_config()
     brain_prompt = load_brain()
+
+    # Bug 7 boot-reconcile: if settings.toml tier drifts from device-permissions.og tier
+    # (e.g. update_permissions() wrote the .og but a crash prevented the in-process gate
+    # from being rebuilt), rebuild the gate + approver to match config before any tool
+    # registration reads permissions.
+    _config_tier = config.get("permissions", {}).get("tier", "")
+    if _config_tier and _config_tier != gate.tier:
+        try:
+            gate = PermissionGate(permissions_file)
+            if on_permission_request:
+                runtime_gate = InteractivePermissionGate(
+                    base_gate=gate,
+                    approval_handler=on_permission_request,
+                    event_emitter=emit_runtime_event,
+                )
+            else:
+                runtime_gate = gate
+            if on_permission_request is not None:
+                action_approver = HandlerApprover(on_permission_request, emit_runtime_event)
+            elif isinstance(runtime_gate, InteractivePermissionGate):
+                action_approver = RegistryApprover(get_approval_registry(), emit_runtime_event)
+            else:
+                action_approver = PolicyApprover(gate.tier)
+            logger.info(
+                "boot_agent: rebuilt gate to tier=%r (was %r per .og)",
+                gate.tier,
+                _config_tier,
+            )
+        except Exception:
+            logger.warning("boot_agent: gate reconcile failed", exc_info=True)
 
     provider_config = config.get("provider", {})
     model_name = provider_config.get("model") or config.get("agent", {}).get(

@@ -45,6 +45,13 @@ MODEL_PRICING: dict[str, tuple[float, float]] = {
     "gpt-4o": (2.50, 10.0),
     "gpt-4": (30.0, 60.0),
     "gpt-3.5-turbo": (0.50, 1.50),
+    # GPT-4.1 family (explicit entries so gpt-4.1-mini never prefix-matches gpt-4.1)
+    "gpt-4.1-mini": (0.40, 1.60),
+    "gpt-4.1": (2.0, 8.0),
+    # o-series reasoning models (o3-mini explicit so it doesn't inherit o3 price)
+    "o3-mini": (1.10, 4.40),
+    "o3": (10.0, 40.0),
+    "o4-mini": (1.10, 4.40),
 }
 _DEFAULT_PRICING = (1.0, 5.0)
 
@@ -162,6 +169,7 @@ def record_voice_usage(
             exc,
         )
         return 0.0
+
 
 # Anthropic prompt-cache multipliers relative to the base input price.
 _CACHE_READ_MULTIPLIER = 0.1

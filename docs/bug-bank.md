@@ -1,16 +1,16 @@
 # Bug Bank — Hachi's regression memory
 
 This file is the **memory layer that survives across sessions**. It is the direct
-cure for *"a bug I already fixed came back"* and *"I fixed the same bug three times."*
+cure for _"a bug I already fixed came back"_ and _"I fixed the same bug three times."_
 
 Every non-trivial bug or hard-won, non-obvious constraint gets a short **autopsy**
-here: the symptom, the root cause, the fix, and what now *locks* it (a regression
+here: the symptom, the root cause, the fix, and what now _locks_ it (a regression
 test or a mechanical guard). When an agent starts a session, the `SessionStart`
 hook (`.claude/hooks/session_start.py`) injects the entries below into context, so
-the warnings are loaded *before* planning — never relearned the hard way.
+the warnings are loaded _before_ planning — never relearned the hard way.
 
 > **The regression law (CLAUDE.md):** for every bug you fix, first write a test
-> that *fails* because of the bug, then fix the code, then confirm it goes green.
+> that _fails_ because of the bug, then fix the code, then confirm it goes green.
 > That test is permanent. Add the autopsy here and link the test under **Locked by**.
 
 ## How to add an entry
@@ -19,6 +19,7 @@ Copy the template, give it the next `BB-N` number, keep it tight:
 
 ```markdown
 ### BB-N — Short title
+
 - **Symptom:** what you observe (the failure, not the cause).
 - **Root cause:** the actual mechanism.
 - **Avoid:** the one-line rule a future agent must follow. ← the SessionStart hook surfaces this.
@@ -32,6 +33,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 ## Entries
 
 ### BB-1 — Windows pytest/mypy `.exe` shim fails with OS error 4551
+
 - **Symptom:** `uv run pytest` or `uv run mypy` aborts on Windows with `OSError 4551`
   (editable-install lock) before collecting anything.
 - **Root cause:** the generated `.exe` console-script shim contends with the
@@ -42,9 +44,10 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** mechanical — documented fallback; no test (environment-specific).
 
 ### BB-2 — `.env` autoload belongs at the CLI edge, never in the core import path
+
 - **Symptom:** adding a top-level `.env` autoload to core/library modules turned the suite
   red across unrelated tests; credentials "sometimes" resolve depending on import/test order.
-- **Root cause:** loading `.env` during a *library* import leaks ambient env into hermetic
+- **Root cause:** loading `.env` during a _library_ import leaks ambient env into hermetic
   tests and couples units to global state. A real attempt to do this caused a cascade and was
   reverted.
 - **Avoid:** keep `.env` loading at the **CLI entry edge only** —
@@ -56,7 +59,8 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   flag to `"1"`); lazy call-time readers in core. Related: BB-8.
 
 ### BB-3 — `patch.dict(sys.modules)` over `chromadb` poisons later tests
-- **Symptom:** a test that patches `sys.modules["chromadb"]` passes, then a *later*
+
+- **Symptom:** a test that patches `sys.modules["chromadb"]` passes, then a _later_
   test dies with `cannot load module more than once` (PyO3 native extension).
 - **Root cause:** `patch.dict(sys.modules)` wipes chromadb's compiled PyO3 extension;
   it cannot be re-imported in the same process. A "restore" fixture made it worse by
@@ -66,6 +70,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** `tests/conftest.py` chromadb warm-up (deterministic suite, ~8× faster).
 
 ### BB-4 — OpenAPI ↔ frontend contract drift fails CI
+
 - **Symptom:** the `frontend-contract` CI job fails on a `schema.d.ts` diff after a
   gateway route change.
 - **Root cause:** the generated TypeScript transport contract
@@ -77,6 +82,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** CI `frontend-contract` job; `npm run --prefix frontend check:api`.
 
 ### BB-5 — `paths.workspace_dir` does not exist
+
 - **Symptom:** `AttributeError` reaching for `paths.workspace_dir`.
 - **Root cause:** the path accessor was never named that.
 - **Avoid:** use `paths.skills_dir` (and the other `get_hachi_paths()` accessors:
@@ -84,6 +90,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** `src/hachi/core/paths.py` (covered by the strict mypy gate).
 
 ### BB-6 — `ProcessSharedServices` is `None` before a session boots
+
 - **Symptom:** `AttributeError`/`NoneType` when touching shared services outside a
   live session (e.g. in a CLI path or a test that didn't boot one).
 - **Root cause:** `ProcessSharedServices` is lazy — it does not exist until a session
@@ -93,6 +100,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** None yet — add a regression test when next touched.
 
 ### BB-7 — `hachi` ↔ `tokoboros` directory junction (double collection)
+
 - **Symptom:** the suite appears to collect twice / a sibling `tokoboros` path shows
   the same files; `git core.hooksPath` may point into the junction.
 - **Root cause:** `D:\OpenGigantic\hachi` and a sibling `tokoboros` path are the same
@@ -102,6 +110,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** `pyproject.toml` `[tool.pytest.ini_options] norecursedirs`.
 
 ### BB-8 — OAuth client id read as an import-time global never saw `.env`
+
 - **Symptom:** Google Workspace config looked correct but auth never picked up
   `GOOGLE_CLIENT_ID`; spend/integration silently inert.
 - **Root cause:** the id was read into a module-level global at import, before any
@@ -111,6 +120,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** regression test for lazy OAuth credential resolution (added with the fix).
 
 ### BB-9 — OpenAI-compatible streaming reported `$0` cost → daily spend cap inert
+
 - **Symptom:** per-turn cost/tokens were `$0` across many real turns on OpenAI-compatible
   providers; the daily spend cap never triggered.
 - **Root cause:** `OpenAICompatibleClient.generate_stream` omitted
@@ -122,6 +132,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   OpenAI-compat turn (added with the fix).
 
 ### BB-10 — Web-UI OAuth token invisible to agent (key prefix mismatch + wrong CLI command)
+
 - **Symptom:** agent always treats the user as unauthenticated with Google even after they
   authenticated through the web UI; every Google tool call raises "Google needs a one-time
   browser sign-in… Run `hachi auth google` once" — but `hachi auth google` does not exist.
@@ -137,6 +148,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `tests/test_oauth.py::test_noninteractive_error_mentions_correct_cli_command`.
 
 ### BB-11 — Connecting Google via web UI never enables the agent capability
+
 - **Symptom:** Integrations page shows Google as "connected" (green dot), but every Gmail
   query reports "Gmail is currently disabled." Re-connecting doesn't help; restarting the
   gateway doesn't help.
@@ -153,6 +165,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `test_callback_failure_does_not_enable_capability`).
 
 ### BB-12 — Idempotency key reuse across page reloads returns stale response instantly
+
 - **Symptom:** a new query instantly returns the previous turn's exact response verbatim;
   the response appears before the LLM has had time to process the new prompt.
 - **Root cause:** `store.ts`'s module-level `_id` counter resets to 100 on every page
@@ -162,10 +175,11 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** include a per-page-load nonce (`_PAGE_NONCE` in `chat.ts`, generated once at
   module load via `crypto.randomUUID()`) in every turn's idempotency key. Never use a
   predictable counter alone as the idempotency key when the session may outlive the page.
-- **Locked by:** `frontend/src/lib/data/domains/chat.test.ts` — *buildTurnKey produces
-  different keys for the same hachiMsgId with different page-load nonces*.
+- **Locked by:** `frontend/src/lib/data/domains/chat.test.ts` — _buildTurnKey produces
+  different keys for the same hachiMsgId with different page-load nonces_.
 
 ### BB-9 — Secret keys blocked with no escape hatch; `secret:` refs not resolved at MCP connect time
+
 - **Symptom:** POST `/runtime/mcp/register` with an env var like `API_KEY` always 422s
   even when the value is a `secret:mykey` reference. Conversely, servers whose TOML env
   contains raw `secret:` strings boot with the literal string instead of the resolved value.
@@ -179,6 +193,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `TestMcpSetupFromConfigSecretRefs`); `tests/test_secret_store.py::TestSecretStoreGatewayAPI`.
 
 ### BB-10 — TOML-only MCP servers invisible until a live session exists
+
 - **Symptom:** after `POST /runtime/mcp/register`, GET `/runtime/mcp/inventory` returns an
   empty list if no conversation has been started yet. Users think registration failed.
 - **Root cause:** `mcp_inventory()` in `GatewayControlPlane` only enriched servers reported by
@@ -188,6 +203,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** `tests/test_mcp_registration.py::TestMcpInventoryTomlOnly`.
 
 ### BB-11 — Search provider is a boot-time registry decision; Tavily key stored live has no effect
+
 - **Symptom:** user saves their Tavily API key via the Integrations UI; the current conversation
   still reports "web search unavailable" and no `web_search` tool appears.
 - **Root cause:** `ProviderRegistry` is built once at `boot_agent`; storing a credential later
@@ -204,6 +220,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 > entries below continue the sequence from the real BB-12.
 
 ### BB-13 — Conversation dropdown empty on boot — `recent_sessions` short-circuited with no live agent
+
 - **Symptom:** at server start the "New conversation" dropdown shows "No recent sessions"
   even though `sessions.db` holds prior conversations; they only appear after the first turn.
 - **Root cause:** `_InProcessGatewayRuntime.recent_sessions` returned `[]` whenever `_agents`
@@ -215,19 +232,21 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** `tests/test_web_gui_diag.py::TestRecentSessionsNoAgent`.
 
 ### BB-14 — Tavily key saved via UI invisible to provider + Test Connection (key-name mismatch)
+
 - **Symptom:** after saving a Tavily API key in Integrations, "Test Connection" reports
   "No Tavily API key stored" and web search stays unavailable.
 - **Root cause:** the credential dialog writes the namespaced key
   `apikey.tavily.tavily_api_key` (`oauth_flow.store_apikey_credential`), but
   `TavilySearchProvider._resolve_api_key` and the Test Connection `_resolve_secret` only read
   the bare `tavily_api_key`. `ProviderRegistry.from_config` already checked BOTH keys for
-  *detection*, so the provider registered but then failed to find the key at call time.
+  _detection_, so the provider registered but then failed to find the key at call time.
 - **Avoid:** readers of a connector credential must resolve the SAME key the writer used —
   check both `apikey.<connector>.<field>` and the bare name (mirror the registry's list).
 - **Locked by:** `tests/test_web_gui_diag.py::TestTavilyKeyResolution`,
   `::TestTavilyTestConnectionEndpoint`.
 
 ### BB-15 — Permission tier silently reverts to Standard when the external `/models` call fails
+
 - **Symptom:** setting the safety tier to "Open" reverts to "Standard" (on reload / intermittently),
   even though `settings.toml` correctly persists `tier = "unrestricted"`.
 - **Root cause:** `loadConfig` fetched `/config` (12 ms, the safety source of truth) and
@@ -240,6 +259,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   ("keeps the /config tier when /models REJECTS").
 
 ### BB-16 — MCP server stuck showing "starting" — unmapped `pending_restart` status
+
 - **Symptom:** a TOML-persisted MCP server (e.g. a legacy "demo") shows "starting" forever
   even when no session is live and it is not actually booting.
 - **Root cause:** the backend reports `pending_restart` (registered, not connected this session),
@@ -250,6 +270,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   ("adaptMcpServer — real mapping (BB-16)").
 
 ### BB-17 — MCP servers table columns misaligned with their headers
+
 - **Symptom:** in the MCP servers table, cell values (status/tools/transport/uptime/toggle)
   don't line up under their column headers.
 - **Root cause:** the header reserved fixed widths (Enabled 40, spacer 32) but the row's toggle
@@ -261,6 +282,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `width:40` (= Switch width = header), delete button to a `width:32` slot (= header spacer).
 
 ### BB-18 — Registering an MCP server with an API key was impossible from the UI
+
 - **Symptom:** registering e.g. context7 with `CONTEXT7_API_KEY` returned HTTP 422
   ("looks like a secret; store the value via POST /runtime/secrets …"); the dialog also
   hard-blocked secret-looking stdio env keys client-side.
@@ -274,6 +296,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   ("extractMcpSecrets — transparent secret handling").
 
 ### BB-19 — Re-registering an MCP server clobbered its persisted `enabled` flag
+
 - **Symptom:** an `[mcp_servers.NAME]` entry that had `transport`, `url`, **and**
   `enabled = true` came back with only `transport` + `url` after the server was
   registered again (e.g. the user edited its URL in the UI). The lifecycle flag was
@@ -283,7 +306,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   from the in-memory `MCPServerConfig`. That dataclass has no `enabled` field (it's
   written separately by `set_mcp_enabled`), so `to_toml_entry()` never emits it and
   the re-register wiped it. (Siblings were already safe — register/delete only ever
-  touched the targeted key — but the *targeted* entry lost any field the config
+  touched the targeted key — but the _targeted_ entry lost any field the config
   doesn't model.)
 - **Avoid:** when persisting a server, edit ONLY the keys the config owns
   (`MCPServerConfig.TOML_MANAGED_KEYS`) — overwrite those, prune managed keys that no
@@ -295,6 +318,55 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `test_reregister_transport_switch_prunes_stale_keys_keeps_enabled`,
   `test_register_then_delete_leaves_sibling_byte_for_byte`,
   `test_toml_managed_keys_cover_to_toml_entry`).
+
+### BB-20 — Default OpenAI model was `gpt-4.1-mini` (not in catalog)
+
+- **Symptom:** cost tracking returned `$0` for sessions using the default model; model-picker UI showed no entry highlighted.
+- **Root cause:** `config_loader.py:217` and `cli/main.py:3798` (tier-plan builder) both hardcoded `"gpt-4.1-mini"` as the fallback, but that id was absent from `BUNDLED_MODEL_DEFAULTS`. `ModelRegistry.get("gpt-4.1-mini")` returned `None`.
+- **Avoid:** whenever changing the default model, verify `ModelRegistry.build(...).get(model_id) is not None`. The locking test asserts this.
+- **Locked by:** `tests/test_config_loader.py::test_openai_default_model_is_catalog_member`.
+
+### BB-21 — Messages table had no `model` column; replayed sessions showed wrong model label
+
+- **Symptom:** reloading a past session showed the current provider model on all past messages instead of the model used when the message was generated.
+- **Root cause:** `messages` table had no `model` column; `log_message()` never accepted one; the synthesised `session.chat.completed` event from `control_plane._synthesize_history_events` emitted `payload: {}`, not `payload: {"model": ...}`. Frontend reads `payload.model` on this event to update `lastUsedModel`.
+- **Avoid:** when adding a new per-turn metadata field, touch all four layers: DB schema + migration, `log_message()` signature, `get_session_messages()` SELECT, and the history-replay event synthesis.
+- **Locked by:** `tests/test_session_store_model_column.py` (4 tests).
+
+### BB-22 — New OpenAI models (gpt-4.1, o3-mini, o4-mini) missing from catalog; o3/o3-mini prefix collision risk
+
+- **Symptom:** configuring `gpt-4.1-mini`, `o3-mini`, or `o4-mini` as the provider model gave `$0` cost tracking and no entry in the model picker.
+- **Root cause:** `BUNDLED_MODEL_DEFAULTS` only had `gpt-4o` and `gpt-4o-mini`; `MODEL_PRICING` had no entries for the GPT-4.1 family or o-series. Without an explicit `"o3-mini"` entry, `pricing_for` would prefix-match `"o3"` and use o3's (10× higher) price.
+- **Avoid:** when adding an o-series model, always add BOTH the base id AND any cheaper variants (e.g. `o3` AND `o3-mini`) as explicit keys in `MODEL_PRICING` so longer-prefix-wins resolves them independently. Extend `TestCurrentOpenAIModels` when adding future models.
+- **Locked by:** `tests/test_routing_registry.py::TestCurrentOpenAIModels` (5 tests).
+
+### BB-23 — MCP servers that failed before transport setup were invisible in the operator inventory
+
+- **Symptom:** an MCP server with an invalid TOML config or gate-denied by the permission tier emitted `MCP_SERVER_FAILED` at boot but never appeared in `GET /runtime/mcp/inventory`, making it impossible to diagnose why a server wasn't available.
+- **Root cause:** `MCPManager.get_inventory()` only iterated `_servers`, which is populated only after a successful transport setup. Servers that failed in `MCPServerConfig.from_toml_entry()` or were denied by `gate.is_mcp_server_allowed()` never entered `_servers`.
+- **Avoid:** call `mcp_manager.register_boot_failure(name, reason)` at every early-exit failure path in `_configure_mcp_servers` before the `mcp_manager.setup_from_config()` call. `get_inventory()` merges `_boot_failures` into the result.
+- **Locked by:** `tests/test_mcp_registration.py::TestMcpBootFailureInventory` (3 tests).
+
+### BB-24 — Tavily connector showed "disconnected" when package not installed (no actionable UI path)
+
+- **Symptom:** users without `tavily-python` installed saw a dead-end API-key form ("Enter your Tavily API key") when the package wasn't installed — entering a key silently failed because the import guard prevented the provider from loading.
+- **Root cause:** `connector_status("tavily")` returned `"disconnected"` regardless of whether the Python package was installed, conflating two distinct states.
+- **Avoid:** for connectors backed by optional Python packages, check `importlib.util.find_spec(package_name)` first. If `None`, return `status="unavailable"` and `package_installed=False` so the UI can show install guidance instead of a key-entry form.
+- **Locked by:** `tests/test_tavily_status_tristate.py::TestTavilyStatusTristate` (4 tests).
+
+### BB-25 — `update_permissions(tier)` wrote settings.toml but never regenerated device-permissions.og
+
+- **Symptom:** changing the permission tier via the Settings UI appeared to save, but `PermissionGate` (which reads `device-permissions.og`) remained at the old tier on the next boot and for any new session started after the change.
+- **Root cause:** `_InProcessGatewayRuntime.update_permissions()` called `write_global_config(config)` which persists to `settings.toml`, but `PermissionGate` reads `device-permissions.og` — a separate file that was never regenerated. The gap was invisible until a fresh boot, because the in-process gate object (already built) wasn't rebuilt either.
+- **Avoid:** after any tier change, atomically regenerate `device-permissions.og` using `generate_permissions_og(tier, custom_paths)`, preserving existing `allowed_paths`. Also add a boot-reconcile step in `boot_agent` after `load_config()`: if `config.permissions.tier != gate.tier`, rebuild gate + approver.
+- **Locked by:** `tests/test_permissions_update.py::TestUpdatePermissionsRegeneratesOg` (3 tests).
+
+### BB-26 — `SessionExpiredError` (HTTP 410) left user to re-type their message
+
+- **Symptom:** after a gateway restart, the next `POST /sessions/{id}/messages` returned 410 with `"session_expired"` and the UI showed a toast asking the user to resend manually — the in-flight prompt was lost.
+- **Root cause:** the frontend `sendMessage` catch handler recognised `session_expired` but only cleared the stale session ID and showed a toast. It did not mint a new session or replay the prompt.
+- **Avoid:** on `session_expired` (410), immediately call `ensureSession()` to mint a fresh session and replay the original `POST` with a new idempotency key. Use a distinct `_r`-suffixed nonce so the server does not de-duplicate it against the dead-session key. The daily spend cap is enforced server-side (durable ledger) and still applies on retry — do not add client-side spend bypass.
+- **Locked by:** `frontend/src/lib/data/domains/chat.ts` auto-retry in `.catch(async …)` block. No dedicated vitest yet (SSE stream integration is hard to mock end-to-end).
 
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,

@@ -1523,6 +1523,10 @@ class MCPManager:
 
     def __init__(self) -> None:
         self._servers: dict[str, MCPServerConnection] = {}
+        # Boot failures for servers that failed before entering _servers (e.g. bad
+        # TOML config or gate denial). These appear in get_inventory() as "failed"
+        # entries so the operator UI always shows a complete picture (Bug 4).
+        self._boot_failures: dict[str, str] = {}
 
     def setup_from_node(self, node: Any) -> bool:
         """Create and start an MCP server from a role=mcp .og node.
@@ -1840,6 +1844,14 @@ class MCPManager:
             return 0
         return len(server.tools)
 
+    def register_boot_failure(self, name: str, reason: str) -> None:
+        """Record a server that failed before entering _servers (e.g. bad config, gate denial).
+
+        These entries appear in get_inventory() with status="failed" so the
+        operator UI shows the full picture, not only successfully started servers.
+        """
+        self._boot_failures[name] = reason
+
     def get_inventory(self) -> list[dict[str, Any]]:
         """Return a structured MCP inventory snapshot for operator views.
 
@@ -1853,8 +1865,12 @@ class MCPManager:
           - ``"failed"``   — server failed to start; see ``err`` for reason.
           - ``"stopped"``  — previously alive but transport is no longer alive.
 
+        Boot failures (servers that failed before transport setup, e.g. invalid TOML
+        or gate denial) are also returned as "failed" entries even though they were
+        never added to ``_servers``.
+
         Returns:
-            List of inventory dicts, one per registered server.
+            List of inventory dicts, one per registered or attempted server.
         """
         rows: list[dict[str, Any]] = []
         for name, server in self._servers.items():
@@ -1878,6 +1894,21 @@ class MCPManager:
                 "err": last_err,
             }
             rows.append(entry)
+
+        # Include pre-registration failures (bad TOML, gate denial) that never
+        # entered _servers. Skip if the server was later successfully added.
+        for name, reason in self._boot_failures.items():
+            if name not in self._servers:
+                rows.append(
+                    {
+                        "name": name,
+                        "transport": "unknown",
+                        "status": "failed",
+                        "tool_count": 0,
+                        "tools": [],
+                        "err": reason,
+                    }
+                )
         return rows
 
     @property

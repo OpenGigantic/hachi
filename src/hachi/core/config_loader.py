@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # Known top-level keys in ResolvedConfig (read from model fields — not hard-coded)
 # ---------------------------------------------------------------------------
 
+
 def _known_config_keys() -> frozenset[str]:
     """Return the set of top-level key names declared on ResolvedConfig."""
     return frozenset(ResolvedConfig.model_fields.keys())
@@ -31,6 +32,7 @@ def _known_config_keys() -> frozenset[str]:
 # ---------------------------------------------------------------------------
 # File-permission safety check
 # ---------------------------------------------------------------------------
+
 
 def _check_file_permissions(path: Path, *, strict: bool = False) -> None:
     """Warn (or abort under strict) if *path* is world-writable on POSIX.
@@ -53,7 +55,7 @@ def _check_file_permissions(path: Path, *, strict: bool = False) -> None:
         msg = (
             f"SECURITY: settings file {path} is world-writable (mode {oct(mode)}). "
             "An unprivileged process could tamper with agent configuration. "
-            "Fix with: chmod o-w \"" + str(path) + "\""
+            'Fix with: chmod o-w "' + str(path) + '"'
         )
         if strict:
             raise PermissionError(msg)
@@ -63,6 +65,7 @@ def _check_file_permissions(path: Path, *, strict: bool = False) -> None:
 # ---------------------------------------------------------------------------
 # Unknown-key validation
 # ---------------------------------------------------------------------------
+
 
 def _warn_unknown_keys(parsed: dict[str, Any], path: Path, *, strict: bool = False) -> None:
     """Compare *parsed* TOML against known ResolvedConfig fields and warn/raise on unknowns.
@@ -214,7 +217,7 @@ def _env_overrides(
             if explicit_model:
                 provider_payload["model"] = explicit_model
             elif not has_ollama and base_kind != "openai-compatible":
-                provider_payload["model"] = "gpt-4.1-mini"
+                provider_payload["model"] = "gpt-4o-mini"
             result = _deep_merge(result, {"provider": provider_payload})
 
         if has_ollama:
@@ -230,9 +233,7 @@ def _env_overrides(
             result = _deep_merge(result, {"provider": provider_payload})
 
     if env_get("HACHI_PERMISSION_TIER"):
-        result = _deep_merge(
-            result, {"permissions": {"tier": env_get("HACHI_PERMISSION_TIER")}}
-        )
+        result = _deep_merge(result, {"permissions": {"tier": env_get("HACHI_PERMISSION_TIER")}})
 
     if env_get("HACHI_MAX_TOKENS"):
         try:
