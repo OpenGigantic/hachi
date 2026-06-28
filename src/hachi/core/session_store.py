@@ -96,6 +96,7 @@ class SessionStore:
                 content     TEXT,
                 tool_name   TEXT,
                 timestamp   TEXT NOT NULL,
+                model       TEXT,
                 FOREIGN KEY (session_id) REFERENCES sessions(id)
             );
 
@@ -174,6 +175,11 @@ class SessionStore:
         # C1: session ownership — NULL for legacy rows (backward-compat = allow access).
         if "owner_token_hash" not in existing:
             self._conn.execute("ALTER TABLE sessions ADD COLUMN owner_token_hash TEXT")
+            self._conn.commit()
+        # Bug 6: messages.model column was added after initial release.
+        msg_existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(messages)")}
+        if "model" not in msg_existing:
+            self._conn.execute("ALTER TABLE messages ADD COLUMN model TEXT")
             self._conn.commit()
         # NOTE(issue12): no automatic ghost-cleanup runs here. Silently deleting
         # message-less session rows on every DB open is dangerous (it would also
@@ -546,7 +552,12 @@ class SessionStore:
     # ==========================================
 
     def log_message(
-        self, session_id: str, role: str, content: str, tool_name: str | None = None
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        tool_name: str | None = None,
+        model: str | None = None,
     ) -> None:
         """Insert a message row synchronously; batch only the COMMIT.
 
@@ -561,6 +572,7 @@ class SessionStore:
             role: Message role — 'user', 'assistant', or 'tool'.
             content: The message text. Truncated to 50K chars to bound DB growth.
             tool_name: Optional tool name if this is a tool call/result.
+            model: LLM model id used to generate this message (assistant rows only).
         """
         now = datetime.datetime.now(datetime.UTC).isoformat()
         # Truncate very large tool outputs to prevent DB bloat.
@@ -571,9 +583,9 @@ class SessionStore:
             # enforcement — start_session must have created the row) and same-connection
             # reads see the row without a flush.
             self._conn.execute(
-                "INSERT INTO messages (session_id, role, content, tool_name, timestamp) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (session_id, role, content, tool_name, now),
+                "INSERT INTO messages (session_id, role, content, tool_name, timestamp, model) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, role, content, tool_name, now, model),
             )
             self._uncommitted += 1
             self._schedule_flush()
@@ -757,12 +769,12 @@ class SessionStore:
                 chronological order). Bounds context bloat on very long sessions.
 
         Returns:
-            List of dicts with role, content, tool_name, timestamp — oldest first.
+            List of dicts with role, content, tool_name, timestamp, model — oldest first.
         """
         self.flush_sync()
         with self._lock:
             rows = self._conn.execute(
-                "SELECT role, content, tool_name, timestamp FROM messages "
+                "SELECT role, content, tool_name, timestamp, model FROM messages "
                 "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
                 (session_id, limit),
             ).fetchall()

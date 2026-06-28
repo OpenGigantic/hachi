@@ -48,9 +48,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def build_episode_summary(
-    interactions: list[dict[str, Any]], *, max_chars: int = 1500
-) -> str:
+def build_episode_summary(interactions: list[dict[str, Any]], *, max_chars: int = 1500) -> str:
     """Build a rich, deterministic episode summary from interaction_log rows.
 
     Produces a plain-text digest suitable for storage in the ``episodic_memory``
@@ -164,6 +162,21 @@ def _is_substantive_fact(fact: str) -> bool:
     if stripped.lower() in _TRIVIAL_FACT_PATTERNS:
         return False
     return True
+
+
+def _record_extraction_spend(llm_client: Any, response: Any) -> None:
+    """Record a fact-extraction LLM call's spend into the durable daily ledger so
+    background extraction isn't invisible to /spend and the daily cap (BB-31)."""
+    try:
+        from hachi.core.cost import record_background_usage
+
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            record_background_usage(
+                getattr(llm_client, "model", "unknown"), usage, feature="extraction"
+            )
+    except Exception:
+        logger.debug("extract_facts: failed to record extraction spend", exc_info=True)
 
 
 def extract_facts(
@@ -304,6 +317,7 @@ def extract_facts(
             ),
             tools=[_EXTRACT_TOOL],
         )
+        _record_extraction_spend(llm_client, response)
 
         raw_nodes: list[dict[str, Any]] = []
         for tc in response.tool_calls or []:
@@ -375,6 +389,7 @@ def extract_facts(
             messages=[_LLMMessage(role="user", content=prompt)],
             system_prompt="You are a fact extraction engine. Output pure JSON only.",
         )
+        _record_extraction_spend(llm_client, response)
 
         text_out = response.content.strip()
         if text_out.startswith("```json"):

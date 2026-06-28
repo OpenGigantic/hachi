@@ -61,6 +61,30 @@ _RETRYABLE_HINTS = ("overloaded", "rate limit", "timeout", "timed out", "tempora
 _MAX_LLM_RETRIES = 3
 _LLM_RETRY_BASE_DELAY = 1.0
 
+# R5 — Tool-output compression: cap text results before they enter history.
+# Large tool outputs (e.g. full file contents, long web pages) are truncated to
+# this limit and suffixed with a char-count note so the model knows data was elided.
+_TOOL_OUTPUT_MAX_CHARS: int = 8_000
+
+# R9 — Pre-generation context trim: if estimated token count is still above this
+# threshold AFTER the standard per-iteration housekeeping (prepare_for_turn), run
+# a second, more aggressive clear_stale_tool_results pass before the LLM call.
+# Positioned above _TOOL_RESULT_CLEAR_TOKENS (12 000) to avoid redundant sweeps.
+_PRE_GEN_TRIM_THRESHOLD: int = 16_000
+
+
+def _compress_tool_output(text: str, max_chars: int = _TOOL_OUTPUT_MAX_CHARS) -> str:
+    """Truncate an oversized text tool result (R5).
+
+    If *text* is within *max_chars*, it is returned unchanged. If it exceeds the
+    limit, the excess is dropped and a one-line note is appended so the model
+    knows the output was cut. Non-tool (ToolResultBlocks) paths never call this.
+    """
+    if len(text) <= max_chars:
+        return text
+    total = len(text)
+    return text[:max_chars] + f"\n[truncated: {total} chars total, showing first {max_chars}]"
+
 
 def _is_retryable_llm_error(exc: Exception) -> bool:
     """Best-effort detection of transient LLM/provider errors (provider-agnostic).
@@ -245,6 +269,34 @@ class ToolRegistry:
                         continue
                 self._groups[name] = default
 
+    def reclassify_by_prefix(self, prefix_groups: dict[str, str]) -> None:
+        """Move tools whose names match a given prefix into a new group.
+
+        Designed as a post-``classify`` step for dynamically-discovered tool
+        namespaces (e.g. MCP servers) whose prefixes are not known at boot-classify
+        time.  Longest prefix wins when multiple prefixes match the same name.
+
+        BB-32: MCP tools land in the ``"integrations"`` default group (never
+        activated), making them invisible to the LLM.  This method lets the
+        orchestrator relocate them into the ``"mcp"`` group immediately after
+        classify, so ``get_schemas(active_groups={"mcp"})`` exposes them.
+
+        Args:
+            prefix_groups: Mapping of prefix string → group name, e.g.
+                ``{"demo_": "mcp", "context7_": "mcp"}``.  An empty dict is a
+                no-op.
+        """
+        if not prefix_groups:
+            return
+        for name in self._tools:
+            match = max(
+                (p for p in prefix_groups if name.startswith(p)),
+                key=len,
+                default=None,
+            )
+            if match is not None:
+                self._groups[name] = prefix_groups[match]
+
     def available_groups(self) -> set[str]:
         """Return the set of groups currently in use (for system-prompt listing)."""
         return set(self._groups.values())
@@ -325,6 +377,7 @@ class ExecutionLoop:
         max_tokens_per_turn: int = 0,
         max_wall_seconds: float = 600.0,
         router=None,
+        routing_store=None,
     ):
         """Initialize the execution loop.
 
@@ -352,6 +405,10 @@ class ExecutionLoop:
                 provided, tools and future slices may call ``router.select(capability)``
                 for capability-aware routing.  When ``None`` (default), the loop behaves
                 exactly as today — ``llm_client`` is the only client used.
+            routing_store: Optional :class:`~hachi.gateway.routing_store.RoutingConfigStore`.
+                When provided, the loop pulls a new :class:`RoutingSnapshot` from the
+                store at each turn boundary if the store's version is newer than the
+                last-applied version.  ``None`` disables hot-reload (back-compat).
         """
         self.llm_client = llm_client
         self.registry = registry
@@ -362,6 +419,10 @@ class ExecutionLoop:
         self.cost_tracker = cost_tracker
         # Optional ModelRouter — when None, loop uses llm_client directly (back-compat).
         self.router = router
+        # Phase 3: optional hot-reload store; None disables snapshot polling.
+        self.routing_store = routing_store
+        # Phase 3: version of the last routing snapshot adopted; 0 = boot state.
+        self._applied_routing_version: int = 0
         # Per-turn LLM client: resolved at run() start via router.select() when a router
         # is present; falls back to llm_client for back-compat when router is None.
         self._turn_client: BaseLLMClient = llm_client
@@ -383,6 +444,10 @@ class ExecutionLoop:
         # Tool groups unlocked for the current turn (besides always-on "core").
         # Reset each run(); mutated when the model calls use_tools / load_skill.
         self._active_groups: set[str] = set()
+        # BB-32: groups that are ALWAYS active for this session (e.g. "mcp").
+        # They are merged into _active_groups at the top of every run() so the
+        # LLM never loses sight of them between turns.
+        self._persistent_groups: set[str] = set()
         # Cooperative cancel: set by cancel(); checked at the top of each iteration.
         self._cancel_event: threading.Event = threading.Event()
         # Text accumulated across iterations (for partial output on cancel).
@@ -477,6 +542,31 @@ class ExecutionLoop:
             return tc.cacheable_system, (tc.dynamic_system or None)
         return self._build_system_prompt(), None
 
+    def _maybe_apply_routing_snapshot(self) -> None:
+        """Pull a newer routing snapshot from the store if one is available.
+
+        Called at the start of each turn boundary (inside ``_resolve_turn_client``
+        or directly from ``run()`` when ``router`` is ``None``).  Safe to call
+        from any single-session thread — no lock needed because each router is
+        per-session and is only accessed from that session's own turn thread.
+
+        No-op when:
+          - ``routing_store`` is ``None`` (hot-reload not configured).
+          - ``router`` is ``None`` (no router to update).
+          - The store version equals the last-applied version (already current).
+          - The store has no snapshot yet (``current_snapshot is None``).
+        """
+        if self.routing_store is None or self.router is None:
+            return
+        store_version = self.routing_store.version
+        if store_version <= self._applied_routing_version:
+            return
+        snap = self.routing_store.current_snapshot
+        if snap is None:
+            return
+        self.router.apply_snapshot(snap)
+        self._applied_routing_version = store_version
+
     def _resolve_turn_client(self, user_input: str) -> None:
         """Classify *user_input* and resolve a capability-tiered client via the router.
 
@@ -488,6 +578,9 @@ class ExecutionLoop:
         """
         from hachi.core.routing.classifier import classify_turn_capability
         from hachi.core.routing.router import NoRouteError
+
+        # Phase 3: pull a newer routing snapshot before this turn's select() calls.
+        self._maybe_apply_routing_snapshot()
 
         # Reset the sticky cache so this turn re-selects independently.
         self.router.new_turn()
@@ -741,7 +834,9 @@ class ExecutionLoop:
             self._resolve_turn_client(user_input_for_turn)
 
         # Only "core" tools are sent until the model unlocks groups this turn.
-        self._active_groups = set()
+        # BB-32: seed with persistent groups (e.g. "mcp") so MCP tools are
+        # always visible to the LLM without an explicit use_tools call.
+        self._active_groups = set(self._persistent_groups)
         # Reset per-run state.
         self._cancel_event.clear()
         self._partial_text = []
@@ -857,6 +952,23 @@ class ExecutionLoop:
                     if fixed:
                         self.on_event("history_repaired", {"orphaned_tool_uses": fixed})
 
+                # R9 — pre-generation context trim: if history is still large after the
+                # standard housekeeping, do an extra tool-result sweep with aggressive
+                # settings (smaller keep window, lower min_chars) before the LLM call so
+                # fewer tokens are sent to the provider.  Guard with getattr: SubAgentMemory
+                # is a lightweight stand-in that skips all compaction housekeeping.
+                _estimate_fn = getattr(self.memory, "estimate_token_count", None)
+                _clear_fn = getattr(self.memory, "clear_stale_tool_results", None)
+                if callable(_estimate_fn) and callable(_clear_fn):
+                    _pre_gen_tokens = _estimate_fn()
+                    if _pre_gen_tokens > _PRE_GEN_TRIM_THRESHOLD:
+                        _extra_cleared = _clear_fn(keep_recent_messages=3, min_chars=200)
+                        if _extra_cleared:
+                            self.on_event(
+                                "context_trimmed",
+                                {"cleared": _extra_cleared, "tokens_before": _pre_gen_tokens},
+                            )
+
                 self.on_event("thinking", {"iteration": iterations})
 
                 # Build the system prompt split into a stable cacheable prefix and a
@@ -946,8 +1058,18 @@ class ExecutionLoop:
                 # Account for token usage / estimated cost and surface it live.
                 if self.cost_tracker is not None:
                     model_name = getattr(self._turn_client, "model", "unknown")
-                    self.cost_tracker.record(model_name, response.usage)
+                    self.cost_tracker.record(model_name, response.usage, feature="chat")
                     self.on_event("usage", self.cost_tracker.snapshot().to_dict())
+                    # Per-call cache/cost breakdown (hit-rate + fresh/cached/no-cache
+                    # spread) so cache effectiveness is observable per request, not just
+                    # buried in the aggregate. Guarded — observability never breaks a turn.
+                    try:
+                        self.on_event(
+                            "cache_metrics",
+                            self.cost_tracker.cache_metrics(model_name, response.usage),
+                        )
+                    except Exception:
+                        pass
 
                 # Stop this turn if a per-turn budget cap is now exceeded.
                 turn_budget_reason = self._turn_budget_exceeded()
@@ -1065,7 +1187,7 @@ class ExecutionLoop:
                         result_content: Any = list(raw_result.blocks)
                         result_summary = raw_result.summary or "[multimodal content]"
                     else:
-                        result_content = str(raw_result)
+                        result_content = _compress_tool_output(str(raw_result))
                         result_summary = result_content
 
                     self.on_event(

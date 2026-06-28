@@ -210,15 +210,16 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "write_file",
         "run_terminal_command",
         "rollback_changes",
-        # ObjectGraph skills (3-pass) + the lazy-loading meta-tool
+        # ObjectGraph skills (3-pass) + the lazy-loading meta-tool. The skill-routing
+        # contract in brain.og requires skill_dependencies / check_skill_assertions to
+        # be present right after load_skill, so they stay core. The rarer authoring
+        # tools (save_skill, skill_changelog) are lazy under the "authoring" group.
         "search_skills",
         "list_skills",
         "peek_skill",
         "load_skill",
         "skill_dependencies",
         "check_skill_assertions",
-        "skill_changelog",
-        "save_skill",
         "use_tools",
         # long-term memory / sessions
         "core_save_memory",
@@ -228,17 +229,28 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "core_search_user_profile",
         "core_delete_user_profile",
         "core_search_sessions",
-        # delegation
-        "delegate_task",
-        "list_roles",
+        # delegation: delegate_task / list_roles are lazy under the "delegation" group.
         # web (the common case; richer browser actions are gated under "browser")
         "browse_web",
+        # BB-33: search tools are always-on when a provider is configured;
+        # they're only registered when Tavily (or another SearchProvider) is
+        # present, so they cannot appear without a key — but classify() must
+        # not reclassify them to "integrations" (which is never activated).
+        "web_search",
+        "extract_url",
     }
 )
 
 # Non-core, statically-known tools → their on-demand group. Per-skill REST tools
 # are tagged at registration (group == skill name) and are not listed here.
 _GROUP_BY_TOOL_NAME: dict[str, str] = {
+    # Flagship-but-occasional tools trimmed out of always-on core to cut the per-turn
+    # tool-schema footprint (~1.3K tokens). Discoverable via the system prompt's
+    # "OPTIONAL TOOL GROUPS" list; the model unlocks them with use_tools(group=...).
+    "delegate_task": "delegation",
+    "list_roles": "delegation",
+    "save_skill": "authoring",
+    "skill_changelog": "authoring",
     "browser_act": "browser",
     "browser_screenshot": "browser",
     "python_sandbox": "sandbox",
@@ -910,6 +922,11 @@ class AgentSession:
         server = self.mcp_manager._servers.get(cfg.name)
         if server is not None:
             self.mcp_manager._register_server_tools(cfg.name, server, registry)
+        # BB-32: reclassify the new server's tools into "mcp" group and ensure
+        # the group is always-on for the running loop so the LLM sees them
+        # immediately without requiring a use_tools call.
+        registry.reclassify_by_prefix({f"{cfg.name}_": "mcp"})
+        self.loop._persistent_groups.add("mcp")
         _emit(MCP_SERVER_READY, {"server": cfg.name, "tool_count": tool_count})
         return {"ok": True, "tool_count": tool_count, "status": "ready"}
 
@@ -1622,7 +1639,9 @@ class AgentSession:
         if self._session_store and self._session_id:
             try:
                 self._session_store.log_message(self._session_id, "user", user_input)
-                self._session_store.log_message(self._session_id, "assistant", response or "")
+                self._session_store.log_message(
+                    self._session_id, "assistant", response or "", model=self.model_name or None
+                )
                 self._emit_event(
                     SESSION_PERSISTED,
                     {
@@ -1998,7 +2017,9 @@ def _configure_mcp_servers(
         try:
             cfg = MCPServerConfig.from_toml_entry(server_name, entry)
         except Exception:
-            emit(MCP_SERVER_FAILED, {"server": server_name, "reason": "invalid TOML config"})
+            _reason = "invalid TOML config"
+            emit(MCP_SERVER_FAILED, {"server": server_name, "reason": _reason})
+            mcp_manager.register_boot_failure(server_name, _reason)
             logger.warning(
                 "_configure_mcp_servers: failed to parse TOML entry for %r",
                 server_name,
@@ -2014,6 +2035,7 @@ def _configure_mcp_servers(
         decision = gate.is_mcp_server_allowed(server_name, trusted=True)
         if not decision.allowed:
             emit(MCP_SERVER_FAILED, {"server": server_name, "reason": decision.reason})
+            mcp_manager.register_boot_failure(server_name, decision.reason)
             continue
 
         started = mcp_manager.setup_from_config(cfg)
@@ -2502,6 +2524,36 @@ def boot_agent(
     config = load_config()
     brain_prompt = load_brain()
 
+    # Bug 7 boot-reconcile: if settings.toml tier drifts from device-permissions.og tier
+    # (e.g. update_permissions() wrote the .og but a crash prevented the in-process gate
+    # from being rebuilt), rebuild the gate + approver to match config before any tool
+    # registration reads permissions.
+    _config_tier = config.get("permissions", {}).get("tier", "")
+    if _config_tier and _config_tier != gate.tier:
+        try:
+            gate = PermissionGate(permissions_file)
+            if on_permission_request:
+                runtime_gate = InteractivePermissionGate(
+                    base_gate=gate,
+                    approval_handler=on_permission_request,
+                    event_emitter=emit_runtime_event,
+                )
+            else:
+                runtime_gate = gate
+            if on_permission_request is not None:
+                action_approver = HandlerApprover(on_permission_request, emit_runtime_event)
+            elif isinstance(runtime_gate, InteractivePermissionGate):
+                action_approver = RegistryApprover(get_approval_registry(), emit_runtime_event)
+            else:
+                action_approver = PolicyApprover(gate.tier)
+            logger.info(
+                "boot_agent: rebuilt gate to tier=%r (was %r per .og)",
+                gate.tier,
+                _config_tier,
+            )
+        except Exception:
+            logger.warning("boot_agent: gate reconcile failed", exc_info=True)
+
     provider_config = config.get("provider", {})
     model_name = provider_config.get("model") or config.get("agent", {}).get(
         "model", "claude-haiku-4-5"
@@ -2716,12 +2768,37 @@ def boot_agent(
             providers=_provider_registry,
             resilience=_retry_policy,
         )
+
+        # Phase 3: ensure RoutingConfigStore exists on the shared singleton and holds
+        # the boot snapshot so sessions can adopt future hot-reload updates at turn
+        # boundaries without a restart.
+        if getattr(_shared, "routing_store", None) is None:
+            from hachi.core.routing.snapshot import RoutingSnapshot
+            from hachi.gateway.routing_store import RoutingConfigStore
+
+            _rcs = RoutingConfigStore()
+            _boot_snap = RoutingSnapshot(
+                registry=_model_registry,
+                policy=_routing_policy,
+                resilience=_retry_policy,
+                version=0,
+                source="boot",
+            )
+            _rcs.init(_boot_snap)
+            _shared.routing_store = _rcs
+
         logger.info(
             "Routing boot: %d models registered; default=%s; auto=%s",
             len(_model_registry.all()),
             _routing_policy.default_model,
             _routing_policy.auto,
         )
+        # Cost-governance guard (BB-30): surface the silent "every chat turn routed to
+        # the priciest model" trap loudly at boot instead of letting it hide in the
+        # routing table. Never changes routing — an explicit choice is respected.
+        for _cost_warning in _routing_policy.costly_capability_warnings(_model_registry):
+            logger.warning(_cost_warning)
+            emit_runtime_event("cost.routing_warning", {"message": _cost_warning})
     except Exception:
         logger.debug(
             "Routing boot: failed to initialise routing layer; falling back to direct client",
@@ -3102,6 +3179,14 @@ def boot_agent(
         default="integrations",
     )
 
+    # BB-32: MCP tools land in "integrations" (never activated) because classify()
+    # doesn't know MCP server names at call time.  Reclassify them into "mcp" so
+    # activating that group exposes them to the LLM.
+    _mcp_prefixes = {f"{name}_": "mcp" for name in mcp_manager._servers}
+    _has_live_mcp = bool(_mcp_prefixes)
+    if _has_live_mcp:
+        tool_registry.reclassify_by_prefix(_mcp_prefixes)
+
     # Tell the model which optional domain groups it can unlock on demand. Skill
     # groups are omitted here — load_skill auto-activates those — so this lists only
     # the static domain groups (e.g. schedule, sandbox, browser, workflow).
@@ -3186,7 +3271,14 @@ def boot_agent(
         max_cost_per_turn=max_turn_cost_usd,
         max_tokens_per_turn=max_turn_tokens,
         router=_model_router,
+        routing_store=getattr(_shared, "routing_store", None),
     )
+
+    # BB-32: if live MCP servers were present at boot, persist "mcp" as an
+    # always-on group so MCP tools are visible to the LLM every turn without
+    # requiring a use_tools call.
+    if _has_live_mcp:
+        loop._persistent_groups.add("mcp")
 
     # 10. Create the Session
     session = AgentSession(

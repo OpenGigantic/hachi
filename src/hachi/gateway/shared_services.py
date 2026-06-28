@@ -96,6 +96,8 @@ class ProcessSharedServices:
     event_bus: Any = field(default=None)  # EventBus | None
     # Slice 2.2: process-level WaitConditionRegistry (None when durable_handlers off).
     wait_registry: Any = field(default=None)  # WaitConditionRegistry | None
+    # Phase 3: hot-reload routing store (None until first session boots with routing).
+    routing_store: Any = field(default=None)  # RoutingConfigStore | None
 
     # ------------------------------------------------------------------
     # Public API
@@ -276,16 +278,12 @@ class ProcessSharedServices:
         try:
             skill_engine.load_directory(paths.skills_dir)
         except OSError:
-            logger.warning(
-                "ProcessSharedServices: workspace skill indexing failed", exc_info=True
-            )
+            logger.warning("ProcessSharedServices: workspace skill indexing failed", exc_info=True)
         try:
             if default_skills_dir.exists():
                 skill_engine.load_directory(default_skills_dir)
         except OSError:
-            logger.warning(
-                "ProcessSharedServices: default-skills indexing failed", exc_info=True
-            )
+            logger.warning("ProcessSharedServices: default-skills indexing failed", exc_info=True)
 
         # --- MCPManager (shared MCP subprocess pool) ---
         mcp_manager = MCPManager()

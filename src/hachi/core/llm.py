@@ -458,9 +458,7 @@ class OpenAICompatibleClient(BaseLLMClient):
                     if btype == "tool_result":
                         rc = block.get("content", "")
                         if isinstance(rc, list):
-                            rc = "\n".join(
-                                b.get("text", "") for b in rc if b.get("type") == "text"
-                            )
+                            rc = "\n".join(b.get("text", "") for b in rc if b.get("type") == "text")
                         adapted.append(
                             {
                                 "role": "tool",
@@ -517,11 +515,15 @@ class OpenAICompatibleClient(BaseLLMClient):
 
         payload_messages: list[dict[str, Any]] = []
         if system_prompt:
-            sys_content = (
-                f"{system_prompt}\n\n{dynamic_system}" if dynamic_system else system_prompt
-            )
-            payload_messages.append({"role": "system", "content": sys_content})
+            payload_messages.append({"role": "system", "content": system_prompt})
         payload_messages.extend(self._adapt_messages(messages))
+        # Volatile per-turn context (time header, recall) goes LAST, as its own
+        # message, so it never mutates the stable system+tools prefix that OpenAI
+        # auto-caches across turns (prompt caching is a prefix match). Appending it
+        # to the system message — as we used to — changed the prefix every turn and
+        # defeated OpenAI's automatic caching entirely (BB-29).
+        if dynamic_system:
+            payload_messages.append({"role": "system", "content": dynamic_system})
 
         payload: dict[str, Any] = {
             "model": self.model,
@@ -554,6 +556,27 @@ class OpenAICompatibleClient(BaseLLMClient):
             )
         return tool_calls
 
+    @staticmethod
+    def _usage_from_openai(raw: dict[str, Any]) -> TokenUsage:
+        """Build a ``TokenUsage`` from an OpenAI-style ``usage`` object.
+
+        OpenAI reports cached prompt tokens in ``prompt_tokens_details.cached_tokens``
+        as a SUBSET of ``prompt_tokens``. We split them out into ``cache_read_tokens``
+        so (a) the automatic prompt-cache discount is visible and (b) the fresh
+        ``input_tokens`` portion isn't billed at full price for input that was
+        actually served from cache. Providers that omit the field behave exactly as
+        before (cached=0 → all prompt tokens counted as fresh input).
+        """
+        prompt_tokens = int(raw.get("prompt_tokens", 0) or 0)
+        details = raw.get("prompt_tokens_details") or {}
+        cached = int(details.get("cached_tokens", 0) or 0)
+        cached = max(0, min(cached, prompt_tokens))  # never exceed prompt_tokens
+        return TokenUsage(
+            input_tokens=max(0, prompt_tokens - cached),
+            output_tokens=int(raw.get("completion_tokens", 0) or 0),
+            cache_read_tokens=cached,
+        )
+
     def generate(
         self,
         messages: list[Message],
@@ -577,10 +600,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         content = message.get("content") or ""
         tool_calls = self._parse_tool_calls(message.get("tool_calls", []))
         raw_usage = data.get("usage", {}) or {}
-        usage = TokenUsage(
-            input_tokens=int(raw_usage.get("prompt_tokens", 0) or 0),
-            output_tokens=int(raw_usage.get("completion_tokens", 0) or 0),
-        )
+        usage = self._usage_from_openai(raw_usage)
         return LLMResponse(content=str(content).strip(), tool_calls=tool_calls, usage=usage)
 
     def generate_stream(
@@ -627,11 +647,7 @@ class OpenAICompatibleClient(BaseLLMClient):
 
                 # Token usage sometimes arrives in the final chunk
                 if "usage" in data and data["usage"]:
-                    raw = data["usage"]
-                    final_usage = TokenUsage(
-                        input_tokens=int(raw.get("prompt_tokens", 0) or 0),
-                        output_tokens=int(raw.get("completion_tokens", 0) or 0),
-                    )
+                    final_usage = self._usage_from_openai(data["usage"])
 
                 choices = data.get("choices", [])
                 if not choices:

@@ -846,7 +846,7 @@ export async function startTaskLive(
         _hachiMsgId = null;
       }
     }
-  }).catch((err: unknown) => {
+  }).catch(async (err: unknown) => {
     // POST failed — surface the error to the user and clean up.
 
     // FIX 2: Handle session expiry / unknown session robustly.
@@ -873,7 +873,24 @@ export async function startTaskLive(
       });
 
       if (isSessionExpired) {
-        store.showToast("This session expired — started a fresh one.", "success");
+        // Bug 5: auto-retry — create a fresh session and resend the prompt so
+        // the user doesn't have to re-type their message after a gateway restart.
+        // A new idempotency key is used (the old key was scoped to the dead session).
+        // The daily cost cap still applies server-side (reads from the durable ledger,
+        // not the per-session tracker), so budget-stopped users cannot bypass it.
+        store.showToast("Session refreshed — resending your message…", "info");
+        try {
+          const newSessionId = await ensureSession();
+          const retryKey = buildTurnKey(_PAGE_NONCE + "-r", hachiMsgId);
+          await apiSend<{ session_id: string; response: string }>(
+            "POST",
+            `/sessions/${newSessionId}/messages`,
+            { prompt: text, attachment_ids: attachmentIds, idempotency_key: retryKey },
+          );
+        } catch {
+          store.hydrate({ streaming: false });
+          store.showToast("Session expired — please send your message again.", "blocked");
+        }
       } else {
         // Gateway restarted and lost the in-memory session — user must resend.
         store.showToast("Connection reset — please send your message again.", "info");

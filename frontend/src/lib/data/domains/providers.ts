@@ -9,6 +9,9 @@
 //   POST /config/providers/{name}/test-connection
 //   GET  /config/routing
 //   PUT  /config/routing
+//   POST /config/routing/validate
+//   POST /config/routing/rollback
+//   GET  /config/routing/audit
 //   GET  /config/models/all
 // ============================================================
 
@@ -155,6 +158,48 @@ export async function setRouting(
     default_model: defaultModel,
     capabilities,
   });
+}
+
+export interface RoutingValidationResult {
+  ok: boolean;
+  issues: string[];
+  warnings: string[];
+}
+
+export interface RoutingRollbackResult {
+  ok: boolean;
+  detail: string;
+  routing: RoutingResponse | null;
+}
+
+/**
+ * Validate a routing config without persisting it.
+ * Always resolves (HTTP 200); check `ok` in the result.
+ */
+export async function validateRouting(
+  defaultModel: string,
+  capabilities: Record<string, string[]>
+): Promise<RoutingValidationResult> {
+  return apiSend<RoutingValidationResult>("POST", "/config/routing/validate", {
+    default_model: defaultModel,
+    capabilities,
+  });
+}
+
+/**
+ * Restore the last-known-good routing snapshot.
+ */
+export async function rollbackRouting(): Promise<RoutingRollbackResult> {
+  return apiSend<RoutingRollbackResult>("POST", "/config/routing/rollback", {});
+}
+
+/**
+ * Fetch recent routing-change audit records (newest first).
+ */
+export async function getRoutingAudit(
+  limit = 50
+): Promise<Record<string, unknown>[]> {
+  return apiGet<Record<string, unknown>[]>(`/config/routing/audit?limit=${limit}`);
 }
 
 /**

@@ -1,7 +1,7 @@
-"""Tests for ModelRegistry and pricing parity guard (Slice 2.1).
+"""Tests for ModelRegistry and pricing parity guard (Slice 2.1 / Phase 1).
 
 GATE tests:
-  - Pricing parity: registry pricing == old MODEL_PRICING for existing families.
+  - Pricing parity: registry pricing == MODEL_PRICING (both derived from model-registry.json).
   - /models regression: configured model appears in registry.all().
 """
 
@@ -18,7 +18,7 @@ from hachi.core.routing.registry import ModelRegistry
 
 
 class TestPricingParity:
-    """Assert registry pricing == old MODEL_PRICING for the 5 existing families."""
+    """Assert registry pricing == MODEL_PRICING — both are computed from model-registry.json."""
 
     def _registry_price(self, registry: ModelRegistry, prefix: str) -> tuple[float, float] | None:
         pricing = registry.pricing_for_model(prefix)
@@ -57,11 +57,27 @@ class TestPricingParity:
         assert new == old, f"gpt-4o-mini pricing mismatch: registry={new} vs cost.py={old}"
 
     def test_dated_variant_resolves_via_prefix(self) -> None:
-        """claude-opus-4-8 (dated variant) should resolve to claude-opus-4 price."""
+        """A date-suffixed variant resolves to its base-model price via longest-prefix match."""
         reg = ModelRegistry.build(object(), None)
-        old = MODEL_PRICING["claude-opus-4"]
+        old = MODEL_PRICING["claude-opus-4-8"]
         new = self._registry_price(reg, "claude-opus-4-8-20260101")
         assert new == old
+
+    def test_all_json_entries_in_model_pricing(self) -> None:
+        """Every priced, non-disabled entry in model-registry.json appears in MODEL_PRICING."""
+        import json
+        from pathlib import Path
+
+        path = Path(__file__).parent.parent / "src" / "hachi" / "data" / "model-registry.json"
+        entries = json.loads(path.read_text(encoding="utf-8"))
+        missing = [
+            e["id"]
+            for e in entries
+            if e.get("status", "active") != "disabled"
+            and "input_per_mtok" in e
+            and e["id"] not in MODEL_PRICING
+        ]
+        assert not missing, f"JSON models absent from MODEL_PRICING (shim broken): {missing}"
 
 
 # ---------------------------------------------------------------------------
@@ -130,3 +146,78 @@ class TestModelRegistry:
         # The typical default is claude-haiku-4-5.
         ids = [d.id for d in reg.all()]
         assert "claude-haiku-4-5" in ids
+
+
+# ---------------------------------------------------------------------------
+# Bug 8: current OpenAI models must be in the registry (descriptor + pricing)
+# ---------------------------------------------------------------------------
+
+
+class TestCurrentOpenAIModels:
+    """gpt-4.1, gpt-4.1-mini, o3-mini and o4-mini must be catalog members.
+
+    The config-loader defaults to gpt-4o-mini (fixed by Bug 1), but users who
+    explicitly configure gpt-4.1-mini (the previous default) or newer models must
+    get working cost tracking and model-picker UI.
+    """
+
+    NEW_OPENAI_MODELS = ["gpt-4.1", "gpt-4.1-mini", "o3-mini", "o4-mini"]
+
+    def _reg(self) -> ModelRegistry:
+        return ModelRegistry.build(object(), None)
+
+    def test_new_openai_models_in_bundled_defaults(self) -> None:
+        reg = self._reg()
+        ids = {d.id for d in reg.all()}
+        for mid in self.NEW_OPENAI_MODELS:
+            assert mid in ids, f"{mid} missing from BUNDLED_MODEL_DEFAULTS"
+
+    def test_new_openai_models_have_pricing(self) -> None:
+        from hachi.core.cost import MODEL_PRICING
+
+        reg = self._reg()
+        for mid in self.NEW_OPENAI_MODELS:
+            pricing = reg.pricing_for_model(mid)
+            assert pricing is not None, f"{mid} has no pricing in registry"
+            # Cross-check against MODEL_PRICING via prefix match.
+            best = max(
+                (p for p in MODEL_PRICING if mid.startswith(p)),
+                key=len,
+                default=None,
+            )
+            assert best is not None, f"{mid} has no prefix entry in MODEL_PRICING"
+
+    def test_gpt_4_1_prefix_collision_resolved(self) -> None:
+        """Longest-prefix-wins must not mis-price gpt-4.1-mini as gpt-4.1."""
+        from hachi.core.cost import MODEL_PRICING
+
+        assert "gpt-4.1" in MODEL_PRICING, "gpt-4.1 must have an explicit pricing entry"
+        assert "gpt-4.1-mini" in MODEL_PRICING, "gpt-4.1-mini must have an explicit pricing entry"
+        # Prices must differ (mini is always cheaper).
+        assert MODEL_PRICING["gpt-4.1-mini"][0] < MODEL_PRICING["gpt-4.1"][0], (
+            "gpt-4.1-mini input price must be less than gpt-4.1"
+        )
+
+    def test_o3_mini_has_independent_price_from_o3(self) -> None:
+        """o3-mini must not silently inherit o3's pricing via prefix match."""
+        from hachi.core.cost import MODEL_PRICING
+
+        assert "o3-mini" in MODEL_PRICING, (
+            "o3-mini must have an explicit entry; otherwise it prefix-matches 'o3' and gets "
+            "the wrong price"
+        )
+
+    def test_drift_guard_covers_new_models(self) -> None:
+        """Every model in BUNDLED_MODEL_DEFAULTS must have a MODEL_PRICING prefix match."""
+        from hachi.core.cost import MODEL_PRICING
+        from hachi.core.routing.descriptor import BUNDLED_MODEL_DEFAULTS
+
+        unpriced = []
+        for desc in BUNDLED_MODEL_DEFAULTS:
+            has_entry = any(desc.id.startswith(p) for p in MODEL_PRICING)
+            if not has_entry:
+                unpriced.append(desc.id)
+        assert not unpriced, (
+            f"Models in BUNDLED_MODEL_DEFAULTS with no MODEL_PRICING prefix: {unpriced}. "
+            "Add them to src/hachi/data/model-registry.json."
+        )

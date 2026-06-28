@@ -1,12 +1,14 @@
-"""Model descriptor and the bundled defaults table.
+"""Model descriptor and bundled defaults.
 
 ``ModelDescriptor`` carries everything the router needs to evaluate a model candidate:
 capabilities, context window, output budget, pricing, and feature flags.
 
-``BUNDLED_MODEL_DEFAULTS`` is the single curated data table — the only place model ids
-and capabilities live as data.  Pricing numbers are migrated verbatim from
-``core/cost.py:19`` (MODEL_PRICING) so the guard test (registry pricing == old dict)
-passes without drift.
+``BUNDLED_MODEL_DEFAULTS`` is loaded from ``src/hachi/data/model-registry.json``
+(via :func:`~hachi.core.routing.registry_data.load_model_registry_json`).  Adding a
+model is a JSON-only edit — no Python change required.  The deferred import in
+:func:`_load_bundled` breaks the ``descriptor ↔ registry_data`` circular reference
+because ``Pricing`` and ``ModelDescriptor`` are already defined by the time the
+function runs.
 """
 
 from __future__ import annotations
@@ -65,133 +67,16 @@ class ModelDescriptor(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Bundled defaults table
-# Pricing values are verbatim from cost.py:19 MODEL_PRICING so the registry
-# guard test in tests/test_routing_registry.py passes without drift.
+# Bundled defaults — loaded from model-registry.json (JSON is the source of truth)
 # ---------------------------------------------------------------------------
 
-BUNDLED_MODEL_DEFAULTS: list[ModelDescriptor] = [
-    # ------ Anthropic Claude family ------
-    ModelDescriptor(
-        id="claude-opus-4",
-        provider="anthropic",
-        capabilities=frozenset(
-            {
-                Capability.REASONING,
-                Capability.CODING,
-                Capability.VISION,
-                Capability.LONG_CONTEXT,
-                Capability.SUMMARIZATION,
-                Capability.COMPACTION,
-            }
-        ),
-        context_window=200_000,
-        max_output=64_000,
-        pricing=Pricing(input_per_mtok=15.0, output_per_mtok=75.0),
-        tier_rank=10,
-    ),
-    ModelDescriptor(
-        id="claude-opus-4-8",
-        provider="anthropic",
-        capabilities=frozenset(
-            {
-                Capability.REASONING,
-                Capability.CODING,
-                Capability.VISION,
-                Capability.LONG_CONTEXT,
-                Capability.SUMMARIZATION,
-                Capability.COMPACTION,
-            }
-        ),
-        context_window=200_000,
-        max_output=64_000,
-        pricing=Pricing(input_per_mtok=15.0, output_per_mtok=75.0),
-        tier_rank=10,
-    ),
-    ModelDescriptor(
-        id="claude-sonnet-4",
-        provider="anthropic",
-        capabilities=frozenset(
-            {
-                Capability.REASONING,
-                Capability.CODING,
-                Capability.VISION,
-                Capability.SUMMARIZATION,
-                Capability.COMPACTION,
-                Capability.LONG_CONTEXT,
-            }
-        ),
-        context_window=200_000,
-        max_output=64_000,
-        pricing=Pricing(input_per_mtok=3.0, output_per_mtok=15.0),
-        tier_rank=20,
-    ),
-    ModelDescriptor(
-        id="claude-haiku-4",
-        provider="anthropic",
-        capabilities=frozenset(
-            {
-                Capability.REASONING,
-                Capability.CODING,
-                Capability.TITLE_GENERATION,
-                Capability.COMPACTION,
-                Capability.SUMMARIZATION,
-            }
-        ),
-        context_window=200_000,
-        max_output=8_192,
-        pricing=Pricing(input_per_mtok=1.0, output_per_mtok=5.0),
-        tier_rank=30,
-    ),
-    ModelDescriptor(
-        id="claude-haiku-4-5",
-        provider="anthropic",
-        capabilities=frozenset(
-            {
-                Capability.REASONING,
-                Capability.CODING,
-                Capability.TITLE_GENERATION,
-                Capability.COMPACTION,
-                Capability.SUMMARIZATION,
-            }
-        ),
-        context_window=200_000,
-        max_output=8_192,
-        pricing=Pricing(input_per_mtok=1.0, output_per_mtok=5.0),
-        tier_rank=30,
-    ),
-    # ------ OpenAI / OpenAI-compatible ------
-    ModelDescriptor(
-        id="gpt-4o",
-        provider="openai",
-        capabilities=frozenset(
-            {
-                Capability.REASONING,
-                Capability.CODING,
-                Capability.VISION,
-                Capability.SUMMARIZATION,
-            }
-        ),
-        context_window=128_000,
-        max_output=16_384,
-        pricing=Pricing(input_per_mtok=2.50, output_per_mtok=10.0),
-        tier_rank=15,
-    ),
-    ModelDescriptor(
-        id="gpt-4o-mini",
-        provider="openai",
-        capabilities=frozenset(
-            {
-                Capability.REASONING,
-                Capability.CODING,
-                Capability.TITLE_GENERATION,
-                Capability.COMPACTION,
-                Capability.SUMMARIZATION,
-            }
-        ),
-        context_window=128_000,
-        max_output=16_384,
-        pricing=Pricing(input_per_mtok=0.15, output_per_mtok=0.60),
-        tier_rank=35,
-    ),
-]
+
+def _load_bundled() -> list[ModelDescriptor]:
+    # Deferred import: registry_data imports Pricing/ModelDescriptor from this module.
+    # Both are already defined above by the time this function executes at module level.
+    from hachi.core.routing.registry_data import load_model_registry_json
+
+    return load_model_registry_json()
+
+
+BUNDLED_MODEL_DEFAULTS: list[ModelDescriptor] = _load_bundled()

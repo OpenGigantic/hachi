@@ -473,9 +473,16 @@ class _InProcessGatewayRuntime:
         """Stored transcript for a (possibly historical) session — powers resume."""
         with self._agents_lock:
             agent = next(iter(self._agents.values()), None)
-        if agent is None:
-            return []
-        return [dict(item) for item in agent.query_session_messages(session_id, limit=limit)]
+        if agent is not None:
+            return [dict(item) for item in agent.query_session_messages(session_id, limit=limit)]
+        # BB-34: no agent booted yet (cold gateway start before the first turn).
+        # Mirror the BB-13 fallback used by recent_sessions(): read directly from
+        # the durable SessionStore so past-session histories load on the picker.
+        store = SessionStore(db_path=str(get_hachi_paths().sessions_db))
+        try:
+            return [dict(item) for item in store.get_session_messages(session_id, limit=limit)]
+        finally:
+            store.shutdown()
 
     def delete_session_record(self, session_id: str) -> bool:
         """Permanently delete a persisted session from the store. True if it existed."""
@@ -752,6 +759,36 @@ class _InProcessGatewayRuntime:
                 setattr(config.permissions.ask_before, key, value)
 
         write_global_config(config)
+
+        # Bug 7: write_global_config persists the tier to settings.toml, but
+        # PermissionGate reads device-permissions.og (not settings.toml).  A tier
+        # change must therefore regenerate the .og so that (a) fresh boots pick it up
+        # and (b) boot_agent's reconcile step can detect the drift.
+        if tier:
+            _perm_file = get_permissions_file()
+            try:
+                from hachi.core.permissions import PermissionGate, generate_permissions_og
+
+                # Preserve any custom allowed_paths the user added manually.
+                _custom_paths: list[str] | None = None
+                if _perm_file.exists():
+                    try:
+                        _gate = PermissionGate(_perm_file)
+                        if not _gate._fs.allow_all and _gate._fs.allowed_paths:
+                            _custom_paths = [str(p) for p in _gate._fs.allowed_paths]
+                    except Exception:
+                        pass
+                _og_content = generate_permissions_og(tier, _custom_paths)
+                _tmp = _perm_file.with_suffix(".og.tmp")
+                _tmp.write_text(_og_content, encoding="utf-8")
+                import os as _os
+
+                _os.replace(_tmp, _perm_file)
+            except Exception:
+                _logger.warning(
+                    "update_permissions: failed to regenerate device-permissions.og", exc_info=True
+                )
+
         return config.model_dump(mode="python", exclude_none=True)
 
     def update_memory(self, payload: dict) -> dict:
@@ -1496,10 +1533,19 @@ class _InProcessGatewayRuntime:
         except Exception:
             pass
 
+        # R10: per-feature cost attribution.
+        by_feature: dict[str, object] = {}
+        if tracker is not None and hasattr(tracker, "per_feature_snapshot"):
+            try:
+                by_feature = tracker.per_feature_snapshot()  # type: ignore[assignment]
+            except Exception:
+                pass
+
         return {
             "turns": turns,
             "tidies": tidies,
             "models": models,
+            "by_feature": by_feature,
             "modalities": {"text": text_cost},
             "session": {
                 "session_id": session_id or "",
@@ -1827,8 +1873,23 @@ class _InProcessGatewayRuntime:
         )
         server_entry = cfg.to_toml_entry()
 
+        # Edit ONLY the targeted server's sub-table, preserving lifecycle fields we
+        # don't model in MCPServerConfig (notably `enabled`, written by
+        # set_mcp_enabled). A blind ``mcp_section[name] = server_entry`` would rewrite
+        # the whole entry from the in-memory config and silently drop `enabled` on every
+        # re-registration (BB-19). On re-register: overwrite the keys this config owns,
+        # prune stale managed keys (e.g. a stdio `command` after switching to http), and
+        # leave every other key untouched.
         mcp_section = doc["mcp_servers"]
-        mcp_section[name] = server_entry  # type: ignore[index]
+        existing = mcp_section.get(name)  # type: ignore[union-attr]
+        if existing is None:
+            mcp_section[name] = server_entry  # type: ignore[index]
+        else:
+            managed = _MCPServerConfig.TOML_MANAGED_KEYS
+            for stale in [k for k in existing if k in managed and k not in server_entry]:
+                del existing[stale]
+            for key, value in server_entry.items():
+                existing[key] = value
 
         import os as _os
 
@@ -2291,6 +2352,16 @@ class _InProcessGatewayRuntime:
     def set_routing(self, default_model: str, capabilities: dict) -> dict:
         """Persist the routing matrix (PUT /config/routing).
 
+        Phase 3 hot-reload: instead of rebooting sessions (_reload_agents), this
+        builds a new RoutingSnapshot from the freshly-written config and publishes
+        it to the process-level RoutingConfigStore.  Each session's ExecutionLoop
+        will notice the bumped version at its own next turn boundary and call
+        router.apply_snapshot() — no restart, no killed in-flight turns.
+
+        _reload_agents() is still called for provider/credential changes (those bake
+        the API key and base URL into the client at boot; a snapshot swap can't
+        rebuild them).
+
         Args:
             default_model: Default/fallback model id.
             capabilities: Mapping of capability name → ordered model-id list.
@@ -2298,15 +2369,109 @@ class _InProcessGatewayRuntime:
         Returns:
             New routing snapshot.
         """
+        from hachi.core.config_loader import load_effective_config
+        from hachi.core.resilience import RetryPolicy
+        from hachi.core.routing.policy import RoutingPolicy
+        from hachi.core.routing.registry import ModelRegistry
+        from hachi.core.routing.snapshot import RoutingSnapshot
         from hachi.gateway.provider_admin import set_routing as _set_routing
+        from hachi.gateway.shared_services import ProcessSharedServices
 
+        # 1. Persist to config (writes settings.toml, returns current routing dict).
         result = _set_routing(default_model, capabilities)
-        # Issue 11: re-boot live agents so the new routing (default_model + per-capability
-        # model lists) takes effect immediately. Without this, running sessions keep the
-        # ModelRouter baked at the previous boot and a routing change in the UI appears to
-        # do nothing (mirrors add_or_update_provider, which already reloads).
-        self._reload_agents()
+
+        # 2. Try to publish a new snapshot so live sessions adopt it at turn boundary.
+        try:
+            shared = ProcessSharedServices.instance()
+            store = getattr(shared, "routing_store", None) if shared is not None else None
+            if store is not None:
+                fresh_cfg = load_effective_config()
+                fresh_registry = ModelRegistry.build(fresh_cfg, None)
+                fresh_policy = RoutingPolicy.from_config(fresh_cfg)
+                if fresh_policy.auto:
+                    fresh_policy = fresh_policy.derive_auto_policy(fresh_registry)
+                fresh_resilience = RetryPolicy.from_config(fresh_cfg)
+                snap = RoutingSnapshot(
+                    registry=fresh_registry,
+                    policy=fresh_policy,
+                    resilience=fresh_resilience,
+                    version=store.version + 1,
+                    source="ui",
+                )
+                store.apply(snap)
+                _logger.info(
+                    "set_routing: published snapshot v%d (default=%s) — "
+                    "sessions will adopt at next turn boundary",
+                    store.version,
+                    default_model,
+                )
+            else:
+                # No store yet (gateway started without routing_store initialised).
+                # Fall back to the old behaviour so a routing change still takes effect.
+                self._reload_agents()
+        except Exception:
+            _logger.warning(
+                "set_routing: snapshot publish failed — falling back to _reload_agents()",
+                exc_info=True,
+            )
+            self._reload_agents()
+
         return result
+
+    def validate_routing(self, default_model: str, capabilities: dict) -> dict:
+        """Validate a routing config without persisting (POST /config/routing/validate).
+
+        Returns:
+            ``{"ok": bool, "issues": list[str], "warnings": list[str]}``.
+        """
+        from hachi.core.routing.policy import RoutingPolicy
+        from hachi.core.routing.registry import ModelRegistry
+        from hachi.core.routing.validate import validate_routing as _validate
+
+        try:
+            policy = RoutingPolicy(
+                default_model=default_model,
+                capabilities={k: v for k, v in (capabilities or {}).items()},
+            )
+            result = _validate(ModelRegistry.build({}, None), policy, providers=None)
+            return {"ok": result.ok, "issues": result.issues, "warnings": result.warnings}
+        except Exception as exc:
+            return {"ok": False, "issues": [str(exc)], "warnings": []}
+
+    def rollback_routing(self) -> dict:
+        """Restore the last-known-good routing snapshot (POST /config/routing/rollback).
+
+        Returns:
+            ``{"ok": bool, "detail": str, "routing": dict | None}``.
+        """
+        from hachi.gateway.shared_services import ProcessSharedServices
+
+        shared = ProcessSharedServices.instance()
+        store = getattr(shared, "routing_store", None) if shared is not None else None
+        if store is None:
+            return {"ok": False, "detail": "routing store not available", "routing": None}
+        restored = store.rollback()
+        if restored is None:
+            return {"ok": False, "detail": "no prior snapshot to restore", "routing": None}
+        return {
+            "ok": True,
+            "detail": f"restored v{store.version} (default={restored.policy.default_model})",
+            "routing": self.get_routing(),
+        }
+
+    def get_routing_audit(self, limit: int = 50) -> list:
+        """Return recent routing-change audit records (GET /config/routing/audit).
+
+        Returns:
+            List of audit records (newest first). Empty when no changes recorded.
+        """
+        from hachi.gateway.shared_services import ProcessSharedServices
+
+        shared = ProcessSharedServices.instance()
+        store = getattr(shared, "routing_store", None) if shared is not None else None
+        if store is None:
+            return []
+        return store.audit_records(limit=limit)
 
     def test_provider_connection(self, name: str) -> dict:
         """Best-effort connectivity test for a provider.
@@ -2767,6 +2932,9 @@ def _build_gateway_control_plane(
         remove_provider=support.remove_provider,
         get_routing=support.get_routing,
         set_routing=support.set_routing,
+        validate_routing=support.validate_routing,
+        rollback_routing=support.rollback_routing,
+        get_routing_audit=support.get_routing_audit,
         test_provider_connection=support.test_provider_connection,
         list_all_models=support.list_all_models,
         probe_provider=support.probe_provider,
@@ -3780,7 +3948,7 @@ def setup(
         provider = {
             "kind": "openai-compatible",
             "api_key_env": "OPENAI_API_KEY",
-            "model": "gpt-4.1-mini",
+            "model": "gpt-4o-mini",
         }
 
     plan = service.build_tier_plan(

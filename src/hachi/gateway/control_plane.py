@@ -147,6 +147,9 @@ class GatewayControlPlane:
         remove_provider: Callable[[str], dict[str, Any]] | None = None,
         get_routing: Callable[[], dict[str, Any]] | None = None,
         set_routing: Callable[[str, dict[str, list[str]]], dict[str, Any]] | None = None,
+        validate_routing: Callable[[str, dict[str, list[str]]], dict[str, Any]] | None = None,
+        rollback_routing: Callable[[], dict[str, Any]] | None = None,
+        get_routing_audit: Callable[[int], list[dict[str, Any]]] | None = None,
         test_provider_connection: Callable[[str], dict[str, Any]] | None = None,
         list_all_models: Callable[[], dict[str, Any]] | None = None,
         probe_provider: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
@@ -219,6 +222,9 @@ class GatewayControlPlane:
         self._remove_provider = remove_provider
         self._get_routing = get_routing
         self._set_routing = set_routing
+        self._validate_routing_handler = validate_routing
+        self._rollback_routing_handler = rollback_routing
+        self._get_routing_audit_handler = get_routing_audit
         self._test_provider_connection = test_provider_connection
         self._list_all_models = list_all_models
         self._probe_provider = probe_provider
@@ -589,7 +595,7 @@ class GatewayControlPlane:
                     {
                         "sequence": seq,
                         "event_type": "session.chat.completed",
-                        "payload": {},
+                        "payload": {"model": msg.get("model")},
                         "time": ts,
                     }
                 )
@@ -1164,9 +1170,85 @@ class GatewayControlPlane:
         return self._get_routing()
 
     def set_routing(self, default_model: str, capabilities: dict[str, list[str]]) -> Any:
-        """Persist the routing matrix — PUT /config/routing."""
+        """Persist the routing matrix — PUT /config/routing (hot-reload)."""
         handler = self._require_handler(self._set_routing, "routing update")
         return handler(default_model, capabilities)
+
+    def validate_routing(
+        self, default_model: str, capabilities: dict[str, list[str]]
+    ) -> dict[str, Any]:
+        """Validate a routing config without persisting — POST /config/routing/validate.
+
+        Always returns HTTP 200; the caller checks ``ok``.
+
+        Returns:
+            ``{"ok": bool, "issues": list[str], "warnings": list[str]}``.
+        """
+        if self._validate_routing_handler is not None:
+            return self._validate_routing_handler(default_model, capabilities)
+        try:
+            from hachi.core.routing.policy import RoutingPolicy
+            from hachi.core.routing.registry import ModelRegistry
+            from hachi.core.routing.validate import validate_routing as _validate
+
+            policy = RoutingPolicy(
+                default_model=default_model,
+                capabilities={k: v for k, v in (capabilities or {}).items()},
+            )
+            reg = ModelRegistry.build({}, None)
+            result = _validate(reg, policy, providers=None)
+            return {
+                "ok": result.ok,
+                "issues": result.issues,
+                "warnings": result.warnings,
+            }
+        except Exception as exc:
+            return {"ok": False, "issues": [str(exc)], "warnings": []}
+
+    def rollback_routing(self) -> dict[str, Any]:
+        """Restore the last-known-good routing config — POST /config/routing/rollback.
+
+        Returns:
+            ``{"ok": bool, "detail": str, "routing": dict | None}``.
+        """
+        if self._rollback_routing_handler is not None:
+            return self._rollback_routing_handler()
+        try:
+            from hachi.gateway.shared_services import ProcessSharedServices
+
+            shared = ProcessSharedServices.instance()
+            store = getattr(shared, "routing_store", None) if shared is not None else None
+            if store is None:
+                return {"ok": False, "detail": "routing store not available", "routing": None}
+            restored = store.rollback()
+            if restored is None:
+                return {"ok": False, "detail": "no prior snapshot to restore", "routing": None}
+            return {
+                "ok": True,
+                "detail": f"restored v{store.version} (default={restored.policy.default_model})",
+                "routing": self.get_routing(),
+            }
+        except Exception as exc:
+            return {"ok": False, "detail": str(exc), "routing": None}
+
+    def get_routing_audit(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return recent routing-change audit records — GET /config/routing/audit.
+
+        Returns:
+            List of audit records (newest first). Empty when no changes recorded.
+        """
+        if self._get_routing_audit_handler is not None:
+            return self._get_routing_audit_handler(limit)
+        try:
+            from hachi.gateway.shared_services import ProcessSharedServices
+
+            shared = ProcessSharedServices.instance()
+            store = getattr(shared, "routing_store", None) if shared is not None else None
+            if store is None:
+                return []
+            return store.audit_records(limit=limit)
+        except Exception:
+            return []
 
     def test_provider_connection(self, name: str) -> Any:
         """Test connectivity for a named provider — POST /config/providers/{name}/test-connection.
