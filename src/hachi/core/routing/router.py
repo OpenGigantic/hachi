@@ -19,7 +19,10 @@ Algorithm:
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+
+if TYPE_CHECKING:
+    from hachi.core.routing.snapshot import RoutingSnapshot
 
 from pydantic import BaseModel, ConfigDict
 
@@ -123,6 +126,28 @@ class ModelRouter:
     def new_turn(self) -> None:
         """Clear the sticky route cache.  Call at the start of each turn."""
         self._sticky.clear()
+
+    def apply_snapshot(self, snap: RoutingSnapshot) -> None:
+        """Adopt a new routing config at the turn boundary.
+
+        Safe to call from the session's own turn thread only — no lock needed
+        because each router is single-threaded-per-session (calls within a session
+        serialise on _chat_lock upstream). Clears _sticky so the new config takes
+        effect from the very next select() call in this turn.
+
+        Args:
+            snap: The new :class:`~hachi.core.routing.snapshot.RoutingSnapshot`.
+        """
+        self._registry = snap.registry
+        self._policy = snap.policy
+        self._resilience = snap.resilience
+        self._sticky.clear()
+        logger.debug(
+            "ModelRouter.apply_snapshot: v%d (source=%s default=%s)",
+            snap.version,
+            snap.source,
+            snap.policy.default_model,
+        )
 
     # ------------------------------------------------------------------
     # Public API

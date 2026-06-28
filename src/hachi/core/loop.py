@@ -325,6 +325,7 @@ class ExecutionLoop:
         max_tokens_per_turn: int = 0,
         max_wall_seconds: float = 600.0,
         router=None,
+        routing_store=None,
     ):
         """Initialize the execution loop.
 
@@ -352,6 +353,10 @@ class ExecutionLoop:
                 provided, tools and future slices may call ``router.select(capability)``
                 for capability-aware routing.  When ``None`` (default), the loop behaves
                 exactly as today — ``llm_client`` is the only client used.
+            routing_store: Optional :class:`~hachi.gateway.routing_store.RoutingConfigStore`.
+                When provided, the loop pulls a new :class:`RoutingSnapshot` from the
+                store at each turn boundary if the store's version is newer than the
+                last-applied version.  ``None`` disables hot-reload (back-compat).
         """
         self.llm_client = llm_client
         self.registry = registry
@@ -362,6 +367,10 @@ class ExecutionLoop:
         self.cost_tracker = cost_tracker
         # Optional ModelRouter — when None, loop uses llm_client directly (back-compat).
         self.router = router
+        # Phase 3: optional hot-reload store; None disables snapshot polling.
+        self.routing_store = routing_store
+        # Phase 3: version of the last routing snapshot adopted; 0 = boot state.
+        self._applied_routing_version: int = 0
         # Per-turn LLM client: resolved at run() start via router.select() when a router
         # is present; falls back to llm_client for back-compat when router is None.
         self._turn_client: BaseLLMClient = llm_client
@@ -477,6 +486,31 @@ class ExecutionLoop:
             return tc.cacheable_system, (tc.dynamic_system or None)
         return self._build_system_prompt(), None
 
+    def _maybe_apply_routing_snapshot(self) -> None:
+        """Pull a newer routing snapshot from the store if one is available.
+
+        Called at the start of each turn boundary (inside ``_resolve_turn_client``
+        or directly from ``run()`` when ``router`` is ``None``).  Safe to call
+        from any single-session thread — no lock needed because each router is
+        per-session and is only accessed from that session's own turn thread.
+
+        No-op when:
+          - ``routing_store`` is ``None`` (hot-reload not configured).
+          - ``router`` is ``None`` (no router to update).
+          - The store version equals the last-applied version (already current).
+          - The store has no snapshot yet (``current_snapshot is None``).
+        """
+        if self.routing_store is None or self.router is None:
+            return
+        store_version = self.routing_store.version
+        if store_version <= self._applied_routing_version:
+            return
+        snap = self.routing_store.current_snapshot
+        if snap is None:
+            return
+        self.router.apply_snapshot(snap)
+        self._applied_routing_version = store_version
+
     def _resolve_turn_client(self, user_input: str) -> None:
         """Classify *user_input* and resolve a capability-tiered client via the router.
 
@@ -488,6 +522,9 @@ class ExecutionLoop:
         """
         from hachi.core.routing.classifier import classify_turn_capability
         from hachi.core.routing.router import NoRouteError
+
+        # Phase 3: pull a newer routing snapshot before this turn's select() calls.
+        self._maybe_apply_routing_snapshot()
 
         # Reset the sticky cache so this turn re-selects independently.
         self.router.new_turn()

@@ -2757,6 +2757,25 @@ def boot_agent(
             providers=_provider_registry,
             resilience=_retry_policy,
         )
+
+        # Phase 3: ensure RoutingConfigStore exists on the shared singleton and holds
+        # the boot snapshot so sessions can adopt future hot-reload updates at turn
+        # boundaries without a restart.
+        if getattr(_shared, "routing_store", None) is None:
+            from hachi.core.routing.snapshot import RoutingSnapshot
+            from hachi.gateway.routing_store import RoutingConfigStore
+
+            _rcs = RoutingConfigStore()
+            _boot_snap = RoutingSnapshot(
+                registry=_model_registry,
+                policy=_routing_policy,
+                resilience=_retry_policy,
+                version=0,
+                source="boot",
+            )
+            _rcs.init(_boot_snap)
+            _shared.routing_store = _rcs
+
         logger.info(
             "Routing boot: %d models registered; default=%s; auto=%s",
             len(_model_registry.all()),
@@ -3233,6 +3252,7 @@ def boot_agent(
         max_cost_per_turn=max_turn_cost_usd,
         max_tokens_per_turn=max_turn_tokens,
         router=_model_router,
+        routing_store=getattr(_shared, "routing_store", None),
     )
 
     # 10. Create the Session
