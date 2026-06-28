@@ -55,5 +55,66 @@ Every fix below was built test-first (failing regression test → fix → green)
 
 ---
 
-### Files touched
+### Files touched (items 1–8)
 `core/cost.py`, `core/llm.py`, `core/cache_observability.py` (new), `core/memory.py`, `core/loop.py`, `core/routing/descriptor.py`, `core/routing/policy.py`, `gateway/orchestrator.py`; tests: `test_cost_tracking.py`, `test_streaming.py`, `test_tool_lazy_loading.py`, `test_cache_observability.py` (new), `test_routing_cost_guard.py` (new); docs: `docs/bug-bank.md` (BB-27..31). One user config: `settings.toml`.
+
+---
+
+## Phase 5 — Heavy optimizers
+
+### 9. R7 (tidy) — Mypy strict gate extended to new files
+
+- **Change:** `mypy-strict-gate.ini` gains four files:
+  `core/cache_observability.py`, `core/routing/snapshot.py`, `core/routing/validate.py`,
+  `gateway/routing_store.py`. Fixed one pre-existing `list[dict]` → `list[dict[str, object]]`
+  in `routing_store.py:129` to satisfy strict mode.
+- **Impact:** four more modules are guarded by the strict CI mypy check; regressions in their
+  type contracts now fail the gate immediately.
+- **Locked by:** `mypy-strict-gate.ini` itself (CI runs it on every PR).
+
+### 10. R5 — Tool-output compression
+
+- **Change:** new module-level `_compress_tool_output(text, max_chars=8000)` pure function in
+  `core/loop.py`. Applied to every text tool result before it is appended to conversation
+  history (the `ToolResultBlocks` multimodal path is unaffected). Outputs over 8 000 chars are
+  truncated and suffixed with `[truncated: N chars total, showing first 8000]` so the model
+  knows data was elided and can re-run the tool if needed.
+- **Token impact (offline estimate):** any turn that receives a large file read, long web-page
+  fetch, or verbose API response now has its tool-result contribution capped rather than
+  growing unboundedly. In heavy multi-tool turns with responses in the 20k–50k char range, this
+  reduces input tokens for subsequent iterations within the same turn.
+- **Locked by:** `tests/test_loop_phase5.py::TestToolOutputCompression` (8 tests).
+
+### 11. R9 — Pre-generation context trim (mid-turn budget trim)
+
+- **Change:** at each ReAct iteration, after `prepare_for_turn()` runs the standard
+  housekeeping (compaction + `clear_stale_tool_results(keep=6, min=600)`), a second check
+  fires if `estimate_token_count() > 16 000`. It calls
+  `clear_stale_tool_results(keep_recent_messages=3, min_chars=200)` — a more aggressive sweep
+  that reaches into the 4–6 most-recent blocks and clears smaller results. On success emits a
+  `context_trimmed` event with cleared count and token count before trim.
+- **Why this helps:** after several tool-heavy iterations, history can sit at 13–18 k estimated
+  tokens even after the standard sweep. The second pass often recovers 2–5 k tokens before the
+  expensive LLM call, reducing per-iteration input cost.
+- **Locked by:** `tests/test_loop_phase5.py::TestPreGenTrimThreshold` (6 tests).
+
+### Deferred (R8, R6, R4)
+
+- **R8 (response cache):** Skipped. The correctness restriction (`non-tool AND non-streaming
+  AND no-recall`) means the cache would hit almost never in real Hachi use — every chat turn is
+  streaming + tools + recall. The correctness hazard (stale responses, tool-result
+  contamination) outweighs the narrow applicable scope. Document as a future decision if a
+  use-case with many identical non-tool queries emerges.
+- **R6 (LLM-summary condenser):** Deferred. Requires injecting a cheap-model LLM client into
+  `MemoryManager._sliding_window_compact()`, pinned at the turn boundary (not per-summary).
+  The design is clear but the injection wiring needs a separate, focused change to avoid
+  entangling it with the Phase 3 routing machinery. Flag as a follow-up.
+- **R4 (prompt compression):** Highest risk. Requires the eval flywheel gate to confirm no
+  task-success regression before shipping. Deferred until the eval harness is proven in CI.
+
+---
+
+### Files touched (Phase 5)
+`core/loop.py` (R5 + R9 constants + `_compress_tool_output()`), `gateway/routing_store.py`
+(type fix), `mypy-strict-gate.ini` (R7 — 4 new files); tests: `tests/test_loop_phase5.py`
+(new, 14 tests); docs: `docs/audit/2026-06-28/OPTIMIZATIONS_IMPLEMENTED.md` (this file).

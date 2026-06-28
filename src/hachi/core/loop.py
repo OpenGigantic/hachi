@@ -61,6 +61,30 @@ _RETRYABLE_HINTS = ("overloaded", "rate limit", "timeout", "timed out", "tempora
 _MAX_LLM_RETRIES = 3
 _LLM_RETRY_BASE_DELAY = 1.0
 
+# R5 — Tool-output compression: cap text results before they enter history.
+# Large tool outputs (e.g. full file contents, long web pages) are truncated to
+# this limit and suffixed with a char-count note so the model knows data was elided.
+_TOOL_OUTPUT_MAX_CHARS: int = 8_000
+
+# R9 — Pre-generation context trim: if estimated token count is still above this
+# threshold AFTER the standard per-iteration housekeeping (prepare_for_turn), run
+# a second, more aggressive clear_stale_tool_results pass before the LLM call.
+# Positioned above _TOOL_RESULT_CLEAR_TOKENS (12 000) to avoid redundant sweeps.
+_PRE_GEN_TRIM_THRESHOLD: int = 16_000
+
+
+def _compress_tool_output(text: str, max_chars: int = _TOOL_OUTPUT_MAX_CHARS) -> str:
+    """Truncate an oversized text tool result (R5).
+
+    If *text* is within *max_chars*, it is returned unchanged. If it exceeds the
+    limit, the excess is dropped and a one-line note is appended so the model
+    knows the output was cut. Non-tool (ToolResultBlocks) paths never call this.
+    """
+    if len(text) <= max_chars:
+        return text
+    total = len(text)
+    return text[:max_chars] + f"\n[truncated: {total} chars total, showing first {max_chars}]"
+
 
 def _is_retryable_llm_error(exc: Exception) -> bool:
     """Best-effort detection of transient LLM/provider errors (provider-agnostic).
@@ -894,6 +918,23 @@ class ExecutionLoop:
                     if fixed:
                         self.on_event("history_repaired", {"orphaned_tool_uses": fixed})
 
+                # R9 — pre-generation context trim: if history is still large after the
+                # standard housekeeping, do an extra tool-result sweep with aggressive
+                # settings (smaller keep window, lower min_chars) before the LLM call so
+                # fewer tokens are sent to the provider.  Guard with getattr: SubAgentMemory
+                # is a lightweight stand-in that skips all compaction housekeeping.
+                _estimate_fn = getattr(self.memory, "estimate_token_count", None)
+                _clear_fn = getattr(self.memory, "clear_stale_tool_results", None)
+                if callable(_estimate_fn) and callable(_clear_fn):
+                    _pre_gen_tokens = _estimate_fn()
+                    if _pre_gen_tokens > _PRE_GEN_TRIM_THRESHOLD:
+                        _extra_cleared = _clear_fn(keep_recent_messages=3, min_chars=200)
+                        if _extra_cleared:
+                            self.on_event(
+                                "context_trimmed",
+                                {"cleared": _extra_cleared, "tokens_before": _pre_gen_tokens},
+                            )
+
                 self.on_event("thinking", {"iteration": iterations})
 
                 # Build the system prompt split into a stable cacheable prefix and a
@@ -1112,7 +1153,7 @@ class ExecutionLoop:
                         result_content: Any = list(raw_result.blocks)
                         result_summary = raw_result.summary or "[multimodal content]"
                     else:
-                        result_content = str(raw_result)
+                        result_content = _compress_tool_output(str(raw_result))
                         result_summary = result_content
 
                     self.on_event(
