@@ -172,3 +172,73 @@ def test_usage_event_adapts_to_stable_taxonomy() -> None:
     assert envelopes[0].primary.name == USAGE_UPDATED
     assert envelopes[0].primary.payload["total_tokens"] == 42
     assert "usage" in envelopes[0].legacy_aliases
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — R10: per-feature cost attribution
+# ---------------------------------------------------------------------------
+
+
+def test_record_accepts_feature_kwarg() -> None:
+    """feature= kwarg is accepted without error."""
+    tracker = CostTracker()
+    tracker.record("claude-haiku-4-5", TokenUsage(input_tokens=10, output_tokens=5), feature="chat")
+
+
+def test_per_feature_snapshot_returns_dict_keyed_by_feature() -> None:
+    tracker = CostTracker()
+    tracker.record(
+        "claude-haiku-4-5", TokenUsage(input_tokens=100, output_tokens=50), feature="chat"
+    )
+    tracker.record(
+        "claude-haiku-4-5", TokenUsage(input_tokens=200, output_tokens=20), feature="titling"
+    )
+    result = tracker.per_feature_snapshot()
+    assert "chat" in result
+    assert "titling" in result
+    assert result["chat"]["call_count"] == 1
+    assert result["titling"]["call_count"] == 1
+
+
+def test_per_feature_snapshot_totals_add_up() -> None:
+    tracker = CostTracker()
+    tracker.record(
+        "claude-haiku-4-5", TokenUsage(input_tokens=100, output_tokens=50), feature="chat"
+    )
+    tracker.record(
+        "claude-haiku-4-5", TokenUsage(input_tokens=200, output_tokens=30), feature="extraction"
+    )
+    overall = tracker.snapshot()
+    pf = tracker.per_feature_snapshot()
+    feature_total_tokens = sum(v["total_tokens"] for v in pf.values())
+    assert feature_total_tokens == overall.total_tokens
+
+
+def test_record_without_feature_is_attributed_as_unattributed() -> None:
+    """Calls without feature= go into a sentinel bucket, not silently dropped."""
+    tracker = CostTracker()
+    tracker.record("claude-haiku-4-5", TokenUsage(input_tokens=10, output_tokens=5))
+    pf = tracker.per_feature_snapshot()
+    # Some bucket must hold the unattributed call.
+    assert sum(v["call_count"] for v in pf.values()) == 1
+
+
+def test_per_feature_snapshot_cost_is_non_negative() -> None:
+    tracker = CostTracker()
+    tracker.record(
+        "claude-haiku-4-5", TokenUsage(input_tokens=50, output_tokens=25), feature="chat"
+    )
+    pf = tracker.per_feature_snapshot()
+    assert pf["chat"]["estimated_cost_usd"] >= 0.0
+
+
+def test_record_background_usage_accepts_feature_kwarg() -> None:
+    """record_background_usage gains a feature= kwarg (Phase 4 contract)."""
+    from hachi.core.cost import record_background_usage
+
+    cost = record_background_usage(
+        "claude-haiku-4-5",
+        TokenUsage(input_tokens=10, output_tokens=5),
+        feature="extraction",
+    )
+    assert isinstance(cost, float)

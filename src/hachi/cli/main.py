@@ -1526,10 +1526,19 @@ class _InProcessGatewayRuntime:
         except Exception:
             pass
 
+        # R10: per-feature cost attribution.
+        by_feature: dict[str, object] = {}
+        if tracker is not None and hasattr(tracker, "per_feature_snapshot"):
+            try:
+                by_feature = tracker.per_feature_snapshot()  # type: ignore[assignment]
+            except Exception:
+                pass
+
         return {
             "turns": turns,
             "tidies": tidies,
             "models": models,
+            "by_feature": by_feature,
             "modalities": {"text": text_cost},
             "session": {
                 "session_id": session_id or "",

@@ -31,9 +31,19 @@ interface CSpendSession {
   turns?: number;
 }
 
+interface FeatureCostEntry {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number;
+  call_count: number;
+}
+
 interface CSpendResponse {
   // per-model breakdown (C-SPEND)
   models?: CSpendModel[];
+  // per-feature breakdown (R10)
+  by_feature?: Record<string, FeatureCostEntry>;
   // per-modality breakdown (C-SPEND)
   modalities?: CSpendModalities;
   // per-session
@@ -249,6 +259,41 @@ function SpendBreakdown({ data, loading }: SpendBreakdownProps) {
                     <td style={{ ...cell, textAlign: 'right', color: 'var(--hachi-muted)' }}>{tok(row.input_tokens)}</td>
                     <td style={{ ...cell, textAlign: 'right', color: 'var(--hachi-muted)' }}>{tok(row.output_tokens)}</td>
                     <td style={{ ...cell, textAlign: 'right' }}>{usd(row.cost_usd)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Per-feature (R10) */}
+      {data?.by_feature && Object.keys(data.by_feature).length > 0 && (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 500, color: 'var(--hachi-muted)', marginBottom: 6 }}>
+            By feature (this session)
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th style={{ ...tableHeadStyle, textAlign: 'left' }}>Feature</th>
+                <th style={{ ...tableHeadStyle, textAlign: 'right' }}>Tokens</th>
+                <th style={{ ...tableHeadStyle, textAlign: 'right' }}>Calls</th>
+                <th style={{ ...tableHeadStyle, textAlign: 'right' }}>Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(data.by_feature).map(([feature, entry], idx, arr) => {
+                const isLast = idx === arr.length - 1;
+                const cell: React.CSSProperties = isLast ? tableLastCellStyle : tableCellStyle;
+                return (
+                  <tr key={feature}>
+                    <td style={{ ...cell, fontFamily: 'var(--font-body)', fontWeight: 500, textTransform: 'capitalize' }}>
+                      {feature}
+                    </td>
+                    <td style={{ ...cell, textAlign: 'right', color: 'var(--hachi-muted)' }}>{tok(entry.total_tokens)}</td>
+                    <td style={{ ...cell, textAlign: 'right', color: 'var(--hachi-muted)' }}>{entry.call_count}</td>
+                    <td style={{ ...cell, textAlign: 'right' }}>{usd(entry.estimated_cost_usd)}</td>
                   </tr>
                 );
               })}
