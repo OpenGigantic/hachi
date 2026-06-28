@@ -271,5 +271,93 @@
     "supports_prompt_caching": false,
     "tier_rank": 19,
     "status": "active"
+  },
+  {
+    "id": "gemini-2.5-pro",
+    "provider": "google",
+    "display_name": "Gemini 2.5 Pro",
+    "capabilities": [
+      "REASONING",
+      "CODING",
+      "VISION",
+      "LONG_CONTEXT",
+      "SUMMARIZATION"
+    ],
+    "context_window": 1000000,
+    "max_output": 8192,
+    "input_per_mtok": 1.25,
+    "output_per_mtok": 10.0,
+    "cache_read_mult": 0.1,
+    "cache_write_mult": 1.0,
+    "supports_tools": true,
+    "supports_streaming": true,
+    "supports_prompt_caching": true,
+    "tier_rank": 12,
+    "status": "active"
+  },
+  {
+    "id": "gemini-2.5-flash",
+    "provider": "google",
+    "display_name": "Gemini 2.5 Flash",
+    "capabilities": [
+      "REASONING",
+      "CODING",
+      "VISION",
+      "LONG_CONTEXT",
+      "TITLE_GENERATION",
+      "COMPACTION",
+      "SUMMARIZATION"
+    ],
+    "context_window": 1000000,
+    "max_output": 8192,
+    "input_per_mtok": 0.3,
+    "output_per_mtok": 2.5,
+    "cache_read_mult": 0.1,
+    "cache_write_mult": 1.0,
+    "supports_tools": true,
+    "supports_streaming": true,
+    "supports_prompt_caching": true,
+    "tier_rank": 22,
+    "status": "active"
+  },
+  {
+    "id": "gemini-2.5-flash-lite",
+    "provider": "google",
+    "display_name": "Gemini 2.5 Flash-Lite",
+    "capabilities": [
+      "REASONING",
+      "CODING",
+      "TITLE_GENERATION",
+      "COMPACTION",
+      "SUMMARIZATION"
+    ],
+    "context_window": 1000000,
+    "max_output": 8192,
+    "input_per_mtok": 0.1,
+    "output_per_mtok": 0.4,
+    "cache_read_mult": 0.1,
+    "cache_write_mult": 1.0,
+    "supports_tools": true,
+    "supports_streaming": true,
+    "supports_prompt_caching": false,
+    "tier_rank": 36,
+    "status": "active"
+  },
+  {
+    "id": "grok-3",
+    "provider": "xai",
+    "display_name": "Grok 3",
+    "capabilities": ["REASONING", "CODING", "VISION", "SUMMARIZATION"],
+    "context_window": 131072,
+    "max_output": 8192,
+    "input_per_mtok": 3.0,
+    "output_per_mtok": 15.0,
+    "cache_read_mult": 0.5,
+    "cache_write_mult": 1.0,
+    "supports_tools": true,
+    "supports_streaming": true,
+    "supports_prompt_caching": false,
+    "tier_rank": 11,
+    "status": "active"
   }
 ]

@@ -239,3 +239,77 @@ class TestRegistryRoundTrip:
         assert p_o3 is not None
         assert p_mini is not None
         assert p_mini.input_per_mtok < p_o3.input_per_mtok
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — new provider entries (Gemini, Grok)
+# ---------------------------------------------------------------------------
+
+
+class TestPhase2NewProviders:
+    """Phase 2 pricing validation: Gemini and Grok must be present and priced."""
+
+    GEMINI_MODELS = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+    GROK_MODELS = ["grok-3"]
+
+    def _load(self) -> dict[str, ModelDescriptor]:
+        return {d.id: d for d in load_model_registry_json()}
+
+    def test_gemini_models_present(self) -> None:
+        """All Gemini 2.5 family entries must be in the bundled registry."""
+        ids = set(self._load())
+        for mid in self.GEMINI_MODELS:
+            assert mid in ids, f"{mid} missing from model-registry.json"
+
+    def test_gemini_models_have_pricing(self) -> None:
+        """Every Gemini entry must have a Pricing object."""
+        models = self._load()
+        for mid in self.GEMINI_MODELS:
+            desc = models.get(mid)
+            assert desc is not None, f"{mid} not found"
+            assert desc.pricing is not None, f"{mid} has no pricing"
+            assert desc.pricing.input_per_mtok > 0, f"{mid} has zero input price"
+            assert desc.pricing.output_per_mtok > 0, f"{mid} has zero output price"
+
+    def test_gemini_cost_tier_ordering(self) -> None:
+        """flash-lite must be cheapest, then flash, then pro."""
+        models = self._load()
+        pro = models["gemini-2.5-pro"].pricing
+        flash = models["gemini-2.5-flash"].pricing
+        lite = models["gemini-2.5-flash-lite"].pricing
+        assert pro is not None and flash is not None and lite is not None
+        assert lite.input_per_mtok < flash.input_per_mtok < pro.input_per_mtok, (
+            "gemini-2.5-flash-lite must be cheapest, gemini-2.5-pro most expensive"
+        )
+
+    def test_gemini_provider_field(self) -> None:
+        """Gemini entries must have provider='google'."""
+        models = self._load()
+        for mid in self.GEMINI_MODELS:
+            desc = models.get(mid)
+            assert desc is not None
+            assert desc.provider == "google", f"{mid} has wrong provider: {desc.provider!r}"
+
+    def test_grok_models_present(self) -> None:
+        """Grok entries must be in the bundled registry."""
+        ids = set(self._load())
+        for mid in self.GROK_MODELS:
+            assert mid in ids, f"{mid} missing from model-registry.json"
+
+    def test_grok_models_have_pricing(self) -> None:
+        """Grok entries must have a Pricing object."""
+        models = self._load()
+        for mid in self.GROK_MODELS:
+            desc = models.get(mid)
+            assert desc is not None, f"{mid} not found"
+            assert desc.pricing is not None, f"{mid} has no pricing"
+
+    def test_new_providers_in_model_pricing(self) -> None:
+        """Gemini and Grok entries must appear in MODEL_PRICING shim."""
+        from hachi.core.cost import MODEL_PRICING
+
+        for mid in self.GEMINI_MODELS + self.GROK_MODELS:
+            assert mid in MODEL_PRICING, (
+                f"{mid} present in registry JSON but missing from MODEL_PRICING shim — "
+                "add the entry to model-registry.json"
+            )
