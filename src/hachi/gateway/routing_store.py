@@ -126,7 +126,7 @@ class RoutingConfigStore:
         logger.info("RoutingConfigStore: rolled back to v%d", self._version)
         return self._last_good
 
-    def audit_records(self, limit: int = 50) -> list[dict]:
+    def audit_records(self, limit: int = 50) -> list[dict[str, object]]:
         """Return the most recent *limit* audit records from disk.
 
         Returns an empty list when no audit path is configured or the file
