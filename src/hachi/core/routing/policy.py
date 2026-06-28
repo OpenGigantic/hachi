@@ -53,6 +53,61 @@ class RoutingPolicy(BaseModel):
         """
         return self.capabilities.get(cap, [])
 
+    def costly_capability_warnings(self, registry: ModelRegistry) -> list[str]:
+        """Cost-governance guard (pure — never mutates routing).
+
+        Flag when a high-volume chat capability (reasoning/coding) is pinned to a
+        model substantially pricier (>= 3x input price) than this policy's
+        ``default_model``, while ``default_model`` itself supports that capability.
+
+        This surfaces the silent "every chat turn is routed to the priciest model"
+        trap — e.g. ``default_model = "gpt-4o-mini"`` but
+        ``routing.capabilities.reasoning = ["gpt-4o"]`` (~16x the input price) — so it
+        shows up loudly at boot instead of hiding in the routing table. It does NOT
+        change routing; an explicit choice is respected, only surfaced.
+        """
+
+        def _input_price(model_id: str) -> float | None:
+            if not model_id:
+                return None
+            try:
+                pricing = registry.pricing_for_model(model_id)
+            except Exception:
+                return None
+            return float(pricing.input_per_mtok) if pricing is not None else None
+
+        warnings: list[str] = []
+        default_price = _input_price(self.default_model)
+        if default_price is None or default_price <= 0:
+            return warnings
+
+        for cap in (Capability.REASONING, Capability.CODING):
+            models = self.capabilities.get(cap) or [self.default_model]
+            resolved = models[0] if models else self.default_model
+            if not resolved or resolved == self.default_model:
+                continue
+            resolved_price = _input_price(resolved)
+            if resolved_price is None:
+                continue
+            # Only warn if the cheaper default is actually viable for this capability.
+            try:
+                capable_ids = {d.id for d in registry.by_capability(cap)}
+            except Exception:
+                capable_ids = set()
+            if self.default_model not in capable_ids:
+                continue
+            ratio = resolved_price / default_price
+            if ratio >= 3.0:
+                warnings.append(
+                    f"[cost] routing.capabilities.{cap.value} = {resolved!r} costs "
+                    f"${resolved_price:.2f}/Mtok input — {ratio:.0f}x your routing "
+                    f"default_model {self.default_model!r} (${default_price:.2f}/Mtok), "
+                    f"which also supports {cap.value}. Every {cap.value} turn pays the "
+                    f"higher rate. Repoint [routing.capabilities].{cap.value} to a cheaper "
+                    f"model unless you specifically need {resolved}."
+                )
+        return warnings
+
     # ------------------------------------------------------------------
     # Factory
     # ------------------------------------------------------------------

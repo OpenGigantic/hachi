@@ -948,6 +948,16 @@ class ExecutionLoop:
                     model_name = getattr(self._turn_client, "model", "unknown")
                     self.cost_tracker.record(model_name, response.usage)
                     self.on_event("usage", self.cost_tracker.snapshot().to_dict())
+                    # Per-call cache/cost breakdown (hit-rate + fresh/cached/no-cache
+                    # spread) so cache effectiveness is observable per request, not just
+                    # buried in the aggregate. Guarded — observability never breaks a turn.
+                    try:
+                        self.on_event(
+                            "cache_metrics",
+                            self.cost_tracker.cache_metrics(model_name, response.usage),
+                        )
+                    except Exception:
+                        pass
 
                 # Stop this turn if a per-turn budget cap is now exceeded.
                 turn_budget_reason = self._turn_budget_exceeded()

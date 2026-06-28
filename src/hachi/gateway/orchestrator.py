@@ -210,15 +210,16 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "write_file",
         "run_terminal_command",
         "rollback_changes",
-        # ObjectGraph skills (3-pass) + the lazy-loading meta-tool
+        # ObjectGraph skills (3-pass) + the lazy-loading meta-tool. The skill-routing
+        # contract in brain.og requires skill_dependencies / check_skill_assertions to
+        # be present right after load_skill, so they stay core. The rarer authoring
+        # tools (save_skill, skill_changelog) are lazy under the "authoring" group.
         "search_skills",
         "list_skills",
         "peek_skill",
         "load_skill",
         "skill_dependencies",
         "check_skill_assertions",
-        "skill_changelog",
-        "save_skill",
         "use_tools",
         # long-term memory / sessions
         "core_save_memory",
@@ -228,9 +229,7 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "core_search_user_profile",
         "core_delete_user_profile",
         "core_search_sessions",
-        # delegation
-        "delegate_task",
-        "list_roles",
+        # delegation: delegate_task / list_roles are lazy under the "delegation" group.
         # web (the common case; richer browser actions are gated under "browser")
         "browse_web",
     }
@@ -239,6 +238,13 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
 # Non-core, statically-known tools → their on-demand group. Per-skill REST tools
 # are tagged at registration (group == skill name) and are not listed here.
 _GROUP_BY_TOOL_NAME: dict[str, str] = {
+    # Flagship-but-occasional tools trimmed out of always-on core to cut the per-turn
+    # tool-schema footprint (~1.3K tokens). Discoverable via the system prompt's
+    # "OPTIONAL TOOL GROUPS" list; the model unlocks them with use_tools(group=...).
+    "delegate_task": "delegation",
+    "list_roles": "delegation",
+    "save_skill": "authoring",
+    "skill_changelog": "authoring",
     "browser_act": "browser",
     "browser_screenshot": "browser",
     "python_sandbox": "sandbox",
@@ -2757,6 +2763,12 @@ def boot_agent(
             _routing_policy.default_model,
             _routing_policy.auto,
         )
+        # Cost-governance guard (BB-30): surface the silent "every chat turn routed to
+        # the priciest model" trap loudly at boot instead of letting it hide in the
+        # routing table. Never changes routing — an explicit choice is respected.
+        for _cost_warning in _routing_policy.costly_capability_warnings(_model_registry):
+            logger.warning(_cost_warning)
+            emit_runtime_event("cost.routing_warning", {"message": _cost_warning})
     except Exception:
         logger.debug(
             "Routing boot: failed to initialise routing layer; falling back to direct client",
