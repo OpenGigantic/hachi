@@ -287,3 +287,56 @@ class TestMcpRegisterPreservesEntryFields:
         )
         for cfg in (stdio, http):
             assert set(cfg.to_toml_entry()) <= MCPServerConfig.TOML_MANAGED_KEYS
+
+
+# ---------------------------------------------------------------------------
+# E. Boot failures before _servers entry must appear in get_inventory (Bug 4)
+# ---------------------------------------------------------------------------
+
+
+class TestMcpBootFailureInventory:
+    """Servers that fail before entering _servers must show up in get_inventory.
+
+    Covers: invalid TOML config and gate denial — both fail before
+    MCPManager._servers is populated, so they were invisible to the operator UI.
+    """
+
+    def test_register_boot_failure_appears_in_inventory(self) -> None:
+        from hachi.core.mcp_client import MCPManager
+
+        mgr = MCPManager()
+        mgr.register_boot_failure("bad-server", "invalid TOML config")
+        rows = mgr.get_inventory()
+        names = [r["name"] for r in rows]
+        assert "bad-server" in names, "Boot failure must appear in inventory"
+        entry = next(r for r in rows if r["name"] == "bad-server")
+        assert entry["status"] == "failed"
+        assert entry["tool_count"] == 0
+        assert entry["err"] == "invalid TOML config"
+
+    def test_boot_failure_not_duplicated_when_server_later_added(self) -> None:
+        """If a server was initially a failure but later successfully added,
+        it must appear only once (from _servers, not from _boot_failures)."""
+        from hachi.core.mcp_client import MCPManager, MCPServerConnection
+
+        mgr = MCPManager()
+        mgr.register_boot_failure("s", "gate denied")
+        # Simulate the server being added successfully later.
+        mock_conn = MagicMock(spec=MCPServerConnection)
+        mock_conn.transport_kind = "stdio"
+        mock_conn.is_alive = True
+        mock_conn.tools = []
+        mgr._servers["s"] = mock_conn
+        rows = mgr.get_inventory()
+        matching = [r for r in rows if r["name"] == "s"]
+        assert len(matching) == 1, "Server must appear exactly once"
+        assert matching[0]["status"] == "ready"
+
+    def test_boot_failure_with_gate_denial_reason(self) -> None:
+        from hachi.core.mcp_client import MCPManager
+
+        mgr = MCPManager()
+        mgr.register_boot_failure("gated-server", "MCP access not permitted in sandbox tier")
+        entry = next(r for r in mgr.get_inventory() if r["name"] == "gated-server")
+        assert entry["status"] == "failed"
+        assert "sandbox" in (entry["err"] or "")

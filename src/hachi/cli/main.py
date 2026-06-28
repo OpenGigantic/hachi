@@ -752,6 +752,36 @@ class _InProcessGatewayRuntime:
                 setattr(config.permissions.ask_before, key, value)
 
         write_global_config(config)
+
+        # Bug 7: write_global_config persists the tier to settings.toml, but
+        # PermissionGate reads device-permissions.og (not settings.toml).  A tier
+        # change must therefore regenerate the .og so that (a) fresh boots pick it up
+        # and (b) boot_agent's reconcile step can detect the drift.
+        if tier:
+            _perm_file = get_permissions_file()
+            try:
+                from hachi.core.permissions import PermissionGate, generate_permissions_og
+
+                # Preserve any custom allowed_paths the user added manually.
+                _custom_paths: list[str] | None = None
+                if _perm_file.exists():
+                    try:
+                        _gate = PermissionGate(_perm_file)
+                        if not _gate._fs.allow_all and _gate._fs.allowed_paths:
+                            _custom_paths = [str(p) for p in _gate._fs.allowed_paths]
+                    except Exception:
+                        pass
+                _og_content = generate_permissions_og(tier, _custom_paths)
+                _tmp = _perm_file.with_suffix(".og.tmp")
+                _tmp.write_text(_og_content, encoding="utf-8")
+                import os as _os
+
+                _os.replace(_tmp, _perm_file)
+            except Exception:
+                _logger.warning(
+                    "update_permissions: failed to regenerate device-permissions.og", exc_info=True
+                )
+
         return config.model_dump(mode="python", exclude_none=True)
 
     def update_memory(self, payload: dict) -> dict:
@@ -3795,7 +3825,7 @@ def setup(
         provider = {
             "kind": "openai-compatible",
             "api_key_env": "OPENAI_API_KEY",
-            "model": "gpt-4.1-mini",
+            "model": "gpt-4o-mini",
         }
 
     plan = service.build_tier_plan(

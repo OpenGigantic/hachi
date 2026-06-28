@@ -115,6 +115,30 @@ def test_env_file_with_malformed_quotes_is_tolerated(monkeypatch, tmp_path: Path
     assert cfg.provider.model == "env-model"
 
 
+def test_openai_default_model_is_catalog_member(monkeypatch, tmp_path: Path) -> None:
+    """config_loader must not default to a model id that is absent from the registry.
+
+    gpt-4.1-mini is not in BUNDLED_MODEL_DEFAULTS, so using it as the fallback model
+    breaks cost tracking and model-selection UI (Bug 1).
+    """
+    from hachi.core.routing.registry import ModelRegistry
+
+    paths = _paths(tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    cfg = load_effective_config(paths=paths)
+    default_model = cfg.provider.model
+
+    reg = ModelRegistry.build(object(), None)
+    assert reg.get(default_model) is not None, (
+        f"Default model {default_model!r} is not in ModelRegistry catalog — "
+        "cost tracking and model-selection UI will be broken"
+    )
+
+
 def test_openai_key_env_does_not_reset_existing_openai_model(monkeypatch, tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     paths.config_dir.mkdir(parents=True, exist_ok=True)

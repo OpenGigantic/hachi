@@ -734,6 +734,15 @@ def connector_status(connector_id: str) -> dict[str, Any]:
             "credential_fields": [],
         }
 
+    # Bug 2: tri-state for connectors backed by an optional Python package.
+    # Check package availability before credential presence so "unavailable"
+    # (package missing) is distinct from "disconnected" (package present, no key).
+    package_installed: bool | None = None
+    if connector_id == "tavily":
+        import importlib.util
+
+        package_installed = importlib.util.find_spec("tavily") is not None
+
     if connector.auth_type == "oauth2":
         connected = _token_store.is_connected(connector_id)
         configured = connector.is_configured()
@@ -742,7 +751,13 @@ def connector_status(connector_id: str) -> dict[str, Any]:
     elif connector.auth_type == "apikey":
         configured = is_apikey_connector_configured(connector_id)
         connected = configured  # apikey connectors are "connected" when all creds are present
-        status = "connected" if configured else "disconnected"
+        if package_installed is False:
+            # Package not installed — override status so UI shows install guidance,
+            # not a dead-end key-entry form.
+            status = "unavailable"
+            connected = False
+        else:
+            status = "connected" if configured else "disconnected"
         source = _apikey_credential_source(connector_id) if configured else None
     else:
         configured = False
@@ -750,7 +765,7 @@ def connector_status(connector_id: str) -> dict[str, Any]:
         status = "disconnected"
         source = None
 
-    return {
+    result: dict[str, Any] = {
         "auth_type": connector.auth_type,
         "configured": configured,
         "connected": connected,
@@ -758,6 +773,9 @@ def connector_status(connector_id: str) -> dict[str, Any]:
         "source": source,
         "credential_fields": list(connector.credential_fields),
     }
+    if package_installed is not None:
+        result["package_installed"] = package_installed
+    return result
 
 
 def all_connector_statuses() -> list[dict[str, Any]]:
