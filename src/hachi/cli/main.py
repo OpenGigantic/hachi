@@ -473,9 +473,16 @@ class _InProcessGatewayRuntime:
         """Stored transcript for a (possibly historical) session — powers resume."""
         with self._agents_lock:
             agent = next(iter(self._agents.values()), None)
-        if agent is None:
-            return []
-        return [dict(item) for item in agent.query_session_messages(session_id, limit=limit)]
+        if agent is not None:
+            return [dict(item) for item in agent.query_session_messages(session_id, limit=limit)]
+        # BB-34: no agent booted yet (cold gateway start before the first turn).
+        # Mirror the BB-13 fallback used by recent_sessions(): read directly from
+        # the durable SessionStore so past-session histories load on the picker.
+        store = SessionStore(db_path=str(get_hachi_paths().sessions_db))
+        try:
+            return [dict(item) for item in store.get_session_messages(session_id, limit=limit)]
+        finally:
+            store.shutdown()
 
     def delete_session_record(self, session_id: str) -> bool:
         """Permanently delete a persisted session from the store. True if it existed."""
