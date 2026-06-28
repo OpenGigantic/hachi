@@ -1,7 +1,7 @@
 """ModelRegistry — the source of truth for what models exist and what they can do.
 
 Seeding precedence (low → high):
-    bundled defaults  ←  provider discovery  ←  config overrides
+    JSON bundled + user override  ←  provider discovery  ←  config overrides
 
 The registry also exposes a ``pricing_for_model`` helper that replicates the
 longest-prefix lookup from ``cost.py`` so ``CostTracker`` can fall back to
@@ -14,7 +14,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from hachi.core.routing.capability import Capability
-from hachi.core.routing.descriptor import BUNDLED_MODEL_DEFAULTS, ModelDescriptor, Pricing
+from hachi.core.routing.descriptor import ModelDescriptor, Pricing
 
 if TYPE_CHECKING:
     from hachi.core.providers.registry import ProviderRegistry
@@ -110,8 +110,15 @@ class ModelRegistry:
         """
         reg = cls()
 
-        # 1. Bundled defaults (lowest precedence).
-        for descriptor in BUNDLED_MODEL_DEFAULTS:
+        # 1. Bundled defaults + user config_dir/model-registry.json (lowest precedence).
+        from hachi.core.paths import get_hachi_paths
+        from hachi.core.routing.registry_data import load_model_registry_json
+
+        try:
+            override_path = get_hachi_paths().config_dir / "model-registry.json"
+        except Exception:
+            override_path = None
+        for descriptor in load_model_registry_json(override_path=override_path):
             reg.register(descriptor)
 
         # 2. Provider-advertised models (override bundled).

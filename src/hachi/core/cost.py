@@ -30,31 +30,20 @@ class _PricingProvider(Protocol):
 
 # USD per 1,000,000 tokens, as (input, output). Prefix match on the model id so
 # dated variants (e.g. "claude-opus-4-8-20260101") resolve to the family price.
-MODEL_PRICING: dict[str, tuple[float, float]] = {
-    # Claude 4 family. Opus 4.x is $5/$25 per MTok (current Anthropic pricing).
-    # The prior $15/$75 was the legacy Claude-3-Opus rate and overcharged the
-    # displayed cost 3x for every Opus turn (BB-27).
-    "claude-opus-4": (5.0, 25.0),
-    "claude-sonnet-4": (3.0, 15.0),
-    "claude-haiku-4": (1.0, 5.0),
-    # Explicit model ids (resolved before prefix match via longer key).
-    # NOTE: do not add a "claude-haiku-4-5" override here — it must prefix-match
-    # "claude-haiku-4" → (1.0, 5.0) (see tests/test_cost_tracking.py). A divergent
-    # per-variant price is a separate, deliberate pricing-accuracy change.
-    "claude-opus-4-8": (5.0, 25.0),
-    # OpenAI
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4o": (2.50, 10.0),
-    "gpt-4": (30.0, 60.0),
-    "gpt-3.5-turbo": (0.50, 1.50),
-    # GPT-4.1 family (explicit entries so gpt-4.1-mini never prefix-matches gpt-4.1)
-    "gpt-4.1-mini": (0.40, 1.60),
-    "gpt-4.1": (2.0, 8.0),
-    # o-series reasoning models (o3-mini explicit so it doesn't inherit o3 price)
-    "o3-mini": (1.10, 4.40),
-    "o3": (10.0, 40.0),
-    "o4-mini": (1.10, 4.40),
-}
+# Single source of truth is src/hachi/data/model-registry.json — add models there,
+# not here. This dict is a computed shim so call-sites that key into MODEL_PRICING
+# by exact id continue to work.
+def _build_model_pricing() -> dict[str, tuple[float, float]]:
+    from hachi.core.routing.registry_data import load_model_registry_json
+
+    result: dict[str, tuple[float, float]] = {}
+    for desc in load_model_registry_json():
+        if desc.pricing is not None:
+            result[desc.id] = (desc.pricing.input_per_mtok, desc.pricing.output_per_mtok)
+    return result
+
+
+MODEL_PRICING: dict[str, tuple[float, float]] = _build_model_pricing()
 _DEFAULT_PRICING = (1.0, 5.0)
 
 # ---------------------------------------------------------------------------
