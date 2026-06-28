@@ -33,7 +33,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from hachi.core.errors import MCPError
 from hachi.core.loop import ToolRegistry
@@ -170,6 +170,25 @@ class MCPServerConfig:
     # Optional per-server timeouts
     boot_timeout_seconds: float | None = None
     request_timeout_seconds: float = 30.0
+
+    # The TOML keys that ``to_toml_entry`` owns. On re-registration,
+    # ``register_mcp_server`` overwrites these (and prunes any that no longer
+    # apply, e.g. a stdio ``command`` after switching to http) but PRESERVES every
+    # other key in the ``[mcp_servers.NAME]`` table — notably ``enabled`` (written
+    # by ``set_mcp_enabled``) — so a re-register never silently drops a persisted
+    # lifecycle field. Keep this in sync with ``to_toml_entry`` (BB-19).
+    TOML_MANAGED_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "transport",
+            "command",
+            "args",
+            "env",
+            "url",
+            "headers",
+            "boot_timeout_seconds",
+            "request_timeout_seconds",
+        }
+    )
 
     @classmethod
     def from_toml_entry(cls, name: str, entry: dict[str, Any]) -> MCPServerConfig:

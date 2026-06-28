@@ -273,6 +273,29 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** `frontend/src/lib/data/domains/integrations.test.ts`
   ("extractMcpSecrets — transparent secret handling").
 
+### BB-19 — Re-registering an MCP server clobbered its persisted `enabled` flag
+- **Symptom:** an `[mcp_servers.NAME]` entry that had `transport`, `url`, **and**
+  `enabled = true` came back with only `transport` + `url` after the server was
+  registered again (e.g. the user edited its URL in the UI). The lifecycle flag was
+  silently dropped — looked like data loss on the entry.
+- **Root cause:** `_InProcessGatewayRuntime.register_mcp_server` persisted with
+  `mcp_section[name] = cfg.to_toml_entry()`, which **replaces the whole sub-table**
+  from the in-memory `MCPServerConfig`. That dataclass has no `enabled` field (it's
+  written separately by `set_mcp_enabled`), so `to_toml_entry()` never emits it and
+  the re-register wiped it. (Siblings were already safe — register/delete only ever
+  touched the targeted key — but the *targeted* entry lost any field the config
+  doesn't model.)
+- **Avoid:** when persisting a server, edit ONLY the keys the config owns
+  (`MCPServerConfig.TOML_MANAGED_KEYS`) — overwrite those, prune managed keys that no
+  longer apply (e.g. a stdio `command` after switching to http), and leave every other
+  key (notably `enabled`) untouched. Never rebuild a `[mcp_servers.NAME]` table from an
+  in-memory config that doesn't carry the full key set.
+- **Locked by:** `tests/test_mcp_registration.py::TestMcpRegisterPreservesEntryFields`
+  (`test_reregister_preserves_enabled`,
+  `test_reregister_transport_switch_prunes_stale_keys_keeps_enabled`,
+  `test_register_then_delete_leaves_sibling_byte_for_byte`,
+  `test_toml_managed_keys_cover_to_toml_entry`).
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

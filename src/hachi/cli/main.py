@@ -1827,8 +1827,23 @@ class _InProcessGatewayRuntime:
         )
         server_entry = cfg.to_toml_entry()
 
+        # Edit ONLY the targeted server's sub-table, preserving lifecycle fields we
+        # don't model in MCPServerConfig (notably `enabled`, written by
+        # set_mcp_enabled). A blind ``mcp_section[name] = server_entry`` would rewrite
+        # the whole entry from the in-memory config and silently drop `enabled` on every
+        # re-registration (BB-19). On re-register: overwrite the keys this config owns,
+        # prune stale managed keys (e.g. a stdio `command` after switching to http), and
+        # leave every other key untouched.
         mcp_section = doc["mcp_servers"]
-        mcp_section[name] = server_entry  # type: ignore[index]
+        existing = mcp_section.get(name)  # type: ignore[union-attr]
+        if existing is None:
+            mcp_section[name] = server_entry  # type: ignore[index]
+        else:
+            managed = _MCPServerConfig.TOML_MANAGED_KEYS
+            for stale in [k for k in existing if k in managed and k not in server_entry]:
+                del existing[stale]
+            for key, value in server_entry.items():
+                existing[key] = value
 
         import os as _os
 
