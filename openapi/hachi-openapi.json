@@ -2679,7 +2679,7 @@
           "config"
         ],
         "summary": "Put Routing",
-        "description": "Persist the capability routing matrix.",
+        "description": "Persist the capability routing matrix (hot-reload \u2014 no restart).",
         "operationId": "put_routing_config_routing_put",
         "requestBody": {
           "content": {
@@ -2698,6 +2698,138 @@
               "application/json": {
                 "schema": {
                   "title": "Response Put Routing Config Routing Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/config/routing/validate": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Post Routing Validate",
+        "description": "Validate a routing config without persisting it.\n\nReturns ``{\"ok\": true, \"issues\": [], \"warnings\": []}`` on success or\n``{\"ok\": false, \"issues\": [...], \"warnings\": [...]}`` on failure.\nAlways returns HTTP 200 \u2014 the ``ok`` field signals validity.",
+        "operationId": "post_routing_validate_config_routing_validate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoutingUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Routing Validate Config Routing Validate Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/config/routing/rollback": {
+      "post": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Post Routing Rollback",
+        "description": "Restore the last-known-good routing config.",
+        "operationId": "post_routing_rollback_config_routing_rollback_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Routing Rollback Config Routing Rollback Post"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/config/routing/audit": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Get Routing Audit",
+        "description": "Return recent routing-change audit records (newest first).",
+        "operationId": "get_routing_audit_config_routing_audit_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Routing Audit Config Routing Audit Get"
                 }
               }
             }
