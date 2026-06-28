@@ -159,3 +159,52 @@ def test_core_tool_set_size_guard() -> None:
     assert 18 <= len(_CORE_TOOL_NAMES) <= 24  # budget can't silently regress
     assert "use_tools" in _CORE_TOOL_NAMES
     assert "browse_web" in _CORE_TOOL_NAMES
+
+
+def test_rare_tools_trimmed_from_core_to_lazy_groups() -> None:
+    # Cost trim: rare flagship tools moved out of the always-on core set to cut the
+    # per-turn tool-schema footprint (~1.3K tokens). Still reachable via use_tools().
+    from hachi.gateway.orchestrator import _CORE_TOOL_NAMES, _GROUP_BY_TOOL_NAME
+
+    moved = {
+        "delegate_task": "delegation",
+        "list_roles": "delegation",
+        "save_skill": "authoring",
+        "skill_changelog": "authoring",
+    }
+    for name, group in moved.items():
+        assert name not in _CORE_TOOL_NAMES, f"{name} should be lazy, not core"
+        assert _GROUP_BY_TOOL_NAME.get(name) == group
+
+    # Skill-routing CONTRACT + safety tools must remain always-on: brain.og requires
+    # skill_dependencies / check_skill_assertions right after load_skill, and
+    # rollback_changes is the file-edit undo. Hiding these would break those flows.
+    for name in (
+        "skill_dependencies",
+        "check_skill_assertions",
+        "rollback_changes",
+        "search_skills",
+        "peek_skill",
+        "load_skill",
+        "use_tools",
+    ):
+        assert name in _CORE_TOOL_NAMES
+
+
+def test_classify_routes_trimmed_tools_to_their_groups() -> None:
+    from hachi.gateway.orchestrator import _CORE_TOOL_NAMES, _GROUP_BY_TOOL_NAME
+
+    reg = ToolRegistry()
+    for nm in ("read_file", "delegate_task", "save_skill", "skill_dependencies"):
+        reg.register(_tool(nm), lambda **_k: "")
+    reg.classify(
+        core_names=set(_CORE_TOOL_NAMES),
+        group_by_name=_GROUP_BY_TOOL_NAME,
+        default="integrations",
+    )
+    core = {s["name"] for s in reg.get_schemas(set())}
+    assert {"read_file", "skill_dependencies"} <= core  # contract tool stays core
+    assert "delegate_task" not in core and "save_skill" not in core  # trimmed out
+    # Unlocking the group surfaces the moved tool again — never permanently hidden.
+    assert "delegate_task" in {s["name"] for s in reg.get_schemas({"delegation"})}
+    assert "save_skill" in {s["name"] for s in reg.get_schemas({"authoring"})}

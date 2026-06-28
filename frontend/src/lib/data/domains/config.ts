@@ -227,18 +227,29 @@ registerLoader("config", loadConfig);
 
 /**
  * Update the safety level optimistically, then persist to the gateway.
- * Reverse: UI SafetyLevel → gateway tier via safetyToTier().
+ * On success, re-reads config from gateway so the store reflects the persisted
+ * value (guards against a concurrent loadConfig() overwriting with stale data).
+ * On failure, rolls back the optimistic update and shows a toast — the error
+ * was previously swallowed silently, causing Open to revert to Standard on the
+ * next page load because settings.toml was never updated.
  */
 export async function setSafetyLive(level: SafetyLevel): Promise<void> {
-  // Optimistic update
+  const previous = useStore.getState().safety;
   useStore.getState().setSafety(level);
   if (USE_MOCKS) return;
   try {
     await apiSend<GatewayConfig>("PUT", "/config/permissions", {
       permissions: { tier: safetyToTier(level) },
     });
+    // Re-read config to confirm the write landed and clear any stale dedupe
+    // result from a concurrent loadConfig() that ran before the PUT committed.
+    await loadConfig();
   } catch {
-    // Network errors surface the reconnecting banner via client.ts callback.
+    useStore.getState().setSafety(previous);
+    useStore.getState().showToast(
+      "Permissions not saved — is Hachi running?",
+      "blocked",
+    );
   }
 }
 

@@ -1442,10 +1442,32 @@ def create_gateway_app(
 
     @config.put("/routing")
     async def put_routing(payload: RoutingUpdateRequest) -> Any:
-        """Persist the capability routing matrix."""
+        """Persist the capability routing matrix (hot-reload — no restart)."""
         return await anyio.to_thread.run_sync(
             lambda: control_plane.set_routing(payload.default_model, payload.capabilities)
         )
+
+    @config.post("/routing/validate")
+    async def post_routing_validate(payload: RoutingUpdateRequest) -> Any:
+        """Validate a routing config without persisting it.
+
+        Returns ``{"ok": true, "issues": [], "warnings": []}`` on success or
+        ``{"ok": false, "issues": [...], "warnings": [...]}`` on failure.
+        Always returns HTTP 200 — the ``ok`` field signals validity.
+        """
+        return await anyio.to_thread.run_sync(
+            lambda: control_plane.validate_routing(payload.default_model, payload.capabilities)
+        )
+
+    @config.post("/routing/rollback")
+    async def post_routing_rollback() -> Any:
+        """Restore the last-known-good routing config."""
+        return await anyio.to_thread.run_sync(lambda: control_plane.rollback_routing())
+
+    @config.get("/routing/audit")
+    async def get_routing_audit(limit: int = 50) -> Any:
+        """Return recent routing-change audit records (newest first)."""
+        return await anyio.to_thread.run_sync(lambda: control_plane.get_routing_audit(limit=limit))
 
     @config.get("/models/all")
     async def get_models_all() -> Any:

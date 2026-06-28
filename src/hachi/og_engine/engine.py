@@ -1837,4 +1837,13 @@ class SkillEngine:
                 }
             )
         inventory.sort(key=lambda item: (-item["use_count"], item["name"]))
-        return inventory
+        # BB-34: deduplicate by name — keep the first (highest use_count) entry.
+        # Two .og files can define nodes with the same name but different qids;
+        # the UI uses name as the React key so duplicates cause key collisions.
+        seen: set[str] = set()
+        deduped: list[dict[str, Any]] = []
+        for item in inventory:
+            if item["name"] not in seen:
+                seen.add(item["name"])
+                deduped.append(item)
+        return deduped

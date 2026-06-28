@@ -13,7 +13,7 @@ import datetime
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from hachi.core.llm import TokenUsage
 
@@ -30,22 +30,20 @@ class _PricingProvider(Protocol):
 
 # USD per 1,000,000 tokens, as (input, output). Prefix match on the model id so
 # dated variants (e.g. "claude-opus-4-8-20260101") resolve to the family price.
-MODEL_PRICING: dict[str, tuple[float, float]] = {
-    # Claude 4 family
-    "claude-opus-4": (15.0, 75.0),
-    "claude-sonnet-4": (3.0, 15.0),
-    "claude-haiku-4": (1.0, 5.0),
-    # Explicit model ids (resolved before prefix match via longer key).
-    # NOTE: do not add a "claude-haiku-4-5" override here — it must prefix-match
-    # "claude-haiku-4" → (1.0, 5.0) (see tests/test_cost_tracking.py). A divergent
-    # per-variant price is a separate, deliberate pricing-accuracy change.
-    "claude-opus-4-8": (15.0, 75.0),
-    # OpenAI
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4o": (2.50, 10.0),
-    "gpt-4": (30.0, 60.0),
-    "gpt-3.5-turbo": (0.50, 1.50),
-}
+# Single source of truth is src/hachi/data/model-registry.json — add models there,
+# not here. This dict is a computed shim so call-sites that key into MODEL_PRICING
+# by exact id continue to work.
+def _build_model_pricing() -> dict[str, tuple[float, float]]:
+    from hachi.core.routing.registry_data import load_model_registry_json
+
+    result: dict[str, tuple[float, float]] = {}
+    for desc in load_model_registry_json():
+        if desc.pricing is not None:
+            result[desc.id] = (desc.pricing.input_per_mtok, desc.pricing.output_per_mtok)
+    return result
+
+
+MODEL_PRICING: dict[str, tuple[float, float]] = _build_model_pricing()
 _DEFAULT_PRICING = (1.0, 5.0)
 
 # ---------------------------------------------------------------------------
@@ -163,9 +161,73 @@ def record_voice_usage(
         )
         return 0.0
 
+
 # Anthropic prompt-cache multipliers relative to the base input price.
 _CACHE_READ_MULTIPLIER = 0.1
 _CACHE_WRITE_MULTIPLIER = 1.25
+
+
+def record_background_usage(
+    model: str,
+    usage: TokenUsage,
+    *,
+    store: Any = None,
+    feature: str | None = None,
+) -> float:
+    """Record a background (non-session) LLM call's spend into the durable daily
+    ledger and return its estimated cost.
+
+    Background work — fact extraction, durable session titling, recall summarisation —
+    runs outside the per-session :class:`CostTracker`, so without this its spend is
+    invisible to ``/spend`` and to the daily spend cap (both read this ledger). Mirrors
+    :func:`record_voice_usage`: best-effort, never raises.
+
+    Args:
+        model:   Model id the background call used (priced via :func:`pricing_for`).
+        usage:   Token usage from the call's ``LLMResponse``.
+        store:   Optional :class:`~hachi.core.session_store.SessionStore` (mainly for
+            tests). When ``None`` the shared gateway store is used, else a short-lived
+            one is opened.
+        feature: Optional feature label for per-feature attribution (R10).
+            e.g. ``"extraction"``, ``"titling"``, ``"compaction"``.  Ignored today
+            (background calls go to the daily ledger, not a per-session tracker)
+            but accepted so call sites can be annotated consistently.
+
+    Returns:
+        Estimated USD cost recorded (``0.0`` on a pricing miss or any error).
+    """
+    try:
+        in_price, out_price = pricing_for(model)
+        cost: float = (
+            usage.input_tokens * in_price
+            + usage.cache_read_tokens * in_price * _CACHE_READ_MULTIPLIER
+            + usage.cache_creation_tokens * in_price * _CACHE_WRITE_MULTIPLIER
+            + usage.output_tokens * out_price
+        ) / 1_000_000
+        if cost <= 0:
+            return 0.0
+
+        date_str = datetime.date.today().isoformat()
+        if store is not None:
+            store.record_daily_cost(date_str, cost)
+            return cost
+
+        from hachi.core.session_store import SessionStore
+
+        try:
+            from hachi.gateway.orchestrator import _get_session_store
+
+            shared = _get_session_store()
+            if shared is not None:
+                shared.record_daily_cost(date_str, cost)
+            else:
+                raise RuntimeError("no shared store")
+        except Exception:
+            SessionStore().record_daily_cost(date_str, cost)
+        return cost
+    except Exception as exc:
+        logger.warning("record_background_usage: failed for %s: %s", model, exc)
+        return 0.0
 
 
 def pricing_for(model: str) -> tuple[float, float]:
@@ -200,6 +262,16 @@ class CostSnapshot:
             "total_tokens": self.total_tokens,
             "estimated_cost_usd": round(self.estimated_cost_usd, 6),
             "call_count": self.call_count,
+            # Fraction of cumulative INPUT tokens served from cache (0..1). 0 here
+            # across a long session means prompt caching isn't engaging — a cost smell.
+            "cache_hit_rate": round(
+                self.cache_read_tokens
+                / max(
+                    1,
+                    self.input_tokens + self.cache_read_tokens + self.cache_creation_tokens,
+                ),
+                4,
+            ),
         }
 
 
@@ -273,9 +345,19 @@ class CostTracker:
         self._provider_map: dict[str, str] = dict(provider_map) if provider_map else {}
         # Per-model accumulators: model_id → [input, output, cache_read, cache_creation, cost, n]
         self._by_model: dict[str, list[float]] = {}
+        # Per-feature accumulators (R10): feature → [in, out, cache_read, cache_creation, cost, n]
+        # Unlabelled calls are bucketed under "unattributed".
+        self._by_feature: dict[str, list[float]] = {}
 
-    def _resolve_pricing(self, model: str) -> tuple[float, float]:
-        """Return (input, output) USD-per-Mtoken, registry-backed with fallback."""
+    def _resolve_pricing(self, model: str) -> tuple[float, float, float, float]:
+        """Return (input, output, cache_read_mult, cache_write_mult), registry-backed.
+
+        The cache multipliers are per-model because providers differ: Anthropic
+        cache reads are ~0.1x the input price, OpenAI cached input is ~0.5x.
+        Honouring the descriptor's mults keeps displayed cost accurate per provider
+        instead of assuming Anthropic economics for every model. Falls back to the
+        module constants when no registry/descriptor pricing is available.
+        """
         if self._registry is not None:
             try:
                 result = self._registry.pricing_for_model(model)
@@ -283,10 +365,13 @@ class CostTracker:
                     return (
                         float(getattr(result, "input_per_mtok", 0.0)),
                         float(getattr(result, "output_per_mtok", 0.0)),
+                        float(getattr(result, "cache_read_mult", _CACHE_READ_MULTIPLIER)),
+                        float(getattr(result, "cache_write_mult", _CACHE_WRITE_MULTIPLIER)),
                     )
             except Exception:
                 pass
-        return pricing_for(model)
+        in_price, out_price = pricing_for(model)
+        return (in_price, out_price, _CACHE_READ_MULTIPLIER, _CACHE_WRITE_MULTIPLIER)
 
     def _provider_for_model(self, model: str) -> str:
         """Return the provider name for *model*, or ``""`` when unknown."""
@@ -302,19 +387,30 @@ class CostTracker:
                 pass
         return ""
 
-    def record(self, model: str, usage: TokenUsage) -> None:
-        """Add one generation's usage, pricing it against ``model``."""
-        in_price, out_price = self._resolve_pricing(model)
-        # The Anthropic API reports input_tokens, cache_read_input_tokens and
-        # cache_creation_input_tokens as SEPARATE, mutually-exclusive counters
-        # (input_tokens is the fresh, non-cached portion). So they are additive:
+    def record(self, model: str, usage: TokenUsage, *, feature: str | None = None) -> None:
+        """Add one generation's usage, pricing it against ``model``.
+
+        Args:
+            model:   Model identifier used for pricing lookup.
+            usage:   Token usage from the LLM response.
+            feature: Optional label for per-feature cost attribution (R10).
+                     e.g. ``"chat"``, ``"titling"``, ``"extraction"``, ``"compaction"``.
+                     Unlabelled calls are bucketed under ``"unattributed"``.
+        """
+        in_price, out_price, cache_read_mult, cache_write_mult = self._resolve_pricing(model)
+        # input_tokens, cache_read and cache_creation are SEPARATE, mutually-exclusive
+        # counters (input_tokens is the fresh, non-cached portion), so they are additive:
         # price fresh input at the base rate, cache reads cheaper, cache writes pricier.
+        # The multipliers are per-model (Anthropic ~0.1x read / 1.25x write; OpenAI ~0.5x
+        # read) so each provider's cache economics are honoured, not assumed.
         cost = (
             usage.input_tokens * in_price
-            + usage.cache_read_tokens * in_price * _CACHE_READ_MULTIPLIER
-            + usage.cache_creation_tokens * in_price * _CACHE_WRITE_MULTIPLIER
+            + usage.cache_read_tokens * in_price * cache_read_mult
+            + usage.cache_creation_tokens * in_price * cache_write_mult
             + usage.output_tokens * out_price
         ) / 1_000_000
+
+        _feature = feature or "unattributed"
 
         with self._lock:
             self._input += usage.input_tokens
@@ -332,6 +428,36 @@ class CostTracker:
             acc[3] += usage.cache_creation_tokens
             acc[4] += cost
             acc[5] += 1
+
+            # Per-feature attribution (R10): same layout as per-model.
+            facc = self._by_feature.setdefault(_feature, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            facc[0] += usage.input_tokens
+            facc[1] += usage.output_tokens
+            facc[2] += usage.cache_read_tokens
+            facc[3] += usage.cache_creation_tokens
+            facc[4] += cost
+            facc[5] += 1
+
+    def cache_metrics(self, model: str, usage: TokenUsage) -> dict[str, float | int | str]:
+        """Per-call cache/cost breakdown for observability — hit-rate, fresh-vs-cached
+        cost split, and what this call would cost with no cache / a full cache.
+
+        Used by the execution loop to emit a ``cache_metrics`` event after each
+        generation so cache effectiveness is visible per request, not just buried in
+        the aggregate spend total. Pure; resolves per-model pricing + cache multipliers.
+        """
+        from hachi.core.cache_observability import cache_call_metrics
+
+        in_price, out_price, cache_read_mult, cache_write_mult = self._resolve_pricing(model)
+        metrics: dict[str, float | int | str] = cache_call_metrics(
+            model=model,
+            usage=usage,
+            input_price=in_price,
+            output_price=out_price,
+            cache_read_mult=cache_read_mult,
+            cache_write_mult=cache_write_mult,
+        ).to_dict()
+        return metrics
 
     def snapshot(self) -> CostSnapshot:
         with self._lock:
@@ -394,3 +520,29 @@ class CostTracker:
                 call_count=sum(s.call_count for s in snaps),
             )
         return dict(sorted(result.items(), key=lambda kv: kv[1].estimated_cost_usd, reverse=True))
+
+    def per_feature_snapshot(self) -> dict[str, dict[str, float | int]]:
+        """Return per-feature cost attribution (R10).
+
+        Returns:
+            A dict mapping ``feature_name → {input_tokens, output_tokens,
+            total_tokens, estimated_cost_usd, call_count}``.  Features ordered
+            by descending estimated cost.  Unlabelled calls appear under
+            ``"unattributed"``.
+        """
+        with self._lock:
+            items = dict(self._by_feature)
+
+        result: dict[str, dict[str, float | int]] = {}
+        for fname, acc in items.items():
+            total_tokens = int(acc[0]) + int(acc[1]) + int(acc[2]) + int(acc[3])
+            result[fname] = {
+                "input_tokens": int(acc[0]),
+                "output_tokens": int(acc[1]),
+                "total_tokens": total_tokens,
+                "estimated_cost_usd": acc[4],
+                "call_count": int(acc[5]),
+            }
+        return dict(
+            sorted(result.items(), key=lambda kv: kv[1]["estimated_cost_usd"], reverse=True)
+        )
