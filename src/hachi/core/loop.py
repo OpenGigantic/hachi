@@ -983,7 +983,7 @@ class ExecutionLoop:
                 # Account for token usage / estimated cost and surface it live.
                 if self.cost_tracker is not None:
                     model_name = getattr(self._turn_client, "model", "unknown")
-                    self.cost_tracker.record(model_name, response.usage)
+                    self.cost_tracker.record(model_name, response.usage, feature="chat")
                     self.on_event("usage", self.cost_tracker.snapshot().to_dict())
                     # Per-call cache/cost breakdown (hit-rate + fresh/cached/no-cache
                     # spread) so cache effectiveness is observable per request, not just

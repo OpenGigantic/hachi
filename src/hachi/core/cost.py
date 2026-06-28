@@ -172,6 +172,7 @@ def record_background_usage(
     usage: TokenUsage,
     *,
     store: Any = None,
+    feature: str | None = None,
 ) -> float:
     """Record a background (non-session) LLM call's spend into the durable daily
     ledger and return its estimated cost.
@@ -182,11 +183,15 @@ def record_background_usage(
     :func:`record_voice_usage`: best-effort, never raises.
 
     Args:
-        model: Model id the background call used (priced via :func:`pricing_for`).
-        usage: Token usage from the call's ``LLMResponse``.
-        store: Optional :class:`~hachi.core.session_store.SessionStore` (mainly for
+        model:   Model id the background call used (priced via :func:`pricing_for`).
+        usage:   Token usage from the call's ``LLMResponse``.
+        store:   Optional :class:`~hachi.core.session_store.SessionStore` (mainly for
             tests). When ``None`` the shared gateway store is used, else a short-lived
             one is opened.
+        feature: Optional feature label for per-feature attribution (R10).
+            e.g. ``"extraction"``, ``"titling"``, ``"compaction"``.  Ignored today
+            (background calls go to the daily ledger, not a per-session tracker)
+            but accepted so call sites can be annotated consistently.
 
     Returns:
         Estimated USD cost recorded (``0.0`` on a pricing miss or any error).
@@ -340,6 +345,9 @@ class CostTracker:
         self._provider_map: dict[str, str] = dict(provider_map) if provider_map else {}
         # Per-model accumulators: model_id → [input, output, cache_read, cache_creation, cost, n]
         self._by_model: dict[str, list[float]] = {}
+        # Per-feature accumulators (R10): feature → [in, out, cache_read, cache_creation, cost, n]
+        # Unlabelled calls are bucketed under "unattributed".
+        self._by_feature: dict[str, list[float]] = {}
 
     def _resolve_pricing(self, model: str) -> tuple[float, float, float, float]:
         """Return (input, output, cache_read_mult, cache_write_mult), registry-backed.
@@ -379,8 +387,16 @@ class CostTracker:
                 pass
         return ""
 
-    def record(self, model: str, usage: TokenUsage) -> None:
-        """Add one generation's usage, pricing it against ``model``."""
+    def record(self, model: str, usage: TokenUsage, *, feature: str | None = None) -> None:
+        """Add one generation's usage, pricing it against ``model``.
+
+        Args:
+            model:   Model identifier used for pricing lookup.
+            usage:   Token usage from the LLM response.
+            feature: Optional label for per-feature cost attribution (R10).
+                     e.g. ``"chat"``, ``"titling"``, ``"extraction"``, ``"compaction"``.
+                     Unlabelled calls are bucketed under ``"unattributed"``.
+        """
         in_price, out_price, cache_read_mult, cache_write_mult = self._resolve_pricing(model)
         # input_tokens, cache_read and cache_creation are SEPARATE, mutually-exclusive
         # counters (input_tokens is the fresh, non-cached portion), so they are additive:
@@ -393,6 +409,8 @@ class CostTracker:
             + usage.cache_creation_tokens * in_price * cache_write_mult
             + usage.output_tokens * out_price
         ) / 1_000_000
+
+        _feature = feature or "unattributed"
 
         with self._lock:
             self._input += usage.input_tokens
@@ -410,6 +428,15 @@ class CostTracker:
             acc[3] += usage.cache_creation_tokens
             acc[4] += cost
             acc[5] += 1
+
+            # Per-feature attribution (R10): same layout as per-model.
+            facc = self._by_feature.setdefault(_feature, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            facc[0] += usage.input_tokens
+            facc[1] += usage.output_tokens
+            facc[2] += usage.cache_read_tokens
+            facc[3] += usage.cache_creation_tokens
+            facc[4] += cost
+            facc[5] += 1
 
     def cache_metrics(self, model: str, usage: TokenUsage) -> dict[str, float | int | str]:
         """Per-call cache/cost breakdown for observability — hit-rate, fresh-vs-cached
@@ -493,3 +520,29 @@ class CostTracker:
                 call_count=sum(s.call_count for s in snaps),
             )
         return dict(sorted(result.items(), key=lambda kv: kv[1].estimated_cost_usd, reverse=True))
+
+    def per_feature_snapshot(self) -> dict[str, dict[str, float | int]]:
+        """Return per-feature cost attribution (R10).
+
+        Returns:
+            A dict mapping ``feature_name → {input_tokens, output_tokens,
+            total_tokens, estimated_cost_usd, call_count}``.  Features ordered
+            by descending estimated cost.  Unlabelled calls appear under
+            ``"unattributed"``.
+        """
+        with self._lock:
+            items = dict(self._by_feature)
+
+        result: dict[str, dict[str, float | int]] = {}
+        for fname, acc in items.items():
+            total_tokens = int(acc[0]) + int(acc[1]) + int(acc[2]) + int(acc[3])
+            result[fname] = {
+                "input_tokens": int(acc[0]),
+                "output_tokens": int(acc[1]),
+                "total_tokens": total_tokens,
+                "estimated_cost_usd": acc[4],
+                "call_count": int(acc[5]),
+            }
+        return dict(
+            sorted(result.items(), key=lambda kv: kv[1]["estimated_cost_usd"], reverse=True)
+        )

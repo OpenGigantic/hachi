@@ -118,7 +118,7 @@ def generate_title(
         if cost_tracker is not None and hasattr(response, "usage") and response.usage is not None:
             try:
                 model_id = getattr(response, "model", "") or getattr(llm_client, "model", "")
-                cost_tracker.record(str(model_id), response.usage)
+                cost_tracker.record(str(model_id), response.usage, feature="titling")
             except Exception as track_exc:
                 logger.debug("generate_title: cost tracking failed: %s", track_exc)
         title = _clean_title(response.content or "")

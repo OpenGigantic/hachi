@@ -172,7 +172,9 @@ def _record_extraction_spend(llm_client: Any, response: Any) -> None:
 
         usage = getattr(response, "usage", None)
         if usage is not None:
-            record_background_usage(getattr(llm_client, "model", "unknown"), usage)
+            record_background_usage(
+                getattr(llm_client, "model", "unknown"), usage, feature="extraction"
+            )
     except Exception:
         logger.debug("extract_facts: failed to record extraction spend", exc_info=True)
 
