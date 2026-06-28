@@ -87,7 +87,7 @@ BUNDLED_MODEL_DEFAULTS: list[ModelDescriptor] = [
         ),
         context_window=200_000,
         max_output=64_000,
-        pricing=Pricing(input_per_mtok=15.0, output_per_mtok=75.0),
+        pricing=Pricing(input_per_mtok=5.0, output_per_mtok=25.0),
         tier_rank=10,
     ),
     ModelDescriptor(
@@ -105,7 +105,7 @@ BUNDLED_MODEL_DEFAULTS: list[ModelDescriptor] = [
         ),
         context_window=200_000,
         max_output=64_000,
-        pricing=Pricing(input_per_mtok=15.0, output_per_mtok=75.0),
+        pricing=Pricing(input_per_mtok=5.0, output_per_mtok=25.0),
         tier_rank=10,
     ),
     ModelDescriptor(
@@ -275,3 +275,11 @@ BUNDLED_MODEL_DEFAULTS: list[ModelDescriptor] = [
         tier_rank=19,
     ),
 ]
+
+# OpenAI prompt caching discounts CACHED input tokens ~50% off the base input
+# price (vs Anthropic's ~90% off). Apply that to every OpenAI model so
+# CostTracker.record prices OpenAI cache reads correctly instead of assuming
+# Anthropic's 0.1x economics (BB-28).
+for _desc in BUNDLED_MODEL_DEFAULTS:
+    if _desc.provider == "openai" and _desc.pricing is not None:
+        _desc.pricing.cache_read_mult = 0.5

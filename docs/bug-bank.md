@@ -368,6 +368,82 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** on `session_expired` (410), immediately call `ensureSession()` to mint a fresh session and replay the original `POST` with a new idempotency key. Use a distinct `_r`-suffixed nonce so the server does not de-duplicate it against the dead-session key. The daily spend cap is enforced server-side (durable ledger) and still applies on retry — do not add client-side spend bypass.
 - **Locked by:** `frontend/src/lib/data/domains/chat.ts` auto-retry in `.catch(async …)` block. No dedicated vitest yet (SSE stream integration is hard to mock end-to-end).
 
+### BB-27 — Opus-4 family mispriced 3× (legacy Claude-3-Opus rate)
+
+- **Symptom:** the web UI / `/spend` showed ~3× the true cost for any turn that ran
+  on an Opus-4 model; spend felt inexplicably high.
+- **Root cause:** `core/cost.py` `MODEL_PRICING` **and** `core/routing/descriptor.py`
+  `BUNDLED_MODEL_DEFAULTS` both priced `claude-opus-4` and `claude-opus-4-8` at
+  `(15.0, 75.0)` — the legacy Claude-3-Opus rate. Current Opus (4.5+) is `$5/$25` per
+  MTok, so every Opus turn's estimated cost was inflated 3×.
+- **Avoid:** price current Opus at `(5.0, 25.0)`; keep the two pricing tables in sync
+  (the parity guard in `tests/test_routing_registry.py::TestPricingParity` enforces it).
+  When adding a model variant, verify against Anthropic's published per-MTok pricing —
+  never copy an older entry's numbers.
+- **Locked by:** `tests/test_cost_tracking.py::test_opus_4_family_priced_at_current_rate_not_legacy`
+  and `::test_pricing_longest_prefix_match`; `tests/test_routing_registry.py::TestPricingParity`.
+
+### BB-28 — OpenAI cached input billed at full price + Anthropic discount assumed for all
+
+- **Symptom:** OpenAI/openai-compatible cache savings were invisible, and displayed
+  cost *overstated* OpenAI spend — cached input tokens were billed at the full input
+  rate, then (where any cache tokens existed) discounted with Anthropic's 0.1× rate.
+- **Root cause:** two gaps. (1) `OpenAICompatibleClient` parsed only `prompt_tokens` /
+  `completion_tokens` and ignored `prompt_tokens_details.cached_tokens`. (2)
+  `CostTracker.record` hard-coded `_CACHE_READ_MULTIPLIER = 0.1` instead of the
+  per-model `Pricing.cache_read_mult` — so even captured cache reads were priced with
+  Anthropic economics for every provider.
+- **Avoid:** parse `cached_tokens` into `cache_read_tokens` (split it out of
+  `prompt_tokens`, both streaming and non-streaming); price cache reads with the
+  resolved model's `cache_read_mult` (OpenAI 0.5×, Anthropic 0.1×). Registry-less
+  trackers fall back to the module constants unchanged.
+- **Locked by:** `tests/test_cost_tracking.py::test_cost_tracker_uses_per_model_cache_multiplier_from_registry`;
+  `tests/test_streaming.py::test_openai_stream_splits_cached_prompt_tokens`,
+  `::test_openai_generate_splits_cached_prompt_tokens`.
+
+### BB-29 — OpenAI auto-cache defeated by the time header inside the system message
+
+- **Symptom:** OpenAI's automatic prompt caching never engaged across turns; every
+  turn re-billed the full ~6K system+tools prefix at fresh-input price.
+- **Root cause:** `OpenAICompatibleClient._build_request` appended the volatile dynamic
+  block (time header / recall) to the END of the system message, so the cached prefix
+  changed every turn. Prompt caching is a prefix match — one byte change invalidates it.
+- **Avoid:** keep the system message byte-stable across turns; place the dynamic block as
+  its own trailing message AFTER the conversation so the stable system+tools prefix stays
+  cacheable. (Mirrors the Anthropic split, where the dynamic tail sits after the cache
+  breakpoint.)
+- **Locked by:** `tests/test_streaming.py::test_openai_request_keeps_time_header_out_of_system_message`.
+
+### BB-30 — Every chat turn silently routed to the priciest model
+
+- **Symptom:** cost per trivial turn was inexplicably high; the model that actually
+  answered was far pricier than the configured `provider.model` / `default_model`.
+- **Root cause:** `routing.capabilities` pinned high-volume capabilities
+  (`reasoning`/`coding`/…) to an expensive model (e.g. `gpt-4o` at $2.50/Mtok in) —
+  often via a legacy import or wizard — while `default_model` was cheap
+  (`gpt-4o-mini` at $0.15). The router honoured it **silently**, so every chat turn
+  paid ~16× without any signal.
+- **Avoid:** a fresh/imported config or tier setup must not map the general chat
+  capability to a model far pricier than `default_model`. `derive_auto_policy`
+  already routes `reasoning → default_model` and `title/compaction → cheapest`;
+  `RoutingPolicy.costly_capability_warnings()` flags an explicit costly override
+  loudly at boot. Never auto-pin chat to the priciest model.
+- **Locked by:** `tests/test_routing_cost_guard.py`; boot wiring in
+  `gateway/orchestrator.py` logs + emits `cost.routing_warning`.
+
+### BB-31 — Background LLM spend (fact extraction / titling) was invisible
+
+- **Symptom:** real spend from background fact extraction (and durable session
+  titling) never showed in `/spend` and never counted against the daily cap.
+- **Root cause:** `extract_facts` / `handle_extract_fact` run an LLM call with no
+  per-session `CostTracker` and never wrote to the durable daily ledger — the spend
+  simply vanished from accounting.
+- **Avoid:** record every background (non-session) LLM call's usage into the durable
+  daily ledger via `cost.record_background_usage(model, usage)` — the daily spend cap
+  reads the same ledger, so untracked background calls both hide cost and weaken the cap.
+- **Locked by:** `tests/test_cost_tracking.py::test_record_background_usage_writes_to_daily_ledger`,
+  `::test_extract_facts_records_background_spend`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
