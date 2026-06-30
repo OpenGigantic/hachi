@@ -87,6 +87,49 @@ def test_messages_model_migration(tmp_path) -> None:
     store.shutdown()
 
 
+def test_messages_composite_index_on_fresh_db(tmp_path) -> None:
+    """Fresh SessionStore must have composite idx_msg_session_id (B8)."""
+    store = SessionStore(db_path=str(tmp_path / "fresh.db"))
+    indexes = {
+        row[0]
+        for row in store._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='messages'"
+        )
+    }
+    store.shutdown()
+    assert "idx_msg_session_id" in indexes, "composite index missing on fresh DB"
+    assert "idx_msg_session" not in indexes, "old single-column index must not exist on fresh DB"
+
+
+def test_messages_composite_index_migration(tmp_path) -> None:
+    """A DB carrying only the old idx_msg_session must be upgraded to the composite index (B8)."""
+    db_path = tmp_path / "old_index.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at TEXT NOT NULL,
+            ended_at TEXT, model TEXT, total_turns INTEGER DEFAULT 0, title TEXT,
+            total_tokens INTEGER DEFAULT 0, total_cost_usd REAL DEFAULT 0.0,
+            owner_token_hash TEXT);
+        CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT,
+            tool_name TEXT, timestamp TEXT NOT NULL, model TEXT);
+        CREATE INDEX idx_msg_session ON messages(session_id);
+    """)
+    conn.commit()
+    conn.close()
+
+    store = SessionStore(db_path=str(db_path))
+    indexes = {
+        row[0]
+        for row in store._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='messages'"
+        )
+    }
+    store.shutdown()
+    assert "idx_msg_session_id" in indexes, "composite index not created by migration"
+    assert "idx_msg_session" not in indexes, "old single-column index not dropped by migration"
+
+
 def test_control_plane_synthesized_completed_event_carries_model(tmp_path) -> None:
     """session.chat.completed events synthesised from DB messages must carry model."""
     store = SessionStore(db_path=str(tmp_path / "test.db"))

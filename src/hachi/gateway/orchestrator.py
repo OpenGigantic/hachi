@@ -1181,7 +1181,12 @@ class AgentSession:
             continue
 
     def _run_prefetch_job(self, query: str, turn_id: str = "compat") -> list[dict]:
-        """Execute the vault recall and store the result keyed by *turn_id*."""
+        """Execute vault recall (semantic + episodic) and store the result keyed by *turn_id*.
+
+        B10: episodic recall runs here so it does not block the inline turn path on
+        turns 2+.  Trade-off: uses the *previous* turn's query for episodic results —
+        accepted heuristic (see docs/DECISIONS.md §B10).
+        """
         results: list[dict] = []
         if self.vault:
             try:
@@ -1194,6 +1199,22 @@ class AgentSession:
                     exc_info=True,
                 )
                 results = []
+
+            # B10: episodic recall merged in-place; dedup by id.
+            if self._episodic_top_k > 0:
+                try:
+                    episodic = self.vault.search_episodic(query, top_k=self._episodic_top_k)
+                    if episodic:
+                        existing_ids = {r.get("id") for r in results}
+                        for ep in episodic:
+                            if ep.get("id") not in existing_ids:
+                                results.append(ep)
+                except Exception:
+                    logger.debug(
+                        "_run_prefetch_job: episodic recall failed for query %r (non-fatal)",
+                        query[:80],
+                        exc_info=True,
+                    )
 
         with self._prefetch_lock:
             # FIX medium: store under turn_id so _pop_prefetch can validate provenance
@@ -1542,9 +1563,12 @@ class AgentSession:
 
         self._memory_snapshot = self._build_frozen_snapshot()
 
-        # 2. Consume async prefetch from previous turn (or sync-fetch on first turn)
+        # 2. Consume async prefetch from previous turn (or sync-fetch on first turn).
+        #    B10: prefetch now includes both semantic + episodic recall so the turn path
+        #    is non-blocking on turns 2+.  Turn 1 falls back to inline for both.
         recalled = self._pop_prefetch()
         if not recalled and self.vault:
+            # Turn 1 (no prefetch available yet): run semantic + episodic inline.
             try:
                 recalled = self.vault.semantic_search(user_input, top_k=5)
             except Exception:
@@ -1555,25 +1579,19 @@ class AgentSession:
                     exc_info=True,
                 )
                 recalled = []
-
-        # 2b. M1: episodic recall — fetch past-session episodes and merge with semantic results.
-        #     Guarded by episodic_top_k > 0 and vault availability.  Never raises on error.
-        if self._episodic_top_k > 0 and self.vault:
-            try:
-                episodic = self.vault.search_episodic(user_input, top_k=self._episodic_top_k)
-                if episodic:
-                    # Merge by ID to avoid duplicates with semantic_search results,
-                    # then append episodic results that are not already present.
-                    existing_ids = {r.get("id") for r in recalled}
-                    for ep in episodic:
-                        if ep.get("id") not in existing_ids:
-                            recalled.append(ep)
-            except Exception:
-                logger.debug(
-                    "_chat_impl_inner: episodic recall failed for turn %s (non-fatal)",
-                    turn_id,
-                    exc_info=True,
-                )
+            if self._episodic_top_k > 0:
+                try:
+                    episodic = self.vault.search_episodic(user_input, top_k=self._episodic_top_k)
+                    if episodic:
+                        existing_ids = {r.get("id") for r in recalled}
+                        for ep in episodic:
+                            if ep.get("id") not in existing_ids:
+                                recalled.append(ep)
+                except Exception:
+                    logger.debug(
+                        "_chat_impl_inner: turn-1 episodic recall failed (non-fatal)",
+                        exc_info=True,
+                    )
 
         # 3. Build the dynamic recall injection
         recall_block = ""
@@ -3436,16 +3454,35 @@ def boot_agent(
     # The fire callback calls session.chat() so the agent executes the task and
     # delivers the result via the session's normal event pipeline.
     def _fire_schedule(s: Schedule) -> None:
+        job_id = f"schedule:{s.schedule_id}:{uuid.uuid4().hex[:8]}"
+        emit_runtime_event(
+            "job.started",
+            {"job_id": job_id, "job_name": s.name, "kind": "schedule", "label": s.name},
+        )
         try:
             result_text = session.chat(s.task, surface="schedule")
             # UC-RSCH-002: the resident runner must honor deliver_to/webhook_url too
             # (previously only `hachi schedule run-due` delivered). deliver_result
             # redacts outbound secrets before any webhook POST.
             deliver_result(s, result_text)
+            emit_runtime_event(
+                "job.completed",
+                {"job_id": job_id, "job_name": s.name, "kind": "schedule", "label": s.name},
+            )
         except Exception:
             import logging as _logging
 
             _logging.getLogger(__name__).exception("Schedule fire error for '%s'", s.name)
+            emit_runtime_event(
+                "job.failed",
+                {
+                    "job_id": job_id,
+                    "job_name": s.name,
+                    "kind": "schedule",
+                    "label": s.name,
+                    "status": "failed",
+                },
+            )
 
     _schedule_runner = ScheduleRunner(scheduler, fire=_fire_schedule)
     _schedule_runner.start()

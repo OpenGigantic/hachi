@@ -74,3 +74,18 @@ def test_stream_unknown_session_is_rejected() -> None:
     with TestClient(app) as client:
         response = client.get("/sessions/does-not-exist/stream", params={"max_idle_cycles": 1})
         assert response.status_code == 400
+
+
+def test_stream_response_carries_proxy_buffering_headers() -> None:
+    """StreamingResponse must disable proxy buffering and cache on the SSE route (B1)."""
+    client, session_id = _client_with_session()
+    with client.stream(
+        "GET",
+        f"/sessions/{session_id}/stream",
+        params={"poll_interval": 0, "max_idle_cycles": 1},
+    ) as response:
+        assert response.status_code == 200
+        assert response.headers.get("x-accel-buffering") == "no"
+        assert response.headers.get("cache-control") == "no-cache"
+        # Consume the body so the context manager exits cleanly.
+        response.read()

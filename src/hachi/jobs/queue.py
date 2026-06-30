@@ -627,6 +627,10 @@ class SQLiteJobQueue(JobQueue):
         # before any schema writes.  Safe to call on an existing DB — WAL is
         # sticky and survives restarts.
         self._db_conn.execute("PRAGMA journal_mode=WAL")
+        # NORMAL durability: can lose the last committed transaction on an OS
+        # crash, which is acceptable for ephemeral jobs (prefetch/title/facts)
+        # that are meaningless after a restart anyway (see _recover_running).
+        self._db_conn.execute("PRAGMA synchronous=NORMAL")
         # In-process side-table for callable (``func``) jobs. SQLite cannot persist a
         # live callable, so func-based jobs are dispatched in-process only — the same
         # model InMemoryJobQueue already uses. The SQLite row still records the job for
