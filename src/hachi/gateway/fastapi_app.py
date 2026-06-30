@@ -392,8 +392,19 @@ class RatingResponse(BaseModel):
     ok: bool
 
 
+_GATEWAY_THREAD_LIMITER_ENV = "HACHI_GATEWAY_THREAD_LIMITER"
+_DEFAULT_THREAD_LIMITER = 64
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # B6: raise the AnyIO default threadpool limit (40) to accommodate concurrent
+    # blocking REST reads (session list, message history, event history) plus
+    # in-flight per-turn send_message threads without queuing. Configurable via
+    # HACHI_GATEWAY_THREAD_LIMITER; intentionally separate from the session-object
+    # cap (HACHI_GATEWAY_MAX_SESSIONS) which governs agent lifetime, not I/O threads.
+    _thread_cap = int(os.environ.get(_GATEWAY_THREAD_LIMITER_ENV, str(_DEFAULT_THREAD_LIMITER)))
+    anyio.to_thread.current_default_thread_limiter().total_tokens = _thread_cap
     yield
 
 
@@ -774,7 +785,9 @@ def create_gateway_app(
         # C1: filter sessions so a caller only sees sessions they own.
         # Legacy sessions (NULL owner) are always returned for backward compat.
         caller_hash = _require_auth(request)
-        all_sessions = control_plane.recent_sessions(limit)
+        # B5+B7a: offload the SQLite read (now 2 queries instead of 2N) off the
+        # event loop; owner filtering runs inline after (in-memory O(1) dict lookups).
+        all_sessions = await anyio.to_thread.run_sync(lambda: control_plane.recent_sessions(limit))
         if caller_hash is None:
             # No-auth mode: return everything.
             return all_sessions
@@ -996,7 +1009,11 @@ def create_gateway_app(
 
         HTTP 404 when *session_id* is unknown or has no persisted messages.
         """
-        result = control_plane.session_transcript(session_id=session_id, limit=limit)
+        # B5: session_transcript hits SQLite — offload to thread so the event loop
+        # stays free for SSE keepalives during a long message-history fetch.
+        result = await anyio.to_thread.run_sync(
+            lambda: control_plane.session_transcript(session_id=session_id, limit=limit)
+        )
         if result is None:
             raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
         return result
@@ -1032,7 +1049,14 @@ def create_gateway_app(
         limit: int = Query(default=100, ge=1, le=500),
     ) -> Any:
         _check_session_ownership(session_id, _require_auth(request))
-        return control_plane.read_session_events(session_id=session_id, after=after, limit=limit)
+        # B5: thread the whole call — historical sessions hit SQLite via
+        # _synthesize_history_events; live sessions use an in-memory slice (minor
+        # thread-hop overhead, acceptable since live callers use SSE not this endpoint).
+        return await anyio.to_thread.run_sync(
+            lambda: control_plane.read_session_events(
+                session_id=session_id, after=after, limit=limit
+            )
+        )
 
     @sessions.get("/{session_id}/stream")
     async def stream_session_events(
@@ -1119,7 +1143,11 @@ def create_gateway_app(
                 except asyncio.CancelledError:
                     pass
 
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        )
 
     @runtime_ops.get("/runtime/events")
     async def get_runtime_events(
@@ -1643,7 +1671,11 @@ def create_gateway_app(
             )
             yield "data: [DONE]\n\n"
 
-        return StreamingResponse(_openai_event_stream(), media_type="text/event-stream")
+        return StreamingResponse(
+            _openai_event_stream(),
+            media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        )
 
     @openai_compat.get("/v1/models")
     async def openai_models() -> Any:
@@ -2677,7 +2709,11 @@ def create_gateway_app(
             return _error_response(
                 500, "synthesis_error", "Synthesis failed, check voice provider configuration"
             )
-        return StreamingResponse(chunk_iter, media_type=media_type)
+        return StreamingResponse(
+            chunk_iter,
+            media_type=media_type,
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        )
 
     @voice_router.get("/config", summary="Get voice configuration")
     async def route_voice_config() -> Any:

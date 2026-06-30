@@ -65,7 +65,7 @@ from hachi.gateway.workspace import (
     run_permissions_wizard,
     show_current_permissions,
 )
-from hachi.jobs import ResidentWorkerThread
+from hachi.jobs import ResidentWorkerThread, ScheduleStore
 
 app = typer.Typer(
     help="Hachi - The Autonomous Agent Engine powered by ObjectGraph",
@@ -545,9 +545,11 @@ class _InProcessGatewayRuntime:
     def list_schedules(self) -> list[dict]:
         with self._agents_lock:
             agent = next(iter(self._agents.values()), None)
-        if agent is None:
-            return []
-        return agent.snapshot_schedules()
+        if agent is not None:
+            return agent.snapshot_schedules()
+        # No active session — read from disk so GET /schedules works before
+        # the user opens the chat (or after a gateway restart with no live session).
+        return [s.to_dict() for s in ScheduleStore(get_hachi_paths().schedules_file).load()]
 
     def cancel_schedule(self, schedule_id: str) -> dict:
         with self._agents_lock:

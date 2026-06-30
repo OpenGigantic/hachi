@@ -187,6 +187,21 @@ function humanizeNextRun(nextRun: string | null | undefined): string {
   }
 }
 
+function humanizeLastRun(lastRun: string | null | undefined): string | undefined {
+  if (!lastRun) return undefined;
+  try {
+    const d = new Date(lastRun);
+    const now = Date.now();
+    const diff = now - d.getTime();
+    if (diff < 60000) return "just now";
+    if (diff < 3600000) return `${Math.round(diff / 60000)}m ago`;
+    if (diff < 86400000) return `${Math.round(diff / 3600000)}h ago`;
+    return d.toLocaleDateString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return undefined;
+  }
+}
+
 function adaptSchedule(raw: GatewaySchedule): Routine {
   const numId = _idCounter(raw.schedule_id);
   _scheduleIdMap.set(numId, raw.schedule_id);
@@ -196,6 +211,7 @@ function adaptSchedule(raw: GatewaySchedule): Routine {
     title: raw.name || raw.task || raw.schedule_id,
     schedule: humanizeSchedule(raw),
     next: humanizeNextRun(raw.next_run),
+    last: humanizeLastRun(raw.last_run),
     cost: 0,
     paused: !raw.enabled,
   };

@@ -48,6 +48,15 @@ def _named_job(name: str = "test.noop") -> Job:
 # ---------------------------------------------------------------------------
 
 
+def test_sqlite_queue_uses_wal_and_normal_synchronous(tmp_path: Path) -> None:
+    """SQLiteJobQueue must set WAL mode and synchronous=NORMAL (B9)."""
+    q = _queue(tmp_path)
+    (journal_mode,) = q._db_conn.execute("PRAGMA journal_mode").fetchone()
+    (synchronous,) = q._db_conn.execute("PRAGMA synchronous").fetchone()
+    assert journal_mode == "wal"
+    assert synchronous == 1  # NORMAL
+
+
 def test_enqueue_assigns_job_id(tmp_path: Path) -> None:
     q = _queue(tmp_path)
     job = _named_job()
@@ -320,9 +329,7 @@ def test_func_based_job_executes_in_process(tmp_path: Path) -> None:
     """
     q = _queue(tmp_path)
     ran: list[str] = []
-    jid = q.enqueue(
-        Job(job_id="", name="in_proc", func=lambda x: ran.append(x), args=("hello",))
-    )
+    jid = q.enqueue(Job(job_id="", name="in_proc", func=lambda x: ran.append(x), args=("hello",)))
 
     worker = JobWorker(q)  # no registry — func dispatch must still work
     assert worker.execute_one() is True

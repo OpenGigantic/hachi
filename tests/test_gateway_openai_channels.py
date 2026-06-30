@@ -138,8 +138,10 @@ def _streaming_control_plane() -> GatewayControlPlane:
         # Simulate text_delta events being emitted by the loop
         store.append(
             GatewayEvent(
-                sequence=1, event_type="text.stream.delta",
-                payload={"text": f"echo:{prompt}"}, time="t",
+                sequence=1,
+                event_type="text.stream.delta",
+                payload={"text": f"echo:{prompt}"},
+                time="t",
             )
         )
         return f"echo:{prompt}"
@@ -168,6 +170,21 @@ def test_openai_stream_returns_event_stream_content_type() -> None:
     assert "finish_reason" in body
 
 
+def test_openai_stream_carries_proxy_buffering_headers() -> None:
+    """OpenAI-compat streaming response must disable proxy buffering (B1)."""
+    app = create_gateway_app(_streaming_control_plane())
+    with TestClient(app) as client:
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
+        ) as resp:
+            assert resp.status_code == 200
+            assert resp.headers.get("x-accel-buffering") == "no"
+            assert resp.headers.get("cache-control") == "no-cache"
+            resp.read()
+
+
 def test_openai_stream_includes_role_chunk() -> None:
     """The first SSE data chunk must carry ``role: assistant``."""
     app = create_gateway_app(_streaming_control_plane())
@@ -182,6 +199,7 @@ def test_openai_stream_includes_role_chunk() -> None:
     data_lines = [ln for ln in lines if ln.startswith("data: ") and ln != "data: [DONE]"]
     assert data_lines, "no data lines in SSE stream"
     import json as _json
+
     first_chunk = _json.loads(data_lines[0][6:])
     assert first_chunk["choices"][0]["delta"].get("role") == "assistant"
 

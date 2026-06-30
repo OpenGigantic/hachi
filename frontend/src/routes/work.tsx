@@ -83,6 +83,7 @@ interface WorkItem {
   // routine
   schedule?: string
   next?: string
+  last?: string
   paused?: boolean
   runHistory?: RoutineRun[]
   // finished
@@ -446,10 +447,16 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
             {(item.schedule || item.next) && (
               <>
                 <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '7px' }}>Schedule</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', marginBottom: '18px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', marginBottom: item.last ? '8px' : '18px' }}>
                   <Icon name="repeat" size={15} />
                   {item.schedule} · next {item.next}
                 </div>
+                {item.last && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--hachi-muted)', marginBottom: '18px' }}>
+                    <Icon name="circle-check" size={13} />
+                    last ran {item.last}
+                  </div>
+                )}
               </>
             )}
             {(item.runHistory ?? []).length > 0 && (
@@ -1119,6 +1126,7 @@ function Work() {
         steps: r.steps,
         schedule: r.schedule,
         next: r.next,
+        last: r.last,
         paused: r.paused,
         runHistory: r.runHistory,
       }))

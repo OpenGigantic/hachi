@@ -664,9 +664,15 @@ function CheckIcon(): JSX.Element {
   )
 }
 
-function CodeBlock({ lang, code }: { lang: string; code: string }): JSX.Element {
+// F1: memo prevents settled code blocks from re-rendering on every streaming token
+// in the active bubble. useMemo inside caches the highlight result so a fence
+// close (code unchanged, only block-open→closed) skips the tokenizer entirely.
+const CodeBlock = memo(function CodeBlock({ lang, code }: { lang: string; code: string }): JSX.Element {
   const [copied, setCopied] = useState(false)
   const copyBtnRef = useRef<HTMLButtonElement>(null)
+  const normalizedLang = lang.toLowerCase().trim()
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: cache on (code, normalizedLang)
+  const highlighted = useMemo(() => renderHighlighted(code, normalizedLang), [code, normalizedLang])
 
   const handleCopy = useCallback(() => {
     const write = async () => {
@@ -801,11 +807,11 @@ function CodeBlock({ lang, code }: { lang: string; code: string }): JSX.Element 
           color: 'var(--hachi-code-text)',
         }}
       >
-        <code>{renderHighlighted(code, lang.toLowerCase().trim())}</code>
+        <code>{highlighted}</code>
       </pre>
     </div>
   )
-}
+})
 
 // ---- Render blocks --------------------------------------------------
 

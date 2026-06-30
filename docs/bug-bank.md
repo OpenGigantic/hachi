@@ -340,6 +340,22 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** when adding an o-series model, always add BOTH the base id AND any cheaper variants (e.g. `o3` AND `o3-mini`) as explicit keys in `MODEL_PRICING` so longer-prefix-wins resolves them independently. Extend `TestCurrentOpenAIModels` when adding future models.
 - **Locked by:** `tests/test_routing_registry.py::TestCurrentOpenAIModels` (5 tests).
 
+### BB-24 — Episodic recall on turns 2+ uses the previous turn's query (B10 staleness)
+
+- **Symptom:** on turn N+1, recalled episode summaries are matched to turn N's question instead of
+  the current one. In most conversations this is invisible, but a sharp topic pivot can surface
+  an episodic hit that feels irrelevant to the new question.
+- **Root cause:** `_run_prefetch_job` is enqueued at the end of turn N with turn N's query; the
+  result is consumed at the start of turn N+1. Episodic recall was moved into this prefetch job
+  (B10, `perf/streaming-optimizations`) to avoid blocking the inline turn path on turns 2+.
+  Turn 1 is always exact (inline fallback runs both semantic and episodic synchronously).
+- **Avoid:** do NOT add a second inline episodic call on every turn to "fix" the lag —
+  that defeats the entire purpose of B10 and re-introduces the latency regression.
+  Only add an inline fallback if the turn N vs N+1 query similarity drops below a threshold
+  (defer until a real complaint surfaces). Document the tradeoff in docs/DECISIONS.md §B10.
+- **Locked by:** `tests/test_b10_episodic_recall_offload.py` (parity tests confirm turn-1 inline
+  path still calls `search_episodic` and that dedup works identically in both paths).
+
 ### BB-23 — MCP servers that failed before transport setup were invisible in the operator inventory
 
 - **Symptom:** an MCP server with an invalid TOML config or gate-denied by the permission tier emitted `MCP_SERVER_FAILED` at boot but never appeared in `GET /runtime/mcp/inventory`, making it impossible to diagnose why a server wasn't available.
@@ -498,6 +514,34 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   every method that reads from `_agents`/`_session_store` — fall back to a direct
   `SessionStore(db_path=get_hachi_paths().sessions_db)` read when `_agents` is empty.
 - **Locked by:** `tests/test_session_messages_cold_boot.py::TestSessionMessagesColdBoot` (2 tests).
+
+### BB-36 — Scheduled task executions invisible in the work section
+
+- **Symptom:** a scheduled job fires and the agent runs the task, but nothing appears in
+  the web UI work section's active-jobs or failed-jobs lists; users have no observability
+  on whether their schedule is running or has errors.
+- **Root cause:** `_fire_schedule` in `orchestrator.boot_agent` called `session.chat()`
+  inline with no surrounding `emit_runtime_event` calls, so no `job.started` /
+  `job.completed` / `job.failed` events were produced. `RuntimeReadModelStore` only tracks
+  jobs when those events arrive; the work section polls `/jobs/active` and `/jobs/failed`
+  which are fed entirely by those events.
+- **Avoid:** whenever you add a new execution path that runs agent work outside the
+  `JobWorker` pipeline, bracket it with `emit_runtime_event("job.started", ...)` and a
+  matching `job.completed` / `job.failed` so the runtime read-model stays consistent.
+- **Locked by:** `tests/test_schedule_job_events.py::TestScheduleJobEvents` (5 tests).
+
+### BB-37 — `GET /schedules` returns `[]` when no agent session is active (Routines tab empty)
+
+- **Symptom:** the Routines tab in the work section shows "Nothing here yet" even though
+  schedules were created in a prior chat session. Happens after a gateway restart or when
+  the user navigates to `/work` before opening a chat (no `POST /sessions` has been called).
+- **Root cause:** `_InProcessGatewayRuntime.list_schedules()` routed through
+  `next(iter(self._agents.values()), None)` — the same `agent is None → return []` pattern
+  as BB-13. `_agents` is empty until the user sends a chat message. The schedules exist in
+  `~/.hachi/state/schedules.json` but were unreachable without a live agent.
+- **Avoid:** `list_schedules()` must never gate on `_agents` being non-empty. Fall back to
+  `ScheduleStore(get_hachi_paths().schedules_file).load()` when no agent is active.
+- **Locked by:** `tests/test_schedule_job_events.py::TestListSchedulesColdBoot` (3 tests).
 
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,

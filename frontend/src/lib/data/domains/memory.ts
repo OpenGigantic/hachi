@@ -109,27 +109,35 @@ function adaptRecallHit(raw: GatewayRecallHit): RecallHit {
 // In live mode: until the first successful fetch, seeded fixtures must NOT be
 // shown, so on failure we clear the slices instead of leaving them in place.
 let _hasEverSucceeded = false;
+// F3: in-flight guard — concurrent calls coalesce into the running promise so
+// bootstrapLiveData + the on-navigate useEffect don't double-fetch on mount.
+// Resets to null on completion so subsequent navigations get a fresh fetch.
+let _inFlight: Promise<void> | null = null;
 
 /** Load memory groups, blocked items, and proposed change from the gateway. */
 export async function loadMemory(): Promise<void> {
   if (USE_MOCKS) return; // keep seeded fixtures
-  try {
-    const raw = await apiGet<GatewayMemory>("/memory");
-    useStore.getState().hydrate({
-      memGroups: (raw.groups ?? []).map(adaptMemGroup),
-      blocked: (raw.blocked ?? []).map(adaptBlockedItem),
-      proposed: adaptProposed(raw.proposed),
-    });
-    _hasEverSucceeded = true;
-  } catch {
-    if (!_hasEverSucceeded) {
-      // First-load failure: clear seeded fixtures so we never present
-      // fabricated memory as if it were real gateway data.
-      useStore.getState().hydrate({ memGroups: [], blocked: [], proposed: null });
+  if (_inFlight) return _inFlight;
+  _inFlight = (async () => {
+    try {
+      const raw = await apiGet<GatewayMemory>("/memory");
+      useStore.getState().hydrate({
+        memGroups: (raw.groups ?? []).map(adaptMemGroup),
+        blocked: (raw.blocked ?? []).map(adaptBlockedItem),
+        proposed: adaptProposed(raw.proposed),
+      });
+      _hasEverSucceeded = true;
+    } catch {
+      if (!_hasEverSucceeded) {
+        // First-load failure: clear seeded fixtures so we never present
+        // fabricated memory as if it were real gateway data.
+        useStore.getState().hydrate({ memGroups: [], blocked: [], proposed: null });
+      }
+      // Reconnecting flag is now managed centrally by client.ts via the
+      // registered callback — no per-domain setReconnecting calls needed here.
     }
-    // Reconnecting flag is now managed centrally by client.ts via the
-    // registered callback — no per-domain setReconnecting calls needed here.
-  }
+  })().finally(() => { _inFlight = null; });
+  return _inFlight;
 }
 
 /**

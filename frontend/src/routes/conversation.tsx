@@ -341,13 +341,16 @@ const CHAT_STARTERS: ChatStarter[] = [
 
 // ---- ActionCard row -------------------------------------------------
 
+// Hoisted so the object reference is stable across renders (no inline allocation).
+const STREAMING_ROW_STYLE: React.CSSProperties = { contain: 'content' }
+
 interface ActionCardRowProps {
   card: ActionCard
   msgId: number
   operator: boolean
 }
 
-function ActionCardRow({ card, msgId, operator }: ActionCardRowProps) {
+const ActionCardRow = React.memo(function ActionCardRow({ card, msgId, operator }: ActionCardRowProps) {
   const toggleCard = useStore((s) => s.toggleCard)
   // In operator mode, cards start expanded; otherwise start collapsed.
   // Local expanded state is layered on top of the store-level `expanded` flag.
@@ -497,7 +500,7 @@ function ActionCardRow({ card, msgId, operator }: ActionCardRowProps) {
       )}
     </div>
   )
-}
+})
 
 // ---- RoutineCard ---------------------------------------------------
 
@@ -506,7 +509,7 @@ interface RoutineCardProps {
   msgId: number
 }
 
-function RoutineCard({ routine, msgId }: RoutineCardProps) {
+const RoutineCard = React.memo(function RoutineCard({ routine, msgId }: RoutineCardProps) {
   const dryRunRoutine = useStore((s) => s.dryRunRoutine)
   const createRoutine = useStore((s) => s.createRoutine)
 
@@ -711,7 +714,7 @@ function RoutineCard({ routine, msgId }: RoutineCardProps) {
       )}
     </div>
   )
-}
+})
 
 // ---- TtsButton -----------------------------------------------------
 
@@ -1440,7 +1443,7 @@ function Conversation() {
                 return (
                   // `contain: content` on the streaming row bounds its reflow/paint
                   // so the growing text never re-lays-out the messages above it.
-                  <div key={msg.id} style={streamingThis ? { contain: 'content' } : undefined}>
+                  <div key={msg.id} style={streamingThis ? STREAMING_ROW_STYLE : undefined}>
                     <MessageItem
                       msg={msg}
                       isLast={isLast}
