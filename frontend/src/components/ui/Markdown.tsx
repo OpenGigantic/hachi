@@ -797,7 +797,12 @@ function renderBlock(block: BlockNode, blockIdx: number): ReactNode {
       return <div key={key} style={{ height: '0.6em' }} />
 
     case 'heading': {
-      const Tag = `h${block.level}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'
+      // Offset the SEMANTIC tag so chat messages never emit a page-level <h1>/<h2>
+      // (each message could otherwise interleave real <h1>s with the app's own
+      // heading outline). The visual size still maps to the markdown level via
+      // headingStyle so a message's own heading hierarchy is preserved.
+      const semanticLevel = Math.min(block.level + 2, 6)
+      const Tag = `h${semanticLevel}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'
       return (
         <Tag key={key} style={headingStyle(block.level)}>
           {renderInline(block.text, key)}

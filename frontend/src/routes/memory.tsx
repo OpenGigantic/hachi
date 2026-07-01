@@ -162,6 +162,7 @@ function FactCard({
             onChange={(e) => onSetEditText(e.target.value)}
             rows={2}
             placeholder="What should Hachi remember?"
+            aria-label="Edit memory fact"
             style={{
               width: '100%',
               resize: 'none',

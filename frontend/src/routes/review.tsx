@@ -302,6 +302,7 @@ function InteractionCard({ ix }: { ix: AgentInteraction }) {
             value={notesValue}
             onChange={(e) => setNotesValue(e.target.value)}
             placeholder="Add a note about this turn…"
+            aria-label="Add a note about this turn"
             rows={2}
             style={{
               flex: 1,

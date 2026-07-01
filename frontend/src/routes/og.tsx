@@ -523,6 +523,19 @@ function GraphPanel({ nodes, ogSel, ogHover, setOgSel, setOgHover }: GraphPanelP
               >
                 {n.index}
               </text>
+              {/* WCAG 1.4.1 — node kind is currently color-only (amber/slate/navy);
+                  this small badge repeats it as a shape so it doesn't rely on hue alone. */}
+              <g
+                transform={`translate(${p.x + r * 0.5}, ${p.y - r * 0.5 - 6})`}
+                style={{ pointerEvents: 'none' }}
+                opacity={lit ? 1 : 0.4}
+                aria-hidden="true"
+              >
+                <circle r={7} fill="var(--hachi-surface)" stroke={color} strokeWidth={1} />
+                <g transform="translate(-5, -5)">
+                  <Icon name={OG_KIND_ICON[n.kind] ?? 'file'} size={10} style={{ color }} />
+                </g>
+              </g>
               {/* label below node */}
               <text
                 x={p.x}

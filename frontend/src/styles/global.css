@@ -68,6 +68,19 @@ body { background: var(--hachi-canvas); font-family: var(--font-body); }
   background-clip: padding-box;
 }
 
+/* Visually hidden but still reachable by screen readers (standard sr-only pattern) */
+.hachi-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* WCAG 2.3.3 / 2.2.2 — stop all animation/transition/scroll motion for users who ask for it */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

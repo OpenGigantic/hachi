@@ -4,7 +4,7 @@
 //         2320–2325 (renderVals)
 // ============================================================
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { createFileRoute } from '@tanstack/react-router';
 import { useStore } from '../lib/store/store';
 import { Icon } from '../components/icons/Icon';
@@ -85,6 +85,19 @@ function SkillCard({ sk, operator }: { sk: Skill; operator: boolean }) {
   const removeSkill = useStore((s) => s.removeSkill);
   const [editHover, setEditHover] = useState(false);
   const [removeHover, setRemoveHover] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current); }, []);
+  function handleRemoveClick() {
+    if (!confirmRemove) {
+      setConfirmRemove(true);
+      confirmTimerRef.current = setTimeout(() => setConfirmRemove(false), 4000);
+      return;
+    }
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmRemove(false);
+    removeSkill(sk.id);
+  }
 
   return (
     <div
@@ -107,20 +120,23 @@ function SkillCard({ sk, operator }: { sk: Skill; operator: boolean }) {
         {operator && (
           <button
             type="button"
-            onClick={() => {/* operator edit — noop per prototype */}}
+            disabled
+            aria-disabled="true"
+            title="Skill editing is coming soon"
             onMouseEnter={() => setEditHover(true)}
             onMouseLeave={() => setEditHover(false)}
             style={{
               border: 'none',
               background: editHover ? 'var(--hachi-cream)' : 'transparent',
               color: 'var(--hachi-muted)',
-              cursor: 'pointer',
+              cursor: 'not-allowed',
+              opacity: 0.5,
               display: 'inline-flex',
               padding: 4,
               borderRadius: 6,
               transition: 'background var(--dur-fast) var(--ease)',
             }}
-            aria-label={`Edit ${sk.name}`}
+            aria-label={`Edit ${sk.name} — coming soon`}
           >
             <Icon name="pencil" size={15} />
           </button>
@@ -149,10 +165,18 @@ function SkillCard({ sk, operator }: { sk: Skill; operator: boolean }) {
         {sk.stale && (
           <button
             type="button"
-            onClick={() => removeSkill(sk.id)}
+            onClick={handleRemoveClick}
             onMouseEnter={() => setRemoveHover(true)}
             onMouseLeave={() => setRemoveHover(false)}
-            aria-label={`Remove ${sk.name} skill (not used in 90 days)`}
+            onBlur={() => setConfirmRemove(false)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape' && confirmRemove) { e.stopPropagation(); setConfirmRemove(false); }
+            }}
+            aria-label={
+              confirmRemove
+                ? `Confirm remove ${sk.name} skill`
+                : `Remove ${sk.name} skill (not used in 90 days)`
+            }
             style={{
               border: 'none',
               background: 'transparent',
@@ -160,11 +184,11 @@ function SkillCard({ sk, operator }: { sk: Skill; operator: boolean }) {
               font: '500 12px var(--font-body)',
               cursor: 'pointer',
               padding: 0,
-              textDecoration: removeHover ? 'underline' : 'none',
+              textDecoration: removeHover || confirmRemove ? 'underline' : 'none',
               transition: 'text-decoration var(--dur-fast) var(--ease)',
             }}
           >
-            not used in 90 days — remove?
+            {confirmRemove ? 'Click again to confirm removal' : 'not used in 90 days — remove?'}
           </button>
         )}
       </div>

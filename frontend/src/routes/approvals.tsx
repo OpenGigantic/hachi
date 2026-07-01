@@ -553,6 +553,7 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
   const dColor = auditDColor[entry.decision] ?? "var(--hachi-muted)";
   return (
     <div
+      role="row"
       style={{
         display: "flex",
         alignItems: "center",
@@ -563,6 +564,8 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
       }}
     >
       <span
+        role="cell"
+        aria-label={`Time: ${entry.ts}`}
         style={{
           fontFamily: "var(--font-mono)",
           fontSize: 12,
@@ -573,6 +576,8 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
         {entry.ts}
       </span>
       <span
+        role="cell"
+        aria-label={`Operation: ${entry.op}`}
         style={{
           color: "var(--hachi-ink)",
           minWidth: 110,
@@ -582,6 +587,8 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
         {entry.op}
       </span>
       <span
+        role="cell"
+        aria-label={`Target: ${entry.target}`}
         style={{
           fontFamily: "var(--font-mono)",
           fontSize: 12,
@@ -596,6 +603,8 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
         {entry.target}
       </span>
       <span
+        role="cell"
+        aria-label={`Policy: ${entry.policy}`}
         style={{
           fontSize: 12,
           color: "var(--hachi-muted)",
@@ -605,6 +614,8 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
         {entry.policy}
       </span>
       <span
+        role="cell"
+        aria-label={`Decision: ${entry.decision}`}
         style={{
           fontSize: 12,
           fontWeight: 500,
@@ -897,6 +908,8 @@ function Approvals() {
                 </span>
               </div>
               <div
+                role="table"
+                aria-label="Permission audit log"
                 style={{
                   background: "var(--hachi-surface)",
                   border: "0.5px solid var(--hachi-line)",
