@@ -543,6 +543,42 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `ScheduleStore(get_hachi_paths().schedules_file).load()` when no agent is active.
 - **Locked by:** `tests/test_schedule_job_events.py::TestListSchedulesColdBoot` (3 tests).
 
+### BB-39 — Home approval card title wrapped one word per line on mobile
+
+- **Symptom:** on narrow viewports (~375px) the Home "What needs you" approval card's
+  title wrapped one word per line ("Hachi / wants / to / send…"), unlike the `/approvals`
+  screen's equivalent card.
+- **Root cause:** `ApprovalCard` (Home, `routes/index.tsx`) put the Decline/Allow-once
+  buttons as a `flexShrink:0` sibling of the title in the SAME horizontal flex row as the
+  icon badge. The title's `flex:1; minWidth:0` column absorbed all the squeeze, shrinking
+  to near-zero width once the fixed-size icon + action buttons claimed their space.
+  `/approvals`' `ApprovalCard` never had this bug because its actions already live in a
+  separate full-width row below the header (`.hachi-approval-actions`, with a
+  `flex-wrap`/`min-height:44px` mobile rule in `responsive.css`).
+- **Avoid:** any card with fixed-size trailing controls (buttons, badges) next to a
+  variable-width title must NOT put those controls in the same flex row as a
+  `flex:1; minWidth:0` title column — give the controls their own full-width row instead,
+  regardless of how much width looks available at desktop breakpoints.
+- **Locked by:** `frontend/src/routes/-index.ApprovalCard.test.tsx` (asserts the actions
+  block is a DOM sibling of the header row, not nested inside it).
+
+### BB-38 — `KennelConsent` Rules-of-Hooks violation — browse↔consent transition could crash the overlay tree
+
+- **Symptom:** switching between the kennel browse panel (`kennelBrowseOpen=true`) and
+  a single-item consent dialog (`kennelConsent` set) throws `Error: Rendered more/fewer
+  hooks than during the previous render`, crashing the overlay tree.
+- **Root cause:** `KennelConsent()` early-returned `<KennelBrowsePanel/>` when
+  `kennelBrowseOpen` was true, BEFORE its Escape-key `useEffect` — so the number of hooks
+  the component called differed between a browse-mode render and a consent-mode render of
+  the same instance (suppressed by a `// eslint-disable-next-line react-hooks/rules-of-hooks`).
+- **Avoid:** every hook a component calls must run unconditionally on every render of that
+  instance — never place a hook after a conditional `return`. Guard the hook's *body*
+  (e.g. `if (!isOpen) return` inside the effect) instead of skipping the hook call itself.
+  `KennelBrowsePanel` already got this right by being a separate sibling component.
+- **Locked by:** `frontend/src/components/overlays/KennelConsent.test.tsx` (mounts
+  `<KennelConsent/>` and rerenders across both transition directions via
+  `@testing-library/react`).
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
