@@ -215,6 +215,19 @@ export function KennelConsent() {
   const isOpen = kc !== null;
   const trapRef = useFocusTrap<HTMLDivElement>(isOpen);
 
+  // Close on Escape. Hooks must run unconditionally on every render of this
+  // component instance, so this is declared before the kennelBrowseOpen /
+  // !kc early returns below (rules-of-hooks) — the isOpen guard inside makes
+  // it a no-op while the browse panel (which has its own Escape handler) is showing.
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') cancelKennel();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [isOpen, cancelKennel]);
+
   // CRIT-003: handle kennelBrowseOpen — show browse panel first, then
   // ask for consent when user picks an item.
   if (kennelBrowseOpen) {
@@ -229,17 +242,6 @@ export function KennelConsent() {
       />
     );
   }
-
-  // Close on Escape.
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  useEffect(() => {
-    if (!isOpen) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') cancelKennel();
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [isOpen, cancelKennel]);
 
   if (!kc) return null;
 

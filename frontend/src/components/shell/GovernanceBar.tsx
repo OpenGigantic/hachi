@@ -118,6 +118,7 @@ export function GovernanceBar() {
           style={{
             color: overBudget ? "var(--hachi-danger)" : "var(--hachi-ink)",
             fontWeight: overBudget ? 600 : 400,
+            userSelect: "text",
           }}
         >
           ${spent.toFixed(2)}

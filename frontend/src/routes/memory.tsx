@@ -437,6 +437,7 @@ function Memory() {
             value={memSearch}
             onChange={(e) => setMemSearch(e.target.value)}
             placeholder="Search memory"
+            aria-label="Search memory"
             style={{
               flex: 1,
               border: 'none',
@@ -503,6 +504,7 @@ function Memory() {
                     }}
                     // LOW-006: placeholder communicates intent; no pre-filled example
                     placeholder="What do you want Hachi to recall?"
+                    aria-label="Ask memory anything"
                     style={{
                       flex: 1,
                       minWidth: 0,

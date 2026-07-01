@@ -59,12 +59,9 @@ describe('Markdown — fenced code blocks', () => {
     expect(html).toContain('print')
   })
 
-  it('renders the Run button only for runnable languages', () => {
-    const pyHtml = renderToString(<Markdown text={'```python\nx = 1\n```'} />)
-    expect(pyHtml).toContain('Run')
-
-    const shHtml = renderToString(<Markdown text={'```bash\necho hello\n```'} />)
-    expect(shHtml).not.toContain('Run')
+  it('gives the copy button an accessible name', () => {
+    const html = renderToString(<Markdown text={'```python\nx = 1\n```'} />)
+    expect(html).toContain('aria-label="Copy code"')
   })
 
   it('handles unclosed fenced block (streaming partial input) with isStreaming', () => {

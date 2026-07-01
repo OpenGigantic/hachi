@@ -85,6 +85,7 @@ export function AddProviderDialog({
   const [model, setModel] = useState(initial?.model ?? '');
   const [baseUrl, setBaseUrl] = useState(initial?.base_url ?? '');
   const [apiKey, setApiKey] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
   const [allowedRaw, setAllowedRaw] = useState(initial?.allowed_models_raw ?? '');
   const [headers, setHeaders] = useState<HeaderRow[]>(initial?.headers ?? []);
   const [nameAuto, setNameAuto] = useState(!isEditing); // name tracks kind until edited
@@ -361,17 +362,32 @@ export function AddProviderDialog({
             {/* API key */}
             {meta.needsKey && (
               <div>
-                <label style={labelStyle}>
+                <label style={labelStyle} htmlFor="provider-api-key">
                   API key{isEditing ? ' (leave blank to keep existing)' : ''}
                 </label>
-                <input
-                  type="password"
-                  style={inputStyle}
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder={isEditing ? '••••••••' : 'sk-…'}
-                  autoComplete="off"
-                />
+                <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                  <input
+                    id="provider-api-key"
+                    type={showApiKey ? 'text' : 'password'}
+                    style={{ ...inputStyle, paddingRight: 38 }}
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder={isEditing ? '••••••••' : 'sk-…'}
+                    autoComplete="new-password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowApiKey((v) => !v)}
+                    aria-label={showApiKey ? 'Hide API key' : 'Show API key'}
+                    style={{
+                      position: 'absolute', right: 8, border: 'none',
+                      background: 'transparent', color: 'var(--hachi-muted)',
+                      cursor: 'pointer', padding: '2px 4px', borderRadius: 4, lineHeight: 1,
+                    }}
+                  >
+                    <Icon name={showApiKey ? 'eye-off' : 'eye'} size={14} />
+                  </button>
+                </div>
                 <div style={{ fontSize: 11, color: 'var(--hachi-muted)', marginTop: 4 }}>
                   Stored securely, never shown again.
                 </div>

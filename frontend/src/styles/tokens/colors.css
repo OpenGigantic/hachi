@@ -27,6 +27,8 @@
   --hachi-success:      #3F9D6B;  /* green — done */
   --hachi-danger:       #C0392B;  /* destructive dot/border — distinct from brand red */
   --hachi-danger-fg:    #922B21;  /* danger text on --hachi-danger-tint bg (passes WCAG AA) */
+  --hachi-success-fg:   #2C7A50;  /* success/"done" text on --hachi-success-tint bg */
+  --hachi-working-fg:   #A8651A;  /* working/"needs care" text on --hachi-working-tint bg */
 
   /* — status pill tints (tinted bg / same-family text) — */
   --hachi-working-tint: #FBEBD6;
@@ -79,6 +81,8 @@
     --hachi-success-tint: #182A22;
     --hachi-danger-tint:  #321E1C;
     --hachi-danger-fg:    #E07068;  /* danger text on dark danger-tint bg */
+    --hachi-success-fg:   #6FCB98;  /* success text on dark success-tint bg */
+    --hachi-working-fg:   #F0B25B;  /* working text on dark working-tint bg */
 
     /* copied feedback: blue in dark theme — bright enough on #13121A code-bg */
     --hachi-code-copied:    #7aa2f7;
@@ -96,6 +100,8 @@
   --hachi-canvas: #FBF7EF; --hachi-surface: #FFFDF8; --hachi-cream: #F3E9D2;
   --hachi-working-tint:#FBEBD6; --hachi-trust-tint:#E4EAF3; --hachi-success-tint:#DEF0E6; --hachi-danger-tint:#F6DEDB;
   --hachi-danger-fg: #922B21;
+  --hachi-success-fg: #2C7A50;
+  --hachi-working-fg: #A8651A;
   color-scheme: light;
 }
 [data-theme="dark"] {
@@ -104,6 +110,8 @@
   --hachi-canvas: #16151A; --hachi-surface: #201E25; --hachi-cream: #2A2730;
   --hachi-working-tint:#34281A; --hachi-trust-tint:#1E2735; --hachi-success-tint:#182A22; --hachi-danger-tint:#321E1C;
   --hachi-danger-fg: #E07068;
+  --hachi-success-fg: #6FCB98;
+  --hachi-working-fg: #F0B25B;
   --hachi-code-copied: #7aa2f7; --hachi-code-copied-bg: rgba(76,110,245,0.18);
   color-scheme: dark;
 }

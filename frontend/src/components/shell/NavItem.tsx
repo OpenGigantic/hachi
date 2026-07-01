@@ -18,7 +18,7 @@ export function NavItem({ label, icon, active, badge, onClick }: NavItemProps) {
     ? 'var(--hachi-cream)'
     : 'transparent'
 
-  const fg = active ? 'var(--hachi-ink)' : 'var(--hachi-ink)'
+  const fg = 'var(--hachi-ink)'
   const iconColor = active ? 'var(--hachi-brand)' : 'var(--hachi-muted)'
   const fontWeight = active ? '500' : '400'
 

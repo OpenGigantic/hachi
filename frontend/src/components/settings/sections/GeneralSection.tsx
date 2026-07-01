@@ -97,12 +97,31 @@ export default function GeneralSection() {
           How much of Hachi is switched on. Higher tiers unlock memory, integrations, and
           advanced controls. This is separate from the safety leash in Permissions.
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+        <div
+          role="radiogroup"
+          aria-label="Setup tier"
+          style={{ display: 'flex', flexDirection: 'column', gap: 9 }}
+          onKeyDown={(e) => {
+            if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+            e.preventDefault();
+            const idx = TIER_OPTIONS.findIndex((opt) => opt.k === effectiveTier);
+            const dir = e.key === 'ArrowDown' ? 1 : -1;
+            const next = TIER_OPTIONS[(idx + dir + TIER_OPTIONS.length) % TIER_OPTIONS.length];
+            handleSetTier(next.k);
+            requestAnimationFrame(() => {
+              (e.currentTarget.querySelector(`[data-tier="${next.k}"]`) as HTMLElement | null)?.focus();
+            });
+          }}
+        >
           {TIER_OPTIONS.map((opt) => {
             const sel = effectiveTier === opt.k;
             return (
               <button
                 key={opt.k}
+                data-tier={opt.k}
+                role="radio"
+                aria-checked={sel}
+                tabIndex={sel ? 0 : -1}
                 onClick={() => handleSetTier(opt.k)}
                 style={{
                   display: 'flex',
@@ -118,6 +137,7 @@ export default function GeneralSection() {
                 }}
               >
                 <span
+                  aria-hidden="true"
                   style={{
                     flexShrink: 0,
                     width: 18,

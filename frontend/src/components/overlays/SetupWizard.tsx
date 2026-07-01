@@ -399,7 +399,7 @@ function Step1({
           </div>
         )}
         {keyValidation.status === 'valid' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: '#2C7A50', marginTop: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: 'var(--hachi-success-fg)', marginTop: 8 }}>
             <Icon name="check" size={15} />
             Gateway confirmed — key is valid.
           </div>
@@ -438,12 +438,28 @@ function Step2({
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ fontFamily: 'var(--font-display)', fontWeight: 500, fontSize: 18 }}>Choose a safety level</div>
       <div style={{ fontSize: 13, color: 'var(--hachi-muted)' }}>You can change this any time. Hachi always shows what it's doing.</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+      <div
+        role="radiogroup"
+        aria-label="Safety level"
+        style={{ display: 'flex', flexDirection: 'column', gap: 9 }}
+        onKeyDown={(e) => {
+          if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+          e.preventDefault();
+          const idx = SAFETY_LEVELS.findIndex((lvl) => lvl.k === currentSafety);
+          const dir = e.key === 'ArrowDown' ? 1 : -1;
+          const next = SAFETY_LEVELS[(idx + dir + SAFETY_LEVELS.length) % SAFETY_LEVELS.length];
+          onPick(next.k);
+          requestAnimationFrame(() => {
+            (e.currentTarget.querySelector(`[data-safety-level="${next.k}"]`) as HTMLElement | null)?.focus();
+          });
+        }}
+      >
         {SAFETY_LEVELS.map((lvl) => {
           const sel = currentSafety === lvl.k;
           return (
             <SafetyOption
               key={lvl.k}
+              dataKey={lvl.k}
               name={lvl.name}
               desc={lvl.desc}
               selected={sel}
@@ -456,8 +472,8 @@ function Step2({
   );
 }
 
-function SafetyOption({ name, desc, selected, onClick }: {
-  name: string; desc: string; selected: boolean; onClick: () => void;
+function SafetyOption({ dataKey, name, desc, selected, onClick }: {
+  dataKey: string; name: string; desc: string; selected: boolean; onClick: () => void;
 }) {
   const [hovered, setHovered] = React.useState(false);
 
@@ -469,10 +485,13 @@ function SafetyOption({ name, desc, selected, onClick }: {
   return (
     <button
       type="button"
+      data-safety-level={dataKey}
+      role="radio"
+      aria-checked={selected}
+      tabIndex={selected ? 0 : -1}
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      aria-pressed={selected}
       style={{
         display: 'flex',
         gap: 12,
@@ -487,7 +506,7 @@ function SafetyOption({ name, desc, selected, onClick }: {
         transition: 'border-color var(--dur-fast) var(--ease)',
       }}
     >
-      <span style={{
+      <span aria-hidden="true" style={{
         flexShrink: 0,
         width: 18,
         height: 18,
@@ -617,7 +636,7 @@ function ConnectRow({
         <div style={{ fontSize: 13, color: 'var(--hachi-muted)', marginTop: 1 }}>{sub}</div>
       </div>
       {connected ? (
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#2C7A50', fontWeight: 500 }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--hachi-success-fg)', fontWeight: 500 }}>
           <Icon name="check" size={15} />
           connected
         </span>

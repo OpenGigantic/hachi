@@ -258,12 +258,31 @@ export default function PermissionsSection() {
             Loading…
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+          <div
+            role="radiogroup"
+            aria-label="Safety level"
+            style={{ display: 'flex', flexDirection: 'column', gap: 9 }}
+            onKeyDown={(e) => {
+              if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+              e.preventDefault();
+              const idx = SAFETY_LEVELS.findIndex((lvl) => lvl.k === effectiveSafety);
+              const dir = e.key === 'ArrowDown' ? 1 : -1;
+              const next = SAFETY_LEVELS[(idx + dir + SAFETY_LEVELS.length) % SAFETY_LEVELS.length];
+              handleSetSafety(next.k);
+              requestAnimationFrame(() => {
+                (e.currentTarget.querySelector(`[data-safety-level="${next.k}"]`) as HTMLElement | null)?.focus();
+              });
+            }}
+          >
             {SAFETY_LEVELS.map((lvl) => {
               const sel = effectiveSafety === lvl.k;
               return (
                 <button
                   key={lvl.k}
+                  data-safety-level={lvl.k}
+                  role="radio"
+                  aria-checked={sel}
+                  tabIndex={sel ? 0 : -1}
                   onClick={() => handleSetSafety(lvl.k)}
                   style={{
                     display: 'flex',
@@ -279,6 +298,7 @@ export default function PermissionsSection() {
                   }}
                 >
                   <span
+                    aria-hidden="true"
                     style={{
                       flexShrink: 0,
                       width: 18,

@@ -621,7 +621,11 @@ function TreePanel({ nodes, ogSel, setOgSel }: TreePanelProps) {
         return (
           <div
             key={n.id}
+            role="button"
+            tabIndex={0}
+            aria-current={isSel ? 'true' : undefined}
             onClick={() => setOgSel(n.id)}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOgSel(n.id); } }}
             onMouseEnter={() => setHovered(n.id)}
             onMouseLeave={() => setHovered(null)}
             style={{

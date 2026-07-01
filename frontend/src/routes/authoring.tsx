@@ -30,7 +30,7 @@ function tokenise(line: string): TokenPart[] {
     }
     const tok = m[0]
     let color = 'var(--hachi-trust)'
-    if (tok[0] === '"') color = '#2C7A50'
+    if (tok[0] === '"') color = 'var(--hachi-success-fg)'
     else if (tok[0] === '@') color = 'var(--hachi-muted)'
     parts.push({ text: tok, color })
     last = m.index + tok.length
@@ -49,14 +49,14 @@ function diffRowStyle(type: '' | 'add' | 'del', isDiff: boolean) {
   if (isDiff && type === 'add') {
     return {
       bg: 'rgba(63,157,107,0.18)',
-      gutColor: '#2C7A50',
+      gutColor: 'var(--hachi-success-fg)',
       barColor: 'var(--hachi-success)',
     }
   }
   if (isDiff && type === 'del') {
     return {
       bg: 'rgba(192,57,43,0.18)',
-      gutColor: '#9E2D21',
+      gutColor: 'var(--hachi-danger-fg)',
       barColor: 'var(--hachi-danger)',
     }
   }
@@ -451,7 +451,11 @@ function Authoring() {
                     return (
                       <div
                         key={t.name}
+                        role="button"
+                        tabIndex={0}
+                        aria-current={isSelected ? 'true' : undefined}
                         onClick={() => selectAuthTarget(t.name)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectAuthTarget(t.name); } }}
                         onMouseEnter={() => setHoverTarget(t.name)}
                         onMouseLeave={() => setHoverTarget(null)}
                         style={{
@@ -668,6 +672,7 @@ function Authoring() {
                       value={editContent}
                       onChange={(e) => setEditContent(e.target.value)}
                       spellCheck={false}
+                      aria-label="Source editor"
                       style={{
                         display: 'block',
                         width: '100%',
@@ -860,6 +865,7 @@ function Authoring() {
                       value={prompt}
                       onChange={(e) => setPrompt(e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) void handleGenerate() }}
+                      aria-label="Describe the change you want"
                       style={{
                         flex: 1,
                         minWidth: 0,
@@ -967,7 +973,7 @@ function Authoring() {
                             padding: '4px 10px',
                             borderRadius: 999,
                             background: 'var(--hachi-success-tint)',
-                            color: '#2C7A50',
+                            color: 'var(--hachi-success-fg)',
                             fontSize: 12,
                             fontWeight: 500,
                             flexShrink: 0,
@@ -1087,7 +1093,7 @@ function Authoring() {
                       style={{
                         marginTop: 11,
                         fontSize: 12.5,
-                        color: '#2C7A50',
+                        color: 'var(--hachi-success-fg)',
                         display: 'flex',
                         alignItems: 'center',
                         gap: 7,

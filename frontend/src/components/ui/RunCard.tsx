@@ -89,6 +89,18 @@ export function RunCard({ title, status, progress, spent, budget, meta, onClick 
     <div
       style={cardStyle}
       onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
       onMouseEnter={onClick ? handleMouseEnter : undefined}
       onMouseLeave={onClick ? handleMouseLeave : undefined}
     >
