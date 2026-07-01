@@ -263,6 +263,7 @@ export function LeashPrompt({
       <div style={{ display: 'flex', gap: 8 }}>
         <button
           type="button"
+          className="hachi-leash-decline-btn"
           onClick={handleDecline}
           onFocus={() => setDeclineFocused(true)}
           onBlur={() => setDeclineFocused(false)}
@@ -282,18 +283,12 @@ export function LeashPrompt({
             outlineOffset: 2,
             transition: 'background var(--dur-fast, 120ms) var(--ease, cubic-bezier(.2,.7,.3,1))',
           }}
-          onMouseEnter={(e) => {
-            ;(e.currentTarget as HTMLButtonElement).style.background =
-              'var(--hachi-trust-tint, #E4EAF3)'
-          }}
-          onMouseLeave={(e) => {
-            ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
-          }}
         >
           Decline
         </button>
         <button
           type="button"
+          className="hachi-leash-allow-once-btn"
           onClick={handleAllowOnce}
           onFocus={() => setAllowFocused(true)}
           onBlur={() => setAllowFocused(false)}
@@ -313,18 +308,12 @@ export function LeashPrompt({
             outlineOffset: 2,
             transition: 'background var(--dur-fast, 120ms) var(--ease, cubic-bezier(.2,.7,.3,1))',
           }}
-          onMouseEnter={(e) => {
-            ;(e.currentTarget as HTMLButtonElement).style.background =
-              'var(--hachi-brand-tint, #FBE7E0)'
-          }}
-          onMouseLeave={(e) => {
-            ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
-          }}
         >
           Allow once
         </button>
         <button
           type="button"
+          className="hachi-leash-always-btn"
           onClick={handleAlwaysAllowClick}
           onFocus={() => setAlwaysFocused(true)}
           onBlur={() => setAlwaysFocused(false)}
@@ -335,7 +324,7 @@ export function LeashPrompt({
             padding: '0 10px',
             borderRadius: 'var(--radius-md, 10px)',
             border: `1.5px solid ${alwaysArmed ? 'var(--hachi-working, #E0922E)' : 'var(--hachi-line, #E2D9C9)'}`,
-            background: alwaysArmed ? 'var(--hachi-working-tint, #FBEBD6)' : 'transparent',
+            background: alwaysArmed ? 'var(--hachi-working-tint, #FBEBD6)' : undefined,
             color: alwaysArmed ? 'var(--hachi-working-fg, #A8651A)' : 'var(--text-muted, var(--hachi-muted, #8A8580))',
             fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
             fontSize: 13,
@@ -344,12 +333,6 @@ export function LeashPrompt({
             outline: alwaysFocused ? focusRing : 'none',
             outlineOffset: 2,
             transition: 'background var(--dur-fast, 120ms) var(--ease, cubic-bezier(.2,.7,.3,1)), border-color var(--dur-fast, 120ms) var(--ease, cubic-bezier(.2,.7,.3,1))',
-          }}
-          onMouseEnter={(e) => {
-            if (!alwaysArmed) (e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream, #F3E9D2)'
-          }}
-          onMouseLeave={(e) => {
-            if (!alwaysArmed) (e.currentTarget as HTMLButtonElement).style.background = 'transparent'
           }}
         >
           {alwaysArmed ? 'Click to confirm' : 'Always allow'}

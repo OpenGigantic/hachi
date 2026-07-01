@@ -18,19 +18,17 @@ const TIER_OPTIONS: { k: WizardTier; name: string; desc: string }[] = [
 ];
 
 function SetupButton({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
-  const [hovered, setHovered] = useState(false);
   return (
     <button
       type="button"
+      className="hachi-setup-btn"
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
         height: 34,
         padding: '0 14px',
         borderRadius: 10,
         border: '0.5px solid var(--hachi-line)',
-        background: hovered ? 'var(--hachi-cream)' : 'var(--hachi-canvas)',
+        background: 'var(--hachi-canvas)',
         color: 'var(--hachi-ink)',
         font: '500 13px var(--font-body)',
         cursor: 'pointer',

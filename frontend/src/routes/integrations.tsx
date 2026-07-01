@@ -577,8 +577,6 @@ function IntCard({
       ? 'var(--hachi-trust)'
       : 'var(--hachi-ink)'
 
-  const [primaryHover, setPrimaryHover] = useState(false)
-  const [disconnectHover, setDisconnectHover] = useState(false)
 
   return (
     <div
@@ -735,10 +733,9 @@ function IntCard({
       {/* action buttons */}
       <div style={{ display: 'flex', gap: 8 }}>
         <button
+          className="hachi-int-primary-btn"
           onClick={isUnconfigured ? undefined : onConnect}
           disabled={isUnconfigured || connectLoading || disconnectLoading}
-          onMouseEnter={() => setPrimaryHover(true)}
-          onMouseLeave={() => setPrimaryHover(false)}
           aria-busy={connectLoading}
           title={isUnconfigured ? 'An admin must configure OAuth client credentials first.' : undefined}
           style={{
@@ -750,9 +747,7 @@ function IntCard({
               : hasCredentialFields && !connected
               ? '0.5px solid var(--hachi-trust)'
               : '0.5px solid var(--hachi-line)',
-            background: primaryHover && !connectLoading && !disconnectLoading && !isUnconfigured
-              ? 'var(--hachi-cream)'
-              : 'var(--hachi-canvas)',
+            background: 'var(--hachi-canvas)',
             color: primaryFg,
             font: '500 13px var(--font-body)',
             cursor: connectLoading || disconnectLoading || isUnconfigured ? 'not-allowed' : 'pointer',
@@ -765,19 +760,16 @@ function IntCard({
         {/* Show "Clear / Disconnect" button when connected or for apikey when configured */}
         {(connected || (hasCredentialFields && configured)) && (
           <button
+            className="hachi-disconnect-btn"
             onClick={onDisconnect}
             disabled={connectLoading || disconnectLoading}
-            onMouseEnter={() => setDisconnectHover(true)}
-            onMouseLeave={() => setDisconnectHover(false)}
             aria-busy={disconnectLoading}
             style={{
               height: 34,
               padding: '0 14px',
               borderRadius: 10,
               border: disconnectError ? '0.5px solid var(--hachi-danger)' : 'none',
-              background: disconnectHover && !connectLoading && !disconnectLoading
-                ? 'var(--hachi-cream)'
-                : 'transparent',
+              background: 'transparent',
               color: disconnectError ? 'var(--hachi-danger)' : 'var(--hachi-muted)',
               font: '500 13px var(--font-body)',
               cursor: connectLoading || disconnectLoading ? 'not-allowed' : 'pointer',
@@ -1918,20 +1910,18 @@ function AddMcpDialog({ onClose }: AddMcpDialogProps) {
 }
 
 function CancelBtn({ onClick, disabled }: { onClick: () => void; disabled?: boolean }) {
-  const [hovered, setHovered] = useState(false)
   return (
     <button
       type="button"
+      className="hachi-cancel-btn"
       onClick={onClick}
       disabled={disabled}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
         flex: 1,
         height: 42,
         borderRadius: 10,
         border: '1px solid var(--hachi-trust)',
-        background: hovered && !disabled ? 'var(--hachi-trust-tint)' : 'transparent',
+        background: 'transparent',
         color: 'var(--hachi-trust)',
         font: '500 14px var(--font-body)',
         cursor: disabled ? 'not-allowed' : 'pointer',
@@ -1945,20 +1935,18 @@ function CancelBtn({ onClick, disabled }: { onClick: () => void; disabled?: bool
 }
 
 function SubmitBtn({ loading }: { loading: boolean }) {
-  const [hovered, setHovered] = useState(false)
   return (
     <button
       type="submit"
+      className="hachi-mcp-submit-btn"
       disabled={loading}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       aria-busy={loading}
       style={{
         flex: 1,
         height: 42,
         borderRadius: 10,
         border: '0.5px solid transparent',
-        background: hovered && !loading ? 'var(--hachi-brand-active)' : 'var(--hachi-brand-hover)',
+        background: 'var(--hachi-brand-hover)',
         color: 'var(--hachi-canvas)',
         font: '500 14px var(--font-body)',
         cursor: loading ? 'not-allowed' : 'pointer',
@@ -1978,13 +1966,11 @@ interface AddMcpRowProps {
 }
 
 function AddMcpRow({ onAdd }: AddMcpRowProps) {
-  const [hover, setHover] = useState(false)
   return (
     <button
       type="button"
+      className="hachi-ghost-icon-btn-bg"
       onClick={onAdd}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
       aria-label="Add MCP server"
       style={{
         display: 'flex',
@@ -1995,7 +1981,7 @@ function AddMcpRow({ onAdd }: AddMcpRowProps) {
         borderStyle: 'solid',
         borderColor: 'var(--hachi-line)',
         cursor: 'pointer',
-        background: hover ? 'var(--hachi-cream)' : 'transparent',
+        background: 'transparent',
         transition: 'background var(--dur-fast) var(--ease)',
         color: 'var(--hachi-trust)',
         width: '100%',

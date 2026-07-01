@@ -55,6 +55,7 @@ function OgExplainerPanel() {
       </div>
       <button
         type="button"
+        className="hachi-ghost-icon-btn-bg"
         onClick={dismiss}
         aria-label="Dismiss .og explainer"
         style={{
@@ -67,12 +68,6 @@ function OgExplainerPanel() {
           borderRadius: 6,
           flexShrink: 0,
         }}
-        onMouseEnter={(e) => {
-          ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)'
-        }}
-        onMouseLeave={(e) => {
-          ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
-        }}
       >
         <Icon name="x" size={15} />
       </button>
@@ -83,8 +78,6 @@ function OgExplainerPanel() {
 // ---- local hover-state helpers (not in store) ----------------
 function SkillCard({ sk, operator }: { sk: Skill; operator: boolean }) {
   const removeSkill = useStore((s) => s.removeSkill);
-  const [editHover, setEditHover] = useState(false);
-  const [removeHover, setRemoveHover] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current); }, []);
@@ -120,14 +113,13 @@ function SkillCard({ sk, operator }: { sk: Skill; operator: boolean }) {
         {operator && (
           <button
             type="button"
+            className="hachi-ghost-icon-btn-bg"
             disabled
             aria-disabled="true"
             title="Skill editing is coming soon"
-            onMouseEnter={() => setEditHover(true)}
-            onMouseLeave={() => setEditHover(false)}
             style={{
               border: 'none',
-              background: editHover ? 'var(--hachi-cream)' : 'transparent',
+              background: 'transparent',
               color: 'var(--hachi-muted)',
               cursor: 'not-allowed',
               opacity: 0.5,
@@ -165,9 +157,8 @@ function SkillCard({ sk, operator }: { sk: Skill; operator: boolean }) {
         {sk.stale && (
           <button
             type="button"
+            className="hachi-underline-on-hover"
             onClick={handleRemoveClick}
-            onMouseEnter={() => setRemoveHover(true)}
-            onMouseLeave={() => setRemoveHover(false)}
             onBlur={() => setConfirmRemove(false)}
             onKeyDown={(e) => {
               if (e.key === 'Escape' && confirmRemove) { e.stopPropagation(); setConfirmRemove(false); }
@@ -184,7 +175,7 @@ function SkillCard({ sk, operator }: { sk: Skill; operator: boolean }) {
               font: '500 12px var(--font-body)',
               cursor: 'pointer',
               padding: 0,
-              textDecoration: removeHover || confirmRemove ? 'underline' : 'none',
+              textDecoration: confirmRemove ? 'underline' : undefined,
               transition: 'text-decoration var(--dur-fast) var(--ease)',
             }}
           >
@@ -198,7 +189,6 @@ function SkillCard({ sk, operator }: { sk: Skill; operator: boolean }) {
 
 function KennelCard({ k }: { k: KennelItem }) {
   const addSkill = useStore((s) => s.addSkill);
-  const [addHover, setAddHover] = useState(false);
 
   return (
     <div
@@ -234,14 +224,13 @@ function KennelCard({ k }: { k: KennelItem }) {
 
       {/* add button */}
       <button
+        className="hachi-kennel-add-btn"
         onClick={() => addSkill(k.id)}
-        onMouseEnter={() => setAddHover(true)}
-        onMouseLeave={() => setAddHover(false)}
         style={{
           height: 32,
           borderRadius: 10,
           border: '0.5px solid var(--hachi-line)',
-          background: addHover ? 'var(--hachi-cream)' : 'var(--hachi-canvas)',
+          background: 'var(--hachi-canvas)',
           color: 'var(--hachi-ink)',
           font: '500 13px var(--font-body)',
           cursor: 'pointer',
@@ -261,9 +250,6 @@ function Skills() {
   const openKennelBrowse = useStore((s) => s.openKennelBrowse);
 
   useEffect(() => { void loadSkills(); void loadKennel(); }, []);
-
-  // "Browse the kennel" header button hover
-  const [browseHover, setBrowseHover] = useState(false);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -297,9 +283,8 @@ function Skills() {
         <div style={{ flex: 1 }} />
         {/* CRIT-003: Browse the kennel — wired to openKennelBrowse */}
         <button
+          className="hachi-browse-kennel-btn"
           onClick={openKennelBrowse}
-          onMouseEnter={() => setBrowseHover(true)}
-          onMouseLeave={() => setBrowseHover(false)}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -308,7 +293,7 @@ function Skills() {
             padding: '0 14px',
             borderRadius: 10,
             border: '1px solid var(--hachi-trust)',
-            background: browseHover ? 'var(--hachi-trust-tint)' : 'transparent',
+            background: 'transparent',
             color: 'var(--hachi-trust)',
             font: '500 13px var(--font-body)',
             cursor: 'pointer',

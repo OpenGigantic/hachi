@@ -243,17 +243,10 @@ function RunSurface({ onBack }: RunSurfaceProps) {
       <div className="hachi-run-header" style={headerStyle}>
         {/* back button */}
         <button
+          className="hachi-ghost-icon-btn-bg"
           onClick={onBack}
           style={backBtnStyle}
           aria-label="Back"
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.background =
-              "var(--hachi-cream)";
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.background =
-              "transparent";
-          }}
         >
           <Icon name="chevron-left" size={18} />
         </button>
@@ -314,16 +307,9 @@ function RunSurface({ onBack }: RunSurfaceProps) {
         {/* stop button */}
         {canStop && (
           <button
+            className="hachi-stop-run-btn"
             onClick={stopRun}
             style={stopBtnStyle}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background =
-                "var(--hachi-trust-tint)";
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background =
-                "transparent";
-            }}
           >
             <Icon name="stop" size={15} />
             Stop
@@ -714,14 +700,9 @@ function LiveRun() {
         </p>
 
         <button
+          className="hachi-open-conversation-btn"
           style={chatBtnStyle}
           onClick={() => void navigate({ to: "/conversation" })}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.opacity = "0.85";
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.opacity = "1";
-          }}
         >
           <Icon name="message-square" size={15} />
           Open conversation

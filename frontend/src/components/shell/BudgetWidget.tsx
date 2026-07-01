@@ -1,4 +1,3 @@
-import React, { useState } from 'react'
 import { Icon } from '../icons/Icon'
 import { HachiMark } from '../brand/HachiMark'
 
@@ -9,8 +8,6 @@ export interface BudgetWidgetProps {
 }
 
 export function BudgetWidget({ spent, budget, onClick }: BudgetWidgetProps) {
-  const [hovered, setHovered] = useState(false)
-
   const pct = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0
   const spentStr = `$${spent.toFixed(2)}`
   const budgetStr = `$${budget.toFixed(2)}`
@@ -18,14 +15,12 @@ export function BudgetWidget({ spent, budget, onClick }: BudgetWidgetProps) {
   return (
     <button
       type="button"
+      className="hachi-budget-widget"
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       aria-label={`Today's budget: ${spentStr} spent of ${budgetStr}`}
       style={{
         textAlign: 'left',
         background: 'var(--hachi-cream)',
-        border: hovered ? '0.5px solid #d3c8b4' : '0.5px solid var(--hachi-line)',
         borderRadius: '10px',
         padding: '14px',
         cursor: 'pointer',

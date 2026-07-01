@@ -3,7 +3,6 @@
 // on mobile. Mirrors the app sidebar's NavItem idiom (icon + label, brand-tint
 // active state).
 
-import { useState } from 'react';
 import { Icon } from '../icons/Icon';
 
 export interface SettingsSection {
@@ -31,22 +30,14 @@ function NavButton({
   horizontal: boolean;
   onSelect: (k: string) => void;
 }) {
-  const [hovered, setHovered] = useState(false);
-
-  const background = active
-    ? 'var(--hachi-brand-tint)'
-    : hovered
-      ? 'var(--hachi-cream)'
-      : 'transparent';
   const color = active ? 'var(--hachi-brand)' : 'var(--hachi-ink)';
 
   return (
     <button
       type="button"
+      className="hachi-settings-navbtn"
       aria-current={active ? 'page' : undefined}
       onClick={() => onSelect(section.key)}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -56,7 +47,7 @@ function NavButton({
         padding: horizontal ? '8px 14px' : '9px 11px',
         borderRadius: 10,
         border: horizontal && active ? '0.5px solid var(--hachi-brand)' : '0.5px solid transparent',
-        background,
+        background: 'transparent',
         color,
         font: `${active ? 500 : 400} 13px var(--font-body)`,
         cursor: 'pointer',
