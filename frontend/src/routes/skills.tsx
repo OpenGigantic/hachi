@@ -156,7 +156,7 @@ function SkillCard({ sk, operator }: { sk: Skill; operator: boolean }) {
             style={{
               border: 'none',
               background: 'transparent',
-              color: removeHover ? 'var(--hachi-danger)' : 'var(--hachi-danger)',
+              color: 'var(--hachi-danger)',
               font: '500 12px var(--font-body)',
               cursor: 'pointer',
               padding: 0,

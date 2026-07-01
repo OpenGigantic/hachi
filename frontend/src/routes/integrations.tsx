@@ -42,13 +42,13 @@ interface StatusMeta {
 const intMeta: Record<string, StatusMeta> = {
   connected: {
     bg: 'var(--hachi-success-tint)',
-    fg: '#2C7A50',
+    fg: 'var(--hachi-success-fg)',
     dot: 'var(--hachi-success)',
     text: 'connected',
   },
   degraded: {
     bg: 'var(--hachi-working-tint)',
-    fg: '#A8651A',
+    fg: 'var(--hachi-working-fg)',
     dot: 'var(--hachi-working)',
     text: 'degraded',
   },
@@ -63,7 +63,7 @@ const intMeta: Record<string, StatusMeta> = {
 const mcpMeta: Record<string, StatusMeta> = {
   connected: {
     bg: 'var(--hachi-success-tint)',
-    fg: '#2C7A50',
+    fg: 'var(--hachi-success-fg)',
     dot: 'var(--hachi-success)',
     text: 'connected',
   },
@@ -75,7 +75,7 @@ const mcpMeta: Record<string, StatusMeta> = {
   },
   starting: {
     bg: 'var(--hachi-working-tint)',
-    fg: '#A8651A',
+    fg: 'var(--hachi-working-fg)',
     dot: 'var(--hachi-working)',
     text: 'starting',
   },
@@ -90,7 +90,7 @@ const mcpMeta: Record<string, StatusMeta> = {
   },
   blocked: {
     bg: 'var(--hachi-danger-tint)',
-    fg: '#9E2D21',
+    fg: 'var(--hachi-danger-fg)',
     dot: 'var(--hachi-danger)',
     text: "can't reach",
   },
@@ -339,7 +339,7 @@ function CredentialDialog({ connectorId, connectorName, fields, connectorSource,
               <div
                 style={{
                   display: 'flex', alignItems: 'center', gap: 7, fontSize: 12,
-                  color: '#2C7A50', background: 'var(--hachi-success-tint)',
+                  color: 'var(--hachi-success-fg)', background: 'var(--hachi-success-tint)',
                   padding: '7px 10px', borderRadius: 8,
                 }}
               >
@@ -409,7 +409,6 @@ function CredentialDialog({ connectorId, connectorName, fields, connectorSource,
                       <button
                         type="button"
                         onClick={() => setShowSecrets((prev) => ({ ...prev, [field.key]: !showPlain }))}
-                        tabIndex={-1}
                         aria-label={showPlain ? 'Hide value' : 'Show value'}
                         style={{
                           position: 'absolute', right: 8, border: 'none',
@@ -458,7 +457,7 @@ function CredentialDialog({ connectorId, connectorName, fields, connectorSource,
                   <div
                     style={{
                       display: 'flex', alignItems: 'flex-start', gap: 7, fontSize: 12,
-                      color: testResult.ok ? '#2C7A50' : 'var(--hachi-danger-fg)',
+                      color: testResult.ok ? 'var(--hachi-success-fg)' : 'var(--hachi-danger-fg)',
                       background: testResult.ok ? 'var(--hachi-success-tint)' : 'var(--hachi-danger-tint)',
                       padding: '7px 10px', borderRadius: 8,
                     }}

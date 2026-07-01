@@ -1,4 +1,4 @@
-import { CSSProperties, useState } from 'react';
+import { CSSProperties, useId, useState } from 'react';
 
 export interface InputProps {
   value?: string;
@@ -8,6 +8,8 @@ export interface InputProps {
   mono?: boolean;
   type?: string;
   style?: CSSProperties;
+  id?: string;
+  'aria-label'?: string;
 }
 
 export function Input({
@@ -18,8 +20,12 @@ export function Input({
   mono = false,
   type = 'text',
   style,
+  id,
+  'aria-label': ariaLabel,
 }: InputProps) {
   const [focused, setFocused] = useState(false);
+  const generatedId = useId();
+  const inputId = id ?? generatedId;
 
   const wrapStyle: CSSProperties = {
     display: 'flex',
@@ -53,8 +59,13 @@ export function Input({
 
   return (
     <div style={wrapStyle}>
-      {label && <label style={labelStyle}>{label}</label>}
+      {label && (
+        <label htmlFor={inputId} style={labelStyle}>
+          {label}
+        </label>
+      )}
       <input
+        id={inputId}
         type={type}
         value={value}
         onChange={e => onChange?.(e.target.value)}
@@ -62,6 +73,7 @@ export function Input({
         style={inputStyle}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
+        aria-label={!label ? ariaLabel : undefined}
       />
     </div>
   );

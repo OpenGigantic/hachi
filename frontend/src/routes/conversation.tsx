@@ -276,7 +276,7 @@ function statusMeta(st: string): {
   const map: Record<string, { bg: string; fg: string; dot: string; text: string }> = {
     working: {
       bg: 'var(--hachi-working-tint)',
-      fg: '#A8651A',
+      fg: 'var(--hachi-working-fg)',
       dot: 'var(--hachi-working)',
       text: 'working',
     },
@@ -288,13 +288,13 @@ function statusMeta(st: string): {
     },
     done: {
       bg: 'var(--hachi-success-tint)',
-      fg: '#2C7A50',
+      fg: 'var(--hachi-success-fg)',
       dot: 'var(--hachi-success)',
       text: 'done',
     },
     blocked: {
       bg: 'var(--hachi-danger-tint)',
-      fg: '#9E2D21',
+      fg: 'var(--hachi-danger-fg)',
       dot: 'var(--hachi-danger)',
       text: 'blocked',
     },
@@ -702,7 +702,7 @@ const RoutineCard = React.memo(function RoutineCard({ routine, msgId }: RoutineC
             alignItems: 'center',
             gap: 8,
             fontSize: 13,
-            color: '#2C7A50',
+            color: 'var(--hachi-success-fg)',
             background: 'var(--hachi-success-tint)',
             padding: '9px 12px',
             borderRadius: 10,

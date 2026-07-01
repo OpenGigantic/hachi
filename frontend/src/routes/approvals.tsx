@@ -3,7 +3,7 @@
 // Pending approvals queue with countdown + history + operator audit log.
 // ============================================================
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useStore } from "../lib/store/store";
 import { useCountdown } from "../lib/hooks/useCountdown";
@@ -117,19 +117,19 @@ function riskMeta(r: string): {
   const map: Record<string, { label: string; fg: string; bg: string; cd: string }> = {
     low: {
       label: "low risk",
-      fg: "#2C7A50",
+      fg: "var(--hachi-success-fg)",
       bg: "var(--hachi-success-tint)",
       cd: "var(--hachi-success)",
     },
     medium: {
       label: "needs care",
-      fg: "#A8651A",
+      fg: "var(--hachi-working-fg)",
       bg: "var(--hachi-working-tint)",
       cd: "var(--hachi-working)",
     },
     high: {
       label: "high risk",
-      fg: "#9E2D21",
+      fg: "var(--hachi-danger-fg)",
       bg: "var(--hachi-danger-tint)",
       cd: "var(--hachi-danger)",
     },
@@ -170,12 +170,27 @@ function ApprovalCard({
 }: ApprovalCardProps) {
   const { ms, label: countdownLabel } = useCountdown(approval.expiresAt);
   const rm = riskMeta(approval.risk);
+  const isHighRisk = approval.risk === "high";
   const cdPct = Math.max(0, Math.min(100, (ms / approval.totalMs) * 100));
 
   // Hover states for the three buttons
   const [declineHover, setDeclineHover] = useState(false);
   const [alwaysHover, setAlwaysHover] = useState(false);
   const [allowHover, setAllowHover] = useState(false);
+  // "Always allow" grants a standing permission — arm on first click, require a
+  // second click (or auto-disarm after 4s) to confirm.
+  const [alwaysArmed, setAlwaysArmed] = useState(false);
+  const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (armTimerRef.current) clearTimeout(armTimerRef.current); }, []);
+  function handleAlwaysAllowClick() {
+    if (!alwaysArmed) {
+      setAlwaysArmed(true);
+      armTimerRef.current = setTimeout(() => setAlwaysArmed(false), 4000);
+      return;
+    }
+    if (armTimerRef.current) clearTimeout(armTimerRef.current);
+    onAlwaysAllow();
+  }
 
   return (
     <div
@@ -390,24 +405,43 @@ function ApprovalCard({
         </div>
       )}
 
-      {/* Action buttons */}
+      {/* Action buttons — on high-risk requests, Decline is the dominant/filled
+          action and Allow once is de-emphasized to an outline (Nielsen error
+          prevention: the safe default must never look like the lesser option
+          next to a filled red CTA). Always allow always gets a distinct
+          treatment + a confirm-on-second-click when the request is high-risk. */}
       <div className="hachi-approval-actions" style={{ display: "flex", gap: 9 }}>
         <button
           type="button"
           onClick={onDecline}
           onMouseEnter={() => setDeclineHover(true)}
           onMouseLeave={() => setDeclineHover(false)}
-          style={{
-            flex: 1,
-            height: 40,
-            borderRadius: 10,
-            border: "1px solid var(--hachi-trust)",
-            background: declineHover ? "var(--hachi-trust-tint)" : "transparent",
-            color: "var(--hachi-trust)",
-            font: "500 14px var(--font-body)",
-            cursor: "pointer",
-            transition: "background var(--dur-fast) var(--ease)",
-          }}
+          style={
+            isHighRisk
+              ? {
+                  flex: 1,
+                  height: 40,
+                  borderRadius: 10,
+                  border: "0.5px solid transparent",
+                  background: "var(--hachi-trust)",
+                  color: "var(--hachi-canvas)",
+                  font: "500 14px var(--font-body)",
+                  cursor: "pointer",
+                  opacity: declineHover ? 0.9 : 1,
+                  transition: "opacity var(--dur-fast) var(--ease)",
+                }
+              : {
+                  flex: 1,
+                  height: 40,
+                  borderRadius: 10,
+                  border: "1px solid var(--hachi-trust)",
+                  background: declineHover ? "var(--hachi-trust-tint)" : "transparent",
+                  color: "var(--hachi-trust)",
+                  font: "500 14px var(--font-body)",
+                  cursor: "pointer",
+                  transition: "background var(--dur-fast) var(--ease)",
+                }
+          }
         >
           Decline
         </button>
@@ -416,40 +450,63 @@ function ApprovalCard({
           onClick={onAllowOnce}
           onMouseEnter={() => setAllowHover(true)}
           onMouseLeave={() => setAllowHover(false)}
-          style={{
-            flex: 1,
-            height: 40,
-            borderRadius: 10,
-            border: "0.5px solid transparent",
-            background: allowHover
-              ? "var(--hachi-brand-hover)"
-              : "var(--hachi-brand)",
-            color: "var(--hachi-canvas)",
-            font: "500 14px var(--font-body)",
-            cursor: "pointer",
-            transition: "background var(--dur-fast) var(--ease)",
-          }}
+          style={
+            isHighRisk
+              ? {
+                  flex: 1,
+                  height: 40,
+                  borderRadius: 10,
+                  border: "1px solid var(--hachi-brand)",
+                  background: allowHover ? "var(--hachi-brand-tint)" : "transparent",
+                  color: "var(--hachi-brand)",
+                  font: "500 14px var(--font-body)",
+                  cursor: "pointer",
+                  transition: "background var(--dur-fast) var(--ease)",
+                }
+              : {
+                  flex: 1,
+                  height: 40,
+                  borderRadius: 10,
+                  border: "0.5px solid transparent",
+                  background: allowHover
+                    ? "var(--hachi-brand-hover)"
+                    : "var(--hachi-brand)",
+                  color: "var(--hachi-canvas)",
+                  font: "500 14px var(--font-body)",
+                  cursor: "pointer",
+                  transition: "background var(--dur-fast) var(--ease)",
+                }
+          }
         >
           Allow once
         </button>
         <button
           type="button"
-          onClick={onAlwaysAllow}
+          onClick={handleAlwaysAllowClick}
           onMouseEnter={() => setAlwaysHover(true)}
           onMouseLeave={() => setAlwaysHover(false)}
+          aria-label={
+            alwaysArmed
+              ? `Confirm: always allow ${approval.scope}`
+              : `Always allow ${approval.scope} — grants a standing permission`
+          }
           style={{
             flex: 1,
             height: 40,
             borderRadius: 10,
-            border: "0.5px solid transparent",
-            background: alwaysHover ? "var(--hachi-cream)" : "transparent",
-            color: "var(--hachi-muted)",
+            border: `0.5px solid ${alwaysArmed ? "var(--hachi-working)" : "transparent"}`,
+            background: alwaysArmed
+              ? "var(--hachi-working-tint)"
+              : alwaysHover
+              ? "var(--hachi-cream)"
+              : "transparent",
+            color: alwaysArmed ? "var(--hachi-working-fg)" : "var(--hachi-muted)",
             font: "500 14px var(--font-body)",
             cursor: "pointer",
-            transition: "background var(--dur-fast) var(--ease)",
+            transition: "background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease)",
           }}
         >
-          Always allow {approval.scope}
+          {alwaysArmed ? "Click to confirm" : `Always allow ${approval.scope}`}
         </button>
       </div>
     </div>
@@ -788,9 +845,20 @@ function Approvals() {
                 overflow: "hidden",
               }}
             >
-              {history.map((h) => (
-                <HistoryRow key={h.id} item={h} />
-              ))}
+              {history.length > 0 ? (
+                history.map((h) => <HistoryRow key={h.id} item={h} />)
+              ) : (
+                <div
+                  style={{
+                    padding: "24px 20px",
+                    fontSize: 13.5,
+                    color: "var(--hachi-muted)",
+                    textAlign: "center",
+                  }}
+                >
+                  No decisions yet — approvals you resolve will show up here.
+                </div>
+              )}
             </div>
           </div>
 
@@ -861,7 +929,7 @@ function GoSettingsLink({ onClick }: { onClick: () => void }) {
         marginTop: 8,
         border: "none",
         background: "transparent",
-        color: hover ? "var(--hachi-trust)" : "var(--hachi-trust)",
+        color: "var(--hachi-trust)",
         font: "500 13px var(--font-body)",
         cursor: "pointer",
         padding: 0,

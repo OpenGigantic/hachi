@@ -1,4 +1,4 @@
-import React, { useState, useEffect, CSSProperties } from 'react'
+import React, { useState, useEffect, useRef, CSSProperties } from 'react'
 import { HachiMark } from './HachiMark'
 
 /** localStorage key — suppress leash explanation after first interaction. */
@@ -43,9 +43,12 @@ function fmtCountdown(ms: number): string {
  * Never looks like an error. Always a matter-of-fact question.
  * The caption "you hold the leash" anchors user control at the bottom.
  *
- * Button order (left→right): Decline · Allow once · Always allow
- * Primary slot (Torii red fill) is "Allow once" — the single primary action per view.
- * "Always allow" is ghost; "Decline" is secondary (navy outline).
+ * Button order (left→right): Decline · Allow once · Always allow.
+ * Decline and Allow once carry EQUAL visual weight (both outlined) — the
+ * safe default must never look like the "lesser" option next to a filled
+ * red CTA (Nielsen error prevention). "Always allow" grants a *standing*
+ * permission, so it gets a distinct amber-leaning outline and arms on the
+ * first click, requiring a second click (or auto-disarms after 4s) to fire.
  *
  * Ported from design-system/components/hachi/LeashPrompt.jsx + contract §5.
  */
@@ -84,8 +87,28 @@ export function LeashPrompt({
   }
 
   const handleAllowOnce = () => { markSeen(); onAllowOnce() }
-  const handleAlwaysAllow = () => { markSeen(); onAlwaysAllow() }
   const handleDecline = () => { markSeen(); onDecline() }
+
+  // "Always allow" grants a *standing* permission — arm on first click and require
+  // a second click to confirm (auto-disarms after 4s so a stray tap can't grant it).
+  const [alwaysArmed, setAlwaysArmed] = useState(false)
+  const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (armTimerRef.current) clearTimeout(armTimerRef.current) }, [])
+  const handleAlwaysAllowClick = () => {
+    if (!alwaysArmed) {
+      setAlwaysArmed(true)
+      armTimerRef.current = setTimeout(() => setAlwaysArmed(false), 4000)
+      return
+    }
+    if (armTimerRef.current) clearTimeout(armTimerRef.current)
+    markSeen()
+    onAlwaysAllow()
+  }
+
+  const [declineFocused, setDeclineFocused] = useState(false)
+  const [allowFocused, setAllowFocused] = useState(false)
+  const [alwaysFocused, setAlwaysFocused] = useState(false)
+  const focusRing = '2px solid var(--hachi-brand-tint, #FBE7E0)'
 
   return (
     <div
@@ -234,11 +257,15 @@ export function LeashPrompt({
         </div>
       )}
 
-      {/* Actions: Decline · Allow once (primary) · Always allow (ghost) */}
+      {/* Actions: Decline · Allow once — equal weight, both outlined, neither
+          looks like the "safe"/"lesser" option. Always allow (standing grant)
+          gets a distinct amber outline and arms on first click. */}
       <div style={{ display: 'flex', gap: 8 }}>
         <button
           type="button"
           onClick={handleDecline}
+          onFocus={() => setDeclineFocused(true)}
+          onBlur={() => setDeclineFocused(false)}
           style={{
             flex: 1,
             height: 38,
@@ -251,6 +278,8 @@ export function LeashPrompt({
             fontSize: 14,
             fontWeight: 500,
             cursor: 'pointer',
+            outline: declineFocused ? focusRing : 'none',
+            outlineOffset: 2,
             transition: 'background var(--dur-fast, 120ms) var(--ease, cubic-bezier(.2,.7,.3,1))',
           }}
           onMouseEnter={(e) => {
@@ -266,46 +295,22 @@ export function LeashPrompt({
         <button
           type="button"
           onClick={handleAllowOnce}
+          onFocus={() => setAllowFocused(true)}
+          onBlur={() => setAllowFocused(false)}
           style={{
             flex: 1,
             height: 38,
             padding: '0 14px',
             borderRadius: 'var(--radius-md, 10px)',
-            border: 'none',
-            background: 'var(--hachi-brand, #D64933)',
-            color: 'var(--hachi-canvas, #FBF7EF)',
-            fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
-            fontSize: 14,
-            fontWeight: 500,
-            cursor: 'pointer',
-            transition: 'background var(--dur-fast, 120ms) var(--ease, cubic-bezier(.2,.7,.3,1))',
-          }}
-          onMouseEnter={(e) => {
-            ;(e.currentTarget as HTMLButtonElement).style.background =
-              'var(--hachi-brand-hover, #C23E2C)'
-          }}
-          onMouseLeave={(e) => {
-            ;(e.currentTarget as HTMLButtonElement).style.background =
-              'var(--hachi-brand, #D64933)'
-          }}
-        >
-          Allow once
-        </button>
-        <button
-          type="button"
-          onClick={handleAlwaysAllow}
-          style={{
-            flex: 1,
-            height: 38,
-            padding: '0 14px',
-            borderRadius: 'var(--radius-md, 10px)',
-            border: 'none',
+            border: '1.5px solid var(--hachi-brand, #D64933)',
             background: 'transparent',
-            color: 'var(--text-default, var(--hachi-ink, #1C1A20))',
+            color: 'var(--hachi-brand, #D64933)',
             fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
             fontSize: 14,
             fontWeight: 500,
             cursor: 'pointer',
+            outline: allowFocused ? focusRing : 'none',
+            outlineOffset: 2,
             transition: 'background var(--dur-fast, 120ms) var(--ease, cubic-bezier(.2,.7,.3,1))',
           }}
           onMouseEnter={(e) => {
@@ -316,7 +321,38 @@ export function LeashPrompt({
             ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
           }}
         >
-          Always allow
+          Allow once
+        </button>
+        <button
+          type="button"
+          onClick={handleAlwaysAllowClick}
+          onFocus={() => setAlwaysFocused(true)}
+          onBlur={() => setAlwaysFocused(false)}
+          aria-label={alwaysArmed ? 'Confirm: always allow this' : 'Always allow — grants a standing permission'}
+          style={{
+            flex: 1,
+            height: 38,
+            padding: '0 10px',
+            borderRadius: 'var(--radius-md, 10px)',
+            border: `1.5px solid ${alwaysArmed ? 'var(--hachi-working, #E0922E)' : 'var(--hachi-line, #E2D9C9)'}`,
+            background: alwaysArmed ? 'var(--hachi-working-tint, #FBEBD6)' : 'transparent',
+            color: alwaysArmed ? 'var(--hachi-working-fg, #A8651A)' : 'var(--text-muted, var(--hachi-muted, #8A8580))',
+            fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
+            fontSize: 13,
+            fontWeight: 500,
+            cursor: 'pointer',
+            outline: alwaysFocused ? focusRing : 'none',
+            outlineOffset: 2,
+            transition: 'background var(--dur-fast, 120ms) var(--ease, cubic-bezier(.2,.7,.3,1)), border-color var(--dur-fast, 120ms) var(--ease, cubic-bezier(.2,.7,.3,1))',
+          }}
+          onMouseEnter={(e) => {
+            if (!alwaysArmed) (e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream, #F3E9D2)'
+          }}
+          onMouseLeave={(e) => {
+            if (!alwaysArmed) (e.currentTarget as HTMLButtonElement).style.background = 'transparent'
+          }}
+        >
+          {alwaysArmed ? 'Click to confirm' : 'Always allow'}
         </button>
       </div>
 

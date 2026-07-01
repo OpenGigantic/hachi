@@ -46,10 +46,10 @@ interface StatusMeta {
 
 function statusMeta(st: string): StatusMeta {
   const map: Record<string, StatusMeta> = {
-    working: { bg: 'var(--hachi-working-tint)', fg: '#A8651A', dot: 'var(--hachi-working)', text: 'working' },
+    working: { bg: 'var(--hachi-working-tint)', fg: 'var(--hachi-working-fg)', dot: 'var(--hachi-working)', text: 'working' },
     'on-watch': { bg: 'var(--hachi-trust-tint)', fg: 'var(--hachi-trust)', dot: 'var(--hachi-trust)', text: 'on watch' },
-    done: { bg: 'var(--hachi-success-tint)', fg: '#2C7A50', dot: 'var(--hachi-success)', text: 'done' },
-    blocked: { bg: 'var(--hachi-danger-tint)', fg: '#9E2D21', dot: 'var(--hachi-danger)', text: 'blocked' },
+    done: { bg: 'var(--hachi-success-tint)', fg: 'var(--hachi-success-fg)', dot: 'var(--hachi-success)', text: 'done' },
+    blocked: { bg: 'var(--hachi-danger-tint)', fg: 'var(--hachi-danger-fg)', dot: 'var(--hachi-danger)', text: 'blocked' },
   }
   return map[st] ?? map.working
 }
@@ -244,9 +244,9 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
 
   const packStatusMeta = (s: string) =>
     s === 'done'
-      ? { dot: 'var(--hachi-success)', text: 'done', fg: '#2C7A50' }
+      ? { dot: 'var(--hachi-success)', text: 'done', fg: 'var(--hachi-success-fg)' }
       : s === 'working'
-      ? { dot: 'var(--hachi-working)', text: 'on it', fg: '#A8651A' }
+      ? { dot: 'var(--hachi-working)', text: 'on it', fg: 'var(--hachi-working-fg)' }
       : { dot: 'var(--hachi-muted)', text: 'queued', fg: 'var(--hachi-muted)' }
 
   return (
@@ -328,7 +328,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
               fontFamily: 'var(--font-mono)',
               fontSize: '12px',
               lineHeight: '20px',
-              color: '#9E2D21',
+              color: 'var(--hachi-danger-fg)',
               whiteSpace: 'pre-wrap',
             }}>
               {item.error}
@@ -430,7 +430,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                       </div>
                       <div style={{ fontSize: '12px', color: 'var(--hachi-muted)', marginTop: '2px' }}>{p.task}</div>
                       {p.outcome && p.outcome !== '—' && (
-                        <div style={{ fontSize: '12px', color: '#2C7A50', marginTop: '3px' }}>→ {p.outcome}</div>
+                        <div style={{ fontSize: '12px', color: 'var(--hachi-success-fg)', marginTop: '3px' }}>→ {p.outcome}</div>
                       )}
                     </div>
                     <span style={{ fontSize: '11px', fontWeight: 500, color: pm.fg, flexShrink: 0 }}>{pm.text}</span>
@@ -620,7 +620,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                   borderRadius: '10px',
                   flexShrink: 0,
                 }}>
-                  <span style={{ fontSize: '13px', color: '#9E2D21', whiteSpace: 'nowrap' }}>
+                  <span style={{ fontSize: '13px', color: 'var(--hachi-danger-fg)', whiteSpace: 'nowrap' }}>
                     Delete this routine?
                   </span>
                   <button
@@ -857,7 +857,7 @@ function SpendLens() {
                   <div style={{ display: 'flex', height: '22px', borderRadius: '5px', overflow: 'hidden', background: 'var(--hachi-line)' }}>
                     <div style={{ width: c.afterPct + '%', background: 'var(--hachi-trust)', minWidth: '3px' }} />
                     <div style={{ flex: 1, background: 'var(--hachi-success-tint)', display: 'flex', alignItems: 'center', paddingLeft: '10px' }}>
-                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: '#2C7A50' }}>−{c.reclaimedK} reclaimed</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--hachi-success-fg)' }}>−{c.reclaimedK} reclaimed</span>
                     </div>
                   </div>
                   <div style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--hachi-muted)', marginTop: '5px' }}>

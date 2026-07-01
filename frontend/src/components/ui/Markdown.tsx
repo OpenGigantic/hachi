@@ -639,8 +639,6 @@ const LANG_DISPLAY: Record<string, string> = {
   markdown: 'Markdown',
 }
 
-const RUNNABLE_LANGS = new Set(['python', 'py', 'js', 'javascript', 'ts', 'typescript'])
-
 function formatLang(lang: string): string {
   return LANG_DISPLAY[lang] ?? (lang ? lang.charAt(0).toUpperCase() + lang.slice(1) : 'Code')
 }
@@ -699,7 +697,6 @@ const CodeBlock = memo(function CodeBlock({ lang, code }: { lang: string; code: 
   }, [code])
 
   const displayLang = formatLang(lang)
-  const canRun = RUNNABLE_LANGS.has(lang)
 
   return (
     <div
@@ -741,8 +738,10 @@ const CodeBlock = memo(function CodeBlock({ lang, code }: { lang: string; code: 
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <button
             ref={copyBtnRef}
+            type="button"
             onClick={handleCopy}
             title={copied ? 'Copied!' : 'Copy code'}
+            aria-label={copied ? 'Copied to clipboard' : 'Copy code'}
             style={{
               background: copied ? 'var(--hachi-code-copied-bg)' : 'none',
               border: 'none',
@@ -767,31 +766,6 @@ const CodeBlock = memo(function CodeBlock({ lang, code }: { lang: string; code: 
               <CopyIcon />
             )}
           </button>
-
-          {canRun && (
-            <button
-              title="Run"
-              style={{
-                background: 'none',
-                border: '1px solid rgba(255,255,255,0.18)',
-                cursor: 'pointer',
-                padding: '2px 10px',
-                borderRadius: 12,
-                color: 'var(--hachi-code-icon)',
-                fontSize: '0.76em',
-                fontFamily: 'inherit',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 5,
-                lineHeight: 1.5,
-              }}
-            >
-              <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-                <path d="M2.5 1.5l8 4.5-8 4.5V1.5z" />
-              </svg>
-              Run
-            </button>
-          )}
         </div>
       </div>
 
