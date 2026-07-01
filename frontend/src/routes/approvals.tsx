@@ -173,10 +173,6 @@ function ApprovalCard({
   const isHighRisk = approval.risk === "high";
   const cdPct = Math.max(0, Math.min(100, (ms / approval.totalMs) * 100));
 
-  // Hover states for the three buttons
-  const [declineHover, setDeclineHover] = useState(false);
-  const [alwaysHover, setAlwaysHover] = useState(false);
-  const [allowHover, setAllowHover] = useState(false);
   // "Always allow" grants a standing permission — arm on first click, require a
   // second click (or auto-disarm after 4s) to confirm.
   const [alwaysArmed, setAlwaysArmed] = useState(false);
@@ -413,9 +409,8 @@ function ApprovalCard({
       <div className="hachi-approval-actions" style={{ display: "flex", gap: 9 }}>
         <button
           type="button"
+          className={isHighRisk ? 'hachi-decline-btn-risk' : 'hachi-decline-btn-safe'}
           onClick={onDecline}
-          onMouseEnter={() => setDeclineHover(true)}
-          onMouseLeave={() => setDeclineHover(false)}
           style={
             isHighRisk
               ? {
@@ -427,7 +422,6 @@ function ApprovalCard({
                   color: "var(--hachi-canvas)",
                   font: "500 14px var(--font-body)",
                   cursor: "pointer",
-                  opacity: declineHover ? 0.9 : 1,
                   transition: "opacity var(--dur-fast) var(--ease)",
                 }
               : {
@@ -435,7 +429,7 @@ function ApprovalCard({
                   height: 40,
                   borderRadius: 10,
                   border: "1px solid var(--hachi-trust)",
-                  background: declineHover ? "var(--hachi-trust-tint)" : "transparent",
+                  background: "transparent",
                   color: "var(--hachi-trust)",
                   font: "500 14px var(--font-body)",
                   cursor: "pointer",
@@ -447,9 +441,8 @@ function ApprovalCard({
         </button>
         <button
           type="button"
+          className={isHighRisk ? 'hachi-allow-btn-risk' : 'hachi-allow-once-approvals-safe'}
           onClick={onAllowOnce}
-          onMouseEnter={() => setAllowHover(true)}
-          onMouseLeave={() => setAllowHover(false)}
           style={
             isHighRisk
               ? {
@@ -457,7 +450,7 @@ function ApprovalCard({
                   height: 40,
                   borderRadius: 10,
                   border: "1px solid var(--hachi-brand)",
-                  background: allowHover ? "var(--hachi-brand-tint)" : "transparent",
+                  background: "transparent",
                   color: "var(--hachi-brand)",
                   font: "500 14px var(--font-body)",
                   cursor: "pointer",
@@ -468,9 +461,7 @@ function ApprovalCard({
                   height: 40,
                   borderRadius: 10,
                   border: "0.5px solid transparent",
-                  background: allowHover
-                    ? "var(--hachi-brand-hover)"
-                    : "var(--hachi-brand)",
+                  background: "var(--hachi-brand)",
                   color: "var(--hachi-canvas)",
                   font: "500 14px var(--font-body)",
                   cursor: "pointer",
@@ -482,9 +473,8 @@ function ApprovalCard({
         </button>
         <button
           type="button"
+          className="hachi-leash-always-btn"
           onClick={handleAlwaysAllowClick}
-          onMouseEnter={() => setAlwaysHover(true)}
-          onMouseLeave={() => setAlwaysHover(false)}
           aria-label={
             alwaysArmed
               ? `Confirm: always allow ${approval.scope}`
@@ -495,11 +485,7 @@ function ApprovalCard({
             height: 40,
             borderRadius: 10,
             border: `0.5px solid ${alwaysArmed ? "var(--hachi-working)" : "transparent"}`,
-            background: alwaysArmed
-              ? "var(--hachi-working-tint)"
-              : alwaysHover
-              ? "var(--hachi-cream)"
-              : "transparent",
+            background: alwaysArmed ? "var(--hachi-working-tint)" : undefined,
             color: alwaysArmed ? "var(--hachi-working-fg)" : "var(--hachi-muted)",
             font: "500 14px var(--font-body)",
             cursor: "pointer",
@@ -644,9 +630,6 @@ function Approvals() {
   // Refresh gateway data on navigate-to this screen
   useEffect(() => { void loadApprovals(); }, []);
 
-  // Hover state for "Decline all" button
-  const [declineAllHover, setDeclineAllHover] = useState(false);
-
   const pendingCount = approvals.length;
   const hasPending = pendingCount > 0;
   const noPending = pendingCount === 0;
@@ -695,17 +678,14 @@ function Approvals() {
         {manyPending && (
           <button
             type="button"
+            className="hachi-cancel-btn"
             onClick={() => { void declineAllMutation(); }}
-            onMouseEnter={() => setDeclineAllHover(true)}
-            onMouseLeave={() => setDeclineAllHover(false)}
             style={{
               height: 36,
               padding: "0 14px",
               borderRadius: 10,
               border: "1px solid var(--hachi-trust)",
-              background: declineAllHover
-                ? "var(--hachi-trust-tint)"
-                : "transparent",
+              background: "transparent",
               color: "var(--hachi-trust)",
               font: "500 13px var(--font-body)",
               cursor: "pointer",
@@ -931,13 +911,11 @@ function Approvals() {
 
 // ---- small inline link (avoids re-creating on each parent render) ----
 function GoSettingsLink({ onClick }: { onClick: () => void }) {
-  const [hover, setHover] = useState(false);
   return (
     <button
       type="button"
+      className="hachi-go-settings-link"
       onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
       style={{
         marginTop: 8,
         border: "none",
@@ -946,7 +924,6 @@ function GoSettingsLink({ onClick }: { onClick: () => void }) {
         font: "500 13px var(--font-body)",
         cursor: "pointer",
         padding: 0,
-        opacity: hover ? 0.8 : 1,
         transition: "opacity var(--dur-fast) var(--ease)",
       }}
     >

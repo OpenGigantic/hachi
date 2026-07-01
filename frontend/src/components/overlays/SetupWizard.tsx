@@ -475,9 +475,6 @@ function Step2({
 function SafetyOption({ dataKey, name, desc, selected, onClick }: {
   dataKey: string; name: string; desc: string; selected: boolean; onClick: () => void;
 }) {
-  const [hovered, setHovered] = React.useState(false);
-
-  const border = selected ? 'var(--hachi-brand)' : hovered ? '#d3c8b4' : 'var(--hachi-line)';
   const bg     = selected ? 'var(--hachi-brand-tint)' : 'var(--hachi-canvas)';
   const dotBorder = selected ? 'var(--hachi-brand)' : 'var(--hachi-line)';
   const dotBg     = selected ? 'var(--hachi-brand)' : 'transparent';
@@ -485,13 +482,12 @@ function SafetyOption({ dataKey, name, desc, selected, onClick }: {
   return (
     <button
       type="button"
+      className="hachi-safety-option"
       data-safety-level={dataKey}
       role="radio"
       aria-checked={selected}
       tabIndex={selected ? 0 : -1}
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
         display: 'flex',
         gap: 12,
@@ -499,7 +495,7 @@ function SafetyOption({ dataKey, name, desc, selected, onClick }: {
         textAlign: 'left',
         padding: 14,
         borderRadius: 12,
-        border: `1px solid ${border}`,
+        border: selected ? '1px solid var(--hachi-brand)' : undefined,
         background: bg,
         cursor: 'pointer',
         font: 'inherit',
@@ -599,15 +595,11 @@ function ConnectRow({
 }: {
   id: string; title: string; sub: string; connected: boolean; pending: boolean; onConnect: () => void;
 }) {
-  const [hovered, setHovered] = React.useState(false);
-
-  const border = connected ? 'var(--hachi-success)' : hovered ? '#d3c8b4' : 'var(--hachi-line)';
-  const bg     = connected ? 'var(--hachi-success-tint)' : 'var(--hachi-canvas)';
+  const bg = connected ? 'var(--hachi-success-tint)' : 'var(--hachi-canvas)';
 
   return (
     <div
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      className="hachi-connect-row"
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -615,7 +607,7 @@ function ConnectRow({
         textAlign: 'left',
         padding: 14,
         borderRadius: 12,
-        border: `1px solid ${border}`,
+        border: connected ? '1px solid var(--hachi-success)' : undefined,
         background: bg,
         transition: 'border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease)',
       }}
@@ -714,17 +706,15 @@ function Step4({
 // ---- shared small components ----
 
 function CloseBtn({ onClick }: { onClick: () => void }) {
-  const [hovered, setHovered] = React.useState(false);
   return (
     <button
       type="button"
+      className="hachi-ghost-icon-btn-bg"
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       aria-label="Close setup wizard"
       style={{
         border: 'none',
-        background: hovered ? 'var(--hachi-cream)' : 'transparent',
+        background: 'transparent',
         color: 'var(--hachi-muted)',
         cursor: 'pointer',
         display: 'inline-flex',
@@ -739,19 +729,17 @@ function CloseBtn({ onClick }: { onClick: () => void }) {
 }
 
 function GhostBtn({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
-  const [hovered, setHovered] = React.useState(false);
   return (
     <button
       type="button"
+      className="hachi-ghost-icon-btn-bg"
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
         height: 40,
         padding: '0 16px',
         borderRadius: 10,
         border: 'none',
-        background: hovered ? 'var(--hachi-cream)' : 'transparent',
+        background: 'transparent',
         color: 'var(--hachi-muted)',
         font: '500 14px var(--font-body)',
         cursor: 'pointer',
@@ -764,19 +752,17 @@ function GhostBtn({ onClick, children }: { onClick: () => void; children: React.
 }
 
 function PrimaryBtn({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
-  const [hovered, setHovered] = React.useState(false);
   return (
     <button
       type="button"
+      className="hachi-mcp-submit-btn"
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
         height: 40,
         padding: '0 22px',
         borderRadius: 10,
         border: '0.5px solid transparent',
-        background: hovered ? 'var(--hachi-brand-active)' : 'var(--hachi-brand-hover)',
+        background: 'var(--hachi-brand-hover)',
         color: 'var(--hachi-canvas)',
         font: '500 14px var(--font-body)',
         cursor: 'pointer',

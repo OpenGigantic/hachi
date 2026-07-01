@@ -1,4 +1,3 @@
-import React, { useState } from 'react'
 import { Icon } from '../icons/Icon'
 
 export interface NavItemProps {
@@ -10,14 +9,6 @@ export interface NavItemProps {
 }
 
 export function NavItem({ label, icon, active, badge, onClick }: NavItemProps) {
-  const [hovered, setHovered] = useState(false)
-
-  const bg = active
-    ? 'var(--hachi-brand-tint)'
-    : hovered
-    ? 'var(--hachi-cream)'
-    : 'transparent'
-
   const fg = 'var(--hachi-ink)'
   const iconColor = active ? 'var(--hachi-brand)' : 'var(--hachi-muted)'
   const fontWeight = active ? '500' : '400'
@@ -25,9 +16,8 @@ export function NavItem({ label, icon, active, badge, onClick }: NavItemProps) {
   return (
     <button
       type="button"
+      className="hachi-nav-item"
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       aria-current={active ? 'page' : undefined}
       style={{
         display: 'flex',
@@ -37,7 +27,7 @@ export function NavItem({ label, icon, active, badge, onClick }: NavItemProps) {
         padding: '9px 12px',
         borderRadius: '10px',
         border: 'none',
-        background: bg,
+        background: 'transparent',
         color: fg,
         font: 'inherit',
         fontWeight,

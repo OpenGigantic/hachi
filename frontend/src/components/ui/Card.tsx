@@ -18,20 +18,9 @@ export function Card({ children, padding = 24, style, onClick }: CardProps) {
     ...style,
   };
 
-  function handleMouseEnter(e: React.MouseEvent<HTMLDivElement>) {
-    if (onClick) {
-      e.currentTarget.style.borderColor = 'var(--hachi-brand)';
-    }
-  }
-
-  function handleMouseLeave(e: React.MouseEvent<HTMLDivElement>) {
-    if (onClick) {
-      e.currentTarget.style.borderColor = 'var(--hachi-line)';
-    }
-  }
-
   return (
     <div
+      className={onClick ? 'hachi-card-clickable' : undefined}
       style={cardStyle}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
@@ -46,8 +35,6 @@ export function Card({ children, padding = 24, style, onClick }: CardProps) {
             }
           : undefined
       }
-      onMouseEnter={onClick ? handleMouseEnter : undefined}
-      onMouseLeave={onClick ? handleMouseLeave : undefined}
     >
       {children}
     </div>

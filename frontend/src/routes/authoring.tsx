@@ -182,12 +182,6 @@ function Authoring() {
   const delCount = activeDiff.filter((l) => l[0] === 'del').length
   const hasDiff = addCount > 0 || delCount > 0
 
-  const [hoverTarget, setHoverTarget] = useState<string | null>(null)
-  const [hoverGenerate, setHoverGenerate] = useState(false)
-  const [hoverApply, setHoverApply] = useState(false)
-  const [hoverReject, setHoverReject] = useState(false)
-  const [hoverRevert, setHoverRevert] = useState(false)
-  const [hoverDismissExplainer, setHoverDismissExplainer] = useState(false)
   const [showWhyTooltip, setShowWhyTooltip] = useState(false)
 
   // Edit mode state (Step 3 — CONTRACT-AUTHORING-SAVE)
@@ -195,9 +189,6 @@ function Authoring() {
   const [editContent, setEditContent] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
-  const [hoverEdit, setHoverEdit] = useState(false)
-  const [hoverSave, setHoverSave] = useState(false)
-  const [hoverCancelEdit, setHoverCancelEdit] = useState(false)
 
   // Derive plain-text source from authSource for the editor seed.
   // authSource holds DiffLine[] (neutral "" rows when not in diff state).
@@ -347,9 +338,8 @@ function Authoring() {
                 </span>
               </span>
               <button
+                className="hachi-ghost-icon-btn-bg"
                 onClick={dismissOgExplainer}
-                onMouseEnter={() => setHoverDismissExplainer(true)}
-                onMouseLeave={() => setHoverDismissExplainer(false)}
                 title="Dismiss"
                 style={{
                   display: 'inline-flex',
@@ -359,7 +349,7 @@ function Authoring() {
                   height: 26,
                   borderRadius: 6,
                   border: 'none',
-                  background: hoverDismissExplainer ? 'var(--hachi-cream)' : 'transparent',
+                  background: 'transparent',
                   color: 'var(--hachi-muted)',
                   cursor: 'pointer',
                   flexShrink: 0,
@@ -449,21 +439,16 @@ function Authoring() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   {authTargets.map((t) => {
                     const isSelected = t.name === authSel
-                    const isHovered = hoverTarget === t.name
-                    let bg = 'transparent'
-                    if (isSelected) bg = 'var(--hachi-brand-tint)'
-                    else if (isHovered) bg = 'var(--hachi-cream)'
 
                     return (
                       <div
                         key={t.name}
+                        className="hachi-auth-target-row"
                         role="button"
                         tabIndex={0}
                         aria-current={isSelected ? 'true' : undefined}
                         onClick={() => selectAuthTarget(t.name)}
                         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectAuthTarget(t.name); } }}
-                        onMouseEnter={() => setHoverTarget(t.name)}
-                        onMouseLeave={() => setHoverTarget(null)}
                         style={{
                           display: 'flex',
                           alignItems: 'center',
@@ -471,7 +456,7 @@ function Authoring() {
                           padding: '8px 10px',
                           borderRadius: 8,
                           cursor: 'pointer',
-                          background: bg,
+                          background: isSelected ? 'var(--hachi-brand-tint)' : undefined,
                           transition: 'background var(--dur-fast) var(--ease)',
                         }}
                       >
@@ -595,9 +580,8 @@ function Authoring() {
                     {editMode ? (
                       <div style={{ display: 'inline-flex', gap: 6 }}>
                         <button
+                          className="hachi-ghost-icon-btn-bg"
                           onClick={cancelEditMode}
-                          onMouseEnter={() => setHoverCancelEdit(true)}
-                          onMouseLeave={() => setHoverCancelEdit(false)}
                           title="Discard edits and return to read-only view"
                           style={{
                             height: 28,
@@ -606,7 +590,7 @@ function Authoring() {
                             borderRadius: 6,
                             font: '500 12px var(--font-body)',
                             cursor: 'pointer',
-                            background: hoverCancelEdit ? 'var(--hachi-cream)' : 'transparent',
+                            background: 'transparent',
                             color: 'var(--hachi-muted)',
                             transition: 'background var(--dur-fast) var(--ease)',
                           }}
@@ -614,9 +598,8 @@ function Authoring() {
                           Cancel
                         </button>
                         <button
+                          className="hachi-mcp-submit-btn"
                           onClick={() => void handleSave()}
-                          onMouseEnter={() => setHoverSave(true)}
-                          onMouseLeave={() => setHoverSave(false)}
                           disabled={isSaving}
                           title="Save edited content to the gateway (POST /authoring/targets/{name}/source)"
                           style={{
@@ -626,11 +609,7 @@ function Authoring() {
                             borderRadius: 6,
                             font: '500 12px var(--font-body)',
                             cursor: isSaving ? 'not-allowed' : 'pointer',
-                            background: isSaving
-                              ? 'var(--hachi-muted)'
-                              : hoverSave
-                              ? 'var(--hachi-brand-active)'
-                              : 'var(--hachi-brand-hover)',
+                            background: isSaving ? 'var(--hachi-muted)' : 'var(--hachi-brand-hover)',
                             color: 'var(--hachi-canvas)',
                             transition: 'background var(--dur-fast) var(--ease)',
                             opacity: isSaving ? 0.6 : 1,
@@ -645,9 +624,8 @@ function Authoring() {
                       </div>
                     ) : (
                       <button
+                        className="hachi-ghost-icon-btn-bg"
                         onClick={enterEditMode}
-                        onMouseEnter={() => setHoverEdit(true)}
-                        onMouseLeave={() => setHoverEdit(false)}
                         disabled={!authSel}
                         title="Switch to manual edit mode — type directly and save to the gateway"
                         style={{
@@ -657,7 +635,7 @@ function Authoring() {
                           borderRadius: 6,
                           font: '500 12px var(--font-body)',
                           cursor: authSel ? 'pointer' : 'not-allowed',
-                          background: hoverEdit ? 'var(--hachi-cream)' : 'transparent',
+                          background: 'transparent',
                           color: 'var(--hachi-muted)',
                           transition: 'background var(--dur-fast) var(--ease)',
                           display: 'inline-flex',
@@ -888,9 +866,8 @@ function Authoring() {
                       placeholder="Describe the change you want…"
                     />
                     <button
+                      className="hachi-mcp-submit-btn"
                       onClick={() => void handleGenerate()}
-                      onMouseEnter={() => setHoverGenerate(true)}
-                      onMouseLeave={() => setHoverGenerate(false)}
                       disabled={isGenerating || !authSel || !prompt.trim()}
                       style={{
                         display: 'inline-flex',
@@ -903,8 +880,6 @@ function Authoring() {
                         background:
                           isGenerating || !authSel || !prompt.trim()
                             ? 'var(--hachi-muted)'
-                            : hoverGenerate
-                            ? 'var(--hachi-brand-active)'
                             : 'var(--hachi-brand-hover)',
                         color: 'var(--hachi-canvas)',
                         font: '500 13px var(--font-body)',
@@ -1015,8 +990,7 @@ function Authoring() {
                         {authApplied ? (
                           <button
                             onClick={() => { if (authSel) void revertAuthoring(authSel) }}
-                            onMouseEnter={() => setHoverRevert(true)}
-                            onMouseLeave={() => setHoverRevert(false)}
+                            className="hachi-ghost-icon-btn-bg"
                             style={{
                               display: 'inline-flex',
                               alignItems: 'center',
@@ -1025,9 +999,7 @@ function Authoring() {
                               padding: '0 13px',
                               borderRadius: 10,
                               border: '0.5px solid var(--hachi-line)',
-                              background: hoverRevert
-                                ? 'var(--hachi-cream)'
-                                : 'var(--hachi-canvas)',
+                              background: 'var(--hachi-canvas)',
                               color: 'var(--hachi-ink)',
                               font: '500 13px var(--font-body)',
                               cursor: 'pointer',
@@ -1040,9 +1012,8 @@ function Authoring() {
                         ) : (
                           <>
                             <button
+                              className="hachi-cancel-btn"
                               onClick={() => { rejectPatch(); setGeneratedDiff(null); setGenerateError(null) }}
-                              onMouseEnter={() => setHoverReject(true)}
-                              onMouseLeave={() => setHoverReject(false)}
                               style={{
                                 display: 'inline-flex',
                                 alignItems: 'center',
@@ -1051,9 +1022,7 @@ function Authoring() {
                                 padding: '0 13px',
                                 borderRadius: 10,
                                 border: '1px solid var(--hachi-trust)',
-                                background: hoverReject
-                                  ? 'var(--hachi-trust-tint)'
-                                  : 'transparent',
+                                background: 'transparent',
                                 color: 'var(--hachi-trust)',
                                 font: '500 13px var(--font-body)',
                                 cursor: 'pointer',
@@ -1064,9 +1033,8 @@ function Authoring() {
                               Reject
                             </button>
                             <button
+                              className="hachi-mcp-submit-btn"
                               onClick={() => { if (authSel) void applyAuthoring(authSel).then(() => setGeneratedDiff(null)) }}
-                              onMouseEnter={() => setHoverApply(true)}
-                              onMouseLeave={() => setHoverApply(false)}
                               style={{
                                 display: 'inline-flex',
                                 alignItems: 'center',
@@ -1075,9 +1043,7 @@ function Authoring() {
                                 padding: '0 13px',
                                 borderRadius: 10,
                                 border: '0.5px solid transparent',
-                                background: hoverApply
-                                  ? 'var(--hachi-brand-active)'
-                                  : 'var(--hachi-brand-hover)',
+                                background: 'var(--hachi-brand-hover)',
                                 color: 'var(--hachi-canvas)',
                                 font: '500 13px var(--font-body)',
                                 cursor: 'pointer',

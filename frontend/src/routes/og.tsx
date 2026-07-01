@@ -56,6 +56,7 @@ function OgExplainerBanner() {
         </span>
       </span>
       <button
+        className="hachi-ghost-icon-btn-bg"
         aria-label="Dismiss explainer"
         onClick={dismiss}
         style={{
@@ -72,12 +73,6 @@ function OgExplainerBanner() {
           flexShrink: 0,
           fontSize: 16,
           lineHeight: 1,
-        }}
-        onMouseEnter={(e) => {
-          ;(e.currentTarget as HTMLElement).style.background = 'var(--hachi-cream)'
-        }}
-        onMouseLeave={(e) => {
-          ;(e.currentTarget as HTMLElement).style.background = 'transparent'
         }}
       >
         ×
@@ -615,32 +610,23 @@ interface TreePanelProps {
 }
 
 function TreePanel({ nodes, ogSel, setOgSel }: TreePanelProps) {
-  const [hovered, setHovered] = useState<string | null>(null)
-
   const depthOf = (kind: string) =>
     kind === 'root' ? 0 : kind === 'skill' ? 1 : 2
 
   return (
     <div style={{ padding: 12 }}>
       {nodes.map((n) => {
-        const isHov = hovered === n.id
         const isSel = ogSel === n.id
-        const bg = isSel
-          ? 'var(--hachi-cream)'
-          : isHov
-          ? 'var(--hachi-cream)'
-          : 'transparent'
 
         return (
           <div
             key={n.id}
+            className="hachi-og-tree-row"
             role="button"
             tabIndex={0}
             aria-current={isSel ? 'true' : undefined}
             onClick={() => setOgSel(n.id)}
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOgSel(n.id); } }}
-            onMouseEnter={() => setHovered(n.id)}
-            onMouseLeave={() => setHovered(null)}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -649,7 +635,7 @@ function TreePanel({ nodes, ogSel, setOgSel }: TreePanelProps) {
               padding: '8px 14px',
               cursor: 'pointer',
               borderRadius: 8,
-              background: bg,
+              background: isSel ? 'var(--hachi-cream)' : undefined,
               transition: 'background var(--dur-fast) var(--ease)',
             }}
           >
@@ -685,9 +671,6 @@ interface DetailPanelProps {
 }
 
 function DetailPanel({ dn, nodes, setOgSel }: DetailPanelProps) {
-  const [hovDep, setHovDep] = useState<string | null>(null)
-  const [hovUsed, setHovUsed] = useState<string | null>(null)
-
   const savedPct = Math.round((1 - dn.index / dn.full) * 100)
   const barWidth = Math.round((dn.index / dn.full) * 100)
 
@@ -1038,9 +1021,8 @@ function DetailPanel({ dn, nodes, setOgSel }: DetailPanelProps) {
             {deps.map((d) => (
               <button
                 key={d.id}
+                className="hachi-og-chip"
                 onClick={() => setOgSel(d.id)}
-                onMouseEnter={() => setHovDep(d.id)}
-                onMouseLeave={() => setHovDep(null)}
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
@@ -1049,10 +1031,7 @@ function DetailPanel({ dn, nodes, setOgSel }: DetailPanelProps) {
                   padding: '0 11px',
                   borderRadius: 8,
                   border: '0.5px solid var(--hachi-line)',
-                  background:
-                    hovDep === d.id
-                      ? 'var(--hachi-cream)'
-                      : 'var(--hachi-canvas)',
+                  background: 'var(--hachi-canvas)',
                   fontFamily: 'var(--font-mono)',
                   fontSize: 12,
                   color: 'var(--hachi-ink)',
@@ -1087,9 +1066,8 @@ function DetailPanel({ dn, nodes, setOgSel }: DetailPanelProps) {
               {usedBy.map((u) => (
                 <button
                   key={u.id}
+                  className="hachi-og-chip"
                   onClick={() => setOgSel(u.id)}
-                  onMouseEnter={() => setHovUsed(u.id)}
-                  onMouseLeave={() => setHovUsed(null)}
                   style={{
                     display: 'inline-flex',
                     alignItems: 'center',
@@ -1098,10 +1076,7 @@ function DetailPanel({ dn, nodes, setOgSel }: DetailPanelProps) {
                     padding: '0 11px',
                     borderRadius: 8,
                     border: '0.5px solid var(--hachi-line)',
-                    background:
-                      hovUsed === u.id
-                        ? 'var(--hachi-cream)'
-                        : 'var(--hachi-canvas)',
+                    background: 'var(--hachi-canvas)',
                     fontFamily: 'var(--font-mono)',
                     fontSize: 12,
                     color: 'var(--hachi-ink)',

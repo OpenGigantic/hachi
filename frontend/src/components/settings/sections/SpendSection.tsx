@@ -151,6 +151,7 @@ function SpendCapInput({ label, value, onCommit }: SpendCapInputProps) {
       ) : (
         <button
           type="button"
+          className="hachi-spend-cap-display-btn"
           id={inputId}
           onClick={() => setEditing(true)}
           title="Click to edit"
@@ -169,12 +170,6 @@ function SpendCapInput({ label, value, onCommit }: SpendCapInputProps) {
             color: 'var(--hachi-ink)',
             cursor: 'pointer',
             textAlign: 'left',
-          }}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--hachi-trust)';
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--hachi-line)';
           }}
         >
           ${value.toFixed(2)}

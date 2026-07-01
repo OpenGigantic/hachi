@@ -298,6 +298,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
           </div>
           <button
             type="button"
+            className="hachi-ghost-icon-btn-bg"
             onClick={onClose}
             aria-label="Close detail panel"
             style={{
@@ -309,8 +310,6 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
               padding: '5px',
               borderRadius: '8px',
             }}
-            onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-cream)')}
-            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
           >
             <Icon name="x" size={18} />
           </button>
@@ -504,6 +503,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
           {isFailed && (
             <>
               <button
+                className="hachi-retry-btn"
                 onClick={() => onRetry(item.id)}
                 style={{
                   flex: 1,
@@ -519,14 +519,13 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                   justifyContent: 'center',
                   gap: '7px',
                 }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand)')}
               >
                 <Icon name="refresh" size={15} />
                 Retry
               </button>
               {canCancelRun && (
                 <button
+                  className="hachi-danger-outline-btn"
                   onClick={() => onCancelRun(item.id)}
                   style={{
                     height: '40px',
@@ -541,8 +540,6 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                     alignItems: 'center',
                     gap: '6px',
                   }}
-                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-danger-tint)')}
-                  onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-canvas)')}
                 >
                   <Icon name="stop" size={14} />
                   Cancel run
@@ -553,6 +550,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
           {isRoutine && (
             <>
               <button
+                className="hachi-cancel-btn"
                 onClick={onRunNow}
                 style={{
                   flex: 1,
@@ -564,12 +562,11 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                   font: '500 14px var(--font-body)',
                   cursor: 'pointer',
                 }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-trust-tint)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
               >
                 Run now
               </button>
               <button
+                className="hachi-pause-resume-btn"
                 onClick={() => onTogglePause(item.id)}
                 style={{
                   flex: 1,
@@ -581,14 +578,13 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                   font: '500 14px var(--font-body)',
                   cursor: 'pointer',
                 }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-cream)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-canvas)')}
               >
                 {item.paused ? 'Resume' : 'Pause'}
               </button>
               {/* Delete routine — two-step confirmation */}
               {!confirmDelete ? (
                 <button
+                  className="hachi-danger-outline-btn"
                   onClick={() => setConfirmDelete(true)}
                   style={{
                     height: '40px',
@@ -603,8 +599,6 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                     alignItems: 'center',
                     gap: '6px',
                   }}
-                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-danger-tint)')}
-                  onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-canvas)')}
                 >
                   <Icon name="x" size={14} />
                   Delete
@@ -659,6 +653,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
           )}
           {isTask && (
             <button
+              className="hachi-retry-btn"
               onClick={() => onWatchLive(item.id)}
               style={{
                 flex: 1,
@@ -674,8 +669,6 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                 justifyContent: 'center',
                 gap: '7px',
               }}
-              onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
-              onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand)')}
             >
               <Icon name="eye" size={15} />
               Watch live
@@ -1279,6 +1272,7 @@ function Work() {
         </h1>
         <div style={{ flex: 1 }} />
         <button
+          className="hachi-retry-btn"
           onClick={goChat}
           style={{
             display: 'inline-flex',
@@ -1293,8 +1287,6 @@ function Work() {
             font: '500 13px var(--font-body)',
             cursor: 'pointer',
           }}
-          onMouseEnter={e => (e.currentTarget.style.background = 'var(--hachi-brand-hover)')}
-          onMouseLeave={e => (e.currentTarget.style.background = 'var(--hachi-brand)')}
         >
           <Icon name="plus" size={15} />
           New task
@@ -1383,6 +1375,7 @@ function Work() {
               return (
                 <div
                   key={w.id}
+                  className="hachi-runcard-home"
                   role="button"
                   tabIndex={0}
                   onClick={() => handleOpenWork(w)}
@@ -1397,8 +1390,6 @@ function Work() {
                     gap: '14px',
                     cursor: 'pointer',
                   }}
-                  onMouseEnter={e => (e.currentTarget.style.borderColor = '#d3c8b4')}
-                  onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--hachi-line)')}
                 >
                   <span style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}>
                     <Icon name={w.icon} size={18} />

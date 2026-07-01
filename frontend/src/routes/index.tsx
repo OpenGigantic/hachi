@@ -73,8 +73,6 @@ export function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps
   const { label: countdown } = useCountdown(approval.expiresAt);
   const rm = riskMeta(approval.risk);
   const isHighRisk = approval.risk === 'high';
-  const [hoverAllow, setHoverAllow] = useState(false);
-  const [hoverDecline, setHoverDecline] = useState(false);
 
   return (
     <div
@@ -154,9 +152,8 @@ export function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps
       >
         <button
           type="button"
+          className={isHighRisk ? 'hachi-decline-btn-risk' : 'hachi-decline-btn-safe'}
           onClick={onDecline}
-          onMouseEnter={() => setHoverDecline(true)}
-          onMouseLeave={() => setHoverDecline(false)}
           style={
             isHighRisk
               ? {
@@ -169,7 +166,6 @@ export function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps
                   color: 'var(--hachi-canvas)',
                   font: '500 13px var(--font-body)',
                   cursor: 'pointer',
-                  opacity: hoverDecline ? 0.9 : 1,
                   transition: 'opacity var(--dur-fast) var(--ease)',
                 }
               : {
@@ -178,7 +174,7 @@ export function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps
                   padding: '0 14px',
                   borderRadius: '10px',
                   border: '1px solid var(--hachi-trust)',
-                  background: hoverDecline ? 'var(--hachi-trust-tint)' : 'transparent',
+                  background: 'transparent',
                   color: 'var(--hachi-trust)',
                   font: '500 13px var(--font-body)',
                   cursor: 'pointer',
@@ -190,9 +186,8 @@ export function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps
         </button>
         <button
           type="button"
+          className={isHighRisk ? 'hachi-allow-btn-risk' : 'hachi-allow-btn-safe'}
           onClick={onAllow}
-          onMouseEnter={() => setHoverAllow(true)}
-          onMouseLeave={() => setHoverAllow(false)}
           style={
             isHighRisk
               ? {
@@ -201,7 +196,7 @@ export function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps
                   padding: '0 14px',
                   borderRadius: '10px',
                   border: '1px solid var(--hachi-brand)',
-                  background: hoverAllow ? 'var(--hachi-brand-tint)' : 'transparent',
+                  background: 'transparent',
                   color: 'var(--hachi-brand)',
                   font: '500 13px var(--font-body)',
                   cursor: 'pointer',
@@ -213,7 +208,7 @@ export function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps
                   padding: '0 14px',
                   borderRadius: '10px',
                   border: '0.5px solid transparent',
-                  background: hoverAllow ? 'var(--hachi-brand-active)' : 'var(--hachi-brand-hover)',
+                  background: 'var(--hachi-brand-hover)',
                   color: 'var(--hachi-canvas)',
                   font: '500 13px var(--font-body)',
                   cursor: 'pointer',
@@ -243,19 +238,17 @@ interface RunCardHomeProps {
 function RunCardHome({ title, status, progress, meta, spent, budget, onClick }: RunCardHomeProps) {
   const sm = statusMeta(status);
   const pct = Math.round(progress * 100);
-  const [hovered, setHovered] = useState(false);
 
   return (
     <div
+      className="hachi-runcard-home"
       onClick={onClick}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
         background: 'var(--hachi-surface)',
-        border: `0.5px solid ${hovered ? '#d3c8b4' : 'var(--hachi-line)'}`,
+        border: '0.5px solid var(--hachi-line)',
         borderRadius: '16px',
         padding: '18px',
         display: 'flex',
@@ -424,11 +417,6 @@ function Home() {
     (s) => s.requiredIntegration === null || connectedIntegrationIds.has(s.requiredIntegration)
   );
 
-  // hover states for starters and manage button
-  const [starterHover, setStarterHover] = useState<number | null>(null);
-  const [manageHover, setManageHover] = useState(false);
-  const [submitHover, setSubmitHover] = useState(false);
-
   function handleHomeSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!homeInput.trim()) return;
@@ -531,6 +519,7 @@ function Home() {
                 value={homeInput}
                 onChange={(e) => setHomeInput(e.target.value)}
                 placeholder="Ask Hachi to do something…"
+                className="hachi-home-ask-input"
                 style={{
                   flex: 1,
                   minWidth: 0,
@@ -544,19 +533,10 @@ function Home() {
                   color: 'var(--hachi-ink)',
                   outline: 'none',
                 }}
-                onFocus={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--hachi-brand)';
-                  e.currentTarget.style.boxShadow = '0 0 0 2px var(--hachi-brand-tint)';
-                }}
-                onBlur={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--hachi-line)';
-                  e.currentTarget.style.boxShadow = 'none';
-                }}
               />
               <button
                 type="submit"
-                onMouseEnter={() => setSubmitHover(true)}
-                onMouseLeave={() => setSubmitHover(false)}
+                className="hachi-ask-hachi-btn"
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
@@ -565,7 +545,7 @@ function Home() {
                   padding: '0 20px',
                   borderRadius: '10px',
                   border: '0.5px solid transparent',
-                  background: submitHover ? '#A8351E' : 'var(--hachi-brand-hover)',
+                  background: 'var(--hachi-brand-hover)',
                   color: 'var(--hachi-canvas)',
                   font: '500 14px var(--font-body)',
                   cursor: 'pointer',
@@ -586,12 +566,11 @@ function Home() {
                 marginTop: '14px',
               }}
             >
-              {starters.map((s, i) => (
+              {starters.map((s) => (
                 <button
                   key={s.label}
+                  className="hachi-starter-chip"
                   onClick={s.go}
-                  onMouseEnter={() => setStarterHover(i)}
-                  onMouseLeave={() => setStarterHover(null)}
                   style={{
                     display: 'inline-flex',
                     alignItems: 'center',
@@ -600,7 +579,7 @@ function Home() {
                     padding: '7px 13px',
                     borderRadius: '999px',
                     border: '0.5px solid var(--hachi-line)',
-                    background: starterHover === i ? 'var(--hachi-cream)' : 'var(--hachi-canvas)',
+                    background: 'var(--hachi-canvas)',
                     color: 'var(--hachi-ink)',
                     font: 'inherit',
                     fontSize: '13px',
@@ -778,16 +757,15 @@ function Home() {
                   ))
                 )}
                 <button
+                  className="hachi-ghost-icon-btn-bg"
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   onClick={() => navigate({ to: '/work' as any })}
-                  onMouseEnter={() => setManageHover(true)}
-                  onMouseLeave={() => setManageHover(false)}
                   style={{
                     width: '100%',
                     padding: '13px',
                     paddingLeft: '16px',
                     border: 'none',
-                    background: manageHover ? 'var(--hachi-cream)' : 'transparent',
+                    background: 'transparent',
                     color: 'var(--hachi-trust)',
                     font: '500 13px var(--font-body)',
                     cursor: 'pointer',
@@ -947,9 +925,6 @@ interface FirstRunPanelProps {
 }
 
 function FirstRunPanel({ onStart, onSetup }: FirstRunPanelProps) {
-  const [startHover, setStartHover] = useState(false);
-  const [setupHover, setSetupHover] = useState(false);
-
   return (
     <div
       style={{
@@ -983,9 +958,8 @@ function FirstRunPanel({ onStart, onSetup }: FirstRunPanelProps) {
 
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
         <button
+          className="hachi-mcp-submit-btn"
           onClick={onStart}
-          onMouseEnter={() => setStartHover(true)}
-          onMouseLeave={() => setStartHover(false)}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -994,7 +968,7 @@ function FirstRunPanel({ onStart, onSetup }: FirstRunPanelProps) {
             padding: '0 20px',
             borderRadius: '10px',
             border: '0.5px solid transparent',
-            background: startHover ? 'var(--hachi-brand-active)' : 'var(--hachi-brand-hover)',
+            background: 'var(--hachi-brand-hover)',
             color: 'var(--hachi-canvas)',
             font: '500 14px var(--font-body)',
             cursor: 'pointer',
@@ -1005,9 +979,8 @@ function FirstRunPanel({ onStart, onSetup }: FirstRunPanelProps) {
           Start your first task
         </button>
         <button
+          className="hachi-ghost-icon-btn-bg"
           onClick={onSetup}
-          onMouseEnter={() => setSetupHover(true)}
-          onMouseLeave={() => setSetupHover(false)}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -1016,7 +989,7 @@ function FirstRunPanel({ onStart, onSetup }: FirstRunPanelProps) {
             padding: '0 20px',
             borderRadius: '10px',
             border: '0.5px solid var(--hachi-line)',
-            background: setupHover ? 'var(--hachi-cream)' : 'var(--hachi-canvas)',
+            background: 'var(--hachi-canvas)',
             color: 'var(--hachi-ink)',
             font: '500 14px var(--font-body)',
             cursor: 'pointer',

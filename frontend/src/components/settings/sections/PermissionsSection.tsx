@@ -128,7 +128,6 @@ function Chip({
   value: string;
   onRemove: (v: string) => void;
 }) {
-  const [hovered, setHovered] = useState(false);
   return (
     <span
       style={{
@@ -145,13 +144,12 @@ function Chip({
     >
       {value}
       <button
+        className="hachi-chip-remove-btn"
         onClick={() => onRemove(value)}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
         style={{
           border: 'none',
           background: 'transparent',
-          color: hovered ? 'var(--hachi-danger)' : 'var(--hachi-muted)',
+          color: 'var(--hachi-muted)',
           cursor: 'pointer',
           display: 'inline-flex',
           padding: 0,
