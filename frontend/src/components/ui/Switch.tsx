@@ -10,6 +10,21 @@ export interface SwitchProps {
 export function Switch({ checked, onChange, label, disabled = false }: SwitchProps) {
   const id = useId();
 
+  // WCAG 2.5.5/2.5.8 — the interactive hit area is 44x44 even though the
+  // visual pill stays compact (40x24); the pill is centered inside a
+  // padded, invisible hit box rather than inflating the graphic itself.
+  const hitAreaStyle: CSSProperties = {
+    position: 'relative',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '44px',
+    height: '44px',
+    margin: '-10px -2px',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    flexShrink: 0,
+  };
+
   const trackStyle: CSSProperties = {
     position: 'relative',
     display: 'inline-block',
@@ -18,10 +33,9 @@ export function Switch({ checked, onChange, label, disabled = false }: SwitchPro
     borderRadius: 'var(--radius-pill)',
     background: checked ? 'var(--hachi-brand)' : 'var(--hachi-line)',
     transition: `background var(--dur-fast) var(--ease)`,
-    cursor: disabled ? 'not-allowed' : 'pointer',
     opacity: disabled ? 0.45 : 1,
-    flexShrink: 0,
     border: '0.5px solid transparent',
+    pointerEvents: 'none',
   };
 
   const thumbStyle: CSSProperties = {
@@ -65,11 +79,13 @@ export function Switch({ checked, onChange, label, disabled = false }: SwitchPro
         aria-checked={checked}
         aria-disabled={disabled}
         tabIndex={disabled ? -1 : 0}
-        style={trackStyle}
+        style={hitAreaStyle}
         onClick={() => !disabled && onChange(!checked)}
         onKeyDown={handleKeyDown}
       >
-        <span style={thumbStyle} />
+        <span style={trackStyle}>
+          <span style={thumbStyle} />
+        </span>
       </span>
       {label && <span style={labelStyle}>{label}</span>}
     </label>

@@ -355,7 +355,6 @@ function nextId() { return ++_id; }
 // Streaming helpers (module-level timers)
 // ============================================================
 let _iv: ReturnType<typeof setInterval> | null = null;
-let _tt: ReturnType<typeof setTimeout> | null = null;
 let _rc: ReturnType<typeof setTimeout> | null = null;
 let _runIv: ReturnType<typeof setInterval> | null = null;
 let _runQueue: RunQueueItem[] = [];
@@ -454,10 +453,10 @@ export const useStore = create<State & Actions>()(
   persist(
     (set, get) => {
       // ---- helpers ----
+      // Auto-dismiss timing lives in ToastHost (not here) so it can pause while
+      // the toast is hovered and use a longer duration for error/"blocked" tones.
       const toast = (message: string, tone?: Toast["tone"]) => {
         set({ toast: { message, tone } });
-        if (_tt) clearTimeout(_tt);
-        _tt = setTimeout(() => set({ toast: null }), 3200);
       };
 
       const getText = (id: number): string => {

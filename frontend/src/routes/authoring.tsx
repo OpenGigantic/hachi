@@ -297,8 +297,12 @@ function Authoring() {
                 files.{' '}
                 <span style={{ position: 'relative', display: 'inline-block' }}>
                   <button
+                    type="button"
+                    aria-describedby={showWhyTooltip ? 'authoring-why-tooltip' : undefined}
                     onMouseEnter={() => setShowWhyTooltip(true)}
                     onMouseLeave={() => setShowWhyTooltip(false)}
+                    onFocus={() => setShowWhyTooltip(true)}
+                    onBlur={() => setShowWhyTooltip(false)}
                     style={{
                       background: 'none',
                       border: 'none',
@@ -315,6 +319,8 @@ function Authoring() {
                   </button>
                   {showWhyTooltip && (
                     <div
+                      id="authoring-why-tooltip"
+                      role="tooltip"
                       style={{
                         position: 'absolute',
                         top: '100%',

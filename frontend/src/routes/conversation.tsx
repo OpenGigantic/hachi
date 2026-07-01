@@ -72,7 +72,7 @@ function SessionPicker({ sessions, activeId, onSwitch, onNew, onDelete, onCleanu
   return (
     <div
       ref={ref}
-      role="menu"
+      role="group"
       aria-label="Recent sessions"
       style={{
         position: 'absolute',
@@ -93,7 +93,6 @@ function SessionPicker({ sessions, activeId, onSwitch, onNew, onDelete, onCleanu
       {/* New conversation row */}
       <button
         type="button"
-        role="menuitem"
         onClick={() => { onNew(); onClose() }}
         style={{
           width: '100%',
@@ -141,7 +140,6 @@ function SessionPicker({ sessions, activeId, onSwitch, onNew, onDelete, onCleanu
           >
             <button
               type="button"
-              role="menuitem"
               aria-current={isActive ? 'true' : undefined}
               onClick={() => { onSwitch(s.id); onClose() }}
               style={{
@@ -208,7 +206,6 @@ function SessionPicker({ sessions, activeId, onSwitch, onNew, onDelete, onCleanu
       {/* FIX 3: Clean up empty sessions affordance */}
       <button
         type="button"
-        role="menuitem"
         onClick={() => { onCleanupEmpty(); onClose() }}
         style={{
           width: '100%',
@@ -1110,6 +1107,18 @@ function Conversation() {
   const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null
   const isStreamingLast = streaming && lastMsg?.role === 'hachi'
 
+  // M11: streaming chat was silent to screen readers — no aria-live region existed
+  // at all. Announce the reply once it finishes streaming (not on every token flush,
+  // which would be both spammy and defeat the point of chunking the visible render).
+  const [srAnnouncement, setSrAnnouncement] = useState('')
+  useEffect(() => {
+    if (streaming) return
+    if (lastMsg && lastMsg.role === 'hachi' && lastMsg.text.trim() && lastMsg.text !== srAnnouncement) {
+      setSrAnnouncement(lastMsg.text)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming, lastMsg?.text])
+
   // Refresh recent sessions list on navigate-to (idempotent loader)
   useEffect(() => { void loadSessions() }, [])
 
@@ -1364,6 +1373,12 @@ function Conversation() {
         >
           spent {fmtDollar(spent)} of {fmtDollar(budget)} today
         </span>
+      </div>
+
+      {/* Announces the completed reply to screen readers — streaming updates the
+          visible transcript on every chunk, but this only updates once per turn. */}
+      <div className="hachi-sr-only" aria-live="polite" role="status">
+        {srAnnouncement}
       </div>
 
       {/* ---- transcript scroll area ---- */}

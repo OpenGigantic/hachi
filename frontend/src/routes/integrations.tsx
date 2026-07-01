@@ -3,7 +3,7 @@
 // Shows: connected accounts/tools w/ health/status, MCP servers,
 // tool inventory (operator-only), add-MCP affordance.
 // ============================================================
-import React, { CSSProperties, useEffect, useReducer, useState } from 'react'
+import React, { CSSProperties, useEffect, useReducer, useRef, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
@@ -816,6 +816,8 @@ function McpServerRow({ server: s, isLast }: McpServerRowProps) {
   const [deleting, setDeleting] = useState(false)
   const [deleteHover, setDeleteHover] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current) }, [])
 
   async function handleToggle(next: boolean) {
     if (toggling) return
@@ -837,8 +839,12 @@ function McpServerRow({ server: s, isLast }: McpServerRowProps) {
   async function handleDelete() {
     if (!confirmDelete) {
       setConfirmDelete(true)
+      // Auto-disarm after 4s so an armed delete doesn't linger indefinitely if
+      // the user walks away without blurring or pressing Escape.
+      confirmTimerRef.current = setTimeout(() => setConfirmDelete(false), 4000)
       return
     }
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
     setDeleting(true)
     setConfirmDelete(false)
     try {
@@ -851,10 +857,17 @@ function McpServerRow({ server: s, isLast }: McpServerRowProps) {
     }
   }
 
-  // Cancel confirm on blur/mouseleave
-  function handleDeleteMouseLeave() {
-    setDeleteHover(false)
+  // Cancel the armed confirm state on blur or Escape — NOT on mouseleave, which
+  // let a 1px cursor jitter silently disarm the confirmation (and never worked
+  // for keyboard/touch users, who have no mouseleave event at all).
+  function handleDeleteBlur() {
     setConfirmDelete(false)
+  }
+  function handleDeleteKeyDown(e: React.KeyboardEvent<HTMLButtonElement>) {
+    if (e.key === 'Escape' && confirmDelete) {
+      e.stopPropagation()
+      setConfirmDelete(false)
+    }
   }
 
   return (
@@ -969,7 +982,9 @@ function McpServerRow({ server: s, isLast }: McpServerRowProps) {
         type="button"
         onClick={handleDelete}
         onMouseEnter={() => setDeleteHover(true)}
-        onMouseLeave={handleDeleteMouseLeave}
+        onMouseLeave={() => setDeleteHover(false)}
+        onBlur={handleDeleteBlur}
+        onKeyDown={handleDeleteKeyDown}
         disabled={deleting}
         aria-label={confirmDelete ? `Confirm remove ${s.name}` : `Remove ${s.name}`}
         title={confirmDelete ? 'Click again to confirm removal' : 'Remove server'}

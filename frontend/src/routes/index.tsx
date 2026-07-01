@@ -161,7 +161,7 @@ export function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps
             isHighRisk
               ? {
                   flex: 1,
-                  height: '36px',
+                  height: '44px',
                   padding: '0 14px',
                   borderRadius: '10px',
                   border: '0.5px solid transparent',
@@ -174,7 +174,7 @@ export function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps
                 }
               : {
                   flex: 1,
-                  height: '36px',
+                  height: '44px',
                   padding: '0 14px',
                   borderRadius: '10px',
                   border: '1px solid var(--hachi-trust)',
@@ -197,7 +197,7 @@ export function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps
             isHighRisk
               ? {
                   flex: 1,
-                  height: '36px',
+                  height: '44px',
                   padding: '0 14px',
                   borderRadius: '10px',
                   border: '1px solid var(--hachi-brand)',
@@ -209,7 +209,7 @@ export function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps
                 }
               : {
                   flex: 1,
-                  height: '36px',
+                  height: '44px',
                   padding: '0 14px',
                   borderRadius: '10px',
                   border: '0.5px solid transparent',
@@ -596,6 +596,7 @@ function Home() {
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: '7px',
+                    minHeight: '44px',
                     padding: '7px 13px',
                     borderRadius: '999px',
                     border: '0.5px solid var(--hachi-line)',

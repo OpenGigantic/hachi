@@ -484,7 +484,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                         }}
                       >
                         <span style={{ color: col, display: 'inline-flex' }}>
-                          <Icon name={ico} size={15} />
+                          <Icon name={ico} size={15} label={h.ok ? 'Succeeded' : 'Failed'} />
                         </span>
                         <span style={{ flex: 1, fontSize: '13px' }}>{h.when}</span>
                         <span style={{ fontSize: '13px', color: 'var(--hachi-muted)', fontVariantNumeric: 'tabular-nums' }}>
@@ -626,7 +626,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                   <button
                     onClick={() => onDelete(item.id)}
                     style={{
-                      height: '30px',
+                      height: '44px',
                       padding: '0 11px',
                       borderRadius: '8px',
                       border: 'none',
@@ -641,7 +641,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                   <button
                     onClick={() => setConfirmDelete(false)}
                     style={{
-                      height: '30px',
+                      height: '44px',
                       padding: '0 11px',
                       borderRadius: '8px',
                       border: '0.5px solid var(--hachi-line)',
@@ -807,7 +807,11 @@ function SpendLens() {
             </div>
           ) : (
             <>
-              <div style={{ display: 'flex', alignItems: 'flex-end', gap: '10px', height: '150px' }}>
+              <div
+                role="img"
+                aria-label={`Token burn by turn: ${spendBars.length} turns, ${stats.tokens} tokens total this session (input and output per turn)`}
+                style={{ display: 'flex', alignItems: 'flex-end', gap: '10px', height: '150px' }}
+              >
                 {spendBars.map(b => (
                   <div key={b.n} style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', gap: '2px', height: '100%' }}>
                     <div style={{ height: b.outPct + '%', background: 'var(--hachi-trust)', opacity: 0.4, borderRadius: '3px 3px 0 0', minHeight: '2px' }} />
@@ -831,7 +835,13 @@ function SpendLens() {
             <span style={{ fontWeight: 500, fontSize: '14px' }}>Cost so far</span>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--hachi-trust)' }}>{cumLast}</span>
           </div>
-          <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ width: '100%', height: '150px', display: 'block' }}>
+          <svg
+            role="img"
+            aria-label={`Cumulative cost so far: rising to ${cumLast} over ${spendBars.length} turn${spendBars.length === 1 ? '' : 's'}`}
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+            style={{ width: '100%', height: '150px', display: 'block' }}
+          >
             <polygon points={areaPts} fill="var(--hachi-trust-tint)" />
             <polyline points={linePts} fill="none" stroke="var(--hachi-trust)" strokeWidth="1.6" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
           </svg>
@@ -883,7 +893,12 @@ function SpendLens() {
             <span style={{ fontSize: '11px', color: 'var(--hachi-muted)' }}>this session</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '16px', position: 'relative' }}>
-            <svg viewBox="0 0 128 128" style={{ width: '140px', height: '140px', display: 'block' }}>
+            <svg
+              role="img"
+              aria-label={`Where it went: total ${spendTotalCost} — ${modelRows.map(r => `${r.name} ${r.costStr}`).join(', ')}`}
+              viewBox="0 0 128 128"
+              style={{ width: '140px', height: '140px', display: 'block' }}
+            >
               <g transform="rotate(-90 64 64)">
                 <circle cx="64" cy="64" r="54" fill="none" stroke="var(--hachi-line)" strokeWidth="16" />
                 {donut.map((seg, i) => (
@@ -941,56 +956,70 @@ function ActivityLens() {
       </div>
 
       {/* events */}
-      <div style={{ background: 'var(--hachi-surface)', border: '0.5px solid var(--hachi-line)', borderRadius: '16px', overflow: 'hidden' }}>
+      <div
+        role="table"
+        aria-label="Recent events"
+        style={{ background: 'var(--hachi-surface)', border: '0.5px solid var(--hachi-line)', borderRadius: '16px', overflow: 'hidden' }}
+      >
         <div style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '14px 16px', borderBottom: '0.5px solid var(--hachi-line)' }}>
           <span style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}><Icon name="work" size={15} /></span>
           <span style={{ fontWeight: 500, fontSize: '14px' }}>Recent events</span>
         </div>
-        {events.map((e, i) => (
-          <div
-            key={i}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '13px',
-              padding: '10px 16px',
-              borderBottom: '0.5px solid var(--hachi-line)',
-              fontSize: '13px',
-            }}
-          >
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--hachi-muted)', flexShrink: 0 }}>{e.t}</span>
-            <span style={{ width: '7px', height: '7px', borderRadius: '2px', background: evColor[e.lvl] ?? 'var(--hachi-muted)', flexShrink: 0 }} />
-            <span style={{ color: 'var(--hachi-ink)', minWidth: '150px', flexShrink: 0 }}>{e.type}</span>
-            <span style={{ color: 'var(--hachi-muted)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.d}</span>
-          </div>
-        ))}
+        <div role="rowgroup">
+          {events.map((e, i) => (
+            <div
+              key={i}
+              role="row"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '13px',
+                padding: '10px 16px',
+                borderBottom: '0.5px solid var(--hachi-line)',
+                fontSize: '13px',
+              }}
+            >
+              <span role="cell" aria-label={`Time: ${e.t}`} style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--hachi-muted)', flexShrink: 0 }}>{e.t}</span>
+              <span aria-hidden="true" style={{ width: '7px', height: '7px', borderRadius: '2px', background: evColor[e.lvl] ?? 'var(--hachi-muted)', flexShrink: 0 }} />
+              <span role="cell" aria-label={`Event: ${e.type}, level ${e.lvl}`} style={{ color: 'var(--hachi-ink)', minWidth: '150px', flexShrink: 0 }}>{e.type}</span>
+              <span role="cell" aria-label={`Detail: ${e.d}`} style={{ color: 'var(--hachi-muted)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.d}</span>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* tool calls */}
-      <div style={{ background: 'var(--hachi-surface)', border: '0.5px solid var(--hachi-line)', borderRadius: '16px', overflow: 'hidden' }}>
+      <div
+        role="table"
+        aria-label="Tool calls"
+        style={{ background: 'var(--hachi-surface)', border: '0.5px solid var(--hachi-line)', borderRadius: '16px', overflow: 'hidden' }}
+      >
         <div style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '14px 16px', borderBottom: '0.5px solid var(--hachi-line)' }}>
           <span style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}><Icon name="terminal" size={15} /></span>
           <span style={{ fontWeight: 500, fontSize: '14px' }}>Tool calls</span>
         </div>
-        {toolCalls.map((t, i) => (
-          <div
-            key={i}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '13px',
-              padding: '11px 16px',
-              borderBottom: '0.5px solid var(--hachi-line)',
-              fontFamily: 'var(--font-mono)',
-              fontSize: '12.5px',
-            }}
-          >
-            <span style={{ color: 'var(--hachi-ink)', minWidth: '160px', flexShrink: 0 }}>{t.tool}</span>
-            <span style={{ color: 'var(--hachi-muted)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.inp}</span>
-            <span style={{ color: 'var(--hachi-trust)', flexShrink: 0 }}>{t.out}</span>
-            <span style={{ color: 'var(--hachi-muted)', flexShrink: 0, width: '42px', textAlign: 'right' }}>{t.dur}</span>
-          </div>
-        ))}
+        <div role="rowgroup">
+          {toolCalls.map((t, i) => (
+            <div
+              key={i}
+              role="row"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '13px',
+                padding: '11px 16px',
+                borderBottom: '0.5px solid var(--hachi-line)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '12.5px',
+              }}
+            >
+              <span role="cell" aria-label={`Tool: ${t.tool}`} style={{ color: 'var(--hachi-ink)', minWidth: '160px', flexShrink: 0 }}>{t.tool}</span>
+              <span role="cell" aria-label={`Input: ${t.inp}`} style={{ color: 'var(--hachi-muted)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.inp}</span>
+              <span role="cell" aria-label={`Output: ${t.out}`} style={{ color: 'var(--hachi-trust)', flexShrink: 0 }}>{t.out}</span>
+              <span role="cell" aria-label={`Duration: ${t.dur}`} style={{ color: 'var(--hachi-muted)', flexShrink: 0, width: '42px', textAlign: 'right' }}>{t.dur}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )
@@ -1273,24 +1302,44 @@ function Work() {
       </div>
 
       {/* tabs — HACHI-008: overflow-x scroll so all tabs are reachable at 375px */}
-      <div style={{
-        display: 'flex',
-        gap: '4px',
-        padding: '14px 32px 0',
-        borderBottom: '0.5px solid var(--hachi-line)',
-        overflowX: 'auto',
-        flexWrap: 'nowrap',
-        WebkitOverflowScrolling: 'touch',
-        /* hide scrollbar while keeping scrollability */
-        scrollbarWidth: 'none',
-        msOverflowStyle: 'none',
-      }}>
+      <div
+        role="tablist"
+        aria-label="Work filters"
+        style={{
+          display: 'flex',
+          gap: '4px',
+          padding: '14px 32px 0',
+          borderBottom: '0.5px solid var(--hachi-line)',
+          overflowX: 'auto',
+          flexWrap: 'nowrap',
+          WebkitOverflowScrolling: 'touch',
+          /* hide scrollbar while keeping scrollability */
+          scrollbarWidth: 'none',
+          msOverflowStyle: 'none',
+        }}
+        onKeyDown={(e) => {
+          if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return
+          e.preventDefault()
+          const idx = tabsDef.findIndex(t => t.k === workFilter)
+          const dir = e.key === 'ArrowRight' ? 1 : -1
+          const next = tabsDef[(idx + dir + tabsDef.length) % tabsDef.length]
+          setWorkFilter(next.k)
+          requestAnimationFrame(() => {
+            (e.currentTarget.querySelector(`#work-tab-${next.k}`) as HTMLElement | null)?.focus()
+          })
+        }}
+      >
         {tabsDef.map(t => {
           const active = workFilter === t.k
           const count = tabCounts[t.k]
           return (
             <button
               key={t.k}
+              id={`work-tab-${t.k}`}
+              role="tab"
+              aria-selected={active}
+              aria-controls="work-tabpanel"
+              tabIndex={active ? 0 : -1}
               onClick={() => setWorkFilter(t.k)}
               style={{
                 display: 'inline-flex',
@@ -1320,6 +1369,10 @@ function Work() {
       {/* scrollable body */}
       <div
         className="hachi-scroll"
+        role="tabpanel"
+        id="work-tabpanel"
+        aria-labelledby={`work-tab-${workFilter}`}
+        tabIndex={0}
         style={{ flex: 1, overflow: 'auto', padding: '24px 32px 64px' }}
       >
         {/* list views */}
