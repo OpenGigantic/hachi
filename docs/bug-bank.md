@@ -1799,6 +1799,22 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   discarded — stringifying for a consumer and logging for debugging are two separate needs.
 - **Locked by:** `tests/test_p4_03_parallel_tools.py::test_execute_single_tool_error_preserves_traceback_in_log`.
 
+### BB-38 — `ExecutionLoop._generate_with_retry` dead code left in `loop.py`
+
+- **Symptom:** none at runtime — purely a maintainability/audit finding. A full non-streaming
+  retry-wrapper method (`_generate_with_retry`) sat unreferenced in `loop.py`, confusing future
+  readers about which retry path `run()` actually uses.
+- **Root cause:** P1-2 (`docs/DECISIONS.md`) moved turn generation to streaming
+  (`_stream_generate`, its own independent retry loop) but never deleted the older
+  non-streaming `_generate_with_retry` it superseded. Grep confirmed zero call sites anywhere
+  in the repo (only a stale docstring cross-reference in `_stream_generate` and a comment in
+  `tests/test_iteration_limit.py`).
+- **Avoid:** when a code path is superseded (new retry/generation strategy, etc.), delete the
+  old implementation in the same change — don't leave it "just in case"; grep the whole repo
+  for call sites before trusting a function is dead, then remove it and any stale
+  cross-reference comments pointing at it.
+- **Locked by:** `tests/test_p4_03_parallel_tools.py::test_generate_with_retry_removed_as_dead_code`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
