@@ -626,16 +626,23 @@ class ExecutionLoop:
                 resolved.descriptor.id,
             )
         except NoRouteError as exc:
-            logger.debug(
-                "hot-path routing: NoRouteError for capability=%s — using llm_client: %s",
+            # S3: a router falling back to the default client is operationally
+            # visible (the model actually used for this turn silently changed) —
+            # WARNING, not DEBUG, so it isn't invisible in normal operation.
+            logger.warning(
+                "hot-path routing: no route for capability=%s — falling back to "
+                "llm_client (%s): %s",
                 capability,
+                getattr(self.llm_client, "model", "unknown"),
                 exc,
             )
             self._turn_client = self.llm_client
         except Exception as exc:  # noqa: BLE001
-            logger.debug(
-                "hot-path routing: unexpected error for capability=%s — using llm_client: %s",
+            logger.warning(
+                "hot-path routing: unexpected error for capability=%s — falling back to "
+                "llm_client (%s): %s",
                 capability,
+                getattr(self.llm_client, "model", "unknown"),
                 exc,
             )
             self._turn_client = self.llm_client
