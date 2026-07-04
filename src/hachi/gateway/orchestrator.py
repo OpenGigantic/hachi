@@ -1883,6 +1883,15 @@ class AgentSession:
                     exc_info=True,
                 )
 
+        # Shut down the per-session tool-execution thread pool (ExecutionLoop
+        # creates its own ThreadPoolExecutor per session; leaving it running
+        # after session close leaks 4 worker threads per ended session).
+        try:
+            self.loop.shutdown(wait=False)
+        except Exception:
+            # HIGH-012: tool-pool shutdown failures should be visible.
+            logger.warning("shutdown: failed to shut down loop tool pool", exc_info=True)
+
         # Close LLM HTTP clients (OpenAICompatibleClient/ollama hold an httpx.Client;
         # AnthropicClient has no close() — guarded by getattr so both are safe).
         for client in (

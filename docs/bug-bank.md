@@ -1815,6 +1815,21 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   cross-reference comments pointing at it.
 - **Locked by:** `tests/test_p4_03_parallel_tools.py::test_generate_with_retry_removed_as_dead_code`.
 
+### BB-39 — `AgentSession.shutdown()` never shuts down the per-session tool thread pool
+
+- **Symptom:** every session leaked its `ExecutionLoop._tool_pool` (a 4-worker
+  `ThreadPoolExecutor` created per `ExecutionLoop`) for the remaining life of the process —
+  no observable crash, just accumulating idle threads across session churn (CLI restarts,
+  gateway session ends, `_reload_agents`).
+- **Root cause:** `AgentSession.shutdown()` closes the session store, LLM HTTP clients,
+  browser controller, memory vault, integrations, and MCP manager, but never called
+  `self.loop.shutdown()` — the one method that calls `self._tool_pool.shutdown()`.
+- **Avoid:** whenever a component owns a `ThreadPoolExecutor` (or similar resource) with its
+  own `shutdown()`, the *owner's* shutdown/teardown method must explicitly delegate to it —
+  a resource is never freed "by association" just because it's an attribute of something
+  that got cleaned up.
+- **Locked by:** `tests/test_agent_session_shutdown.py::TestAgentSessionShutdown::test_shutdown_shuts_down_tool_pool`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
