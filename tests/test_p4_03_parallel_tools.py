@@ -202,3 +202,19 @@ def test_results_maintain_original_order() -> None:
 def test_shutdown_does_not_raise() -> None:
     loop = _make_loop()
     loop.shutdown(wait=True)
+
+
+# ---------------------------------------------------------------------------
+# 8. Dead code: _generate_with_retry was superseded by _stream_generate
+# (P1-2, docs/DECISIONS.md) and run() no longer calls it. It must not linger
+# unreferenced in ExecutionLoop.
+# ---------------------------------------------------------------------------
+
+
+def test_generate_with_retry_removed_as_dead_code() -> None:
+    from hachi.core.loop import ExecutionLoop
+
+    assert not hasattr(ExecutionLoop, "_generate_with_retry"), (
+        "_generate_with_retry is dead code (superseded by _stream_generate) "
+        "and must be deleted, not left unreferenced"
+    )

@@ -631,31 +631,6 @@ class ExecutionLoop:
             )
             self._turn_client = self.llm_client
 
-    def _generate_with_retry(self, **kwargs: Any):
-        """Call the LLM with bounded exponential-backoff retry on transient errors.
-
-        A single rate-limit / overloaded / network blip should not abort the whole
-        turn. Non-retryable errors (auth, 400s) propagate immediately; retryable
-        ones are retried up to ``_MAX_LLM_RETRIES`` times before re-raising.
-        """
-        delay = _LLM_RETRY_BASE_DELAY
-        for attempt in range(1, _MAX_LLM_RETRIES + 1):
-            try:
-                return self._turn_client.generate(**kwargs)
-            except Exception as exc:
-                if attempt >= _MAX_LLM_RETRIES or not _is_retryable_llm_error(exc):
-                    raise
-                logger.warning(
-                    "LLM call failed (attempt %d/%d): %s — retrying in %.1fs",
-                    attempt,
-                    _MAX_LLM_RETRIES,
-                    exc,
-                    delay,
-                )
-                self.on_event(LLM_RETRY, {"attempt": attempt, "error": str(exc)})
-                time.sleep(delay)
-                delay *= 2
-
     def cancel(self) -> None:
         """Signal the loop to stop at the start of the next iteration.
 
@@ -673,9 +648,9 @@ class ExecutionLoop:
     def _stream_generate(self, on_delta: Callable[[str], None], **kwargs: Any) -> LLMResponse:
         """Drive generate_stream(), emit per-chunk callbacks, return the LLMResponse.
 
-        Retries on pre-stream transient errors using the same policy as
-        _generate_with_retry. Does NOT retry mid-stream failures to avoid
-        emitting duplicate output.
+        Retries on pre-stream transient errors (bounded exponential backoff,
+        same retry/backoff constants used elsewhere in this module). Does NOT
+        retry mid-stream failures to avoid emitting duplicate output.
 
         Checks the cancel flag and wall-clock deadline after each chunk so an
         in-flight generation can be interrupted promptly by cancel() or a timeout.
