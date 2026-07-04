@@ -1785,7 +1785,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   even-length fixed dataset, never just one parity.
 - **Locked by:** `tests/test_resilience.py::TestHealthRecorder::test_p50_latency_even_count_uses_nearest_rank`.
 
-### BB-37 — Tool execution exceptions swallowed with no traceback ever logged
+### BB-64 — Tool execution exceptions swallowed with no traceback ever logged
 
 - **Symptom:** when a tool raises an unexpected exception, the LLM receives a compact
   `"Tool Execution Error: <str(exc)>"` message (correct/intended), but there is zero log
@@ -1799,7 +1799,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   discarded — stringifying for a consumer and logging for debugging are two separate needs.
 - **Locked by:** `tests/test_p4_03_parallel_tools.py::test_execute_single_tool_error_preserves_traceback_in_log`.
 
-### BB-38 — `ExecutionLoop._generate_with_retry` dead code left in `loop.py`
+### BB-65 — `ExecutionLoop._generate_with_retry` dead code left in `loop.py`
 
 - **Symptom:** none at runtime — purely a maintainability/audit finding. A full non-streaming
   retry-wrapper method (`_generate_with_retry`) sat unreferenced in `loop.py`, confusing future
@@ -1815,7 +1815,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   cross-reference comments pointing at it.
 - **Locked by:** `tests/test_p4_03_parallel_tools.py::test_generate_with_retry_removed_as_dead_code`.
 
-### BB-39 — `AgentSession.shutdown()` never shuts down the per-session tool thread pool
+### BB-66 — `AgentSession.shutdown()` never shuts down the per-session tool thread pool
 
 - **Symptom:** every session leaked its `ExecutionLoop._tool_pool` (a 4-worker
   `ThreadPoolExecutor` created per `ExecutionLoop`) for the remaining life of the process —
@@ -1830,7 +1830,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   that got cleaned up.
 - **Locked by:** `tests/test_agent_session_shutdown.py::TestAgentSessionShutdown::test_shutdown_shuts_down_tool_pool`.
 
-### BB-40 — Budget/token safety ceiling checked only post-hoc; a single call can overshoot it
+### BB-67 — Budget/token safety ceiling checked only post-hoc; a single call can overshoot it
 
 - **Symptom:** with a hard `_TOKEN_SAFETY_CEILING` (or an opt-in `max_tokens`) close to the
   current cumulative usage, the loop still let ONE MORE full LLM call complete before
@@ -1847,7 +1847,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   cap by more than one step's cost" unless the next step's cost is bounded and added in.
 - **Locked by:** `tests/test_loop_backstop_cancel.py::test_token_safety_ceiling_is_preflight_not_post_hoc`.
 
-### BB-41 — Streaming LLM calls with unknown/zero usage silently under-count spend
+### BB-68 — Streaming LLM calls with unknown/zero usage silently under-count spend
 
 - **Symptom:** when a provider stream never sends a usage chunk (e.g. `stream_usage=False`
   for a strict local server, or a provider that omits `stream_options`), `generate_stream()`
@@ -1866,7 +1866,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   (companion to the pre-existing `test_openai_stream_no_usage_chunk_returns_zeros`, which
   pins the unchanged zero-usage return value).
 
-### BB-42 — Sub-agents ran with no inherited budget cap, invisibly draining shared spend
+### BB-69 — Sub-agents ran with no inherited budget cap, invisibly draining shared spend
 
 - **Symptom:** a delegated sub-agent (`delegate_task`/`delegate_parallel_tasks`) could run
   its full `max_iterations` budget completely unchecked by any cost/token cap even when the
@@ -1890,7 +1890,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `max_session_cost_usd`/`max_session_tokens`/`max_turn_cost_usd`/`max_turn_tokens` in
   `src/hachi/gateway/orchestrator.py`.
 
-### BB-43 — Sub-agent iteration-limit exhaustion reported as SUCCESS, not TIMEOUT
+### BB-70 — Sub-agent iteration-limit exhaustion reported as SUCCESS, not TIMEOUT
 
 - **Symptom:** when a delegated sub-agent never finished its task and was cut off by
   `max_iterations`, the orchestrator received `Status: success` in the delegation report —
@@ -1912,7 +1912,7 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:**
   `tests/test_sub_agent_iteration_limit_status.py::test_sub_agent_iteration_limit_exhaustion_is_not_success`.
 
-### BB-44 — Router fallback (`_resolve_turn_client`) silently swallowed at DEBUG level
+### BB-71 — Router fallback (`_resolve_turn_client`) silently swallowed at DEBUG level
 
 - **Symptom:** when the `ModelRouter` failed to resolve a route (misconfiguration, all
   candidates unavailable, or any unexpected error) and the loop silently fell back to the
