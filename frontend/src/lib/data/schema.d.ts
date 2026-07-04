@@ -764,6 +764,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/schedules/{schedule_id}/run-now": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Schedule Run Now
+         * @description Force-trigger a schedule immediately, regardless of its next-run time.
+         *
+         *     Dispatches in the background (does not block on the agent turn); returns
+         *     ``{"ok": true, "schedule_id": ...}`` once dispatch is confirmed, or
+         *     ``{"ok": false, ...}`` if the schedule id is unknown or scheduling is
+         *     unavailable (no active session).
+         */
+        post: operations["post_schedule_run_now_schedules__schedule_id__run_now_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/config": {
         parameters: {
             query?: never;
@@ -1603,7 +1628,7 @@ export interface paths {
         };
         /**
          * List recent durable runs
-         * @description Return recent durable runs across all sessions, newest first.
+         * @description Return recent durable runs across all sessions the caller owns, newest first.
          */
         get: operations["get_runs_runs_get"];
         put?: never;
@@ -3755,6 +3780,44 @@ export interface operations {
                 "application/json": components["schemas"]["ScheduleToggleRequest"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_schedule_run_now_schedules__schedule_id__run_now_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                schedule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
