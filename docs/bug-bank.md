@@ -1733,6 +1733,44 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   markup, an unregistered name documents the blank-fallback failure mode, and a sweep over the
   in-use icon names asserts none render blank).
 
+### BB-62 — Work screen "Run now" had zero gateway call (audit L1/gap 1)
+
+- **Symptom:** clicking "Run now" on a routine in the `/work` detail panel only closed the
+  panel and showed a toast — unlike Retry/Cancel-run (already wired to durable runs) and
+  Approve/Decline (already wired to `/approvals`), `runRoutineNow` in `store.ts` never touched
+  the gateway; a scheduled task force-triggered from the UI never actually ran.
+- **Root cause:** no gateway route existed to force-fire one schedule outside its own
+  `next_run` tick — `Scheduler` only had `tick()` (due-schedules only) and the CLI's
+  `hachi schedule run-now` booted a brand-new, throwaway agent session rather than reusing
+  the resident session already running the proactive `ScheduleRunner`.
+- **Fix:** added `Scheduler.run_now(schedule_id, fire, now=None)` (mirrors `tick()`'s
+  fire+`mark_fired` sequencing but bypasses the `due()` gate — an explicit user action always
+  fires); `AgentSession.run_schedule_now(schedule_id)` reuses the *live* `ScheduleRunner`'s
+  `_fire` callback (same `session.chat(...)` + `deliver_result` as a real tick) and dispatches
+  it through the existing background job queue (`func=` closure, mirrors `_enqueue_title_job`)
+  so the HTTP request returns immediately; new route `POST /schedules/{id}/run-now` wired
+  through `GatewayControlPlane.run_schedule_now`; frontend `runRoutineNowLive()` in
+  `work.ts` calls it and `work.tsx`'s `onRunNow` now dispatches on the routine's real id.
+- **Investigated, no fix needed (false positive):** audit gap 2 — the scripted demo
+  `_runQueue`/`runTick()`/`finishRun()` path in `store.ts` (source of the hardcoded
+  `"Summarised 6 PRs…"` result) is unreachable whenever `dataMode === 'live'`; every entry
+  point (`openRun`, `runAllowLeash`, `runAlwaysAllow`, `runDenyLeash`, `stopRun`) has an
+  explicit live-mode early return before the mock queue is ever seeded, and `dataMode` is a
+  fixed constant set once from the build-time `USE_MOCKS` flag (never toggled at runtime).
+  Locked with a regression test rather than a code change.
+- **Avoid:** when a "force this scheduled/recurring thing to run now" feature is needed,
+  reuse the *live* session's existing fire callback/job queue (via `AgentSession`) instead of
+  booting a second, throwaway agent inline in the request handler — a synchronous LLM call in
+  an HTTP handler blocks the response and double-boots session state. When auditing a mock vs.
+  live data path for a "have we shipped fake data to a real user" concern, check the *entry
+  points* into the mock branch, not just the code that produces the fake string — one guard at
+  the top of the shared trigger function is enough to make every downstream fake-data path
+  provably unreachable in live mode.
+- **Locked by:** `tests/test_scheduler.py` (4 new `run_now` tests);
+  `tests/test_schedule_run_now_gateway.py` (8 tests: `AgentSession.run_schedule_now` +
+  `POST /schedules/{id}/run-now`); `frontend/src/lib/data/domains/work.test.ts` (3 tests);
+  `frontend/src/lib/store/store.test.ts` (4 tests, gap-2 false-positive lock).
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

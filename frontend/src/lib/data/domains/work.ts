@@ -477,3 +477,36 @@ export async function cancelDurableRunLive(numericId: number): Promise<boolean> 
     return false;
   }
 }
+
+/**
+ * Force-trigger a routine (schedule) immediately via
+ * POST /schedules/{id}/run-now.
+ *
+ * Applies the store's optimistic action (closes the detail panel + toast)
+ * first, exactly like pauseRoutineLive/deleteRoutineLive. When the numeric id
+ * doesn't map to a real gateway schedule (mock fixture, or live mode before
+ * loadWork() ever populated the map), the optimistic action alone is the
+ * whole behaviour — same fallback shape as pauseRoutineLive.
+ *
+ * Returns true when the gateway confirmed dispatch (`{ok: true}`), false
+ * otherwise (fixture id, gateway unavailable, or the gateway rejected it —
+ * e.g. no active session). Callers use the return value to show a live vs.
+ * generic toast.
+ */
+export async function runRoutineNowLive(numericId: number): Promise<boolean> {
+  useStore.getState().runRoutineNow(numericId);
+  if (USE_MOCKS) return false;
+
+  const scheduleId = _scheduleIdMap.get(numericId);
+  if (!scheduleId) return false; // fixture or unknown id — optimistic update was enough
+
+  try {
+    const result = await apiSend<{ ok: boolean; schedule_id?: string }>(
+      "POST",
+      `/schedules/${encodeURIComponent(scheduleId)}/run-now`
+    );
+    return Boolean(result?.ok);
+  } catch {
+    return false;
+  }
+}

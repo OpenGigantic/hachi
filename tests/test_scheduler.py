@@ -146,6 +146,58 @@ def test_failed_fire_does_not_advance(tmp_path: Path) -> None:
     assert sched.get(s.schedule_id).is_due(t0 + timedelta(minutes=2))  # still due
 
 
+# ---- run_now (BB-36 — Work screen "Run now" force-trigger) ----
+
+
+def test_run_now_fires_regardless_of_next_run(tmp_path: Path) -> None:
+    """run_now must fire a schedule even when it is nowhere near due."""
+    sched = _scheduler(tmp_path)
+    t0 = datetime(2026, 6, 5, 12, 0, tzinfo=UTC)
+    s = sched.add(name="daily", task="say hi", kind="cron", cron="0 9 * * *", now=t0)
+    # Freshly created cron schedule is not due for hours — run_now must not care.
+    assert not sched.get(s.schedule_id).is_due(t0)
+
+    fired: list[Schedule] = []
+    ok = sched.run_now(s.schedule_id, fired.append, now=t0)
+
+    assert ok is True
+    assert fired == [s]
+    assert sched.get(s.schedule_id).run_count == 1
+    assert sched.get(s.schedule_id).last_run == t0.isoformat()
+
+
+def test_run_now_unknown_schedule_returns_false(tmp_path: Path) -> None:
+    sched = _scheduler(tmp_path)
+    fired: list[Schedule] = []
+    ok = sched.run_now("does-not-exist", fired.append)
+    assert ok is False
+    assert fired == []
+
+
+def test_run_now_matches_by_unique_prefix(tmp_path: Path) -> None:
+    sched = _scheduler(tmp_path)
+    t0 = datetime(2026, 6, 5, 12, 0, tzinfo=UTC)
+    s = sched.add(name="x", task="t", kind="interval", interval_seconds=3600, now=t0)
+    fired: list[Schedule] = []
+    ok = sched.run_now(s.schedule_id[:8], fired.append, now=t0)
+    assert ok is True
+    assert fired == [s]
+
+
+def test_run_now_failed_fire_does_not_advance_and_raises(tmp_path: Path) -> None:
+    """Unlike tick(), run_now propagates the fire failure (explicit user action)."""
+    sched = _scheduler(tmp_path)
+    t0 = datetime(2026, 6, 5, 12, 0, tzinfo=UTC)
+    s = sched.add(name="x", task="t", kind="interval", interval_seconds=3600, now=t0)
+
+    def boom(_s: Schedule) -> None:
+        raise RuntimeError("agent call failed")
+
+    with pytest.raises(RuntimeError, match="agent call failed"):
+        sched.run_now(s.schedule_id, boom, now=t0)
+    assert sched.get(s.schedule_id).run_count == 0
+
+
 def test_add_validation_errors(tmp_path: Path) -> None:
     sched = _scheduler(tmp_path)
     with pytest.raises(ValueError):

@@ -1404,6 +1404,17 @@ def create_gateway_app(
     async def put_schedule_enabled(schedule_id: str, payload: ScheduleToggleRequest) -> Any:
         return control_plane.toggle_schedule(schedule_id, payload.enabled)
 
+    @runtime_ops.post("/schedules/{schedule_id}/run-now")
+    async def post_schedule_run_now(schedule_id: str) -> Any:
+        """Force-trigger a schedule immediately, regardless of its next-run time.
+
+        Dispatches in the background (does not block on the agent turn); returns
+        ``{"ok": true, "schedule_id": ...}`` once dispatch is confirmed, or
+        ``{"ok": false, ...}`` if the schedule id is unknown or scheduling is
+        unavailable (no active session).
+        """
+        return control_plane.run_schedule_now(schedule_id)
+
     @config.get("")
     async def get_config() -> Any:
         return control_plane.get_config()

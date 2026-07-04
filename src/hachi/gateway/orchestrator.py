@@ -859,6 +859,57 @@ class AgentSession:
             return False
         return self._scheduler.set_enabled(schedule_id, enabled)
 
+    def run_schedule_now(self, schedule_id: str) -> bool:
+        """Force-trigger a schedule immediately (Work screen "Run now").
+
+        Dispatches the same ``fire`` callback the resident :class:`ScheduleRunner`
+        uses (``session.chat(task, surface="schedule")`` + :func:`deliver_result`),
+        via the existing background job queue so the HTTP request returns without
+        waiting for the agent turn to finish — mirrors ``_enqueue_title_job``'s
+        ``func=`` closure path (BB-36).
+
+        Returns:
+            ``True`` if the schedule id was found and the run was dispatched (in
+            the background); ``False`` if no schedule matches ``schedule_id`` or
+            the scheduler/runner is not wired up (never booted, or booted without
+            proactive scheduling).
+        """
+        if self._scheduler is None:
+            return False
+        runner = getattr(self, "_schedule_runner", None)
+        fire = getattr(runner, "_fire", None)
+        if fire is None:
+            return False
+        schedule = self._scheduler.get(schedule_id)
+        if schedule is None:
+            return False
+
+        def _run() -> None:
+            self._scheduler.run_now(schedule.schedule_id, fire)
+
+        if not self._job_queue:
+            _run()
+            return True
+
+        job = Job(
+            job_id="",
+            name="schedule_run_now",
+            status=JobStatus.PENDING,
+            func=_run,
+            job_type="background",
+            session_id=self._session_id,
+        )
+        try:
+            self._job_queue.enqueue(job)
+        except Exception:
+            # HIGH-012 pattern: enqueue failures should be visible; fall back to inline.
+            logger.warning(
+                "run_schedule_now: job queue enqueue failed; running inline",
+                exc_info=True,
+            )
+            _run()
+        return True
+
     def snapshot_mcp_inventory(self) -> MCPInventorySnapshot:
         """Current MCP server and tool inventory."""
         inventory_rows = self.mcp_manager.get_inventory()

@@ -15,6 +15,7 @@ import {
   isDurableRun,
   wakeDurableRunLive,
   cancelDurableRunLive,
+  runRoutineNowLive,
 } from '../lib/data/domains/work'
 import { loadSpend } from '../lib/data/domains/spend'
 import { loadOperator } from '../lib/data/domains/operator'
@@ -210,7 +211,7 @@ interface WorkDetailProps {
   onClose: () => void
   onRetry: (id: number) => void
   onCancelRun: (id: number) => void
-  onRunNow: () => void
+  onRunNow: (id: number) => void
   onTogglePause: (id: number) => void
   onDelete: (id: number) => void
   onWatchLive: (id: number) => void
@@ -551,7 +552,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
             <>
               <button
                 className="hachi-cancel-btn"
-                onClick={onRunNow}
+                onClick={() => onRunNow(item.id)}
                 style={{
                   flex: 1,
                   height: '40px',
@@ -1038,7 +1039,6 @@ function Work() {
   const openWork = useStore(s => s.openWork)
   const closeWork = useStore(s => s.closeWork)
   const retryFailed = useStore(s => s.retryFailed)
-  const runRoutineNow = useStore(s => s.runRoutineNow)
   const openRun = useStore(s => s.openRun)
   const showToast = useStore(s => s.showToast)
 
@@ -1245,6 +1245,18 @@ function Work() {
         return
       }
       showToast('Could not cancel run — please try again', 'blocked')
+    })()
+  }
+
+  const handleRunNow = (id: number) => {
+    // runRoutineNowLive always applies the optimistic store update (closes the
+    // panel + toast) itself; here we only need to react to whether the
+    // gateway actually dispatched the run in live mode.
+    void (async () => {
+      const dispatched = await runRoutineNowLive(id)
+      if (dataMode === 'live' && dispatched) {
+        void loadWork()
+      }
     })()
   }
 
@@ -1473,7 +1485,7 @@ function Work() {
           onClose={closeWork}
           onRetry={handleRetry}
           onCancelRun={handleCancelRun}
-          onRunNow={runRoutineNow}
+          onRunNow={handleRunNow}
           onTogglePause={handleTogglePause}
           onDelete={handleDelete}
           onWatchLive={handleWatchLive}
