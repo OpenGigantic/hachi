@@ -259,6 +259,19 @@ class TestHealthRecorder:
         assert seen[0].recent_error_rate == 0.0
         assert seen[1].consecutive_failures == 1
 
+    def test_p50_latency_even_count_uses_nearest_rank(self) -> None:
+        # Nearest-rank p50 over 4 sorted samples [100, 200, 300, 400] must
+        # pick the lower-middle value (200), matching standard percentile
+        # semantics (e.g. rank = ceil(0.5 * n) = 2 -> 0-indexed 1 -> 200.0).
+        # The naive `lats[len(lats) // 2]` formula picks index 2 (300.0),
+        # which is off by one for even-length datasets.
+        policy = RetryPolicy()
+        recorder = HealthRecorder("p", policy)
+        for ms in [400.0, 100.0, 300.0, 200.0]:
+            recorder.record_success(ms)
+        snap = recorder.snapshot()
+        assert snap.p50_latency_ms == 200.0
+
 
 # ---------------------------------------------------------------------------
 # ResilientClient

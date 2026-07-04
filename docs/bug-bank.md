@@ -1771,6 +1771,20 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `POST /schedules/{id}/run-now`); `frontend/src/lib/data/domains/work.test.ts` (3 tests);
   `frontend/src/lib/store/store.test.ts` (4 tests, gap-2 false-positive lock).
 
+### BB-63 — `HealthRecorder.snapshot()` p50 latency off-by-one on even-length windows (L3)
+
+- **Symptom:** `ProviderHealth.p50_latency_ms` reports a value one rank too high whenever the
+  recorder has collected an even number of latency samples (e.g. 4 samples `[100, 200, 300, 400]`
+  reported 300.0 instead of the correct 200.0).
+- **Root cause:** `p50 = lats[len(lats) // 2]` picks the *upper*-middle element for even `n`
+  (e.g. `n=4` -> index 2, the 3rd-smallest value), which is one rank higher than the standard
+  nearest-rank percentile (`rank = ceil(p * n)`, 1-indexed -> index 1 for `n=4, p=0.5`). It
+  happened to match for odd `n` (median), masking the bug in the one existing test.
+- **Avoid:** compute percentiles with the nearest-rank formula
+  `lats[max(0, math.ceil(p * n) - 1)]`, not `len // 2` — verify against both an odd- and an
+  even-length fixed dataset, never just one parity.
+- **Locked by:** `tests/test_resilience.py::TestHealthRecorder::test_p50_latency_even_count_uses_nearest_rank`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
