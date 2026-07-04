@@ -1785,6 +1785,20 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   even-length fixed dataset, never just one parity.
 - **Locked by:** `tests/test_resilience.py::TestHealthRecorder::test_p50_latency_even_count_uses_nearest_rank`.
 
+### BB-37 — Tool execution exceptions swallowed with no traceback ever logged
+
+- **Symptom:** when a tool raises an unexpected exception, the LLM receives a compact
+  `"Tool Execution Error: <str(exc)>"` message (correct/intended), but there is zero log
+  record anywhere with the exception or its traceback — operators have no way to debug the
+  real failure beyond the one-line message.
+- **Root cause:** `ExecutionLoop._execute_single_tool()`'s `except Exception as exc:` branch
+  only stringified `exc` into the tool-result text; it never called `logger.error(...,
+  exc_info=exc)` or otherwise preserved the traceback/chain.
+- **Avoid:** whenever an except-branch converts an exception into a user/model-facing string,
+  also log it with `exc_info=exc` (or re-raise `from exc`) so the traceback isn't silently
+  discarded — stringifying for a consumer and logging for debugging are two separate needs.
+- **Locked by:** `tests/test_p4_03_parallel_tools.py::test_execute_single_tool_error_preserves_traceback_in_log`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
