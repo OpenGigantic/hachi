@@ -377,6 +377,13 @@ def _make_delegate_task(
     cost_tracker=None,
     skill_engine: Any = None,
     lease_manager: Any = None,
+    # S2: parent session's configured budget caps (0 = unlimited), inherited by
+    # every sub-agent this factory spawns UNLESS a future caller passes larger
+    # explicit values — see SubAgentRuntime's docstring for the same fields.
+    max_cost_usd: float = 0.0,
+    max_tokens: int = 0,
+    max_cost_per_turn: float = 0.0,
+    max_tokens_per_turn: int = 0,
     # --- ADV-012: depth / cycle tracking (internal, not exposed in schema) ---
     _depth: int = 0,
     _ancestry: tuple[str, ...] = (),
@@ -398,6 +405,11 @@ def _make_delegate_task(
                          ``skill_engine.with_role(role)`` view, preventing the
                          sub-agent from reading ``scope=orchestrator`` nodes.
         lease_manager:   P4-01 optional LeaseManager for write-target leases.
+        max_cost_usd:        S2 — parent session's per-session cost cap, inherited
+                             by every spawned sub-agent by default (0 = unlimited).
+        max_tokens:          S2 — parent session's per-session token cap.
+        max_cost_per_turn:   S2 — parent session's per-turn cost cap.
+        max_tokens_per_turn: S2 — parent session's per-turn token cap.
         _depth:          ADV-012 internal — current nesting depth (0 = orchestrator).
         _ancestry:       ADV-012 internal — tuple of role names already in the call
                          chain, used to detect cycles.
@@ -561,6 +573,10 @@ def _make_delegate_task(
                 model=model or None,
                 on_event=on_event,
                 cost_tracker=cost_tracker,
+                max_cost_usd=max_cost_usd,
+                max_tokens=max_tokens,
+                max_cost_per_turn=max_cost_per_turn,
+                max_tokens_per_turn=max_tokens_per_turn,
             )
             report = runtime.run()
 
@@ -628,6 +644,10 @@ def _make_delegate_parallel_tasks(
     job_queue: Any = None,
     sub_agent_llm: Any = None,
     cost_tracker: Any = None,
+    max_cost_usd: float = 0.0,
+    max_tokens: int = 0,
+    max_cost_per_turn: float = 0.0,
+    max_tokens_per_turn: int = 0,
 ) -> Callable[..., str]:
     """Factory: creates the delegate_parallel_tasks tool handler.
 
@@ -643,13 +663,28 @@ def _make_delegate_parallel_tasks(
         job_queue:       Optional job queue.
         sub_agent_llm:   Credential-resolved LLM client for sub-agents.
         cost_tracker:    Shared cost tracker (thread-safe).
+        max_cost_usd:        S2 — parent session's per-session cost cap, inherited
+                             by every spawned sub-agent (0 = unlimited).
+        max_tokens:          S2 — parent session's per-session token cap.
+        max_cost_per_turn:   S2 — parent session's per-turn cost cap.
+        max_tokens_per_turn: S2 — parent session's per-turn token cap.
 
     Returns:
         A callable that accepts ``tasks`` and returns a JSON result string.
     """
     # Build a single-task dispatcher we can call from threads.
     _single = _make_delegate_task(
-        parent_registry, gate, on_event, vault, job_queue, sub_agent_llm, cost_tracker
+        parent_registry,
+        gate,
+        on_event,
+        vault,
+        job_queue,
+        sub_agent_llm,
+        cost_tracker,
+        max_cost_usd=max_cost_usd,
+        max_tokens=max_tokens,
+        max_cost_per_turn=max_cost_per_turn,
+        max_tokens_per_turn=max_tokens_per_turn,
     )
 
     def delegate_parallel_tasks(
@@ -926,6 +961,10 @@ def register_delegation_tools(
     cost_tracker=None,
     skill_engine: Any = None,
     lease_manager: Any = None,
+    max_cost_usd: float = 0.0,
+    max_tokens: int = 0,
+    max_cost_per_turn: float = 0.0,
+    max_tokens_per_turn: int = 0,
 ) -> None:
     """Mount delegation tools onto the provided ToolRegistry.
 
@@ -945,6 +984,14 @@ def register_delegation_tools(
                       only sees skill nodes within its declared scope
                       (closes the scope=orchestrator information-leak).
         lease_manager: P4-01 optional LeaseManager for write-target leases.
+        max_cost_usd:        S2 — the orchestrator session's configured per-session
+                             cost cap (0 = unlimited).  Passed down to every
+                             sub-agent's own ExecutionLoop so a delegated task can
+                             never silently outspend the caps the user configured
+                             for the parent session.
+        max_tokens:          S2 — the orchestrator session's per-session token cap.
+        max_cost_per_turn:   S2 — the orchestrator session's per-turn cost cap.
+        max_tokens_per_turn: S2 — the orchestrator session's per-turn token cap.
     """
     registry.register(
         DELEGATE_TASK_SCHEMA,
@@ -958,12 +1005,26 @@ def register_delegation_tools(
             cost_tracker,
             skill_engine=skill_engine,
             lease_manager=lease_manager,
+            max_cost_usd=max_cost_usd,
+            max_tokens=max_tokens,
+            max_cost_per_turn=max_cost_per_turn,
+            max_tokens_per_turn=max_tokens_per_turn,
         ),
     )
     registry.register(
         DELEGATE_PARALLEL_TASKS_SCHEMA,
         _make_delegate_parallel_tasks(
-            registry, gate, on_event, vault, job_queue, sub_agent_llm, cost_tracker
+            registry,
+            gate,
+            on_event,
+            vault,
+            job_queue,
+            sub_agent_llm,
+            cost_tracker,
+            max_cost_usd=max_cost_usd,
+            max_tokens=max_tokens,
+            max_cost_per_turn=max_cost_per_turn,
+            max_tokens_per_turn=max_tokens_per_turn,
         ),
     )
     registry.register(

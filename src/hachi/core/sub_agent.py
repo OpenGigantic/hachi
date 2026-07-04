@@ -35,7 +35,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from hachi.core.llm import AnthropicClient, BaseLLMClient, Message
-from hachi.core.loop import AgentException, ExecutionLoop, ToolRegistry
+from hachi.core.loop import (
+    INCOMPLETE_RESULT_PREFIX,
+    AgentException,
+    ExecutionLoop,
+    ToolRegistry,
+)
 from hachi.core.paths import get_hachi_paths
 from hachi.og_engine.parser import OGFile, parse_og_file
 
@@ -539,6 +544,10 @@ class SubAgentRuntime:
         workspace_dir: Path | None = None,
         on_event: Callable[..., None] | None = None,
         cost_tracker: Any = None,
+        max_cost_usd: float = 0.0,
+        max_tokens: int = 0,
+        max_cost_per_turn: float = 0.0,
+        max_tokens_per_turn: int = 0,
     ) -> None:
         """Initialize the sub-agent runtime.
 
@@ -562,6 +571,15 @@ class SubAgentRuntime:
             timeout_seconds:  Wall-clock timeout in seconds.
             workspace_dir:    Path to ~/.hachi/ (auto-resolved if None).
             on_event:         Optional callback for execution progress events.
+            max_cost_usd:         S2: per-session cost cap passed straight through to the
+                                  sub-agent's own ExecutionLoop.  Callers (delegate_task)
+                                  should default this to the PARENT session's configured
+                                  cap so a sub-agent can never silently outspend its
+                                  parent — 0 (unlimited) only when the caller has no cap
+                                  to inherit or explicitly wants an uncapped sub-agent.
+            max_tokens:           Same as max_cost_usd but for the token budget.
+            max_cost_per_turn:    Per-turn cost cap forwarded to the sub-agent's loop.
+            max_tokens_per_turn:  Per-turn token cap forwarded to the sub-agent's loop.
 
         Raises:
             FileNotFoundError: If the role .og file does not exist.
@@ -571,6 +589,10 @@ class SubAgentRuntime:
         self._context = context
         self._max_iterations = max_iterations
         self._timeout_seconds = timeout_seconds
+        self._max_cost_usd = max_cost_usd
+        self._max_tokens = max_tokens
+        self._max_cost_per_turn = max_cost_per_turn
+        self._max_tokens_per_turn = max_tokens_per_turn
         self._on_event = on_event or (lambda *a, **kw: None)
         self._cost_tracker = cost_tracker
 
@@ -680,7 +702,11 @@ class SubAgentRuntime:
         # Create isolated memory (no compaction, no vault, no ledger)
         memory = SubAgentMemory()
 
-        # Create the execution loop
+        # Create the execution loop.
+        # S2: thread the (parent-inherited, by default) cost/token caps down so the
+        # sub-agent's OWN loop can stop itself early instead of always running
+        # unchecked to max_iterations — the shared cost_tracker alone only records
+        # spend, it doesn't stop this loop from spending it.
         loop = ExecutionLoop(
             llm_client=self._llm_client,
             registry=self._tool_registry,
@@ -688,6 +714,10 @@ class SubAgentRuntime:
             base_system_prompt=self._system_prompt,
             on_event=self._on_event,
             cost_tracker=self._cost_tracker,
+            max_cost_usd=self._max_cost_usd,
+            max_tokens=self._max_tokens,
+            max_cost_per_turn=self._max_cost_per_turn,
+            max_tokens_per_turn=self._max_tokens_per_turn,
         )
 
         # Inject the task as the initial user message
@@ -698,6 +728,28 @@ class SubAgentRuntime:
             result = self._execute_with_timeout(loop, start_time)
             elapsed = time.monotonic() - start_time
             token_estimate = self._estimate_tokens_from_memory(memory)
+
+            # S2: ExecutionLoop.run() never raises AgentException when max_iterations
+            # is exhausted (P1-04 made it a graceful [INCOMPLETE] string return, not
+            # a raised exception) — so the `except AgentException` branch below is
+            # unreachable for this case. Detect the prefix directly so an
+            # incomplete/cut-off sub-agent is never reported as SUCCESS.
+            if result.startswith(INCOMPLETE_RESULT_PREFIX):
+                logger.warning(
+                    "Sub-agent '%s' hit iteration limit after %.1fs (%d iterations)",
+                    self._role,
+                    elapsed,
+                    self._max_iterations,
+                )
+                return SubAgentReport(
+                    status=SubAgentStatus.TIMEOUT,
+                    summary=result,
+                    role=self._role,
+                    task=self._task,
+                    iterations=self._count_iterations(memory),
+                    duration_seconds=round(elapsed, 2),
+                    token_estimate=token_estimate,
+                )
 
             logger.info(
                 "Sub-agent '%s' completed: %.1fs, ~%d tokens",

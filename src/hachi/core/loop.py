@@ -109,6 +109,15 @@ class AgentException(Exception):
     pass
 
 
+# P1-04: ExecutionLoop.run() does NOT raise when max_iterations is exhausted —
+# it returns this prefix in a graceful, partial-summary string instead (see
+# run()'s SESSION_ITERATION_LIMIT branch). Callers that need to distinguish
+# "the task genuinely finished" from "the loop was cut off mid-task" (e.g.
+# SubAgentRuntime mapping this to a non-SUCCESS status) must check for this
+# prefix on the returned string — there is no exception to catch.
+INCOMPLETE_RESULT_PREFIX = "[INCOMPLETE]"
+
+
 class SuspendWorkflow(Exception):
     """Signal that the agent loop should suspend and wait for an external trigger.
 
@@ -1257,8 +1266,9 @@ class ExecutionLoop:
                 f"Partial: iteration limit reached ({max_iterations})",
             )
             return (
-                f"[INCOMPLETE] The task reached the {max_iterations}-iteration limit and "
-                "could not be fully completed. Reply 'continue' to pick up where it left off."
+                f"{INCOMPLETE_RESULT_PREFIX} The task reached the {max_iterations}-iteration "
+                "limit and could not be fully completed. Reply 'continue' to pick up where "
+                "it left off."
             )
 
         finally:
