@@ -47,6 +47,11 @@ class _FakeProvider:
         self.name = name
         self._models = models
         self._health = ProviderHealth(provider=name)
+        self.health_updates: list[ProviderHealth] = []
+
+    def update_health(self, health: ProviderHealth) -> None:
+        self.health_updates.append(health)
+        self._health = health
 
     def capabilities(self) -> set[Capability]:
         caps: set[Capability] = set()
@@ -362,3 +367,48 @@ class TestDefaultClient:
         # Should not raise; synthetic descriptor used.
         client = router.default_client()
         assert client is not None
+
+
+class TestHealthFeedback:
+    def test_call_outcomes_update_provider_health(self) -> None:
+        """H7: HealthRecorder.record_success/record_failure must feed back into
+        the real provider adapter's health, not just an internal recorder no one
+        ever reads — previously the router's breaker filter saw a permanent
+        boot-time default (available=True) no matter what actually happened.
+        """
+        descs = [_make_descriptor("claude-haiku-4-5", "p1", {Capability.REASONING})]
+        router, provider_reg = _make_router(descs, default_model="claude-haiku-4-5")
+        provider = provider_reg.get_by_name("p1")
+        assert provider is not None
+
+        recorder = router._get_recorder("p1")
+        recorder.record_success(50.0)
+        recorder.record_failure()
+
+        assert len(provider.health_updates) == 2
+        assert provider.health_updates[-1].consecutive_failures == 1
+
+
+class TestSyntheticDescriptorProviderInference:
+    @pytest.mark.parametrize(
+        ("model_id", "expected_provider"),
+        [
+            ("gpt-4o", "openai-compatible"),
+            ("gpt-4o-mini", "openai-compatible"),
+            ("o3-mini", "openai-compatible"),
+            ("gemini-2.0-flash", "gemini"),
+            ("grok-3", "openai-compatible"),
+            ("claude-haiku-4-5", "anthropic"),
+        ],
+    )
+    def test_infers_provider_from_model_id_family(
+        self, model_id: str, expected_provider: str
+    ) -> None:
+        """H7: an undeclared model id must synthesize a descriptor matching its
+        naming family, not always 'anthropic' — an undeclared 'gpt-4o' was
+        previously built against the wrong client entirely.
+        """
+        from hachi.core.routing.router import _synthetic_descriptor
+
+        desc = _synthetic_descriptor(model_id)
+        assert desc.provider == expected_provider
