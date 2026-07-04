@@ -511,6 +511,16 @@ class ExecutionLoop:
                 except SuspendWorkflow as exc:
                     return (None, False, exc)
                 except Exception as exc:
+                    # Only the stringified message goes back to the model (it needs
+                    # a compact error to reason about), but the original exception
+                    # + traceback must not vanish — log it with exc_info so the
+                    # chain survives for debugging.
+                    logger.error(
+                        "Tool %s raised during execution: %s",
+                        tool_call.name,
+                        exc,
+                        exc_info=exc,
+                    )
                     return (f"Tool Execution Error: {str(exc)}", True, None)
         finally:
             detach_otel_context(otel_token)
