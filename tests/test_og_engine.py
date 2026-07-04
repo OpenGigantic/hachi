@@ -94,6 +94,17 @@ def test_resolve_node_all_expands_everything() -> None:
     assert "MANDATORY ASSERTIONS" in everything
 
 
+def test_load_time_nudges_to_check_skill_assertions() -> None:
+    """M2: a Pass-3 load of a skill with ::assertions must point the agent at
+    check_skill_assertions right in the load response — previously this instruction
+    only lived in brain.og's system prompt, so it was easy for the loop to skip
+    calling it despite the "MANDATORY" label right above it.
+    """
+    engine = _engine()
+    everything = engine.resolve_node("deploy_to_prod", blocks=["all"])
+    assert 'check_skill_assertions(name="deploy_to_prod"' in everything
+
+
 def test_resolve_context_delegates_to_default_load() -> None:
     engine = _engine()
     assert engine.resolve_context("deploy_to_prod") == engine.resolve_node("deploy_to_prod")

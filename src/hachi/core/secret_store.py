@@ -13,6 +13,7 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
+from hachi.core.atomic_io import atomic_write_json, quarantine_corrupt_file
 from hachi.core.paths import HachiPaths, ensure_directories, get_hachi_paths
 
 logger = logging.getLogger(__name__)
@@ -49,12 +50,13 @@ class _MetadataStore:
             if isinstance(data, dict):
                 return data
         except Exception:
-            pass
+            # BB-51: quarantine the unparseable file BEFORE returning the empty
+            # default, so the next _save() can't silently clobber it with {}.
+            quarantine_corrupt_file(self._path)
         return {}
 
     def _save(self, payload: dict[str, SecretMetadata]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        atomic_write_json(self._path, payload)
 
     def upsert(self, name: str, metadata: SecretMetadata) -> None:
         payload = self._load()
@@ -305,6 +307,9 @@ class EncryptedFileSecretStore:
         try:
             return json.loads(self._file_path.read_text(encoding="utf-8"))
         except Exception:
+            # BB-51: quarantine the unparseable blob BEFORE returning the empty
+            # default, so the next _encrypt_all() can't silently clobber it.
+            quarantine_corrupt_file(self._file_path)
             return {"salt": "", "payload": ""}
 
     def _decrypt_all(self) -> dict[str, str]:
@@ -339,17 +344,13 @@ class EncryptedFileSecretStore:
         cipher = Fernet(key)
         ciphertext = cipher.encrypt(json.dumps(payload).encode("utf-8"))
 
-        self._file_path.parent.mkdir(parents=True, exist_ok=True)
-        self._file_path.write_text(
-            json.dumps(
-                {
-                    "salt": base64.b64encode(salt).decode("utf-8"),
-                    "payload": ciphertext.decode("utf-8"),
-                    "fingerprint": hashlib.sha256(ciphertext).hexdigest(),
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
+        atomic_write_json(
+            self._file_path,
+            {
+                "salt": base64.b64encode(salt).decode("utf-8"),
+                "payload": ciphertext.decode("utf-8"),
+                "fingerprint": hashlib.sha256(ciphertext).hexdigest(),
+            },
         )
 
     def get(self, name: str) -> str | None:

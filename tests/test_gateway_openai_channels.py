@@ -59,6 +59,110 @@ def test_openai_chat_is_rate_limited(monkeypatch) -> None:
     assert second.status_code == 429
 
 
+def _control_plane_with_models(models: dict[str, list[str]]) -> GatewayControlPlane:
+    """A control plane wired with a fixed list_all_models() allowlist."""
+    return GatewayControlPlane(
+        on_chat=lambda _sid, prompt: f"echo:{prompt}",
+        list_all_models=lambda: models,
+    )
+
+
+# ---------------------------------------------------------------------------
+# BB-58 — requested `model` must be validated, not silently echoed/ignored
+# ---------------------------------------------------------------------------
+
+
+def test_openai_chat_rejects_unknown_model() -> None:
+    """A model id absent from every configured provider's allowlist must be
+    rejected with a clear error instead of silently falling back to a default.
+    """
+    cp = _control_plane_with_models({"__primary__": ["claude-haiku-4-5"]})
+    app = create_gateway_app(cp)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "totally-not-a-real-model",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    assert resp.status_code == 400
+
+
+def test_openai_chat_accepts_known_model() -> None:
+    """A model id present in the allowlist must be accepted."""
+    cp = _control_plane_with_models({"__primary__": ["claude-haiku-4-5", "gpt-4o"]})
+    app = create_gateway_app(cp)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["model"] == "gpt-4o"
+
+
+def test_openai_chat_no_allowlist_data_does_not_reject(monkeypatch) -> None:
+    """When list_all_models is not wired (no data to validate against), any
+    requested model must still be accepted — fail-open, matching every other
+    'handler not attached' seam in this codebase.
+    """
+    app = create_gateway_app(_control_plane())
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# BB-58 — rate limiter must be keyed per-principal, not one global bucket
+# ---------------------------------------------------------------------------
+
+
+def test_openai_chat_rate_limit_is_keyed_per_caller(monkeypatch) -> None:
+    """The rate limiter must key on the caller's identity, not a shared global bucket.
+
+    Before the fix, ``openai_limiter.allow("openai")`` used a single hardcoded
+    key, so caller A exhausting the limit would also lock out caller B. We spy
+    on the limiter to capture the exact key it was called with and confirm it
+    is derived from the caller's bearer token (the same ``caller_hash`` H6 uses
+    for session ownership) instead of the constant literal ``"openai"``.
+    """
+    import hashlib
+
+    monkeypatch.setenv("HACHI_OPENAI_RATE_LIMIT", "1")
+    token_a = "token-caller-aaa"
+    expected_hash = hashlib.sha256(token_a.encode()).hexdigest()
+    cp = _control_plane()
+
+    calls: list[str] = []
+    import hachi.gateway.fastapi_app as fastapi_app_module
+
+    real_rate_limiter_cls = fastapi_app_module.RateLimiter
+
+    class _SpyRateLimiter(real_rate_limiter_cls):
+        def allow(self, key: str, now: float | None = None) -> bool:
+            calls.append(key)
+            return super().allow(key, now)
+
+    monkeypatch.setattr(fastapi_app_module, "RateLimiter", _SpyRateLimiter)
+    app = create_gateway_app(cp, auth_token=token_a)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+    assert resp.status_code == 200
+    assert calls, "rate limiter was never invoked"
+    # The recorded key must be the caller's own hash, not the pre-fix constant
+    # literal "openai" (the shared global-bucket key).
+    assert calls[0] == expected_hash
+    assert calls[0] != "openai"
+
+
 def test_openai_models_list() -> None:
     app = create_gateway_app(_control_plane())
     with TestClient(app) as client:
