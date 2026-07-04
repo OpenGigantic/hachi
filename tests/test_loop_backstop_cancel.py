@@ -265,6 +265,43 @@ def test_token_safety_ceiling_distinct_from_opt_in_budget(monkeypatch) -> None:
     assert "ceiling" in result.lower()
 
 
+def test_token_safety_ceiling_is_preflight_not_post_hoc(monkeypatch) -> None:
+    """S1: the ceiling must be checked pre-flight against the upcoming call's
+    worst-case token cost, not only against the already-recorded snapshot.
+
+    With ceiling=100 and a single call reporting 90 tokens, a post-hoc-only
+    check (snapshot >= ceiling) would let a SECOND 90-token call start (90 <
+    100), overshooting the ceiling by 80 tokens before it is ever caught. A
+    pre-flight check that adds the upcoming call's worst-case tokens (bounded
+    by the client's configured `max_tokens` output cap) to the current
+    snapshot must refuse to start that second call.
+    """
+    monkeypatch.setattr(ExecutionLoop, "_TOKEN_SAFETY_CEILING", 100)
+    tracker = CostTracker()
+    llm = _RunawayTokenLLM(tokens_per_call=90)
+    llm.max_tokens = 50  # worst-case output tokens for the NEXT call
+    loop = ExecutionLoop(
+        llm,
+        _noop_registry(),
+        SubAgentMemory(),
+        base_system_prompt="x",
+        cost_tracker=tracker,
+        max_tokens=0,  # opt-in budget NOT set
+        max_wall_seconds=0.0,
+    )
+    loop.add_user_message("go")
+    result = loop.run(max_iterations=50)
+    assert "[BUDGET LIMIT REACHED]" in result
+    assert "ceiling" in result.lower()
+    # Pre-flight must stop BEFORE the 2nd call would push cumulative usage to
+    # 180 (90 + 90), i.e. it must catch the overrun risk after just 1 call —
+    # not let a 2nd 90-token call complete and overshoot to 180 >> 100.
+    assert llm.calls <= 1, (
+        f"Pre-flight ceiling check should refuse the 2nd call before it starts, "
+        f"got {llm.calls} calls (cumulative would overshoot the 100-token ceiling)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 3. cancel() mid-stream
 # ---------------------------------------------------------------------------

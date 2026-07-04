@@ -770,6 +770,20 @@ class OpenAICompatibleClient(BaseLLMClient):
                 ToolCall(id=call_id, name=acc["name"], input=args, parse_error=parse_error)
             )
 
+        # S1: a real generation happened (text and/or tool calls were produced) but the
+        # provider never sent a usage chunk, so final_usage is still the zero default.
+        # Returning a hard 0 here silently under-counts real spend against any
+        # configured cost/token cap (BUDGET_EXCEEDED would never fire for these calls).
+        # We keep the zero-usage return value (callers already treat it as "unknown",
+        # and a fabricated estimate could be worse than an honest zero) but make the
+        # gap visible via a WARNING so operators can see spend is being under-tracked.
+        if final_usage == TokenUsage() and (text_parts or tool_calls):
+            logger.warning(
+                "generate_stream: no usage data received from provider (stream_usage=%s) "
+                "— cost/token tracking will under-count this call.",
+                self._stream_usage,
+            )
+
         return LLMResponse(
             content="".join(text_parts).strip(),
             tool_calls=tool_calls,
