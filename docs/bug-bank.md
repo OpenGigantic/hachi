@@ -1693,6 +1693,27 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `::test_openai_chat_accepts_known_model`, `::test_openai_chat_no_allowlist_data_does_not_reject`,
   `::test_openai_chat_rate_limit_is_keyed_per_caller`.
 
+### BB-60 — TUI Cockpit chat right-rail rendered hardcoded demo plan/approval data (L4)
+
+- **Symptom:** the Textual Cockpit's Chat view right rail always showed a fixed 5-step "plan"
+  (search sources / read top 5 articles / …), a fake `skill research-protocol` line, and
+  "⚠ 1 approval waiting / browse_web (researcher)" — even in live mode with a real gateway
+  session that had zero pending approvals or a completely different tool pending.
+- **Root cause:** `ChatView._render_rail()` in `src/hachi/tui/cockpit/views/chat.py` built the
+  rail purely from module-level literals (`_PLAN_STEPS`, the skill string, the approval card
+  text) and never called `CockpitData.approvals()` — even though that method already existed
+  and was already used correctly by `ApprovalsView` (`views/approvals.py`). No gateway data
+  model exists for a live per-turn "plan" at all (confirmed: no such field on `ConfigSnapshot`/
+  `SessionInfo`; frontend `run.tsx` hides its own Plan section for the identical reason — "live
+  mode emits no plan events").
+- **Avoid:** any view field that claims to reflect session state must be sourced from a
+  `CockpitData` method (which itself falls back to `placeholder_*()` offline) — never a bare
+  module-level literal. When no live data model exists for a demo field (e.g. a "plan"), gate
+  it behind `CockpitData.is_live` and omit it live rather than fabricating steps; don't invent a
+  new backend model to fill the gap without discussing scope first.
+- **Locked by:** `tests/test_cockpit_chat_live.py::TestChatViewOffline::test_rail_reflects_real_pending_approval`,
+  `::test_rail_shows_no_approvals_when_none_pending`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
