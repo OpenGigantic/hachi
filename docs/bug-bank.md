@@ -1912,6 +1912,24 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:**
   `tests/test_sub_agent_iteration_limit_status.py::test_sub_agent_iteration_limit_exhaustion_is_not_success`.
 
+### BB-44 — Router fallback (`_resolve_turn_client`) silently swallowed at DEBUG level
+
+- **Symptom:** when the `ModelRouter` failed to resolve a route (misconfiguration, all
+  candidates unavailable, or any unexpected error) and the loop silently fell back to the
+  default `llm_client`, the ONLY trace of this was a DEBUG log line — invisible in normal
+  operation (INFO/WARNING is the typical default level), so a misrouted/degraded session
+  looked identical to a healthy one in the logs.
+- **Root cause:** `ExecutionLoop._resolve_turn_client()`'s `except NoRouteError` and
+  `except Exception` branches both called `logger.debug(...)` instead of `logger.warning(...)`
+  before falling back — an operationally significant event (the model actually serving this
+  turn silently changed) was logged at a level nobody watches by default.
+- **Avoid:** a fallback path that silently changes user-visible behavior (which model
+  answers, which provider is used, etc.) must log at WARNING or above — DEBUG is for
+  developer tracing, not for "something degraded and the user should be able to find out."
+- **Locked by:** `tests/test_hot_path_routing.py::TestNoRouteErrorFallback` — new
+  `test_no_route_error_logs_at_warning_not_debug` and
+  `test_arbitrary_router_exception_logs_at_warning_not_debug`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
