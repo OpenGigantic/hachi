@@ -810,6 +810,40 @@ class Scheduler:
             fired.append(schedule)
         return fired
 
+    def run_now(
+        self,
+        schedule_id: str,
+        fire: Callable[[Schedule], None],
+        now: datetime | None = None,
+    ) -> bool:
+        """Force-fire one schedule immediately, regardless of its ``next_run``.
+
+        Mirrors the per-schedule body of :meth:`tick` (same ``fire`` +
+        :meth:`mark_fired` sequencing) but bypasses the ``due()`` gate and the
+        condition-skill evaluator — this is an explicit user-triggered run, not
+        an automatic tick, so it always executes.
+
+        A ``fire`` callback that raises does **not** advance the schedule (same
+        semantics as :meth:`tick`) and the exception propagates to the caller so
+        a manual "run now" surfaces failures instead of silently swallowing them.
+
+        Args:
+            schedule_id: Exact id or unique prefix (see :meth:`get`).
+            fire:        Callback invoked with the resolved :class:`Schedule`.
+            now:         Override the current time (for testing).
+
+        Returns:
+            ``True`` if the schedule was found and fired; ``False`` if no
+            schedule matches ``schedule_id``.
+        """
+        schedule = self.get(schedule_id)
+        if schedule is None:
+            return False
+        now = now or _now()
+        fire(schedule)
+        self.mark_fired(schedule, now)
+        return True
+
     # ---- internals ----
 
     @staticmethod

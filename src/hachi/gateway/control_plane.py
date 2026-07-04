@@ -116,6 +116,7 @@ class GatewayControlPlane:
         list_schedules: Callable[[], list[dict[str, Any]]] | None = None,
         cancel_schedule: Callable[[str], dict[str, Any]] | None = None,
         toggle_schedule: Callable[[str, bool], dict[str, Any]] | None = None,
+        run_schedule_now: Callable[[str], dict[str, Any]] | None = None,
         get_skills: Callable[[], list[dict[str, Any]]] | None = None,
         get_memory: Callable[[], dict[str, Any]] | None = None,
         get_memory_recall: Callable[[str, int], list[dict[str, Any]]] | None = None,
@@ -191,6 +192,7 @@ class GatewayControlPlane:
         self._list_schedules = list_schedules
         self._cancel_schedule = cancel_schedule
         self._toggle_schedule = toggle_schedule
+        self._run_schedule_now = run_schedule_now
         self._get_skills = get_skills
         self._get_memory = get_memory
         self._get_memory_recall = get_memory_recall
@@ -851,6 +853,11 @@ class GatewayControlPlane:
         if self._toggle_schedule is None:
             return {"ok": False, "detail": "schedules not available"}
         return self._toggle_schedule(schedule_id, enabled)
+
+    def run_schedule_now(self, schedule_id: str) -> Any:
+        if self._run_schedule_now is None:
+            return {"ok": False, "detail": "schedules not available"}
+        return self._run_schedule_now(schedule_id)
 
     # ==========================================
     # Web endpoint handlers — added for web UI (#1–#6)

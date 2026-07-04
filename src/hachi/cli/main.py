@@ -567,6 +567,14 @@ class _InProcessGatewayRuntime:
         ok = agent.toggle_schedule_enabled(schedule_id, enabled=enabled)
         return {"ok": ok, "schedule_id": schedule_id, "enabled": enabled}
 
+    def run_schedule_now(self, schedule_id: str) -> dict:
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return {"ok": False, "detail": "no active session"}
+        ok = agent.run_schedule_now(schedule_id)
+        return {"ok": ok, "schedule_id": schedule_id}
+
     def capabilities(self) -> list[dict]:
         config = load_effective_config()
         # Pull OAuth status for each capability from the connector registry.
@@ -2920,6 +2928,7 @@ def _build_gateway_control_plane(
         list_schedules=runtime.list_schedules if runtime else None,
         cancel_schedule=runtime.cancel_schedule if runtime else None,
         toggle_schedule=runtime.toggle_schedule if runtime else None,
+        run_schedule_now=runtime.run_schedule_now if runtime else None,
         # Web UI endpoints (#1–#6):
         get_skills=runtime.get_skills if runtime else None,
         get_memory=runtime.get_memory if runtime else None,
