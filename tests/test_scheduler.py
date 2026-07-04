@@ -242,4 +242,52 @@ def test_add_dedups_against_persisted_schedule_after_restart(tmp_path: Path) -> 
         name="standup", task="post", kind="cron", cron="0 9 * * *", now=t0 + timedelta(seconds=10)
     )
     assert again.schedule_id == first.schedule_id
-    assert len(reloaded.list_schedules()) == 1
+
+
+# ---- H3: shared-scheduler singleton (BB-45) ----
+
+
+class _FakeShared:
+    """Minimal stand-in for ProcessSharedServices' two new H3 fields."""
+
+    def __init__(self) -> None:
+        self.scheduler = None
+        self.scheduler_runner_started = False
+
+
+def test_get_or_create_shared_scheduler_returns_the_same_instance(tmp_path: Path) -> None:
+    """H3: two 'sessions' booting in the same process must share one Scheduler
+    over the same schedules_file — a private per-call instance would double-fire
+    due schedules and let each session's writes clobber the other's.
+    """
+    from hachi.gateway.orchestrator import _get_or_create_shared_scheduler
+
+    shared = _FakeShared()
+    store_path = tmp_path / "schedules.json"
+
+    first = _get_or_create_shared_scheduler(shared, store_path)
+    second = _get_or_create_shared_scheduler(shared, store_path)
+
+    assert first is second
+    assert shared.scheduler is first
+
+
+def test_get_or_create_shared_scheduler_writes_are_visible_across_callers(
+    tmp_path: Path,
+) -> None:
+    """A schedule added via the instance one caller received must be visible to
+    another caller that fetches the 'shared' scheduler afterward — proving they
+    are truly the same in-memory object, not two independent copies of the
+    same on-disk file that would silently clobber each other's writes.
+    """
+    from hachi.gateway.orchestrator import _get_or_create_shared_scheduler
+
+    shared = _FakeShared()
+    store_path = tmp_path / "schedules.json"
+    t0 = datetime(2026, 6, 24, 12, 0, tzinfo=UTC)
+
+    first = _get_or_create_shared_scheduler(shared, store_path)
+    first.add(name="standup", task="post", kind="cron", cron="0 9 * * *", now=t0)
+
+    second = _get_or_create_shared_scheduler(shared, store_path)
+    assert len(second.list_schedules()) == 1
