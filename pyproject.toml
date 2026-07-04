@@ -230,7 +230,7 @@ ignore_imports = [
     # that have no engine-level home yet. All lazy except onboarding. Burn down by
     # introducing a GatewayControlPlane protocol owned by core.
     "hachi.core.onboarding -> hachi.gateway.workspace",
-    "hachi.core.cost -> hachi.gateway.orchestrator",
+    "hachi.core.cost -> hachi.gateway.shared_services",
     "hachi.core.runtime.job_handlers -> hachi.gateway.orchestrator",
     "hachi.core.runtime.resume -> hachi.gateway.shared_services",
     "hachi.tools.config_tools -> hachi.gateway.workspace",
