@@ -149,7 +149,13 @@ class HealthRecorder:
 
     _WINDOW = 20  # calls retained for error-rate calculation
 
-    def __init__(self, provider: str, policy: RetryPolicy) -> None:
+    def __init__(
+        self,
+        provider: str,
+        policy: RetryPolicy,
+        *,
+        on_update: Callable[[ProviderHealth], None] | None = None,
+    ) -> None:
         self._provider = provider
         self._policy = policy
         self._lock = threading.Lock()
@@ -158,6 +164,14 @@ class HealthRecorder:
         self._consecutive_failures = 0
         self._breaker: Literal["closed", "open", "half_open"] = "closed"
         self._breaker_opened_at: float = 0.0
+        # H7: optional sink invoked after every outcome so a caller (the model
+        # router) can wire real call results into its own provider-health view
+        # instead of that view staying permanently at its boot-time default.
+        self._on_update = on_update
+
+    def _notify(self) -> None:
+        if self._on_update is not None:
+            self._on_update(self.snapshot())
 
     def record_success(self, latency_ms: float) -> None:
         """Record a successful call."""
@@ -171,6 +185,7 @@ class HealthRecorder:
             self._consecutive_failures = 0
             # Close breaker on success (even from half-open).
             self._breaker = "closed"
+        self._notify()
 
     def record_failure(self) -> None:
         """Record a failed call and potentially open the circuit breaker."""
@@ -190,6 +205,18 @@ class HealthRecorder:
                     self._provider,
                     self._consecutive_failures,
                 )
+            elif self._breaker == "half_open":
+                # H7: a failed probe during the half-open trial must reopen the
+                # breaker immediately — previously only closed->open existed, so
+                # a still-flapping provider stuck in half-open let every probe
+                # through instead of backing off again.
+                self._breaker = "open"
+                self._breaker_opened_at = time.monotonic()
+                logger.warning(
+                    "HealthRecorder[%s]: half-open probe failed — circuit breaker REOPENED",
+                    self._provider,
+                )
+        self._notify()
 
     def snapshot(self) -> ProviderHealth:
         """Return the current health snapshot (thread-safe)."""
@@ -318,13 +345,22 @@ class ResilientClient(BaseLLMClient):  # type: ignore[misc]
     def _call_with_chain(
         self,
         fn_builder: Callable[[BaseLLMClient], Callable[[], Any]],
+        *,
+        include_primary: bool = True,
     ) -> Any:
         """Drive the fallback chain for a given operation.
 
         Args:
             fn_builder: Given a client, returns the zero-arg callable to try.
+            include_primary: When ``False``, skip ``self._inner`` and start the
+                chain at the first fallback. H7: a mid-stream primary failure in
+                ``generate_stream`` must not re-invoke the same primary that just
+                failed — that risks a double-print/double-bill of a stream that
+                already emitted partial output before it broke.
         """
         chain = [(self._inner, self._recorder)] + self._fallbacks
+        if not include_primary:
+            chain = chain[1:]
         last_exc: BaseException | None = None
 
         for idx, (client, recorder) in enumerate(chain):
@@ -416,7 +452,8 @@ class ResilientClient(BaseLLMClient):  # type: ignore[misc]
                             tools=tools,
                             dynamic_system=dynamic_system,
                         )
-                    )
+                    ),
+                    include_primary=False,
                 )
                 if response.content:
                     yield response.content
