@@ -125,6 +125,14 @@ _STOPWORDS: frozenset[str] = frozenset(
 # Minimum token length to index/query (excludes single-char noise).
 _MIN_TOKEN_LEN = 2
 
+# C4 fix: minimum length for a token to act as a PREFIX source (distinct from
+# _MIN_TOKEN_LEN, which governs exact-match indexing). A 2-3 char indexed token
+# (e.g. "cap" from the keyword "market cap") over-matched as a prefix of unrelated
+# longer words (e.g. "capacitor"), producing false positives on negative probes.
+# Exact-match indexing via _MIN_TOKEN_LEN is untouched — short exact keywords like
+# "qr" still work; only prefix-matching eligibility is raised.
+_MIN_PREFIX_SOURCE_LEN = 4
+
 
 def _tokenize(text: str) -> list[str]:
     """Lowercase, strip punctuation, split into words, remove stopwords.
@@ -441,7 +449,10 @@ class SkillEngine:
         """Return all qualified node IDs reachable via prefix-of-``qt`` tokens.
 
         A token in ``_token_index`` qualifies when it is:
-        - at least ``_MIN_TOKEN_LEN`` (3-char rule in original code) characters long,
+        - at least ``_MIN_PREFIX_SOURCE_LEN`` characters long (C4: distinct from
+          the shorter ``_MIN_TOKEN_LEN`` used for exact-match indexing — a 2-3
+          char token is too short a prefix source and over-matches unrelated
+          longer words),
         - a proper prefix of ``qt`` (tok != qt, and qt.startswith(tok)).
 
         Uses a sorted token list + ``bisect`` for O(log V) range entry instead of the
@@ -461,16 +472,16 @@ class SkillEngine:
         if not tokens:
             return result
 
-        # All potential prefix tokens start at or after the 3-char minimum prefix of qt.
+        # All potential prefix tokens start at or after the minimum prefix of qt.
         # Use qt itself as the upper bound because a prefix must be strictly shorter.
-        min_prefix = qt[:_MIN_TOKEN_LEN]
+        min_prefix = qt[:_MIN_PREFIX_SOURCE_LEN]
         lo = bisect.bisect_left(tokens, min_prefix)
         for i in range(lo, len(tokens)):
             tok = tokens[i]
             # Once the token sorts past qt, no further token can be a prefix of qt.
             if tok >= qt:
                 break
-            if len(tok) >= _MIN_TOKEN_LEN and qt.startswith(tok):
+            if len(tok) >= _MIN_PREFIX_SOURCE_LEN and qt.startswith(tok):
                 result.update(self._token_index[tok])
         return result
 

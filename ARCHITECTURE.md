@@ -15,7 +15,7 @@ User input
 ┌─────────────────────────────────────────────────┐
 │  Entry points (CLI / TUI / Gateway / Channels)  │
 │  src/hachi/cli/main.py                          │
-│  src/hachi/tui/app.py                           │
+│  src/hachi/tui/cockpit/app.py                   │
 │  src/hachi/gateway/fastapi_app.py               │
 └──────────────────────┬──────────────────────────┘
                        │ session.chat()
@@ -50,7 +50,7 @@ User input
 | `src/hachi/core/turn_context.py` | Frozen per-turn snapshot (no shared mutable state) |
 | `src/hachi/og_engine/` | ObjectGraph (`.og`) parser and skill indexer |
 | `src/hachi/tools/` | All LLM-callable tool implementations |
-| `src/hachi/tui/app.py` | Textual UI |
+| `src/hachi/tui/cockpit/app.py` | Textual UI ("Hachi Cockpit") |
 | `src/hachi/gateway/fastapi_app.py` | FastAPI control plane (REST + SSE) |
 | `src/hachi/core/runtime_events.py` | Typed event contract consumed by TUI and gateway |
 
@@ -115,7 +115,7 @@ Failed writes surface in the `jobs/failed` read-model (visible in the TUI badge)
 
 ---
 
-## Permission gating (`src/hachi/tools/permissions.py`)
+## Permission gating (`src/hachi/core/permissions.py`)
 
 `device-permissions.og` (in the platformdirs config dir) declares:
 - Allowed filesystem roots (reads and writes)
@@ -154,8 +154,9 @@ between the loop and the display layer.
 
 FastAPI control plane exposing:
 - `POST /sessions` — create a session (lazy-boots the agent)
-- `POST /sessions/{id}/chat` — send a message; returns SSE stream or JSON
-- `GET  /sessions/{id}/events` — SSE event stream
+- `POST /sessions/{id}/messages` — send a message; returns JSON
+- `GET  /sessions/{id}/events` — JSON snapshot of past events (paginated via `after`/`limit`)
+- `GET  /sessions/{id}/stream` — SSE event stream (the real live-update channel; auto-reconnects)
 - `GET  /health` — liveness probe
 - `POST /v1/chat/completions` — OpenAI-compat facade
 

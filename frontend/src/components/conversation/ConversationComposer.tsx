@@ -22,18 +22,16 @@ import { VoiceOption } from './VoiceOption'
 import { VoiceWave } from './VoiceWave'
 
 // ---- slash command items (prototype renderVals lines 2214–2219) ------
-// LOW-024: added /plan /memory /sessions /model /delegate
+// H4: /routine, /dry-run, /budget, /delegate, /plan removed — no backend endpoint
+// exists for any of them (see docs/bug-bank.md BB-50). Only list commands with a
+// real 1:1 backing: /model, /memory, /remember (gateway slash commands) and
+// /sessions (a real client-side action via handleSlashPick).
 
 const SLASH_ITEMS = [
-  { cmd: '/routine', desc: 'create a recurring routine' },
-  { cmd: '/dry-run', desc: 'try a task once, safely' },
-  { cmd: '/remember', desc: 'save a fact to memory' },
-  { cmd: '/budget', desc: 'set a spend limit' },
-  { cmd: '/plan', desc: 'show the current task plan' },
-  { cmd: '/memory', desc: 'browse and edit memory' },
-  { cmd: '/sessions', desc: 'switch to a previous session' },
   { cmd: '/model', desc: 'change the AI model' },
-  { cmd: '/delegate', desc: 'hand off to a sub-agent' },
+  { cmd: '/memory', desc: 'search stored memory' },
+  { cmd: '/remember', desc: 'save a fact to memory' },
+  { cmd: '/sessions', desc: 'switch to a previous session' },
 ]
 
 interface ConversationComposerProps {
