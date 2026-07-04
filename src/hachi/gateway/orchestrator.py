@@ -21,7 +21,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import date as _date
+from pathlib import Path
 from typing import Any
 
 from hachi.core.approvals import (
@@ -32,7 +32,7 @@ from hachi.core.approvals import (
     get_approval_registry,
 )
 from hachi.core.checkpoints import CheckpointManager
-from hachi.core.cost import CostTracker
+from hachi.core.cost import CostTracker, clamp_nonnegative_cost_delta, today_utc_str
 from hachi.core.credential_vault import CredentialVault
 from hachi.core.integrations import IntegrationRuntime
 from hachi.core.llm import Message, create_llm_client
@@ -1530,7 +1530,10 @@ class AgentSession:
         if self._session_store is None:
             return None
         try:
-            today = _date.today().isoformat()
+            # BB-56: key on UTC (matching the write side below), not the host's
+            # local date — otherwise spend near midnight is misattributed to the
+            # wrong day for any user not in UTC.
+            today = today_utc_str()
             spent = self._session_store.get_daily_spend(today)
             if spent >= self._max_daily_cost_usd:
                 return f"daily cost cap reached (~${spent:.4f} >= ${self._max_daily_cost_usd:.2f})"
@@ -1691,11 +1694,18 @@ class AgentSession:
                     # daily ledger accumulates exactly what this turn spent.
                     turn_delta = snap.estimated_cost_usd - self._last_recorded_cost_usd
                     self._last_recorded_cost_usd = snap.estimated_cost_usd
-                    _turn_cost_usd = max(0.0, turn_delta)
+                    # BB-56: a negative delta (e.g. a cost_tracker reset mid-session)
+                    # is clamped to 0.0 AND logged — never silently dropped with no
+                    # trace, so a real anomaly stays visible instead of invisible.
+                    _turn_cost_usd = clamp_nonnegative_cost_delta(
+                        turn_delta, context=self._session_id or "unknown-session"
+                    )
                     _turn_tokens = max(0, snap.total_tokens - self._last_recorded_tokens)
                     self._last_recorded_tokens = snap.total_tokens
-                    if turn_delta > 0:
-                        self._session_store.record_daily_cost(_date.today().isoformat(), turn_delta)
+                    if _turn_cost_usd > 0:
+                        # BB-56: key on UTC (matching _daily_cap_exceeded's read side),
+                        # not the host's local date.
+                        self._session_store.record_daily_cost(today_utc_str(), _turn_cost_usd)
             except Exception:
                 # HIGH-012: cost persistence failures must be visible.
                 logger.warning(
@@ -2430,6 +2440,21 @@ def og_graph_from_engine(skill_engine: Any) -> dict[str, Any]:
 # ==========================================
 
 
+def _get_or_create_shared_scheduler(shared: Any, schedules_file: "Path") -> Scheduler:
+    """Return the one process-wide :class:`Scheduler` over *schedules_file*.
+
+    H3: a private per-session ``Scheduler(ScheduleStore(...))`` meant two
+    sessions in the same process each ran their own in-memory copy of the same
+    on-disk schedule store — both would independently fire a due schedule
+    (double-fire) and each's writes could clobber the other's (lost updates).
+    Mirrors the existing ``routing_store``/``event_bus`` lazy-singleton pattern
+    on :class:`~hachi.gateway.shared_services.ProcessSharedServices`.
+    """
+    if getattr(shared, "scheduler", None) is None:
+        shared.scheduler = Scheduler(ScheduleStore(schedules_file))
+    return shared.scheduler  # type: ignore[no-any-return]
+
+
 def boot_agent(
     on_event: Callable[..., None] | None = None,
     on_permission_request: Callable[[PermissionRequest], PermissionDecision] | None = None,
@@ -2868,7 +2893,8 @@ def boot_agent(
     # File-change checkpoints give the user an undo for agent edits (rollback_changes tool).
     checkpoint_manager = CheckpointManager(get_hachi_paths().checkpoints_dir)
     # Proactive scheduling (cron/interval/once) — persisted across restarts.
-    scheduler = Scheduler(ScheduleStore(get_hachi_paths().schedules_file))
+    # H3: shared across sessions in this process (see _get_or_create_shared_scheduler).
+    scheduler = _get_or_create_shared_scheduler(_shared, get_hachi_paths().schedules_file)
     # Initialize Session Store (Phase 3: cross-session persistence)
     session_store = SessionStore()
 
@@ -3485,7 +3511,12 @@ def boot_agent(
             )
 
     _schedule_runner = ScheduleRunner(scheduler, fire=_fire_schedule)
-    _schedule_runner.start()
+    # H3: the shared Scheduler object still races if two independent runner
+    # threads tick it concurrently — only the first session in this process
+    # starts the runner; later sessions reuse it without a second thread.
+    if not getattr(_shared, "scheduler_runner_started", False):
+        _schedule_runner.start()
+        _shared.scheduler_runner_started = True
     session._schedule_runner = _schedule_runner  # stopped in shutdown()
     session._scheduler = scheduler  # P4-05: exposed for companion web UI
 
