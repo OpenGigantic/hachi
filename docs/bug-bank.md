@@ -1830,6 +1830,42 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   that got cleaned up.
 - **Locked by:** `tests/test_agent_session_shutdown.py::TestAgentSessionShutdown::test_shutdown_shuts_down_tool_pool`.
 
+### BB-40 — Budget/token safety ceiling checked only post-hoc; a single call can overshoot it
+
+- **Symptom:** with a hard `_TOKEN_SAFETY_CEILING` (or an opt-in `max_tokens`) close to the
+  current cumulative usage, the loop still let ONE MORE full LLM call complete before
+  stopping — cumulative usage could land arbitrarily far past the ceiling (bounded only by
+  that one call's actual token cost) instead of being refused before it started.
+- **Root cause:** `ExecutionLoop._safety_ceiling_exceeded()` compared only the
+  already-recorded `cost_tracker.snapshot().total_tokens` against the ceiling. That snapshot
+  reflects calls that already completed; there was no estimate of the *upcoming* call's
+  worst-case token cost, so a call that would clearly blow the budget was allowed to run
+  anyway and only caught one iteration later, after the overrun already happened.
+- **Avoid:** when a resource cap is checked in a loop with expensive steps between checks,
+  the check must account for the worst-case cost of the *next* step, not just the
+  already-recorded total — "check after every step" is not equivalent to "never exceed the
+  cap by more than one step's cost" unless the next step's cost is bounded and added in.
+- **Locked by:** `tests/test_loop_backstop_cancel.py::test_token_safety_ceiling_is_preflight_not_post_hoc`.
+
+### BB-41 — Streaming LLM calls with unknown/zero usage silently under-count spend
+
+- **Symptom:** when a provider stream never sends a usage chunk (e.g. `stream_usage=False`
+  for a strict local server, or a provider that omits `stream_options`), `generate_stream()`
+  returns an all-zero `TokenUsage()` with zero visibility — cost/token budget caps
+  (`_budget_exceeded`, `_safety_ceiling_exceeded`) silently under-count these calls' real
+  spend since there is nothing distinguishing "really used 0 tokens" from "usage unknown."
+- **Root cause:** `OpenAICompatibleClient.generate_stream()` initializes
+  `final_usage = TokenUsage()` and only overwrites it if a usage chunk arrives; when none
+  does, the zero default is returned with no log signal at all.
+- **Avoid:** the zero-usage fallback return value must stay (breaking it would ripple into
+  every caller that already treats it as a valid `TokenUsage`), but any code path that
+  returns a placeholder/unknown value silently must at minimum log a WARNING so the gap is
+  operationally visible — never let "unknown" and "verified zero" be indistinguishable in
+  both the return value AND the logs.
+- **Locked by:** `tests/test_streaming.py::test_openai_stream_no_usage_chunk_logs_warning`
+  (companion to the pre-existing `test_openai_stream_no_usage_chunk_returns_zeros`, which
+  pins the unchanged zero-usage return value).
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

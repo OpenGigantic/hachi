@@ -520,6 +520,28 @@ def test_openai_stream_no_usage_chunk_returns_zeros() -> None:
     assert final.usage.output_tokens == 0
 
 
+def test_openai_stream_no_usage_chunk_logs_warning(caplog: Any) -> None:
+    """S1: real content was generated but usage came back all-zero (unknown) — this
+    silently under-counts spend against any configured cost/token cap, so it must be
+    logged at WARNING (not silently swallowed), even though the zero-usage fallback
+    return value itself is unchanged (see test_openai_stream_no_usage_chunk_returns_zeros).
+    """
+    import logging
+
+    client = _make_openai_client()  # _stream_usage=True is set by the helper
+
+    body = _sse_lines("pong")
+    mock_resp = _make_mock_stream_response(body)
+    client._http.stream = MagicMock(return_value=mock_resp)
+
+    with caplog.at_level(logging.WARNING, logger="hachi.core.llm"):
+        drain_stream(client.generate_stream(messages=[Message(role="user", content="ping")]))
+
+    assert any("usage" in r.getMessage().lower() for r in caplog.records), (
+        "expected a WARNING log when a stream completes with unknown/zero usage"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Existing generate() path unchanged (regression guard)
 # ---------------------------------------------------------------------------

@@ -714,19 +714,35 @@ class ExecutionLoop:
         return None
 
     def _safety_ceiling_exceeded(self) -> str | None:
-        """Return a reason string if the hard token safety ceiling is hit, else None.
+        """Return a reason string if the hard token safety ceiling is hit — or would be
+        crossed by the upcoming LLM call — else None.
 
         This ceiling is always checked when a cost_tracker is present, regardless of
         whether the user configured any opt-in budget.  It prevents true runaway
         token consumption when no other cap is active.
+
+        S1: checked PRE-FLIGHT, not just post-hoc. A pure ``snapshot >= ceiling``
+        check only ever catches an overrun *after* a call has already happened —
+        a single generation can cross the ceiling by its own full token cost before
+        the next iteration's check notices. We instead add the upcoming call's
+        worst-case token cost (bounded by ``_turn_client.max_tokens``, the
+        provider's configured output-token cap) to the current snapshot, so a call
+        that *would* cross the ceiling is refused before it starts.
         """
         if self.cost_tracker is None:
             return None
         snap = self.cost_tracker.snapshot()
-        if snap.total_tokens >= self._TOKEN_SAFETY_CEILING:
+        # Worst-case tokens the upcoming call could add: its bounded max output
+        # tokens (0 if the client doesn't expose one — no client-based estimate
+        # possible, falls back to the pure post-hoc check for that call).
+        worst_case_next_call = getattr(self, "_turn_client", None)
+        next_call_ceiling_tokens = getattr(worst_case_next_call, "max_tokens", 0) or 0
+        projected = snap.total_tokens + next_call_ceiling_tokens
+        if projected >= self._TOKEN_SAFETY_CEILING:
             return (
-                f"token safety ceiling reached ({snap.total_tokens:,} >= "
-                f"{self._TOKEN_SAFETY_CEILING:,})"
+                f"token safety ceiling reached ({snap.total_tokens:,} "
+                f"+ up to {next_call_ceiling_tokens:,} for the next call "
+                f">= {self._TOKEN_SAFETY_CEILING:,})"
             )
         return None
 
