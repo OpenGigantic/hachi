@@ -544,7 +544,7 @@ function Memory() {
                     }}
                     hoverStyle={{ background: 'var(--hachi-brand-active)' }}
                   >
-                    <Icon name={recallLoading ? 'loader' : 'search'} size={15} />
+                    <Icon name={recallLoading ? 'refresh' : 'search'} size={15} />
                     {recallLoading ? 'Recalling…' : 'Recall'}
                   </TextBtn>
                 </div>

@@ -1714,6 +1714,25 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** `tests/test_cockpit_chat_live.py::TestChatViewOffline::test_rail_reflects_real_pending_approval`,
   `::test_rail_shows_no_approvals_when_none_pending`.
 
+### BB-61 — Icon registry silently renders blank `<svg>` for unregistered names (L2)
+
+- **Symptom:** `SpendSection.tsx`'s "Breakdown" heading and `memory.tsx`'s recall button showed
+  no icon at all — an empty space where the icon should be, no console warning, no crash.
+- **Root cause:** `components/icons/Icon.tsx`'s `registry[name] ?? ''` silently falls back to an
+  empty string for any unrecognized `name`, so a typo'd/never-added icon name renders a valid but
+  visually blank `<svg>`. Two call sites referenced names that were never added to the registry:
+  `'bar-chart'` (SpendSection.tsx:486) and `'loader'` (memory.tsx recall button, was line 546).
+- **Fix:** added `'bar-chart'` to the registry (no existing substitute — a real gap). For
+  `'loader'`, changed the call site to the existing `'refresh'` icon, matching the loading-state
+  convention already used elsewhere (e.g. `conversation.tsx`'s upload button swaps
+  `paperclip`→`refresh` while uploading) rather than growing the icon set for a near-duplicate.
+- **Avoid:** when adding an `<Icon name="...">` call, verify the name exists in
+  `components/icons/Icon.tsx`'s `registry` (or add it) — the component gives no runtime signal
+  when it doesn't.
+- **Locked by:** `frontend/src/components/icons/Icon.test.tsx` (3 tests: bar-chart renders real
+  markup, an unregistered name documents the blank-fallback failure mode, and a sweep over the
+  in-use icon names asserts none render blank).
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
