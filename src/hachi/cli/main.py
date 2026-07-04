@@ -605,8 +605,27 @@ class _InProcessGatewayRuntime:
         return items
 
     def get_config(self) -> dict:
+        # BB-57: GET /config must never echo secret-shaped fields — mirror the
+        # masking GET /config/providers already applies via provider_admin._mask_provider
+        # (drops api_key_ref/api_key_env/base_url, masks header values) instead of
+        # dumping the raw ResolvedConfig, which leaked env-var names, base URLs, and
+        # raw header values (e.g. Authorization bearer tokens) verbatim.
+        from hachi.gateway.provider_admin import _mask_provider
+
         config = load_effective_config()
         raw = config.model_dump(mode="python", exclude_none=True)
+
+        raw["provider"] = _mask_provider("__primary__", config.provider)
+        raw["providers"] = {
+            name: _mask_provider(name, ps) for name, ps in (config.providers or {}).items()
+        }
+
+        capabilities_block = raw.get("capabilities")
+        if isinstance(capabilities_block, dict):
+            for entry in capabilities_block.values():
+                if isinstance(entry, dict) and entry.get("secret_ref"):
+                    entry["secret_ref"] = "***"
+
         # Ensure GET /config always includes a ``limits`` block with the frontend-facing
         # keys ``per_task_cap_usd`` / ``daily_cap_usd`` so caps saved via PUT /config/limits
         # round-trip on reload.

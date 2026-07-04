@@ -58,7 +58,9 @@ class _FakeResolvedConfig:
             api_key_ref=None,
             api_key_env=None,
             allowed_models=[],
+            headers={},
         )
+        self.providers: dict = {}
         self.permissions = SimpleNamespace(tier="guided")
         self.memory = SimpleNamespace(
             enable_session_history=True,
@@ -121,6 +123,86 @@ def test_get_config_endpoint_includes_limits_keys(monkeypatch: pytest.MonkeyPatc
     assert "limits" in data
     assert data["limits"]["per_task_cap_usd"] == 2.0
     assert data["limits"]["daily_cap_usd"] == 20.0
+
+
+# ---------------------------------------------------------------------------
+# BB-57 — GET /config must mask secret refs / base URLs / raw headers
+# ---------------------------------------------------------------------------
+
+
+def _real_config_with_secrets():
+    """A real ResolvedConfig populated with secret-shaped fields (BB-57 repro)."""
+    from hachi.core.settings import CapabilityState, ProviderSettings, ResolvedConfig
+
+    return ResolvedConfig(
+        provider=ProviderSettings(
+            kind="openai-compatible",
+            model="gpt-4",
+            base_url="https://api.example.com/v1",
+            api_key_ref="vault:openai_key",
+            api_key_env="OPENAI_API_KEY",
+            headers={"Authorization": "Bearer sk-secret123"},
+        ),
+        providers={
+            "backup": ProviderSettings(
+                kind="anthropic",
+                model="claude",
+                base_url="https://backup.example.com",
+                api_key_env="ANTHROPIC_API_KEY",
+                api_key_ref="vault:anthropic_key",
+            ),
+        },
+        capabilities={
+            "google": CapabilityState(
+                enabled=True, configured=True, secret_ref="vault:google_oauth"
+            ),
+        },
+    )
+
+
+def test_get_config_masks_provider_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GET /config must not leak api_key_ref/api_key_env/raw header values.
+
+    BB-57: the raw ResolvedConfig.model_dump() was returned verbatim, unlike the
+    already-masked GET /config/providers (provider_admin._mask_provider). Masking
+    must be *consistent* with that endpoint: api_key_ref/api_key_env are dropped
+    entirely (collapsed into a ``configured`` boolean) and header values are
+    replaced with ``"***"``. ``base_url`` is not itself a secret and stays
+    visible (matching /providers) so the UI can still display/edit it.
+    """
+    from hachi.cli.main import _InProcessGatewayRuntime
+
+    runtime = _InProcessGatewayRuntime()
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: _real_config_with_secrets())
+
+    result = runtime.get_config()
+
+    for block in (result["provider"], result["providers"]["backup"]):
+        assert "api_key_ref" not in block
+        assert "api_key_env" not in block
+        assert "configured" in block
+        if block.get("headers"):
+            assert all(v == "***" for v in block["headers"].values())
+
+    assert result["capabilities"]["google"]["secret_ref"] != "vault:google_oauth"
+
+
+def test_get_config_endpoint_masks_secrets_via_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The GET /config HTTP endpoint must not echo secret refs or raw header values."""
+    from hachi.cli.main import _InProcessGatewayRuntime
+
+    runtime = _InProcessGatewayRuntime()
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: _real_config_with_secrets())
+
+    cp = GatewayControlPlane(get_config=runtime.get_config)
+    with _app(cp) as client:
+        resp = client.get("/config")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "vault:openai_key" not in body
+    assert "vault:anthropic_key" not in body
+    assert "vault:google_oauth" not in body
+    assert "sk-secret123" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -553,6 +635,134 @@ def test_slash_unknown_returns_error_message() -> None:
     assert resp.status_code == 200
     response_text = resp.json()["response"].lower()
     assert "unknown" in response_text or "frobnicator" in response_text
+
+
+# ---------------------------------------------------------------------------
+# H4 — /memory and /remember must be real slash commands, not "Unknown command"
+# ---------------------------------------------------------------------------
+
+
+def _make_cp_with_memory() -> tuple[GatewayControlPlane, list[tuple[str, str]], list[str]]:
+    """Control plane wired with chat + memory recall + add_memory_fact handlers.
+
+    Returns (control_plane, recall_calls, added_facts) so tests can assert on
+    what the slash-command handler actually invoked.
+    """
+    recall_calls: list[tuple[str, str]] = []  # (query, top_k) as strings for easy asserts
+    added_facts: list[str] = []
+
+    def _connect(session_id: str, req) -> None:
+        pass
+
+    def _chat(session_id: str, prompt: str) -> str:
+        return f"LLM reply to: {prompt}"
+
+    def _events(session_id: str, after: int, limit: int):
+        return []
+
+    def _recall(query: str, top_k: int) -> list[dict]:
+        recall_calls.append((query, str(top_k)))
+        return [{"id": "fact-1", "raw_content": f"remembered: {query}", "category": "user_profile"}]
+
+    def _add_fact(group: str, text: str) -> dict:
+        added_facts.append(text)
+        return {"id": "new-fact-id"}
+
+    cp = GatewayControlPlane(
+        on_connect=_connect,
+        on_chat=_chat,
+        read_events=_events,
+        get_memory_recall=_recall,
+        add_memory_fact=_add_fact,
+    )
+    return cp, recall_calls, added_facts
+
+
+def test_slash_memory_returns_recall_results() -> None:
+    """/memory <query> must call memory_recall and surface the results as text."""
+    cp, recall_calls, _added = _make_cp_with_memory()
+
+    with _app(cp) as client:
+        create_resp = client.post(
+            "/sessions",
+            json={"client_id": "test-client", "surface": "test", "protocol_version": "1.0"},
+        )
+        session_id = create_resp.json()["session_id"]
+
+        resp = client.post(
+            f"/sessions/{session_id}/messages",
+            json={"prompt": "/memory favorite editor"},
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    response_text = data["response"]
+    assert recall_calls, "/memory must invoke memory_recall(), not forward to the LLM"
+    assert recall_calls[0][0] == "favorite editor"
+    assert "remembered: favorite editor" in response_text
+
+
+def test_slash_memory_without_query_returns_usage_hint() -> None:
+    """/memory with no query argument must not crash or silently forward to the LLM."""
+    cp, recall_calls, _added = _make_cp_with_memory()
+
+    with _app(cp) as client:
+        create_resp = client.post(
+            "/sessions",
+            json={"client_id": "test-client", "surface": "test", "protocol_version": "1.0"},
+        )
+        session_id = create_resp.json()["session_id"]
+
+        resp = client.post(
+            f"/sessions/{session_id}/messages",
+            json={"prompt": "/memory"},
+        )
+    assert resp.status_code == 200
+    assert not recall_calls, "no query given — memory_recall must not be called"
+    assert "usage" in resp.json()["response"].lower() or "query" in resp.json()["response"].lower()
+
+
+def test_slash_remember_adds_a_fact() -> None:
+    """/remember <fact> must call add_memory_fact, not forward to the LLM."""
+    cp, _recall_calls, added_facts = _make_cp_with_memory()
+
+    with _app(cp) as client:
+        create_resp = client.post(
+            "/sessions",
+            json={"client_id": "test-client", "surface": "test", "protocol_version": "1.0"},
+        )
+        session_id = create_resp.json()["session_id"]
+
+        resp = client.post(
+            f"/sessions/{session_id}/messages",
+            json={"prompt": "/remember I prefer dark mode"},
+        )
+    assert resp.status_code == 200
+    assert added_facts == ["I prefer dark mode"], (
+        "/remember must call add_memory_fact() with the fact text, not forward to the LLM"
+    )
+    assert (
+        "remember" in resp.json()["response"].lower() or "saved" in resp.json()["response"].lower()
+    )
+
+
+def test_slash_remember_without_fact_returns_usage_hint() -> None:
+    """/remember with no fact text must not crash or silently forward to the LLM."""
+    cp, _recall_calls, added_facts = _make_cp_with_memory()
+
+    with _app(cp) as client:
+        create_resp = client.post(
+            "/sessions",
+            json={"client_id": "test-client", "surface": "test", "protocol_version": "1.0"},
+        )
+        session_id = create_resp.json()["session_id"]
+
+        resp = client.post(
+            f"/sessions/{session_id}/messages",
+            json={"prompt": "/remember"},
+        )
+    assert resp.status_code == 200
+    assert not added_facts, "no fact given — add_memory_fact must not be called"
+    assert "usage" in resp.json()["response"].lower() or "fact" in resp.json()["response"].lower()
 
 
 def test_normal_message_not_affected_by_slash_handler() -> None:

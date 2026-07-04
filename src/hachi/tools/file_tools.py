@@ -306,19 +306,13 @@ def register_file_tools(registry: Any, gate: Any) -> None:
         registry: :class:`~hachi.core.loop.ToolRegistry` instance.
         gate:     :class:`~hachi.core.permissions.PermissionGate` instance.
     """
-    from hachi.core.permissions import PermissionRequest
 
     def _gated(fn: Any, action: str, resource_key: str = "path") -> Any:
         """Wrap *fn* with a permission gate check."""
 
         def _inner(**kwargs: Any) -> str:
             resource = kwargs.get(resource_key, "files")
-            req = PermissionRequest(
-                tool_name=fn.__name__,
-                action=action,
-                resource=str(resource),
-            )
-            decision = gate.check(req)
+            decision = gate.check_path(str(resource), action)
             if not decision.allowed:
                 return json.dumps({"error": f"Permission denied: {decision.reason}"})
             return fn(**kwargs)

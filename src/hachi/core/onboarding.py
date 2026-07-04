@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from hachi.core.atomic_io import atomic_write_json, quarantine_corrupt_file
 from hachi.core.config_loader import load_effective_config, write_global_config
 from hachi.core.paths import (
     HachiPaths,
@@ -177,12 +178,14 @@ class OnboardingService:
         try:
             return OnboardingState.model_validate_json(path.read_text(encoding="utf-8"))
         except Exception:
+            # BB-51: quarantine the unparseable file BEFORE returning the empty
+            # default, so the next save_state() can't silently clobber it.
+            quarantine_corrupt_file(path)
             return OnboardingState()
 
     def save_state(self, state: OnboardingState) -> Path:
         dest: Path = self.paths.onboarding_state_file
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(state.model_dump_json(indent=2), encoding="utf-8")
+        atomic_write_json(dest, state.model_dump(mode="json"))
         return dest
 
     def detect_environment(self, project_dir: Path | None = None) -> dict[str, Any]:

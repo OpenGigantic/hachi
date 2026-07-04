@@ -579,6 +579,1120 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `<KennelConsent/>` and rerenders across both transition directions via
   `@testing-library/react`).
 
+### BB-41 — File-attachment tools crashed on every call — wrong `PermissionGate` API
+
+- **Symptom:** every call to `attach_file`, `read_attachment`, `list_attachments`, or
+  `search_attachments` raised a `TypeError` immediately, invisible to the end user because
+  the execution loop swallowed it as a generic "Tool Execution Error". The whole file
+  attachment tool group was silently non-functional.
+- **Root cause:** `register_file_tools`'s internal `_gated` wrapper
+  (`src/hachi/tools/file_tools.py`) constructed
+  `PermissionRequest(tool_name=..., action=..., resource=...)` — kwargs that don't exist
+  on the real dataclass (`request_id`/`operation`/`tool`/`target`/`reason`/
+  `policy_summary`) — and called `gate.check(req)`, a method `PermissionGate` doesn't
+  have. `PermissionGate` only exposes `check_path(path, operation)` /
+  `check_command(command)`, each returning a `PermissionResult` with `.allowed`/`.reason`.
+  `os_tools.py`'s gated wrappers already used the correct pattern; `file_tools.py` never
+  matched it.
+- **Avoid:** any new permission-gated tool wrapper must call `gate.check_path(path,
+  operation)` or `gate.check_command(command)` and branch on `.allowed`/`.reason` — never
+  invent a `.check()` method or a `PermissionRequest` convenience constructor. Verify
+  against `src/hachi/core/permissions.py`'s actual public surface (or copy the pattern
+  from `os_tools.py`) before wiring a new tool group to the gate.
+- **Locked by:** `tests/test_file_platform.py::TestRegisteredFileToolsPermissionGate` (4
+  tests) — registers the file tools with a REAL `PermissionGate` (not a mock) and invokes
+  the wrapped, registered callables exactly as `ToolRegistry`/the execution loop would,
+  asserting real JSON results instead of a `TypeError`.
+
+### BB-42 — Background spend recording leaked a SQLite connection on every call
+
+- **Symptom:** every call to `record_background_usage`/`record_voice_usage` (fact
+  extraction, durable session titling, voice STT/TTS spend) opened a brand-new
+  `SessionStore()` — running full schema init/migrations — and never closed it. On
+  Windows this holds `sessions.db-wal`/`-shm` file handles open indefinitely,
+  compounding over the life of a long-running gateway process.
+- **Root cause:** both functions in `src/hachi/core/cost.py` tried
+  `from hachi.gateway.orchestrator import _get_session_store` inside a
+  `try/except Exception` — but `_get_session_store` has never existed in
+  `hachi.gateway.orchestrator` (the real process-wide accessor pattern lives in
+  `hachi.gateway.fastapi_app._resolve_session_store`, which goes through
+  `ProcessSharedServices.instance()`). The import always raised `ImportError`,
+  which the broad `except` swallowed, so the code silently fell through to the
+  fallback branch on *every single call* and the fallback `SessionStore()` was
+  never shut down.
+- **Fix:** added `_get_shared_session_store()` in `cost.py` — mirrors
+  `hachi.core.runtime.resume._get_process_bus()`'s established pattern of lazily
+  importing `ProcessSharedServices` from `hachi.gateway.shared_services` (not
+  `orchestrator`) and reading `.session_store` off the singleton via `getattr`.
+  Both call sites now wrap the fallback `SessionStore()` in `try/finally:
+  fallback_store.shutdown()` so the connection is always closed when no shared
+  store exists. Updated the frozen import-linter seam in `pyproject.toml` from
+  `"hachi.core.cost -> hachi.gateway.orchestrator"` to
+  `"hachi.core.cost -> hachi.gateway.shared_services"` to match.
+- **Avoid:** any core-adjacent code that opens a short-lived, non-shared
+  `SessionStore()` (or any other object owning a raw `sqlite3` connection) as a
+  fallback MUST wrap the call in `try/finally: store.shutdown()`. Never
+  reference a gateway symbol by name without grepping to confirm it actually
+  exists there first — a broad `except Exception` around the lookup will hide
+  an `ImportError` forever and silently downgrade every call to the "no shared
+  store" path.
+- **Locked by:** `tests/test_cost_tracking.py::test_record_background_usage_closes_fallback_store_connection`
+  and `::test_record_voice_usage_closes_fallback_store_connection` — assert that after the
+  call, the fallback store's underlying `sqlite3` connection raises
+  `sqlite3.ProgrammingError` on further use (i.e. it was actually closed).
+
+### BB-40 — Automatic background fact-extraction ("auto-memory") was a complete, silent no-op
+
+- **Symptom:** Hachi's advertised feature — background fact extraction after every
+  turn so the user never has to say "remember this" — never wrote a single fact to
+  the vault, for any user, in production. No error surfaced anywhere; the job queue
+  reported every `extract_fact` job as COMPLETED.
+- **Root cause:** two independent, compounding bugs.
+  1. `build_job_context()`'s no-factory branch (the path every real production job
+     takes — `orchestrator.boot_agent` registers `handle_extract_fact` with NO
+     `_vault_factory` injected) did `from hachi.core.memory_vault import
+     get_memory_vault` — a function that **did not exist** in `memory_vault.py`
+     (only the `MemoryVault` class + module helpers were defined). The resulting
+     `ImportError` was swallowed by a bare `except Exception: logger.debug(...)`,
+     so `ctx.vault` silently stayed `None` and `handle_extract_fact` returned
+     `"skipped:no_vault"` — logged with a misleading "ChromaDB not configured?"
+     message that pointed nowhere near the real cause.
+  2. `core/memory.py`'s `extract_facts()` additionally hardcoded a check for
+     `os.environ["ANTHROPIC_API_KEY"]` even though it already receives a resolved,
+     working `llm_client` argument from both callers (`handle_extract_fact` and
+     `MemoryManager._run_fact_extraction`), each of which already gates on
+     `client is None` before calling `extract_facts`. This doubly killed
+     auto-memory for any user on a non-Anthropic backend (Ollama/Groq/OpenRouter)
+     even after fixing bug 1.
+  3. The pre-existing test suite (`tests/test_durable_fact_extraction.py`) always
+     injected `_vault_factory=lambda: vault`, so it never exercised the real,
+     no-factory production code path — which is exactly why this shipped silently.
+- **Fix:** added `get_memory_vault()` to `src/hachi/core/memory_vault.py` — a
+  pure, paths-only constructor (`MemoryVault(brain_dir=str(get_hachi_paths().data_dir))`)
+  with NO import of `hachi.gateway` (the import-linter "engine must not import the
+  gateway service" contract has no ignore entry for this module). Moved the
+  process-shared-vault *preference* (reuse the live session's ChromaDB client
+  instead of opening a second `PersistentClient`) into
+  `build_job_context()`/`job_handlers.py` itself, which already has a frozen,
+  allowed seam to `hachi.gateway.orchestrator` — it now tries
+  `orchestrator._shared.vault` first and falls back to `get_memory_vault()`.
+  Upgraded the swallowed-import log line from `logger.debug` to
+  `logger.warning(..., exc_info=True)` so a future regression here is visible.
+  Changed `extract_facts()`'s gate from `if not os.environ.get("ANTHROPIC_API_KEY")`
+  to `if llm_client is None` — the client itself, not an Anthropic-specific env var,
+  is the correct signal that extraction can run.
+- **Avoid:** whenever a durable job handler's `build_job_context()`-style no-factory
+  branch imports a "get the real service" function, grep to confirm that function
+  actually exists before trusting a bare `except Exception: logger.debug(...)` to
+  hide the truth — that pattern is exactly how BB-40 (and BB-42, found the same
+  session) shipped silently. Any test that only ever exercises an injected
+  `_factory=` path is NOT testing the real production code path — always add at
+  least one test with no factory injected for the handler's actual no-argument
+  resolution branch. Feature gates for "is an LLM client available" must check the
+  resolved client object, never a single provider's env var.
+- **Locked by:** `tests/test_durable_fact_extraction.py::test_build_job_context_resolves_real_vault_with_no_factory`,
+  `::test_handle_extract_fact_no_vault_factory_writes_real_fact`, and
+  `::test_extract_facts_does_not_require_anthropic_api_key_when_client_present`.
+
+### BB-43 — Benchmark headline measured a failed query; the FPR gate was never run against the shipped corpus
+
+- **Symptom:** the marquee "97.6% token savings" headline (README badge, `benchmark.md`,
+  the frozen `s_real_results_v1.json`) actually measured Pass 2/3 costs of a **failed**
+  skill load, not a real one. Separately, the benchmark's own CI gate
+  (`skill benchmark --suite fast --json --threshold 0.80`) failed with exit 1 — FPR
+  0.40 — the moment it was run against the actual bundled `default_skills` directory
+  instead of a stale, previously-installed local copy.
+- **Root cause:** three independent, compounding issues.
+  1. Both the CLI (`skill.py::skill_benchmark`) and the pytest benchmark
+     (`test_og_benchmark.py`) picked their "representative query" as either
+     `list(engine._keyword_index.keys())[0]` or the first keyword on the first
+     node — with no check that the result actually resolves. On the shipped corpus
+     this picks the keyword `"persona"`, whose top search hit is the bare node name
+     `identity` — defined once in `brain.og` **and once per `roles/*.og` file** (6
+     nodes total). `resolve_node("identity")` refuses to pick one of 6 ambiguous
+     matches and returns the sentinel string `"Error: Skill 'identity' not found in
+     the loaded skills."` — 13 characters, estimated as 13 tokens. The benchmark
+     then reported "97.6% savings" for measuring the length of an error message.
+  2. `_prefix_matched_qids()` in `src/hachi/og_engine/engine.py` let indexed tokens
+     as short as 2 characters act as *prefix sources* (its own docstring claimed a
+     "3-char rule" while the actual constant, `_MIN_TOKEN_LEN`, was 2). The keyword
+     "market cap" tokenizes to `["market", "cap"]`; the 3-char token `"cap"` then
+     prefix-matched any query token starting with those letters, e.g. `"capacitor"`
+     → `core_finance` — an unrelated false positive on a negative probe.
+  3. The frozen `benchmarks/og_bench/data/s_real_results_v1.json` (`nodes: 53`,
+     `run_date: 2026-06-13`) was never regenerated as `default_skills` grew to 31
+     files / 60 total nodes (53 non-`brain.og` "skill" nodes). Nobody caught the
+     drift because (a) the pytest threshold only asserts `savings >= 0.80`, not the
+     specific headline number, and (b) a developer's own machine already had an
+     older, 53-node copy bootstrapped into `~/.hachi/skills`, so `skill benchmark`
+     (no `--dir`) silently passed there — `get_skills_dir()` only bootstraps fresh
+     from the bundled `default_skills` package when no local copy exists yet (i.e.
+     on a genuinely clean checkout, which is what CI actually runs).
+- **Fix:**
+  - Added `pick_representative_query(engine)` to `benchmarks/og_bench/metrics.py` —
+    walks indexed keywords in stable order and returns the first one whose top
+    search hit's `resolve_node()` does **not** start with `"Error:"`. Wired into
+    both `skill.py::skill_benchmark` (exits 2 with a clear message if none resolve,
+    instead of silently measuring a failure) and `test_og_benchmark.py` (skips with
+    a clear reason).
+  - Added a distinct `_MIN_PREFIX_SOURCE_LEN = 4` constant in `engine.py`, used only
+    by `_prefix_matched_qids`'s length check — `_MIN_TOKEN_LEN` (2) is untouched so
+    short *exact*-match keywords (e.g. `"qr"`) still index normally; only their
+    eligibility as a *prefix source* for other query tokens is raised.
+  - Reworded probe `n001` in `s_real_probes.json` (`"supercalifragilistic skill not
+    in library"` → `"...gizmo not in repertoire"`) — the old wording's incidental
+    use of the real word "skill" collided with the shipped `learning_plan` node's
+    "skill development" keyword via an **exact** token match (not a prefix issue,
+    so unaffected by the matcher fix); this is a probe-content fix, not an engine fix.
+  - Regenerated `s_real_results_v1.json` from a live run against
+    `src/hachi/default_skills` (`git d293c82`, 2026-07-04): 60 nodes, 97.8% savings
+    (248 vs 11,183 tokens), P@5 = 1.00, FPR = 0.00 — all gates green. Updated
+    `README.md` and `docs/reference/benchmark.md` to match (including the
+    "53 default skills" wording, which conflated a node count with the actual
+    31-file count).
+- **Avoid:** never pick a "representative"/example query for a demo or benchmark by
+  index-order alone — always assert the resolution actually succeeds, or average
+  over a full probe set. When a skill library allows same-named nodes across files
+  (an intentional feature — see `_bare_name_index`/qualified IDs), any code that
+  surfaces a bare `name` from `search()` results and later calls `resolve_node(name)`
+  must handle the ambiguous case, not assume success. Re-run gates that depend on
+  "the skills directory" against the actual bundled/shipped path in a test, not just
+  interactively on a developer machine that may have a stale local cache from a
+  previous version.
+- **Locked by:** `tests/test_og_benchmark.py::test_three_pass_beats_dump_baseline`
+  (now asserts the resolved text doesn't start with `"Error:"`) and the new
+  `::test_retrieval_quality_gate_on_shipped_corpus` (runs the real M1 gate against
+  `default_skills`, not a mock); `tests/test_og_engine.py::test_prefix_match_does_not_over_match_short_tokens`.
+
+### BB-44 — `_history` mutated/read without consistently holding `_history_lock` — background compaction races a live turn
+
+- **Symptom:** audit finding H1 (`docs/audit/2026-07-03/PRODUCTION_READINESS.md` §4 H1).
+  `MemoryManager._history` is protected by a `_history_lock`, but that lock was only
+  ever taken inside `_sliding_window_compact()`'s reassignment and
+  `_apply_summary_to_history()`'s placeholder scan. `add_message()` (the append on
+  every live turn), `apply_pending_compaction()` (the deferred skill-switch
+  compaction meant to run "between turns"), and the `history` property (handed by
+  reference to the LLM provider at `core/loop.py:979`) all read or mutated
+  `self._history` with **no lock at all**. If a background compaction
+  (`_sliding_window_compact`, lock-holding) and the deferred
+  `apply_pending_compaction` (lock-free) ever ran concurrently — e.g. a live turn's
+  `add_message()` trips the token/count-based sliding-window compaction on one path
+  while `prepare_for_turn()` calls `apply_pending_compaction()` for a still-pending
+  skill switch on another — both replace `self._history` wholesale
+  (`self._history = <new list>`), so whichever reassignment lands second silently
+  discards the other's result (last-writer-wins on the list reference, not a merge).
+  This can drop an entire tool_use/tool_result pair the other thread had already
+  retained, which the Anthropic API rejects with a 400 (or worse, silently corrupts
+  context if only one side of the pair survives).
+- **Root cause:** locking discipline was inconsistent, not absent — one compaction
+  path (`_sliding_window_compact`) was correctly guarded, but a second, differently
+  shaped read-modify-reassign of the same list (`apply_pending_compaction`) and the
+  primary writer (`add_message`) were not, so the lock provided no real mutual
+  exclusion for the actual race the audit describes. The `history` property also
+  returned the live list object by reference rather than a point-in-time snapshot,
+  so a caller (e.g. `core/loop.py` building `gen_kwargs["messages"]` before a
+  streaming LLM call) could be handed a reference that a background thread later
+  reassigns or whose retained Message objects a background thread mutates in place.
+- **Fix:** `src/hachi/core/memory.py`:
+  - `add_message()` (~L734) now appends under `with self._history_lock:`.
+  - `apply_pending_compaction()` (~L785) now performs the boundary lookup, the
+    old-messages read, and the final reassignment as one atomic critical section
+    under `with self._history_lock:` — matching `_sliding_window_compact`'s existing
+    shape. The task-ledger append (which has its own append-only semantics and isn't
+    part of the `_history` invariant) stays outside the lock to keep the held time
+    minimal.
+  - The `history` property (~L709) now returns `list(self._history)` — a shallow
+    snapshot copy taken under `_history_lock` — instead of the live list reference,
+    so `core/loop.py` (and any other reader) always gets a consistent, point-in-time
+    view that a concurrent compaction cannot reassign out from under it.
+- **Avoid:** every read *and* every write of `MemoryManager._history` must hold
+  `_history_lock` for the entire read-modify-write — a lock that only some of the
+  mutators respect provides no real protection. Any public accessor that hands
+  `_history` to a caller outside the class (especially one that survives past the
+  call, like a provider request body) must return a locked snapshot copy, never the
+  live list reference.
+- **Locked by:** `tests/test_history_lock_race.py::test_concurrent_apply_pending_compaction_and_sliding_window_compact_dont_clobber`.
+
+### BB-46 — Resilience/routing subsystem was decorative: breaker never re-opened, router health never updated, stream failover could double-bill, provider inference was hardcoded
+
+- **Symptom:** audit finding H7 (`docs/audit/2026-07-03/PRODUCTION_READINESS.md` §4 H7;
+  DETAILED_FINDINGS.md core-agent M1/L2). Four related but distinct correctness gaps in
+  `core/resilience.py` / `core/routing/router.py`:
+  1. A circuit breaker that transitioned `open` → `half_open` after cooldown and then
+     failed its recovery probe stayed stuck in `half_open` forever instead of reopening
+     — `HealthRecorder.record_failure()`'s only breaker-opening guard was
+     `self._breaker == "closed"` (`resilience.py:184`, old code), so a still-broken
+     provider kept receiving probe traffic indefinitely.
+  2. `AIProvider.update_health()` (defined on both `AnthropicProvider` and
+     `OpenAICompatProvider`) had **zero real callers repo-wide** — grep confirmed only
+     the two method definitions, no invocations. Real call outcomes never fed back into
+     `provider.health()`, so `ModelRouter._resolve()`'s breaker filter
+     (`_provider_usable()`, router.py ~L233/346) always read a permanently-default
+     `ProviderHealth(breaker="closed")` regardless of actual failures.
+  3. `ResilientClient.generate_stream`'s failover path called `self._call_with_chain(...)`
+     on a mid-stream primary failure, but `_call_with_chain` unconditionally prepended
+     `(self._inner, self._recorder)` — the very primary that just failed — as
+     fallback[0]. A primary that fails after emitting partial output would be
+     re-invoked and re-charged, risking double-printed text and double-billed cost.
+  4. `_synthetic_descriptor()` (router.py ~L315, amendment A11 fallback for
+     undeclared model ids) hardcoded `provider="anthropic"` unconditionally, so an
+     unregistered OpenAI/Gemini/xAI model id would synthesize a descriptor pointing at
+     the wrong provider adapter.
+- **Root cause:** each sub-part was a narrow, independent gap in an otherwise-correct
+  state machine/function — not a systemic design flaw: (1) a missing state transition,
+  (2) a callback hook (`update_health`) that was defined speculatively but never wired
+  to a real caller, (3) a fallback-chain builder reused verbatim for a code path where
+  its "always include primary" assumption no longer holds, (4) a one-line hardcoded
+  default that was never revisited once real non-Anthropic bundled models existed.
+- **Fix:**
+  1. `HealthRecorder.record_failure()` (`src/hachi/core/resilience.py:192-218`) now
+     checks `self._breaker == "half_open"` first and reopens immediately on any failed
+     probe (bypassing the consecutive-failure threshold, since one failed probe during
+     recovery testing is decisive), falling through to the original `closed` → `open`
+     threshold check otherwise.
+  2. `HealthRecorder.__init__` (`resilience.py:162-176`) gained an optional
+     `on_update: Callable[[ProviderHealth], None] | None` sink, invoked via a new
+     `_notify()` helper (`resilience.py:221-230`, called outside the lock) at the end of
+     both `record_success` and `record_failure`. `ModelRouter._get_recorder`
+     (`src/hachi/core/routing/router.py:304-322`) now resolves the owning provider via
+     `self._providers.get_by_name(provider_name)` and wires its `update_health` method
+     (if present) as that sink — real outcomes now flow
+     `resilient_call` → `HealthRecorder` → `provider.update_health()` → next
+     `_resolve()`'s `provider.health()` read.
+  3. `ResilientClient._call_with_chain` (`resilience.py:327-345`) gained an
+     `include_primary: bool = True` keyword; `generate_stream`'s failover call site
+     (`resilience.py:430-441`) now passes `include_primary=False` so the rebuilt chain
+     starts at the fallbacks only, never re-invoking the primary that just failed
+     mid-stream. Also fixed the failover-log `idx > 0` gate to account for the
+     no-primary case.
+  4. Added `_infer_provider()` (`router.py`, new helper) that pattern-matches the model
+     id against the same naming families already used in `model-registry.json`
+     (`claude-*` → anthropic, `gpt-*`/`o<N>*` → openai, `gemini-*` → google, `grok-*` →
+     xai), falling back to `"anthropic"` only for genuinely unrecognised ids.
+     `_synthetic_descriptor()` now calls it instead of hardcoding the provider.
+- **Avoid:** a circuit breaker's `half_open` state must have its own failure-handling
+  branch — never gate breaker-opening solely on `self._breaker == "closed"`, or
+  recovery probes can never fail back to `open`. A `*_call_with_chain`-style fallback
+  builder that unconditionally includes "the current client" must not be reused
+  as-is for a failure path where that client has *already just failed* — add an
+  explicit flag rather than assuming every caller wants the primary retried. A
+  callback/hook method defined on a Protocol implementation but never actually wired
+  to a real caller (`grep -rn update_health` before this fix showed 2 defs, 0 calls) is
+  effectively dead code — grep for zero-caller methods when auditing a "wired-looking"
+  subsystem. Hardcoded fallback defaults (`provider="anthropic"`) for anything
+  multi-provider should be revisited whenever new provider families are added.
+- **Locked by:** `tests/test_resilience.py::TestHealthRecorder::test_half_open_probe_failure_reopens_breaker`,
+  `tests/test_resilience.py::TestStreamFailoverExcludesPrimary::test_stream_failover_does_not_reinvoke_primary`,
+  `tests/test_routing_router.py::TestHealthFeedback::test_call_outcomes_update_provider_health`,
+  `tests/test_routing_router.py::TestSyntheticDescriptorProviderInference` (6 cases).
+
+### BB-47 — "Delete session" didn't cascade-delete the transcript; no periodic retention sweep exists
+
+- **Symptom:** audit finding H8. Calling `SessionStore.delete_session(sid)` (and the
+  bulk `delete_sessions_before(cutoff)` used by `hachi session clean`) removed the
+  `sessions` row and `messages` rows, but left that session's `interaction_log` rows
+  (full user_input/agent_output transcript, AUDIT P0-2) and `idempotency_keys` rows
+  (cached full turn responses, AUDIT P0-3) behind in `sessions.db` — a "deleted"
+  session's content was still fully recoverable via `get_interactions(session_id=...)`
+  or a replayed idempotency key. Separately, `JobQueue.cleanup_completed()` (defined
+  3x: abstract/`InMemoryJobQueue`/`SQLiteJobQueue` in `src/hachi/jobs/queue.py`) prunes
+  only the `jobs` table and has **zero callers** anywhere in `src/` — no periodic sweep
+  wires it in, and no equivalent retention logic exists at all for `daily_spend` or
+  `CheckpointManager`'s edit-undo snapshots (`src/hachi/core/checkpoints.py` has no
+  age/expiry concept whatsoever).
+- **Root cause:** `delete_session`/`delete_sessions_before` were written when
+  `messages` was the only child table of `sessions`; `interaction_log` and
+  `idempotency_keys` were added later (AUDIT P0-2/P0-3) without updating the delete
+  paths to cascade to them. There is no `FOREIGN KEY ... ON DELETE CASCADE` on either
+  table (SQLite requires `PRAGMA foreign_keys=ON` *and* an explicit `ON DELETE CASCADE`
+  clause — neither table declares one), so nothing enforces this at the schema level;
+  it's a manual multi-DELETE responsibility that silently drifted out of sync.
+- **Fix:** `SessionStore.delete_session` (`src/hachi/core/session_store.py:814`) and
+  `SessionStore.delete_sessions_before` (`src/hachi/core/session_store.py:842`) now
+  also `DELETE FROM interaction_log WHERE session_id = ...` and
+  `DELETE FROM idempotency_keys WHERE session_id = ...` inside the same transaction,
+  before the `sessions` row(s) are removed.
+  Retention-sweep follow-up: investigated wiring `cleanup_completed()` into the
+  worker idle loop (`_start_timeout_sweep`/`_start_eval_report_scheduler` in
+  `src/hachi/gateway/orchestrator.py`, both daemon-thread sweep patterns already
+  called from `boot_agent`) but did **not** wire it in this pass — `orchestrator.py`
+  had substantial unrelated uncommitted WIP (a concurrent BB-45 scheduler-sharing fix)
+  in the exact function body the new call would land in, and forcing an edit into
+  actively-changing shared code risked a bad merge for that other in-flight task. Left
+  un-wired; tracked as follow-up, not silently dropped.
+- **Avoid:** whenever a new table is added that references `sessions.id` (or any
+  other "owning" entity with a delete path), grep every existing `DELETE FROM
+  <owner> WHERE id = ?` call site and add the matching child-table `DELETE` in the
+  same transaction — don't rely on `PRAGMA foreign_keys=ON` alone; SQLite only
+  cascades if the child table's `FOREIGN KEY` clause explicitly says
+  `ON DELETE CASCADE`, which none of `session_store.py`'s tables declare. Before
+  wiring a "just add the caller" fix into a shared orchestration file, check
+  `git status`/`git diff` on that file first — if another task already has an
+  uncommitted, non-trivial diff in the same function, stop and report rather than
+  editing on top of it.
+- **Locked by:** `tests/test_session_store_delete.py::test_delete_removes_interaction_log_rows`,
+  `::test_delete_removes_idempotency_key_rows`,
+  `::test_delete_cascade_leaves_other_sessions_interaction_log_intact`;
+  `tests/test_session_clean.py::test_delete_sessions_before_removes_interaction_log_and_idempotency_keys`.
+  Retention-sweep wiring: **not locked yet** — `cleanup_completed()` remains
+  uncalled in `src/`; a future task should add a `_start_job_cleanup_sweep` (mirroring
+  `_start_timeout_sweep`) once `orchestrator.py`'s WIP has landed, and separately
+  design retention for `daily_spend` and checkpoint snapshots (no existing function to
+  wire — new code, not a wire-in).
+
+### BB-45 — Per-session `Scheduler` over one shared file: double-fires and clobbers writes
+
+- **Symptom:** audit finding H3 (`docs/audit/2026-07-03/PRODUCTION_READINESS.md` §4
+  H3). `orchestrator.boot_agent` built a brand-new `Scheduler(ScheduleStore(...))` on
+  **every** call (`src/hachi/gateway/orchestrator.py:2871`, old code) and a brand-new
+  `ScheduleRunner` (`~L3487`) to tick it — one of each per gateway session — but all of
+  them pointed at the exact same on-disk `get_hachi_paths().schedules_file`. Two
+  sessions open at once (companion web UI + TUI, or two browser tabs) each held a
+  private in-memory snapshot of the one shared file: a due cron/interval entry fired
+  once per session's own `ScheduleRunner` (double-fire, double-billed/duplicated
+  side effects), and any mutation made through one session's `Scheduler`
+  (`set_enabled`/`cancel`/`mark_fired`) was invisible to a sibling session's stale
+  copy — whichever session next persisted its own full snapshot silently clobbered
+  the other's write (e.g. a user-disabled schedule could revert back to enabled).
+- **Root cause:** `jobs/scheduler.py`'s `Scheduler.__init__` loads `ScheduleStore.load()`
+  into an in-memory `dict[str, Schedule]` **exactly once** and never reloads before
+  `due()`/`tick()`/`mark_fired()`/`set_enabled()` — by design, so it can be driven by
+  an injected `now` for deterministic unit tests (see the class docstring's "Tick
+  serialization guarantee", which only promises no double-fire *within one Scheduler
+  instance*, never across two independent instances over the same file).
+  `boot_agent` is called once per gateway session, and each call built a fresh
+  `Scheduler`/`ScheduleRunner` pair — the exact same anti-pattern H2/BB-42 found for
+  `SessionStore`, but for the schedule file instead of the session DB.
+- **Fix:** added `_get_or_create_shared_scheduler(shared, schedules_file)` in
+  `src/hachi/gateway/orchestrator.py` (~L2428) — mirrors the existing
+  `ProcessSharedServices` pattern already used for `routing_store`/`event_bus`
+  (`getattr(shared, "X", None) is None` → lazily attach once, `shared.X` thereafter).
+  `boot_agent`'s scheduler construction (`~L2903`) now calls this helper against the
+  `ProcessSharedServices` singleton (`_shared`) instead of constructing a private
+  `Scheduler`, so every session in the process shares the one in-memory `Scheduler`
+  object — there is only one copy of schedule state in memory, period, so nothing
+  can diverge or get clobbered. Additionally, only the **first** session to boot in
+  the process now starts the `ScheduleRunner` thread (`~L3541`, guarded by
+  `getattr(_shared, "_schedule_runner", None) is None`); sibling sessions reuse the
+  same running runner instead of starting a second thread that would call
+  `tick()` concurrently on the shared `Scheduler` (which has no internal lock — two
+  concurrent `tick()` calls could still race to fire the same due entry twice even
+  with a single shared `Scheduler` object). The shared runner is intentionally never
+  stopped by an individual session's `shutdown()` — only the owning session's
+  `AgentSession._schedule_runner` is non-`None`, so only its `shutdown()` can stop
+  it, matching how the shared vault/skill_engine/mcp_manager already outlive any one
+  session. Declared `self._schedule_runner: Any = None` in `AgentSession.__init__`
+  (was previously set only dynamically, with no declared field, unlike `_scheduler`).
+- **Avoid:** any state that is backed by **one shared file/DB on disk** (schedules,
+  sessions, routing config, cost ledgers) must have exactly **one** in-memory owner
+  per process — never let `boot_agent` (or any other per-session boot path) construct
+  a private in-memory wrapper object over shared on-disk state. Route it through
+  `ProcessSharedServices` (`getattr(shared, "X", None) is None` → construct-once →
+  `shared.X` reuse) the same way `routing_store`/`event_bus`/BB-42's
+  `_get_shared_session_store()` already do. When the shared object also needs a
+  background thread ticking it (a `*Runner`/sweep loop), guard the thread start the
+  same way — only the first session starts it, and no individual session's
+  `shutdown()` should stop a thread other live sessions depend on.
+- **Locked by:** `tests/test_scheduler.py::TestSharedScheduleFileAcrossSessions` —
+  `test_naive_per_session_scheduler_double_fires` /
+  `test_naive_per_session_scheduler_clobbers_writes` reproduce the bug mechanism
+  directly against the `Scheduler`/`ScheduleStore` primitives (two independently
+  constructed `Scheduler`s over one file); `test_boot_agent_reuses_one_shared_scheduler_instance`,
+  `test_boot_agent_shared_scheduler_does_not_double_fire`, and
+  `test_boot_agent_shared_scheduler_mutation_is_visible_to_other_session` exercise
+  the real fix — `orchestrator._get_or_create_shared_scheduler`, the exact helper
+  `boot_agent` now calls — and were confirmed to fail (double-fire / clobbered
+  write) when the fix was reverted to its naive per-call `Scheduler(...)` form.
+
+### BB-48 — Facade sessions (OpenAI-compat / channel-inbound) and `/runs/*` skipped ownership
+
+- **Symptom:** audit finding H6 (`docs/audit/2026-07-03/PRODUCTION_READINESS.md`
+  §4 H6). Sessions auto-created via `POST /v1/chat/completions` and
+  `POST /channels/{channel}/inbound` were readable/postable by ANY bearer holder
+  (not just whoever triggered their creation) — unlike sessions created through
+  the normal `POST /sessions` flow, which stamps an owner immediately. Separately,
+  `GET /runs`, `GET /runs/{id}`, `POST /runs/{id}/wake`, and `DELETE /runs/{id}`
+  applied no owner filter at all, unlike `GET /sessions`/`_check_session_ownership`
+  which already gate every other session-scoped route.
+- **Root cause:** `GatewayControlPlane.get_or_create_session()`/`complete_chat()`
+  (the facade helpers that power the OpenAI-compat and channel-webhook routes)
+  call `self.create_session(...)` directly and never followed it with
+  `set_session_owner(...)` — that stamping only happened in the `POST /sessions`
+  FastAPI route handler itself (`fastapi_app.py`, right after `create_session`
+  returns), so any code path that reached `create_session` through a different
+  entry point silently produced an ownerless (NULL-owner) session, which the
+  existing `_check_session_ownership`/`list_sessions` policy always treats as
+  "accessible by any authenticated caller" (the documented backward-compat rule
+  for legacy sessions — but facade sessions aren't legacy, they're brand new).
+  The `/runs/*` routes were a separate, unrelated gap: they were added later
+  (Initiative D, durable runs) without anyone porting the `_check_session_ownership`
+  pattern over, even though `RunState.session_id` makes it trivial to do so.
+- **Fix:**
+  - `GatewayControlPlane.get_or_create_session()`/`complete_chat()`
+    (`src/hachi/gateway/control_plane.py`) gained an `owner_token_hash: str | None
+    = None` kwarg; when a NEW facade session is created, `set_session_owner()` is
+    called on it immediately, mirroring the `POST /sessions` route.
+  - `fastapi_app.py`'s `openai_chat_completions` (`/v1/chat/completions`, both the
+    non-streaming `complete_chat` call and the streaming `get_or_create_session`
+    call) and `channel_inbound` (`/channels/{channel}/inbound`) now resolve
+    `caller_hash = _require_auth(request)` and forward it as `owner_token_hash`.
+    For channel-inbound, ownership is stamped from the webhook caller's bearer
+    token, NOT the attacker-controlled `sender_id` field embedded in
+    `session_key = f"{channel}:{sender}"`.
+  - Added `_check_run_ownership(run_session_id, caller_hash)` in `fastapi_app.py`
+    (thin wrapper delegating to the existing `_check_session_ownership`) and wired
+    it into `get_run`, `post_run_wake`, and `delete_run` (each already looks up the
+    `RunState` and has `run.session_id` on hand); `get_runs` (the list route)
+    applies the same in-memory owner filter `list_sessions` already uses,
+    filtering out runs whose owning session belongs to a different caller.
+- **Avoid:** any code path that calls `GatewayControlPlane.create_session()`
+  outside the `POST /sessions` route handler MUST also call
+  `set_session_owner()` (or forward `owner_token_hash` through, as
+  `get_or_create_session`/`complete_chat` now do) — never assume a facade/helper
+  session is "legacy" just because it wasn't created through the primary route.
+  Whenever a new session-scoped resource collection is added (durable runs,
+  future entities keyed by `session_id`), port the existing
+  `_check_session_ownership` pattern to it in the same PR — don't let ownership
+  enforcement be something only the original `/sessions` routes remember to do.
+- **Locked by:** `tests/test_session_ownership.py::TestFacadeSessionOwnership`
+  (`test_channel_inbound_session_is_owned_by_caller`,
+  `test_openai_compat_session_is_owned_by_caller`) and
+  `::TestRunsOwnershipFilter` (`test_list_runs_excludes_runs_owned_by_other_caller`,
+  `test_get_run_forbidden_for_non_owner`, `test_wake_run_forbidden_for_non_owner`,
+  `test_delete_run_forbidden_for_non_owner`).
+
+### BB-49 — "Notion/Slack via OAuth" was a facade; the real mechanism is pasted API tokens
+
+- **Symptom:** audit finding H5 (`docs/audit/2026-07-03/PRODUCTION_READINESS.md`
+  §4 H5). README claimed "Google Workspace, Notion, Slack — all via OAuth", and the
+  `connector_registry.py` / integrations UI present Notion and Slack with a
+  "Connect with OAuth" button (full authorize/token/callback flow, tokens stored
+  in `OAuthTokenStore` under `oauth2.<connector>`). Connecting either through
+  that flow produces a stored OAuth token that **nothing ever reads** — every
+  Notion/Slack tool call still errors asking the user to paste a raw API token.
+- **Root cause (confirmed by reading the actual call chain, not assumed):**
+  `src/hachi/integrations/notion/service.py` (`NotionService.__init__`/
+  `_ensure_api_key`) and `src/hachi/integrations/slack/service.py`
+  (`SlackService.__init__`/`_ensure_token`/`_ensure_user_token`) authenticate
+  every HTTP call using `CredentialVault.get_token("notion_api_key")` /
+  `"slack_bot_token"` / `"slack_user_token"` — a completely separate credential
+  namespace from `OAuthTokenStore` (`integrations/oauth_flow.py`, `oauth2.*`
+  vault keys). `connector_registry.py` nonetheless declares both connectors
+  `auth_type="oauth2"` with **no `credential_fields` fallback**, so the OAuth
+  flow is the *only* UI path offered — the two systems (OAuth token storage vs.
+  API-token consumption) simply never intersect. This is intentional-by-omission,
+  not a regression: `tests/test_slack_notion_fixes.py` already exercises and
+  locks the real API-token mechanism (`slack_bot_token`/`slack_user_token`/
+  `notion_api_key` via `CredentialVault`), confirming the API-token path is the
+  one actually wired end-to-end.
+  `GatewayControlPlane`/`orchestrator.py`'s `_build_capability_registry`'s
+  `cap_flags()` helper calls `OAuthTokenStore().is_connected(cap_id)` as a
+  fallback to auto-enable the `slack`/`notion` capability flag when a token was
+  stored via the OAuth UI (BB-11's pattern) — this method does exactly what its
+  name and docstring say ("Return True iff a token is stored (does not validate
+  expiry)") and is not itself buggy; it just means a user can end up with the
+  capability "enabled" (tools registered) while the tools still fail at call
+  time for lack of the real credential, which is the crux of the UI-facing
+  facade this bug describes.
+- **Scope decision (per audit + task instructions):** implement the HONESTY fix
+  only — reword the false claim — not the full OAuth bridge (making
+  `NotionService`/`SlackService` consume `OAuthTokenStore` tokens, or changing
+  `connector_registry.py`'s `auth_type` for these two connectors to `apikey`).
+  Either of those is a real behavior change to the OAuth start/callback routes
+  and the integrations UI's button/dialog logic — bigger than a docs pass and
+  explicitly out of scope for this fix.
+- **Fix:** `README.md`'s "Native Integrations" bullet now reads "Google
+  Workspace (Gmail, Drive, Calendar) via OAuth; Notion and Slack via pasted API
+  tokens (`hachi secrets --set notion_api_key` / `slack_bot_token`/
+  `slack_user_token`)" instead of "all via OAuth". No code change was needed in
+  `orchestrator.py`/`is_connected` (verified not misleading — see root cause) or
+  the frontend integrations page (`integrations.tsx`'s "Connect with OAuth"
+  label is correctly data-driven off the connector's real `auth_type` field;
+  the falseness lives in that field's value for these two connectors, which is
+  the deliberately-deferred bridge, not a copy bug).
+- **Avoid:** before reflexively "fixing" `is_connected`/similar predicate
+  methods flagged by an audit, read their docstring and actual return value —
+  a method can be completely honest about what it checks (token presence) while
+  still being *used* in a way that produces a misleading end-to-end UX (BB-11's
+  auto-enable fallback + a UI button offering the only-OAuth path for a
+  connector whose service layer never reads OAuth tokens). Don't conflate "this
+  method's semantics are wrong" with "this subsystem's design creates a UX
+  facade" — the former is a code bug, the latter is a scoped product decision.
+  If Notion/Slack OAuth consumption is ever built for real, wire
+  `NotionService`/`SlackService` to call `OAuthTokenStore().load(connector_id)`
+  as a fallback before/after `CredentialVault`, and only then flip
+  `connector_registry.py`'s `auth_type` — don't advertise OAuth again until the
+  services actually consume it.
+- **Locked by:** docs-only correction — no regression test (per the task's own
+  scope decision: "docs/copy-honesty fix, not a behavior fix"). The underlying
+  API-token mechanism this entry documents as the *real* path is already locked
+  by the pre-existing `tests/test_slack_notion_fixes.py`
+  (`TestSlackUserTokenConsistency`, `TestNotionSearchWorkspacePagination`).
+
+### BB-50 — ~85% of advertised slash commands didn't exist; truth-pass implemented 2, deleted the rest
+
+- **Symptom:** audit finding H4 (`docs/audit/2026-07-03/PRODUCTION_READINESS.md`
+  §4 H4). README advertised 13 slash commands (`/clear /compact /new /sessions
+  /model /memory /remember /forget /plan /deep-research /settings /setup
+  /quit`); `fastapi_app.py`'s `_handle_slash_command` (the ONLY in-chat
+  slash-command parser in the codebase — grepped, confirmed the TUI has no
+  separate one and goes through the same gateway route) implemented only
+  `/model` (display-only) and `/help`. Every other command returned `"Unknown
+  command"`. The web composer additionally advertised a THIRD, mostly
+  non-overlapping vocabulary (`/routine /dry-run /budget /plan /memory
+  /sessions /model /delegate`) with the same problem — only `/sessions` had any
+  real behavior (client-side: opens the session picker, never reaches the
+  backend at all).
+- **Root cause:** `_handle_slash_command` was built in one pass ("Step 7 —
+  Minimal slash-command handler") implementing exactly two commands as a
+  proof of concept, then the README/composer vocabularies were written
+  aspirationally (or copied from an early design doc) without anyone auditing
+  which commands actually had a registered `elif word == "..."` branch.
+  `_handle_slash_command`'s reply shape (`{"response": str, session_id:
+  str|None}` — see `SessionMessageResponse`) has no mechanism for triggering
+  client-side navigation/state changes (opening a session picker, a settings
+  panel, starting a new session), so commands like `/clear`, `/new`,
+  `/settings`, `/setup`, `/quit` could never be implemented as slash commands
+  in this handler's shape at all — they are inherently client-side UI actions,
+  not "send text, get text back" round-trips.
+- **Fix — per-command implement/delete decision** (implement only clear 1:1
+  wins backed by an existing endpoint; delete the rest rather than
+  half-implement, per CLAUDE.md):
+  - **Implemented** (`src/hachi/gateway/fastapi_app.py`'s `_handle_slash_command`,
+    ~L869-928): `/memory <query>` now calls the same `control_plane.memory_recall()`
+    backing `GET /memory/recall` and renders the hits as text; `/remember <fact>`
+    now calls the same `control_plane.add_memory_fact(group="user_profile", ...)`
+    backing `POST /memory/facts`. Both return a usage hint when called with no
+    argument instead of silently no-op'ing. `_SLASH_HELP_TEXT` updated to list
+    them.
+  - **Deleted** from `README.md`'s slash-command line and (where present) the
+    frontend composer's `SLASH_ITEMS` (`frontend/src/components/conversation/ConversationComposer.tsx`):
+    `/clear`, `/compact`, `/new`, `/plan`, `/deep-research`, `/settings`,
+    `/setup`, `/quit` — no backing endpoint reachable from a text-reply-only
+    slash handler, and building the client-side plumbing for each is
+    non-trivial new work, not a wire-in. Also deleted the frontend-only fakes
+    `/routine`, `/dry-run`, `/budget`, `/delegate` (zero backing anywhere).
+  - **Deliberately NOT implemented** (flagged, not silently dropped):
+    `/forget <query>` — `memory_recall()` does return a `fact_id` per hit, so
+    wiring it to `delete_memory_fact()` is *technically* possible, but deleting
+    a memory based on the single top semantic match to a natural-language
+    query risks silently deleting the wrong fact — that's new confidence/
+    disambiguation logic, not a 1:1 endpoint wire-in, so it was left out
+    rather than shipped as a foot-gun.
+  - **Kept** (already real, verified not fake): `/model` (display-only, real),
+    `/help` (real), `/sessions` in the frontend list (real — client-side
+    `handleSlashPick` special-case that opens the session picker without
+    hitting the backend at all).
+- **Avoid:** when a slash-command / chat-meta-command handler returns a fixed
+  `{"response": str}` shape with no side-channel for UI navigation, any
+  "command" that needs to open a panel, switch screens, or start a new session
+  cannot be implemented server-side in that handler at all — it must be a
+  client-side interception (like `/sessions`) or it doesn't belong in that
+  vocabulary. Before advertising a slash command anywhere (README, help text,
+  frontend composer list), grep the actual handler for a matching `elif word
+  ==` branch — three independent vocabularies (README, `_SLASH_HELP_TEXT`,
+  frontend `SLASH_ITEMS`) drifting out of sync with the real implementation
+  and with each other is exactly how this shipped unnoticed for 11 of 13
+  commands.
+- **Locked by:** `tests/test_gateway_new_endpoints.py`
+  (`test_slash_memory_returns_recall_results`,
+  `test_slash_memory_without_query_returns_usage_hint`,
+  `test_slash_remember_adds_a_fact`,
+  `test_slash_remember_without_fact_returns_usage_hint`) — each was confirmed
+  to fail against the pre-fix code (returned `"Unknown command"` instead of
+  calling `memory_recall`/`add_memory_fact`). The README/composer deletions are
+  docs/UI-copy corrections with no dedicated regression test (nothing to
+  regress once the fake references are removed); the frontend's existing
+  119-test vitest suite + `tsc --noEmit` confirm no other code depended on the
+  removed `SLASH_ITEMS` entries.
+
+### BB-52 — `move`/`copy` terminal builtins bypassed the write/delete permission tier; `ren`/`rename` were missing from `_EXFIL_STEMS`
+
+- **Symptom:** audit finding M3 (`docs/audit/2026-07-03/PRODUCTION_READINESS.md`
+  §4 M3, with a correction in `DETAILED_FINDINGS.md` downgrading it from the
+  original agent's HIGH). The `mv`/`move` and `cp`/`copy` builtins inside
+  `_raw_run_terminal_command` (`src/hachi/tools/os_tools.py`) resolved their
+  own `src`/`dst` paths and called `shutil.move`/`shutil.copy2` directly,
+  without ever calling `gate.check_path(dst, "write")` or
+  `gate.check_path(src, "delete")`. `PermissionGate.check_command`'s
+  `_EXFIL_STEMS` scan (`src/hachi/core/permissions.py`) only enforces
+  `blocked_paths` for these stems — it does **not** consult the full
+  read/write/delete permission tier (`allow_write`, `allow_delete`,
+  `allowed_paths`). Concretely: a source path outside `allowed_paths` but not
+  inside `blocked_paths` could still be `move`d (deleted from its original
+  location) with no gate check at all, and a `copy` succeeded even when
+  `allow_write=false`. Separately, `ren`/`rename` (both real Windows/Unix
+  rename commands, and both already in `_SAFE_COMMANDS`) were entirely absent
+  from `_EXFIL_STEMS`, so even the blocked_paths-only check never ran for
+  them.
+- **Root cause:** `check_command`'s `_EXFIL_STEMS`/`_check_path_args` path
+  only ever checked `blocked_paths` (a deny-list), not the full
+  `PermissionGate.check_path` decision tree (allowed_paths membership +
+  allow_write/allow_delete). The `mv`/`cp` builtins never called
+  `check_path` at all — unlike `cat`/`type`, which `_make_guarded_run_terminal`
+  (UC-PERM-003, BB-era fix) already re-checks per-argument via `check_path`.
+  `move`/`copy` were simply never given the same treatment when that pattern
+  was introduced, and `ren`/`rename` were never added to `_EXFIL_STEMS` at
+  all despite being listed in `_SAFE_COMMANDS`.
+- **Fix:** `src/hachi/tools/os_tools.py`'s `_make_guarded_run_terminal`
+  (~L477-556) now mirrors the existing `_CAT_STEMS` pattern for
+  `mv`/`move`/`cp`/`copy`: after `check_command` passes, it resolves the last
+  two non-flag argv tokens as `src`/`dst` (matching how
+  `_raw_run_terminal_command` itself resolves them), then calls
+  `gate.check_path(dst, "write")` and `gate.check_path(src, "delete")` (move)
+  or `gate.check_path(src, "read")` (copy) before falling through to the raw
+  executor — denying with `"Permission Denied: ..."` if either check fails.
+  New `_COPY_STEMS`/`_MOVE_STEMS` frozensets (~L474-481) name the executables.
+  `src/hachi/core/permissions.py`'s `_EXFIL_STEMS` (~L156-171) now also
+  includes `"ren"` and `"rename"`.
+- **Avoid:** any terminal builtin in `_raw_run_terminal_command` that resolves
+  its own filesystem paths and performs a write/delete side effect (not just a
+  read) must be paired with an explicit `gate.check_path(path, operation)`
+  call in `_make_guarded_run_terminal` for **every** path it touches, using
+  the operation that matches the actual side effect (`"write"` for the
+  destination of a copy/move, `"delete"` for the source of a move that
+  removes the original, `"read"` for a copy's source). `check_command`'s
+  `_EXFIL_STEMS`/blocked_paths scan is a deny-list safety net, not a
+  substitute for the full allow/deny permission-tier decision — don't assume
+  "it's in `_EXFIL_STEMS`" means the full gate ran.
+- **Locked by:** `tests/test_os_tools_hardening.py`
+  (`test_ren_and_rename_are_recognized_as_exfil_stems`,
+  `test_move_denied_when_source_outside_allowed_paths`,
+  `test_copy_denied_when_write_disabled`,
+  `test_copy_allowed_within_allowed_paths`,
+  `test_move_allowed_within_allowed_paths_when_delete_enabled`) — the first
+  three were confirmed to fail against the pre-fix code (`ren`/`rename`
+  missing from `_EXFIL_STEMS`; a `move` from outside `allowed_paths` silently
+  succeeded; a `copy` silently succeeded with `allow_write=false`), then the
+  minimal gate wiring was added and all five pass, alongside the full
+  `test_os_tools_hardening.py` module (18/18) and the broader
+  `-k "os_tools or permission or exfil"` sweep (71 passed, 3 skipped).
+
+### BB-53 — REST tool allowlist failed OPEN by default; resident scheduler's webhook delivery had no SSRF guard at all
+
+- **Symptom:** audit finding M4 (`docs/audit/2026-07-03/PRODUCTION_READINESS.md`
+  §4 M4). (1) With `HACHI_REST_ALLOWLIST` unset — the out-of-the-box state on
+  every fresh install — `UniversalRestAdapter` let an `.og` skill's
+  `::api`-defined REST tool call **any** public host; an unset allowlist was
+  silently treated as "no restriction" rather than "nothing permitted". (2)
+  `hachi.jobs.scheduler.deliver_result` (the resident/gateway path a recurring
+  schedule's `deliver_to="webhook"` actually runs through) POSTed straight to
+  `schedule.webhook_url` with zero SSRF checking — a `webhook_url` pointing at
+  `169.254.169.254` (cloud metadata) or `127.0.0.1` (loopback) was requested
+  without complaint, even though the separate CLI-only path
+  (`cli/commands/schedule.py::_deliver_schedule_result`, used only by
+  `hachi schedule run-due`) already called
+  `net_guard.validate_outbound_url` first.
+- **Root cause:** (1) `UniversalRestAdapter._validate_outbound_url` guarded the
+  allowlist with `if self.allowed_hosts and not self._host_in_allowlist(...)`
+  — an empty/unset `allowed_hosts` list made the whole `if` false, so the
+  check was skipped entirely instead of denying. (2) `deliver_result` is the
+  shared delivery function the resident scheduler/orchestrator was documented
+  to call (see its own module docstring), but it was never wired to
+  `hachi.core.net_guard.validate_outbound_url` — only the separate, CLI-only
+  `_deliver_schedule_result` had that guard, so any deployment relying on the
+  resident scheduler (not the CLI) had no SSRF protection on webhook delivery
+  at all.
+- **Fix:** `src/hachi/core/rest_adapter.py` (`_validate_outbound_url`,
+  ~L131-142) — an empty/unset `allowed_hosts` now unconditionally denies with
+  a "HACHI_REST_ALLOWLIST is not configured (fails closed …)" message before
+  any host-specific or net_guard check runs; the allowlist membership check
+  only executes once an allowlist actually exists. `src/hachi/jobs/scheduler.py`
+  (`deliver_result`, webhook branch ~L448-469) now calls
+  `hachi.core.net_guard.validate_outbound_url(url)` before POSTing and returns
+  early (with a `logger.warning`) if it's not `.ok` — mirroring the CLI path's
+  existing guard so both delivery routes share the same SSRF posture.
+- **Avoid:** an allowlist gate must fail CLOSED on empty/unset config — never
+  write `if allowlist and host not in allowlist: deny` as the *only* check;
+  that pattern silently no-ops (allows everything) when the allowlist is
+  empty. Always check "is the allowlist itself configured at all?" as a
+  separate, unconditional first branch. When two code paths perform the same
+  outbound network action (here: CLI `schedule run-due` vs. the resident
+  scheduler's `deliver_result`), grep for the other path's existing safety
+  guard and reuse it — don't assume "the CLI already checks this" also covers
+  the gateway/resident path.
+- **Locked by:** `tests/test_ssrf_security.py::TestRestAdapterSsrfDelegation::test_unset_allowlist_env_fails_closed`
+  (confirmed pre-fix that an unset `HACHI_REST_ALLOWLIST` let a request to an
+  arbitrary public host proceed to net_guard instead of being denied);
+  `tests/test_scheduler_hardening.py::TestDeliverResult::test_ssrf_unsafe_webhook_url_is_not_posted`,
+  `::test_loopback_webhook_url_is_not_posted`, `::test_ssrf_unsafe_webhook_url_logs_warning`
+  (confirmed pre-fix that `deliver_result` POSTed to a cloud-metadata and a
+  loopback `webhook_url` with no guard at all). Six pre-existing tests
+  (`test_ssrf_security.py`, `test_phase0_security_hardening.py`,
+  `test_rest_injection_guard.py`, `test_rest_outbound_secret_guard.py`,
+  `test_rest_response_trimming.py`) that constructed `UniversalRestAdapter`
+  with no/empty `allowed_hosts` to reach net_guard/injection/redaction/trimming
+  behavior unrelated to the allowlist itself were updated to pass an explicit
+  matching-host allowlist entry, since a fail-closed default means "no
+  allowlist" can no longer stand in for "no restriction" in those setups.
+
+### BB-55 — Snapshot/recent-facts read paths injected stored memory into the system prompt without MemoryGuard redaction
+
+- **Symptom:** audit finding M8 (`docs/audit/2026-07-03/PRODUCTION_READINESS.md`
+  §4 M8). `MemoryVault.get_user_snapshot()`, `get_agent_snapshot()`, and
+  `get_recent_facts()` read raw documents straight out of ChromaDB and inject
+  them verbatim into the system prompt (user profile snapshot, agent persona
+  directives, and the session-start recency probe respectively) — none of the
+  three ran the content through `memory_guard.scan()` before injection. Every
+  *search* path (`semantic_search`, `search_user_profile`,
+  `search_delegations`, `search_episodic`) already redacts via
+  `_redact_results()`, so the guard was applied inconsistently: content that
+  reached storage by any route other than `_guarded_write` (e.g. written
+  before the guard existed, restored from a backup/import, or written via a
+  path that bypassed `_guarded_write`) would be served unredacted whenever it
+  was read back through one of these three accessors, even though the exact
+  same content would have been screened had it come back through search.
+- **Root cause:** `get_user_snapshot`/`get_agent_snapshot`/`get_recent_facts`
+  were written purely as ChromaDB `.get()` formatters (FIX 2's unbiased
+  recency accessor and the two persona/profile snapshot builders) with no
+  awareness that `memory_guard.scan()` exists as a read-time safety net
+  elsewhere in the file — the guard was treated as a write-time-only concern.
+- **Fix:** `src/hachi/core/memory_vault.py` — added `_guard_filter_docs()`
+  (~L220), a small helper that runs `guard_scan()` over a list of raw
+  documents and drops any that fail, logging a `WARNING` per drop (mirrors
+  the existing `_guarded_write` log format). Wired into all three read paths:
+  `get_recent_facts` (~L1213-1216, filters before the `[:limit]` slice so a
+  dropped entry doesn't shrink the returned count below what was actually
+  available), `get_user_snapshot` (~L1399-1410, inline per-doc check inside
+  the `category` zip loop so doc/category pairing stays aligned, returns `""`
+  if every doc was filtered), and `get_agent_snapshot` (~L1488-1500, same
+  inline pattern inside its `zip(documents, metadatas, ids)` loop). Also
+  toned down `src/hachi/core/memory_guard.py`'s module docstring, which
+  previously read as if the scanner were a comprehensive/obfuscation-resistant
+  classifier — now explicitly states it is a small English-language regex
+  heuristic, not resistant to non-English phrasing/homoglyphs beyond NFKC/
+  base64, and one signal among several (per M8's explicit note not to expand
+  or rewrite the blocklist itself).
+- **Avoid:** when a security scan/redaction step exists, audit **every** read
+  path that surfaces the same underlying stored content into a prompt or
+  response — not just the "obvious" one (here: `search_*`). A guard applied
+  only at write time is not equivalent to a guard applied at read time: data
+  written before the guard existed, imported, or written through any path
+  that skips the guarded writer will sit in storage unredacted forever unless
+  reads also re-check it. When formatting doc+metadata pairs from a
+  `zip()`/`enumerate()` loop, filter inline inside the loop (not by
+  post-filtering just the doc list) so paired fields never drift out of
+  alignment.
+- **Locked by:** `tests/test_memory_fixes.py::TestSnapshotAndRecentFactsRedaction`
+  (`test_get_user_snapshot_redacts_guard_flagged_content`,
+  `test_get_agent_snapshot_redacts_guard_flagged_content`,
+  `test_get_recent_facts_redacts_guard_flagged_content` — each plants a
+  `guard_scan`-flagged document directly into a fake collection and confirms
+  it is now excluded from the returned snapshot/list;
+  `test_get_user_snapshot_still_returns_safe_content` locks that ordinary safe
+  facts are unaffected).
+
+### BB-51 — JSON state stores self-wiped on a torn write; corrupt reads could cascade into an overwrite of good data
+
+- **Symptom:** audit finding M1 (`docs/audit/2026-07-03/PRODUCTION_READINESS.md`
+  §4 M1). None of `secret_store.py`'s `_MetadataStore`/`EncryptedFileSecretStore`,
+  `onboarding.py`'s `OnboardingService.save_state`, or the OG engine's
+  `skill_usage.json` writer (`SkillEngine._save_usage`) wrote atomically — each
+  called `Path.write_text(...)` directly on the live file. A crash/kill/full-disk
+  mid-write leaves a truncated or empty file on disk (a "torn write"). Worse,
+  every one of these stores' *read* paths caught any `json.JSONDecodeError`/
+  generic parse exception and silently returned an empty dict / default model —
+  with no record that the file had ever been corrupt. Combined, this is a
+  self-wipe cascade: a corrupt read silently resets in-memory state to empty,
+  and the very next legitimate write (`upsert`/`set`/`save_state`/`record_use`)
+  persists that empty state, permanently destroying whatever was on disk before
+  the crash — with zero trace that data loss occurred.
+- **Root cause:** each store independently hand-rolled its own "write the
+  file" logic with a plain `write_text`, and its own "read the file" logic
+  with a bare `except Exception: return {}` — there was no shared atomic-write
+  helper anywhere these JSON state files are written, unlike
+  `hachi.jobs.scheduler.ScheduleStore.save` and
+  `hachi.core.checkpoints.CheckpointManager._save_index`, which already did
+  this correctly (temp file in the same directory + `os.replace`, atomic on
+  both POSIX and Windows). The corrupt-read handlers never flagged/quarantined
+  the bad file before returning the default, so there was nothing to prevent
+  the following write from clobbering it.
+- **Fix:** new shared helper module `src/hachi/core/atomic_io.py` —
+  `atomic_write_json(path, payload)` (temp file via `tempfile.mkstemp` in the
+  same parent directory + `os.replace`, copying the exact pattern already used
+  by `ScheduleStore.save`/`CheckpointManager._save_index`) and
+  `quarantine_corrupt_file(path)` (renames an unparseable file to
+  `<path>.corrupt-<unix-ts>` and logs a `WARNING`, returning the quarantine
+  path). Wired into every JSON-state write/read site found by grep:
+  `src/hachi/core/secret_store.py` — `_MetadataStore._load`/`_save` (~L44-57),
+  `EncryptedFileSecretStore._read_blob` (~L302-311) and `_encrypt_all`'s write
+  (~L342-353, the exact lines flagged by the audit); `src/hachi/core/onboarding.py`
+  — `OnboardingService.resume_state`/`save_state` (~L172-187); and
+  `src/hachi/og_engine/engine.py` — `SkillEngine._load_usage`/`_save_usage`
+  (~L1681-1699, the `skill_usage.json` writer). Every corrupt-read branch now
+  calls `quarantine_corrupt_file()` **before** returning the empty/default
+  value, so the bad file is preserved on disk (inspectable, recoverable) and
+  can never be silently overwritten by whatever write happens next.
+- **Avoid:** any JSON-backed state file must be written via
+  `hachi.core.atomic_io.atomic_write_json` — never a bare `Path.write_text`ing
+  of a live path — and any read path that swallows a parse error must call
+  `quarantine_corrupt_file()` on that path *before* returning a default/empty
+  value, so a corrupt read can never cascade into a write that permanently
+  destroys the pre-crash data. Copy this pattern (already correct in
+  `ScheduleStore`/`CheckpointManager`) rather than hand-rolling a new one.
+- **Locked by:** `tests/test_atomic_state_writes.py` — `TestAtomicWriteJson`
+  and `TestQuarantineCorruptFile` unit-test the shared helpers directly
+  (including simulating a crash via `patch("os.replace", side_effect=OSError)`
+  and confirming the original file survives untouched with no leftover temp
+  file); `TestMetadataStoreSelfWipe`, `TestEncryptedFileSecretStoreSelfWipe`,
+  `TestOnboardingStateSelfWipe`, and `TestSkillUsageSelfWipe` each reproduce
+  the exact self-wipe cascade end-to-end against the real store classes
+  (corrupt file → read → confirm quarantined-not-clobbered; simulated crash
+  during a second write → confirm the first write's data survives).
+
+### BB-54 — Malformed/truncated tool-arg JSON silently executed with `input={}`; streamed tool_use_ids could collide
+
+- **Symptom:** audit finding M7 (`docs/audit/2026-07-03/PRODUCTION_READINESS.md`
+  §4 M7; `DETAILED_FINDINGS.md` core-agent M3/M4). When an OpenAI-compatible
+  provider's tool-call `arguments` JSON arrived malformed or was cut off
+  mid-object (e.g. a `max_tokens` stop landing inside a tool call), both
+  `OpenAICompatibleClient._parse_tool_calls` (non-streaming) and
+  `generate_stream`'s SSE tool-call-fragment reconstruction caught the
+  `json.loads` failure and silently fell back to `input={}` — the `ToolCall`
+  looked exactly like a normal, successfully-parsed call with no arguments, so
+  `ToolRegistry.execute` ran the real tool with the wrong (empty) arguments
+  instead of failing. Separately, some providers stream an empty (`""`) or
+  constant `tool_use_id`; `_parse_tool_calls`'s old fallback
+  (`raw_call.get("id", "tool_call")`) also returned `""` unchanged for that
+  case (`.get(key, default)` only applies `default` when the key is *missing*,
+  not when it's falsy), and the streaming accumulator's `tc_acc[idx]["id"]`
+  stayed `""` whenever the provider never sent a non-empty id fragment. Two
+  tool calls in the same response sharing that `""`/constant id would then
+  collide when `ExecutionLoop.run` pairs them up via `_futures: dict[str, ...]`
+  keyed on `tool_call.id` (`src/hachi/core/loop.py` ~L1167-1223) — the second
+  call's future/result silently overwrites the first's. There was also no way
+  for a caller to distinguish a clean completion from a `max_tokens` cutoff
+  mid-tool-call, since neither client surfaced the provider's stop/finish
+  reason on `LLMResponse` at all.
+- **Root cause:** both JSON-parse call sites treated `except: args = {}` as a
+  safe default instead of a visible failure, conflating "the model deliberately
+  called this tool with no arguments" with "the argument payload never
+  finished arriving." The id-fallback used `dict.get(key, default)`, which
+  does not substitute the default for an empty-but-present string. Neither
+  client read/forwarded the provider's `stop_reason`/`finish_reason`.
+- **Fix:** `src/hachi/core/llm.py` — `ToolCall` gained a `parse_error: str |
+  None` field (~L93-101) and `LLMResponse` gained `stop_reason: str | None`
+  (~L104-111). `OpenAICompatibleClient._parse_tool_calls` (~L579-613) now logs
+  a `logger.warning` with the tool name and raw argument string on a JSON
+  decode failure and sets `parse_error` instead of silently keeping `input={}`
+  as if it were valid; the id fallback is now `str(raw_call.get("id") or "")
+  or _synthesize_tool_call_id()` so an empty/missing id is replaced with a
+  fresh `uuid4`-based id (new module helper `_synthesize_tool_call_id()`,
+  ~L26-35) rather than passing through unchanged. `generate_stream`'s
+  reconstruction loop (~L744-777) applies the identical parse_error/logging/
+  id-synthesis treatment to the accumulated SSE fragments, and now also
+  captures each chunk's `choices[0].finish_reason` into `final_stop_reason`,
+  returned as `LLMResponse.stop_reason`. `OpenAICompatibleClient.generate`
+  (non-streaming, ~L657-666) and `AnthropicClient._parse_message` (~L349-372,
+  reading the SDK message's `stop_reason`, guarded to only accept a real `str`
+  so an unconfigured test double doesn't fail Pydantic validation) both now
+  populate `stop_reason` too. `src/hachi/core/loop.py`'s
+  `ToolRegistry.execute` (~L330-355) gained a guard clause: a `ToolCall` with
+  `parse_error` set raises a `ValueError` *before* the tool function is ever
+  invoked, which routes through the existing `except Exception` →
+  `is_error=True` tool_result path in `_execute_single_tool`/`run()` — no
+  other change to the loop's control flow was needed. (Note: the task's
+  originally-cited `src/hachi/core/routing/registry.py` — `ModelRegistry`, the
+  bundled/provider/config model-descriptor registry — has no tool-call
+  parsing or pairing logic at all; the actual pairing-by-id code lives in
+  `core/loop.py`, confirmed by reading both files before making any change.)
+- **Avoid:** never let a parse/decode failure produce a value that is
+  indistinguishable from a legitimate empty result (`args = {}` on exception
+  looks identical to a real no-argument tool call) — carry the failure forward
+  as an explicit, checkable field and fail that specific unit of work loudly
+  instead of continuing as if it succeeded. When falling back to a
+  placeholder id/value from an optional provider field, use `x or default`
+  (or an explicit emptiness check), not `dict.get(key, default)` — `.get`'s
+  default only fires on a *missing* key, not a present-but-falsy one. Anything
+  paired up later by an id supplied by an external provider must treat a
+  missing/empty id as "needs a locally-synthesized unique id," never as "use
+  the empty string as-is."
+- **Locked by:** `tests/test_streaming.py::test_openai_generate_malformed_tool_json_sets_parse_error`,
+  `::test_openai_stream_truncated_tool_json_sets_parse_error`,
+  `::test_openai_stream_empty_tool_use_id_gets_synthesized_unique_ids`,
+  `::test_anthropic_generate_surfaces_stop_reason`,
+  `::test_openai_generate_surfaces_finish_reason`,
+  `::test_openai_stream_surfaces_finish_reason`;
+  `tests/test_e2e_loop.py::test_tool_call_with_parse_error_fails_instead_of_running_with_empty_input`
+  (confirmed pre-fix that a `ToolCall` carrying a `parse_error` still reached
+  and executed the real tool function with empty arguments; confirmed
+  post-fix it now raises before the tool runs and surfaces as
+  `is_error=True` in history, exactly like a real tool exception).
+
+### BB-59 — `save_skill` wrote lint-invalid skills to disk (M2)
+
+- **Symptom:** `SkillEngine.upsert_skill` could write and hot-load a skill with an
+  empty `::dense` block — `validate_dense("")` passes (0 tokens ≤ the 30-token
+  budget), so the only pre-write check available never fired. The write-path's
+  own post-write `lint_og_file()` call *did* detect this as a `missing-dense`
+  lint **error**, but the code only ever surfaced `warning`/`info` issues as
+  advisory feedback — errors were silently discarded, so a lint-invalid skill
+  still landed on disk and stayed hot-loaded. This directly undermined the
+  "lint bounds what the agent may write" governance claim in README.md.
+- **Root cause:** lint ran *after* the atomic write instead of gating it, and
+  its result was filtered to advisory-only levels with no error branch.
+- **Fix:** `upsert_skill` now lints the *temp* file before `os.replace()`
+  promotes it into place; any `error`-level lint issue aborts the write
+  (`{"status": "rejected", "lint_errors": [...]}`), deleting the temp file and
+  never hot-loading it. Also added a small load-time nudge: `resolve_node`'s
+  Pass-3 assertions block now names `check_skill_assertions(name=..., params=...)`
+  directly in the render (previously that instruction only lived in
+  `brain.og`'s system prompt, one layer removed from the actual skill load).
+  Deliberately did **not** build a runtime enforcement engine that blocks tool
+  execution on assertion failure — out of scope per the audit's own minimal-fix
+  recommendation; `evaluate_assertions`/`check_skill_assertions` already exist
+  as a real, tested, deterministic (non-`eval`) checker the agent can call.
+- **Avoid:** any new skill-write path must lint the content and reject on
+  `error`-level issues *before* the file is promoted/hot-loaded — never lint
+  only after the fact and only surface non-error levels.
+- **Locked by:** `tests/test_og_skill_authoring.py::test_lint_errors_reject_the_write`,
+  `tests/test_og_engine.py::test_load_time_nudges_to_check_skill_assertions`.
+
+### BB-56 — Cost-accounting edges: fictional pricing for unrecognised/local models, local-vs-UTC date skew, silently dropped negative deltas
+
+- **Symptom:** audit finding M14 (`docs/audit/2026-07-03/PRODUCTION_READINESS.md`
+  §4 M14). Three independent, compounding correctness gaps in
+  `src/hachi/core/cost.py` (and its one call site in
+  `src/hachi/gateway/orchestrator.py`):
+  1. Any model id with no entry in `MODEL_PRICING` and no matching registry
+     descriptor — most notably an Ollama-served local model
+     (`OpenAICompatProvider.models()` returns `[]` for `kind="ollama"`, so no
+     descriptor is ever registered for it) — priced at `_DEFAULT_PRICING =
+     (1.0, 5.0)` USD/Mtok. A genuinely free local model could therefore
+     accumulate a fabricated non-zero "cost" and trip a user's daily spend cap
+     on usage that cost nothing.
+  2. `record_voice_usage`/`record_background_usage` keyed the daily-spend
+     ledger with `datetime.date.today().isoformat()` (host **local** time),
+     while `AgentSession._daily_cap_exceeded`/the per-turn recording block in
+     `orchestrator.py` independently did the same with their own
+     `date.today()` call. Every one of those calls resolves in the host's
+     local timezone, not UTC — a user running the gateway outside UTC (e.g.
+     IST, UTC+5:30) has spend near local midnight land on the wrong ledger
+     date relative to a UTC-anchored day boundary, silently splitting or
+     merging a day's total incorrectly depending on which side of the actual
+     UTC-day boundary a given call's local wall-clock landed on. **This bug
+     reproduced live during this session's own test run**: the pre-existing
+     `tests/test_daily_cap_enforcement.py` fixtures wrote spend via
+     `datetime.date.today().isoformat()` (local); once the code was fixed to
+     read via UTC, those fixtures' writes landed on a different day than the
+     UTC-based read the instant local and UTC dates diverged (crossing local
+     midnight IST while still on the prior UTC day) — 5 tests failed for
+     exactly the reason this bug describes, not because of a mistake in the
+     fix.
+  3. `orchestrator.py`'s per-turn cost-recording block computed
+     `turn_delta = snap.estimated_cost_usd - self._last_recorded_cost_usd` and
+     silently clamped/skipped a negative delta (`_turn_cost_usd = max(0.0,
+     turn_delta)` for the per-turn log, `if turn_delta > 0:` guarding the
+     ledger write) — technically safe (never records negative spend), but a
+     negative delta is not supposed to happen (cost is monotonic within a
+     tracker's lifetime); it only occurs after some kind of cost-tracker
+     regression (e.g. a mid-session reset). Dropping it with **no trace at
+     all** hid a real anomaly instead of surfacing it.
+- **Root cause:** (1) `_DEFAULT_PRICING` was a leftover "better than crashing"
+  guess from before any provider could report per-token cost as genuinely
+  unknown — but the module already has a convention for "unknown pricing"
+  (`ModelDescriptor.pricing: Pricing | None`, where `None` means "cost
+  unknown," honoured correctly by `ModelRegistry.pricing_for_model`); the
+  fallback constant contradicted that convention by inventing a non-zero
+  number instead of treating "no pricing found anywhere" as "$0 known cost."
+  (2) the daily-spend ledger's write side (`cost.py`) and read side
+  (`orchestrator.py`'s cap check) each independently called
+  `datetime.date.today()`/`date.today()` — nothing enforced that both sides
+  resolve the same instant to the same date string, and neither used an
+  explicit timezone. (3) the `max(0.0, ...)` / `if turn_delta > 0:` guards
+  were written purely to keep the ledger non-negative; nobody added a log
+  line for the "this shouldn't happen" branch, so the previous behaviour was
+  indistinguishable from "everything is fine."
+- **Fix:**
+  - `src/hachi/core/cost.py`: `_DEFAULT_PRICING` (~L47) changed from
+    `(1.0, 5.0)` to `(0.0, 0.0)` — an unrecognised model id now prices at $0,
+    consistent with the existing "pricing unknown → 0 known cost" convention
+    elsewhere in this module.
+  - Added `today_utc_str()` (~L112) — `datetime.datetime.now(datetime.UTC).date().isoformat()`
+    — and rewired `record_voice_usage`/`record_background_usage` (~L222, ~L300)
+    to call it instead of local `datetime.date.today().isoformat()`.
+    `src/hachi/gateway/orchestrator.py`'s `_daily_cap_exceeded` (~L1535) and the
+    per-turn recording block (~L1707) now import and call the same
+    `today_utc_str()` helper, so every reader and writer of the daily-spend
+    ledger resolves the same UTC day boundary — removed the now-unused
+    `from datetime import date as _date` import.
+  - Added `clamp_nonnegative_cost_delta(delta_usd, *, context)` (~L132) —
+    clamps a negative delta to `0.0` **and** logs a `warning` (previously
+    nothing was logged). `orchestrator.py`'s per-turn recording block (~L1699)
+    now calls this instead of the bare `max(0.0, turn_delta)`, so a
+    tracker-reset-mid-session anomaly is visible in logs instead of invisible.
+  - `tests/test_daily_cap_enforcement.py`'s fixtures (`today = datetime.date.today().isoformat()`,
+    6 call sites) were updated to `today = today_utc_str()` — they must write
+    to the same UTC-keyed bucket the fixed code now reads from.
+- **Avoid:** an "unknown/unpriced" fallback must default to the same
+  semantics the rest of the pricing system already uses for "cost unknown" —
+  never invent a nonzero guessed price for a model nobody actually priced;
+  a fabricated bill on a genuinely free/local model can trip a real spend cap.
+  Any code that reads AND writes the same daily/periodic ledger must derive
+  its date key from one shared, timezone-explicit helper (UTC) — never let
+  two independent call sites each call bare `date.today()` and assume they
+  agree; this includes TEST FIXTURES that seed a ledger for a test to read
+  back — a fixture using local `date.today()` against UTC-keyed production
+  code is itself a latent, time-of-day-dependent flake. A cumulative metric
+  that "should" be monotonic (cost, tokens) going negative is a signal worth
+  logging, not just clamping — silently dropping an impossible value with no
+  trace makes a real regression undebuggable later.
+- **Locked by:** `tests/test_cost_tracking.py::test_unknown_model_prices_at_zero_not_a_fictional_default`,
+  `::test_cost_tracker_records_zero_cost_for_unknown_local_model`,
+  `::test_today_utc_str_uses_utc_not_local_date`,
+  `::test_record_background_usage_keys_daily_ledger_by_utc_date`,
+  `::test_clamp_nonnegative_cost_delta_clamps_and_logs`,
+  `::test_clamp_nonnegative_cost_delta_passes_through_positive`; the
+  pre-existing `::test_pricing_longest_prefix_match` was updated in place
+  (its "unknown model" assertion encoded the exact bug being fixed — the
+  fallback value itself, not the lookup mechanism, was under test).
+  `tests/test_daily_cap_enforcement.py` (all 13 tests) re-verified green after
+  switching its fixtures to `today_utc_str()`.
+
+### BB-57 — `GET /config` echoed unmasked secret refs / raw header values
+
+- **Symptom:** `GET /config` returned the raw `ResolvedConfig.model_dump()` verbatim —
+  `provider.api_key_ref` / `api_key_env` (env-var and vault-ref names), `providers.*`
+  (same), and raw `headers` values (e.g. a live `Authorization: Bearer ...` token) were
+  all echoed back to any caller, and `capabilities.*.secret_ref` leaked vault-key names.
+  Inconsistent with the already-masked `GET /config/providers`.
+- **Root cause:** `_InProcessGatewayRuntime.get_config()` (`cli/main.py`) dumped
+  `ResolvedConfig` straight to JSON with no redaction step, while the sibling
+  `GET /config/providers` route went through `provider_admin._mask_provider()`
+  (drops `api_key_ref`/`api_key_env` down to a `configured` boolean, replaces header
+  *values* with `"***"`). Two endpoints serializing the same underlying secrets with
+  two different (one masked, one not) code paths.
+- **Avoid:** never add a second serializer for a config/settings object that contains
+  secret-shaped fields (`*_ref`, `*_env`, `headers`, `secret_ref`) — route ALL such
+  serialization through the one existing masking helper (`provider_admin._mask_provider`
+  for providers; extend it, don't bypass it, for new secret-shaped fields).
+- **Locked by:** `tests/test_gateway_new_endpoints.py::test_get_config_masks_provider_secrets`,
+  `::test_get_config_endpoint_masks_secrets_via_http`.
+
+### BB-58 — OpenAI-compat endpoint ignored the requested `model`; one global rate-limit bucket
+
+- **Symptom:** (a) `POST /v1/chat/completions` accepted any `model` string, never
+  validated it, and only echoed it back in the response's `model` field — the actual
+  agent turn always ran on the session's already-booted model regardless of what was
+  requested, with no error if the model was nonsense. (b) `openai_limiter.allow("openai")`
+  used the hardcoded literal `"openai"` as its rate-limit key for every caller, so one
+  caller exhausting the sliding-window limit locked out every other caller sharing the
+  same gateway instance.
+- **Root cause:** (a) `model_name = payload.model or "hachi"` was computed only for
+  display, never checked against anything. (b) the rate limiter key was a constant
+  instead of a per-caller identity.
+- **Avoid:** (a) when a request carries a caller-selectable `model`, validate it against
+  the real allowlist (`control_plane.list_all_models()`) before running the turn — reject
+  unrecognized models with 400 instead of silently substituting a default; fail open only
+  when there is genuinely no allowlist data to check against (handler not wired). (b) any
+  shared `RateLimiter` on an externally-reachable route must be keyed by the resolved
+  caller identity (the same `caller_hash` from `_require_auth` that H6 uses for session
+  ownership), never by a route-name constant — a constant key always degrades to one
+  global bucket no matter how many distinct principals call it.
+- **Locked by:** `tests/test_gateway_openai_channels.py::test_openai_chat_rejects_unknown_model`,
+  `::test_openai_chat_accepts_known_model`, `::test_openai_chat_no_allowlist_data_does_not_reject`,
+  `::test_openai_chat_rate_limit_is_keyed_per_caller`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

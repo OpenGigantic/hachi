@@ -123,3 +123,23 @@ def test_name_cannot_escape_skills_dir(tmp_path: Path) -> None:
     assert result["name"] == "etc_passwd"
     assert path.parent == tmp_path / "learned"  # stayed inside the learned dir
     assert ".." not in path.parts
+
+
+def test_lint_errors_reject_the_write(tmp_path: Path) -> None:
+    """A skill whose ::dense block is empty trips a lint ERROR ("missing-dense" for a
+    skill-role node) and must never be committed to disk — the whole 3-pass model
+    depends on every skill having a routable dense block. Regression for M2: lint
+    previously ran only *after* the write and only surfaced warnings/info, so a
+    lint-invalid skill would land on disk and be hot-loaded anyway.
+    """
+    engine = _engine(tmp_path)
+    result = engine.upsert_skill(
+        name="silent skill",
+        keywords=["silent"],
+        dense="",  # empty dense passes the token-budget check (0 <= 30) but fails lint
+        full="Some Pass-3 content.",
+    )
+
+    assert result["status"] == "rejected"
+    assert not (tmp_path / "learned" / "silent_skill.og").exists()
+    assert "silent_skill" not in {r["name"] for r in engine.search("silent")}

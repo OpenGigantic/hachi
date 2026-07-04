@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from hachi.core import og_history
+from hachi.core.atomic_io import atomic_write_json, quarantine_corrupt_file
 from hachi.core.paths import get_hachi_paths
 from hachi.og_engine.parser import (
     OGChangelogEntry,
@@ -1098,6 +1099,10 @@ class SkillEngine:
             sections.append("\n--- MANDATORY ASSERTIONS (run these before proceeding) ---")
             for assertion in node.assertions:
                 sections.append(f"  - {assertion}")
+            sections.append(
+                f'  Call check_skill_assertions(name="{node.name}", params=...) with your '
+                "intended parameter values before executing this skill's steps."
+            )
         if "edges" in want and node.edges:
             sections.append("\n--- Relationships ---")
             for edge in node.edges:
@@ -1297,6 +1302,22 @@ class SkillEngine:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
                 fh.write(serialized)
                 _tmp_fd_closed = True  # os.fdopen context manager closed the fd
+
+            # M2: lint the tmp file BEFORE promoting it. Governance claims
+            # ("lint bounds what the agent may write") were previously honor-system
+            # for save_skill — lint only ran *after* the write and only surfaced
+            # warnings/info, so a lint-invalid skill (e.g. no ::dense block) would
+            # still land on disk and get hot-loaded. Reject on any lint error instead.
+            pre_report = lint_og_file(tmp_path_str)
+            pre_errors = [i for i in pre_report["issues"] if i["level"] == "error"]
+            if pre_errors:
+                Path(tmp_path_str).unlink(missing_ok=True)
+                return {
+                    "status": "rejected",
+                    "reason": "skill failed lint validation",
+                    "lint_errors": [f"{i['code']}: {i['message']}" for i in pre_errors],
+                }
+
             os.replace(tmp_path_str, path)
         except Exception:
             # Ensure the raw fd is closed before we try to unlink on Windows.
@@ -1675,7 +1696,10 @@ class SkillEngine:
             if self._usage_path.exists():
                 return json.loads(self._usage_path.read_text(encoding="utf-8"))
         except Exception:
+            # BB-51: quarantine the unparseable file BEFORE returning the empty
+            # default, so the next _save_usage() can't silently clobber it.
             logger.warning("Failed to load skill usage DB, starting fresh")
+            quarantine_corrupt_file(self._usage_path)
         return {}
 
     def _save_usage(self) -> None:
@@ -1684,10 +1708,7 @@ class SkillEngine:
             snapshot = dict(self._usage)
             self._usage_last_flush = time.monotonic()
         try:
-            self._usage_path.parent.mkdir(parents=True, exist_ok=True)
-            self._usage_path.write_text(
-                json.dumps(snapshot, indent=2, default=str), encoding="utf-8"
-            )
+            atomic_write_json(self._usage_path, snapshot)
         except Exception:
             logger.warning("Failed to persist skill usage DB")
 
