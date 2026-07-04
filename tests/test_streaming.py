@@ -569,3 +569,224 @@ def test_openai_generate_still_works_after_refactor() -> None:
     result = client.generate(messages=[Message(role="user", content="test")])
     assert result.content == "legacy reply"
     assert result.usage.input_tokens == 4
+
+
+# ---------------------------------------------------------------------------
+# BB-54 — malformed/truncated tool-arg JSON must NOT silently execute with
+# input={}; must be logged and the specific tool call must carry a visible
+# parse_error instead of empty args.
+# ---------------------------------------------------------------------------
+
+
+def test_openai_generate_malformed_tool_json_sets_parse_error(caplog: Any) -> None:
+    """Non-streaming: malformed tool-call argument JSON must not become input={}."""
+    import logging
+
+    client = _make_openai_client()
+    client._http.post = MagicMock(
+        return_value=MagicMock(
+            json=MagicMock(
+                return_value={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call_bad",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "transfer_funds",
+                                            # Truncated JSON — e.g. cut off mid-object by
+                                            # a max_tokens stop.
+                                            "arguments": '{"amount": 500, "account":',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+                }
+            ),
+            raise_for_status=MagicMock(),
+        )
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = client.generate(messages=[Message(role="user", content="pay someone")])
+
+    assert len(result.tool_calls) == 1
+    tc = result.tool_calls[0]
+    # The dangerous behaviour this regression guards against: treating empty
+    # args as a *successful* parse instead of visibly flagging the failure.
+    assert tc.parse_error, "ToolCall.parse_error must be set on malformed JSON"
+    assert any(
+        "transfer_funds" in r.message or "parse" in r.message.lower() for r in caplog.records
+    ), "malformed tool-arg JSON must be logged, not silently swallowed"
+
+
+def test_openai_stream_truncated_tool_json_sets_parse_error(caplog: Any) -> None:
+    """Streaming: JSON truncated mid-object (e.g. max_tokens cutoff) must not become input={}."""
+    import logging
+
+    client = _make_openai_client()
+
+    chunks_data = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_trunc",
+                                "type": "function",
+                                "function": {"name": "search", "arguments": '{"q": "cats"'},
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+    ]
+    # No closing brace ever arrives — simulates a max_tokens cutoff mid-tool-call.
+    lines = (
+        "\n".join(f"data: {json.dumps(d)}" for d in chunks_data)
+        + f"\ndata: {json.dumps({'choices': [{'delta': {}, 'finish_reason': 'length'}]})}"
+        + "\ndata: [DONE]"
+    )
+    mock_resp = _make_mock_stream_response(lines)
+    client._http.stream = MagicMock(return_value=mock_resp)
+
+    with caplog.at_level(logging.WARNING):
+        _, final = drain_stream(
+            client.generate_stream(messages=[Message(role="user", content="search")])
+        )
+
+    assert len(final.tool_calls) == 1
+    tc = final.tool_calls[0]
+    assert tc.parse_error, "ToolCall.parse_error must be set on truncated JSON"
+    assert any("search" in r.message or "parse" in r.message.lower() for r in caplog.records), (
+        "truncated tool-arg JSON must be logged, not silently swallowed"
+    )
+
+
+# ---------------------------------------------------------------------------
+# BB-54 — empty/constant streamed tool_use_id must not collide across calls.
+# ---------------------------------------------------------------------------
+
+
+def test_openai_stream_empty_tool_use_id_gets_synthesized_unique_ids() -> None:
+    """Two parallel tool calls that both stream an empty id must not collide."""
+    client = _make_openai_client()
+
+    chunks_data = [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "",  # some providers stream an empty id
+                                "type": "function",
+                                "function": {"name": "tool_a", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 1,
+                                "id": "",  # ...and the second call also arrives empty
+                                "type": "function",
+                                "function": {"name": "tool_b", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+    ]
+    lines = "\n".join(f"data: {json.dumps(d)}" for d in chunks_data) + "\ndata: [DONE]"
+    mock_resp = _make_mock_stream_response(lines)
+    client._http.stream = MagicMock(return_value=mock_resp)
+
+    _, final = drain_stream(
+        client.generate_stream(messages=[Message(role="user", content="do both")])
+    )
+
+    assert len(final.tool_calls) == 2
+    ids = [tc.id for tc in final.tool_calls]
+    assert all(i for i in ids), "every ToolCall must have a non-empty id"
+    assert len(set(ids)) == 2, f"synthesized ids must be unique, got {ids}"
+
+
+# ---------------------------------------------------------------------------
+# BB-54 — stop_reason/finish_reason must be surfaced on LLMResponse so callers
+# can distinguish a clean completion from a max_tokens mid-tool-call cutoff.
+# ---------------------------------------------------------------------------
+
+
+def test_anthropic_generate_surfaces_stop_reason() -> None:
+    from hachi.core.llm import AnthropicClient
+
+    client = AnthropicClient.__new__(AnthropicClient)
+    client.api_key = "sk-test"
+    client.model = "claude-haiku-4-5"
+    client.max_tokens = 1024
+
+    fake_response = MagicMock()
+    fake_response.content = [MagicMock(type="text", text="cut off mid")]
+    fake_response.stop_reason = "max_tokens"
+    fake_response.usage = MagicMock(
+        input_tokens=3,
+        output_tokens=2,
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=0,
+    )
+    mock_client = MagicMock()
+    mock_client.messages.create = MagicMock(return_value=fake_response)
+    client.client = mock_client
+
+    result = client.generate(messages=[Message(role="user", content="hi")])
+    assert result.stop_reason == "max_tokens"
+
+
+def test_openai_generate_surfaces_finish_reason() -> None:
+    client = _make_openai_client()
+    client._http.post = MagicMock(
+        return_value=MagicMock(
+            json=MagicMock(
+                return_value={
+                    "choices": [{"message": {"content": "cut off"}, "finish_reason": "length"}],
+                    "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+                }
+            ),
+            raise_for_status=MagicMock(),
+        )
+    )
+
+    result = client.generate(messages=[Message(role="user", content="test")])
+    assert result.stop_reason == "length"
+
+
+def test_openai_stream_surfaces_finish_reason() -> None:
+    client = _make_openai_client()
+    body = (
+        f"data: {json.dumps({'choices': [{'delta': {'content': 'hi'}, 'index': 0}]})}\n"
+        f"data: {json.dumps({'choices': [{'delta': {}, 'finish_reason': 'max_tokens'}]})}\n"
+        "data: [DONE]"
+    )
+    mock_resp = _make_mock_stream_response(body)
+    client._http.stream = MagicMock(return_value=mock_resp)
+
+    _, final = drain_stream(client.generate_stream(messages=[Message(role="user", content="q")]))
+    assert final.stop_reason == "max_tokens"

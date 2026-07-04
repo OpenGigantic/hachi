@@ -251,6 +251,58 @@ def test_tool_error_does_not_abort_loop() -> None:
 
 
 # ---------------------------------------------------------------------------
+# BB-54 — a ToolCall with a parse_error (malformed/truncated tool-arg JSON)
+# must FAIL that specific tool call (is_error=True) instead of silently
+# executing the underlying tool with empty/wrong arguments.
+# ---------------------------------------------------------------------------
+
+
+def test_tool_call_with_parse_error_fails_instead_of_running_with_empty_input() -> None:
+    """A ToolCall carrying parse_error must never reach the tool function."""
+    reg = ToolRegistry()
+    calls: list[dict[str, Any]] = []
+    reg.register(_tool("transfer_funds"), lambda **kw: calls.append(kw) or "transferred")
+
+    responses = [
+        LLMResponse(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="transfer_funds",
+                    input={},
+                    parse_error="truncated JSON: unterminated object",
+                )
+            ],
+        ),
+        LLMResponse(content="I saw the error."),
+    ]
+    loop, _ = _make_loop(responses, registry=reg)
+    loop.add_user_message("transfer money")
+
+    result = loop.run(max_iterations=3)
+
+    assert result == "I saw the error."
+    # The dangerous behaviour this guards against: executing transfer_funds
+    # with empty/wrong arguments instead of failing loudly.
+    assert calls == [], "tool must NOT execute when the call carries a parse_error"
+
+    tool_result_msgs = [
+        m for m in loop.memory.history if m.role == "user" and isinstance(m.content, list)
+    ]
+    result_block = next(
+        (
+            b
+            for b in tool_result_msgs[-1].content
+            if isinstance(b, dict) and b.get("tool_use_id") == "t1"
+        ),
+        None,
+    )
+    assert result_block is not None, "no tool_result block for t1"
+    assert result_block.get("is_error") is True, "parse_error must surface as is_error=True"
+
+
+# ---------------------------------------------------------------------------
 # Malformed / empty responses
 # ---------------------------------------------------------------------------
 

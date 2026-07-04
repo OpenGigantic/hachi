@@ -71,6 +71,7 @@ from typing import Any
 import httpx
 
 from hachi.core.file_lock import file_lock
+from hachi.core.net_guard import validate_outbound_url
 from hachi.core.secret_scanner import redact_outbound
 
 logger = logging.getLogger(__name__)
@@ -454,6 +455,20 @@ def deliver_result(schedule: Schedule, result: str) -> None:
                 schedule.name,
             )
             return
+
+        # BB-53: apply the same SSRF guard the CLI path (`hachi schedule run-due`)
+        # already uses before making any outbound request — a schedule's
+        # webhook_url is user-configured, so it must be treated as untrusted.
+        validation = validate_outbound_url(url)
+        if not validation.ok:
+            logger.warning(
+                "deliver_result: webhook POST to %s blocked for schedule %s (%s)",
+                url,
+                schedule.schedule_id,
+                validation.reason,
+            )
+            return
+
         safe_result, redacted_count = redact_outbound(result)
         if redacted_count:
             logger.info(

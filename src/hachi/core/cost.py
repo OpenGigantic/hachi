@@ -44,7 +44,15 @@ def _build_model_pricing() -> dict[str, tuple[float, float]]:
 
 
 MODEL_PRICING: dict[str, tuple[float, float]] = _build_model_pricing()
-_DEFAULT_PRICING = (1.0, 5.0)
+# BB-56 (M14): a genuinely unrecognised model id (e.g. an Ollama-served local
+# model, or any other id with no entry in MODEL_PRICING/the registry) prices at
+# $0 rather than a fictional nonzero guess. The previous (1.0, 5.0) default made
+# up a real-looking bill for models nobody ever priced — for a free local model
+# this could trip a user's daily spend cap on usage that cost nothing. "Unknown
+# pricing" already means "0 known cost" elsewhere in this module (see
+# ModelDescriptor.pricing: Pricing | None, where None means "cost unknown");
+# this default now honours that same convention instead of contradicting it.
+_DEFAULT_PRICING = (0.0, 0.0)
 
 # ---------------------------------------------------------------------------
 # Voice / modality pricing (Issue 9)
@@ -74,6 +82,82 @@ VOICE_PRICING: dict[str, dict[str, float]] = {
 }
 
 _VOICE_LOCK = threading.Lock()
+
+
+def _get_shared_session_store() -> Any:
+    """Return the process-wide ``SessionStore`` if one has been booted, else ``None``.
+
+    Mirrors ``hachi.core.runtime.resume._get_process_bus``'s pattern for reaching
+    the shared-services singleton from ``core`` without a hard import-time
+    dependency on the gateway: the import is lazy and any failure (including the
+    module simply not existing at this fingerprint) degrades to ``None``, which
+    callers treat as "no shared store yet — open a short-lived fallback".
+
+    BB-42: the previous code imported a ``_get_session_store`` symbol from
+    ``hachi.gateway.orchestrator`` that has never existed there, so this lookup
+    always raised ``ImportError`` and every call silently fell through to the
+    fallback branch.
+    """
+    try:
+        from hachi.gateway.shared_services import ProcessSharedServices
+
+        shared = ProcessSharedServices.instance()
+        if shared is not None:
+            return getattr(shared, "session_store", None)
+    except Exception:
+        pass
+    return None
+
+
+def today_utc_str() -> str:
+    """Return today's date as an ISO string (``YYYY-MM-DD``), keyed on UTC.
+
+    BB-56 (M14): the daily-spend ledger (``SessionStore.record_daily_cost`` /
+    ``get_daily_spend``) must be bucketed by ONE consistent timezone. Using the
+    host's local ``datetime.date.today()`` here (as this module and
+    ``gateway/orchestrator.py``'s daily-cap check previously did) misattributes
+    spend to the wrong day for any user not in UTC — e.g. a turn at 23:45 IST
+    (UTC+5:30) lands on "tomorrow" in UTC, so a write keyed on local time and a
+    later read keyed on local time can silently split what should be one day's
+    total across two ledger rows near midnight, in either direction depending
+    on which side of midnight each call lands on relative to the other.
+
+    Every caller that reads or writes the daily-spend ledger must derive its
+    date key from this function (or an equivalent UTC computation) — never from
+    bare ``datetime.date.today()``.
+    """
+    return datetime.datetime.now(datetime.UTC).date().isoformat()
+
+
+def clamp_nonnegative_cost_delta(delta_usd: float, *, context: str) -> float:
+    """Clamp a per-turn cost delta to zero, logging a warning if it went negative.
+
+    BB-56 (M14): a per-turn cost delta is computed as
+    ``current_cumulative_cost - previous_cumulative_cost``. This is normally
+    monotonic (cost only accumulates), but a tracker reset mid-session (or any
+    other cumulative-total regression) can make it negative. The previous
+    behaviour silently dropped/ignored a negative delta with no trace — this
+    hides a real anomaly instead of surfacing it. Clamping to 0.0 keeps the
+    ledger from ever recording negative spend, while the warning makes the
+    anomaly visible instead of invisible.
+
+    Args:
+        delta_usd: The raw per-turn cost delta (may be negative).
+        context:   A short label identifying the call site (e.g. a session id)
+                   for the log line.
+
+    Returns:
+        ``delta_usd`` unchanged when it is ``>= 0``; otherwise ``0.0``.
+    """
+    if delta_usd < 0:
+        logger.warning(
+            "cost: negative per-turn cost delta (%.6f) clamped to 0.0 [%s] — "
+            "likely a cost-tracker reset mid-session; investigate if this recurs",
+            delta_usd,
+            context,
+        )
+        return 0.0
+    return delta_usd
 
 
 def _voice_cost(modality: Literal["stt", "tts"], model: str, units: float) -> float:
@@ -134,22 +218,27 @@ def record_voice_usage(
             # Import lazily to avoid a circular import at module load time.
             from hachi.core.session_store import SessionStore
 
-            date_str = datetime.date.today().isoformat()
+            # BB-56: key the daily ledger on UTC, not the host's local date.
+            date_str = today_utc_str()
             # Use the module-level singleton if available (gateway process), else
             # open a short-lived connection.  Both paths call record_daily_cost
             # which is atomic (INSERT OR IGNORE + UPDATE).
-            try:
-                from hachi.gateway.orchestrator import _get_session_store
-
-                store = _get_session_store()
-                if store is not None:
-                    store.record_daily_cost(date_str, cost)
-                else:
-                    raise RuntimeError("no shared store")
-            except Exception:
+            shared_store = _get_shared_session_store()
+            if shared_store is not None:
+                shared_store.record_daily_cost(date_str, cost)
+            else:
                 # Fallback: open a dedicated connection (unit-test / CLI context).
-                store = SessionStore()
-                store.record_daily_cost(date_str, cost)
+                # BB-42: this short-lived store is never shared, so it must be
+                # shut down here — otherwise its sqlite3/WAL connection leaks for
+                # the rest of the process lifetime. getattr-guarded so test doubles
+                # that only implement record_daily_cost still work.
+                fallback_store = SessionStore()
+                try:
+                    fallback_store.record_daily_cost(date_str, cost)
+                finally:
+                    _shutdown = getattr(fallback_store, "shutdown", None)
+                    if callable(_shutdown):
+                        _shutdown()
         return cost
     except Exception as exc:
         logger.warning(
@@ -207,23 +296,28 @@ def record_background_usage(
         if cost <= 0:
             return 0.0
 
-        date_str = datetime.date.today().isoformat()
+        # BB-56: key the daily ledger on UTC, not the host's local date.
+        date_str = today_utc_str()
         if store is not None:
             store.record_daily_cost(date_str, cost)
             return cost
 
-        from hachi.core.session_store import SessionStore
+        shared = _get_shared_session_store()
+        if shared is not None:
+            shared.record_daily_cost(date_str, cost)
+        else:
+            from hachi.core.session_store import SessionStore
 
-        try:
-            from hachi.gateway.orchestrator import _get_session_store
-
-            shared = _get_session_store()
-            if shared is not None:
-                shared.record_daily_cost(date_str, cost)
-            else:
-                raise RuntimeError("no shared store")
-        except Exception:
-            SessionStore().record_daily_cost(date_str, cost)
+            # BB-42: this short-lived store is never shared, so it must be shut
+            # down here — otherwise its sqlite3/WAL connection leaks for the
+            # rest of the process lifetime.
+            fallback_store = SessionStore()
+            try:
+                fallback_store.record_daily_cost(date_str, cost)
+            finally:
+                _shutdown = getattr(fallback_store, "shutdown", None)
+                if callable(_shutdown):
+                    _shutdown()
         return cost
     except Exception as exc:
         logger.warning("record_background_usage: failed for %s: %s", model, exc)
