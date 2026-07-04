@@ -138,6 +138,38 @@ def load_probes(probe_file: Path | None = None) -> list[dict[str, Any]]:
     return list(data["probes"])
 
 
+def pick_representative_query(engine: Any) -> str | None:
+    """Pick a query that actually resolves to real Pass-3 content.
+
+    C3 fix: the token-savings headline previously picked its "representative"
+    query by raw index order (``keywords[0]`` of the first node) with no check
+    that it actually loads. On the shipped corpus this could land on a bare
+    name defined once per ``roles/*.og`` file (e.g. "identity") — a 6-way
+    collision ``resolve_node`` refuses as ambiguous, returning an ``"Error: ..."``
+    sentinel string. Measuring that error string's length as "savings" produced
+    a dishonest headline number.
+
+    Walks every indexed keyword (``engine._keyword_index``, the same source
+    the naive ``keywords[0]`` pick used), searches each one, and returns the
+    first keyword whose top search hit actually resolves to real content (not
+    an ``"Error: ..."`` sentinel). Returns ``None`` if nothing qualifies.
+    """
+    for keyword in engine._keyword_index.keys():
+        keyword = keyword.strip()
+        if not keyword:
+            continue
+        results = engine.search(keyword)
+        if not results:
+            continue
+        top_name = results[0].get("name")
+        if not top_name:
+            continue
+        resolved = engine.resolve_node(top_name)
+        if not resolved.startswith("Error:"):
+            return keyword
+    return None
+
+
 # ---------------------------------------------------------------------------
 # M7 — Pass-depth distribution
 # ---------------------------------------------------------------------------
