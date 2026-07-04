@@ -15,6 +15,7 @@ Closes debt D6 (600s Anthropic default; no retry/breaker). Design doc 13 §5.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from collections.abc import Callable, Generator
@@ -232,7 +233,10 @@ class HealthRecorder:
             n = len(self._outcomes)
             error_rate = sum(1 for ok in self._outcomes if not ok) / n if n > 0 else 0.0
             lats = sorted(self._latencies_ms)
-            p50 = lats[len(lats) // 2] if lats else 0.0
+            # Nearest-rank percentile: rank = ceil(p * n), 1-indexed, clamped to
+            # [0, n-1] after converting to a 0-index. `len(lats) // 2` is off by
+            # one for even-length datasets (e.g. n=4 picks index 2 instead of 1).
+            p50 = lats[max(0, math.ceil(0.5 * len(lats)) - 1)] if lats else 0.0
 
             return ProviderHealth(
                 provider=self._provider,
