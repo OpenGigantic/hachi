@@ -485,9 +485,10 @@ Some capabilities ship as optional dependency groups so the base install stays l
 | Extra | Install | Enables |
 |-------|---------|---------|
 | `browser` | `pip install 'hachi-og[browser]'` then `playwright install chromium` | Headless browser tools (`browse_web`, `browser_act`, `browser_screenshot`). Disabled in the `sandbox` permission tier; URLs are validated like other outbound calls. |
-| `google` | `pip install 'hachi-og[google]'` | Google Workspace integration (`GOOGLE_CLIENT_ID`/`SECRET`). |
-| `slack` | `pip install 'hachi-og[slack]'` | Slack SDK. |
 | `tracing` | `pip install 'hachi-og[tracing]'` | OpenTelemetry tracing. Enable at runtime with `HACHI_TRACING=true` (console exporter); emits spans for LLM and tool calls. No-op when the extra is absent or the flag is unset. |
+
+Google/Notion/Slack integrations need no extra install — they authenticate over
+`httpx` (a base dependency) via OAuth (Google) or pasted API tokens (Notion, Slack).
 
 ## Integrations & secrets
 

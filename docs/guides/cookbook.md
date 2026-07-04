@@ -139,11 +139,8 @@ Restart the agent after changing the config.
 
 ### Prerequisites
 
-```bash
-uv tool install "hachi-og[google]"
-# or inside the dev repo:
-uv sync --extra google
-```
+No extra install needed — the Google integration authenticates via OAuth over
+`httpx`, which is a base dependency.
 
 Enable Google OAuth in settings:
 
