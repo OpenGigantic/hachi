@@ -402,7 +402,12 @@ The repository includes a two-service local stack:
 - `hachi` (Python gateway service on `:8787`)
 - `frontend` (web UI on `:5173`)
 
+Both services read their bearer token from a Docker secret file that isn't
+generated automatically — create it once before the first `up`:
+
 ```bash
+mkdir -p .hachi
+openssl rand -hex 32 > .hachi/gateway_api_token.txt
 docker compose up --build
 ```
 
