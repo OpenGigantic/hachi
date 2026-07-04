@@ -58,7 +58,9 @@ def _register(monkeypatch, payload: dict, api_def: dict) -> ToolRegistry:
 
     monkeypatch.setenv("HACHI_REST_ALLOW_PRIVATE", "true")
     monkeypatch.setattr("hachi.core.rest_adapter.httpx.Client", _FakeClient)
-    adapter = UniversalRestAdapter(registry, allowed_hosts=[])
+    # BB-53: an empty allowlist now fails closed — this test is about response
+    # trimming/projection, not the allowlist, so allowlist the host under test explicitly.
+    adapter = UniversalRestAdapter(registry, allowed_hosts=["127.0.0.1"])
     base = {"method": "GET", "endpoint": "http://127.0.0.1:9000/x", "schema": "{}", "headers": "{}"}
     base.update(api_def)
     adapter._register_single_api(tool_name="api", api_def=base, node_name="n")

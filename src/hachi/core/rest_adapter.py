@@ -129,11 +129,17 @@ class UniversalRestAdapter:
             return "URL hostname is required", None
 
         host_lc = host.lower()
-        if self.allowed_hosts and not self._host_in_allowlist(host_lc, self.allowed_hosts):
+        # BB-53: fail CLOSED when no allowlist is configured. An empty/unset
+        # HACHI_REST_ALLOWLIST means NO outbound REST host is permitted — it must
+        # never be treated as "no restriction" (that was the fail-open bug).
+        if not self.allowed_hosts:
+            return (
+                f"Host '{host_lc}' is not allowed: HACHI_REST_ALLOWLIST is not configured "
+                "(fails closed — configure it to permit any outbound REST host)",
+                None,
+            )
+        if not self._host_in_allowlist(host_lc, self.allowed_hosts):
             return f"Host '{host_lc}' is not allowed by HACHI_REST_ALLOWLIST", None
-
-        if includes_secret and not self.allowed_hosts:
-            return "Secret interpolation requires HACHI_REST_ALLOWLIST to be configured", None
 
         result = _net_guard_validate(raw_url, allow_private=self._allow_private_egress)
         if not result.ok:

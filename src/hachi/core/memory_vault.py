@@ -217,6 +217,38 @@ def _redact_text(text: str) -> str:
     return text
 
 
+def _guard_filter_docs(docs: list[str]) -> list[str]:
+    """Drop any document flagged by MemoryGuard's threat scan.
+
+    BB-55: ``get_user_snapshot``, ``get_agent_snapshot``, and ``get_recent_facts``
+    read raw documents straight out of ChromaDB and inject them into the system
+    prompt. Every *write* path already runs ``guard_scan`` (via ``_guarded_write``),
+    so this is defense-in-depth for content that reached storage some other way
+    (e.g. written before the guard existed, restored from a backup, or written via
+    a path that bypassed ``_guarded_write``) — it mirrors the same guard check the
+    search paths apply via ``_redact_results``, just for the snapshot/recency reads
+    that previously skipped it entirely.
+
+    This is intentionally the same-strength check as the write-time guard (still a
+    small regex blocklist, not a rewrite of MemoryGuard itself) — see M8 in
+    ``docs/audit/2026-07-03/PRODUCTION_READINESS.md``.
+
+    Args:
+        docs: Raw document strings read from a ChromaDB collection.
+
+    Returns:
+        The subset of ``docs`` that pass ``guard_scan``, in the same order.
+    """
+    safe_docs: list[str] = []
+    for doc in docs:
+        is_safe, threat_id = guard_scan(doc)
+        if is_safe:
+            safe_docs.append(doc)
+        else:
+            logger.warning("MemoryGuard blocked read: threat=%s content=%.80s", threat_id, doc)
+    return safe_docs
+
+
 def _redact_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Redact secrets from a list of fact dicts returned by _query_collection.
 
@@ -273,6 +305,48 @@ def _get_llm_client() -> Any:
     return _llm_client_instance
 
 
+# ---------------------------------------------------------------------------
+# BB-40 — process-durable vault accessor for job_handlers.build_job_context().
+#
+# handle_extract_fact (job_handlers.py) is registered in production with NO
+# _vault_factory (orchestrator.boot_agent's unconditional
+# `_job_registry.register("extract_fact", handle_extract_fact)`), so the
+# no-factory branch of build_job_context() must resolve a real vault here.
+# Before this function existed, `from hachi.core.memory_vault import
+# get_memory_vault` raised ImportError, which was silently swallowed by a bare
+# `except Exception: logger.debug(...)`, making auto-memory a permanent no-op
+# for every user.  See docs/bug-bank.md BB-40.
+#
+# NOTE — layering: this module (hachi.core.memory_vault) must NOT import
+# hachi.gateway (the import-linter "engine must not import the gateway
+# service" contract forbids it and has no ignore entry for this module).
+# Preferring the process-shared vault (to avoid opening a second ChromaDB
+# PersistentClient against the same on-disk store) is therefore
+# job_handlers.py's responsibility — it already has a frozen seam to
+# hachi.gateway.orchestrator. get_memory_vault() here is the pure, paths-only
+# fallback constructor.
+# ---------------------------------------------------------------------------
+
+
+def get_memory_vault() -> Any:
+    """Return a real, usable MemoryVault constructed from standard on-disk paths.
+
+    This is the paths-only fallback used by ``build_job_context()`` when no
+    process-shared vault is available (or when called from a context — like
+    this module — that must not import ``hachi.gateway`` per the engine/service
+    layering rule). Matches ``ChromaMemoryProvider.initialize()``'s construction
+    so the same on-disk collections are opened either way.
+
+    Never returns None on success; only import/construction errors propagate
+    (callers — ``build_job_context`` — already guard this call with a logged
+    try/except).
+
+    Returns:
+        A live :class:`MemoryVault` instance.
+    """
+    return MemoryVault(brain_dir=str(get_hachi_paths().data_dir))
+
+
 class MemoryVault:
     """Dual-collection vector storage engine for Hachi.
 
@@ -304,7 +378,10 @@ class MemoryVault:
     _COLLECTION_SPECS: dict[str, tuple[str, str]] = {
         "collection": ("core_memory", "Hachi Long-Term Semantic Memory"),
         "user_collection": ("user_profile", "Bounded user identity and preferences"),
-        "agent_profile": ("agent_profile", "Bounded agent personality and instructions"),
+        "agent_profile": (
+            "agent_profile",
+            "Bounded agent personality and instructions",
+        ),
         "delegation_collection": (
             "delegation_log",
             "Sub-agent delegation history for pattern learning",
@@ -863,11 +940,7 @@ class MemoryVault:
         # Use getattr with None default so vaults constructed without this attribute
         # (e.g. via __new__ in older test code) degrade gracefully to no-decay.
         _half_life: float | None = getattr(self, "_decay_half_life_days", None)
-        decay_active = (
-            apply_decay
-            and _half_life is not None
-            and _half_life > 0
-        )
+        decay_active = apply_decay and _half_life is not None and _half_life > 0
 
         # M2: over-fetch so decay has a larger pool to reorder.
         if decay_active:
@@ -907,9 +980,7 @@ class MemoryVault:
             ids = results["ids"][0]
             metadatas = results["metadatas"][0] if results.get("metadatas") else []
             # FIX 1: read distances so we can filter below.
-            distances: list[float] = (
-                results["distances"][0] if results.get("distances") else []
-            )
+            distances: list[float] = results["distances"][0] if results.get("distances") else []
 
             for i, doc in enumerate(documents):
                 # FIX 1: drop results that are too dissimilar to the query.
@@ -1063,9 +1134,7 @@ class MemoryVault:
             logger.debug("MemoryVault: graph index search failed; falling back to Chroma only")
             return _redact_results(chroma_results)
 
-    def get_recent_facts(
-        self, collection: str = "core_memory", limit: int = 8
-    ) -> list[str]:
+    def get_recent_facts(self, collection: str = "core_memory", limit: int = 8) -> list[str]:
         """Return the most-recently-stored facts by insertion timestamp.
 
         FIX 2 — Unbiased recent-facts accessor (contract C-RECENT).
@@ -1141,7 +1210,10 @@ class MemoryVault:
             paired.append((ts, doc))
 
         paired.sort(key=lambda x: x[0], reverse=True)
-        return [doc for (_ts, doc) in paired[:limit]]
+        # BB-55: apply the same MemoryGuard scan the search paths apply via
+        # _redact_results, so guard-flagged content is never re-served unredacted
+        # just because it was read through get_recent_facts instead of search.
+        return _guard_filter_docs([doc for (_ts, doc) in paired])[:limit]
 
     def prune_core_memory(self, target_count: int | None = None) -> int:
         """Evict the oldest core_memory entries to respect the soft cap.
@@ -1188,7 +1260,8 @@ class MemoryVault:
             raise
         except Exception as exc:
             logger.warning(
-                "prune_core_memory: ChromaDB read failed; skipping prune. Error: %s", exc
+                "prune_core_memory: ChromaDB read failed; skipping prune. Error: %s",
+                exc,
             )
             return 0
 
@@ -1327,8 +1400,18 @@ class MemoryVault:
         docs = results["documents"]
         metas = results.get("metadatas", [])
         for i, doc in enumerate(docs):
+            # BB-55: apply the same MemoryGuard scan the search paths apply via
+            # _redact_results, so guard-flagged content is never injected into
+            # the frozen system prompt snapshot unredacted.
+            is_safe, threat_id = guard_scan(doc)
+            if not is_safe:
+                logger.warning("MemoryGuard blocked read: threat=%s content=%.80s", threat_id, doc)
+                continue
             cat = metas[i].get("category", "general") if i < len(metas) else "general"
             lines.append(f"- [{cat}] {doc}")
+
+        if not lines:
+            return ""
 
         return "## User Profile\n" + "\n".join(lines)
 
@@ -1406,7 +1489,19 @@ class MemoryVault:
             for doc, _meta, doc_id in zip(
                 results["documents"], results["metadatas"], results["ids"], strict=False
             ):
+                # BB-55: apply the same MemoryGuard scan the search paths apply via
+                # _redact_results, so guard-flagged content is never injected into
+                # the agent persona system prompt prefix unredacted.
+                is_safe, threat_id = guard_scan(doc)
+                if not is_safe:
+                    logger.warning(
+                        "MemoryGuard blocked read: threat=%s content=%.80s", threat_id, doc
+                    )
+                    continue
                 lines.append(f"- [{doc_id}] {doc}")
+
+            if not lines:
+                return ""
 
             return "## Agent Persona Directives (Evolution Protocol)\n" + "\n".join(lines)
         except Exception:

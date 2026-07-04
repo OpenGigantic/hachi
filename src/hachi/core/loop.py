@@ -336,7 +336,19 @@ class ToolRegistry:
 
         Returns:
             The execution result (stringified for LLM ingestion).
+
+        Raises:
+            ValueError: If ``tool_call.parse_error`` is set (BB-54) — the
+                provider's tool-call argument JSON was malformed or truncated
+                (e.g. a max_tokens cutoff mid-tool-call), so ``input`` is not a
+                trustworthy reconstruction of the model's intent. Raising here
+                (instead of running the tool with empty/partial args) routes
+                through the existing is_error=True tool_result path in
+                ``ExecutionLoop.run`` / ``_execute_single_tool``.
         """
+        if tool_call.parse_error:
+            raise ValueError(f"Tool call '{tool_call.name}' rejected: {tool_call.parse_error}")
+
         if tool_call.name not in self._tools:
             return f"Error: Tool '{tool_call.name}' is not registered."
 

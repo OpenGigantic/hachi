@@ -9,7 +9,9 @@ model-agnostic, allowing seamless swapping between Anthropic, OpenAI, or local e
 
 import abc
 import json
+import logging
 import os
+import uuid
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,20 @@ import httpx
 from pydantic import BaseModel, Field
 
 from hachi.core.secret_store import SecretStore
+
+logger = logging.getLogger(__name__)
+
+
+def _synthesize_tool_call_id() -> str:
+    """Generate a unique tool_use id for providers that stream an empty/constant one.
+
+    BB-54: some OpenAI-compatible providers omit the ``id`` field on a
+    tool-call delta (or reuse a constant placeholder). Pairing tool calls by
+    id downstream (``ExecutionLoop``) would then collide — the second call's
+    future/result silently overwrites the first's. A random uuid4-based id
+    guarantees uniqueness within a response.
+    """
+    return f"call_{uuid.uuid4().hex}"
 
 
 def _read_dotenv(path: Path) -> dict[str, str]:
@@ -74,6 +90,16 @@ class ToolCall(BaseModel):
     id: str = Field(..., description="The unique identifier for the tool call.")
     name: str = Field(..., description="The name of the tool to execute.")
     input: dict[str, Any] = Field(..., description="The arguments to pass to the tool.")
+    parse_error: str | None = Field(
+        default=None,
+        description=(
+            "Set when the provider's tool-call argument JSON was malformed or "
+            "truncated (e.g. a max_tokens cutoff mid-tool-call). When set, "
+            "``input`` is NOT a trustworthy reconstruction of the model's intent "
+            "(BB-54) — callers (``ToolRegistry.execute``) must fail this specific "
+            "call loudly instead of running the tool with empty/partial args."
+        ),
+    )
 
 
 class TokenUsage(BaseModel):
@@ -100,6 +126,15 @@ class LLMResponse(BaseModel):
     )
     usage: TokenUsage = Field(
         default_factory=TokenUsage, description="Token usage for this generation."
+    )
+    stop_reason: str | None = Field(
+        default=None,
+        description=(
+            "The provider's raw stop/finish reason (e.g. Anthropic 'end_turn' / "
+            "'max_tokens' / 'tool_use'; OpenAI-compat 'stop' / 'length' / "
+            "'tool_calls'), when the provider reports one. Lets callers tell a "
+            "clean completion apart from a max_tokens cutoff mid-tool-call (BB-54)."
+        ),
     )
 
 
@@ -327,7 +362,16 @@ class AnthropicClient(BaseLLMClient):
             cache_read_tokens=getattr(raw_usage, "cache_read_input_tokens", 0) or 0,
             cache_creation_tokens=getattr(raw_usage, "cache_creation_input_tokens", 0) or 0,
         )
-        return LLMResponse(content=text_content.strip(), tool_calls=tool_calls, usage=usage)
+        raw_stop_reason = getattr(msg, "stop_reason", None)
+        # Guard against non-string values (e.g. an unconfigured test double) —
+        # a real Anthropic SDK Message always reports stop_reason as str|None.
+        stop_reason = raw_stop_reason if isinstance(raw_stop_reason, str) else None
+        return LLMResponse(
+            content=text_content.strip(),
+            tool_calls=tool_calls,
+            usage=usage,
+            stop_reason=stop_reason,
+        )
 
     def generate(
         self,
@@ -538,22 +582,37 @@ class OpenAICompatibleClient(BaseLLMClient):
 
     @staticmethod
     def _parse_tool_calls(raw_calls: list[Any]) -> list[ToolCall]:
-        """Parse OpenAI-format tool_calls into ``ToolCall`` objects."""
+        """Parse OpenAI-format tool_calls into ``ToolCall`` objects.
+
+        BB-54: malformed/truncated argument JSON (e.g. a max_tokens cutoff
+        mid-tool-call) must NOT silently become ``input={}`` — that lets the
+        caller execute the tool with the wrong (empty) arguments as if the
+        call had succeeded. Instead we log the failure and set
+        ``ToolCall.parse_error`` so ``ToolRegistry.execute`` fails that
+        specific call loudly. An empty/missing streamed id is replaced with a
+        synthesized unique one so parallel tool calls can never collide when
+        paired up by id downstream.
+        """
         tool_calls: list[ToolCall] = []
         for raw_call in raw_calls or []:
             fn = raw_call.get("function", {})
             args_str = fn.get("arguments", "{}")
+            name = str(fn.get("name", "unknown_tool"))
+            parse_error: str | None = None
             try:
                 args: dict[str, Any] = json.loads(args_str)
-            except Exception:
-                args = {}
-            tool_calls.append(
-                ToolCall(
-                    id=str(raw_call.get("id", "tool_call")),
-                    name=str(fn.get("name", "unknown_tool")),
-                    input=args,
+            except Exception as exc:
+                logger.warning(
+                    "OpenAICompatibleClient: malformed tool-call argument JSON for "
+                    "tool %r (raw=%r): %s",
+                    name,
+                    args_str,
+                    exc,
                 )
-            )
+                args = {}
+                parse_error = f"malformed tool-call argument JSON: {exc}"
+            call_id = str(raw_call.get("id") or "") or _synthesize_tool_call_id()
+            tool_calls.append(ToolCall(id=call_id, name=name, input=args, parse_error=parse_error))
         return tool_calls
 
     @staticmethod
@@ -601,7 +660,13 @@ class OpenAICompatibleClient(BaseLLMClient):
         tool_calls = self._parse_tool_calls(message.get("tool_calls", []))
         raw_usage = data.get("usage", {}) or {}
         usage = self._usage_from_openai(raw_usage)
-        return LLMResponse(content=str(content).strip(), tool_calls=tool_calls, usage=usage)
+        stop_reason = choices[0].get("finish_reason")
+        return LLMResponse(
+            content=str(content).strip(),
+            tool_calls=tool_calls,
+            usage=usage,
+            stop_reason=stop_reason,
+        )
 
     def generate_stream(
         self,
@@ -629,6 +694,7 @@ class OpenAICompatibleClient(BaseLLMClient):
         # Accumulate streaming tool-call fragments: {index: {id, name, args_parts}}
         tc_acc: dict[int, dict[str, Any]] = {}
         final_usage: TokenUsage = TokenUsage()
+        final_stop_reason: str | None = None
 
         with self._http.stream(
             "POST", f"{self.base_url}/chat/completions", headers=headers, json=payload
@@ -652,6 +718,9 @@ class OpenAICompatibleClient(BaseLLMClient):
                 choices = data.get("choices", [])
                 if not choices:
                     continue
+                finish_reason = choices[0].get("finish_reason")
+                if finish_reason:
+                    final_stop_reason = finish_reason
                 delta = choices[0].get("delta", {})
 
                 # Text delta
@@ -673,21 +742,39 @@ class OpenAICompatibleClient(BaseLLMClient):
                     if fn.get("arguments"):
                         tc_acc[idx]["args"].append(fn["arguments"])
 
-        # Reconstruct full tool calls
+        # Reconstruct full tool calls. BB-54: truncated/malformed argument JSON
+        # (e.g. a max_tokens cutoff mid-tool-call) must NOT silently become
+        # input={} — log it and mark parse_error so the call fails loudly
+        # instead of executing with the wrong (empty) arguments. An
+        # empty/missing streamed id is replaced with a synthesized unique one
+        # so parallel tool calls can never collide when paired up by id.
         tool_calls: list[ToolCall] = []
         for idx in sorted(tc_acc):
             acc = tc_acc[idx]
             args_str = "".join(acc["args"])
+            parse_error: str | None = None
             try:
                 args = json.loads(args_str)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "OpenAICompatibleClient: malformed/truncated tool-call argument "
+                    "JSON for tool %r (raw=%r): %s",
+                    acc["name"],
+                    args_str,
+                    exc,
+                )
                 args = {}
-            tool_calls.append(ToolCall(id=acc["id"], name=acc["name"], input=args))
+                parse_error = f"malformed/truncated tool-call argument JSON: {exc}"
+            call_id = str(acc["id"] or "") or _synthesize_tool_call_id()
+            tool_calls.append(
+                ToolCall(id=call_id, name=acc["name"], input=args, parse_error=parse_error)
+            )
 
         return LLMResponse(
             content="".join(text_parts).strip(),
             tool_calls=tool_calls,
             usage=final_usage,
+            stop_reason=final_stop_reason,
         )
 
     def list_models(self) -> list[str]:
