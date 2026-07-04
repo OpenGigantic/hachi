@@ -1981,6 +1981,57 @@
         ]
       }
     },
+    "/schedules/{schedule_id}/run-now": {
+      "post": {
+        "tags": [
+          "runtime"
+        ],
+        "summary": "Post Schedule Run Now",
+        "description": "Force-trigger a schedule immediately, regardless of its next-run time.\n\nDispatches in the background (does not block on the agent turn); returns\n``{\"ok\": true, \"schedule_id\": ...}`` once dispatch is confirmed, or\n``{\"ok\": false, ...}`` if the schedule id is unknown or scheduling is\nunavailable (no active session).",
+        "operationId": "post_schedule_run_now_schedules__schedule_id__run_now_post",
+        "parameters": [
+          {
+            "name": "schedule_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Schedule Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Post Schedule Run Now Schedules  Schedule Id  Run Now Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/config": {
       "get": {
         "tags": [
@@ -3926,7 +3977,7 @@
           "runs"
         ],
         "summary": "List recent durable runs",
-        "description": "Return recent durable runs across all sessions, newest first.",
+        "description": "Return recent durable runs across all sessions the caller owns, newest first.",
         "operationId": "get_runs_runs_get",
         "parameters": [
           {
