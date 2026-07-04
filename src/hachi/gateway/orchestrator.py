@@ -3065,6 +3065,29 @@ def boot_agent(
 
     _lease_manager = LeaseManager()
 
+    # Per-session safety caps (0 = unlimited): stop a runaway loop from draining the
+    # user's API budget. Read from the optional [limits] config section, else env vars.
+    # Computed here (before _make_deps/registration) so S2 can thread the SAME caps
+    # down to register_delegation_tools -> every sub-agent's own ExecutionLoop —
+    # a delegated sub-agent must never be able to silently outspend what the user
+    # configured for the parent session.
+    limits_cfg = config.get("limits", {}) if isinstance(config.get("limits"), dict) else {}
+    max_daily_cost_usd = _coerce_float(
+        limits_cfg.get("max_daily_cost_usd"), os.environ.get("HACHI_MAX_DAILY_COST_USD")
+    )
+    max_session_cost_usd = _coerce_float(
+        limits_cfg.get("max_session_cost_usd"), os.environ.get("HACHI_MAX_SESSION_COST_USD")
+    )
+    max_session_tokens = _coerce_int(
+        limits_cfg.get("max_session_tokens"), os.environ.get("HACHI_MAX_SESSION_TOKENS")
+    )
+    max_turn_cost_usd = _coerce_float(
+        limits_cfg.get("max_turn_cost_usd"), os.environ.get("HACHI_MAX_TURN_COST_USD")
+    )
+    max_turn_tokens = _coerce_int(
+        limits_cfg.get("max_turn_tokens"), os.environ.get("HACHI_MAX_TURN_TOKENS")
+    )
+
     def _make_deps() -> BootDeps:
         return BootDeps(
             gate=runtime_gate,
@@ -3232,6 +3255,12 @@ def boot_agent(
                 cost_tracker=d.cost_tracker,
                 skill_engine=d.skill_engine,
                 lease_manager=d.lease_manager,
+                # S2: sub-agents inherit the parent session's configured budget caps
+                # by default so a delegated task can never silently outspend them.
+                max_cost_usd=max_session_cost_usd,
+                max_tokens=max_session_tokens,
+                max_cost_per_turn=max_turn_cost_usd,
+                max_tokens_per_turn=max_turn_tokens,
             ),
         ),
     ]
@@ -3317,26 +3346,10 @@ def boot_agent(
         },
     )
 
-    # Per-session safety caps (0 = unlimited): stop a runaway loop from draining the
-    # user's API budget. Read from the optional [limits] config section, else env vars.
-    limits_cfg = config.get("limits", {}) if isinstance(config.get("limits"), dict) else {}
-    max_daily_cost_usd = _coerce_float(
-        limits_cfg.get("max_daily_cost_usd"), os.environ.get("HACHI_MAX_DAILY_COST_USD")
-    )
-    max_session_cost_usd = _coerce_float(
-        limits_cfg.get("max_session_cost_usd"), os.environ.get("HACHI_MAX_SESSION_COST_USD")
-    )
-    max_session_tokens = _coerce_int(
-        limits_cfg.get("max_session_tokens"), os.environ.get("HACHI_MAX_SESSION_TOKENS")
-    )
-    max_turn_cost_usd = _coerce_float(
-        limits_cfg.get("max_turn_cost_usd"), os.environ.get("HACHI_MAX_TURN_COST_USD")
-    )
-    max_turn_tokens = _coerce_int(
-        limits_cfg.get("max_turn_tokens"), os.environ.get("HACHI_MAX_TURN_TOKENS")
-    )
-
     # 9. Instantiate the Brain Loop (cost_tracker created earlier, shared with sub-agents)
+    # (max_daily_cost_usd / max_session_cost_usd / max_session_tokens / max_turn_cost_usd /
+    # max_turn_tokens were computed earlier, before _make_deps, so S2 could thread them
+    # into register_delegation_tools as well.)
     # When the router is available, default_client() returns the configured model's
     # resilient client; the loop's llm_client is unchanged (back-compat).
     _loop_client = client

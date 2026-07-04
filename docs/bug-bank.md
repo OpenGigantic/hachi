@@ -1866,6 +1866,52 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   (companion to the pre-existing `test_openai_stream_no_usage_chunk_returns_zeros`, which
   pins the unchanged zero-usage return value).
 
+### BB-42 — Sub-agents ran with no inherited budget cap, invisibly draining shared spend
+
+- **Symptom:** a delegated sub-agent (`delegate_task`/`delegate_parallel_tasks`) could run
+  its full `max_iterations` budget completely unchecked by any cost/token cap even when the
+  parent session had `max_session_cost_usd`/`max_session_tokens`/`max_turn_cost_usd`/
+  `max_turn_tokens` configured — the parent's `CostTracker` recorded the spend correctly
+  (it's shared), but nothing stopped the sub-agent's own loop from continuing to spend
+  against it. The parent's own budget checks wouldn't fire until its NEXT turn, by which
+  time the sub-agent had already run unchecked.
+- **Root cause:** `SubAgentRuntime.run()` constructed its own `ExecutionLoop` passing only
+  `llm_client`/`registry`/`memory`/`base_system_prompt`/`on_event`/`cost_tracker` — never
+  `max_cost_usd`/`max_tokens`/`max_cost_per_turn`/`max_tokens_per_turn`, so those defaulted
+  to `0` (unlimited) regardless of what the parent session had configured.
+- **Avoid:** when a child execution unit shares a parent's tracked resource (cost tracker,
+  rate limiter, etc.), it must also inherit the parent's ENFORCEMENT of that resource's caps
+  by default — sharing the accounting without sharing the limit lets the child spend past
+  what the parent would ever allow itself.
+- **Locked by:** `tests/test_sub_agent_budget_caps.py` (2 tests: cap propagation stops the
+  loop early; `SubAgentRuntime` accepts all 4 cap kwargs). Threaded end-to-end via
+  `register_delegation_tools()`/`_make_delegate_task()`/`_make_delegate_parallel_tasks()` in
+  `src/hachi/tools/delegation_tools.py`, wired from `boot_agent()`'s existing
+  `max_session_cost_usd`/`max_session_tokens`/`max_turn_cost_usd`/`max_turn_tokens` in
+  `src/hachi/gateway/orchestrator.py`.
+
+### BB-43 — Sub-agent iteration-limit exhaustion reported as SUCCESS, not TIMEOUT
+
+- **Symptom:** when a delegated sub-agent never finished its task and was cut off by
+  `max_iterations`, the orchestrator received `Status: success` in the delegation report —
+  indistinguishable from a task that genuinely completed — even though the summary text
+  said `"[INCOMPLETE] The task reached the N-iteration limit..."`. The incomplete result was
+  also persisted to the memory vault as a confirmed `delegation_result` fact (BB-42's
+  sibling: `_enqueue_delegation_persistence` only skips the fact-upsert for non-SUCCESS).
+- **Root cause:** `ExecutionLoop.run()` never raises `AgentException` on iteration-limit
+  exhaustion (P1-04 made it a graceful `"[INCOMPLETE] ..."` string return, not a raised
+  exception — see `tests/test_iteration_limit.py`). `SubAgentRuntime.run()`'s
+  `except AgentException as exc:` branch, written to map this case to
+  `SubAgentStatus.TIMEOUT`, was therefore unreachable: the `[INCOMPLETE]` string flowed
+  straight into the `try` block's normal return path, reported as `SUCCESS`.
+- **Avoid:** when a callee changes from "raises on incomplete" to "returns a sentinel string
+  on incomplete" (or vice versa), every caller's exception handler for the old contract
+  becomes silently dead code — grep for the exception type across the codebase whenever you
+  change how a loop signals a non-exceptional-but-not-fully-successful outcome, and update
+  callers to check the new signal instead of leaving a now-unreachable except clause.
+- **Locked by:**
+  `tests/test_sub_agent_iteration_limit_status.py::test_sub_agent_iteration_limit_exhaustion_is_not_success`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
