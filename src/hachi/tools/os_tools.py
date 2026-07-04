@@ -472,6 +472,8 @@ ROLLBACK_CHANGES_SCHEMA = {
 
 
 _CAT_STEMS: frozenset[str] = frozenset({"cat", "type"})
+_COPY_STEMS: frozenset[str] = frozenset({"cp", "copy"})
+_MOVE_STEMS: frozenset[str] = frozenset({"mv", "move"})
 
 
 def _make_guarded_run_terminal(gate: Any):
@@ -517,6 +519,36 @@ def _make_guarded_run_terminal(gate: Any):
                     path_result = gate.check_path(str(p), "read")
                     if not path_result.allowed:
                         return f"Permission Denied: {path_result.reason}"
+
+            # M3: check_command's blocked_paths scan (via _EXFIL_STEMS) only catches
+            # move/copy destinations/sources that fall inside blocked_paths — it never
+            # consults the full read/write/delete permission tier for paths outside
+            # that list. Mirror the _CAT_STEMS re-check above: resolve src/dst the same
+            # way _raw_run_terminal_command does and gate them explicitly.
+            if executable_stem in _COPY_STEMS or executable_stem in _MOVE_STEMS:
+                non_flag = [t.strip("\"'") for t in argv[1:] if not t.startswith("-")]
+                if len(non_flag) >= 2:
+                    effective_cwd = Path(cwd).resolve()
+
+                    def _resolve(tok: str) -> Path:
+                        p = Path(tok)
+                        return p.resolve() if p.is_absolute() else (effective_cwd / p).resolve()
+
+                    src = _resolve(non_flag[-2])
+                    dst = _resolve(non_flag[-1])
+
+                    write_result = gate.check_path(str(dst), "write")
+                    if not write_result.allowed:
+                        return f"Permission Denied: {write_result.reason}"
+
+                    if executable_stem in _MOVE_STEMS:
+                        delete_result = gate.check_path(str(src), "delete")
+                        if not delete_result.allowed:
+                            return f"Permission Denied: {delete_result.reason}"
+                    else:
+                        read_result = gate.check_path(str(src), "read")
+                        if not read_result.allowed:
+                            return f"Permission Denied: {read_result.reason}"
 
         return _raw_run_terminal_command(command, cwd, timeout=gate.terminal_timeout)
 

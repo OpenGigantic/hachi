@@ -166,6 +166,8 @@ _EXFIL_STEMS: frozenset[str] = frozenset(
         "ls",
         "tree",
         "xcopy",
+        "ren",
+        "rename",
     }
 )
 

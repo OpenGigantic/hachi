@@ -170,6 +170,91 @@ def test_cat_bare_filename_from_blocked_cwd_is_denied(tmp_path: Path) -> None:
     assert "PRIVATE KEY" not in result
 
 
+def test_ren_and_rename_are_recognized_as_exfil_stems() -> None:
+    """M3: 'ren'/'rename' must trigger the same blocked_paths re-check as
+    cat/copy/move — they were entirely absent from _EXFIL_STEMS before the fix,
+    so a rename in/out of a blocked path was never checked at all.
+    """
+    from hachi.core.permissions import _EXFIL_STEMS
+
+    assert "ren" in _EXFIL_STEMS
+    assert "rename" in _EXFIL_STEMS
+
+
+def test_move_denied_when_destination_outside_allowed_paths(tmp_path: Path) -> None:
+    """M3: 'move' only had blocked_paths coverage via _EXFIL_STEMS — a destination
+    outside allowed_paths but not explicitly blocked previously went unchecked.
+    """
+    gate, allowed_dir, blocked_dir = _make_gate(tmp_path)
+    src = allowed_dir / "source.txt"
+    src.write_text("payload", encoding="utf-8")
+
+    registry = ToolRegistry()
+    register_os_tools(registry, gate=gate)
+
+    dst = blocked_dir / "dest.txt"
+    result = registry._tools["run_terminal_command"](
+        command=f"move {src} {dst}",
+        cwd=str(allowed_dir),
+    )
+
+    assert "Permission Denied" in result, f"Expected denial, got: {result!r}"
+    assert src.exists()  # the move must not have actually happened
+    assert not dst.exists()
+
+
+def test_copy_denied_when_source_outside_allowed_paths(tmp_path: Path) -> None:
+    """M3: 'copy' reading a source outside allowed_paths was previously unchecked
+    unless the source happened to sit inside blocked_paths specifically."""
+    gate, allowed_dir, blocked_dir = _make_gate(tmp_path)
+    src = blocked_dir / "secret.txt"
+    src.write_text("TOP SECRET", encoding="utf-8")
+
+    registry = ToolRegistry()
+    register_os_tools(registry, gate=gate)
+
+    dst = allowed_dir / "leaked.txt"
+    result = registry._tools["run_terminal_command"](
+        command=f"copy {src} {dst}",
+        cwd=str(allowed_dir),
+    )
+
+    assert "Permission Denied" in result, f"Expected denial, got: {result!r}"
+    assert not dst.exists()
+
+
+def test_move_allowed_within_allowed_paths_when_delete_enabled(tmp_path: Path) -> None:
+    """Sanity check: the new gate must not break the legitimate in-bounds case.
+
+    Guided tier defaults allow_delete=false, and 'move' needs delete on its
+    source — explicitly enable it here to isolate the path-scope check under
+    test from the (correctly, separately enforced) delete-permission check.
+    """
+    from hachi.core.permissions import PermissionGate
+
+    _gate, allowed_dir, _blocked_dir = _make_gate(tmp_path)
+    pf = tmp_path / "device-permissions.og"
+    content = pf.read_text(encoding="utf-8").replace("allow_delete=false", "allow_delete=true")
+    pf.write_text(content, encoding="utf-8")
+    gate = PermissionGate(pf)
+
+    src = allowed_dir / "source.txt"
+    src.write_text("payload", encoding="utf-8")
+    dst = allowed_dir / "moved.txt"
+
+    registry = ToolRegistry()
+    register_os_tools(registry, gate=gate)
+
+    result = registry._tools["run_terminal_command"](
+        command=f"move {src} {dst}",
+        cwd=str(allowed_dir),
+    )
+
+    assert "Permission Denied" not in result, f"Unexpected denial: {result!r}"
+    assert dst.exists()
+    assert not src.exists()
+
+
 def test_cat_absolute_blocked_path_is_denied(tmp_path: Path) -> None:
     """'cat /blocked/secret.txt' with an absolute blocked path is also denied."""
     gate, allowed_dir, blocked_dir = _make_gate(tmp_path)
