@@ -29,6 +29,8 @@ No code/config changes are made by this engagement — analysis and specs only, 
 | Artifact | Purpose |
 |---|---|
 | [09-execution-plan.md](09-execution-plan.md) | The engagement's roadmap (Phase 8) broken into implementation phases, parallel lanes, and agent-executable task specs with dependencies, acceptance criteria, and phase gates. **Start here to implement.** |
+| [2026-07-05-competitive-review/](2026-07-05-competitive-review/README.md) | Fresh (2026-07-05) competitive/gap analysis + positioning. **Updates and partly supersedes [03-competitive-and-positioning.md](03-competitive-and-positioning.md):** two of that doc's assumptions no longer hold — OpenClaw now ships native memory and Hermes now ships governance/audit, so "governance + visibility" is table stakes rather than an open quadrant. Competitor incident framing is replaced with the product-design lesson only. |
+| [../audit/2026-07-03/BACKLOG.md](../audit/2026-07-03/BACKLOG.md) | **Consolidated forward backlog (2026-07-05).** Fuses the 2026-07-03 production audit (now remediated) with the competitive review's strategic bets into cold-start-able unit tasks. **Start here for the next session's work** — it carries the state snapshot, the two blocked owner decisions (H9/M10), and Workstreams A–G. |
 
 ## Standing evidence notes
 
