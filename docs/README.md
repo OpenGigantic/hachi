@@ -35,6 +35,8 @@ convention; everything else lives here.
 
 - [architecture/README.md](architecture/README.md) — design docs (01–29) and ADRs
 - [strategy/00-index.md](strategy/00-index.md) — product strategy, evaluation, and roadmap (00–09)
+- [strategy/2026-07-05-competitive-review/README.md](strategy/2026-07-05-competitive-review/README.md) — fresh competitive/gap analysis vs OpenClaw, Hermes, Claude Code, Copilot, Cursor + positioning (updates the 2026-06-12 competitive doc)
+- [audit/2026-07-03/BACKLOG.md](audit/2026-07-03/BACKLOG.md) — **consolidated forward backlog**: the 2026-07-03 production audit (remediated) + the competitive review's bets, compiled into cold-start-able unit tasks (Workstreams A–G) — the next-session entry point
 - [design/](design/) — TUI and web UI design specs
 - [web/backend-api-gaps.md](web/backend-api-gaps.md) — frontend ↔ gateway API notes
 
