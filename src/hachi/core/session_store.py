@@ -541,6 +541,67 @@ class SessionStore:
             self._conn.commit()
             return cur.rowcount > 0
 
+    # ==========================================
+    # Retention / Pruning (BB-72)
+    # ==========================================
+
+    def cleanup_idempotency_keys(self, older_than_hours: int = 48) -> int:
+        """Delete idempotency_keys rows created more than ``older_than_hours`` ago.
+
+        The replay window for a POST /messages retry is at most a few minutes;
+        48 hours is extremely conservative.  Returns the number of rows deleted.
+        """
+        cutoff = time.time() - older_than_hours * 3600
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM idempotency_keys WHERE created_at < ?",
+                (cutoff,),
+            )
+            self._conn.commit()
+            count = int(cur.rowcount)
+        logger.debug("SessionStore: pruned %d idempotency key(s)", count)
+        return count
+
+    def cleanup_interaction_log(self, older_than_days: int = 90) -> int:
+        """Delete interaction_log rows older than ``older_than_days`` days.
+
+        The eval/audit trail is retained for 90 days by default.  Returns the
+        number of rows deleted.
+        """
+        cutoff = (
+            datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=older_than_days)
+        ).isoformat()
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM interaction_log WHERE ts < ?",
+                (cutoff,),
+            )
+            self._conn.commit()
+            count = int(cur.rowcount)
+        logger.debug("SessionStore: pruned %d interaction_log row(s)", count)
+        return count
+
+    def cleanup_daily_spend(self, older_than_days: int = 365) -> int:
+        """Delete daily_spend rows for dates older than ``older_than_days`` days.
+
+        A year of spend history (default) is enough for tax/billing purposes.
+        Returns the number of rows deleted.
+        """
+        cutoff = (
+            (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=older_than_days))
+            .date()
+            .isoformat()
+        )
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM daily_spend WHERE date < ?",
+                (cutoff,),
+            )
+            self._conn.commit()
+            count = int(cur.rowcount)
+        logger.debug("SessionStore: pruned %d daily_spend row(s)", count)
+        return count
+
     def get_sessions_missing_title(self, limit: int = 1000) -> list[dict[str, Any]]:
         """Return sessions that have no title yet (oldest first), for backfill.
 

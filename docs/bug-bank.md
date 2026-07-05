@@ -1930,6 +1930,42 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `test_no_route_error_logs_at_warning_not_debug` and
   `test_arbitrary_router_exception_logs_at_warning_not_debug`.
 
+### BB-72 — `cleanup_completed()` defined 3×, called by zero production code; session data stores grew without bound
+
+- **Symptom:** `jobs.db` accumulated completed/failed/cancelled rows forever;
+  `interaction_log`, `idempotency_keys`, and `daily_spend` tables in `sessions.db` had
+  no prune path; `CheckpointManager` snapshot files piled up on disk.  A "governed"
+  product that never prunes its own audit trail leaks data and disk indefinitely.
+- **Root cause:** `SQLiteJobQueue.cleanup_completed()` and `InMemoryJobQueue.cleanup_completed()`
+  were defined (and tested) but never wired into any background call path.  The
+  `ResidentWorkerThread._run()` loop only called `execute_one()` on idle and had no
+  periodic maintenance step.  Session-store tables had no cleanup methods at all;
+  `CheckpointManager` had no prune method.
+- **Fix:**
+  - Added `SessionStore.cleanup_idempotency_keys()`, `cleanup_interaction_log()`,
+    and `cleanup_daily_spend()` (`core/session_store.py`).
+  - Added `CheckpointManager.prune_old_snapshots()` (`core/checkpoints.py`).
+  - Added `RetentionSettings` to `core/settings.py` (maps to `[retention]` in
+    `settings.toml`; conservative defaults: jobs 24 h, interaction_log 90 d,
+    idempotency keys 48 h, daily_spend 365 d, checkpoints 30 d, sweep every 3600 s).
+  - Extended `ResidentWorkerThread.__init__` with optional `session_store`,
+    `checkpoint_manager`, and retention-TTL params; added `_maybe_sweep()` / `_do_sweep()`
+    called on every idle poll cycle.
+  - `boot_agent` in `gateway/orchestrator.py` now passes `session_store`,
+    `checkpoint_manager`, and `RetentionSettings` values to `ResidentWorkerThread`.
+- **Avoid:** defining a cleanup method without also hooking it into the background
+  maintenance loop — the method is effectively dead code and stores grow unbounded.
+  When adding a new durable store, add its cleanup method AND wire it into
+  `ResidentWorkerThread._do_sweep()` in the same PR.
+- **Locked by:**
+  `tests/test_retention_sweep.py` — 6 tests covering:
+  `test_worker_idle_prunes_old_completed_jobs`,
+  `test_inmemory_queue_also_swept`,
+  `test_session_store_cleanup_idempotency_keys`,
+  `test_session_store_cleanup_interaction_log`,
+  `test_session_store_cleanup_daily_spend`,
+  `test_checkpoint_manager_prune_old_snapshots`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
