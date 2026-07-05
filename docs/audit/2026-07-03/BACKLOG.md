@@ -21,10 +21,10 @@ without re-reading the whole engagement.
 
 | Fact | Value |
 |---|---|
-| Branch / HEAD | `frontend-review` / `9fcb002` |
-| Audit remediation ([`TASKS.md`](TASKS.md)) | **Done & committed** — all P0/P1/P2/P3 + S1–S3, except the 3 open items in §2 |
-| Gate (last independent run, HEAD `9fcb002`) | **preflight 12/12 green**; `pytest` **4245 passed / 21 skipped / 0 failed** |
-| Uncommitted | `docs/audit/2026-07-03/` (this audit set) + `docs/strategy/2026-07-05-competitive-review/` are **untracked**; `docs/README.md`, `docs/strategy/00-index.md`, `docs/strategy/03-competitive-and-positioning.md` are **modified**. See T0. |
+| Branch / HEAD | `frontend-review` / see T0 + A3 commits below |
+| Audit remediation ([`TASKS.md`](TASKS.md)) | **Done & committed** — all P0/P1/P2/P3 + S1–S3 + A3 (BB-72) |
+| Gate (last independent run, 2026-07-05) | **preflight 12/12 green**; `pytest` **4251 passed / 21 skipped / 0 failed** |
+| Uncommitted | Nothing — T0 and A3 both committed. |
 
 **The one-paragraph thesis** (compiled from the audit + review): the *engine* is real and rare
 (governed ReAct loop, in-loop cost caps, hardened gateway, durable job queue, `.og`, 4245 passing
@@ -46,7 +46,7 @@ Everything else in [`TASKS.md`](TASKS.md) is Done. These three are the only rema
 |---|---|---|---|---|
 | **H9** | `pipx install hachi-og` 404s — package not on PyPI | Release/ops | **Blocked (decision)** | Cut `0.1.0` to PyPI now, or keep the README leading with `install.sh`/`git clone` and mark pipx "coming soon"? Needs PyPI creds + a go/no-go. |
 | **M10** | `tokoboros` compat shim reintroduced (`cli/main.py:151-184`, `gateway/workspace.py:49-90`) — violates CLAUDE.md's anti-shim rule | Decision | **Blocked (decision)** | Was it added to cover a real self-heal/migration need? Either remove it or formally reverse the CLAUDE.md rule. Check `git blame` on those lines first. |
-| **A3** | Session/data retention sweep never wired (`cleanup_completed()` defined 3×, called by zero production code); `jobs.db`/`interaction_log`/`idempotency_keys`/`daily_spend`/checkpoints grow monotonically | Code | **Deferred (open)** | None — pure engineering. H8's cascade-delete landed; only the periodic sweep was deferred (concurrent WIP at the time). Promoted to task A3 below. |
+| **A3** | Session/data retention sweep never wired (`cleanup_completed()` defined 3×, called by zero production code); `jobs.db`/`interaction_log`/`idempotency_keys`/`daily_spend`/checkpoints grow monotonically | Code | **Done** (2026-07-05, BB-72) | — |
 
 ---
 
@@ -76,10 +76,10 @@ Priority key: **P0** = finish making the claims true / unblock; **P1** = the dur
 
 | ID | Title | WS | Bet | Priority | Size | Deps |
 |---|---|---|---|---|---|---|
-| **T0** | Commit the audit + competitive-review docs | — | — | P0 | S | none |
+| **T0** ✅ | Commit the audit + competitive-review docs | — | — | P0 | S | none |
 | **A1** | Cut `hachi-og 0.1.0` to PyPI (= H9) | A | 1 | P0 | S | decision |
 | **A2** | Resolve the tokoboros shim (= M10) | A | 1 | P0 | S | decision |
-| **A3** | Wire the retention/prune sweep (= H8 deferred) | A | 1 | P1 | M | none |
+| **A3** ✅ | Wire the retention/prune sweep (= H8 deferred) | A | 1 | P1 | M | none |
 | **A4** | Real OAuth token consumption for Notion/Slack (= H5 bridge) | A | 3 | P2 | M | none |
 | **A5** | Claim-vs-code truth-pass re-verification | A | 1 | P1 | S | A1–A4 |
 | **B1** | Trust-receipt design + threat model (spec) | B | 2 | P1 | M | none |

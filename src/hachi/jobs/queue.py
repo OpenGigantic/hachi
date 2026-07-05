@@ -18,6 +18,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator
@@ -992,11 +993,38 @@ class ResidentWorkerThread:
     Start once at agent boot; ``AgentSession._drain_job_queue()`` becomes a
     no-op while this thread is running. On shutdown, ``stop()`` signals the
     thread to exit and joins it with a short timeout.
+
+    When the queue is idle (``execute_one`` returns False), the thread also runs
+    a periodic retention sweep every ``sweep_interval_seconds`` seconds (BB-72):
+    old completed jobs, idempotency keys, interaction-log rows, daily-spend rows,
+    and file-edit checkpoints are pruned according to the configured TTLs.
     """
 
-    def __init__(self, worker: JobWorker, poll_interval: float = 0.5) -> None:
+    def __init__(
+        self,
+        worker: JobWorker,
+        poll_interval: float = 0.5,
+        *,
+        session_store: "Any | None" = None,
+        checkpoint_manager: "Any | None" = None,
+        sweep_interval_seconds: float = 3600.0,
+        jobs_retention_hours: int = 24,
+        interaction_log_retention_days: int = 90,
+        idempotency_key_retention_hours: int = 48,
+        daily_spend_retention_days: int = 365,
+        checkpoint_retention_days: int = 30,
+    ) -> None:
         self._worker = worker
         self._poll_interval = poll_interval
+        self._session_store = session_store
+        self._checkpoint_manager = checkpoint_manager
+        self._sweep_interval = sweep_interval_seconds
+        self._jobs_retention_hours = jobs_retention_hours
+        self._interaction_log_retention_days = interaction_log_retention_days
+        self._idempotency_key_retention_hours = idempotency_key_retention_hours
+        self._daily_spend_retention_days = daily_spend_retention_days
+        self._checkpoint_retention_days = checkpoint_retention_days
+        self._last_sweep: float = 0.0  # initialised in _run so first idle fires the sweep
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
             target=self._run,
@@ -1018,11 +1046,70 @@ class ResidentWorkerThread:
         return self._thread.is_alive()
 
     def _run(self) -> None:
+        self._last_sweep = time.monotonic()
         while not self._stop_event.is_set():
             try:
                 ran = self._worker.execute_one()
                 if not ran:
                     self._stop_event.wait(self._poll_interval)
+                    self._maybe_sweep()
             except Exception:
                 logger.exception("ResidentWorkerThread: uncaught error in execute_one")
                 self._stop_event.wait(self._poll_interval)
+                self._maybe_sweep()  # keep sweep ticking even when the job path errors
+
+    def _maybe_sweep(self) -> None:
+        now = time.monotonic()
+        if now - self._last_sweep < self._sweep_interval:
+            return
+        self._last_sweep = now
+        self._do_sweep()
+
+    def _do_sweep(self) -> None:
+        """Run all retention-cleanup routines (BB-72)."""
+        try:
+            removed = self._worker.queue.cleanup_completed(
+                older_than_hours=self._jobs_retention_hours
+            )
+            if removed:
+                logger.info("RetentionSweep: pruned %d completed job(s)", removed)
+        except Exception:
+            logger.exception("RetentionSweep: error cleaning up jobs")
+
+        if self._session_store is not None:
+            try:
+                n = self._session_store.cleanup_idempotency_keys(
+                    older_than_hours=self._idempotency_key_retention_hours
+                )
+                if n:
+                    logger.info("RetentionSweep: pruned %d idempotency key(s)", n)
+            except Exception:
+                logger.exception("RetentionSweep: error cleaning up idempotency keys")
+
+            try:
+                n = self._session_store.cleanup_interaction_log(
+                    older_than_days=self._interaction_log_retention_days
+                )
+                if n:
+                    logger.info("RetentionSweep: pruned %d interaction_log row(s)", n)
+            except Exception:
+                logger.exception("RetentionSweep: error cleaning up interaction log")
+
+            try:
+                n = self._session_store.cleanup_daily_spend(
+                    older_than_days=self._daily_spend_retention_days
+                )
+                if n:
+                    logger.info("RetentionSweep: pruned %d daily_spend row(s)", n)
+            except Exception:
+                logger.exception("RetentionSweep: error cleaning up daily spend")
+
+        if self._checkpoint_manager is not None:
+            try:
+                n = self._checkpoint_manager.prune_old_snapshots(
+                    older_than_days=self._checkpoint_retention_days
+                )
+                if n:
+                    logger.info("RetentionSweep: pruned %d old checkpoint(s)", n)
+            except Exception:
+                logger.exception("RetentionSweep: error pruning checkpoints")

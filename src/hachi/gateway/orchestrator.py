@@ -2669,7 +2669,12 @@ def boot_agent(
     # are identical to the original direct-call code path, registered in the
     # same order, so SSE/TUI output is byte-identical by construction.
     # ------------------------------------------------------------------
-    from hachi.core.settings import EvalReportSettings, EventsSettings, JobsSettings
+    from hachi.core.settings import (
+        EvalReportSettings,
+        EventsSettings,
+        JobsSettings,
+        RetentionSettings,
+    )
 
     _events_cfg = EventsSettings.model_validate(config.get("events", {}))
     _jobs_cfg = JobsSettings.model_validate(config.get("jobs", {}))
@@ -3542,10 +3547,23 @@ def boot_agent(
 
     # Start the resident job worker so background jobs (fact extraction, prefetch,
     # title generation) execute without blocking the turn path.
+    # BB-72: also pass session_store + checkpoint_manager so the idle sweep can
+    # prune idempotency keys, interaction_log, daily_spend, and checkpoint files.
+    _retention_cfg = RetentionSettings.model_validate(config.get("retention") or {})
     _job_worker_for_session = JobWorker(
         job_queue, on_job_event=emit_runtime_event, registry=_job_registry
     )
-    _resident_worker = ResidentWorkerThread(_job_worker_for_session)
+    _resident_worker = ResidentWorkerThread(
+        _job_worker_for_session,
+        session_store=session_store,
+        checkpoint_manager=checkpoint_manager,
+        sweep_interval_seconds=_retention_cfg.sweep_interval_seconds,
+        jobs_retention_hours=_retention_cfg.jobs_retention_hours,
+        interaction_log_retention_days=_retention_cfg.interaction_log_retention_days,
+        idempotency_key_retention_hours=_retention_cfg.idempotency_key_retention_hours,
+        daily_spend_retention_days=_retention_cfg.daily_spend_retention_days,
+        checkpoint_retention_days=_retention_cfg.checkpoint_retention_days,
+    )
     _resident_worker.start()
     session.set_resident_worker(_resident_worker)
 
