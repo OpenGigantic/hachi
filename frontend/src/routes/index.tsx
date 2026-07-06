@@ -29,10 +29,10 @@ interface StatusMeta {
 
 function statusMeta(st: StatusKey | string): StatusMeta {
   const map: Record<string, StatusMeta> = {
-    working: { bg: 'var(--hachi-working-tint)', fg: '#A8651A', dot: 'var(--hachi-working)', text: 'working' },
+    working: { bg: 'var(--hachi-working-tint)', fg: 'var(--hachi-working-fg)', dot: 'var(--hachi-working)', text: 'working' },
     'on-watch': { bg: 'var(--hachi-trust-tint)', fg: 'var(--hachi-trust)', dot: 'var(--hachi-trust)', text: 'on watch' },
-    done: { bg: 'var(--hachi-success-tint)', fg: '#2C7A50', dot: 'var(--hachi-success)', text: 'done' },
-    blocked: { bg: 'var(--hachi-danger-tint)', fg: '#9E2D21', dot: 'var(--hachi-danger)', text: 'blocked' },
+    done: { bg: 'var(--hachi-success-tint)', fg: 'var(--hachi-success-fg)', dot: 'var(--hachi-success)', text: 'done' },
+    blocked: { bg: 'var(--hachi-danger-tint)', fg: 'var(--hachi-danger-fg)', dot: 'var(--hachi-danger)', text: 'blocked' },
   };
   return map[st] || map['working'];
 }
@@ -47,9 +47,9 @@ interface RiskMeta {
 
 function riskMeta(r: RiskKey | string): RiskMeta {
   const map: Record<string, RiskMeta> = {
-    low: { label: 'low risk', fg: '#2C7A50', bg: 'var(--hachi-success-tint)' },
-    medium: { label: 'needs care', fg: '#A8651A', bg: 'var(--hachi-working-tint)' },
-    high: { label: 'high risk', fg: '#9E2D21', bg: 'var(--hachi-danger-tint)' },
+    low: { label: 'low risk', fg: 'var(--hachi-success-fg)', bg: 'var(--hachi-success-tint)' },
+    medium: { label: 'needs care', fg: 'var(--hachi-working-fg)', bg: 'var(--hachi-working-tint)' },
+    high: { label: 'high risk', fg: 'var(--hachi-danger-fg)', bg: 'var(--hachi-danger-tint)' },
   };
   return map[r] || map['medium'];
 }
@@ -69,11 +69,10 @@ interface ApprovalCardProps {
   onDecline: () => void;
 }
 
-function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps) {
+export function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps) {
   const { label: countdown } = useCountdown(approval.expiresAt);
   const rm = riskMeta(approval.risk);
-  const [hoverAllow, setHoverAllow] = useState(false);
-  const [hoverDecline, setHoverDecline] = useState(false);
+  const isHighRisk = approval.risk === 'high';
 
   return (
     <div
@@ -83,99 +82,139 @@ function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps) {
         borderRadius: '16px',
         padding: '16px 18px',
         display: 'flex',
+        flexDirection: 'column',
         gap: '14px',
-        alignItems: 'flex-start',
       }}
     >
-      {/* icon badge */}
-      <div
-        style={{
-          flexShrink: 0,
-          width: '40px',
-          height: '40px',
-          borderRadius: '10px',
-          background: 'var(--hachi-cream)',
-          display: 'grid',
-          placeItems: 'center',
-          color: 'var(--hachi-ink)',
-        }}
-      >
-        <Icon name={approval.icon} size={19} />
-      </div>
-
-      {/* content */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-          <span style={{ fontWeight: 500, fontSize: '15px' }}>{approval.request}</span>
-          <span
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '5px',
-              padding: '3px 9px',
-              borderRadius: '999px',
-              background: rm.bg,
-              color: rm.fg,
-              fontSize: '11px',
-              fontWeight: 500,
-            }}
-          >
-            {rm.label}
-          </span>
-        </div>
-        <div style={{ fontSize: '13px', color: 'var(--hachi-muted)', marginTop: '3px' }}>
-          why: {approval.why}
-        </div>
+      {/* header row: icon badge + content */}
+      <div data-testid="approval-header" style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
+        {/* icon badge */}
         <div
           style={{
-            marginTop: '10px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '7px',
-            fontSize: '12px',
-            color: 'var(--hachi-muted)',
+            flexShrink: 0,
+            width: '40px',
+            height: '40px',
+            borderRadius: '10px',
+            background: 'var(--hachi-cream)',
+            display: 'grid',
+            placeItems: 'center',
+            color: 'var(--hachi-ink)',
           }}
         >
-          <Icon name="clock" size={13} />
-          auto-declines in {countdown}
+          <Icon name={approval.icon} size={19} />
+        </div>
+
+        {/* content */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 500, fontSize: '15px' }}>{approval.request}</span>
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                padding: '3px 9px',
+                borderRadius: '999px',
+                background: rm.bg,
+                color: rm.fg,
+                fontSize: '11px',
+                fontWeight: 500,
+              }}
+            >
+              {rm.label}
+            </span>
+          </div>
+          <div style={{ fontSize: '13px', color: 'var(--hachi-muted)', marginTop: '3px' }}>
+            why: {approval.why}
+          </div>
+          <div
+            style={{
+              marginTop: '10px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '7px',
+              fontSize: '12px',
+              color: 'var(--hachi-muted)',
+            }}
+          >
+            <Icon name="clock" size={13} />
+            auto-declines in {countdown}
+          </div>
         </div>
       </div>
 
-      {/* actions */}
-      <div style={{ display: 'flex', gap: '8px', flexShrink: 0, flexWrap: 'wrap' }}>
+      {/* actions — separate full-width row so it can never squeeze the title
+          into a one-word-per-line wrap on narrow viewports */}
+      <div
+        data-testid="approval-actions"
+        className="hachi-approval-actions"
+        style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}
+      >
         <button
+          type="button"
+          className={isHighRisk ? 'hachi-decline-btn-risk' : 'hachi-decline-btn-safe'}
           onClick={onDecline}
-          onMouseEnter={() => setHoverDecline(true)}
-          onMouseLeave={() => setHoverDecline(false)}
-          style={{
-            height: '36px',
-            padding: '0 14px',
-            borderRadius: '10px',
-            border: '1px solid var(--hachi-trust)',
-            background: hoverDecline ? 'var(--hachi-trust-tint)' : 'transparent',
-            color: 'var(--hachi-trust)',
-            font: '500 13px var(--font-body)',
-            cursor: 'pointer',
-            transition: 'background var(--dur-fast) var(--ease)',
-          }}
+          style={
+            isHighRisk
+              ? {
+                  flex: 1,
+                  height: '44px',
+                  padding: '0 14px',
+                  borderRadius: '10px',
+                  border: '0.5px solid transparent',
+                  background: 'var(--hachi-trust)',
+                  color: 'var(--hachi-canvas)',
+                  font: '500 13px var(--font-body)',
+                  cursor: 'pointer',
+                  transition: 'opacity var(--dur-fast) var(--ease)',
+                }
+              : {
+                  flex: 1,
+                  height: '44px',
+                  padding: '0 14px',
+                  borderRadius: '10px',
+                  border: '1px solid var(--hachi-trust)',
+                  background: 'transparent',
+                  color: 'var(--hachi-trust)',
+                  font: '500 13px var(--font-body)',
+                  cursor: 'pointer',
+                  transition: 'background var(--dur-fast) var(--ease)',
+                }
+          }
         >
           Decline
         </button>
         <button
+          type="button"
+          className={isHighRisk ? 'hachi-allow-btn-risk' : 'hachi-allow-btn-safe'}
           onClick={onAllow}
-          onMouseEnter={() => setHoverAllow(true)}
-          onMouseLeave={() => setHoverAllow(false)}
-          style={{
-            height: '36px',
-            padding: '0 14px',
-            borderRadius: '10px',
-            border: '0.5px solid transparent',
-            background: hoverAllow ? 'var(--hachi-brand-active)' : 'var(--hachi-brand-hover)',
-            color: 'var(--hachi-canvas)',
-            font: '500 13px var(--font-body)',
-            cursor: 'pointer',
-            transition: 'background var(--dur-fast) var(--ease)',
-          }}
+          style={
+            isHighRisk
+              ? {
+                  flex: 1,
+                  height: '44px',
+                  padding: '0 14px',
+                  borderRadius: '10px',
+                  border: '1px solid var(--hachi-brand)',
+                  background: 'transparent',
+                  color: 'var(--hachi-brand)',
+                  font: '500 13px var(--font-body)',
+                  cursor: 'pointer',
+                  transition: 'background var(--dur-fast) var(--ease)',
+                }
+              : {
+                  flex: 1,
+                  height: '44px',
+                  padding: '0 14px',
+                  borderRadius: '10px',
+                  border: '0.5px solid transparent',
+                  background: 'var(--hachi-brand-hover)',
+                  color: 'var(--hachi-canvas)',
+                  font: '500 13px var(--font-body)',
+                  cursor: 'pointer',
+                  transition: 'background var(--dur-fast) var(--ease)',
+                }
+          }
         >
           Allow once
         </button>
@@ -199,16 +238,17 @@ interface RunCardHomeProps {
 function RunCardHome({ title, status, progress, meta, spent, budget, onClick }: RunCardHomeProps) {
   const sm = statusMeta(status);
   const pct = Math.round(progress * 100);
-  const [hovered, setHovered] = useState(false);
 
   return (
     <div
+      className="hachi-runcard-home"
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       style={{
         background: 'var(--hachi-surface)',
-        border: `0.5px solid ${hovered ? '#d3c8b4' : 'var(--hachi-line)'}`,
+        border: '0.5px solid var(--hachi-line)',
         borderRadius: '16px',
         padding: '18px',
         display: 'flex',
@@ -377,11 +417,6 @@ function Home() {
     (s) => s.requiredIntegration === null || connectedIntegrationIds.has(s.requiredIntegration)
   );
 
-  // hover states for starters and manage button
-  const [starterHover, setStarterHover] = useState<number | null>(null);
-  const [manageHover, setManageHover] = useState(false);
-  const [submitHover, setSubmitHover] = useState(false);
-
   function handleHomeSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!homeInput.trim()) return;
@@ -484,6 +519,7 @@ function Home() {
                 value={homeInput}
                 onChange={(e) => setHomeInput(e.target.value)}
                 placeholder="Ask Hachi to do something…"
+                className="hachi-home-ask-input"
                 style={{
                   flex: 1,
                   minWidth: 0,
@@ -497,19 +533,10 @@ function Home() {
                   color: 'var(--hachi-ink)',
                   outline: 'none',
                 }}
-                onFocus={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--hachi-brand)';
-                  e.currentTarget.style.boxShadow = '0 0 0 2px var(--hachi-brand-tint)';
-                }}
-                onBlur={(e) => {
-                  e.currentTarget.style.borderColor = 'var(--hachi-line)';
-                  e.currentTarget.style.boxShadow = 'none';
-                }}
               />
               <button
                 type="submit"
-                onMouseEnter={() => setSubmitHover(true)}
-                onMouseLeave={() => setSubmitHover(false)}
+                className="hachi-ask-hachi-btn"
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
@@ -518,7 +545,7 @@ function Home() {
                   padding: '0 20px',
                   borderRadius: '10px',
                   border: '0.5px solid transparent',
-                  background: submitHover ? '#A8351E' : 'var(--hachi-brand-hover)',
+                  background: 'var(--hachi-brand-hover)',
                   color: 'var(--hachi-canvas)',
                   font: '500 14px var(--font-body)',
                   cursor: 'pointer',
@@ -539,20 +566,20 @@ function Home() {
                 marginTop: '14px',
               }}
             >
-              {starters.map((s, i) => (
+              {starters.map((s) => (
                 <button
                   key={s.label}
+                  className="hachi-starter-chip"
                   onClick={s.go}
-                  onMouseEnter={() => setStarterHover(i)}
-                  onMouseLeave={() => setStarterHover(null)}
                   style={{
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: '7px',
+                    minHeight: '44px',
                     padding: '7px 13px',
                     borderRadius: '999px',
                     border: '0.5px solid var(--hachi-line)',
-                    background: starterHover === i ? 'var(--hachi-cream)' : 'var(--hachi-canvas)',
+                    background: 'var(--hachi-canvas)',
                     color: 'var(--hachi-ink)',
                     font: 'inherit',
                     fontSize: '13px',
@@ -730,16 +757,15 @@ function Home() {
                   ))
                 )}
                 <button
+                  className="hachi-ghost-icon-btn-bg"
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   onClick={() => navigate({ to: '/work' as any })}
-                  onMouseEnter={() => setManageHover(true)}
-                  onMouseLeave={() => setManageHover(false)}
                   style={{
                     width: '100%',
                     padding: '13px',
                     paddingLeft: '16px',
                     border: 'none',
-                    background: manageHover ? 'var(--hachi-cream)' : 'transparent',
+                    background: 'transparent',
                     color: 'var(--hachi-trust)',
                     font: '500 13px var(--font-body)',
                     cursor: 'pointer',
@@ -899,9 +925,6 @@ interface FirstRunPanelProps {
 }
 
 function FirstRunPanel({ onStart, onSetup }: FirstRunPanelProps) {
-  const [startHover, setStartHover] = useState(false);
-  const [setupHover, setSetupHover] = useState(false);
-
   return (
     <div
       style={{
@@ -935,9 +958,8 @@ function FirstRunPanel({ onStart, onSetup }: FirstRunPanelProps) {
 
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
         <button
+          className="hachi-mcp-submit-btn"
           onClick={onStart}
-          onMouseEnter={() => setStartHover(true)}
-          onMouseLeave={() => setStartHover(false)}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -946,7 +968,7 @@ function FirstRunPanel({ onStart, onSetup }: FirstRunPanelProps) {
             padding: '0 20px',
             borderRadius: '10px',
             border: '0.5px solid transparent',
-            background: startHover ? 'var(--hachi-brand-active)' : 'var(--hachi-brand-hover)',
+            background: 'var(--hachi-brand-hover)',
             color: 'var(--hachi-canvas)',
             font: '500 14px var(--font-body)',
             cursor: 'pointer',
@@ -957,9 +979,8 @@ function FirstRunPanel({ onStart, onSetup }: FirstRunPanelProps) {
           Start your first task
         </button>
         <button
+          className="hachi-ghost-icon-btn-bg"
           onClick={onSetup}
-          onMouseEnter={() => setSetupHover(true)}
-          onMouseLeave={() => setSetupHover(false)}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -968,7 +989,7 @@ function FirstRunPanel({ onStart, onSetup }: FirstRunPanelProps) {
             padding: '0 20px',
             borderRadius: '10px',
             border: '0.5px solid var(--hachi-line)',
-            background: setupHover ? 'var(--hachi-cream)' : 'var(--hachi-canvas)',
+            background: 'var(--hachi-canvas)',
             color: 'var(--hachi-ink)',
             font: '500 14px var(--font-body)',
             cursor: 'pointer',

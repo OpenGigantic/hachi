@@ -24,6 +24,7 @@ from unittest.mock import MagicMock
 import pytest
 from textual.app import App, ComposeResult
 
+from hachi.client.models import Approval
 from hachi.client.sse import RuntimeEvent
 from hachi.tui.cockpit.data import CockpitData
 from hachi.tui.cockpit.views.chat import ChatView, _TranscriptMessage
@@ -91,8 +92,7 @@ class TestChatViewOffline:
                 chat._on_composer_submit("hello hachi")
                 await pilot.pause()
                 user_msgs = [
-                    m for m in chat._messages
-                    if m.speaker == "you" and m.text == "hello hachi"
+                    m for m in chat._messages if m.speaker == "you" and m.text == "hello hachi"
                 ]
                 assert len(user_msgs) >= 1, "user message not appended"
                 assert len(chat._messages) > before
@@ -270,6 +270,78 @@ class TestChatViewOffline:
                 # Should have added an inline warning card
                 tool_msgs = [m for m in chat._messages if m.speaker == "tool"]
                 assert any("approval" in m.text.lower() for m in tool_msgs)
+
+        _run(_body())
+
+    def test_rail_reflects_real_pending_approval(self) -> None:
+        """BB-60: the right-rail approval card must reflect CockpitData.approvals(),
+        not the hardcoded 'browse_web (researcher)' demo literal.
+        """
+
+        async def _body() -> None:
+            async with _OfflineApp().run_test(headless=True) as pilot:
+                app = pilot.app
+                chat = app.query_one("#view-chat", ChatView)
+
+                real_approval = Approval(
+                    id="req-999",
+                    icon="shell",
+                    request="run_command",
+                    why="needs to run a build script",
+                    action="run_command → ./build.sh",
+                    op="shell",
+                    policy="asks first",
+                    touches=("./build.sh",),
+                    risk="high",
+                    scope="shell",
+                    expires_at=0,
+                    total_ms=0,
+                )
+
+                mock_data = MagicMock(spec=CockpitData)
+                mock_data.is_live = True
+                mock_data.config.return_value = app.cockpit_data.config()
+                mock_data.sessions.return_value = app.cockpit_data.sessions(limit=1)
+                mock_data.spend.return_value = app.cockpit_data.spend()
+                mock_data.approvals.return_value = [real_approval]
+
+                chat.populate(mock_data)
+                await pilot.pause()
+
+                rail = chat.query_one("#chat-rail")
+                rendered = rail.content.plain  # type: ignore[union-attr]
+
+                # The real pending approval's tool/target must appear...
+                assert "run_command" in rendered
+                assert "./build.sh" in rendered
+                # ...and the hardcoded demo literal must NOT appear.
+                assert "browse_web" not in rendered
+                assert "researcher" not in rendered
+
+        _run(_body())
+
+    def test_rail_shows_no_approvals_when_none_pending(self) -> None:
+        """BB-60: with zero pending approvals the rail must not claim '1 approval waiting'."""
+
+        async def _body() -> None:
+            async with _OfflineApp().run_test(headless=True) as pilot:
+                app = pilot.app
+                chat = app.query_one("#view-chat", ChatView)
+
+                mock_data = MagicMock(spec=CockpitData)
+                mock_data.is_live = True
+                mock_data.config.return_value = app.cockpit_data.config()
+                mock_data.sessions.return_value = app.cockpit_data.sessions(limit=1)
+                mock_data.spend.return_value = app.cockpit_data.spend()
+                mock_data.approvals.return_value = []
+
+                chat.populate(mock_data)
+                await pilot.pause()
+
+                rail = chat.query_one("#chat-rail")
+                rendered = rail.content.plain  # type: ignore[union-attr]
+
+                assert "1 approval waiting" not in rendered
 
         _run(_body())
 
@@ -454,6 +526,7 @@ class TestChatViewLiveMechanics:
             # (GatewayError from "no events yet" is acceptable)
             for exc in errors_seen:
                 from hachi.client.gateway import GatewayError
+
                 # Network/transport errors for a brand-new session with no LLM key
                 # are expected.  Any other exception type would be a bug.
                 assert isinstance(exc, (GatewayError, OSError)), (

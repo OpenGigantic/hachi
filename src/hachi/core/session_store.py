@@ -100,8 +100,8 @@ class SessionStore:
                 FOREIGN KEY (session_id) REFERENCES sessions(id)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_msg_session
-                ON messages(session_id);
+            CREATE INDEX IF NOT EXISTS idx_msg_session_id
+                ON messages(session_id, id);
             -- idx_msg_content removed: leading-wildcard LIKE cannot use a B-tree index.
 
             -- Daily spend ledger: one row per calendar date (ISO, e.g. "2026-06-22").
@@ -180,6 +180,21 @@ class SessionStore:
         msg_existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(messages)")}
         if "model" not in msg_existing:
             self._conn.execute("ALTER TABLE messages ADD COLUMN model TEXT")
+            self._conn.commit()
+        # B8: replace single-column idx_msg_session with composite (session_id, id).
+        # The composite covers both "all messages for a session" and "messages after
+        # cursor X in a session" without write-amplification from two overlapping indexes.
+        indexes = {
+            row[0]
+            for row in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='messages'"
+            )
+        }
+        if "idx_msg_session" in indexes:
+            self._conn.execute("DROP INDEX idx_msg_session")
+            self._conn.commit()
+        if "idx_msg_session_id" not in indexes:
+            self._conn.execute("CREATE INDEX idx_msg_session_id ON messages(session_id, id)")
             self._conn.commit()
         # NOTE(issue12): no automatic ghost-cleanup runs here. Silently deleting
         # message-less session rows on every DB open is dangerous (it would also
@@ -526,6 +541,67 @@ class SessionStore:
             self._conn.commit()
             return cur.rowcount > 0
 
+    # ==========================================
+    # Retention / Pruning (BB-72)
+    # ==========================================
+
+    def cleanup_idempotency_keys(self, older_than_hours: int = 48) -> int:
+        """Delete idempotency_keys rows created more than ``older_than_hours`` ago.
+
+        The replay window for a POST /messages retry is at most a few minutes;
+        48 hours is extremely conservative.  Returns the number of rows deleted.
+        """
+        cutoff = time.time() - older_than_hours * 3600
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM idempotency_keys WHERE created_at < ?",
+                (cutoff,),
+            )
+            self._conn.commit()
+            count = int(cur.rowcount)
+        logger.debug("SessionStore: pruned %d idempotency key(s)", count)
+        return count
+
+    def cleanup_interaction_log(self, older_than_days: int = 90) -> int:
+        """Delete interaction_log rows older than ``older_than_days`` days.
+
+        The eval/audit trail is retained for 90 days by default.  Returns the
+        number of rows deleted.
+        """
+        cutoff = (
+            datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=older_than_days)
+        ).isoformat()
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM interaction_log WHERE ts < ?",
+                (cutoff,),
+            )
+            self._conn.commit()
+            count = int(cur.rowcount)
+        logger.debug("SessionStore: pruned %d interaction_log row(s)", count)
+        return count
+
+    def cleanup_daily_spend(self, older_than_days: int = 365) -> int:
+        """Delete daily_spend rows for dates older than ``older_than_days`` days.
+
+        A year of spend history (default) is enough for tax/billing purposes.
+        Returns the number of rows deleted.
+        """
+        cutoff = (
+            (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=older_than_days))
+            .date()
+            .isoformat()
+        )
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM daily_spend WHERE date < ?",
+                (cutoff,),
+            )
+            self._conn.commit()
+            count = int(cur.rowcount)
+        logger.debug("SessionStore: pruned %d daily_spend row(s)", count)
+        return count
+
     def get_sessions_missing_title(self, limit: int = 1000) -> list[dict[str, Any]]:
         """Return sessions that have no title yet (oldest first), for backfill.
 
@@ -706,31 +782,45 @@ class SessionStore:
                 (limit,),
             ).fetchall()
 
+            items = [dict(row) for row in rows]
+
+            # B7a: batch-derive title and turn-count in two queries instead of 2N.
+            # Sessions with a stored value skip the batch; only the missing subset is fetched.
+            sids_no_title = [item["id"] for item in items if not item.get("title")]
+            sids_no_turns = [item["id"] for item in items if not item.get("total_turns")]
+
+            first_content: dict[str, str] = {}
+            if sids_no_title:
+                ph = ",".join("?" * len(sids_no_title))
+                for row in self._conn.execute(
+                    f"SELECT session_id, content FROM messages "  # noqa: S608
+                    f"WHERE session_id IN ({ph}) AND role = 'user' ORDER BY id ASC",
+                    sids_no_title,
+                ):
+                    sid = row["session_id"]
+                    if sid not in first_content:  # keep only first per session
+                        first_content[sid] = row["content"] or ""
+
+            turn_count: dict[str, int] = {}
+            if sids_no_turns:
+                ph = ",".join("?" * len(sids_no_turns))
+                for row in self._conn.execute(
+                    f"SELECT session_id, COUNT(*) AS c FROM messages "  # noqa: S608
+                    f"WHERE session_id IN ({ph}) AND role = 'user' GROUP BY session_id",
+                    sids_no_turns,
+                ):
+                    turn_count[row["session_id"]] = int(row["c"])
+
             result: list[dict[str, Any]] = []
-            for row in rows:
-                item = dict(row)
+            for item in items:
                 sid = item["id"]
-                # Derive a human-readable title from the first user message when no
-                # stored title exists yet (LLM title-gen is best-effort/deferred, so
-                # many sessions never get one). A stored title always wins.
                 if not item.get("title"):
-                    first = self._conn.execute(
-                        "SELECT content FROM messages "
-                        "WHERE session_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1",
-                        (sid,),
-                    ).fetchone()
-                    content = (first["content"] if first else "") or ""
-                    stripped = content.strip()
+                    raw = first_content.get(sid, "")
+                    stripped = raw.strip()
                     if stripped:
                         item["title"] = stripped.splitlines()[0][:60].strip()
-                # Derive the turn count from logged user messages when the stored
-                # counter is missing/zero (it is not incremented on every code path).
                 if not item.get("total_turns"):
-                    cnt_row = self._conn.execute(
-                        "SELECT COUNT(*) AS c FROM messages WHERE session_id = ? AND role = 'user'",
-                        (sid,),
-                    ).fetchone()
-                    item["total_turns"] = int(cnt_row["c"]) if cnt_row else 0
+                    item["total_turns"] = turn_count.get(sid, 0)
                 result.append(item)
 
         return result

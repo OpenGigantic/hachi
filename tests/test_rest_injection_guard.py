@@ -43,7 +43,9 @@ def _register(monkeypatch, *, payload=None, text=None, raise_json=False) -> Tool
 
     monkeypatch.setenv("HACHI_REST_ALLOW_PRIVATE", "true")
     monkeypatch.setattr("hachi.core.rest_adapter.httpx.Client", _FakeClient)
-    adapter = UniversalRestAdapter(registry, allowed_hosts=[])
+    # BB-53: an empty allowlist now fails closed — this test is about injection
+    # framing, not the allowlist, so allowlist the host under test explicitly.
+    adapter = UniversalRestAdapter(registry, allowed_hosts=["127.0.0.1"])
     api_def = {
         "method": "GET",
         "endpoint": "http://127.0.0.1:9000/x",

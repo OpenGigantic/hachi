@@ -399,7 +399,7 @@ function Step1({
           </div>
         )}
         {keyValidation.status === 'valid' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: '#2C7A50', marginTop: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: 'var(--hachi-success-fg)', marginTop: 8 }}>
             <Icon name="check" size={15} />
             Gateway confirmed — key is valid.
           </div>
@@ -438,12 +438,28 @@ function Step2({
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ fontFamily: 'var(--font-display)', fontWeight: 500, fontSize: 18 }}>Choose a safety level</div>
       <div style={{ fontSize: 13, color: 'var(--hachi-muted)' }}>You can change this any time. Hachi always shows what it's doing.</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+      <div
+        role="radiogroup"
+        aria-label="Safety level"
+        style={{ display: 'flex', flexDirection: 'column', gap: 9 }}
+        onKeyDown={(e) => {
+          if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+          e.preventDefault();
+          const idx = SAFETY_LEVELS.findIndex((lvl) => lvl.k === currentSafety);
+          const dir = e.key === 'ArrowDown' ? 1 : -1;
+          const next = SAFETY_LEVELS[(idx + dir + SAFETY_LEVELS.length) % SAFETY_LEVELS.length];
+          onPick(next.k);
+          requestAnimationFrame(() => {
+            (e.currentTarget.querySelector(`[data-safety-level="${next.k}"]`) as HTMLElement | null)?.focus();
+          });
+        }}
+      >
         {SAFETY_LEVELS.map((lvl) => {
           const sel = currentSafety === lvl.k;
           return (
             <SafetyOption
               key={lvl.k}
+              dataKey={lvl.k}
               name={lvl.name}
               desc={lvl.desc}
               selected={sel}
@@ -456,12 +472,9 @@ function Step2({
   );
 }
 
-function SafetyOption({ name, desc, selected, onClick }: {
-  name: string; desc: string; selected: boolean; onClick: () => void;
+function SafetyOption({ dataKey, name, desc, selected, onClick }: {
+  dataKey: string; name: string; desc: string; selected: boolean; onClick: () => void;
 }) {
-  const [hovered, setHovered] = React.useState(false);
-
-  const border = selected ? 'var(--hachi-brand)' : hovered ? '#d3c8b4' : 'var(--hachi-line)';
   const bg     = selected ? 'var(--hachi-brand-tint)' : 'var(--hachi-canvas)';
   const dotBorder = selected ? 'var(--hachi-brand)' : 'var(--hachi-line)';
   const dotBg     = selected ? 'var(--hachi-brand)' : 'transparent';
@@ -469,10 +482,12 @@ function SafetyOption({ name, desc, selected, onClick }: {
   return (
     <button
       type="button"
+      className="hachi-safety-option"
+      data-safety-level={dataKey}
+      role="radio"
+      aria-checked={selected}
+      tabIndex={selected ? 0 : -1}
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      aria-pressed={selected}
       style={{
         display: 'flex',
         gap: 12,
@@ -480,14 +495,14 @@ function SafetyOption({ name, desc, selected, onClick }: {
         textAlign: 'left',
         padding: 14,
         borderRadius: 12,
-        border: `1px solid ${border}`,
+        border: selected ? '1px solid var(--hachi-brand)' : undefined,
         background: bg,
         cursor: 'pointer',
         font: 'inherit',
         transition: 'border-color var(--dur-fast) var(--ease)',
       }}
     >
-      <span style={{
+      <span aria-hidden="true" style={{
         flexShrink: 0,
         width: 18,
         height: 18,
@@ -580,15 +595,11 @@ function ConnectRow({
 }: {
   id: string; title: string; sub: string; connected: boolean; pending: boolean; onConnect: () => void;
 }) {
-  const [hovered, setHovered] = React.useState(false);
-
-  const border = connected ? 'var(--hachi-success)' : hovered ? '#d3c8b4' : 'var(--hachi-line)';
-  const bg     = connected ? 'var(--hachi-success-tint)' : 'var(--hachi-canvas)';
+  const bg = connected ? 'var(--hachi-success-tint)' : 'var(--hachi-canvas)';
 
   return (
     <div
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      className="hachi-connect-row"
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -596,7 +607,7 @@ function ConnectRow({
         textAlign: 'left',
         padding: 14,
         borderRadius: 12,
-        border: `1px solid ${border}`,
+        border: connected ? '1px solid var(--hachi-success)' : undefined,
         background: bg,
         transition: 'border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease)',
       }}
@@ -617,7 +628,7 @@ function ConnectRow({
         <div style={{ fontSize: 13, color: 'var(--hachi-muted)', marginTop: 1 }}>{sub}</div>
       </div>
       {connected ? (
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#2C7A50', fontWeight: 500 }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--hachi-success-fg)', fontWeight: 500 }}>
           <Icon name="check" size={15} />
           connected
         </span>
@@ -695,17 +706,15 @@ function Step4({
 // ---- shared small components ----
 
 function CloseBtn({ onClick }: { onClick: () => void }) {
-  const [hovered, setHovered] = React.useState(false);
   return (
     <button
       type="button"
+      className="hachi-ghost-icon-btn-bg"
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       aria-label="Close setup wizard"
       style={{
         border: 'none',
-        background: hovered ? 'var(--hachi-cream)' : 'transparent',
+        background: 'transparent',
         color: 'var(--hachi-muted)',
         cursor: 'pointer',
         display: 'inline-flex',
@@ -720,19 +729,17 @@ function CloseBtn({ onClick }: { onClick: () => void }) {
 }
 
 function GhostBtn({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
-  const [hovered, setHovered] = React.useState(false);
   return (
     <button
       type="button"
+      className="hachi-ghost-icon-btn-bg"
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
         height: 40,
         padding: '0 16px',
         borderRadius: 10,
         border: 'none',
-        background: hovered ? 'var(--hachi-cream)' : 'transparent',
+        background: 'transparent',
         color: 'var(--hachi-muted)',
         font: '500 14px var(--font-body)',
         cursor: 'pointer',
@@ -745,19 +752,17 @@ function GhostBtn({ onClick, children }: { onClick: () => void; children: React.
 }
 
 function PrimaryBtn({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
-  const [hovered, setHovered] = React.useState(false);
   return (
     <button
       type="button"
+      className="hachi-mcp-submit-btn"
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
         height: 40,
         padding: '0 22px',
         borderRadius: 10,
         border: '0.5px solid transparent',
-        background: hovered ? 'var(--hachi-brand-active)' : 'var(--hachi-brand-hover)',
+        background: 'var(--hachi-brand-hover)',
         color: 'var(--hachi-canvas)',
         font: '500 14px var(--font-body)',
         cursor: 'pointer',

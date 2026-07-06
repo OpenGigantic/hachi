@@ -61,8 +61,12 @@ if TYPE_CHECKING:
 
 _DIM = "#6E6A74"
 
-# Representative plan steps shown on first populate
-_PLAN_STEPS = [
+# Representative plan steps shown only in offline/demo mode (CockpitData(None)).
+# There is currently no gateway data model for a live per-turn "plan" — the
+# frontend's run.tsx hides its Plan section for the same reason ("live mode
+# emits no plan events"). Do NOT show these once a live CockpitData is wired;
+# see BB-60.
+_DEMO_PLAN_STEPS = [
     (GREEN, "☑", "search sources"),
     (AMBER, "◐", "read top 5 articles"),
     (_DIM, "☐", "extract figures"),
@@ -71,13 +75,13 @@ _PLAN_STEPS = [
 ]
 
 # Event types sourced from hachi/core/runtime_events.py
-_EV_TEXT_DELTA = TEXT_STREAM           # "text.stream.delta"
-_EV_TOOL_STARTED = TOOL_CALL_STARTED   # "tool.call.started"
-_EV_TOOL_DONE = TOOL_CALL_COMPLETED    # "tool.call.completed"
+_EV_TEXT_DELTA = TEXT_STREAM  # "text.stream.delta"
+_EV_TOOL_STARTED = TOOL_CALL_STARTED  # "tool.call.started"
+_EV_TOOL_DONE = TOOL_CALL_COMPLETED  # "tool.call.completed"
 _EV_PERM_REQUESTED = PERMISSION_REQUESTED  # "permission.requested"
 _EV_CHAT_COMPLETED = SESSION_CHAT_COMPLETED  # "session.chat.completed"
 _EV_CHAT_STARTED = SESSION_CHAT_STARTED  # "session.chat.started"
-_EV_CANCELLED = SESSION_CANCELLED      # "session.turn.cancelled"
+_EV_CANCELLED = SESSION_CANCELLED  # "session.turn.cancelled"
 
 
 class _TranscriptMessage:
@@ -265,9 +269,7 @@ class ChatView(CockpitView):  # type: ignore[misc]
             sid = data.start_session()
             if sid is None:
                 # start_session failed — fall back to local echo
-                self._messages.append(
-                    _TranscriptMessage("hachi", "Got it — working on that now.")
-                )
+                self._messages.append(_TranscriptMessage("hachi", "Got it — working on that now."))
                 self._render_transcript()
                 return
             self._session_id = sid
@@ -501,13 +503,17 @@ class ChatView(CockpitView):  # type: ignore[misc]
         """Build the right-rail content from live config + session data."""
         t = Text()
 
-        # Plan checklist
-        t.append("plan · what's next\n", style=_DIM)
-        for color, glyph, label in _PLAN_STEPS:
-            t.append(f"{glyph} {label}\n", style=color)
+        # Plan checklist — no gateway data model backs a live per-turn plan
+        # today (see BB-60), so only show the representative steps in
+        # offline/demo mode. Live sessions omit the section entirely rather
+        # than showing fabricated steps, mirroring frontend run.tsx.
+        if self._data is None or not self._data.is_live:
+            t.append("plan · what's next\n", style=_DIM)
+            for color, glyph, label in _DEMO_PLAN_STEPS:
+                t.append(f"{glyph} {label}\n", style=color)
 
-        t.append("\n")
-        t.append("─" * 28 + "\n", style=BORDER_MUTED)
+            t.append("\n")
+            t.append("─" * 28 + "\n", style=BORDER_MUTED)
 
         # Context block
         t.append("context\n", style=_DIM)
@@ -544,15 +550,23 @@ class ChatView(CockpitView):  # type: ignore[misc]
         t.append("session ", style=_DIM)
         t.append(f"0x{sess_id_display[:4]} · t{turns}\n", style=MUTED)
 
-        t.append("skill   ", style=_DIM)
-        t.append("research-protocol\n", style=MUTED)
-
         t.append("\n")
         t.append("─" * 28 + "\n", style=BORDER_MUTED)
 
-        # Approval card
-        t.append("⚠ 1 approval waiting\n", style=BRAND)
-        t.append("browse_web (researcher)\n", style=MUTED)
-        t.append("[a] review now", style=NAVY)
+        # Approval card — reflects CockpitData.approvals() (real pending
+        # approvals when live, representative placeholder data offline).
+        # Previously hardcoded to "1 approval waiting / browse_web
+        # (researcher)" regardless of actual state; see BB-60.
+        approvals = self._data.approvals() if self._data else []
+        if approvals:
+            first = approvals[0]
+            count = len(approvals)
+            noun = "approval" if count == 1 else "approvals"
+            detail = first.touches[0] if first.touches else first.scope
+            t.append(f"⚠ {count} {noun} waiting\n", style=BRAND)
+            t.append(f"{first.request} ({detail})\n", style=MUTED)
+            t.append("[a] review now", style=NAVY)
+        else:
+            t.append("✓ no approvals waiting\n", style=MUTED)
 
         self.query_one("#chat-rail", Static).update(t)

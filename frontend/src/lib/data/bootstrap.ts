@@ -4,7 +4,8 @@
 // Only the three domains that feed always-visible sidebar elements
 // (budget/spend, session list, provider/leash) are loaded eagerly at
 // boot. All other domains are loaded lazily when their route is first
-// visited — see useRouteLoaders.ts.
+// visited — each route calls its own `load<Domain>()` on mount
+// (see lib/data/README.md, "The loader pattern").
 //
 // Imports `live.ts` FIRST so its loader registry (`const loaders`) is
 // fully initialized, THEN imports the eager domain modules so each
@@ -26,11 +27,11 @@ import "./domains/config";
 import "./domains/chat";
 import "./domains/spend";
 
-// ---- Non-critical domains (lazy, via useRouteLoaders) ----
-// These are imported at module scope so their registerLoader() side-effects
-// run (making them importable without re-loading), but they are NOT added
-// to the bootstrap registry — they will be called on first route visit.
-// NOTE: Do not add registerLoader() calls for these; they are self-contained.
-// They will be dynamically imported by useRouteLoaders.ts as needed.
+// ---- Non-critical domains (lazy, per-route) ----
+// These domain modules are NOT imported here and are NOT added to the
+// bootstrap registry. Each owning route imports its domain module directly
+// and calls `load<Domain>()` in a `useEffect(() => { ... }, [])` on mount
+// (see lib/data/README.md, "The loader pattern"). Do not add
+// registerLoader() calls for these here — they are self-contained.
 
 export { bootstrapLiveData, registeredLoaderNames };

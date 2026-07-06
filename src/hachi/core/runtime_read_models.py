@@ -427,10 +427,17 @@ class RuntimeReadModelStore:
         """Events whose sequence is greater than ``after``, oldest→newest, capped at ``limit``.
 
         The single source for sequence-based polling (the gateway events endpoint).
+        O(1) index into the bounded ring-tail: the event at index ``i`` has sequence
+        ``base + i`` where ``base = self._events[0].sequence``.  Clamp ``start`` to
+        zero for stale clients (``after < base``) to avoid the silent tail-slice wrap
+        that a naive ``after - base + 1`` would produce after a trim (BB entry).
         """
         with self._lock:
-            fresh = [snap for snap in self._events if snap.sequence > after]
-            return tuple(fresh[:limit])
+            if not self._events:
+                return ()
+            base = self._events[0].sequence
+            start = max(0, after - base + 1)
+            return tuple(self._events[start : start + limit])
 
     def activity(self) -> ActivitySnapshot:
         """Current derived activity (label, state, usage, recent tools)."""

@@ -227,6 +227,51 @@ class TestHealthRecorder:
         snap = recorder.snapshot()
         assert snap.p50_latency_ms == 200.0  # median of [100, 200, 300]
 
+    def test_half_open_probe_failure_reopens_breaker(self) -> None:
+        """H7: a failed probe during the half-open trial must reopen the breaker
+        immediately — previously only closed->open existed, so a still-flapping
+        provider stuck in half-open let every subsequent probe through instead of
+        backing off again.
+        """
+        policy = RetryPolicy(breaker_threshold=1, backoff_base_s=0.0, breaker_cooldown_s=0.01)
+        recorder = HealthRecorder("p", policy)
+        recorder.record_failure()
+        assert recorder.snapshot().breaker == "open"
+        time.sleep(0.05)
+        assert recorder.snapshot().breaker == "half_open"
+
+        recorder.record_failure()  # the half-open probe itself fails
+        assert recorder.snapshot().breaker == "open"
+
+    def test_on_update_sink_invoked_after_every_outcome(self) -> None:
+        """H7: HealthRecorder must call an injected on_update sink after every
+        success/failure so a caller (the router) can wire real outcomes into its
+        own provider-health view instead of it staying permanently default.
+        """
+        seen = []
+        policy = RetryPolicy(breaker_threshold=5, backoff_base_s=0.0)
+        recorder = HealthRecorder("p", policy, on_update=seen.append)
+
+        recorder.record_success(10.0)
+        recorder.record_failure()
+
+        assert len(seen) == 2
+        assert seen[0].recent_error_rate == 0.0
+        assert seen[1].consecutive_failures == 1
+
+    def test_p50_latency_even_count_uses_nearest_rank(self) -> None:
+        # Nearest-rank p50 over 4 sorted samples [100, 200, 300, 400] must
+        # pick the lower-middle value (200), matching standard percentile
+        # semantics (e.g. rank = ceil(0.5 * n) = 2 -> 0-indexed 1 -> 200.0).
+        # The naive `lats[len(lats) // 2]` formula picks index 2 (300.0),
+        # which is off by one for even-length datasets.
+        policy = RetryPolicy()
+        recorder = HealthRecorder("p", policy)
+        for ms in [400.0, 100.0, 300.0, 200.0]:
+            recorder.record_success(ms)
+        snap = recorder.snapshot()
+        assert snap.p50_latency_ms == 200.0
+
 
 # ---------------------------------------------------------------------------
 # ResilientClient
@@ -276,6 +321,29 @@ class TestResilientClient:
         result = client.generate([Message(role="user", content="hi")])
         assert result.content == "ok"
         assert fallback._call_count == 1
+
+    def test_stream_failover_does_not_reinvoke_primary(self) -> None:
+        """H7: a mid-stream primary failure must fail over to the NEXT client in
+        the chain, never re-invoke the same primary that just failed — retrying
+        the identical primary risks a double-print/double-bill of a stream that
+        may have already emitted partial output before it broke.
+        """
+        primary = _FakeClient([_TransientError("stream broke")], model="primary")
+        fallback = _FakeClient([_ok_response()], model="fallback")
+        policy = RetryPolicy(max_attempts=1, backoff_base_s=0.0)
+        client = ResilientClient(
+            inner=primary,
+            policy=policy,
+            recorder=_make_recorder("primary", 1),
+            fallbacks=[(fallback, _make_recorder("fallback", 1))],
+        )
+
+        gen = client.generate_stream([Message(role="user", content="hi")])
+        chunks = list(gen)
+
+        assert primary._call_count == 1  # only the initial failed stream attempt
+        assert fallback._call_count == 1  # the fallback, exactly once
+        assert chunks == ["ok"]
 
     def test_all_fallbacks_exhausted_raises(self) -> None:
         primary = _FakeClient([_TransientError("fail")] * 5, model="p")

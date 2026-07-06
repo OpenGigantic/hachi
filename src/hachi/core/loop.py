@@ -109,6 +109,15 @@ class AgentException(Exception):
     pass
 
 
+# P1-04: ExecutionLoop.run() does NOT raise when max_iterations is exhausted —
+# it returns this prefix in a graceful, partial-summary string instead (see
+# run()'s SESSION_ITERATION_LIMIT branch). Callers that need to distinguish
+# "the task genuinely finished" from "the loop was cut off mid-task" (e.g.
+# SubAgentRuntime mapping this to a non-SUCCESS status) must check for this
+# prefix on the returned string — there is no exception to catch.
+INCOMPLETE_RESULT_PREFIX = "[INCOMPLETE]"
+
+
 class SuspendWorkflow(Exception):
     """Signal that the agent loop should suspend and wait for an external trigger.
 
@@ -336,7 +345,19 @@ class ToolRegistry:
 
         Returns:
             The execution result (stringified for LLM ingestion).
+
+        Raises:
+            ValueError: If ``tool_call.parse_error`` is set (BB-54) — the
+                provider's tool-call argument JSON was malformed or truncated
+                (e.g. a max_tokens cutoff mid-tool-call), so ``input`` is not a
+                trustworthy reconstruction of the model's intent. Raising here
+                (instead of running the tool with empty/partial args) routes
+                through the existing is_error=True tool_result path in
+                ``ExecutionLoop.run`` / ``_execute_single_tool``.
         """
+        if tool_call.parse_error:
+            raise ValueError(f"Tool call '{tool_call.name}' rejected: {tool_call.parse_error}")
+
         if tool_call.name not in self._tools:
             return f"Error: Tool '{tool_call.name}' is not registered."
 
@@ -499,6 +520,16 @@ class ExecutionLoop:
                 except SuspendWorkflow as exc:
                     return (None, False, exc)
                 except Exception as exc:
+                    # Only the stringified message goes back to the model (it needs
+                    # a compact error to reason about), but the original exception
+                    # + traceback must not vanish — log it with exc_info so the
+                    # chain survives for debugging.
+                    logger.error(
+                        "Tool %s raised during execution: %s",
+                        tool_call.name,
+                        exc,
+                        exc_info=exc,
+                    )
                     return (f"Tool Execution Error: {str(exc)}", True, None)
         finally:
             detach_otel_context(otel_token)
@@ -595,44 +626,26 @@ class ExecutionLoop:
                 resolved.descriptor.id,
             )
         except NoRouteError as exc:
-            logger.debug(
-                "hot-path routing: NoRouteError for capability=%s — using llm_client: %s",
+            # S3: a router falling back to the default client is operationally
+            # visible (the model actually used for this turn silently changed) —
+            # WARNING, not DEBUG, so it isn't invisible in normal operation.
+            logger.warning(
+                "hot-path routing: no route for capability=%s — falling back to "
+                "llm_client (%s): %s",
                 capability,
+                getattr(self.llm_client, "model", "unknown"),
                 exc,
             )
             self._turn_client = self.llm_client
         except Exception as exc:  # noqa: BLE001
-            logger.debug(
-                "hot-path routing: unexpected error for capability=%s — using llm_client: %s",
+            logger.warning(
+                "hot-path routing: unexpected error for capability=%s — falling back to "
+                "llm_client (%s): %s",
                 capability,
+                getattr(self.llm_client, "model", "unknown"),
                 exc,
             )
             self._turn_client = self.llm_client
-
-    def _generate_with_retry(self, **kwargs: Any):
-        """Call the LLM with bounded exponential-backoff retry on transient errors.
-
-        A single rate-limit / overloaded / network blip should not abort the whole
-        turn. Non-retryable errors (auth, 400s) propagate immediately; retryable
-        ones are retried up to ``_MAX_LLM_RETRIES`` times before re-raising.
-        """
-        delay = _LLM_RETRY_BASE_DELAY
-        for attempt in range(1, _MAX_LLM_RETRIES + 1):
-            try:
-                return self._turn_client.generate(**kwargs)
-            except Exception as exc:
-                if attempt >= _MAX_LLM_RETRIES or not _is_retryable_llm_error(exc):
-                    raise
-                logger.warning(
-                    "LLM call failed (attempt %d/%d): %s — retrying in %.1fs",
-                    attempt,
-                    _MAX_LLM_RETRIES,
-                    exc,
-                    delay,
-                )
-                self.on_event(LLM_RETRY, {"attempt": attempt, "error": str(exc)})
-                time.sleep(delay)
-                delay *= 2
 
     def cancel(self) -> None:
         """Signal the loop to stop at the start of the next iteration.
@@ -651,9 +664,9 @@ class ExecutionLoop:
     def _stream_generate(self, on_delta: Callable[[str], None], **kwargs: Any) -> LLMResponse:
         """Drive generate_stream(), emit per-chunk callbacks, return the LLMResponse.
 
-        Retries on pre-stream transient errors using the same policy as
-        _generate_with_retry. Does NOT retry mid-stream failures to avoid
-        emitting duplicate output.
+        Retries on pre-stream transient errors (bounded exponential backoff,
+        same retry/backoff constants used elsewhere in this module). Does NOT
+        retry mid-stream failures to avoid emitting duplicate output.
 
         Checks the cancel flag and wall-clock deadline after each chunk so an
         in-flight generation can be interrupted promptly by cancel() or a timeout.
@@ -717,19 +730,35 @@ class ExecutionLoop:
         return None
 
     def _safety_ceiling_exceeded(self) -> str | None:
-        """Return a reason string if the hard token safety ceiling is hit, else None.
+        """Return a reason string if the hard token safety ceiling is hit — or would be
+        crossed by the upcoming LLM call — else None.
 
         This ceiling is always checked when a cost_tracker is present, regardless of
         whether the user configured any opt-in budget.  It prevents true runaway
         token consumption when no other cap is active.
+
+        S1: checked PRE-FLIGHT, not just post-hoc. A pure ``snapshot >= ceiling``
+        check only ever catches an overrun *after* a call has already happened —
+        a single generation can cross the ceiling by its own full token cost before
+        the next iteration's check notices. We instead add the upcoming call's
+        worst-case token cost (bounded by ``_turn_client.max_tokens``, the
+        provider's configured output-token cap) to the current snapshot, so a call
+        that *would* cross the ceiling is refused before it starts.
         """
         if self.cost_tracker is None:
             return None
         snap = self.cost_tracker.snapshot()
-        if snap.total_tokens >= self._TOKEN_SAFETY_CEILING:
+        # Worst-case tokens the upcoming call could add: its bounded max output
+        # tokens (0 if the client doesn't expose one — no client-based estimate
+        # possible, falls back to the pure post-hoc check for that call).
+        worst_case_next_call = getattr(self, "_turn_client", None)
+        next_call_ceiling_tokens = getattr(worst_case_next_call, "max_tokens", 0) or 0
+        projected = snap.total_tokens + next_call_ceiling_tokens
+        if projected >= self._TOKEN_SAFETY_CEILING:
             return (
-                f"token safety ceiling reached ({snap.total_tokens:,} >= "
-                f"{self._TOKEN_SAFETY_CEILING:,})"
+                f"token safety ceiling reached ({snap.total_tokens:,} "
+                f"+ up to {next_call_ceiling_tokens:,} for the next call "
+                f">= {self._TOKEN_SAFETY_CEILING:,})"
             )
         return None
 
@@ -1244,8 +1273,9 @@ class ExecutionLoop:
                 f"Partial: iteration limit reached ({max_iterations})",
             )
             return (
-                f"[INCOMPLETE] The task reached the {max_iterations}-iteration limit and "
-                "could not be fully completed. Reply 'continue' to pick up where it left off."
+                f"{INCOMPLETE_RESULT_PREFIX} The task reached the {max_iterations}-iteration "
+                "limit and could not be fully completed. Reply 'continue' to pick up where "
+                "it left off."
             )
 
         finally:

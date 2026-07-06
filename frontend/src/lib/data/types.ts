@@ -86,6 +86,7 @@ export interface Routine {
   title: string;
   schedule: string;
   next: string;
+  last?: string;
   cost: number;
   paused: boolean;
   steps?: RunStep[];

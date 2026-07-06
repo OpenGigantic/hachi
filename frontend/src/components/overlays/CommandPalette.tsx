@@ -168,7 +168,7 @@ export function CommandPalette() {
   const backdropStyle: CSSProperties = {
     position: 'fixed',
     inset: 0,
-    background: 'rgba(28,26,32,.32)',
+    background: 'rgba(28,26,32,.45)',
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'flex-start',

@@ -34,8 +34,6 @@ const NAV_ITEMS: NavEntry[] = [
 function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
   const navigate = useNavigate()
   const location = useLocation()
-  const [searchHovered, setSearchHovered] = useState(false)
-  const [operatorHovered, setOperatorHovered] = useState(false)
 
   const operator = useStore((s) => s.operator)
   const setOperator = useStore((s) => s.setOperator)
@@ -84,10 +82,9 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
       {/* Search / palette button */}
       <button
         type="button"
+        className="hachi-sidebar-search-btn"
         aria-label="Open command palette (Ctrl+K)"
         onClick={() => { openPalette(); onNavClick?.() }}
-        onMouseEnter={() => setSearchHovered(true)}
-        onMouseLeave={() => setSearchHovered(false)}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -98,7 +95,6 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
           marginBottom: '14px',
           borderRadius: '10px',
           border: '0.5px solid var(--hachi-line)',
-          background: searchHovered ? 'var(--hachi-cream)' : 'var(--hachi-canvas)',
           color: 'var(--hachi-muted)',
           cursor: 'pointer',
           font: 'inherit',
@@ -160,8 +156,7 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
 
       {/* Operator view toggle */}
       <label
-        onMouseEnter={() => setOperatorHovered(true)}
-        onMouseLeave={() => setOperatorHovered(false)}
+        className="hachi-sidebar-operator-toggle"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -170,7 +165,7 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
           marginBottom: '10px',
           borderRadius: '10px',
           cursor: 'pointer',
-          background: operatorHovered ? 'var(--hachi-cream)' : 'transparent',
+          background: 'transparent',
           transition: 'background var(--dur) var(--ease)',
           minHeight: '44px',
         }}

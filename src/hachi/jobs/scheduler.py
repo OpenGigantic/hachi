@@ -71,6 +71,7 @@ from typing import Any
 import httpx
 
 from hachi.core.file_lock import file_lock
+from hachi.core.net_guard import validate_outbound_url
 from hachi.core.secret_scanner import redact_outbound
 
 logger = logging.getLogger(__name__)
@@ -454,6 +455,20 @@ def deliver_result(schedule: Schedule, result: str) -> None:
                 schedule.name,
             )
             return
+
+        # BB-53: apply the same SSRF guard the CLI path (`hachi schedule run-due`)
+        # already uses before making any outbound request — a schedule's
+        # webhook_url is user-configured, so it must be treated as untrusted.
+        validation = validate_outbound_url(url)
+        if not validation.ok:
+            logger.warning(
+                "deliver_result: webhook POST to %s blocked for schedule %s (%s)",
+                url,
+                schedule.schedule_id,
+                validation.reason,
+            )
+            return
+
         safe_result, redacted_count = redact_outbound(result)
         if redacted_count:
             logger.info(
@@ -794,6 +809,40 @@ class Scheduler:
             self.mark_fired(schedule, now)
             fired.append(schedule)
         return fired
+
+    def run_now(
+        self,
+        schedule_id: str,
+        fire: Callable[[Schedule], None],
+        now: datetime | None = None,
+    ) -> bool:
+        """Force-fire one schedule immediately, regardless of its ``next_run``.
+
+        Mirrors the per-schedule body of :meth:`tick` (same ``fire`` +
+        :meth:`mark_fired` sequencing) but bypasses the ``due()`` gate and the
+        condition-skill evaluator — this is an explicit user-triggered run, not
+        an automatic tick, so it always executes.
+
+        A ``fire`` callback that raises does **not** advance the schedule (same
+        semantics as :meth:`tick`) and the exception propagates to the caller so
+        a manual "run now" surfaces failures instead of silently swallowing them.
+
+        Args:
+            schedule_id: Exact id or unique prefix (see :meth:`get`).
+            fire:        Callback invoked with the resolved :class:`Schedule`.
+            now:         Override the current time (for testing).
+
+        Returns:
+            ``True`` if the schedule was found and fired; ``False`` if no
+            schedule matches ``schedule_id``.
+        """
+        schedule = self.get(schedule_id)
+        if schedule is None:
+            return False
+        now = now or _now()
+        fire(schedule)
+        self.mark_fired(schedule, now)
+        return True
 
     # ---- internals ----
 

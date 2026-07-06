@@ -19,6 +19,7 @@ import { useStore } from "../lib/store/store";
 import { Icon } from "../components/icons/Icon";
 import { Terminal } from "../components/ui/Terminal";
 import { LeashPrompt } from "../components/brand/LeashPrompt";
+import { useFocusTrap } from "../lib/hooks/useFocusTrap";
 
 // ---- helpers ----
 
@@ -31,19 +32,19 @@ function statusMeta(phase: "working" | "done" | "blocked") {
   const map = {
     working: {
       bg: "var(--hachi-working-tint)",
-      fg: "#A8651A",
+      fg: "var(--hachi-working-fg)",
       dot: "var(--hachi-working)",
       text: "working",
     },
     done: {
       bg: "var(--hachi-success-tint)",
-      fg: "#2C7A50",
+      fg: "var(--hachi-success-fg)",
       dot: "var(--hachi-success)",
       text: "done",
     },
     blocked: {
       bg: "var(--hachi-danger-tint)",
-      fg: "#9E2D21",
+      fg: "var(--hachi-danger-fg)",
       dot: "var(--hachi-danger)",
       text: "blocked",
     },
@@ -65,10 +66,10 @@ function stepMeta(state: string): { icon: string; color: string } {
 // Mirror prototype packMeta — dot/text/fg per pack member status.
 function packMeta(status: string): { dot: string; text: string; fg: string } {
   if (status === "done") {
-    return { dot: "var(--hachi-success)", text: "done", fg: "#2C7A50" };
+    return { dot: "var(--hachi-success)", text: "done", fg: "var(--hachi-success-fg)" };
   }
   if (status === "working") {
-    return { dot: "var(--hachi-working)", text: "on it", fg: "#A8651A" };
+    return { dot: "var(--hachi-working)", text: "on it", fg: "var(--hachi-working-fg)" };
   }
   return { dot: "var(--hachi-line)", text: "queued", fg: "var(--hachi-muted)" };
 }
@@ -155,6 +156,7 @@ function RunSurface({ onBack }: RunSurfaceProps) {
   });
 
   const hasLeash = !!runLeash;
+  const leashTrapRef = useFocusTrap<HTMLDivElement>(hasLeash);
   // Hide the Plan section when no steps exist (live mode emits no plan events)
   const hasPlan = steps.length > 0;
 
@@ -241,17 +243,10 @@ function RunSurface({ onBack }: RunSurfaceProps) {
       <div className="hachi-run-header" style={headerStyle}>
         {/* back button */}
         <button
+          className="hachi-ghost-icon-btn-bg"
           onClick={onBack}
           style={backBtnStyle}
           aria-label="Back"
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.background =
-              "var(--hachi-cream)";
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.background =
-              "transparent";
-          }}
         >
           <Icon name="chevron-left" size={18} />
         </button>
@@ -312,16 +307,9 @@ function RunSurface({ onBack }: RunSurfaceProps) {
         {/* stop button */}
         {canStop && (
           <button
+            className="hachi-stop-run-btn"
             onClick={stopRun}
             style={stopBtnStyle}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background =
-                "var(--hachi-trust-tint)";
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background =
-                "transparent";
-            }}
           >
             <Icon name="stop" size={15} />
             Stop
@@ -534,6 +522,10 @@ function RunSurface({ onBack }: RunSurfaceProps) {
           {/* leash overlay (inline, mid-run) */}
           {hasLeash && runLeash && (
             <div
+              ref={leashTrapRef}
+              role="alertdialog"
+              aria-modal="true"
+              aria-label={runLeash.request}
               style={{
                 position: "absolute",
                 inset: 0,
@@ -708,14 +700,9 @@ function LiveRun() {
         </p>
 
         <button
+          className="hachi-open-conversation-btn"
           style={chatBtnStyle}
           onClick={() => void navigate({ to: "/conversation" })}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.opacity = "0.85";
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.opacity = "1";
-          }}
         >
           <Icon name="message-square" size={15} />
           Open conversation

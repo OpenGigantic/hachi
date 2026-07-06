@@ -301,9 +301,22 @@ class ModelRouter:
         return create_llm_client({"kind": desc.provider, "model": desc.id})
 
     def _get_recorder(self, provider_name: str) -> HealthRecorder:
-        """Return (or create) the HealthRecorder for *provider_name*."""
+        """Return (or create) the HealthRecorder for *provider_name*.
+
+        H7: wires the recorder's ``on_update`` sink to the real provider
+        adapter's ``update_health`` when one is available, so the breaker
+        filter in ``_resolve`` reflects actual call outcomes instead of the
+        permanent boot-time default (``available=True``, breaker "closed").
+        """
         if provider_name not in self._recorders:
-            self._recorders[provider_name] = HealthRecorder(provider_name, self._resilience)
+            on_update = None
+            if self._providers is not None:
+                provider = self._providers.get_by_name(provider_name)
+                if provider is not None and hasattr(provider, "update_health"):
+                    on_update = provider.update_health
+            self._recorders[provider_name] = HealthRecorder(
+                provider_name, self._resilience, on_update=on_update
+            )
         return self._recorders[provider_name]
 
 
@@ -312,13 +325,34 @@ class ModelRouter:
 # ---------------------------------------------------------------------------
 
 
+def _infer_provider(model_id: str) -> str:
+    """Guess a provider ``kind`` from a model id's naming family (H7).
+
+    Undeclared models previously always synthesized as ``provider="anthropic"``
+    regardless of what the id actually looked like — an undeclared ``gpt-4o``
+    or ``gemini-2.0`` would be built against the wrong client. This is a
+    best-effort naming-convention match, not a registry lookup; genuinely
+    ambiguous ids still fall back to "anthropic" (the pre-existing default).
+    """
+    lowered = model_id.lower()
+    if lowered.startswith(("gpt-", "o1", "o1-", "o3", "o3-", "o4", "o4-")) or "openai" in lowered:
+        return "openai-compatible"
+    if "gemini" in lowered:
+        return "gemini"
+    if "grok" in lowered:
+        return "openai-compatible"  # xAI's API is OpenAI-compatible
+    if lowered.startswith("claude") or "anthropic" in lowered:
+        return "anthropic"
+    return "anthropic"  # safest default; unrecognized families fall through here
+
+
 def _synthetic_descriptor(model_id: str) -> ModelDescriptor:
     """Create a minimal descriptor for an undeclared model (amendment A11)."""
     from hachi.core.routing.descriptor import ModelDescriptor
 
     return ModelDescriptor(
         id=model_id,
-        provider="anthropic",  # safest default; will be overridden by provider lookup
+        provider=_infer_provider(model_id),
         capabilities=frozenset({Capability.REASONING}),
         context_window=200_000,
         max_output=8_192,

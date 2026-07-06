@@ -1,9 +1,9 @@
 # ObjectGraph (.og) Token-Efficiency Benchmark
 
 **TL;DR:** Answering a query by routing through the 3-pass ObjectGraph model
-uses **97.6% fewer tokens** than naively concatenating all skill files into the
-prompt — measured against the 53-node bundled skill pack shipped with Hachi
-(corpus S-real, 2026-06-13, git `a54d242`).
+uses **98.0% fewer tokens** than naively concatenating all skill files into the
+prompt — measured against the 31-file / 60-node bundled skill pack shipped
+with Hachi (corpus S-real, regenerated 2026-07-05).
 
 > **Scope caveat:** below ~30 k tokens of total library content, a cached
 > dump-all approach is competitive on cost. ObjectGraph is built for libraries
@@ -63,8 +63,8 @@ has what it needs:
 | **Pass 2 — dense** | `::dense` compressed summaries for the matching candidates | ~150–300 tok total |
 | **Pass 3 — full** | `::full` content for the single best node | exact skill size |
 
-Based on the S-real probe corpus (31 real queries), **77% of queries resolve at
-Pass 1**.  Pass 3 is only reached for ~3% of queries.
+Based on the S-real probe corpus (31 real queries), **87% of queries resolve at
+Pass 1**.  Pass 3 is not reached by any current probe.
 
 Compare this to **competitor approaches**:
 
@@ -79,20 +79,20 @@ Compare this to **competitor approaches**:
 
 ## Current results (bundled default_skills)
 
-Measured against the 53 `.og` nodes shipped with Hachi, corpus S-real
-(36 probes: 16 keyword / 10 procedural / 5 instructional / 5 negative), 2026-06-13.
+Measured against the 60 `.og` nodes (31 files) shipped with Hachi, corpus
+S-real (36 probes: 16 keyword / 10 procedural / 5 instructional / 5 negative).
 
 ### Token efficiency (M0)
 
 | Metric | Value |
 |--------|-------|
-| Skill nodes | 53 |
-| Baseline — dump all (tokens) | 8,726 |
-| 3-pass total (tokens) | 208 |
-| &nbsp;&nbsp;└ Pass 1 — index search | 182 |
-| &nbsp;&nbsp;└ Pass 2 — dense peek (top 5) | 13 |
-| &nbsp;&nbsp;└ Pass 3 — full resolve (1 node) | 13 |
-| **Token savings** | **97.6%** |
+| Skill nodes | 60 |
+| Baseline — dump all (tokens) | 12,150 |
+| 3-pass total (tokens) | 248 |
+| &nbsp;&nbsp;└ Pass 1 — index search | 31 |
+| &nbsp;&nbsp;└ Pass 2 — dense peek (top 5) | 85 |
+| &nbsp;&nbsp;└ Pass 3 — full resolve (1 node) | 132 |
+| **Token savings** | **98.0%** |
 | CI gate | ≥ 80% |
 
 The CI gate enforces that this savings ratio never regresses below 80% as the
@@ -104,14 +104,12 @@ Measured against 31 positive probes (K/P/I types) + 5 negative probes:
 
 | Metric | Value | Gate |
 |--------|-------|------|
-| P@1 — rank-1 correct | 0.7742 | — |
-| P@5 — correct in top 5 | 0.9677 | ≥ 0.80 ✅ |
-| MRR — mean reciprocal rank | 0.8548 | — |
+| P@1 — rank-1 correct | 0.871 | — |
+| P@5 — correct in top 5 | 1.000 | ≥ 0.80 ✅ |
+| MRR — mean reciprocal rank | 0.936 | — |
 | FPR — false positive rate (N-probes) | 0.0000 | ≤ 0.20 ✅ |
 
-One miss: `[k012] "financial data"` returned `identity` instead of `core_finance`
-(keyword overlap on "personal finance" node label).  No false positives on
-negative probes.
+No misses; no false positives on negative probes.
 
 ### Pass-depth distribution (M7)
 
@@ -119,12 +117,11 @@ How far into the 3-pass model each query goes:
 
 | Depth | Rate |
 |-------|------|
-| Pass 1 sufficient (rank-1 hit) | **77.4%** |
-| Pass 2 sufficient (top-5 hit) | 19.4% |
-| Pass 3 required (not in top 5) | 3.2% |
+| Pass 1 sufficient (rank-1 hit) | **87.1%** |
+| Pass 2 sufficient (top-5 hit) | 12.9% |
+| Pass 3 required (not in top 5) | 0.0% |
 
-96.8% of queries are resolved within 2 passes.  The 3.2% that reach Pass 3
-correspond exactly to the 1 retrieval miss identified in M1.
+100% of queries are resolved within 2 passes.
 
 ### Token cost model (M2)
 
@@ -133,11 +130,11 @@ upper bound — cache hits reduce cost substantially in production):
 
 | Metric | Value |
 |--------|-------|
-| Avg tokens / query (Pass 1) | 107 |
-| Avg tokens / query (Pass 2) | 160 |
-| Avg tokens / query (Pass 3) | 142 |
-| **Avg tokens / query (total)** | **408** |
-| Estimated cost / 1k queries | **$1.22** |
+| Avg tokens / query (Pass 1) | 116.9 |
+| Avg tokens / query (Pass 2) | 124.2 |
+| Avg tokens / query (Pass 3) | 205.3 |
+| **Avg tokens / query (total)** | **446.4** |
+| Estimated cost / 1k queries | **$1.34** |
 
 Pricing model: Anthropic 2026-06 uncached input @ $3.00/Mtok.  With prompt
 caching (Pass 1 index is highly cache-friendly), effective cost is lower.
@@ -148,7 +145,7 @@ Engine-only timing (search + peek + resolve, no LLM calls):
 
 | Metric | Value |
 |--------|-------|
-| Avg engine ops | **0.217 ms** |
+| Avg engine ops | **~0.08 ms** |
 | RTT model (3 passes × 800 ms) | 2,400 ms |
 | Total estimated wall-clock | ~2.4 s |
 
@@ -181,14 +178,17 @@ as the denominator.
 2. Run `engine.peek(candidates)` → dense summaries for all 5 → `estimate_tokens(json.dumps(...))`.
 3. Run `engine.resolve_node(candidates[0])` → full content for the single best node → `estimate_tokens(...)`.
 
-The representative query is the first keyword from the engine's index (a
-repeatable, version-controlled selection that always resolves to at least one
-match).
+The representative query is chosen by `pick_representative_query()`
+(`benchmarks/og_bench/metrics.py`): it walks every indexed node's keywords and
+returns the first one whose top search hit actually resolves to real Pass-3
+content — not merely the first keyword in index order, which can land on an
+ambiguous bare name (e.g. a role name defined once per `roles/*.og` file) that
+`resolve_node` refuses to load.
 
 ### Probe corpus (S-real)
 
-The S-real corpus (frozen at git `a54d242`) contains 36 probes authored against
-the default_skills pack:
+The S-real corpus (`benchmarks/og_bench/s_real_probes.json`) contains 36 probes
+authored against the default_skills pack:
 
 - **16 keyword (K)** — single-concept lookups (e.g. "currency", "weather")
 - **10 procedural (P)** — multi-step task queries (e.g. "how do I set up a standup")
@@ -237,33 +237,33 @@ your README or submit it to the Hachi skill registry.  Example (truncated):
 ```json
 {
   "suite": "full",
-  "nodes": 53,
+  "nodes": 60,
   "token": {
-    "baseline_tokens": 8726,
-    "three_pass_tokens": 208,
-    "savings_pct": 0.976163,
+    "baseline_tokens": 12150,
+    "three_pass_tokens": 248,
+    "savings_pct": 0.979588,
     "passed": true
   },
   "m1": {
-    "p_at_1": 0.7742,
-    "p_at_5": 0.9677,
-    "mrr": 0.8548,
+    "p_at_1": 0.871,
+    "p_at_5": 1.0,
+    "mrr": 0.9355,
     "fpr_negative": 0.0,
     "passed": true
   },
   "m7": {
-    "p1_rate": 0.7742,
-    "p2_rate": 0.1935,
-    "p3_rate": 0.0323
+    "p1_rate": 0.871,
+    "p2_rate": 0.129,
+    "p3_rate": 0.0
   },
   "m2": {
-    "avg_tokens_total": 408.1,
-    "estimated_usd_per_1k_queries": 1.2242
+    "avg_tokens_total": 446.4,
+    "estimated_usd_per_1k_queries": 1.3392
   },
   "m4": {
-    "avg_engine_ms": 0.217,
+    "avg_engine_ms": 0.08,
     "rtt_estimate_ms": 2400.0,
-    "total_estimate_ms": 2400.2
+    "total_estimate_ms": 2400.1
   },
   "passed": true
 }

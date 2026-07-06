@@ -24,29 +24,26 @@ export function Button({
   const px = size === 'sm' ? 'var(--space-3)' : 'var(--space-4)';
   const fontSize = size === 'sm' ? 'var(--type-small-size)' : 'var(--type-body-size)';
 
+  const variantClass = `hachi-btn-${variant}`;
+
   const variantStyles: CSSProperties = (() => {
     switch (variant) {
       case 'primary':
         return {
-          background: 'var(--hachi-brand-hover)',
           color: 'var(--hachi-canvas)',
           border: 'none',
         };
       case 'secondary':
         return {
-          background: 'transparent',
           color: 'var(--hachi-trust)',
           border: '0.5px solid var(--hachi-trust)',
         };
       case 'ghost':
         return {
-          background: 'transparent',
-          color: 'var(--text-muted)',
           border: 'none',
         };
       case 'danger':
         return {
-          background: 'var(--hachi-danger)',
           color: 'var(--hachi-canvas)',
           border: 'none',
         };
@@ -78,33 +75,14 @@ export function Button({
     ...style,
   };
 
-  function handleMouseEnter(e: React.MouseEvent<HTMLButtonElement>) {
-    if (disabled) return;
-    const el = e.currentTarget;
-    if (variant === 'primary') el.style.background = 'var(--hachi-brand-active)';
-    if (variant === 'danger') el.style.background = '#a83226';
-    if (variant === 'secondary') el.style.background = 'var(--hachi-trust-tint)';
-    if (variant === 'ghost') el.style.color = 'var(--text-default)';
-  }
-
-  function handleMouseLeave(e: React.MouseEvent<HTMLButtonElement>) {
-    if (disabled) return;
-    const el = e.currentTarget;
-    if (variant === 'primary') el.style.background = 'var(--hachi-brand-hover)';
-    if (variant === 'danger') el.style.background = 'var(--hachi-danger)';
-    if (variant === 'secondary') el.style.background = 'transparent';
-    if (variant === 'ghost') el.style.color = 'var(--text-muted)';
-  }
-
   return (
     <button
       type={type}
+      className={variantClass}
       onClick={onClick}
       disabled={disabled}
       aria-disabled={disabled || undefined}
       style={baseStyles}
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
       {...ariaProps}
     >
       {children}

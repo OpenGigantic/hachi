@@ -396,3 +396,19 @@
     display: none;
   }
 }
+
+/* ── Large desktop (>=1440px): let fixed 2-col card grids use the extra
+   width instead of leaving it empty either side of a capped column count. ── */
+@media (min-width: 1440px) {
+  .hachi-int-grid {
+    grid-template-columns: 1fr 1fr 1fr !important;
+  }
+
+  .hachi-fact-grid {
+    grid-template-columns: 1fr 1fr 1fr !important;
+  }
+
+  .hachi-skills-installed-grid {
+    grid-template-columns: 1fr 1fr 1fr !important;
+  }
+}

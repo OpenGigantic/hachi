@@ -56,7 +56,6 @@ def _make_tool_call(name: str, call_id: str = "tc1", input_data: dict | None = N
 def test_execution_loop_has_tool_pool() -> None:
     import concurrent.futures
 
-
     loop = _make_loop()
     assert isinstance(loop._tool_pool, concurrent.futures.ThreadPoolExecutor)
 
@@ -113,6 +112,30 @@ def test_execute_single_tool_error() -> None:
     assert "Tool Execution Error" in str(result)
     assert is_error is True
     assert suspend is None
+
+
+def test_execute_single_tool_error_preserves_traceback_in_log(caplog) -> None:
+    """The original exception + traceback must reach the logs (not just the
+    stringified message returned to the model), so operators can debug the
+    real failure instead of only seeing "Tool Execution Error: ...".
+    """
+    import logging
+
+    loop = _make_loop()
+    loop.registry.execute.side_effect = RuntimeError("network timeout")
+
+    tc = _make_tool_call("browse_web")
+    with caplog.at_level(logging.ERROR, logger="hachi.core.loop"):
+        loop._execute_single_tool(tc)
+
+    assert len(caplog.records) >= 1
+    record = caplog.records[-1]
+    assert "browse_web" in record.getMessage()
+    # exc_info must be attached so the traceback (not just str(exc)) is preserved.
+    assert record.exc_info is not None
+    assert record.exc_info[1] is not None
+    assert isinstance(record.exc_info[1], RuntimeError)
+    assert record.exc_info[2] is not None, "traceback must be preserved, not discarded"
 
 
 # ---------------------------------------------------------------------------
@@ -179,3 +202,19 @@ def test_results_maintain_original_order() -> None:
 def test_shutdown_does_not_raise() -> None:
     loop = _make_loop()
     loop.shutdown(wait=True)
+
+
+# ---------------------------------------------------------------------------
+# 8. Dead code: _generate_with_retry was superseded by _stream_generate
+# (P1-2, docs/DECISIONS.md) and run() no longer calls it. It must not linger
+# unreferenced in ExecutionLoop.
+# ---------------------------------------------------------------------------
+
+
+def test_generate_with_retry_removed_as_dead_code() -> None:
+    from hachi.core.loop import ExecutionLoop
+
+    assert not hasattr(ExecutionLoop, "_generate_with_retry"), (
+        "_generate_with_retry is dead code (superseded by _stream_generate) "
+        "and must be deleted, not left unreferenced"
+    )

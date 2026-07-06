@@ -21,7 +21,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import date as _date
+from pathlib import Path
 from typing import Any
 
 from hachi.core.approvals import (
@@ -32,7 +32,7 @@ from hachi.core.approvals import (
     get_approval_registry,
 )
 from hachi.core.checkpoints import CheckpointManager
-from hachi.core.cost import CostTracker
+from hachi.core.cost import CostTracker, clamp_nonnegative_cost_delta, today_utc_str
 from hachi.core.credential_vault import CredentialVault
 from hachi.core.integrations import IntegrationRuntime
 from hachi.core.llm import Message, create_llm_client
@@ -859,6 +859,57 @@ class AgentSession:
             return False
         return self._scheduler.set_enabled(schedule_id, enabled)
 
+    def run_schedule_now(self, schedule_id: str) -> bool:
+        """Force-trigger a schedule immediately (Work screen "Run now").
+
+        Dispatches the same ``fire`` callback the resident :class:`ScheduleRunner`
+        uses (``session.chat(task, surface="schedule")`` + :func:`deliver_result`),
+        via the existing background job queue so the HTTP request returns without
+        waiting for the agent turn to finish — mirrors ``_enqueue_title_job``'s
+        ``func=`` closure path (BB-36).
+
+        Returns:
+            ``True`` if the schedule id was found and the run was dispatched (in
+            the background); ``False`` if no schedule matches ``schedule_id`` or
+            the scheduler/runner is not wired up (never booted, or booted without
+            proactive scheduling).
+        """
+        if self._scheduler is None:
+            return False
+        runner = getattr(self, "_schedule_runner", None)
+        fire = getattr(runner, "_fire", None)
+        if fire is None:
+            return False
+        schedule = self._scheduler.get(schedule_id)
+        if schedule is None:
+            return False
+
+        def _run() -> None:
+            self._scheduler.run_now(schedule.schedule_id, fire)
+
+        if not self._job_queue:
+            _run()
+            return True
+
+        job = Job(
+            job_id="",
+            name="schedule_run_now",
+            status=JobStatus.PENDING,
+            func=_run,
+            job_type="background",
+            session_id=self._session_id,
+        )
+        try:
+            self._job_queue.enqueue(job)
+        except Exception:
+            # HIGH-012 pattern: enqueue failures should be visible; fall back to inline.
+            logger.warning(
+                "run_schedule_now: job queue enqueue failed; running inline",
+                exc_info=True,
+            )
+            _run()
+        return True
+
     def snapshot_mcp_inventory(self) -> MCPInventorySnapshot:
         """Current MCP server and tool inventory."""
         inventory_rows = self.mcp_manager.get_inventory()
@@ -1181,7 +1232,12 @@ class AgentSession:
             continue
 
     def _run_prefetch_job(self, query: str, turn_id: str = "compat") -> list[dict]:
-        """Execute the vault recall and store the result keyed by *turn_id*."""
+        """Execute vault recall (semantic + episodic) and store the result keyed by *turn_id*.
+
+        B10: episodic recall runs here so it does not block the inline turn path on
+        turns 2+.  Trade-off: uses the *previous* turn's query for episodic results —
+        accepted heuristic (see docs/DECISIONS.md §B10).
+        """
         results: list[dict] = []
         if self.vault:
             try:
@@ -1194,6 +1250,22 @@ class AgentSession:
                     exc_info=True,
                 )
                 results = []
+
+            # B10: episodic recall merged in-place; dedup by id.
+            if self._episodic_top_k > 0:
+                try:
+                    episodic = self.vault.search_episodic(query, top_k=self._episodic_top_k)
+                    if episodic:
+                        existing_ids = {r.get("id") for r in results}
+                        for ep in episodic:
+                            if ep.get("id") not in existing_ids:
+                                results.append(ep)
+                except Exception:
+                    logger.debug(
+                        "_run_prefetch_job: episodic recall failed for query %r (non-fatal)",
+                        query[:80],
+                        exc_info=True,
+                    )
 
         with self._prefetch_lock:
             # FIX medium: store under turn_id so _pop_prefetch can validate provenance
@@ -1509,7 +1581,10 @@ class AgentSession:
         if self._session_store is None:
             return None
         try:
-            today = _date.today().isoformat()
+            # BB-56: key on UTC (matching the write side below), not the host's
+            # local date — otherwise spend near midnight is misattributed to the
+            # wrong day for any user not in UTC.
+            today = today_utc_str()
             spent = self._session_store.get_daily_spend(today)
             if spent >= self._max_daily_cost_usd:
                 return f"daily cost cap reached (~${spent:.4f} >= ${self._max_daily_cost_usd:.2f})"
@@ -1542,9 +1617,12 @@ class AgentSession:
 
         self._memory_snapshot = self._build_frozen_snapshot()
 
-        # 2. Consume async prefetch from previous turn (or sync-fetch on first turn)
+        # 2. Consume async prefetch from previous turn (or sync-fetch on first turn).
+        #    B10: prefetch now includes both semantic + episodic recall so the turn path
+        #    is non-blocking on turns 2+.  Turn 1 falls back to inline for both.
         recalled = self._pop_prefetch()
         if not recalled and self.vault:
+            # Turn 1 (no prefetch available yet): run semantic + episodic inline.
             try:
                 recalled = self.vault.semantic_search(user_input, top_k=5)
             except Exception:
@@ -1555,25 +1633,19 @@ class AgentSession:
                     exc_info=True,
                 )
                 recalled = []
-
-        # 2b. M1: episodic recall — fetch past-session episodes and merge with semantic results.
-        #     Guarded by episodic_top_k > 0 and vault availability.  Never raises on error.
-        if self._episodic_top_k > 0 and self.vault:
-            try:
-                episodic = self.vault.search_episodic(user_input, top_k=self._episodic_top_k)
-                if episodic:
-                    # Merge by ID to avoid duplicates with semantic_search results,
-                    # then append episodic results that are not already present.
-                    existing_ids = {r.get("id") for r in recalled}
-                    for ep in episodic:
-                        if ep.get("id") not in existing_ids:
-                            recalled.append(ep)
-            except Exception:
-                logger.debug(
-                    "_chat_impl_inner: episodic recall failed for turn %s (non-fatal)",
-                    turn_id,
-                    exc_info=True,
-                )
+            if self._episodic_top_k > 0:
+                try:
+                    episodic = self.vault.search_episodic(user_input, top_k=self._episodic_top_k)
+                    if episodic:
+                        existing_ids = {r.get("id") for r in recalled}
+                        for ep in episodic:
+                            if ep.get("id") not in existing_ids:
+                                recalled.append(ep)
+                except Exception:
+                    logger.debug(
+                        "_chat_impl_inner: turn-1 episodic recall failed (non-fatal)",
+                        exc_info=True,
+                    )
 
         # 3. Build the dynamic recall injection
         recall_block = ""
@@ -1673,11 +1745,18 @@ class AgentSession:
                     # daily ledger accumulates exactly what this turn spent.
                     turn_delta = snap.estimated_cost_usd - self._last_recorded_cost_usd
                     self._last_recorded_cost_usd = snap.estimated_cost_usd
-                    _turn_cost_usd = max(0.0, turn_delta)
+                    # BB-56: a negative delta (e.g. a cost_tracker reset mid-session)
+                    # is clamped to 0.0 AND logged — never silently dropped with no
+                    # trace, so a real anomaly stays visible instead of invisible.
+                    _turn_cost_usd = clamp_nonnegative_cost_delta(
+                        turn_delta, context=self._session_id or "unknown-session"
+                    )
                     _turn_tokens = max(0, snap.total_tokens - self._last_recorded_tokens)
                     self._last_recorded_tokens = snap.total_tokens
-                    if turn_delta > 0:
-                        self._session_store.record_daily_cost(_date.today().isoformat(), turn_delta)
+                    if _turn_cost_usd > 0:
+                        # BB-56: key on UTC (matching _daily_cap_exceeded's read side),
+                        # not the host's local date.
+                        self._session_store.record_daily_cost(today_utc_str(), _turn_cost_usd)
             except Exception:
                 # HIGH-012: cost persistence failures must be visible.
                 logger.warning(
@@ -1803,6 +1882,15 @@ class AgentSession:
                     self._session_id,
                     exc_info=True,
                 )
+
+        # Shut down the per-session tool-execution thread pool (ExecutionLoop
+        # creates its own ThreadPoolExecutor per session; leaving it running
+        # after session close leaks 4 worker threads per ended session).
+        try:
+            self.loop.shutdown(wait=False)
+        except Exception:
+            # HIGH-012: tool-pool shutdown failures should be visible.
+            logger.warning("shutdown: failed to shut down loop tool pool", exc_info=True)
 
         # Close LLM HTTP clients (OpenAICompatibleClient/ollama hold an httpx.Client;
         # AnthropicClient has no close() — guarded by getattr so both are safe).
@@ -2412,6 +2500,21 @@ def og_graph_from_engine(skill_engine: Any) -> dict[str, Any]:
 # ==========================================
 
 
+def _get_or_create_shared_scheduler(shared: Any, schedules_file: "Path") -> Scheduler:
+    """Return the one process-wide :class:`Scheduler` over *schedules_file*.
+
+    H3: a private per-session ``Scheduler(ScheduleStore(...))`` meant two
+    sessions in the same process each ran their own in-memory copy of the same
+    on-disk schedule store — both would independently fire a due schedule
+    (double-fire) and each's writes could clobber the other's (lost updates).
+    Mirrors the existing ``routing_store``/``event_bus`` lazy-singleton pattern
+    on :class:`~hachi.gateway.shared_services.ProcessSharedServices`.
+    """
+    if getattr(shared, "scheduler", None) is None:
+        shared.scheduler = Scheduler(ScheduleStore(schedules_file))
+    return shared.scheduler  # type: ignore[no-any-return]
+
+
 def boot_agent(
     on_event: Callable[..., None] | None = None,
     on_permission_request: Callable[[PermissionRequest], PermissionDecision] | None = None,
@@ -2566,7 +2669,12 @@ def boot_agent(
     # are identical to the original direct-call code path, registered in the
     # same order, so SSE/TUI output is byte-identical by construction.
     # ------------------------------------------------------------------
-    from hachi.core.settings import EvalReportSettings, EventsSettings, JobsSettings
+    from hachi.core.settings import (
+        EvalReportSettings,
+        EventsSettings,
+        JobsSettings,
+        RetentionSettings,
+    )
 
     _events_cfg = EventsSettings.model_validate(config.get("events", {}))
     _jobs_cfg = JobsSettings.model_validate(config.get("jobs", {}))
@@ -2850,7 +2958,8 @@ def boot_agent(
     # File-change checkpoints give the user an undo for agent edits (rollback_changes tool).
     checkpoint_manager = CheckpointManager(get_hachi_paths().checkpoints_dir)
     # Proactive scheduling (cron/interval/once) — persisted across restarts.
-    scheduler = Scheduler(ScheduleStore(get_hachi_paths().schedules_file))
+    # H3: shared across sessions in this process (see _get_or_create_shared_scheduler).
+    scheduler = _get_or_create_shared_scheduler(_shared, get_hachi_paths().schedules_file)
     # Initialize Session Store (Phase 3: cross-session persistence)
     session_store = SessionStore()
 
@@ -2960,6 +3069,29 @@ def boot_agent(
     from hachi.core.lease_manager import LeaseManager
 
     _lease_manager = LeaseManager()
+
+    # Per-session safety caps (0 = unlimited): stop a runaway loop from draining the
+    # user's API budget. Read from the optional [limits] config section, else env vars.
+    # Computed here (before _make_deps/registration) so S2 can thread the SAME caps
+    # down to register_delegation_tools -> every sub-agent's own ExecutionLoop —
+    # a delegated sub-agent must never be able to silently outspend what the user
+    # configured for the parent session.
+    limits_cfg = config.get("limits", {}) if isinstance(config.get("limits"), dict) else {}
+    max_daily_cost_usd = _coerce_float(
+        limits_cfg.get("max_daily_cost_usd"), os.environ.get("HACHI_MAX_DAILY_COST_USD")
+    )
+    max_session_cost_usd = _coerce_float(
+        limits_cfg.get("max_session_cost_usd"), os.environ.get("HACHI_MAX_SESSION_COST_USD")
+    )
+    max_session_tokens = _coerce_int(
+        limits_cfg.get("max_session_tokens"), os.environ.get("HACHI_MAX_SESSION_TOKENS")
+    )
+    max_turn_cost_usd = _coerce_float(
+        limits_cfg.get("max_turn_cost_usd"), os.environ.get("HACHI_MAX_TURN_COST_USD")
+    )
+    max_turn_tokens = _coerce_int(
+        limits_cfg.get("max_turn_tokens"), os.environ.get("HACHI_MAX_TURN_TOKENS")
+    )
 
     def _make_deps() -> BootDeps:
         return BootDeps(
@@ -3128,6 +3260,12 @@ def boot_agent(
                 cost_tracker=d.cost_tracker,
                 skill_engine=d.skill_engine,
                 lease_manager=d.lease_manager,
+                # S2: sub-agents inherit the parent session's configured budget caps
+                # by default so a delegated task can never silently outspend them.
+                max_cost_usd=max_session_cost_usd,
+                max_tokens=max_session_tokens,
+                max_cost_per_turn=max_turn_cost_usd,
+                max_tokens_per_turn=max_turn_tokens,
             ),
         ),
     ]
@@ -3213,26 +3351,10 @@ def boot_agent(
         },
     )
 
-    # Per-session safety caps (0 = unlimited): stop a runaway loop from draining the
-    # user's API budget. Read from the optional [limits] config section, else env vars.
-    limits_cfg = config.get("limits", {}) if isinstance(config.get("limits"), dict) else {}
-    max_daily_cost_usd = _coerce_float(
-        limits_cfg.get("max_daily_cost_usd"), os.environ.get("HACHI_MAX_DAILY_COST_USD")
-    )
-    max_session_cost_usd = _coerce_float(
-        limits_cfg.get("max_session_cost_usd"), os.environ.get("HACHI_MAX_SESSION_COST_USD")
-    )
-    max_session_tokens = _coerce_int(
-        limits_cfg.get("max_session_tokens"), os.environ.get("HACHI_MAX_SESSION_TOKENS")
-    )
-    max_turn_cost_usd = _coerce_float(
-        limits_cfg.get("max_turn_cost_usd"), os.environ.get("HACHI_MAX_TURN_COST_USD")
-    )
-    max_turn_tokens = _coerce_int(
-        limits_cfg.get("max_turn_tokens"), os.environ.get("HACHI_MAX_TURN_TOKENS")
-    )
-
     # 9. Instantiate the Brain Loop (cost_tracker created earlier, shared with sub-agents)
+    # (max_daily_cost_usd / max_session_cost_usd / max_session_tokens / max_turn_cost_usd /
+    # max_turn_tokens were computed earlier, before _make_deps, so S2 could thread them
+    # into register_delegation_tools as well.)
     # When the router is available, default_client() returns the configured model's
     # resilient client; the loop's llm_client is unchanged (back-compat).
     _loop_client = client
@@ -3425,10 +3547,23 @@ def boot_agent(
 
     # Start the resident job worker so background jobs (fact extraction, prefetch,
     # title generation) execute without blocking the turn path.
+    # BB-72: also pass session_store + checkpoint_manager so the idle sweep can
+    # prune idempotency keys, interaction_log, daily_spend, and checkpoint files.
+    _retention_cfg = RetentionSettings.model_validate(config.get("retention") or {})
     _job_worker_for_session = JobWorker(
         job_queue, on_job_event=emit_runtime_event, registry=_job_registry
     )
-    _resident_worker = ResidentWorkerThread(_job_worker_for_session)
+    _resident_worker = ResidentWorkerThread(
+        _job_worker_for_session,
+        session_store=session_store,
+        checkpoint_manager=checkpoint_manager,
+        sweep_interval_seconds=_retention_cfg.sweep_interval_seconds,
+        jobs_retention_hours=_retention_cfg.jobs_retention_hours,
+        interaction_log_retention_days=_retention_cfg.interaction_log_retention_days,
+        idempotency_key_retention_hours=_retention_cfg.idempotency_key_retention_hours,
+        daily_spend_retention_days=_retention_cfg.daily_spend_retention_days,
+        checkpoint_retention_days=_retention_cfg.checkpoint_retention_days,
+    )
     _resident_worker.start()
     session.set_resident_worker(_resident_worker)
 
@@ -3436,19 +3571,43 @@ def boot_agent(
     # The fire callback calls session.chat() so the agent executes the task and
     # delivers the result via the session's normal event pipeline.
     def _fire_schedule(s: Schedule) -> None:
+        job_id = f"schedule:{s.schedule_id}:{uuid.uuid4().hex[:8]}"
+        emit_runtime_event(
+            "job.started",
+            {"job_id": job_id, "job_name": s.name, "kind": "schedule", "label": s.name},
+        )
         try:
             result_text = session.chat(s.task, surface="schedule")
             # UC-RSCH-002: the resident runner must honor deliver_to/webhook_url too
             # (previously only `hachi schedule run-due` delivered). deliver_result
             # redacts outbound secrets before any webhook POST.
             deliver_result(s, result_text)
+            emit_runtime_event(
+                "job.completed",
+                {"job_id": job_id, "job_name": s.name, "kind": "schedule", "label": s.name},
+            )
         except Exception:
             import logging as _logging
 
             _logging.getLogger(__name__).exception("Schedule fire error for '%s'", s.name)
+            emit_runtime_event(
+                "job.failed",
+                {
+                    "job_id": job_id,
+                    "job_name": s.name,
+                    "kind": "schedule",
+                    "label": s.name,
+                    "status": "failed",
+                },
+            )
 
     _schedule_runner = ScheduleRunner(scheduler, fire=_fire_schedule)
-    _schedule_runner.start()
+    # H3: the shared Scheduler object still races if two independent runner
+    # threads tick it concurrently — only the first session in this process
+    # starts the runner; later sessions reuse it without a second thread.
+    if not getattr(_shared, "scheduler_runner_started", False):
+        _schedule_runner.start()
+        _shared.scheduler_runner_started = True
     session._schedule_runner = _schedule_runner  # stopped in shutdown()
     session._scheduler = scheduler  # P4-05: exposed for companion web UI
 

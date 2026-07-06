@@ -384,6 +384,43 @@ class SearchSettings(BaseModel):
     window_seconds: float = 3600.0
 
 
+class RetentionSettings(BaseModel):
+    """Data-retention TTLs for the periodic maintenance sweep.
+
+    Maps to the optional ``[retention]`` section in ``settings.toml``.
+    Defaults are conservative — nothing is deleted aggressively; operators can
+    tighten them for storage-constrained installs.
+
+    Field semantics:
+        jobs_retention_hours:           Delete completed/failed/cancelled jobs
+                                        older than this many hours.  24 h keeps
+                                        one day of job history.
+        interaction_log_retention_days: Delete ``interaction_log`` rows older than
+                                        this many days.  90 days is the default
+                                        for eval/audit usage.
+        idempotency_key_retention_hours: Delete ``idempotency_keys`` rows older
+                                        than this many hours.  48 h covers any
+                                        realistic replay window.
+        daily_spend_retention_days:     Delete ``daily_spend`` rows older than
+                                        this many days.  365 keeps a year of
+                                        cost history.
+        checkpoint_retention_days:      Delete file-edit checkpoint snapshots
+                                        older than this many days.  30 is safe
+                                        since they're only needed for undo.
+        sweep_interval_seconds:         How often the idle ResidentWorkerThread
+                                        runs the sweep.  Default 3600 = hourly.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    jobs_retention_hours: int = 24
+    interaction_log_retention_days: int = 90
+    idempotency_key_retention_hours: int = 48
+    daily_spend_retention_days: int = 365
+    checkpoint_retention_days: int = 30
+    sweep_interval_seconds: float = 3600.0
+
+
 class ResolvedConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -412,6 +449,8 @@ class ResolvedConfig(BaseModel):
     search: SearchSettings = Field(default_factory=SearchSettings)
     # Optional [files] section — absent = default 50 MB cap, all types allowed.
     files: FileSettings = Field(default_factory=FileSettings)
+    # Optional [retention] section — absent = conservative defaults (see RetentionSettings).
+    retention: RetentionSettings = Field(default_factory=RetentionSettings)
     # [mcp_servers.<name>] sections — Model Context Protocol servers registered via the
     # UI/CLI. Kept as raw dicts (parsed by MCPServerConfig.from_toml_entry at boot) so the
     # section survives model_dump() — without this field it was silently dropped and

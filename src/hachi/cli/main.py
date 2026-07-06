@@ -65,7 +65,7 @@ from hachi.gateway.workspace import (
     run_permissions_wizard,
     show_current_permissions,
 )
-from hachi.jobs import ResidentWorkerThread
+from hachi.jobs import ResidentWorkerThread, ScheduleStore
 
 app = typer.Typer(
     help="Hachi - The Autonomous Agent Engine powered by ObjectGraph",
@@ -545,9 +545,11 @@ class _InProcessGatewayRuntime:
     def list_schedules(self) -> list[dict]:
         with self._agents_lock:
             agent = next(iter(self._agents.values()), None)
-        if agent is None:
-            return []
-        return agent.snapshot_schedules()
+        if agent is not None:
+            return agent.snapshot_schedules()
+        # No active session — read from disk so GET /schedules works before
+        # the user opens the chat (or after a gateway restart with no live session).
+        return [s.to_dict() for s in ScheduleStore(get_hachi_paths().schedules_file).load()]
 
     def cancel_schedule(self, schedule_id: str) -> dict:
         with self._agents_lock:
@@ -564,6 +566,14 @@ class _InProcessGatewayRuntime:
             return {"ok": False, "detail": "no active session"}
         ok = agent.toggle_schedule_enabled(schedule_id, enabled=enabled)
         return {"ok": ok, "schedule_id": schedule_id, "enabled": enabled}
+
+    def run_schedule_now(self, schedule_id: str) -> dict:
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return {"ok": False, "detail": "no active session"}
+        ok = agent.run_schedule_now(schedule_id)
+        return {"ok": ok, "schedule_id": schedule_id}
 
     def capabilities(self) -> list[dict]:
         config = load_effective_config()
@@ -603,8 +613,27 @@ class _InProcessGatewayRuntime:
         return items
 
     def get_config(self) -> dict:
+        # BB-57: GET /config must never echo secret-shaped fields — mirror the
+        # masking GET /config/providers already applies via provider_admin._mask_provider
+        # (drops api_key_ref/api_key_env/base_url, masks header values) instead of
+        # dumping the raw ResolvedConfig, which leaked env-var names, base URLs, and
+        # raw header values (e.g. Authorization bearer tokens) verbatim.
+        from hachi.gateway.provider_admin import _mask_provider
+
         config = load_effective_config()
         raw = config.model_dump(mode="python", exclude_none=True)
+
+        raw["provider"] = _mask_provider("__primary__", config.provider)
+        raw["providers"] = {
+            name: _mask_provider(name, ps) for name, ps in (config.providers or {}).items()
+        }
+
+        capabilities_block = raw.get("capabilities")
+        if isinstance(capabilities_block, dict):
+            for entry in capabilities_block.values():
+                if isinstance(entry, dict) and entry.get("secret_ref"):
+                    entry["secret_ref"] = "***"
+
         # Ensure GET /config always includes a ``limits`` block with the frontend-facing
         # keys ``per_task_cap_usd`` / ``daily_cap_usd`` so caps saved via PUT /config/limits
         # round-trip on reload.
@@ -2899,6 +2928,7 @@ def _build_gateway_control_plane(
         list_schedules=runtime.list_schedules if runtime else None,
         cancel_schedule=runtime.cancel_schedule if runtime else None,
         toggle_schedule=runtime.toggle_schedule if runtime else None,
+        run_schedule_now=runtime.run_schedule_now if runtime else None,
         # Web UI endpoints (#1–#6):
         get_skills=runtime.get_skills if runtime else None,
         get_memory=runtime.get_memory if runtime else None,

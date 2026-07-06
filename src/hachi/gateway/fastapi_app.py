@@ -392,8 +392,19 @@ class RatingResponse(BaseModel):
     ok: bool
 
 
+_GATEWAY_THREAD_LIMITER_ENV = "HACHI_GATEWAY_THREAD_LIMITER"
+_DEFAULT_THREAD_LIMITER = 64
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # B6: raise the AnyIO default threadpool limit (40) to accommodate concurrent
+    # blocking REST reads (session list, message history, event history) plus
+    # in-flight per-turn send_message threads without queuing. Configurable via
+    # HACHI_GATEWAY_THREAD_LIMITER; intentionally separate from the session-object
+    # cap (HACHI_GATEWAY_MAX_SESSIONS) which governs agent lifetime, not I/O threads.
+    _thread_cap = int(os.environ.get(_GATEWAY_THREAD_LIMITER_ENV, str(_DEFAULT_THREAD_LIMITER)))
+    anyio.to_thread.current_default_thread_limiter().total_tokens = _thread_cap
     yield
 
 
@@ -596,7 +607,9 @@ def create_gateway_app(
     @app.exception_handler(GatewayProtocolError)
     async def _protocol_error_handler(_request: Request, exc: GatewayProtocolError) -> JSONResponse:
         return _error_response(
-            status_code=400, code=getattr(exc, "code", "protocol_error"), message=str(exc)
+            status_code=400,
+            code=getattr(exc, "code", "protocol_error"),
+            message=str(exc),
         )
 
     @app.exception_handler(GatewayUnavailableError)
@@ -774,7 +787,9 @@ def create_gateway_app(
         # C1: filter sessions so a caller only sees sessions they own.
         # Legacy sessions (NULL owner) are always returned for backward compat.
         caller_hash = _require_auth(request)
-        all_sessions = control_plane.recent_sessions(limit)
+        # B5+B7a: offload the SQLite read (now 2 queries instead of 2N) off the
+        # event loop; owner filtering runs inline after (in-memory O(1) dict lookups).
+        all_sessions = await anyio.to_thread.run_sync(lambda: control_plane.recent_sessions(limit))
         if caller_hash is None:
             # No-auth mode: return everything.
             return all_sessions
@@ -802,6 +817,8 @@ def create_gateway_app(
     _SLASH_HELP_TEXT = (
         "Available slash commands:\n"
         "  /model — Show the current model and how to change it\n"
+        "  /memory <query>  — Search long-term memory\n"
+        "  /remember <fact> — Save a fact to long-term memory\n"
         "  /help  — Show this help text"
     )
 
@@ -858,8 +875,12 @@ def create_gateway_app(
         stripped = prompt.strip()
         if not stripped.startswith("/"):
             return None
-        # Extract the command word (everything up to first whitespace).
-        word = stripped[1:].split()[0].lower() if stripped[1:].strip() else ""
+        # Extract the command word (everything up to first whitespace) and the
+        # remainder of the line as the command's argument text.
+        rest = stripped[1:]
+        parts = rest.split(maxsplit=1)
+        word = parts[0].lower() if rest.strip() else ""
+        arg = parts[1].strip() if len(parts) > 1 else ""
 
         if word == "model":
             try:
@@ -876,6 +897,40 @@ def create_gateway_app(
                 "To change the model, go to **Settings → Provider** in the web UI, "
                 "or run `hachi setup --tier lightning` and select a different model."
             )
+        elif word == "memory":
+            # H4: /memory <query> — real semantic recall, wired to GET /memory/recall's
+            # backing handler so this behaves identically to that endpoint.
+            if not arg:
+                reply = "Usage: `/memory <query>` — searches long-term memory for a query."
+            else:
+                try:
+                    hits = control_plane.memory_recall(query=arg, top_k=5)
+                except Exception:
+                    hits = []
+                if not hits:
+                    reply = f"No memory found for “{arg}”."
+                else:
+                    lines = [f"Memory results for “{arg}”:"]
+                    for hit in hits:
+                        content = (
+                            hit.get("content") or hit.get("raw_content") or ""
+                            if isinstance(hit, dict)
+                            else str(hit)
+                        )
+                        if content:
+                            lines.append(f"- {content}")
+                    reply = "\n".join(lines)
+        elif word == "remember":
+            # H4: /remember <fact> — real write, wired to POST /memory/facts' backing
+            # handler (stored in the user_profile collection, like the UI's memory tool).
+            if not arg:
+                reply = "Usage: `/remember <fact>` — saves a fact to long-term memory."
+            else:
+                try:
+                    control_plane.add_memory_fact(group="user_profile", text=arg)
+                    reply = f"Got it — I'll remember: “{arg}”."
+                except Exception as exc:
+                    reply = f"Couldn't save that fact: {exc}"
         elif word == "help":
             reply = _SLASH_HELP_TEXT
         else:
@@ -996,7 +1051,11 @@ def create_gateway_app(
 
         HTTP 404 when *session_id* is unknown or has no persisted messages.
         """
-        result = control_plane.session_transcript(session_id=session_id, limit=limit)
+        # B5: session_transcript hits SQLite — offload to thread so the event loop
+        # stays free for SSE keepalives during a long message-history fetch.
+        result = await anyio.to_thread.run_sync(
+            lambda: control_plane.session_transcript(session_id=session_id, limit=limit)
+        )
         if result is None:
             raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
         return result
@@ -1032,7 +1091,14 @@ def create_gateway_app(
         limit: int = Query(default=100, ge=1, le=500),
     ) -> Any:
         _check_session_ownership(session_id, _require_auth(request))
-        return control_plane.read_session_events(session_id=session_id, after=after, limit=limit)
+        # B5: thread the whole call — historical sessions hit SQLite via
+        # _synthesize_history_events; live sessions use an in-memory slice (minor
+        # thread-hop overhead, acceptable since live callers use SSE not this endpoint).
+        return await anyio.to_thread.run_sync(
+            lambda: control_plane.read_session_events(
+                session_id=session_id, after=after, limit=limit
+            )
+        )
 
     @sessions.get("/{session_id}/stream")
     async def stream_session_events(
@@ -1119,7 +1185,11 @@ def create_gateway_app(
                 except asyncio.CancelledError:
                     pass
 
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        )
 
     @runtime_ops.get("/runtime/events")
     async def get_runtime_events(
@@ -1226,7 +1296,9 @@ def create_gateway_app(
             if val_is_ref:
                 cred_name = env_val[len("secret:") :]
                 try:
-                    from hachi.core.secret_store import create_default_secret_store as _css
+                    from hachi.core.secret_store import (
+                        create_default_secret_store as _css,
+                    )
 
                     if _css().get(f"cred:{cred_name}") is None:
                         raise HTTPException(
@@ -1331,6 +1403,17 @@ def create_gateway_app(
     @runtime_ops.put("/schedules/{schedule_id}/enabled")
     async def put_schedule_enabled(schedule_id: str, payload: ScheduleToggleRequest) -> Any:
         return control_plane.toggle_schedule(schedule_id, payload.enabled)
+
+    @runtime_ops.post("/schedules/{schedule_id}/run-now")
+    async def post_schedule_run_now(schedule_id: str) -> Any:
+        """Force-trigger a schedule immediately, regardless of its next-run time.
+
+        Dispatches in the background (does not block on the agent turn); returns
+        ``{"ok": true, "schedule_id": ...}`` once dispatch is confirmed, or
+        ``{"ok": false, ...}`` if the schedule id is unknown or scheduling is
+        unavailable (no active session).
+        """
+        return control_plane.run_schedule_now(schedule_id)
 
     @config.get("")
     async def get_config() -> Any:
@@ -1490,11 +1573,42 @@ def create_gateway_app(
 
     @openai_compat.post("/v1/chat/completions")
     async def openai_chat_completions(payload: OpenAIChatRequest, request: Request) -> Any:
+        # H6: resolve the caller's identity so a facade session created below is
+        # stamped with an owner, same as the normal POST /sessions route.
+        caller_hash = _require_auth(request)
         prompt = _last_user_text(payload.messages)
         if not prompt:
             raise HTTPException(status_code=400, detail="no user message content")
-        if not openai_limiter.allow("openai"):
+        # BB-58: key the rate limiter per-principal (the same caller_hash H6 uses
+        # for session ownership) instead of one shared global bucket — otherwise
+        # one caller exhausting the limit locks out every other caller too.
+        # ``caller_hash`` is None in no-auth mode; fall back to a fixed key there
+        # since there is no notion of distinct principals without auth.
+        rate_key = caller_hash or "anonymous"
+        if not openai_limiter.allow(rate_key):
             raise HTTPException(status_code=429, detail="rate limit exceeded; slow down")
+
+        # BB-58: validate (not silently ignore) the requested model. When the
+        # control plane has allowlist data (list_all_models — the same data that
+        # powers GET /config/models/all), reject unrecognized model ids instead
+        # of silently substituting a default. When no allowlist data is wired
+        # (handler not attached), fail open — nothing to validate against.
+        requested_model = (payload.model or "").strip()
+        if requested_model:
+            try:
+                all_models = await anyio.to_thread.run_sync(control_plane.list_all_models)
+            except Exception:
+                all_models = {}
+            known_models: set[str] = set()
+            if isinstance(all_models, dict):
+                for ids in all_models.values():
+                    if isinstance(ids, list):
+                        known_models.update(str(i) for i in ids)
+            if known_models and requested_model not in known_models:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"model '{requested_model}' is not recognized or allowed",
+                )
 
         chat_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created_ts = int(time.time())
@@ -1502,7 +1616,9 @@ def create_gateway_app(
 
         if not payload.stream:
             # Full agent turn is synchronous — run in a thread so the event loop stays free.
-            result = await anyio.to_thread.run_sync(lambda: control_plane.complete_chat(prompt))
+            result = await anyio.to_thread.run_sync(
+                lambda: control_plane.complete_chat(prompt, owner_token_hash=caller_hash)
+            )
             reply = result.get("response", "")
             return {
                 "id": chat_id,
@@ -1516,7 +1632,11 @@ def create_gateway_app(
                         "finish_reason": "stop",
                     }
                 ],
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
             }
 
         # Streaming path: forward text.stream.delta events as OpenAI SSE chunks.
@@ -1525,7 +1645,9 @@ def create_gateway_app(
             # Create/get the session before starting the turn so we can read its events.
             session_key = f"openai-{chat_id}"
             session_id: str = await anyio.to_thread.run_sync(
-                lambda: control_plane.get_or_create_session(session_key)
+                lambda: control_plane.get_or_create_session(
+                    session_key, owner_token_hash=caller_hash
+                )
             )
 
             # Snapshot the event cursor so only events from THIS turn are forwarded.
@@ -1542,7 +1664,11 @@ def create_gateway_app(
                         "created": created_ts,
                         "model": model_name,
                         "choices": [
-                            {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+                            {
+                                "index": 0,
+                                "delta": {"role": "assistant"},
+                                "finish_reason": None,
+                            }
                         ],
                     }
                 )
@@ -1643,7 +1769,11 @@ def create_gateway_app(
             )
             yield "data: [DONE]\n\n"
 
-        return StreamingResponse(_openai_event_stream(), media_type="text/event-stream")
+        return StreamingResponse(
+            _openai_event_stream(),
+            media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        )
 
     @openai_compat.get("/v1/models")
     async def openai_models() -> Any:
@@ -1672,6 +1802,10 @@ def create_gateway_app(
     async def channel_inbound(
         channel: str, payload: ChannelInboundRequest, request: Request
     ) -> Any:
+        # H6: resolve the caller's identity (the webhook's bearer token, not the
+        # attacker-controlled sender_id) so the facade session for this
+        # channel:sender key is stamped with a real owner.
+        caller_hash = _require_auth(request)
         if not payload.text.strip():
             raise HTTPException(status_code=400, detail="text is required")
         sender = payload.sender_id
@@ -1696,7 +1830,9 @@ def create_gateway_app(
         guarded_text, _flagged = guard_untrusted(payload.text, source=source_label)
         # Full agent turn is synchronous — run in a thread so the event loop stays free.
         result = await anyio.to_thread.run_sync(
-            lambda: control_plane.complete_chat(guarded_text, session_key=session_key)
+            lambda: control_plane.complete_chat(
+                guarded_text, session_key=session_key, owner_token_hash=caller_hash
+            )
         )
         return {
             "channel": channel,
@@ -1929,7 +2065,9 @@ def create_gateway_app(
     # ==========================================
 
     integrations_router = APIRouter(
-        prefix="/integrations", tags=["integrations"], dependencies=protected_dependencies
+        prefix="/integrations",
+        tags=["integrations"],
+        dependencies=protected_dependencies,
     )
     # Callback does NOT carry the auth dependency — the browser popup calls it directly
     # and does not have the Bearer token.  State validation provides CSRF protection.
@@ -2032,7 +2170,8 @@ def create_gateway_app(
 
         if not code or not state:
             html = _callback_html_error(
-                "", "Missing code or state parameter. Please start the OAuth flow again."
+                "",
+                "Missing code or state parameter. Please start the OAuth flow again.",
             )
             return HTMLResponse(content=html, status_code=400)
 
@@ -2092,7 +2231,10 @@ def create_gateway_app(
         import re
 
         from hachi.integrations.connector_registry import get_connector
-        from hachi.integrations.oauth_flow import connector_status, store_apikey_credential
+        from hachi.integrations.oauth_flow import (
+            connector_status,
+            store_apikey_credential,
+        )
 
         if not re.match(r"^[a-z0-9_-]+$", connector_id):
             return _error_response(400, "invalid_connector_id", "Connector id is not valid")
@@ -2138,7 +2280,10 @@ def create_gateway_app(
             # in registry.py (another lane); we only persist the TOML value here.
             if connector_id == "tavily":
                 try:
-                    from hachi.core.config_loader import load_effective_config, write_global_config
+                    from hachi.core.config_loader import (
+                        load_effective_config,
+                        write_global_config,
+                    )
 
                     _cfg = load_effective_config()
                     if _cfg.search.provider != "tavily":
@@ -2250,10 +2395,16 @@ def create_gateway_app(
                         timeout=8.0,
                     )
                     if resp.status_code == 200:
-                        return {"ok": True, "message": "Tavily reachable — API key is valid."}
+                        return {
+                            "ok": True,
+                            "message": "Tavily reachable — API key is valid.",
+                        }
                     if resp.status_code in (401, 403):
                         return {"ok": False, "message": "Tavily rejected the API key."}
-                    return {"ok": False, "message": f"Tavily returned HTTP {resp.status_code}."}
+                    return {
+                        "ok": False,
+                        "message": f"Tavily returned HTTP {resp.status_code}.",
+                    }
                 if connector_id == "telegram":
                     token = _resolve_secret("telegram_bot_token")
                     if not token:
@@ -2263,7 +2414,10 @@ def create_gateway_app(
                     resp = httpx.get(f"https://api.telegram.org/bot{token}/getMe", timeout=8.0)
                     if resp.status_code == 200 and resp.json().get("ok"):
                         name = resp.json().get("result", {}).get("username", "bot")
-                        return {"ok": True, "message": f"Telegram bot @{name} reachable."}
+                        return {
+                            "ok": True,
+                            "message": f"Telegram bot @{name} reachable.",
+                        }
                     return {"ok": False, "message": "Telegram rejected the bot token."}
                 # Generic: confirm a credential is present; no live probe available.
                 from hachi.integrations.oauth_flow import connector_status
@@ -2274,7 +2428,10 @@ def create_gateway_app(
                         "ok": True,
                         "message": "Credential stored; live test not available for this connector.",
                     }
-                return {"ok": False, "message": "No credential configured for this connector."}
+                return {
+                    "ok": False,
+                    "message": "No credential configured for this connector.",
+                }
             except Exception as exc:  # never leak secrets or stack traces to the client
                 return {"ok": False, "message": f"Test failed: {type(exc).__name__}"}
 
@@ -2293,7 +2450,10 @@ def create_gateway_app(
         import re
 
         from hachi.integrations.connector_registry import get_connector
-        from hachi.integrations.oauth_flow import clear_apikey_credentials, connector_status
+        from hachi.integrations.oauth_flow import (
+            clear_apikey_credentials,
+            connector_status,
+        )
 
         if not re.match(r"^[a-z0-9_-]+$", connector_id):
             return _error_response(400, "invalid_connector_id", "Connector id is not valid")
@@ -2325,18 +2485,36 @@ def create_gateway_app(
 
     runs_router = APIRouter(prefix="/runs", tags=["runs"], dependencies=protected_dependencies)
 
+    def _check_run_ownership(run_session_id: str, caller_hash: str | None) -> None:
+        """H6: apply the same owner filter that ``/sessions`` already enforces.
+
+        A durable run belongs to whichever session created it — reuse
+        ``_check_session_ownership`` against ``run.session_id`` so a caller who
+        doesn't own the run's session gets the identical 403 policy (NULL owner /
+        no-auth mode = allowed, for backward compat with legacy/ownerless runs).
+        """
+        _check_session_ownership(run_session_id, caller_hash)
+
     @runs_router.get("", summary="List recent durable runs")
-    async def get_runs(limit: int = Query(default=100, ge=1, le=500)) -> Any:
-        """Return recent durable runs across all sessions, newest first."""
+    async def get_runs(request: Request, limit: int = Query(default=100, ge=1, le=500)) -> Any:
+        """Return recent durable runs across all sessions the caller owns, newest first."""
         from hachi.core.runtime.state import RunStateView
         from hachi.core.runtime.store import RunStateStore
 
+        caller_hash = _require_auth(request)
         store = RunStateStore()
         runs = store.list_all(limit=limit)
+        if caller_hash is not None:
+            runs = [
+                r
+                for r in runs
+                if (owner := control_plane.get_session_owner(r.session_id)) is None
+                or secrets.compare_digest(owner, caller_hash)
+            ]
         return {"runs": [RunStateView.from_run_state(r).model_dump() for r in runs]}
 
     @runs_router.get("/{run_id}", summary="Get a durable run by ID")
-    async def get_run(run_id: str) -> Any:
+    async def get_run(run_id: str, request: Request) -> Any:
         """Return a single RunState by run_id.  404 if not found."""
         from hachi.core.runtime.state import RunStateView
         from hachi.core.runtime.store import RunStateStore
@@ -2345,10 +2523,13 @@ def create_gateway_app(
         run = store.get(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
+        _check_run_ownership(run.session_id, _require_auth(request))
         return RunStateView.from_run_state(run).model_dump()
 
     @runs_router.post("/{run_id}/wake", summary="Wake a WAITING run")
-    async def post_run_wake(run_id: str, body: dict[str, Any] | None = None) -> Any:
+    async def post_run_wake(
+        run_id: str, request: Request, body: dict[str, Any] | None = None
+    ) -> Any:
         """Wake a WAITING run by resolving its wait condition.
 
         The run transitions WAITING→RUNNING and the resumed turn is started in the
@@ -2369,6 +2550,7 @@ def create_gateway_app(
         run = store.get(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
+        _check_run_ownership(run.session_id, _require_auth(request))
         if run.status != RunStatus.WAITING:
             raise HTTPException(
                 status_code=409,
@@ -2412,7 +2594,7 @@ def create_gateway_app(
         return {"status": "waking", "run_id": run_id, "source": source}
 
     @runs_router.delete("/{run_id}", summary="Cancel a durable run")
-    async def delete_run(run_id: str) -> Any:
+    async def delete_run(run_id: str, request: Request) -> Any:
         """Cancel a durable run (sets status to CANCELLED and disarms its wait).
 
         Idempotent: cancelling an already-terminal run returns 200 with the
@@ -2427,10 +2609,15 @@ def create_gateway_app(
         run = store.get(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
+        _check_run_ownership(run.session_id, _require_auth(request))
 
         terminal = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
         if run.status in terminal:
-            return {"run_id": run_id, "status": run.status.value, "note": "already terminal"}
+            return {
+                "run_id": run_id,
+                "status": run.status.value,
+                "note": "already terminal",
+            }
 
         get_wait_registry().disarm(run_id)
         run = run.model_copy(update={"status": RunStatus.CANCELLED, "updated_at": now_iso()})
@@ -2675,9 +2862,15 @@ def create_gateway_app(
         except Exception as exc:  # noqa: BLE001
             _log.warning("TTS synthesis failed: %s", exc)
             return _error_response(
-                500, "synthesis_error", "Synthesis failed, check voice provider configuration"
+                500,
+                "synthesis_error",
+                "Synthesis failed, check voice provider configuration",
             )
-        return StreamingResponse(chunk_iter, media_type=media_type)
+        return StreamingResponse(
+            chunk_iter,
+            media_type=media_type,
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        )
 
     @voice_router.get("/config", summary="Get voice configuration")
     async def route_voice_config() -> Any:
@@ -2697,7 +2890,9 @@ def create_gateway_app(
     # ==========================================
 
     interactions_router = APIRouter(
-        prefix="/interactions", tags=["interactions"], dependencies=protected_dependencies
+        prefix="/interactions",
+        tags=["interactions"],
+        dependencies=protected_dependencies,
     )
 
     @interactions_router.get("", response_model=InteractionListResponse)

@@ -2797,3 +2797,34 @@ failed) is unaffected.
 the user is weighing it). Ratchet deptry/vulture/complexity/adr-lint advisory→blocking as baselines
 hold. Decide the 4 unused SDK extras. Investigate the `og_engine/engine.py:638` ternary. Uncommitted
 on `main` at time of writing.
+
+## B10 — Episodic recall offloaded from inline turn path (`perf/streaming-optimizations`, 2026-06-28)
+
+**Context.** Prior to this change `_chat_impl_inner` ran two synchronous vault calls on every turn:
+`semantic_search` (already in the background prefetch) **and** `search_episodic` (always inline,
+never prefetched). The episodic call added measurable latency to the turn-start hot path, especially
+on slower machines where ChromaDB I/O isn't cached.
+
+**Decision.** Move `search_episodic` into `_run_prefetch_job` alongside `semantic_search`.
+Both calls now run in the background job queue between turns (turns 2+). Turn 1 keeps both calls
+inline because no prefetch result exists yet — this is the correct fallback and is tested.
+
+**Tradeoff — previous-query staleness.** On turns 2+, episodic recall uses the *previous* turn's
+query (enqueued at the end of turn N, consumed at the start of turn N+1). This means the episodic
+context in turn N+1 is semantically matched to turn N's question, not turn N+1's. In practice
+this is acceptable because:
+- Episodic results are long-term memory (prior sessions), not turn-sensitive context.
+- The 1-turn lag is almost always invisible; topics rarely pivot between consecutive turns.
+- Turn 1 is always exact (inline fallback).
+
+**What to watch for.** If users report that recalled episode summaries feel irrelevant on the first
+message of a new topic (turn 2+), the root cause is this lag. Fix: run a second inline episodic call
+when the semantic similarity between consecutive queries drops below a threshold — but that adds
+complexity; defer until a real complaint surfaces.
+
+**Implementation.** `src/hachi/gateway/orchestrator.py`:
+- `_run_prefetch_job` (~line 1203): episodic block added after semantic block; id-keyed dedup.
+- `_chat_impl_inner` (~line 1582): turn-1 inline fallback now handles both semantic + episodic with
+  the same id-keyed dedup. The old always-synchronous standalone episodic block was removed.
+
+**Locked by.** `tests/test_b10_episodic_recall_offload.py` (10 tests).

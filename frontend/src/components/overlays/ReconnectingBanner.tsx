@@ -32,7 +32,7 @@ export function ReconnectingBanner() {
 
   const textStyle: CSSProperties = {
     fontSize: 13,
-    color: '#A8651A',
+    color: 'var(--hachi-working-fg)',
     fontWeight: 500,
   };
 

@@ -77,20 +77,23 @@ export function RunCard({ title, status, progress, spent, budget, meta, onClick 
     return `$${n.toFixed(2)}`;
   }
 
-  function handleMouseEnter(e: React.MouseEvent<HTMLDivElement>) {
-    if (onClick) e.currentTarget.style.borderColor = 'var(--hachi-brand)';
-  }
-
-  function handleMouseLeave(e: React.MouseEvent<HTMLDivElement>) {
-    if (onClick) e.currentTarget.style.borderColor = 'var(--hachi-line)';
-  }
-
   return (
     <div
+      className={onClick ? 'hachi-card-clickable' : undefined}
       style={cardStyle}
       onClick={onClick}
-      onMouseEnter={onClick ? handleMouseEnter : undefined}
-      onMouseLeave={onClick ? handleMouseLeave : undefined}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
     >
       {/* thin Torii-red progress bar at top */}
       <div style={trackStyle}>

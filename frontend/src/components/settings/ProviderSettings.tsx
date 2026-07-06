@@ -116,6 +116,9 @@ function ProviderCard({
   const [status, setStatus] = useState<boolean | null>(null);
   const [detail, setDetail] = useState<string | undefined>(undefined);
   const [testing, setTesting] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current); }, []);
 
   const isPrimary = provider.name === '__primary__';
   const noKey = NO_KEY_KINDS.has(provider.kind);
@@ -129,6 +132,28 @@ function ProviderCard({
     setStatus(r.ok);
     if (!r.ok) setDetail(r.detail);
     setTesting(false);
+  }
+
+  // Removing a provider is destructive with no undo — arm on first click,
+  // require a second click (or Escape/blur, or a 4s timeout) to confirm.
+  function handleRemoveClick() {
+    if (!confirmRemove) {
+      setConfirmRemove(true);
+      confirmTimerRef.current = setTimeout(() => setConfirmRemove(false), 4000);
+      return;
+    }
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmRemove(false);
+    onRemove(provider.name);
+  }
+  function handleRemoveBlur() {
+    setConfirmRemove(false);
+  }
+  function handleRemoveKeyDown(e: React.KeyboardEvent<HTMLButtonElement>) {
+    if (e.key === 'Escape' && confirmRemove) {
+      e.stopPropagation();
+      setConfirmRemove(false);
+    }
   }
 
   // Resolve the status line: testing → connected/failed → needs-key → idle.
@@ -304,11 +329,21 @@ function ProviderCard({
         {!isPrimary && (
           <button
             type="button"
-            style={{ ...actionBtn, color: 'var(--hachi-danger)', marginLeft: 'auto' }}
-            aria-label={`Remove ${displayName}`}
-            onClick={() => onRemove(provider.name)}
+            style={{
+              ...actionBtn,
+              color: 'var(--hachi-danger)',
+              marginLeft: 'auto',
+              background: confirmRemove ? 'var(--hachi-danger-tint)' : actionBtn.background,
+              border: confirmRemove ? '0.5px solid var(--hachi-danger)' : actionBtn.border,
+            }}
+            aria-label={confirmRemove ? `Confirm remove ${displayName}` : `Remove ${displayName}`}
+            title={confirmRemove ? 'Click again to confirm removal' : 'Remove provider'}
+            onClick={handleRemoveClick}
+            onBlur={handleRemoveBlur}
+            onKeyDown={handleRemoveKeyDown}
           >
             <Icon name="trash" size={12} />
+            {confirmRemove && <span>Remove?</span>}
           </button>
         )}
       </div>

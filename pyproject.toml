@@ -66,16 +66,6 @@ dev = [
     "deptry>=0.20.0",
     "vulture>=2.11",
 ]
-google = [
-    "google-auth>=2.53.0",
-    "google-api-python-client>=2.154.0",
-]
-notion = [
-    "notion-client>=2.2.1",
-]
-slack = [
-    "slack-sdk>=3.33.3",
-]
 memory = [
     "chromadb>=1.5.9",
 ]
@@ -240,7 +230,7 @@ ignore_imports = [
     # that have no engine-level home yet. All lazy except onboarding. Burn down by
     # introducing a GatewayControlPlane protocol owned by core.
     "hachi.core.onboarding -> hachi.gateway.workspace",
-    "hachi.core.cost -> hachi.gateway.orchestrator",
+    "hachi.core.cost -> hachi.gateway.shared_services",
     "hachi.core.runtime.job_handlers -> hachi.gateway.orchestrator",
     "hachi.core.runtime.resume -> hachi.gateway.shared_services",
     "hachi.tools.config_tools -> hachi.gateway.workspace",
@@ -265,8 +255,6 @@ optional_dependencies_dev_groups = ["dev", "security"]
 [tool.deptry.package_module_name_map]
 # Distributions whose import name differs from the package name, so deptry can match
 # the lazy import in an integration/tool back to its declared extra.
-google-api-python-client = ["googleapiclient"]
-google-auth = ["google"]
 python-docx = ["docx"]
 python-pptx = ["pptx"]
 python-multipart = ["multipart"]
@@ -296,10 +284,6 @@ ignore_names = ["visit_*", "on_*", "test_*", "exc_type", "exc_val", "exc_tb"]
 #                      tavily_provider.py; a dynamic import static analysis cannot see.
 #   python-multipart — provides the `multipart` module Starlette imports to parse form/file
 #                      uploads; a runtime dep of the gateway, never imported by Hachi directly.
-# NOTE: slack-sdk, notion-client, google-auth, google-api-python-client are deliberately
-# NOT ignored — they are declared extras whose SDKs are imported NOWHERE in the repo (the
-# integrations use httpx). deptry surfaces them as advisory findings pending a decision to
-# either drop the extras or keep them as intentional optional installs (then freeze here).
 DEP002 = ["tzdata", "tavily-python", "python-multipart"]
 # DEP003 (transitive): anyio is used directly but supplied transitively by
 # fastapi/anthropic; a top-level pin buys nothing.

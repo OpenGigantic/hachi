@@ -116,6 +116,7 @@ class GatewayControlPlane:
         list_schedules: Callable[[], list[dict[str, Any]]] | None = None,
         cancel_schedule: Callable[[str], dict[str, Any]] | None = None,
         toggle_schedule: Callable[[str, bool], dict[str, Any]] | None = None,
+        run_schedule_now: Callable[[str], dict[str, Any]] | None = None,
         get_skills: Callable[[], list[dict[str, Any]]] | None = None,
         get_memory: Callable[[], dict[str, Any]] | None = None,
         get_memory_recall: Callable[[str, int], list[dict[str, Any]]] | None = None,
@@ -191,6 +192,7 @@ class GatewayControlPlane:
         self._list_schedules = list_schedules
         self._cancel_schedule = cancel_schedule
         self._toggle_schedule = toggle_schedule
+        self._run_schedule_now = run_schedule_now
         self._get_skills = get_skills
         self._get_memory = get_memory
         self._get_memory_recall = get_memory_recall
@@ -439,12 +441,24 @@ class GatewayControlPlane:
             "response": response.response,
         }
 
-    def get_or_create_session(self, session_key: str = "__default__") -> str:
+    def get_or_create_session(
+        self, session_key: str = "__default__", *, owner_token_hash: str | None = None
+    ) -> str:
         """Return the session_id for ``session_key``, creating it if necessary.
 
         Extracted from ``complete_chat`` so the streaming path can obtain the
         session_id before launching a background turn, enabling event polling
         while the turn runs.
+
+        Args:
+            session_key: The facade key (e.g. ``f"{channel}:{sender}"`` or the
+                OpenAI-compat chat id) mapped to a real session_id.
+            owner_token_hash: H6 — sha256 hex-digest of the caller's bearer
+                token, stamped as the owner the first time this session_key is
+                created, exactly like the normal ``POST /sessions`` route
+                does via ``set_session_owner``. ``None`` (no-auth mode / no
+                caller context) leaves the session ownerless, matching legacy
+                behaviour.
         """
         with self._connections_lock:
             session_id = self._api_sessions.get(session_key)
@@ -459,18 +473,33 @@ class GatewayControlPlane:
             session_id = created["session_id"]
             with self._connections_lock:
                 self._api_sessions[session_key] = session_id
+            # H6: stamp ownership immediately, mirroring the /sessions create route —
+            # facade sessions (OpenAI-compat, channel-inbound) must not be ownerless.
+            if owner_token_hash is not None:
+                self.set_session_owner(session_id, owner_token_hash)
         assert session_id is not None, "session_id must be set after get_or_create_session"
         return session_id
 
-    def complete_chat(self, prompt: str, *, session_key: str = "__default__") -> dict[str, Any]:
+    def complete_chat(
+        self,
+        prompt: str,
+        *,
+        session_key: str = "__default__",
+        owner_token_hash: str | None = None,
+    ) -> dict[str, Any]:
         """Run a prompt through an auto-managed session keyed by ``session_key``.
 
         Powers stateless-looking facades (OpenAI-compatible endpoint, channel
         webhooks) that don't manage sessions themselves: the first call for a key
         creates a session (booting an agent via on_connect), subsequent calls
         reuse it so the conversation keeps continuity.
+
+        Args:
+            owner_token_hash: H6 — forwarded to ``get_or_create_session`` so a
+                freshly-created facade session is stamped with the caller's
+                identity instead of staying ownerless.
         """
-        session_id = self.get_or_create_session(session_key)
+        session_id = self.get_or_create_session(session_key, owner_token_hash=owner_token_hash)
         return self.send_message(session_id=session_id, prompt=prompt)
 
     def close_session(self, session_id: str) -> dict[str, Any]:
@@ -824,6 +853,11 @@ class GatewayControlPlane:
         if self._toggle_schedule is None:
             return {"ok": False, "detail": "schedules not available"}
         return self._toggle_schedule(schedule_id, enabled)
+
+    def run_schedule_now(self, schedule_id: str) -> Any:
+        if self._run_schedule_now is None:
+            return {"ok": False, "detail": "schedules not available"}
+        return self._run_schedule_now(schedule_id)
 
     # ==========================================
     # Web endpoint handlers — added for web UI (#1–#6)

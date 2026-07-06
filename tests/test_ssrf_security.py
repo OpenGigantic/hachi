@@ -69,13 +69,26 @@ class TestNetGuardSsrfCoverage:
 
 
 class TestRestAdapterSsrfDelegation:
-    """UniversalRestAdapter._validate_outbound_url must go through net_guard."""
+    """UniversalRestAdapter._validate_outbound_url must go through net_guard.
 
-    def _make_adapter(self, allow_private: bool = False) -> object:
+    BB-53: an unset ``HACHI_REST_ALLOWLIST`` must fail CLOSED (deny all hosts),
+    not fail open. These tests exercise net_guard's own IP/scheme checks, so
+    they pass an explicit allowlist covering the host under test — this is the
+    secure equivalent of "no allowlist configured" for a test that wants to
+    reach net_guard rather than being short-circuited by the allowlist gate.
+    """
+
+    def _make_adapter(
+        self, allow_private: bool = False, allowed_hosts: list[str] | None = None
+    ) -> object:
         from hachi.core.rest_adapter import UniversalRestAdapter
 
         registry = ToolRegistry()
-        adapter = UniversalRestAdapter(registry)
+        adapter = UniversalRestAdapter(
+            registry,
+            allowed_hosts=allowed_hosts
+            or ["1.1.1.1", "127.0.0.1", "169.254.169.254", "192.168.0.1", "10.0.0.5"],
+        )
         adapter._allow_private_egress = allow_private
         return adapter
 
@@ -83,7 +96,12 @@ class TestRestAdapterSsrfDelegation:
         adapter = self._make_adapter()
         error, _ = adapter._validate_outbound_url("http://127.0.0.1/admin", includes_secret=False)
         assert error is not None
-        assert "127.0.0.1" in error or "non-public" in error or "loopback" in error.lower() or "private" in error.lower()  # noqa: E501
+        assert (
+            "127.0.0.1" in error
+            or "non-public" in error
+            or "loopback" in error.lower()
+            or "private" in error.lower()
+        )  # noqa: E501
 
     def test_blocks_metadata_endpoint(self) -> None:
         adapter = self._make_adapter()
@@ -130,10 +148,27 @@ class TestRestAdapterSsrfDelegation:
 
         registry = ToolRegistry()
         adapter = UniversalRestAdapter(registry, allowed_hosts=["api.allowed.com"])
-        error, _ = adapter._validate_outbound_url(
-            "http://other-host.com/", includes_secret=False
-        )
+        error, _ = adapter._validate_outbound_url("http://other-host.com/", includes_secret=False)
         assert error is not None
+        assert "HACHI_REST_ALLOWLIST" in error
+
+    def test_unset_allowlist_env_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """BB-53: with HACHI_REST_ALLOWLIST unset, requests to an arbitrary public host
+        must be DENIED (fail closed), not permitted (fail open)."""
+        from hachi.core.rest_adapter import UniversalRestAdapter
+
+        monkeypatch.delenv("HACHI_REST_ALLOWLIST", raising=False)
+        registry = ToolRegistry()
+        adapter = UniversalRestAdapter(registry)
+        assert adapter.allowed_hosts == []
+
+        error, _ = adapter._validate_outbound_url(
+            "http://arbitrary-public-host.example.com/", includes_secret=False
+        )
+        assert error is not None, (
+            "An unset HACHI_REST_ALLOWLIST must deny outbound requests to any host, "
+            "not silently allow them"
+        )
         assert "HACHI_REST_ALLOWLIST" in error
 
 
@@ -227,9 +262,7 @@ class FakeControllerWithRedirectSimulation:
         # Simulate the per-hop guard aborting the redirect hop.
         ok, reason = validate_outbound_url(self.redirect_target, allow_private=allow_private)
         if not ok:
-            raise BrowserUnavailable(
-                f"Navigation aborted: redirect to blocked address ({reason})"
-            )
+            raise BrowserUnavailable(f"Navigation aborted: redirect to blocked address ({reason})")
         return {"url": url, "title": "Redirected"}
 
     def read(self, **_kwargs) -> dict:
@@ -254,8 +287,7 @@ def test_browse_web_surfaces_aborted_private_redirect(monkeypatch) -> None:
     assert "169.254.169.254" not in out or "Browser unavailable" in out or "aborted" in out.lower()
     # Must surface the failure, not silently succeed.
     assert any(
-        phrase in out
-        for phrase in ("Browser unavailable", "aborted", "Blocked", "blocked")
+        phrase in out for phrase in ("Browser unavailable", "aborted", "Blocked", "blocked")
     ), f"Expected failure message in output, got: {out!r}"
 
 

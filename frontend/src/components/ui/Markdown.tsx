@@ -639,8 +639,6 @@ const LANG_DISPLAY: Record<string, string> = {
   markdown: 'Markdown',
 }
 
-const RUNNABLE_LANGS = new Set(['python', 'py', 'js', 'javascript', 'ts', 'typescript'])
-
 function formatLang(lang: string): string {
   return LANG_DISPLAY[lang] ?? (lang ? lang.charAt(0).toUpperCase() + lang.slice(1) : 'Code')
 }
@@ -664,9 +662,15 @@ function CheckIcon(): JSX.Element {
   )
 }
 
-function CodeBlock({ lang, code }: { lang: string; code: string }): JSX.Element {
+// F1: memo prevents settled code blocks from re-rendering on every streaming token
+// in the active bubble. useMemo inside caches the highlight result so a fence
+// close (code unchanged, only block-open→closed) skips the tokenizer entirely.
+const CodeBlock = memo(function CodeBlock({ lang, code }: { lang: string; code: string }): JSX.Element {
   const [copied, setCopied] = useState(false)
   const copyBtnRef = useRef<HTMLButtonElement>(null)
+  const normalizedLang = lang.toLowerCase().trim()
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: cache on (code, normalizedLang)
+  const highlighted = useMemo(() => renderHighlighted(code, normalizedLang), [code, normalizedLang])
 
   const handleCopy = useCallback(() => {
     const write = async () => {
@@ -693,7 +697,6 @@ function CodeBlock({ lang, code }: { lang: string; code: string }): JSX.Element 
   }, [code])
 
   const displayLang = formatLang(lang)
-  const canRun = RUNNABLE_LANGS.has(lang)
 
   return (
     <div
@@ -735,8 +738,10 @@ function CodeBlock({ lang, code }: { lang: string; code: string }): JSX.Element 
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <button
             ref={copyBtnRef}
+            type="button"
             onClick={handleCopy}
             title={copied ? 'Copied!' : 'Copy code'}
+            aria-label={copied ? 'Copied to clipboard' : 'Copy code'}
             style={{
               background: copied ? 'var(--hachi-code-copied-bg)' : 'none',
               border: 'none',
@@ -761,31 +766,6 @@ function CodeBlock({ lang, code }: { lang: string; code: string }): JSX.Element 
               <CopyIcon />
             )}
           </button>
-
-          {canRun && (
-            <button
-              title="Run"
-              style={{
-                background: 'none',
-                border: '1px solid rgba(255,255,255,0.18)',
-                cursor: 'pointer',
-                padding: '2px 10px',
-                borderRadius: 12,
-                color: 'var(--hachi-code-icon)',
-                fontSize: '0.76em',
-                fontFamily: 'inherit',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 5,
-                lineHeight: 1.5,
-              }}
-            >
-              <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-                <path d="M2.5 1.5l8 4.5-8 4.5V1.5z" />
-              </svg>
-              Run
-            </button>
-          )}
         </div>
       </div>
 
@@ -801,11 +781,11 @@ function CodeBlock({ lang, code }: { lang: string; code: string }): JSX.Element 
           color: 'var(--hachi-code-text)',
         }}
       >
-        <code>{renderHighlighted(code, lang.toLowerCase().trim())}</code>
+        <code>{highlighted}</code>
       </pre>
     </div>
   )
-}
+})
 
 // ---- Render blocks --------------------------------------------------
 
@@ -817,7 +797,12 @@ function renderBlock(block: BlockNode, blockIdx: number): ReactNode {
       return <div key={key} style={{ height: '0.6em' }} />
 
     case 'heading': {
-      const Tag = `h${block.level}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'
+      // Offset the SEMANTIC tag so chat messages never emit a page-level <h1>/<h2>
+      // (each message could otherwise interleave real <h1>s with the app's own
+      // heading outline). The visual size still maps to the markdown level via
+      // headingStyle so a message's own heading hierarchy is preserved.
+      const semanticLevel = Math.min(block.level + 2, 6)
+      const Tag = `h${semanticLevel}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'
       return (
         <Tag key={key} style={headingStyle(block.level)}>
           {renderInline(block.text, key)}

@@ -165,3 +165,61 @@ def test_read_events_since_after_tip_is_empty() -> None:
     store = RuntimeReadModelStore()
     store.append_event(_ev("only", {}))
     assert store.read_events_since(after=1) == ()
+
+
+# --- B4 trim-underflow contract -------------------------------------------
+# These tests establish the correctness contract for the O(1) index
+# implementation.  A naive `start = after - base + 1` (no guard) would
+# silently return a wrong tail slice when `after < base_sequence` — a
+# condition that arises on any trimmed buffer (>2000 events appended).
+
+
+def test_read_events_since_empty_buffer_returns_empty() -> None:
+    """Empty buffer must return an empty tuple without indexing errors (B4)."""
+    store = RuntimeReadModelStore()
+    assert store.read_events_since(after=0) == ()
+    assert store.read_events_since(after=999) == ()
+
+
+def test_read_events_since_on_trimmed_buffer_returns_oldest_surviving_event() -> None:
+    """after=0 on a trimmed buffer must return from the oldest surviving event (B4).
+
+    After 2001 appends the buffer trims to the last 2000 (sequences 2..2001).
+    A client polling with after=0 must receive the oldest survivor (seq=2),
+    NOT an out-of-bounds tail slice.
+    """
+    store = RuntimeReadModelStore()
+    # Trigger a trim: append > 2000 events.
+    for i in range(2001):
+        store.append_event(_ev(f"e{i}", {}))
+    # Buffer now holds events with sequences 2..2001 (oldest trimmed away).
+    result = store.read_events_since(after=0, limit=5)
+    assert len(result) == 5
+    # The oldest surviving event has sequence 2, not 1.
+    assert result[0].sequence == 2
+    assert result[0].name == "e1"
+
+
+def test_read_events_since_stale_after_clamps_to_oldest_surviving() -> None:
+    """after far below base must not wrap to a wrong tail slice (B4 underflow guard)."""
+    store = RuntimeReadModelStore()
+    for i in range(2001):
+        store.append_event(_ev(f"e{i}", {}))
+    # Client is very stale: requests events after sequence 0 (below the trim boundary).
+    result = store.read_events_since(after=0)
+    # Must start from seq=2 (oldest surviving), not from end-of-buffer.
+    assert result[0].sequence == 2
+    # Must NOT return a tail slice (the wrong wrap behaviour would yield seq~2001).
+    assert result[0].sequence < 100
+
+
+def test_read_events_since_parity_with_scan_after_trim() -> None:
+    """O(1) result must equal the O(N) scan reference after a trim (B4 parity)."""
+    store = RuntimeReadModelStore()
+    for i in range(2010):
+        store.append_event(_ev(f"ev{i}", {}))
+    # Spot-check a cursor in the middle of the surviving window.
+    cursor = 1500  # well below trim point 2010 - 2000 + 1 = 11
+    reference = tuple(s for s in store._events if s.sequence > cursor)[:100]
+    result = store.read_events_since(after=cursor, limit=100)
+    assert result == reference
