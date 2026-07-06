@@ -12,10 +12,10 @@ budget.exceeded event when _daily_cap_exceeded() fires.
 
 from __future__ import annotations
 
-import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from hachi.core.cost import today_utc_str
 from hachi.core.session_store import SessionStore
 from hachi.gateway.orchestrator import AgentSession
 
@@ -63,7 +63,7 @@ class TestDailyCapExceeded:
     def test_returns_none_when_under_cap(self, tmp_path: Path) -> None:
         """Spend below cap → None (turn allowed)."""
         store = _real_store(tmp_path)
-        today = datetime.date.today().isoformat()
+        today = today_utc_str()
         store.record_daily_cost(today, 0.50)
 
         sess = _session_with_daily_cap(store=store, max_daily_cost_usd=5.00)
@@ -73,7 +73,7 @@ class TestDailyCapExceeded:
     def test_returns_reason_when_spend_equals_cap(self, tmp_path: Path) -> None:
         """Spend exactly equal to cap → reason string returned (>= comparison)."""
         store = _real_store(tmp_path)
-        today = datetime.date.today().isoformat()
+        today = today_utc_str()
         store.record_daily_cost(today, 5.00)
 
         sess = _session_with_daily_cap(store=store, max_daily_cost_usd=5.00)
@@ -86,7 +86,7 @@ class TestDailyCapExceeded:
     def test_returns_reason_when_spend_exceeds_cap(self, tmp_path: Path) -> None:
         """Spend over cap → reason string returned."""
         store = _real_store(tmp_path)
-        today = datetime.date.today().isoformat()
+        today = today_utc_str()
         store.record_daily_cost(today, 2.00)
         store.record_daily_cost(today, 1.00)  # total 3.00, cap 2.50
 
@@ -119,7 +119,7 @@ class TestDailyCapExceeded:
     def test_uses_today_iso_date_matching_record_side(self, tmp_path: Path) -> None:
         """get_daily_spend is called with today's ISO date — same key record_daily_cost uses."""
         store = _real_store(tmp_path)
-        today = datetime.date.today().isoformat()
+        today = today_utc_str()
         store.record_daily_cost(today, 10.0)
 
         sess = _session_with_daily_cap(store=store, max_daily_cost_usd=1.00)
@@ -155,7 +155,7 @@ class TestChatImplInnerDailyCapRefusal:
     ) -> AgentSession:
         """Build a minimal AgentSession that can run _chat_impl_inner up to the cap check."""
         store = _real_store(tmp_path)
-        today = datetime.date.today().isoformat()
+        today = today_utc_str()
         if daily_spend > 0:
             store.record_daily_cost(today, daily_spend)
 
@@ -210,7 +210,7 @@ class TestChatImplInnerDailyCapRefusal:
     def test_turn_runs_when_no_cap_configured(self, tmp_path: Path) -> None:
         """With max_daily_cost_usd=None, _daily_cap_exceeded is always None."""
         store = _real_store(tmp_path)
-        today = datetime.date.today().isoformat()
+        today = today_utc_str()
         store.record_daily_cost(today, 999.99)
 
         sess = _session_with_daily_cap(store=store, max_daily_cost_usd=None)

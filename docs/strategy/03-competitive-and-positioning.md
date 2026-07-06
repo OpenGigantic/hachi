@@ -1,5 +1,13 @@
 # Phase 3 — Competitive Position & the Switch Argument
 
+> **⚠️ Partly superseded (2026-07-05).** See
+> [`2026-07-05-competitive-review/`](2026-07-05-competitive-review/README.md) for the current landscape.
+> Two assumptions below no longer hold against live competitor docs: OpenClaw **now ships native memory**
+> (`MEMORY.md` + hybrid search) and Hermes **now ships governance/audit** (approval gating + append-only
+> Kanban log). "Governance + visibility" is therefore table stakes, not an open quadrant. The competitor
+> **security-incident** framing in this doc (CVE / exposed instances / marketplace incident) is out of
+> scope for the 2026-07-05 review, which discusses control only in product-feature terms.
+
 > **Historical document.** Written before the Hachi rename. References to
 > "Hachi", the `hachi` CLI, `HACHI_*` env vars, and `src/hachi/...` paths
 > below describe the project now called **Hachi** (package `hachi`, CLI `hachi`, dist

@@ -187,6 +187,21 @@ function humanizeNextRun(nextRun: string | null | undefined): string {
   }
 }
 
+function humanizeLastRun(lastRun: string | null | undefined): string | undefined {
+  if (!lastRun) return undefined;
+  try {
+    const d = new Date(lastRun);
+    const now = Date.now();
+    const diff = now - d.getTime();
+    if (diff < 60000) return "just now";
+    if (diff < 3600000) return `${Math.round(diff / 60000)}m ago`;
+    if (diff < 86400000) return `${Math.round(diff / 3600000)}h ago`;
+    return d.toLocaleDateString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return undefined;
+  }
+}
+
 function adaptSchedule(raw: GatewaySchedule): Routine {
   const numId = _idCounter(raw.schedule_id);
   _scheduleIdMap.set(numId, raw.schedule_id);
@@ -196,6 +211,7 @@ function adaptSchedule(raw: GatewaySchedule): Routine {
     title: raw.name || raw.task || raw.schedule_id,
     schedule: humanizeSchedule(raw),
     next: humanizeNextRun(raw.next_run),
+    last: humanizeLastRun(raw.last_run),
     cost: 0,
     paused: !raw.enabled,
   };
@@ -457,6 +473,39 @@ export async function cancelDurableRunLive(numericId: number): Promise<boolean> 
   try {
     await apiSend<unknown>("DELETE", `/runs/${encodeURIComponent(runId)}`);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Force-trigger a routine (schedule) immediately via
+ * POST /schedules/{id}/run-now.
+ *
+ * Applies the store's optimistic action (closes the detail panel + toast)
+ * first, exactly like pauseRoutineLive/deleteRoutineLive. When the numeric id
+ * doesn't map to a real gateway schedule (mock fixture, or live mode before
+ * loadWork() ever populated the map), the optimistic action alone is the
+ * whole behaviour — same fallback shape as pauseRoutineLive.
+ *
+ * Returns true when the gateway confirmed dispatch (`{ok: true}`), false
+ * otherwise (fixture id, gateway unavailable, or the gateway rejected it —
+ * e.g. no active session). Callers use the return value to show a live vs.
+ * generic toast.
+ */
+export async function runRoutineNowLive(numericId: number): Promise<boolean> {
+  useStore.getState().runRoutineNow(numericId);
+  if (USE_MOCKS) return false;
+
+  const scheduleId = _scheduleIdMap.get(numericId);
+  if (!scheduleId) return false; // fixture or unknown id — optimistic update was enough
+
+  try {
+    const result = await apiSend<{ ok: boolean; schedule_id?: string }>(
+      "POST",
+      `/schedules/${encodeURIComponent(scheduleId)}/run-now`
+    );
+    return Boolean(result?.ok);
   } catch {
     return false;
   }

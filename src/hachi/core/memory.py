@@ -703,8 +703,14 @@ class MemoryManager:
 
     @property
     def history(self) -> list[Message]:
-        """The current active conversation history (what gets sent to the LLM)."""
-        return self._history
+        """The current active conversation history (what gets sent to the LLM).
+
+        Returns a shallow snapshot copy taken under ``_history_lock`` so a
+        concurrent background compaction can never hand back a partially
+        rewritten list (BB-44).
+        """
+        with self._history_lock:
+            return list(self._history)
 
     @property
     def task_ledger(self) -> list[TaskRecord]:
@@ -727,7 +733,10 @@ class MemoryManager:
         if message.role == "user" and isinstance(message.content, str):
             self._last_user_query = message.content
 
-        self._history.append(message)
+        # BB-44: hold the lock across the append so a concurrent background
+        # compaction (apply_pending_compaction) can never interleave with it.
+        with self._history_lock:
+            self._history.append(message)
 
         # P2-1: Token-budget trigger (defense-in-depth before message-count trigger).
         # Runs estimate_token_count() only after every message to keep the common path
@@ -770,43 +779,50 @@ class MemoryManager:
         self._pending_compaction = False
         old_skill = getattr(self, "_pending_old_skill", None)
 
-        # Find where the old skill's messages end — everything before the
-        # most recent user message is considered "old context"
-        compact_boundary = self._find_safe_compact_boundary()
-        if compact_boundary <= 0:
-            return False
+        # BB-44: the boundary lookup, the old-messages read, and the final
+        # reassignment must form ONE atomic critical section — otherwise a
+        # concurrent _sliding_window_compact() (which holds the same lock for
+        # its own read-modify-write) can interleave and silently drop a
+        # tool_use/tool_result pair.
+        with self._history_lock:
+            # Find where the old skill's messages end — everything before the
+            # most recent user message is considered "old context"
+            compact_boundary = self._find_safe_compact_boundary()
+            if compact_boundary <= 0:
+                return False
 
-        # Extract old messages and build a compact summary
-        old_messages = self._history[:compact_boundary]
-        summary_parts = [f"[Compacted: previous task using skill '{old_skill}']"]
+            # Extract old messages and build a compact summary
+            old_messages = self._history[:compact_boundary]
+            summary_parts = [f"[Compacted: previous task using skill '{old_skill}']"]
 
-        for msg in old_messages:
-            if isinstance(msg.content, str) and msg.role == "assistant":
-                truncated = msg.content[:150].strip()
-                if truncated:
-                    summary_parts.append(f"Agent: {truncated}...")
+            for msg in old_messages:
+                if isinstance(msg.content, str) and msg.role == "assistant":
+                    truncated = msg.content[:150].strip()
+                    if truncated:
+                        summary_parts.append(f"Agent: {truncated}...")
 
-        compact_text = "\n".join(summary_parts[:8])
+            compact_text = "\n".join(summary_parts[:8])
 
-        # Log to task ledger
-        self._task_ledger.append(
-            TaskRecord(
-                skill_name=old_skill or "unknown",
-                user_query=self._last_user_query,
-                summary=f"Completed using {old_skill}",
+            # Log to task ledger
+            self._task_ledger.append(
+                TaskRecord(
+                    skill_name=old_skill or "unknown",
+                    user_query=self._last_user_query,
+                    summary=f"Completed using {old_skill}",
+                )
             )
-        )
 
-        # Replace old messages with a single compact message
-        self._history = [
-            Message(
-                role="user", content=f"[System: Previous task context compacted]\n{compact_text}"
-            ),
-            Message(
-                role="assistant",
-                content="Understood. Previous task context noted. Ready for the new task.",
-            ),
-        ] + self._history[compact_boundary:]
+            # Replace old messages with a single compact message
+            self._history = [
+                Message(
+                    role="user",
+                    content=f"[System: Previous task context compacted]\n{compact_text}",
+                ),
+                Message(
+                    role="assistant",
+                    content="Understood. Previous task context noted. Ready for the new task.",
+                ),
+            ] + self._history[compact_boundary:]
 
         self._skill_start_index = 2  # After the compact pair
         return True

@@ -59,12 +59,9 @@ describe('Markdown — fenced code blocks', () => {
     expect(html).toContain('print')
   })
 
-  it('renders the Run button only for runnable languages', () => {
-    const pyHtml = renderToString(<Markdown text={'```python\nx = 1\n```'} />)
-    expect(pyHtml).toContain('Run')
-
-    const shHtml = renderToString(<Markdown text={'```bash\necho hello\n```'} />)
-    expect(shHtml).not.toContain('Run')
+  it('gives the copy button an accessible name', () => {
+    const html = renderToString(<Markdown text={'```python\nx = 1\n```'} />)
+    expect(html).toContain('aria-label="Copy code"')
   })
 
   it('handles unclosed fenced block (streaming partial input) with isStreaming', () => {
@@ -147,6 +144,49 @@ describe('Markdown — streaming / isStreaming prop (FIX 1)', () => {
     const html = renderToString(<Markdown text="" />)
     // The wrapping div must have minHeight set (anti-FOUC)
     expect(html).toContain('min-height')
+  })
+})
+
+// F1 — CodeBlock memo correctness (BB: fence-memo trap)
+// CodeBlock is now wrapped in React.memo with useMemo on renderHighlighted.
+// These tests verify memo wrapping doesn't FOUC or change rendered output.
+describe('Markdown — CodeBlock memo (F1)', () => {
+  it('renders identical highlighted output on repeated renders of the same code', () => {
+    // If the memoization is unsafe (e.g. wrong deps) the two renders would differ.
+    const text = '```python\ndef greet(name: str) -> str:\n    return f"hi {name}"\n```'
+    const html1 = renderToString(<Markdown text={text} />)
+    const html2 = renderToString(<Markdown text={text} />)
+    expect(html1).toBe(html2)
+    // Highlight tokens should be present (span-split by tokenizer)
+    expect(html1).toContain('def')
+    expect(html1).toContain('greet')
+    expect(html1).toContain('return')
+  })
+
+  it('open-fence then close-fence produces same token spans (fence-memo trap)', () => {
+    // An open fence renders the code as a partial streaming block.
+    // When the fence closes the code content is identical — the useMemo cache
+    // must return the same highlighted output without a flicker (FOUC).
+    const partialCode = 'def greet(name: str) -> str:\n    return f"hi {name}"'
+    const openFence = `\`\`\`python\n${partialCode}`
+    const closedFence = `\`\`\`python\n${partialCode}\n\`\`\``
+
+    const htmlOpen = renderToString(<Markdown text={openFence} isStreaming />)
+    const htmlClosed = renderToString(<Markdown text={closedFence} />)
+
+    // Both renders must produce the same Python syntax tokens — no FOUC on close.
+    expect(htmlOpen).toContain('def')
+    expect(htmlOpen).toContain('greet')
+    expect(htmlClosed).toContain('def')
+    expect(htmlClosed).toContain('greet')
+    // The highlighted spans for the shared prefix must be structurally identical.
+    // Extract the <code> body from each and compare token presence.
+    const extractSpans = (html: string) =>
+      Array.from(html.matchAll(/<span[^>]*>([^<]+)<\/span>/g)).map((m) => m[1])
+    const openSpans = extractSpans(htmlOpen)
+    const closedSpans = extractSpans(htmlClosed)
+    // Every token in the open render must appear in the closed render.
+    openSpans.forEach((tok) => expect(closedSpans).toContain(tok))
   })
 })
 

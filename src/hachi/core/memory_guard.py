@@ -4,8 +4,16 @@ Scans inbound memory content for prompt-injection and role-hijack patterns
 before it reaches long-term storage. The scanner uses layered checks:
 
 1. Unicode hygiene (invisible/control characters)
-2. Canonical normalization for obfuscation-resistant matching
-3. Weighted threat scoring across multiple indicator families
+2. Canonical normalization (NFKC) so some obfuscated variants still match
+3. Weighted threat scoring across a small set of English-language indicator
+   families (see ``_THREAT_SIGNALS``)
+
+This is a fast, deterministic, defense-in-depth heuristic — a handful of
+regexes, not a comprehensive prompt-injection classifier. It is NOT
+resistant to non-English phrasing, homoglyph substitution beyond NFKC
+normalization, or encoded payloads (e.g. base64). Do not treat a clean
+``scan()`` result as a guarantee that content is safe; it is one signal
+among several (see M8 in ``docs/audit/2026-07-03/PRODUCTION_READINESS.md``).
 
 The public API remains ``scan(content) -> (is_safe, threat_id)``.
 """

@@ -32,8 +32,6 @@ function fmtTokens(n: number | null): string {
 function InteractionCard({ ix }: { ix: AgentInteraction }) {
   const [notesOpen, setNotesOpen] = useState(false);
   const [notesValue, setNotesValue] = useState(ix.notes ?? '');
-  const [upHover, setUpHover] = useState(false);
-  const [downHover, setDownHover] = useState(false);
 
   async function handleRate(r: 'up' | 'down') {
     await rateInteraction(ix.id, r, notesValue.trim() || undefined);
@@ -197,11 +195,10 @@ function InteractionCard({ ix }: { ix: AgentInteraction }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
         <button
           type="button"
+          className="hachi-rating-btn"
           aria-label="Thumbs up"
           aria-pressed={ix.rating === 'up'}
           onClick={() => void handleRate('up')}
-          onMouseEnter={() => setUpHover(true)}
-          onMouseLeave={() => setUpHover(false)}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -210,11 +207,7 @@ function InteractionCard({ ix }: { ix: AgentInteraction }) {
             padding: '0 12px',
             borderRadius: 10,
             border: ix.rating === 'up' ? '1px solid var(--hachi-trust)' : '0.5px solid var(--hachi-line)',
-            background: ix.rating === 'up'
-              ? 'var(--hachi-trust-tint)'
-              : upHover
-                ? 'var(--hachi-cream)'
-                : 'var(--hachi-canvas)',
+            background: ix.rating === 'up' ? 'var(--hachi-trust-tint)' : undefined,
             color: ix.rating === 'up' ? 'var(--hachi-trust)' : 'var(--hachi-muted)',
             font: '500 12px var(--font-body)',
             cursor: 'pointer',
@@ -227,11 +220,10 @@ function InteractionCard({ ix }: { ix: AgentInteraction }) {
 
         <button
           type="button"
+          className="hachi-rating-btn"
           aria-label="Thumbs down"
           aria-pressed={ix.rating === 'down'}
           onClick={() => void handleRate('down')}
-          onMouseEnter={() => setDownHover(true)}
-          onMouseLeave={() => setDownHover(false)}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -242,9 +234,7 @@ function InteractionCard({ ix }: { ix: AgentInteraction }) {
             border: ix.rating === 'down' ? '1px solid var(--hachi-danger, #c0392b)' : '0.5px solid var(--hachi-line)',
             background: ix.rating === 'down'
               ? 'color-mix(in srgb, var(--hachi-danger, #c0392b) 10%, transparent)'
-              : downHover
-                ? 'var(--hachi-cream)'
-                : 'var(--hachi-canvas)',
+              : undefined,
             color: ix.rating === 'down' ? 'var(--hachi-danger, #c0392b)' : 'var(--hachi-muted)',
             font: '500 12px var(--font-body)',
             cursor: 'pointer',
@@ -302,6 +292,7 @@ function InteractionCard({ ix }: { ix: AgentInteraction }) {
             value={notesValue}
             onChange={(e) => setNotesValue(e.target.value)}
             placeholder="Add a note about this turn…"
+            aria-label="Add a note about this turn"
             rows={2}
             style={{
               flex: 1,

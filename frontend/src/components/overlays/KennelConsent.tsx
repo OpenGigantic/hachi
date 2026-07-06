@@ -98,6 +98,7 @@ function KennelBrowsePanel({
           </h2>
           <button
             type="button"
+            className="hachi-ghost-icon-btn-bg"
             onClick={onClose}
             aria-label="Close kennel browser"
             style={{
@@ -108,12 +109,6 @@ function KennelBrowsePanel({
               display: 'inline-flex',
               padding: 6,
               borderRadius: 8,
-            }}
-            onMouseEnter={(e) => {
-              ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)'
-            }}
-            onMouseLeave={(e) => {
-              ;(e.currentTarget as HTMLButtonElement).style.background = 'transparent'
             }}
           >
             <Icon name="x" size={16} />
@@ -151,10 +146,9 @@ function KennelBrowseRow({
   item: KennelItem;
   onSelect: (item: KennelItem) => void;
 }) {
-  const [hov, setHov] = useState(false);
-
   return (
     <div
+      className="hachi-kennel-browse-row"
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -162,11 +156,9 @@ function KennelBrowseRow({
         padding: '12px 14px',
         borderRadius: 12,
         border: '0.5px solid var(--hachi-line)',
-        background: hov ? 'var(--hachi-cream)' : 'var(--hachi-canvas)',
+        background: 'var(--hachi-canvas)',
         transition: 'background var(--dur-fast) var(--ease)',
       }}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
     >
       <span style={{ color: 'var(--hachi-trust)', display: 'inline-flex', flexShrink: 0 }}>
         <Icon name={item.icon} size={18} />
@@ -177,6 +169,7 @@ function KennelBrowseRow({
       </div>
       <button
         type="button"
+        className="hachi-kennel-browse-add-btn"
         onClick={() => onSelect(item)}
         style={{
           height: 32,
@@ -188,12 +181,6 @@ function KennelBrowseRow({
           font: '500 13px var(--font-body)',
           cursor: 'pointer',
           flexShrink: 0,
-        }}
-        onMouseEnter={(e) => {
-          ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-cream)'
-        }}
-        onMouseLeave={(e) => {
-          ;(e.currentTarget as HTMLButtonElement).style.background = 'var(--hachi-surface)'
         }}
       >
         Add
@@ -215,6 +202,19 @@ export function KennelConsent() {
   const isOpen = kc !== null;
   const trapRef = useFocusTrap<HTMLDivElement>(isOpen);
 
+  // Close on Escape. Hooks must run unconditionally on every render of this
+  // component instance, so this is declared before the kennelBrowseOpen /
+  // !kc early returns below (rules-of-hooks) — the isOpen guard inside makes
+  // it a no-op while the browse panel (which has its own Escape handler) is showing.
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') cancelKennel();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [isOpen, cancelKennel]);
+
   // CRIT-003: handle kennelBrowseOpen — show browse panel first, then
   // ask for consent when user picks an item.
   if (kennelBrowseOpen) {
@@ -229,17 +229,6 @@ export function KennelConsent() {
       />
     );
   }
-
-  // Close on Escape.
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  useEffect(() => {
-    if (!isOpen) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') cancelKennel();
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [isOpen, cancelKennel]);
 
   if (!kc) return null;
 
@@ -352,19 +341,17 @@ export function KennelConsent() {
 }
 
 function CancelBtn({ onClick }: { onClick: () => void }) {
-  const [hovered, setHovered] = useState(false);
   return (
     <button
       type="button"
+      className="hachi-cancel-btn"
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
         flex: 1,
         height: 42,
         borderRadius: 10,
         border: '1px solid var(--hachi-trust)',
-        background: hovered ? 'var(--hachi-trust-tint)' : 'transparent',
+        background: 'transparent',
         color: 'var(--hachi-trust)',
         font: '500 14px var(--font-body)',
         cursor: 'pointer',
@@ -377,19 +364,17 @@ function CancelBtn({ onClick }: { onClick: () => void }) {
 }
 
 function ConfirmBtn({ onClick }: { onClick: () => void }) {
-  const [hovered, setHovered] = useState(false);
   return (
     <button
       type="button"
+      className="hachi-mcp-submit-btn"
       onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       style={{
         flex: 1,
         height: 42,
         borderRadius: 10,
         border: '0.5px solid transparent',
-        background: hovered ? 'var(--hachi-brand-active)' : 'var(--hachi-brand-hover)',
+        background: 'var(--hachi-brand-hover)',
         color: 'var(--hachi-canvas)',
         font: '500 14px var(--font-body)',
         cursor: 'pointer',

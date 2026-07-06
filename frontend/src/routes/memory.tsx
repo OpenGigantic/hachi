@@ -46,24 +46,23 @@ function GhostIconBtn({
   'aria-label': string
   children: React.ReactNode
 }) {
-  const [hov, setHov] = useState(false)
   return (
     <button
       type="button"
+      className="hachi-ghost-icon-btn"
       onClick={onClick}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
       aria-label={ariaLabel}
       style={{
         border: 'none',
         background: 'transparent',
-        color: hov ? hoverColor : 'var(--hachi-muted)',
+        color: 'var(--hachi-muted)',
         cursor: 'pointer',
         display: 'inline-flex',
         padding: '4px',
         borderRadius: '6px',
         transition: 'background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease)',
-        ...(hov ? { background: hoverBg } : {}),
+        ['--hover-bg' as string]: hoverBg,
+        ['--hover-color' as string]: hoverColor,
       }}
     >
       {children}
@@ -81,20 +80,19 @@ function TextBtn({
   onClick: () => void
   children: React.ReactNode
   style: React.CSSProperties
+  /** Only `background` is honored — carried to CSS via the --hover-bg custom property. */
   hoverStyle: React.CSSProperties
   disabled?: boolean
 }) {
-  const [hov, setHov] = useState(false)
   return (
     <button
+      className="hachi-text-btn"
       onClick={onClick}
-      onMouseEnter={() => !disabled && setHov(true)}
-      onMouseLeave={() => setHov(false)}
       disabled={disabled}
       style={{
         ...style,
-        ...(hov && !disabled ? hoverStyle : {}),
         ...(disabled ? { opacity: 0.55, cursor: 'not-allowed' } : {}),
+        ['--hover-bg' as string]: hoverStyle.background,
       }}
     >
       {children}
@@ -162,6 +160,7 @@ function FactCard({
             onChange={(e) => onSetEditText(e.target.value)}
             rows={2}
             placeholder="What should Hachi remember?"
+            aria-label="Edit memory fact"
             style={{
               width: '100%',
               resize: 'none',
@@ -437,6 +436,7 @@ function Memory() {
             value={memSearch}
             onChange={(e) => setMemSearch(e.target.value)}
             placeholder="Search memory"
+            aria-label="Search memory"
             style={{
               flex: 1,
               border: 'none',
@@ -503,6 +503,7 @@ function Memory() {
                     }}
                     // LOW-006: placeholder communicates intent; no pre-filled example
                     placeholder="What do you want Hachi to recall?"
+                    aria-label="Ask memory anything"
                     style={{
                       flex: 1,
                       minWidth: 0,
@@ -543,7 +544,7 @@ function Memory() {
                     }}
                     hoverStyle={{ background: 'var(--hachi-brand-active)' }}
                   >
-                    <Icon name={recallLoading ? 'loader' : 'search'} size={15} />
+                    <Icon name={recallLoading ? 'refresh' : 'search'} size={15} />
                     {recallLoading ? 'Recalling…' : 'Recall'}
                   </TextBtn>
                 </div>

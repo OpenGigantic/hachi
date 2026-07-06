@@ -172,6 +172,9 @@ def test_rest_adapter_blocks_private_hosts() -> None:
 
 
 def test_rest_adapter_requires_allowlist_for_secret_interpolation() -> None:
+    # BB-53: an unset/empty allowlist now fails CLOSED for every host, not just
+    # for secret-interpolating calls — so this scenario (no allowlist configured,
+    # secret interpolation attempted) is blocked by the broader allowlist gate.
     registry = ToolRegistry()
     adapter = UniversalRestAdapter(
         registry,
@@ -191,7 +194,7 @@ def test_rest_adapter_requires_allowlist_for_secret_interpolation() -> None:
     )
 
     result = registry._tools["token_call"]()
-    assert "Secret interpolation requires HACHI_REST_ALLOWLIST" in result
+    assert "HACHI_REST_ALLOWLIST is not configured" in result
 
 
 def test_rest_allowlist_wildcard_matches_subdomains_only() -> None:
@@ -272,8 +275,12 @@ def test_rest_adapter_allows_private_egress_when_explicitly_enabled(monkeypatch)
     monkeypatch.setenv("HACHI_REST_ALLOW_PRIVATE", "true")
     monkeypatch.setattr("hachi.core.rest_adapter.httpx.Client", _FakeClient)
 
+    # BB-53: an empty allowlist now fails closed regardless of HACHI_REST_ALLOW_PRIVATE
+    # (allow-private only affects net_guard's IP check, not the allowlist gate) — this
+    # test is specifically about the private-egress opt-in, so give it an explicit
+    # allowlist entry for the host under test.
     registry = ToolRegistry()
-    adapter = UniversalRestAdapter(registry, allowed_hosts=[])
+    adapter = UniversalRestAdapter(registry, allowed_hosts=["127.0.0.1"])
 
     adapter._register_single_api(
         tool_name="private_allowed",

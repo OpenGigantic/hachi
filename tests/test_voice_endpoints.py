@@ -53,9 +53,7 @@ def test_transcribe_returns_text(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(voice_endpoints, "_load_voice_cfg", lambda: None)
     monkeypatch.setattr(voice_endpoints, "_is_voice_configured", lambda _cfg: True)
 
-    with patch(
-        "hachi.gateway.voice_endpoints.build_stt_provider", return_value=fake_provider
-    ):
+    with patch("hachi.gateway.voice_endpoints.build_stt_provider", return_value=fake_provider):
         result = voice_endpoints.transcribe(
             b"\x00\x01\x02",
             filename="audio.wav",
@@ -91,9 +89,7 @@ def test_transcribe_passes_language_through(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(voice_endpoints, "_load_voice_cfg", lambda: None)
     monkeypatch.setattr(voice_endpoints, "_is_voice_configured", lambda _cfg: True)
 
-    with patch(
-        "hachi.gateway.voice_endpoints.build_stt_provider", return_value=fake_provider
-    ):
+    with patch("hachi.gateway.voice_endpoints.build_stt_provider", return_value=fake_provider):
         result = voice_endpoints.transcribe(
             b"\x00",
             filename="audio.webm",
@@ -118,9 +114,7 @@ def test_speak_returns_bytes_and_media_type(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(voice_endpoints, "_load_voice_cfg", lambda: None)
     monkeypatch.setattr(voice_endpoints, "_is_voice_configured", lambda _cfg: True)
 
-    with patch(
-        "hachi.gateway.voice_endpoints.build_tts_provider", return_value=fake_provider
-    ):
+    with patch("hachi.gateway.voice_endpoints.build_tts_provider", return_value=fake_provider):
         audio, media_type = voice_endpoints.speak("hello hachi")
 
     assert audio == b"MP3DATA"
@@ -136,9 +130,7 @@ def test_speak_wav_format_returns_wav_mime(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(voice_endpoints, "_load_voice_cfg", lambda: None)
     monkeypatch.setattr(voice_endpoints, "_is_voice_configured", lambda _cfg: True)
 
-    with patch(
-        "hachi.gateway.voice_endpoints.build_tts_provider", return_value=fake_provider
-    ):
+    with patch("hachi.gateway.voice_endpoints.build_tts_provider", return_value=fake_provider):
         audio, media_type = voice_endpoints.speak("test", fmt="wav")
 
     assert audio == b"WAVDATA"
@@ -325,6 +317,41 @@ def test_build_tts_provider_openai_returns_openai_compat() -> None:
 
     provider = build_tts_provider(_Cfg())
     assert isinstance(provider, OpenAICompatibleSpeechProvider)
+
+
+# ---------------------------------------------------------------------------
+# Gateway route — streaming headers (B1)
+# ---------------------------------------------------------------------------
+
+
+def test_voice_speak_route_carries_proxy_buffering_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST /voice/speak StreamingResponse must disable proxy buffering (B1)."""
+    from fastapi.testclient import TestClient
+
+    from hachi.gateway import voice_endpoints
+    from hachi.gateway.control_plane import GatewayControlPlane
+    from hachi.gateway.fastapi_app import create_gateway_app
+
+    # Patch speak_stream before app creation so the lazy import inside
+    # create_gateway_app picks up the stub.
+    def _fake_speak_stream(text: str, **_kwargs: Any) -> tuple[Any, str]:
+        def _gen():  # type: ignore[return]
+            yield b"AUDIO"
+
+        return _gen(), "audio/mpeg"
+
+    monkeypatch.setattr(voice_endpoints, "speak_stream", _fake_speak_stream)
+
+    cp = GatewayControlPlane()
+    app = create_gateway_app(cp)
+    with TestClient(app) as client:
+        resp = client.post("/voice/speak", json={"text": "hello hachi"})
+
+    assert resp.status_code == 200
+    assert resp.headers.get("x-accel-buffering") == "no"
+    assert resp.headers.get("cache-control") == "no-cache"
 
 
 def test_build_tts_provider_elevenlabs_returns_elevenlabs() -> None:

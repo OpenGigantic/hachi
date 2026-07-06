@@ -98,6 +98,11 @@ class ProcessSharedServices:
     wait_registry: Any = field(default=None)  # WaitConditionRegistry | None
     # Phase 3: hot-reload routing store (None until first session boots with routing).
     routing_store: Any = field(default=None)  # RoutingConfigStore | None
+    # H3: one Scheduler per process (was a private per-session instance over the
+    # same schedules_file, causing double-fires and clobbered writes when two
+    # sessions in one process each ran their own Scheduler+ScheduleRunner pair).
+    scheduler: Any = field(default=None)  # Scheduler | None
+    scheduler_runner_started: bool = field(default=False)
 
     # ------------------------------------------------------------------
     # Public API

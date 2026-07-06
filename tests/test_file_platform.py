@@ -272,9 +272,11 @@ class TestExtractorDegradation:
                 },
             )
         # Either 'degraded:no_extractor' (no pypdf) or 'extracted' (pypdf installed).
-        assert result.startswith("degraded:no_extractor") or result.startswith(
-            "extracted"
-        ) or result.startswith("error")
+        assert (
+            result.startswith("degraded:no_extractor")
+            or result.startswith("extracted")
+            or result.startswith("error")
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -380,8 +382,10 @@ class TestSecurity:
                 },
             )
         # guard_untrusted was called or file was skipped; either way no crash.
-        assert result.startswith("extracted") or result.startswith("error") or result.startswith(
-            "degraded"
+        assert (
+            result.startswith("extracted")
+            or result.startswith("error")
+            or result.startswith("degraded")
         )
 
     def test_empty_file_id_in_tool_rejected(self) -> None:
@@ -770,3 +774,47 @@ class TestFileSettings:
 
         fs = FileSettings(**{"unknown_key": "value", "max_size_bytes": 1024})  # type: ignore[arg-type]
         assert fs.max_size_bytes == 1024
+
+
+class TestRegisteredFileToolsPermissionGate:
+    """Regression for C2: every registered file tool crashed on every call with
+    ``TypeError: unexpected keyword argument 'tool_name'`` — ``_gated`` built a
+    ``PermissionRequest(tool_name=..., action=..., resource=...)`` and called
+    ``gate.check(req)``, an API that does not exist on ``PermissionGate``. The
+    whole file-attachment tool group was silently non-functional.
+    """
+
+    def _make_gate(self, tmp_path: Path) -> Any:
+        from hachi.core.permissions import PermissionGate, generate_permissions_og
+
+        allowed = tmp_path / "allowed"
+        allowed.mkdir(parents=True, exist_ok=True)
+        content = generate_permissions_og("guided", custom_paths=[str(allowed)])
+        pf = tmp_path / "device-permissions.og"
+        pf.write_text(content, encoding="utf-8")
+        return PermissionGate(pf), allowed
+
+    def test_registered_tools_do_not_crash_on_call(self, tmp_path: Path) -> None:
+        from hachi.core.loop import ToolRegistry
+        from hachi.tools.file_tools import register_file_tools
+
+        gate, allowed = self._make_gate(tmp_path)
+        registry = ToolRegistry()
+        register_file_tools(registry, gate)
+
+        # Previously every call raised TypeError before ever reaching the real
+        # tool body — this must now return a normal (possibly error) string.
+        result = registry._tools["list_attachments"](path=str(allowed))
+        assert isinstance(result, str)
+
+    def test_registered_tools_honor_a_denied_permission(self, tmp_path: Path) -> None:
+        from hachi.core.loop import ToolRegistry
+        from hachi.tools.file_tools import register_file_tools
+
+        gate, _allowed = self._make_gate(tmp_path)
+        registry = ToolRegistry()
+        register_file_tools(registry, gate)
+
+        outside = tmp_path / "not_allowed" / "secret.txt"
+        result = registry._tools["list_attachments"](path=str(outside))
+        assert "Permission denied" in result

@@ -282,9 +282,7 @@ def skill_export(
     engine.load_directory(get_skills_dir())
     text = engine.export_skill(name)
     if text is None:
-        console.print(
-            f"[red]Skill not found:[/red] {name} [dim](see `hachi skill list`)[/dim]"
-        )
+        console.print(f"[red]Skill not found:[/red] {name} [dim](see `hachi skill list`)[/dim]")
         raise typer.Exit(1)
     if output:
         Path(output).write_text(text, encoding="utf-8")
@@ -306,9 +304,7 @@ def skill_deps(
     engine.load_directory(get_skills_dir())
     result = engine.get_dependency_chain(name)
     if result is None:
-        console.print(
-            f"[red]Skill not found:[/red] {name} [dim](see `hachi skill list`)[/dim]"
-        )
+        console.print(f"[red]Skill not found:[/red] {name} [dim](see `hachi skill list`)[/dim]")
         raise typer.Exit(1)
 
     if as_json:
@@ -340,9 +336,7 @@ def skill_show(
 
     node = engine.get_node(name)
     if node is None:
-        console.print(
-            f"[red]Skill not found:[/red] {name} [dim](see `hachi skill list`)[/dim]"
-        )
+        console.print(f"[red]Skill not found:[/red] {name} [dim](see `hachi skill list`)[/dim]")
         raise typer.Exit(1)
 
     peeked = engine.peek([name]).get(name, {})
@@ -431,9 +425,7 @@ def skill_changelog(
     engine.load_directory(get_skills_dir())
     result = engine.get_node_changelog(name)
     if result is None:
-        console.print(
-            f"[red]Skill not found:[/red] {name} [dim](see `hachi skill list`)[/dim]"
-        )
+        console.print(f"[red]Skill not found:[/red] {name} [dim](see `hachi skill list`)[/dim]")
         raise typer.Exit(1)
 
     if as_json:
@@ -475,9 +467,7 @@ def skill_traverse(
     engine.load_directory(get_skills_dir())
     result = engine.get_traverse_hints(name)
     if result is None:
-        console.print(
-            f"[red]Skill not found:[/red] {name} [dim](see `hachi skill list`)[/dim]"
-        )
+        console.print(f"[red]Skill not found:[/red] {name} [dim](see `hachi skill list`)[/dim]")
         raise typer.Exit(1)
 
     if as_json:
@@ -523,9 +513,7 @@ def skill_assert(
     engine.load_directory(get_skills_dir())
     node = engine.get_node(name)
     if node is None:
-        console.print(
-            f"[red]Skill not found:[/red] {name} [dim](see `hachi skill list`)[/dim]"
-        )
+        console.print(f"[red]Skill not found:[/red] {name} [dim](see `hachi skill list`)[/dim]")
         raise typer.Exit(1)
 
     results = evaluate_assertions(node.assertions, params)
@@ -597,15 +585,11 @@ def skill_graph(
     for node in nodes:
         arrow = " → " + ", ".join(node["direct"]) if node["direct"] else "  [dim](no deps)[/dim]"
         flag = "  [red]⚠ cycle[/red]" if node["has_cycle"] else ""
-        console.print(
-            f"  [bold]{node['name']}[/bold] [dim]({node['role']})[/dim]{arrow}{flag}"
-        )
+        console.print(f"  [bold]{node['name']}[/bold] [dim]({node['role']})[/dim]{arrow}{flag}")
     if roots:
         console.print(f"\n  [cyan]entry-point roots:[/cyan] {', '.join(roots)}")
     if missing:
-        console.print(
-            f"  [yellow]missing (referenced, not loaded):[/yellow] {', '.join(missing)}"
-        )
+        console.print(f"  [yellow]missing (referenced, not loaded):[/yellow] {', '.join(missing)}")
     if cyclic:
         console.print(f"  [red]cycles in:[/red] {', '.join(cyclic)}")
 
@@ -866,20 +850,43 @@ def skill_benchmark(
         baseline_text = "\n".join(engine.resolve_node(n.name, blocks=["all"]) for n in nodes)
         baseline = estimate_tokens(baseline_text)
 
-        keywords = list(engine._keyword_index.keys())
-        if not keywords:
+        import sys as _sys3
+
+        _project_root = str(Path.cwd())
+        if _project_root not in _sys3.path:
+            _sys3.path.insert(0, _project_root)
+        try:
+            from benchmarks.og_bench.metrics import (  # type: ignore[import-not-found]
+                pick_representative_query,
+            )
+        except ImportError as exc:
+            console.print(f"[red]Cannot load benchmark metrics module: {exc}[/red]")
+            raise typer.Exit(2) from exc
+
+        # C3 fix: a naive keywords[0] pick can land on a bare name defined once
+        # per roles/*.og file (e.g. "identity") — resolve_node refuses the
+        # ambiguous match and returns an "Error: ..." sentinel, which would
+        # silently masquerade as real Pass-3 content in the savings measurement.
+        query = pick_representative_query(engine)
+        if query is None:
             console.print(
-                "[yellow]No indexed keywords in bundled skills — cannot run token benchmark."
-                "[/yellow]"
+                "[yellow]No indexed keyword resolves to a loadable skill node — "
+                "cannot run token benchmark.[/yellow]"
             )
             raise typer.Exit(2)
-        query = keywords[0]
 
         results = engine.search(query)
         candidates = [r["name"] for r in results][:5]
         p1 = estimate_tokens(_json.dumps(results[:5]))
         p2 = estimate_tokens(_json.dumps(engine.peek(candidates)))
-        p3 = estimate_tokens(engine.resolve_node(candidates[0]))
+        resolved = engine.resolve_node(candidates[0])
+        if resolved.startswith("Error:"):
+            console.print(
+                f"[red]Representative query {query!r} resolved to a failed skill "
+                f"load: {resolved!r}[/red]"
+            )
+            raise typer.Exit(2)
+        p3 = estimate_tokens(resolved)
         three_pass = p1 + p2 + p3
         savings = 1.0 - (three_pass / baseline) if baseline > 0 else 0.0
         token_passed = savings >= threshold

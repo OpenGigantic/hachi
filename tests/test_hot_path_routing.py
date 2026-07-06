@@ -399,6 +399,55 @@ class TestNoRouteErrorFallback:
         assert "safe answer" in result
         assert direct.calls >= 1
 
+    def test_no_route_error_logs_at_warning_not_debug(self, caplog: Any) -> None:
+        """S3: a router falling back to llm_client is an operationally-visible event
+        (the model actually used silently changed) — it must be logged at WARNING,
+        not DEBUG, so it isn't invisible in normal operation.
+        """
+        import logging
+
+        raising_router = _RaisingRouter()
+        loop = ExecutionLoop(
+            llm_client=_CapturingLLMClient(response_text="fallback answer"),
+            registry=ToolRegistry(),
+            memory=SubAgentMemory(),
+            base_system_prompt="test",
+            router=raising_router,
+        )
+        with caplog.at_level(logging.WARNING, logger="hachi.core.loop"):
+            loop.run()
+
+        assert any("routing" in r.getMessage().lower() for r in caplog.records), (
+            "expected a WARNING log when the router falls back to llm_client"
+        )
+
+    def test_arbitrary_router_exception_logs_at_warning_not_debug(self, caplog: Any) -> None:
+        """S3: an unexpected router exception falling back to llm_client must also
+        be WARNING, not DEBUG — same visibility requirement as NoRouteError.
+        """
+        import logging
+
+        class _BrokenRouter:
+            def new_turn(self) -> None:
+                pass
+
+            def select(self, cap: Any, constraints: Any = None) -> Any:
+                raise RuntimeError("simulated router crash")
+
+        loop = ExecutionLoop(
+            llm_client=_CapturingLLMClient(response_text="safe answer"),
+            registry=ToolRegistry(),
+            memory=SubAgentMemory(),
+            base_system_prompt="test",
+            router=_BrokenRouter(),
+        )
+        with caplog.at_level(logging.WARNING, logger="hachi.core.loop"):
+            loop.run()
+
+        assert any("routing" in r.getMessage().lower() for r in caplog.records), (
+            "expected a WARNING log when the router raises an unexpected exception"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 5. Integration: multi-turn run with router — each turn re-selects

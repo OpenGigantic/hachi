@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import threading
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -112,3 +112,33 @@ class CheckpointManager:
     def count(self) -> int:
         with self._lock:
             return len(self._load_index())
+
+    def prune_old_snapshots(self, older_than_days: int = 30) -> int:
+        """Remove checkpoint entries (and their snapshot files) older than ``older_than_days``.
+
+        Entries are matched by the ``ts`` ISO timestamp written at snapshot time.
+        Fresh entries and entries with unparseable timestamps are preserved.
+        Returns the number of entries removed.
+        """
+        cutoff = datetime.now(UTC) - timedelta(days=older_than_days)
+        removed = 0
+        with self._lock:
+            index = self._load_index()
+            surviving = []
+            for entry in index:
+                try:
+                    ts = datetime.fromisoformat(entry["ts"])
+                    if ts < cutoff:
+                        # Delete the snapshot file if present.
+                        ref = entry.get("content_ref")
+                        if ref:
+                            snap_file = self._snaps_dir / ref
+                            snap_file.unlink(missing_ok=True)
+                        removed += 1
+                        continue
+                except Exception:
+                    pass
+                surviving.append(entry)
+            if removed:
+                self._save_index(surviving)
+        return removed

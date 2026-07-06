@@ -3,7 +3,7 @@
 // FIX 4: breakdown section fetches /spend and /spend/daily for per-model,
 // per-modality, per-session, and cumulative data (C-SPEND).
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useId } from 'react';
 import { useStore } from '../../../lib/store/store';
 import { Icon } from '../../icons/Icon';
 import { setLimitsLive } from '../../../lib/data/domains/config';
@@ -66,11 +66,15 @@ interface SpendCapInputProps {
 function SpendCapInput({ label, value, onCommit }: SpendCapInputProps) {
   const [editing, setEditing] = useState(false);
   const [localVal, setLocalVal] = useState(String(value.toFixed(2)));
+  const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const inputId = useId();
+  const errorId = `${inputId}-error`;
 
   useEffect(() => {
     if (editing) {
       setLocalVal(String(value.toFixed(2)));
+      setError(null);
       inputRef.current?.focus();
       inputRef.current?.select();
     }
@@ -78,7 +82,12 @@ function SpendCapInput({ label, value, onCommit }: SpendCapInputProps) {
 
   function commit() {
     const parsed = parseFloat(localVal);
-    if (!isNaN(parsed) && parsed > 0 && parsed !== value) {
+    if (isNaN(parsed) || parsed <= 0) {
+      setError('Enter a number greater than $0');
+      return;
+    }
+    setError(null);
+    if (parsed !== value) {
       onCommit(parsed);
     }
     setEditing(false);
@@ -97,38 +106,53 @@ function SpendCapInput({ label, value, onCommit }: SpendCapInputProps) {
 
   return (
     <div style={{ flex: 1 }}>
-      <div style={{ fontSize: 12, color: 'var(--hachi-muted)', marginBottom: 6 }}>{label}</div>
+      <label htmlFor={inputId} style={{ display: 'block', fontSize: 12, color: 'var(--hachi-muted)', marginBottom: 6 }}>
+        {label}
+      </label>
       {editing ? (
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 15, color: 'var(--hachi-muted)' }}>
-            $
-          </span>
-          <input
-            ref={inputRef}
-            type="number"
-            min="0.01"
-            step="0.01"
-            value={localVal}
-            onChange={(e) => setLocalVal(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onBlur={commit}
-            style={{
-              flex: 1,
-              height: 42,
-              padding: '0 14px',
-              borderRadius: 10,
-              border: '0.5px solid var(--hachi-trust)',
-              background: 'var(--hachi-canvas)',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 15,
-              color: 'var(--hachi-ink)',
-              outline: 'none',
-            }}
-          />
-        </div>
+        <>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 15, color: 'var(--hachi-muted)' }}>
+              $
+            </span>
+            <input
+              id={inputId}
+              ref={inputRef}
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={localVal}
+              onChange={(e) => setLocalVal(e.target.value)}
+              onKeyDown={handleKeyDown}
+              onBlur={commit}
+              required
+              aria-invalid={error != null}
+              aria-describedby={error ? errorId : undefined}
+              style={{
+                flex: 1,
+                height: 42,
+                padding: '0 14px',
+                borderRadius: 10,
+                border: error ? '0.5px solid var(--hachi-danger)' : '0.5px solid var(--hachi-trust)',
+                background: 'var(--hachi-canvas)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 15,
+                color: 'var(--hachi-ink)',
+                outline: 'none',
+              }}
+            />
+          </div>
+          {error && (
+            <div id={errorId} role="alert" style={{ fontSize: 11.5, color: 'var(--hachi-danger)', marginTop: 4 }}>
+              {error}
+            </div>
+          )}
+        </>
       ) : (
         <button
           type="button"
+          className="hachi-spend-cap-display-btn"
+          id={inputId}
           onClick={() => setEditing(true)}
           title="Click to edit"
           style={{
@@ -146,12 +170,6 @@ function SpendCapInput({ label, value, onCommit }: SpendCapInputProps) {
             color: 'var(--hachi-ink)',
             cursor: 'pointer',
             textAlign: 'left',
-          }}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--hachi-trust)';
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--hachi-line)';
           }}
         >
           ${value.toFixed(2)}

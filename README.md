@@ -9,7 +9,7 @@ _Governed personal agent: safety, spend, and self-improvement enforced by code, 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-purple.svg)](https://docs.astral.sh/ruff/)
-[![.og token savings: 97.6%](https://img.shields.io/badge/.og%20token%20savings-97.6%25-brightgreen)](docs/reference/benchmark.md)
+[![.og token savings: 98.0%](https://img.shields.io/badge/.og%20token%20savings-98.0%25-brightgreen)](docs/reference/benchmark.md)
 
 </div>
 
@@ -31,7 +31,7 @@ supervision.  Hachi is built to make both structurally impossible.
 | **Runaway token spend** | Per-session _and_ per-turn cost/token caps enforced between LLM calls; lazy tool groups; prompt-cache-aware breakpoints. The $47-echo-loop story is structurally impossible under a turn cap. |
 | **Ungoverned self-learning** | `save_skill` bumps semver and appends changelog instead of overwriting; lint + dense-budget rejection bounds what the agent may write; `::assertions` make learned procedures machine-checkable before execution; your manual edits are never silently overwritten. |
 | **Exposed attack surface** | Gateway binds loopback with bearer-token support by default; a `security-audit` CLI runs with `--fail-on-medium` in CI; permission tiers gate filesystem/shell/MCP at call time — not as runtime prompts. |
-| **Skill library context bloat** | ObjectGraph `.og` files are queryable at sub-file granularity: agents load a 30-token index, pull only the node a task needs. [Measured: **97.6% fewer tokens** vs dump-all](docs/reference/benchmark.md) (53 nodes, P@5 = 0.97, reproducible). |
+| **Skill library context bloat** | ObjectGraph `.og` files are queryable at sub-file granularity: agents load a 30-token index, pull only the node a task needs. [Measured: **98.0% fewer tokens** vs dump-all](docs/reference/benchmark.md) (60 nodes, P@5 = 1.00, reproducible). |
 
 > **Honest scope caveat:** below ~30 k tokens of total library content, a cached dump-all
 > approach is competitive on token cost. ObjectGraph is built for libraries that grow past
@@ -145,10 +145,10 @@ OpenCode users can point tools at.
 - **ObjectGraph (.og) Engine** — A structured, queryable, agent-native file format with 20+
   semantic tags; typed blocks (`::meta`, `::index`, `::dense`, `::full`, `::assertion`,
   `::edges`, `::steps`, `::changelog`) enable sub-file granular loading and deterministic skill
-  execution. [Benchmark: 97.6% token savings, P@5 = 0.97, reproducible.](docs/reference/benchmark.md)
+  execution. [Benchmark: 98.0% token savings, P@5 = 1.00, reproducible.](docs/reference/benchmark.md)
 - **Permission Gating** — Declarative `device-permissions.og` manifest controlling filesystem,
   terminal, MCP access, and outbound scopes; guards run at call time, not as runtime prompts;
-  permission tiers (lightning / guided / strict) for different trust levels.
+  permission tiers (sandbox / guided / unrestricted) for different trust levels.
 - **Governed Self-Learning** — `save_skill` persists novel task solutions as versioned `.og`
   nodes with semver bumps and changelog entries; lint + dense-budget rejection bounds what the
   agent may write; `::assertions` make learned procedures machine-checkable before execution.
@@ -158,16 +158,17 @@ OpenCode users can point tools at.
   and operations views; Esc-interrupt during active turns; incremental streaming render.
 - **Typed Gateway API** — FastAPI control plane for sessions, events, runtime read models,
   config, and setup; gateway binds loopback with bearer-token support by default.
-- **Web Frontend Workspace** — TanStack Start frontend wired to gateway endpoints with generated
-  OpenAPI client types.
+- **Web Frontend Workspace** — `@tanstack/react-router` SPA wired to gateway endpoints with
+  generated OpenAPI client types.
 - **Multi-Agent Delegation** — Sub-agents with isolated context windows, role-scoped
   ToolRegistries, and searchable delegation reports; results via `delegation_log`.
 - **Prompt Caching** — Native Anthropic cache breakpoints on system prompts and tool schemas;
   cache-aware prompt split keeps per-turn token spend low on repeated tool loads.
 - **Job Queue** — Runtime jobs tracked with retry/backoff, surfaced in gateway read models;
   memory writes go through the queue (no inline drain latency in the turn path).
-- **Native Integrations** — Google Workspace (Gmail, Drive, Calendar), Notion, Slack — all via
-  OAuth; credentials resolved lazily at call time, never at boot.
+- **Native Integrations** — Google Workspace (Gmail, Drive, Calendar) via OAuth; Notion and
+  Slack via pasted API tokens (`hachi secrets --set notion_api_key`/`slack_bot_token`/
+  `slack_user_token`); credentials resolved lazily at call time, never at boot.
 - **Universal REST Adapter** — Define any REST API in a `.og` file; Hachi auto-generates
   the tool; outbound requests scrubbed of leaked credentials before they leave the machine.
 - **Browser Automation** — Real headless browser (`browse_web`, `browser_act`,
@@ -271,9 +272,8 @@ On first run, Hachi will:
 
 #### Slash commands (type in the chat composer)
 
-`/help` lists them all. Highlights: `/clear`, `/compact`, `/new`, `/sessions`,
-`/model [name]`, `/memory <query>`, `/remember <fact>`, `/forget <query>`,
-`/plan <task>`, `/deep-research <question>`, `/settings`, `/setup`, `/quit`.
+`/help` lists them all. Highlights: `/model [name]`, `/memory <query>`,
+`/remember <fact>`, `/sessions`.
 
 ### Common Commands
 
@@ -402,7 +402,12 @@ The repository includes a two-service local stack:
 - `hachi` (Python gateway service on `:8787`)
 - `frontend` (web UI on `:5173`)
 
+Both services read their bearer token from a Docker secret file that isn't
+generated automatically — create it once before the first `up`:
+
 ```bash
+mkdir -p .hachi
+openssl rand -hex 32 > .hachi/gateway_api_token.txt
 docker compose up --build
 ```
 
@@ -470,7 +475,7 @@ hachi/
 ├── benchmarks/og_bench/                   # Reproducible benchmark suite
 │   ├── metrics.py                         # M1/M2/M4/M7 metric implementations
 │   └── data/s_real_results_v1.json        # Frozen S-real corpus results
-├── frontend/                              # TanStack Start web frontend
+├── frontend/                              # @tanstack/react-router web frontend
 ├── openapi/
 │   └── hachi-openapi.json                # Generated gateway OpenAPI contract
 ├── docker-compose.yml                    # Gateway + frontend local stack
@@ -508,8 +513,8 @@ human-readable and are low-effort to author and port.
 | **Dependency Tracking**    | None                   | `::edges` with typed relationships |
 | **Delta Loading**          | Full re-read           | `::changelog` diff entries         |
 
-¹ On the bundled 53-node skill set: 97.6% fewer skill-loading tokens vs dump-all (208 vs 8,726
-tokens); P@5 retrieval = 0.97; 77% of queries resolve at Pass 1. Reproducible via
+¹ On the bundled 31-file / 60-node skill set: 98.0% fewer skill-loading tokens vs dump-all (248 vs
+12,150 tokens); P@5 retrieval = 1.00; 87% of queries resolve at Pass 1. Reproducible via
 [`tests/test_og_benchmark.py`](tests/test_og_benchmark.py) — see [docs/reference/benchmark.md](docs/reference/benchmark.md)
 for methodology, honest crossover caveat, and full M1/M2/M4/M7 results.
 
@@ -656,7 +661,7 @@ timeout=120
 - [x] **Governed Turn Execution** — per-session serialization lock; iteration-limit graceful exit
 - [x] **Streaming** — `generate_stream` provider seam; `text_delta` loop events; TUI incremental render; Esc-interrupt; SSE + OpenAI `stream:true`
 - [x] **ObjectGraph Engine v2** — qualified node IDs + collision error; retrieval v2 (BM25 + stopword-guarded tokenization); P@5 = 0.97 on the S-real corpus; pass-depth counters (M7)
-- [x] **Shipped-Skill Compliance** — all 53 default skills have `::meta` + `::index`; lint CI gate blocks on errors
+- [x] **Shipped-Skill Compliance** — all 31 default skill files have `::meta` + `::index`; lint CI gate blocks on errors
 - [x] **Durable Job Queue** — SQLite persistence; resident worker thread; memory writes off the turn path
 - [x] **Reproducible Benchmark Suite** — `skill benchmark --suite {token|fast|full}`; M1/M2/M4/M7 metrics; CI gates token savings + retrieval quality per-PR; frozen S-real results in `benchmarks/og_bench/data/`
 - [x] **Security Posture** — `security-audit` CLI; gateway loopback-by-default + bearer-token support; `--fail-on-medium` in CI

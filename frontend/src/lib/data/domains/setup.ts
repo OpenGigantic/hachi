@@ -376,8 +376,12 @@ const TIER_STEP_PLANS: Record<WizardTier, string[]> = {
  */
 export async function setTierLive(tier: WizardTier): Promise<void> {
   const store = useStore.getState();
+  const previousTier = store.setup.tier;
   store.hydrate({ setup: { ...store.setup, tier } });
-  if (USE_MOCKS) return;
+  if (USE_MOCKS) {
+    store.showToast("Setup tier updated", "success");
+    return;
+  }
   try {
     await apiSend<GatewayApplyResponse>("POST", "/setup/apply", {
       plan: {
@@ -389,8 +393,10 @@ export async function setTierLive(tier: WizardTier): Promise<void> {
         show_advanced: tier === "power",
       },
     });
+    store.showToast("Setup tier updated", "success");
   } catch {
-    // Non-fatal: optimistic store update already applied. Network errors surface
-    // the reconnecting banner via client.ts callback.
+    // Roll back the optimistic tier change — a silently-failed apply must not look saved.
+    store.hydrate({ setup: { ...store.setup, tier: previousTier } });
+    store.showToast("Could not update setup tier — is Hachi running?", "blocked");
   }
 }

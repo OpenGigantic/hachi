@@ -236,7 +236,10 @@ registerLoader("config", loadConfig);
 export async function setSafetyLive(level: SafetyLevel): Promise<void> {
   const previous = useStore.getState().safety;
   useStore.getState().setSafety(level);
-  if (USE_MOCKS) return;
+  if (USE_MOCKS) {
+    useStore.getState().showToast("Safety level updated", "success");
+    return;
+  }
   try {
     await apiSend<GatewayConfig>("PUT", "/config/permissions", {
       permissions: { tier: safetyToTier(level) },
@@ -244,6 +247,7 @@ export async function setSafetyLive(level: SafetyLevel): Promise<void> {
     // Re-read config to confirm the write landed and clear any stale dedupe
     // result from a concurrent loadConfig() that ran before the PUT committed.
     await loadConfig();
+    useStore.getState().showToast("Safety level updated", "success");
   } catch {
     useStore.getState().setSafety(previous);
     useStore.getState().showToast(
@@ -259,19 +263,28 @@ export async function setSafetyLive(level: SafetyLevel): Promise<void> {
  * only the single changed flag. Persisted to settings.toml so it survives reload.
  */
 export async function setAskRuleLive(id: string, on: boolean): Promise<void> {
+  const previousRules = useStore.getState().askRules;
   // Optimistic update — flip just this rule in the store.
   useStore.getState().hydrate({
-    askRules: useStore
-      .getState()
-      .askRules.map((r) => (r.id === id ? { ...r, on } : r)),
+    askRules: previousRules.map((r) => (r.id === id ? { ...r, on } : r)),
   });
-  if (USE_MOCKS) return;
+  const ruleLabel = ASK_RULE_LABELS.find((r) => r.id === id)?.label ?? "rule";
+  if (USE_MOCKS) {
+    useStore.getState().showToast(`"${ruleLabel}" updated`, "success");
+    return;
+  }
   try {
     await apiSend<GatewayConfig>("PUT", "/config/permissions", {
       permissions: { ask_before: { [id]: on } },
     });
+    useStore.getState().showToast(`"${ruleLabel}" updated`, "success");
   } catch {
-    // Network errors surface the reconnecting banner via client.ts callback.
+    // Roll back the optimistic flip — a silently-failed write must not look saved.
+    useStore.getState().hydrate({ askRules: previousRules });
+    useStore.getState().showToast(
+      `Could not update "${ruleLabel}" — is Hachi running?`,
+      "blocked",
+    );
   }
 }
 

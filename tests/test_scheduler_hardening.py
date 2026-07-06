@@ -125,9 +125,7 @@ for _ in range(int(sys.argv[3])):
                 pytest.fail(f"Lock-worker subprocess exited with code {rc}")
 
         final = int(target.read_text(encoding="utf-8"))
-        assert final == n * 2, (
-            f"Expected {n * 2}, got {final} (cross-process lock failed)"
-        )
+        assert final == n * 2, f"Expected {n * 2}, got {final} (cross-process lock failed)"
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +417,43 @@ class TestDeliverResult:
             payload = mock_post.call_args.kwargs["json"]
             # With opt-out, the raw secret must be present.
             assert "sk-ant-api03" in payload["result"]
+
+    def test_ssrf_unsafe_webhook_url_is_not_posted(self) -> None:
+        """BB-53: deliver_result must route through net_guard.validate_outbound_url
+        before POSTing — a webhook_url pointing at a link-local/loopback/internal
+        address (that validate_outbound_url would reject) must never be requested."""
+        schedule = self._make_schedule(webhook_url="http://169.254.169.254/latest/meta-data/")
+
+        with patch("hachi.jobs.scheduler.httpx.post") as mock_post:
+            deliver_result(schedule, "result text")
+            mock_post.assert_not_called()
+
+    def test_loopback_webhook_url_is_not_posted(self) -> None:
+        """BB-53: a loopback webhook_url must also be rejected before the POST."""
+        schedule = self._make_schedule(webhook_url="http://127.0.0.1:9999/hook")
+
+        with patch("hachi.jobs.scheduler.httpx.post") as mock_post:
+            deliver_result(schedule, "result text")
+            mock_post.assert_not_called()
+
+    def test_ssrf_unsafe_webhook_url_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A rejected webhook URL must be logged, not silently dropped."""
+        import logging
+
+        schedule = self._make_schedule(webhook_url="http://169.254.169.254/latest/meta-data/")
+        with (
+            patch("hachi.jobs.scheduler.httpx.post") as mock_post,
+            caplog.at_level(logging.WARNING, logger="hachi.jobs.scheduler"),
+        ):
+            deliver_result(schedule, "result text")
+        mock_post.assert_not_called()
+        assert any(
+            "blocked" in r.message.lower()
+            or "ssrf" in r.message.lower()
+            or "not allowed" in r.message.lower()
+            or "non-public" in r.message.lower()
+            for r in caplog.records
+        ), "Expected a warning explaining the webhook was blocked"
 
 
 # ---------------------------------------------------------------------------
