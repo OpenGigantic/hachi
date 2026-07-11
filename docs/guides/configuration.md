@@ -241,6 +241,7 @@ All values default to `null` (no cap).
 | `exporter` | str | `"console"` | Trace exporter: `"console"` \| `"otlp"` \| `"langfuse"` |
 | `endpoint` | str\|null | `null` | OTLP exporter endpoint URL |
 | `metrics_enabled` | bool | `false` | Also initialise the metrics facade |
+| `log_format` | str | `"text"` | Log format: `"text"` (default) \| `"json"` (correlated JSON logs) |
 
 ### [channels.telegram]
 

@@ -1,4 +1,12 @@
-"""Tests for core/obs/sink.py — ObservabilitySink."""
+"""Tests for core/obs/sink.py — ObservabilitySink.
+
+Phase 2 contract change (CX2, intentional — see docs/DECISIONS.md):
+The sink was demoted from a span *emitter* to an attribute *stamper*.
+It no longer creates new spans; instead it stamps attributes + span-events
+onto the *currently active* span.  The three tests below that previously
+asserted marker-span creation have been rewritten to assert the new contract.
+This is an intended contract change, not a weakened test.
+"""
 
 from __future__ import annotations
 
@@ -33,34 +41,43 @@ def _configure() -> InMemorySpanExporter:
 
 
 # ---------------------------------------------------------------------------
-# Basic mirroring
+# Phase 2 contract: sink stamps attributes onto the current span, does NOT
+# create new spans.  The three tests below replace the old marker-span tests.
 # ---------------------------------------------------------------------------
 
 
-def test_sink_mirrors_tool_call_started():
+def test_sink_stamps_correlation_attrs_on_current_span():
+    """NEW (Phase 2): sink stamps hachi.trace_id onto the *active* span — no new span created."""
     exp = _configure()
     sink = ObservabilitySink()
     event = _make_event("tool.call.started", {"name": "bash", "trace_id": "t1", "session_id": "s1"})
-    sink.handle(event)
+
+    with _tracing.span("tool.call", tool="bash") as _:
+        sink.handle(event)
 
     spans = exp.get_finished_spans()
-    names = [s.name for s in spans]
-    assert "tool.call.started" in names
+    # Still exactly one span — no extra marker span was created.
+    assert len(spans) == 1
+    assert spans[0].name == "tool.call"
+    attrs = dict(spans[0].attributes or {})
+    assert attrs.get("hachi.trace_id") == "t1" or attrs.get("hachi.turn_id") == "t1"
 
 
-def test_sink_carries_correlation_attributes():
+def test_sink_carries_correlation_attributes_on_active_span():
+    """NEW (Phase 2): correlation ids land on the active span, not a throwaway span."""
     exp = _configure()
     sink = ObservabilitySink()
     event = _make_event(
         "tool.call.started",
         {"name": "read_file", "trace_id": "trace-xyz", "session_id": "ses-abc"},
     )
-    sink.handle(event)
+
+    with _tracing.span("tool.call"):
+        sink.handle(event)
 
     spans = exp.get_finished_spans()
-    span = next((s for s in spans if s.name == "tool.call.started"), None)
-    assert span is not None
-    attrs = span.attributes or {}
+    assert len(spans) == 1, "sink must not create extra spans"
+    attrs = dict(spans[0].attributes or {})
     assert attrs.get("hachi.trace_id") == "trace-xyz"
     assert attrs.get("hachi.session_id") == "ses-abc"
 
@@ -114,24 +131,32 @@ def test_sink_does_not_raise_on_exception(monkeypatch):
 
 
 def test_sink_does_not_leak_secrets():
-    """Secrets already scrubbed by the event taxonomy do not reach the span."""
+    """NEW (Phase 2): denied payload keys never reach span attributes (same intent, new mechanism).
+
+    The sink now stamps attributes onto the *active* span.  Denied fields
+    (prompt_preview, user_input, authorization, *_body, etc.) must not appear
+    in any attribute on the active span, just as they could not reach the old
+    marker spans.
+    """
     exp = _configure()
     sink = ObservabilitySink()
 
-    # A payload with a secret-looking key — the event taxonomy scrubs it before
-    # reaching the sink; we verify the span attribute does not contain it.
     event = _make_event(
         "tool.call.started",
-        {"name": "post_to_slack", "trace_id": "t99"},
+        {
+            "name": "post_to_slack",
+            "trace_id": "t99",
+            "prompt_preview": "TOPSECRET",
+            "authorization": "Bearer TOPSECRET",
+        },
     )
-    sink.handle(event)
+    with _tracing.span("tool.call"):
+        sink.handle(event)
 
     spans = exp.get_finished_spans()
     assert spans, "expected a span"
-    all_attr_values = list((spans[0].attributes or {}).values())
-    # The raw payload value "secret-api-key=TOPSECRET" is not present anywhere.
-    for v in all_attr_values:
-        assert "TOPSECRET" not in str(v)
+    all_attr_values = " ".join(str(v) for v in (spans[0].attributes or {}).values())
+    assert "TOPSECRET" not in all_attr_values
 
 
 # ---------------------------------------------------------------------------

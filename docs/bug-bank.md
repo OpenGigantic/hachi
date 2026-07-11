@@ -1966,6 +1966,40 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `test_session_store_cleanup_daily_spend`,
   `test_checkpoint_manager_prune_old_snapshots`.
 
+### BB-73 — `[observability]` config was dead; `setup_from_config`/`setup_metrics` never called at boot
+
+- **Symptom:** Setting `[observability] enabled=true` in `settings.toml` had no effect —
+  tracing and metrics stayed dormant regardless of config. `HACHI_TRACING=true` (env-var path)
+  was the only way to activate tracing. `ObservabilitySettings.metrics_enabled=true` was also
+  inert. The degraded mode (`enabled=true` + `bus_funnel=false`) had no warning.
+- **Root cause:** `boot_agent` called `configure_from_env()` (env-var path only) at line ~2544
+  but never read `ObservabilitySettings` from the loaded config dict or called
+  `tracing.setup_from_config` / `metrics.setup_metrics`. The config objects existed and the
+  functions existed; they were simply never wired together.
+- **Fix:** Added `_apply_observability_settings(obs_cfg, events_cfg)` in
+  `gateway/orchestrator.py` (called from `boot_agent` immediately after `_events_cfg` is
+  parsed — config is already loaded, no double `load_config()` call). The helper calls
+  `tracing.setup_from_config` and (conditionally) `metrics.setup_metrics`, and logs a
+  `WARNING` when `enabled=true` + `bus_funnel=false` (degraded mode).
+- **Avoid:** adding a new config section to `ObservabilitySettings` without also adding its
+  activation call in `_apply_observability_settings`. The docstring in `settings.py` now
+  correctly references `_apply_observability_settings` so the connection is documented.
+- **Locked by:** `tests/test_obs_boot_config.py` — 8 tests covering enabled/disabled/
+  metrics/sdk-absent/unknown-exporter/degraded-mode paths.
+
+### BB-74 — `ObservabilitySettings` docstring falsely claimed the gateway called `setup_from_config`
+
+- **Symptom:** `core/settings.py` docstring for `ObservabilitySettings` said "the gateway
+  calls `setup_from_config` at boot" — a statement that was false (BB-73). Misleading
+  documentation in the type that developers read first when understanding the config.
+- **Root cause:** The docstring was written for an intended behavior that was never
+  implemented.
+- **Fix:** Updated the docstring to correctly reference `_apply_observability_settings`
+  in `gateway.orchestrator` as the actual boot wiring point (`core/settings.py`).
+- **Avoid:** writing docstrings that describe intended future behavior as present fact —
+  especially on config classes where operators rely on the doc to understand the actual effect.
+- **Locked by:** BB-73 tests (the behavior the docstring described is now real).
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
