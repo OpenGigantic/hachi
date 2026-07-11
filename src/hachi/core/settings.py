@@ -194,10 +194,13 @@ class EventsSettings(BaseModel):
 
 
 class ObservabilitySettings(BaseModel):
-    """Optional ``[observability]`` config section (Slice 2.3 — tracing / metrics).
+    """Optional ``[observability]`` config section (Phase 0 — tracing / metrics).
 
-    When ``enabled=True`` the gateway calls :func:`~hachi.core.tracing.setup_from_config`
-    at boot, selecting the exporter via :attr:`exporter`.
+    When ``enabled=True``, ``boot_agent`` calls
+    :func:`~hachi.core.tracing.setup_from_config` and (when
+    ``metrics_enabled=True``) :func:`~hachi.core.obs.metrics.setup_metrics`
+    immediately after the EventBus config is parsed — see
+    ``gateway.orchestrator._apply_observability_settings``.
 
     Attributes:
         enabled:           Master switch.  Default ``False`` so default runtime is
@@ -214,6 +217,7 @@ class ObservabilitySettings(BaseModel):
     exporter: str = "console"
     endpoint: str | None = None
     metrics_enabled: bool = False
+    log_format: str = "text"  # "text" | "json"
 
 
 class JobsSettings(BaseModel):

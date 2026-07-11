@@ -535,6 +535,12 @@ def create_gateway_app(
         allow_headers=["Authorization", "Content-Type"],
         allow_credentials=False,
     )
+    # Phase 4: request-tracing middleware (pure ASGI, after CORS, before auth).
+    # No-op when tracing is inactive; adds `traceparent` response header only —
+    # zero OpenAPI schema change (verified: run `hachi gateway-openapi`).
+    from hachi.gateway.middleware.trace import TraceMiddleware
+
+    app.add_middleware(TraceMiddleware)
 
     class _AuthRequired(Exception):
         pass

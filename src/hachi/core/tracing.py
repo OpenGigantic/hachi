@@ -205,6 +205,31 @@ def add_span_attributes(**attributes: Any) -> None:
         pass
 
 
+def add_span_event(name: str, **attributes: Any) -> None:
+    """Add a named span-event to the *current* active span.
+
+    Safe to call when no span is active or tracing is unconfigured — a no-op
+    in those cases.  Only ``str | bool | int | float`` attribute values are
+    forwarded.
+
+    Args:
+        name:       Span event name (e.g. ``"tool.call.started"``).
+        **attributes: Key/value pairs to attach to the span event.
+    """
+    if _tracer is None:
+        return
+    try:
+        from opentelemetry import trace as _otel_trace
+
+        current = _otel_trace.get_current_span()
+        safe_attrs = {
+            k: v for k, v in attributes.items() if isinstance(v, str | bool | int | float)
+        }
+        current.add_event(name, attributes=safe_attrs)
+    except Exception:  # pragma: no cover — OTel unavailable
+        pass
+
+
 def _reset_for_tests() -> None:
     """Clear tracing state so a test can reconfigure from scratch."""
     global _tracer, _configured
@@ -214,6 +239,7 @@ def _reset_for_tests() -> None:
 
 __all__ = [
     "add_span_attributes",
+    "add_span_event",
     "configure_from_env",
     "is_active",
     "is_available",

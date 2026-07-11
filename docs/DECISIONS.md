@@ -2828,3 +2828,27 @@ complexity; defer until a real complaint surfaces.
   the same id-keyed dedup. The old always-synchronous standalone episodic block was removed.
 
 **Locked by.** `tests/test_b10_episodic_recall_offload.py` (10 tests).
+
+
+---
+
+## Observability sink demoted from span-emitter to attribute-stamper (Phase 2, 2026-07-06)
+
+**Context.** `ObservabilitySink` previously opened zero-duration marker spans for each of 9 bus
+events (e.g. `tool.call.started` → a span named `"tool.call.started"`; `session.chat.started` →
+`"agent.turn.start"`). This caused double-accounting with the real `agent.turn` root span opened in
+`orchestrator._chat_impl` and created empty spans with no timing or child content.
+
+**Decision.** The sink is now an **attribute stamper**: it calls `tracing.add_span_attributes()`
+and `tracing.add_span_event()` to stamp correlation ids and well-known payload fields onto the
+*currently active* span — never opening a new span. The waterfall is owned by `with span(...)`
+wrappers at the work seams; the sink enriches them.
+
+**Consequences.**
+- `test_obs_sink.py::test_sink_mirrors_tool_call_started`, `::test_sink_carries_correlation_attributes`,
+  `::test_sink_does_not_leak_secrets` were rewritten to assert the new attribute-stamping contract.
+  This is an intended contract change, not a weakened test.
+- When `events.bus_funnel=false`, direct spans still give the full waterfall; only sink-based
+  attribute enrichment is unavailable (Phase 0 degraded-mode warning covers this).
+
+**Locked by.** `tests/test_obs_sink.py` (10 tests, post-Phase-2 contract).
