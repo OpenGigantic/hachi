@@ -2515,6 +2515,45 @@ def _get_or_create_shared_scheduler(shared: Any, schedules_file: "Path") -> Sche
     return shared.scheduler  # type: ignore[no-any-return]
 
 
+def _apply_observability_settings(
+    obs_cfg: Any,
+    events_cfg: Any,
+) -> None:
+    """Wire [observability] config into tracing + metrics at boot (Phase 0 / BB-73).
+
+    Must be called AFTER config is loaded and _events_cfg is parsed — not earlier.
+    Never calls load_config() a second time; accepts already-parsed objects.
+
+    Args:
+        obs_cfg:    Parsed ObservabilitySettings (enabled, exporter, endpoint, metrics_enabled).
+        events_cfg: Parsed EventsSettings (bus_funnel).
+    """
+    if not obs_cfg.enabled:
+        return
+
+    from hachi.core import tracing as _tracing
+    from hachi.core.obs import metrics as _metrics
+
+    _tracing.setup_from_config(obs_cfg.exporter, obs_cfg.endpoint)
+
+    if obs_cfg.metrics_enabled:
+        _metrics.setup_from_config(obs_cfg.exporter, obs_cfg.endpoint)
+
+    # Phase 5: wire JSON logging when log_format="json".
+    log_fmt = getattr(obs_cfg, "log_format", "text")
+    if log_fmt == "json":
+        from hachi.core.obs.logging_setup import setup_logging as _setup_logging
+
+        _setup_logging(log_format="json")
+
+    if not events_cfg.bus_funnel:
+        logger.warning(
+            "boot_agent: [observability] enabled=true but [events] bus_funnel=false — "
+            "direct spans/metrics/logging still work; sink-based attribute enrichment is "
+            "unavailable until bus_funnel is re-enabled."
+        )
+
+
 def boot_agent(
     on_event: Callable[..., None] | None = None,
     on_permission_request: Callable[[PermissionRequest], PermissionDecision] | None = None,
@@ -2678,6 +2717,12 @@ def boot_agent(
 
     _events_cfg = EventsSettings.model_validate(config.get("events", {}))
     _jobs_cfg = JobsSettings.model_validate(config.get("jobs", {}))
+
+    # Phase 0 / BB-73: wire [observability] config into tracing + metrics.
+    from hachi.core.settings import ObservabilitySettings as _ObsSettings
+
+    _obs_cfg = _ObsSettings.model_validate(config.get("observability", {}))
+    _apply_observability_settings(_obs_cfg, _events_cfg)
 
     if _events_cfg.bus_funnel:
         from hachi.core.event_bus import EventBus
