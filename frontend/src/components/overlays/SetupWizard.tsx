@@ -733,7 +733,6 @@ function CloseBtn({ onClick }: { onClick: () => void }) {
       aria-label="Close setup wizard"
       style={{
         border: 'none',
-        background: 'transparent',
         color: 'var(--hachi-muted)',
         cursor: 'pointer',
         display: 'inline-flex',
@@ -758,7 +757,6 @@ function GhostBtn({ onClick, children }: { onClick: () => void; children: React.
         padding: '0 16px',
         borderRadius: 10,
         border: 'none',
-        background: 'transparent',
         color: 'var(--hachi-muted)',
         font: '500 14px var(--font-body)',
         cursor: 'pointer',

@@ -481,7 +481,6 @@ function Authoring() {
                             borderRadius: 6,
                             font: '500 12px var(--font-body)',
                             cursor: 'pointer',
-                            background: 'transparent',
                             color: 'var(--hachi-muted)',
                             transition: 'background var(--dur-fast) var(--ease)',
                           }}
@@ -499,11 +498,7 @@ function Authoring() {
                             border: 'none',
                             borderRadius: 6,
                             font: '500 12px var(--font-body)',
-                            cursor: isSaving ? 'not-allowed' : 'pointer',
-                            background: isSaving ? 'var(--hachi-muted)' : 'var(--hachi-brand-hover)',
-                            color: 'var(--hachi-canvas)',
                             transition: 'background var(--dur-fast) var(--ease)',
-                            opacity: isSaving ? 0.6 : 1,
                             display: 'inline-flex',
                             alignItems: 'center',
                             gap: 6,
@@ -526,7 +521,6 @@ function Authoring() {
                           borderRadius: 6,
                           font: '500 12px var(--font-body)',
                           cursor: authSel ? 'pointer' : 'not-allowed',
-                          background: 'transparent',
                           color: 'var(--hachi-muted)',
                           transition: 'background var(--dur-fast) var(--ease)',
                           display: 'inline-flex',
@@ -768,17 +762,9 @@ function Authoring() {
                         padding: '0 14px',
                         borderRadius: 10,
                         border: '0.5px solid transparent',
-                        background:
-                          isGenerating || !authSel || !prompt.trim()
-                            ? 'var(--hachi-muted)'
-                            : 'var(--hachi-brand-hover)',
-                        color: 'var(--hachi-canvas)',
                         font: '500 13px var(--font-body)',
-                        cursor:
-                          isGenerating || !authSel || !prompt.trim() ? 'not-allowed' : 'pointer',
                         transition: 'background var(--dur-fast) var(--ease)',
                         flexShrink: 0,
-                        opacity: isGenerating || !authSel || !prompt.trim() ? 0.6 : 1,
                       }}
                     >
                       <Icon name="sparkles" size={14} />
@@ -913,7 +899,6 @@ function Authoring() {
                                 padding: '0 13px',
                                 borderRadius: 10,
                                 border: '1px solid var(--hachi-trust)',
-                                background: 'transparent',
                                 color: 'var(--hachi-trust)',
                                 font: '500 13px var(--font-body)',
                                 cursor: 'pointer',
@@ -934,8 +919,6 @@ function Authoring() {
                                 padding: '0 13px',
                                 borderRadius: 10,
                                 border: '0.5px solid transparent',
-                                background: 'var(--hachi-brand-hover)',
-                                color: 'var(--hachi-canvas)',
                                 font: '500 13px var(--font-body)',
                                 cursor: 'pointer',
                                 transition: 'background var(--dur-fast) var(--ease)',

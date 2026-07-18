@@ -109,6 +109,10 @@
 }
 
 /* Skills screen */
+/* Base required so :hover can override it (BB-76). */
+.hachi-ghost-icon-btn-bg {
+  background: transparent;
+}
 .hachi-ghost-icon-btn-bg:hover {
   background: var(--hachi-cream);
 }
@@ -117,10 +121,16 @@
   text-decoration: underline;
 }
 
+.hachi-kennel-add-btn {
+  background: var(--hachi-canvas);
+}
 .hachi-kennel-add-btn:hover {
   background: var(--hachi-cream);
 }
 
+.hachi-browse-kennel-btn {
+  background: transparent;
+}
 .hachi-browse-kennel-btn:hover {
   background: var(--hachi-trust-tint);
 }
@@ -134,10 +144,22 @@
   background: var(--hachi-cream);
 }
 
+.hachi-cancel-btn {
+  background: transparent;
+}
 .hachi-cancel-btn:hover:not(:disabled) {
   background: var(--hachi-trust-tint);
 }
 
+.hachi-mcp-submit-btn {
+  background: var(--hachi-brand-hover);
+  color: var(--hachi-canvas);
+}
+.hachi-mcp-submit-btn:disabled {
+  background: var(--hachi-muted);
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 .hachi-mcp-submit-btn:hover:not(:disabled) {
   background: var(--hachi-brand-active);
 }
@@ -220,8 +242,26 @@
   background: var(--hachi-cream);
 }
 
+.hachi-kennel-browse-add-btn {
+  background: var(--hachi-surface);
+}
 .hachi-kennel-browse-add-btn:hover {
   background: var(--hachi-cream);
+}
+
+/* Integrations MCP delete / confirm-delete button */
+.hachi-mcp-delete-btn {
+  background: transparent;
+  border: none;
+  color: var(--hachi-muted);
+}
+.hachi-mcp-delete-btn:hover:not(:disabled):not([data-confirm='true']) {
+  background: var(--hachi-cream);
+}
+.hachi-mcp-delete-btn[data-confirm='true'] {
+  background: var(--hachi-danger-tint);
+  border: 0.5px solid var(--hachi-danger);
+  color: var(--hachi-danger);
 }
 
 /* Home screen */

@@ -130,7 +130,6 @@ export function OgExplainer({ headline, body, whyTooltip }: OgExplainerProps) {
           height: 26,
           borderRadius: 6,
           border: 'none',
-          background: 'transparent',
           color: 'var(--hachi-muted)',
           cursor: 'pointer',
           flexShrink: 0,

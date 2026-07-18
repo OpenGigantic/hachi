@@ -103,7 +103,6 @@ function KennelBrowsePanel({
             aria-label="Close kennel browser"
             style={{
               border: 'none',
-              background: 'transparent',
               color: 'var(--hachi-muted)',
               cursor: 'pointer',
               display: 'inline-flex',
@@ -176,7 +175,6 @@ function KennelBrowseRow({
           padding: '0 14px',
           borderRadius: 10,
           border: '0.5px solid var(--hachi-line)',
-          background: 'var(--hachi-surface)',
           color: 'var(--hachi-ink)',
           font: '500 13px var(--font-body)',
           cursor: 'pointer',
@@ -351,7 +349,6 @@ function CancelBtn({ onClick }: { onClick: () => void }) {
         height: 42,
         borderRadius: 10,
         border: '1px solid var(--hachi-trust)',
-        background: 'transparent',
         color: 'var(--hachi-trust)',
         font: '500 14px var(--font-body)',
         cursor: 'pointer',
@@ -374,8 +371,6 @@ function ConfirmBtn({ onClick }: { onClick: () => void }) {
         height: 42,
         borderRadius: 10,
         border: '0.5px solid transparent',
-        background: 'var(--hachi-brand-hover)',
-        color: 'var(--hachi-canvas)',
         font: '500 14px var(--font-body)',
         cursor: 'pointer',
         transition: 'background var(--dur-fast) var(--ease)',
