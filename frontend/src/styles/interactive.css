@@ -165,12 +165,35 @@
 }
 
 /* LeashPrompt (in-context permission ask) */
+/* Resting backgrounds live in the class so :hover can override them (BB-76). */
+.hachi-leash-decline-btn {
+  background: transparent;
+}
 .hachi-leash-decline-btn:hover {
   background: var(--hachi-trust-tint, #E4EAF3);
 }
 
+.hachi-leash-allow-once-btn {
+  background: transparent;
+}
 .hachi-leash-allow-once-btn:hover {
   background: var(--hachi-brand-tint, #FBE7E0);
+}
+
+/* High-risk Decline: solid trust is the dominant safe-default action. */
+.hachi-leash-decline-high-btn {
+  background: var(--hachi-trust);
+  color: var(--hachi-canvas);
+}
+.hachi-leash-decline-high-btn:hover {
+  opacity: 0.9;
+}
+
+/* Ghost tertiary next to outlined "Decline" and solid "Allow once" — the hairline
+ * border carries it, so the fill is the card beneath. Base rule required: without
+ * it the UA paints ButtonFace grey. See BB-76. */
+.hachi-leash-always-btn {
+  background: transparent;
 }
 
 .hachi-leash-always-btn:hover {
@@ -287,11 +310,38 @@
   color: var(--hachi-ink);
 }
 
+/* Base background is load-bearing: a <button> with no background declared falls
+ * through to the UA stylesheet, which paints ButtonFace (#F0F0F0 cold grey) —
+ * jarring on the warm bone canvas. See BB-76. */
+.hachi-composer-voice-btn {
+  background: transparent;
+}
+
 .hachi-composer-voice-btn:hover {
   background: var(--hachi-cream);
   color: var(--hachi-ink);
 }
 
+/* Session title — a heading that doubles as the recents-menu trigger. It carries a
+ * persistent hairline so users can SEE there is a session picker here: NN/g's
+ * clickability research finds hover-only cues are weak signifiers that "reduce target
+ * discoverability", while a border is a strong one. Fill stays empty at rest, so the
+ * control is legible without shouting; hover adds cream, and open takes the dropdown's
+ * own skin (surface + same hairline) so trigger and panel read as one object. */
+.hachi-session-title-btn {
+  background: transparent;
+  border: 0.5px solid var(--hachi-line);
+  transition: background var(--transition), border-color var(--transition);
+}
+
 .hachi-session-title-btn:hover {
   background: var(--hachi-cream);
+}
+
+/* Keyed off the ARIA state so the visual and the a11y state can never drift.
+ * Must follow :hover — equal specificity, so source order decides, and the open
+ * styling should hold even while the pointer is over the trigger. */
+.hachi-session-title-btn[aria-expanded='true'] {
+  background: var(--hachi-surface);
+  border-color: var(--hachi-line);
 }

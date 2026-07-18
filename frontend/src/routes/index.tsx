@@ -9,6 +9,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { useStore } from '../lib/store/store';
 import { Icon } from '../components/icons/Icon';
 import { HachiMark } from '../components/brand/HachiMark';
+import { LeashPrompt } from '../components/brand/LeashPrompt';
 import { useCountdown } from '../lib/hooks/useCountdown';
 import type { Integration } from '../lib/data/types';
 
@@ -70,162 +71,21 @@ interface ApprovalCardProps {
 }
 
 export function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps) {
-  const { label: countdown } = useCountdown(approval.expiresAt);
+  const { label: countdownLabel } = useCountdown(approval.expiresAt);
   const rm = riskMeta(approval.risk);
-  const isHighRisk = approval.risk === 'high';
 
   return (
-    <div
-      style={{
-        background: 'var(--hachi-surface)',
-        border: '0.5px solid var(--hachi-line)',
-        borderRadius: '16px',
-        padding: '16px 18px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '14px',
-      }}
-    >
-      {/* header row: icon badge + content */}
-      <div data-testid="approval-header" style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
-        {/* icon badge */}
-        <div
-          style={{
-            flexShrink: 0,
-            width: '40px',
-            height: '40px',
-            borderRadius: '10px',
-            background: 'var(--hachi-cream)',
-            display: 'grid',
-            placeItems: 'center',
-            color: 'var(--hachi-ink)',
-          }}
-        >
-          <Icon name={approval.icon} size={19} />
-        </div>
-
-        {/* content */}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-            <span style={{ fontWeight: 500, fontSize: '15px' }}>{approval.request}</span>
-            <span
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '5px',
-                padding: '3px 9px',
-                borderRadius: '999px',
-                background: rm.bg,
-                color: rm.fg,
-                fontSize: '11px',
-                fontWeight: 500,
-              }}
-            >
-              {rm.label}
-            </span>
-          </div>
-          <div style={{ fontSize: '13px', color: 'var(--hachi-muted)', marginTop: '3px' }}>
-            why: {approval.why}
-          </div>
-          <div
-            style={{
-              marginTop: '10px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '7px',
-              fontSize: '12px',
-              color: 'var(--hachi-muted)',
-            }}
-          >
-            {approval.expiresAt > 0 ? (
-              <>
-                <Icon name="clock" size={13} />
-                auto-declines in {countdown}
-              </>
-            ) : (
-              'no auto-decline — Hachi waits until you decide'
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* actions — separate full-width row so it can never squeeze the title
-          into a one-word-per-line wrap on narrow viewports */}
-      <div
-        data-testid="approval-actions"
-        className="hachi-approval-actions"
-        style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}
-      >
-        <button
-          type="button"
-          className={isHighRisk ? 'hachi-decline-btn-risk' : 'hachi-decline-btn-safe'}
-          onClick={onDecline}
-          style={
-            isHighRisk
-              ? {
-                  flex: 1,
-                  height: '44px',
-                  padding: '0 14px',
-                  borderRadius: '10px',
-                  border: '0.5px solid transparent',
-                  background: 'var(--hachi-trust)',
-                  color: 'var(--hachi-canvas)',
-                  font: '500 13px var(--font-body)',
-                  cursor: 'pointer',
-                  transition: 'opacity var(--dur-fast) var(--ease)',
-                }
-              : {
-                  flex: 1,
-                  height: '44px',
-                  padding: '0 14px',
-                  borderRadius: '10px',
-                  border: '1px solid var(--hachi-trust)',
-                  background: 'transparent',
-                  color: 'var(--hachi-trust)',
-                  font: '500 13px var(--font-body)',
-                  cursor: 'pointer',
-                  transition: 'background var(--dur-fast) var(--ease)',
-                }
-          }
-        >
-          Decline
-        </button>
-        <button
-          type="button"
-          className={isHighRisk ? 'hachi-allow-btn-risk' : 'hachi-allow-btn-safe'}
-          onClick={onAllow}
-          style={
-            isHighRisk
-              ? {
-                  flex: 1,
-                  height: '44px',
-                  padding: '0 14px',
-                  borderRadius: '10px',
-                  border: '1px solid var(--hachi-brand)',
-                  background: 'transparent',
-                  color: 'var(--hachi-brand)',
-                  font: '500 13px var(--font-body)',
-                  cursor: 'pointer',
-                  transition: 'background var(--dur-fast) var(--ease)',
-                }
-              : {
-                  flex: 1,
-                  height: '44px',
-                  padding: '0 14px',
-                  borderRadius: '10px',
-                  border: '0.5px solid transparent',
-                  background: 'var(--hachi-brand-hover)',
-                  color: 'var(--hachi-canvas)',
-                  font: '500 13px var(--font-body)',
-                  cursor: 'pointer',
-                  transition: 'background var(--dur-fast) var(--ease)',
-                }
-          }
-        >
-          Allow once
-        </button>
-      </div>
-    </div>
+    <LeashPrompt
+      request={approval.request}
+      why={approval.why}
+      riskPill={rm}
+      countdown={approval.expiresAt > 0 ? countdownLabel : null}
+      onAllowOnce={onAllow}
+      onAlwaysAllow={() => {}}
+      onDecline={onDecline}
+      headerTestId="approval-header"
+      actionsTestId="approval-actions"
+    />
   );
 }
 
