@@ -31,43 +31,5 @@ export function sizeStr(b?: number): string {
   return (b / 1048576).toFixed(1) + ' MB'
 }
 
-export function statusMeta(st: string): {
-  bg: string
-  fg: string
-  dot: string
-  text: string
-} {
-  const map: Record<string, { bg: string; fg: string; dot: string; text: string }> = {
-    working: {
-      bg: 'var(--hachi-working-tint)',
-      fg: 'var(--hachi-working-fg)',
-      dot: 'var(--hachi-working)',
-      text: 'working',
-    },
-    'on-watch': {
-      bg: 'var(--hachi-trust-tint)',
-      fg: 'var(--hachi-trust)',
-      dot: 'var(--hachi-trust)',
-      text: 'on watch',
-    },
-    done: {
-      bg: 'var(--hachi-success-tint)',
-      fg: 'var(--hachi-success-fg)',
-      dot: 'var(--hachi-success)',
-      text: 'done',
-    },
-    blocked: {
-      bg: 'var(--hachi-danger-tint)',
-      fg: 'var(--hachi-danger-fg)',
-      dot: 'var(--hachi-danger)',
-      text: 'blocked',
-    },
-    pending: {
-      bg: 'var(--hachi-cream)',
-      fg: 'var(--hachi-muted)',
-      dot: 'var(--hachi-muted)',
-      text: 'pending',
-    },
-  }
-  return map[st] ?? map.working
-}
+export { statusMeta } from '../../lib/ui/status'
+export type { StatusMeta } from '../../lib/ui/status'

@@ -12,30 +12,12 @@ import { HachiMark } from '../components/brand/HachiMark';
 import { LeashPrompt } from '../components/brand/LeashPrompt';
 import { useCountdown } from '../lib/hooks/useCountdown';
 import type { Integration } from '../lib/data/types';
+import { statusMeta } from '../lib/ui/status';
 
 // ---- Local helpers ----
 
 function fmtMoney(n: number): string {
   return '$' + Number(n).toFixed(2);
-}
-
-type StatusKey = 'working' | 'on-watch' | 'done' | 'blocked';
-
-interface StatusMeta {
-  bg: string;
-  fg: string;
-  dot: string;
-  text: string;
-}
-
-function statusMeta(st: StatusKey | string): StatusMeta {
-  const map: Record<string, StatusMeta> = {
-    working: { bg: 'var(--hachi-working-tint)', fg: 'var(--hachi-working-fg)', dot: 'var(--hachi-working)', text: 'working' },
-    'on-watch': { bg: 'var(--hachi-trust-tint)', fg: 'var(--hachi-trust)', dot: 'var(--hachi-trust)', text: 'on watch' },
-    done: { bg: 'var(--hachi-success-tint)', fg: 'var(--hachi-success-fg)', dot: 'var(--hachi-success)', text: 'done' },
-    blocked: { bg: 'var(--hachi-danger-tint)', fg: 'var(--hachi-danger-fg)', dot: 'var(--hachi-danger)', text: 'blocked' },
-  };
-  return map[st] || map['working'];
 }
 
 type RiskKey = 'low' | 'medium' | 'high';

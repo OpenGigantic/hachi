@@ -20,36 +20,12 @@ import { Icon } from "../components/icons/Icon";
 import { Terminal } from "../components/ui/Terminal";
 import { LeashPrompt } from "../components/brand/LeashPrompt";
 import { useFocusTrap } from "../lib/hooks/useFocusTrap";
+import { statusMeta } from "../lib/ui/status";
 
 // ---- helpers ----
 
 function fmtMoney(n: number): string {
   return "$" + Number(n).toFixed(2);
-}
-
-// Mirror prototype statusMeta — returns pill colors for each run phase.
-function statusMeta(phase: "working" | "done" | "blocked") {
-  const map = {
-    working: {
-      bg: "var(--hachi-working-tint)",
-      fg: "var(--hachi-working-fg)",
-      dot: "var(--hachi-working)",
-      text: "working",
-    },
-    done: {
-      bg: "var(--hachi-success-tint)",
-      fg: "var(--hachi-success-fg)",
-      dot: "var(--hachi-success)",
-      text: "done",
-    },
-    blocked: {
-      bg: "var(--hachi-danger-tint)",
-      fg: "var(--hachi-danger-fg)",
-      dot: "var(--hachi-danger)",
-      text: "blocked",
-    },
-  };
-  return map[phase] ?? map.working;
 }
 
 // Mirror prototype stepMeta — icon + color per step state.

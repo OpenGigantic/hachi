@@ -21,6 +21,7 @@ import { loadSpend } from '../lib/data/domains/spend'
 import { loadOperator } from '../lib/data/domains/operator'
 import { useFocusTrap } from '../lib/hooks/useFocusTrap'
 import { PendingCard } from '../components/ui/PendingCard'
+import { statusMeta } from '../lib/ui/status'
 
 // ---- helpers ------------------------------------------------
 
@@ -35,25 +36,6 @@ function mc(n: number): string {
   const v = Number(n) || 0
   if (v > 0 && v < 0.01) return '$' + v.toFixed(4)
   return '$' + v.toFixed(2)
-}
-
-type StatusKey = 'working' | 'on-watch' | 'done' | 'blocked'
-
-interface StatusMeta {
-  bg: string
-  fg: string
-  dot: string
-  text: string
-}
-
-function statusMeta(st: string): StatusMeta {
-  const map: Record<string, StatusMeta> = {
-    working: { bg: 'var(--hachi-working-tint)', fg: 'var(--hachi-working-fg)', dot: 'var(--hachi-working)', text: 'working' },
-    'on-watch': { bg: 'var(--hachi-trust-tint)', fg: 'var(--hachi-trust)', dot: 'var(--hachi-trust)', text: 'on watch' },
-    done: { bg: 'var(--hachi-success-tint)', fg: 'var(--hachi-success-fg)', dot: 'var(--hachi-success)', text: 'done' },
-    blocked: { bg: 'var(--hachi-danger-tint)', fg: 'var(--hachi-danger-fg)', dot: 'var(--hachi-danger)', text: 'blocked' },
-  }
-  return map[st] ?? map.working
 }
 
 function stepMeta(state: string): { icon: string; color: string } {
@@ -1177,7 +1159,7 @@ function Work() {
       owner: f.owner ?? 'a routine',
       when: f.when,
       cost: f.cost,
-      status: f.status as StatusKey,
+      status: f.status as string,
       icon: 'alert',
       kind: 'failed',
       steps: f.steps,
