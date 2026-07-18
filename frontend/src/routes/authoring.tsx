@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { OgExplainer } from '../components/ui/OgExplainer'
 import { createFileRoute } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
@@ -69,8 +70,7 @@ const AUTH_KIND_ICON: Record<AuthTarget['kind'], string> = {
   skill: 'file-code',
 }
 
-// ---- localStorage key for .og explainer dismissal ----
-const OG_EXPLAINER_KEY = 'hachi-og-explainer-dismissed'
+const AUTHORING_WHY = 'Pass 1 reads only the index (~30 tokens) to route to the right node. Pass 2 reads dense summaries. Pass 3 reads full content only when truly needed — most queries never reach it.'
 
 // ---- Authoring screen ----
 function Authoring() {
@@ -137,23 +137,7 @@ function Authoring() {
     setSourceFetchError(null)
   }, [authSel])
 
-  // .og explainer panel dismissal (E6-T1)
-  const [ogExplainerDismissed, setOgExplainerDismissed] = useState(() => {
-    try {
-      return localStorage.getItem(OG_EXPLAINER_KEY) === 'true'
-    } catch {
-      return false
-    }
-  })
 
-  function dismissOgExplainer() {
-    try {
-      localStorage.setItem(OG_EXPLAINER_KEY, 'true')
-    } catch {
-      /* ignore storage errors */
-    }
-    setOgExplainerDismissed(true)
-  }
 
   // Handle Generate button click (CRIT-002)
   async function handleGenerate() {
@@ -182,8 +166,6 @@ function Authoring() {
   const addCount = activeDiff.filter((l) => l[0] === 'add').length
   const delCount = activeDiff.filter((l) => l[0] === 'del').length
   const hasDiff = addCount > 0 || delCount > 0
-
-  const [showWhyTooltip, setShowWhyTooltip] = useState(false)
 
   // Edit mode state (Step 3 — CONTRACT-AUTHORING-SAVE)
   const [editMode, setEditMode] = useState(false)
@@ -264,103 +246,11 @@ function Authoring() {
         <div style={{ maxWidth: 1000, margin: '0 auto' }}>
 
           {/* E6-T1: .og explainer panel */}
-          {!ogExplainerDismissed && (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 12,
-                padding: '11px 16px',
-                marginBottom: 16,
-                background: 'var(--hachi-brand-tint)',
-                border: '0.5px solid var(--hachi-brand)',
-                borderRadius: 12,
-                fontSize: 13,
-                color: 'var(--hachi-ink)',
-              }}
-            >
-              <span style={{ color: 'var(--hachi-brand)', display: 'inline-flex', flexShrink: 0 }}>
-                <Icon name="file-code" size={15} />
-              </span>
-              <span style={{ flex: 1, lineHeight: '20px' }}>
-                Skills use the{' '}
-                <strong style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>.og</strong>
-                {' '}format — a 3-pass graph that cuts token usage by up to 70 % vs. loading entire
-                files.{' '}
-                <span style={{ position: 'relative', display: 'inline-block' }}>
-                  <button
-                    type="button"
-                    aria-describedby={showWhyTooltip ? 'authoring-why-tooltip' : undefined}
-                    onMouseEnter={() => setShowWhyTooltip(true)}
-                    onMouseLeave={() => setShowWhyTooltip(false)}
-                    onFocus={() => setShowWhyTooltip(true)}
-                    onBlur={() => setShowWhyTooltip(false)}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      padding: 0,
-                      font: 'inherit',
-                      fontSize: 13,
-                      color: 'var(--hachi-brand)',
-                      cursor: 'pointer',
-                      textDecoration: 'underline',
-                      textDecorationStyle: 'dotted',
-                    }}
-                  >
-                    Why?
-                  </button>
-                  {showWhyTooltip && (
-                    <div
-                      id="authoring-why-tooltip"
-                      role="tooltip"
-                      style={{
-                        position: 'absolute',
-                        top: '100%',
-                        left: 0,
-                        marginTop: 6,
-                        padding: '8px 12px',
-                        background: 'var(--hachi-surface)',
-                        border: '0.5px solid var(--hachi-line)',
-                        borderRadius: 8,
-                        width: 280,
-                        fontSize: 12.5,
-                        lineHeight: '18px',
-                        color: 'var(--hachi-ink)',
-                        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                        zIndex: 200,
-                        pointerEvents: 'none',
-                      }}
-                    >
-                      Pass 1 reads only the index (~30 tokens) to route to the right node. Pass 2
-                      reads dense summaries. Pass 3 reads full content only when truly needed —
-                      most queries never reach it.
-                    </div>
-                  )}
-                </span>
-              </span>
-              <button
-                className="hachi-ghost-icon-btn-bg"
-                onClick={dismissOgExplainer}
-                title="Dismiss"
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  width: 26,
-                  height: 26,
-                  borderRadius: 6,
-                  border: 'none',
-                  background: 'transparent',
-                  color: 'var(--hachi-muted)',
-                  cursor: 'pointer',
-                  flexShrink: 0,
-                  transition: 'background var(--dur-fast) var(--ease)',
-                }}
-              >
-                <Icon name="x" size={13} />
-              </button>
-            </div>
-          )}
+          <OgExplainer
+            headline=""
+            body={<>Skills use the <strong style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>.og</strong>{' '}format — a 3-pass graph that cuts token usage by up to 70 % vs. loading entire files.</>}
+            whyTooltip={AUTHORING_WHY}
+          />
 
           {/* Lead copy */}
           <div
