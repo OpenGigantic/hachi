@@ -7,8 +7,8 @@
 // Behaviour:
 //   • Focuses the first focusable child when `active` becomes true.
 //   • Tab / Shift-Tab cycles within the container (wraps at edges).
-//   • On deactivation the ref loses the event listener automatically.
-//   • Returns focus to the element that was active *before* the trap opened.
+//   • On deactivation / unmount, restores focus to the element that was
+//     active before the trap opened (guarded by document.contains).
 
 import { useEffect, useRef } from 'react';
 
@@ -18,13 +18,12 @@ const FOCUSABLE =
 
 export function useFocusTrap<T extends HTMLElement = HTMLElement>(active: boolean) {
   const containerRef = useRef<T>(null);
-  const previouslyFocused = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!active) return;
 
     // Remember what had focus before we opened.
-    previouslyFocused.current = document.activeElement as HTMLElement | null;
+    const prev = document.activeElement as HTMLElement | null;
 
     const el = containerRef.current;
     if (!el) return;
@@ -63,15 +62,9 @@ export function useFocusTrap<T extends HTMLElement = HTMLElement>(active: boolea
     el.addEventListener('keydown', onKeyDown);
     return () => {
       el.removeEventListener('keydown', onKeyDown);
+      // Restore focus on deactivation OR unmount (whichever comes first).
+      if (prev && document.contains(prev)) prev.focus();
     };
-  }, [active]);
-
-  // Restore focus when the trap is deactivated.
-  useEffect(() => {
-    if (!active && previouslyFocused.current) {
-      previouslyFocused.current.focus();
-      previouslyFocused.current = null;
-    }
   }, [active]);
 
   return containerRef;
