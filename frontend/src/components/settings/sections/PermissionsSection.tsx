@@ -13,6 +13,9 @@ import {
   setAskRuleLive,
   addFolderLive,
   addCommandLive,
+  removeFolderLive,
+  removeCommandLive,
+  toggleOpToolLive,
 } from '../../../lib/data/domains/config';
 import { cardStyle, sectionHeadingStyle, PanelHeader } from '../shared';
 
@@ -194,9 +197,7 @@ export default function PermissionsSection() {
   const allowedCommands = useStore((s) => s.allowedCommands);
   const opTools = useStore((s) => s.opTools);
   const operator = useStore((s) => s.operator);
-  const removeFolder = useStore((s) => s.removeFolder);
-  const removeCommand = useStore((s) => s.removeCommand);
-  const toggleOpTool = useStore((s) => s.toggleOpTool);
+  // Use Live functions so removals are persisted to the gateway (T2 / BB-78).
 
   // Hold the user's chosen value until setSafetyLive's full round-trip
   // (PUT + re-read) settles. Previously cleared as soon as the optimistic
@@ -413,7 +414,7 @@ export default function PermissionsSection() {
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 18 }}>
             {allowedFolders.map((folder) => (
-              <Chip key={folder} value={folder} onRemove={removeFolder} />
+              <Chip key={folder} value={folder} onRemove={(f) => void removeFolderLive(f)} />
             ))}
             {addingFolder ? (
               <InlineInput
@@ -431,7 +432,7 @@ export default function PermissionsSection() {
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 18 }}>
             {allowedCommands.map((cmd) => (
-              <Chip key={cmd} value={cmd} onRemove={removeCommand} />
+              <Chip key={cmd} value={cmd} onRemove={(c) => void removeCommandLive(c)} />
             ))}
             {addingCommand ? (
               <InlineInput
@@ -470,7 +471,7 @@ export default function PermissionsSection() {
                   {tool.scope}
                 </div>
               </div>
-              <Switch checked={tool.on} onChange={() => toggleOpTool(tool.id)} />
+              <Switch checked={tool.on} onChange={() => void toggleOpToolLive(tool.id)} />
             </div>
           ))}
         </div>

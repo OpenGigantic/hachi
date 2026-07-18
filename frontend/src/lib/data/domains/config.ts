@@ -392,6 +392,64 @@ export async function addCommandLive(command: string): Promise<void> {
 }
 
 /**
+ * Remove an allowed folder path and persist to the gateway.
+ * Only removes from the UI list on 2xx; shows an error toast on failure.
+ */
+export async function removeFolderLive(path: string): Promise<void> {
+  const { removeFolder, showToast } = useStore.getState();
+  if (USE_MOCKS) {
+    removeFolder(path);
+    return;
+  }
+  try {
+    await apiSend<unknown>("DELETE", "/config/permissions/folders", { path });
+    removeFolder(path);
+  } catch {
+    showToast("Could not update permissions — nothing was changed", "blocked");
+  }
+}
+
+/**
+ * Remove an allowed command and persist to the gateway.
+ * Only removes from the UI list on 2xx; shows an error toast on failure.
+ */
+export async function removeCommandLive(command: string): Promise<void> {
+  const { removeCommand, showToast } = useStore.getState();
+  if (USE_MOCKS) {
+    removeCommand(command);
+    return;
+  }
+  try {
+    await apiSend<unknown>("DELETE", "/config/permissions/commands", { command });
+    removeCommand(command);
+  } catch {
+    showToast("Could not update permissions — nothing was changed", "blocked");
+  }
+}
+
+/**
+ * Toggle an operator tool's enabled state and persist to the gateway.
+ * Reads current `on` value, sends PUT with the flipped boolean; only mutates
+ * the store on 2xx.
+ */
+export async function toggleOpToolLive(id: string): Promise<void> {
+  const { opTools, toggleOpTool, showToast } = useStore.getState();
+  if (USE_MOCKS) {
+    toggleOpTool(id);
+    return;
+  }
+  const tool = opTools.find((t) => t.id === id);
+  if (!tool) return;
+  const enabled = !tool.on;
+  try {
+    await apiSend<unknown>("PUT", `/capabilities/${id}/enabled`, { enabled });
+    toggleOpTool(id);
+  } catch {
+    showToast("Could not update permissions — nothing was changed", "blocked");
+  }
+}
+
+/**
  * Toggle memory flags and persist to the gateway.
  */
 export async function setMemoryLive(

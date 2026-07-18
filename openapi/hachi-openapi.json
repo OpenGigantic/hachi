@@ -2355,6 +2355,54 @@
             "BearerAuth": []
           }
         ]
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Delete Allowed Folder",
+        "description": "Remove a folder path from the allowed_paths list and persist to device-permissions.og.",
+        "operationId": "delete_allowed_folder_config_permissions_folders_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AllowedFolderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Delete Allowed Folder Config Permissions Folders Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
       }
     },
     "/config/permissions/commands": {
@@ -2382,6 +2430,54 @@
               "application/json": {
                 "schema": {
                   "title": "Response Post Allowed Command Config Permissions Commands Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Delete Allowed Command",
+        "description": "Remove a command from the allowed_commands list and persist to device-permissions.og.",
+        "operationId": "delete_allowed_command_config_permissions_commands_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AllowedCommandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Delete Allowed Command Config Permissions Commands Delete"
                 }
               }
             }

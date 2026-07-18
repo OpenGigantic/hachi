@@ -2,12 +2,14 @@
 
 Covers:
 - G1-T3: PUT /config/limits, POST /config/permissions/folders, POST /config/permissions/commands
+- T2b: DELETE /config/permissions/folders, DELETE /config/permissions/commands
 - G1-T4: POST /sessions/{id}/permissions/always-allow
 - G1-T5: POST /runtime/mcp/register
 - G1-T6: GET /skills/kennel, POST /skills/add
 - G1-T7: session resume wiring (_InProcessGatewayRuntime._pending_resume_session_id)
 - G1-T8: hachi serve StaticFiles mount
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -367,8 +369,9 @@ def test_update_limits_runtime_writes_config(
 
     class _FakeConfig:
         limits = _FakeLimits()
-        provider = SimpleNamespace(kind="anthropic", model="haiku", base_url=None,
-                                   api_key_ref=None, api_key_env=None)
+        provider = SimpleNamespace(
+            kind="anthropic", model="haiku", base_url=None, api_key_ref=None, api_key_env=None
+        )
         permissions = SimpleNamespace(tier="guided")
         memory = SimpleNamespace(enable_session_history=True, enable_semantic_memory=True)
         capabilities: dict = {}
@@ -430,3 +433,56 @@ def test_serve_skips_mount_when_dist_missing() -> None:
     with TestClient(app, raise_server_exceptions=False) as client:
         resp = client.get("/health")
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# T2b — DELETE /config/permissions/folders and /config/permissions/commands
+# ---------------------------------------------------------------------------
+
+
+def test_delete_allowed_folder_returns_200() -> None:
+    received: list[str] = []
+
+    def _stub(path: str) -> dict:
+        received.append(path)
+        return {"ok": True, "path": path, "modified": True}
+
+    client = _app(remove_allowed_folder=_stub)
+    resp = client.request(
+        "DELETE",
+        "/config/permissions/folders",
+        json={"path": "/home/user/projects"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert received[0] == "/home/user/projects"
+
+
+def test_delete_allowed_folder_returns_503_when_not_attached() -> None:
+    client = _app()
+    resp = client.request("DELETE", "/config/permissions/folders", json={"path": "/tmp"})
+    assert resp.status_code == 503
+
+
+def test_delete_allowed_command_returns_200() -> None:
+    received: list[str] = []
+
+    def _stub(cmd: str) -> dict:
+        received.append(cmd)
+        return {"ok": True, "command": cmd, "modified": True}
+
+    client = _app(remove_allowed_command=_stub)
+    resp = client.request(
+        "DELETE",
+        "/config/permissions/commands",
+        json={"command": "npm"},
+    )
+    assert resp.status_code == 200
+    assert received[0] == "npm"
+
+
+def test_delete_allowed_command_returns_503_when_not_attached() -> None:
+    client = _app()
+    resp = client.request("DELETE", "/config/permissions/commands", json={"command": "git"})
+    assert resp.status_code == 503
