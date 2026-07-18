@@ -2086,6 +2086,14 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** never wire a destructive UI action to a bare store mutation; always mirror the add-path pattern (Live function → gateway → store-on-2xx).
 - **Locked by:** `frontend/src/lib/data/domains/config.test.ts` — "removeFolderLive/removeCommandLive/toggleOpToolLive — persist to gateway (BB-78)"; `tests/test_g1_wave1.py` — "test_delete_allowed_folder/command_*".
 
+### BB-79 — "Browse the kennel → Add" dead-ends; consent dialog never appears
+
+- **Symptom:** Clicking Add on any skill in the kennel browse panel had no effect — the browse panel stayed open and the consent dialog never appeared.
+- **Root cause:** `askKennel` in store.ts set `kennelConsent: item` but did not clear `kennelBrowseOpen`. `KennelConsent.tsx` renders the browse panel when `kennelBrowseOpen` is true, so it always rendered the browse panel, never the consent view — even when a pending consent item was in state.
+- **Fix:** `askKennel: (item) => set({ kennelConsent: item, kennelBrowseOpen: false })` — consent and browse are mutually exclusive; clearing the browse flag is the correct invariant.
+- **Avoid:** consent and browse mode are mutually exclusive — setting one must always clear the other.
+- **Locked by:** `frontend/src/components/overlays/KennelConsent.test.tsx` — "askKennel — closes browse panel before showing consent (BB-79)".
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
