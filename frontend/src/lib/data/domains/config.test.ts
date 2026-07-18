@@ -6,11 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── Mock the HTTP client so we control /config and /models independently ──────
 const apiGetMock = vi.fn();
+const apiSendMock = vi.fn();
 vi.mock("../client", () => ({
   USE_MOCKS: false,
   apiGet: (path: string, params?: unknown, signal?: unknown) =>
     apiGetMock(path, params, signal),
-  apiSend: vi.fn(),
+  apiSend: (...args: unknown[]) => apiSendMock(...args),
   // store.ts calls this at module-load to wire the reconnecting flag.
   registerReconnectCallback: vi.fn(),
   isNetworkError: () => false,
@@ -22,7 +23,7 @@ vi.mock("../client", () => ({
 // loadConfig calls loadDailySpend() — stub it so no real network happens.
 vi.mock("./spend", () => ({ loadDailySpend: vi.fn().mockResolvedValue(undefined) }));
 
-import { loadConfig, getAvailableModels } from "./config";
+import { loadConfig, getAvailableModels, removeFolderLive, removeCommandLive, toggleOpToolLive } from "./config";
 import { useStore } from "../../store/store";
 
 const CONFIG_OPEN = {
@@ -83,5 +84,66 @@ describe("loadConfig — safety tier resilience (BB-15)", () => {
 
     expect(useStore.getState().safety).toBe("open");
     expect(getAvailableModels()).toHaveLength(1);
+  });
+});
+
+// ---- T2 / BB-78: permission removals must persist to the gateway (BB-78) ----
+
+describe("removeFolderLive — persist to gateway (BB-78)", () => {
+  beforeEach(() => {
+    apiSendMock.mockReset();
+    useStore.getState().hydrate({ allowedFolders: ["/home/user/projects", "/tmp"] });
+  });
+
+  it("removes folder from store on 200", async () => {
+    apiSendMock.mockResolvedValue({ ok: true });
+    await removeFolderLive("/home/user/projects");
+    expect(useStore.getState().allowedFolders).not.toContain("/home/user/projects");
+  });
+
+  it("keeps folder in store on failure", async () => {
+    apiSendMock.mockRejectedValue(new Error("server error"));
+    await removeFolderLive("/home/user/projects");
+    expect(useStore.getState().allowedFolders).toContain("/home/user/projects");
+  });
+});
+
+describe("removeCommandLive — persist to gateway (BB-78)", () => {
+  beforeEach(() => {
+    apiSendMock.mockReset();
+    useStore.getState().hydrate({ allowedCommands: ["npm", "git"] });
+  });
+
+  it("removes command from store on 200", async () => {
+    apiSendMock.mockResolvedValue({ ok: true });
+    await removeCommandLive("npm");
+    expect(useStore.getState().allowedCommands).not.toContain("npm");
+  });
+
+  it("keeps command in store on failure", async () => {
+    apiSendMock.mockRejectedValue(new Error("server error"));
+    await removeCommandLive("npm");
+    expect(useStore.getState().allowedCommands).toContain("npm");
+  });
+});
+
+describe("toggleOpToolLive — persist to gateway (BB-78)", () => {
+  beforeEach(() => {
+    apiSendMock.mockReset();
+    useStore.getState().hydrate({
+      opTools: [{ id: "shell", label: "Shell", scope: "approved folders", on: true }],
+    });
+  });
+
+  it("flips op tool in store on 200", async () => {
+    apiSendMock.mockResolvedValue({ ok: true });
+    await toggleOpToolLive("shell");
+    expect(useStore.getState().opTools.find((t) => t.id === "shell")?.on).toBe(false);
+  });
+
+  it("keeps op tool unchanged on failure", async () => {
+    apiSendMock.mockRejectedValue(new Error("server error"));
+    await toggleOpToolLive("shell");
+    expect(useStore.getState().opTools.find((t) => t.id === "shell")?.on).toBe(true);
   });
 });

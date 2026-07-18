@@ -136,6 +136,8 @@ class GatewayControlPlane:
         update_limits: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         add_allowed_folder: Callable[[str], dict[str, Any]] | None = None,
         add_allowed_command: Callable[[str], dict[str, Any]] | None = None,
+        remove_allowed_folder: Callable[[str], dict[str, Any]] | None = None,
+        remove_allowed_command: Callable[[str], dict[str, Any]] | None = None,
         add_always_allow: Callable[[str, str, str], dict[str, Any]] | None = None,
         register_mcp_server: (Callable[..., dict[str, Any]] | None) = None,
         set_mcp_enabled: Callable[[str, bool], dict[str, Any]] | None = None,
@@ -212,6 +214,8 @@ class GatewayControlPlane:
         self._update_limits = update_limits
         self._add_allowed_folder = add_allowed_folder
         self._add_allowed_command = add_allowed_command
+        self._remove_allowed_folder = remove_allowed_folder
+        self._remove_allowed_command = remove_allowed_command
         self._add_always_allow = add_always_allow
         self._register_mcp_server = register_mcp_server
         self._set_mcp_enabled = set_mcp_enabled
@@ -1017,6 +1021,16 @@ class GatewayControlPlane:
     def add_allowed_command(self, command: str) -> Any:
         """Append a command to the allowed_commands list (POST /config/permissions/commands)."""
         handler = self._require_handler(self._add_allowed_command, "add allowed command")
+        return handler(command)
+
+    def remove_allowed_folder(self, folder_path: str) -> Any:
+        """Remove a folder from the allowed_paths list (DELETE /config/permissions/folders)."""
+        handler = self._require_handler(self._remove_allowed_folder, "remove allowed folder")
+        return handler(folder_path)
+
+    def remove_allowed_command(self, command: str) -> Any:
+        """Remove a command from the allowed_commands list (DELETE /config/permissions/commands)."""
+        handler = self._require_handler(self._remove_allowed_command, "remove allowed command")
         return handler(command)
 
     def add_always_allow(self, session_id: str, request: str, action: str) -> Any:

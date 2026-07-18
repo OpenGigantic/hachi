@@ -910,7 +910,11 @@ export interface paths {
          * @description Append a folder path to the allowed_paths list and persist to device-permissions.og.
          */
         post: operations["post_allowed_folder_config_permissions_folders_post"];
-        delete?: never;
+        /**
+         * Delete Allowed Folder
+         * @description Remove a folder path from the allowed_paths list and persist to device-permissions.og.
+         */
+        delete: operations["delete_allowed_folder_config_permissions_folders_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -930,7 +934,11 @@ export interface paths {
          * @description Append a command to the allowed_commands list and persist to device-permissions.og.
          */
         post: operations["post_allowed_command_config_permissions_commands_post"];
-        delete?: never;
+        /**
+         * Delete Allowed Command
+         * @description Remove a command from the allowed_commands list and persist to device-permissions.og.
+         */
+        delete: operations["delete_allowed_command_config_permissions_commands_delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4113,7 +4121,87 @@ export interface operations {
             };
         };
     };
+    delete_allowed_folder_config_permissions_folders_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AllowedFolderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     post_allowed_command_config_permissions_commands_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AllowedCommandRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_allowed_command_config_permissions_commands_delete: {
         parameters: {
             query?: never;
             header?: never;

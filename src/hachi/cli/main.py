@@ -1788,6 +1788,66 @@ class _InProcessGatewayRuntime:
 
         return {"ok": True, "command": cmd, "modified": modified}
 
+    def remove_allowed_folder(self, folder_path: str) -> dict:
+        """Remove a folder path from device-permissions.og allowed_paths."""
+        from pathlib import Path as _Path
+
+        path = folder_path.strip()
+        if not path:
+            raise GatewayProtocolError("path cannot be empty")
+
+        permissions_file = get_permissions_file()
+        if not permissions_file.exists():
+            raise GatewayProtocolError("device-permissions.og not found — run `hachi setup` first")
+
+        resolved = str(_Path(path).expanduser().resolve())
+        content = permissions_file.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        modified = False
+        for i, line in enumerate(lines):
+            if line.strip().startswith("allowed_paths="):
+                current_value = line.split("=", 1)[1].strip()
+                existing = [t.strip() for t in current_value.split(",") if t.strip()]
+                # Accept both the raw path and the resolved path for removal.
+                filtered = [p for p in existing if p != path and p != resolved]
+                if len(filtered) != len(existing):
+                    lines[i] = f"allowed_paths={', '.join(filtered)}"
+                    modified = True
+                break
+
+        if modified:
+            permissions_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        return {"ok": True, "path": path, "modified": modified}
+
+    def remove_allowed_command(self, command: str) -> dict:
+        """Remove a command from device-permissions.og allowed_commands."""
+        cmd = command.strip()
+        if not cmd:
+            raise GatewayProtocolError("command cannot be empty")
+
+        permissions_file = get_permissions_file()
+        if not permissions_file.exists():
+            raise GatewayProtocolError("device-permissions.og not found — run `hachi setup` first")
+
+        content = permissions_file.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        modified = False
+        for i, line in enumerate(lines):
+            if line.strip().startswith("allowed_commands="):
+                current_value = line.split("=", 1)[1].strip()
+                existing = [t.strip() for t in current_value.split(",") if t.strip()]
+                filtered = [c for c in existing if c != cmd]
+                if len(filtered) != len(existing):
+                    lines[i] = f"allowed_commands={', '.join(filtered)}"
+                    modified = True
+                break
+
+        if modified:
+            permissions_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        return {"ok": True, "command": cmd, "modified": modified}
+
     def add_always_allow(self, session_id: str, request: str, action: str) -> dict:
         """Persist a standing always-allow rule to the global config.
 
@@ -2950,6 +3010,8 @@ def _build_gateway_control_plane(
         update_limits=support.update_limits,
         add_allowed_folder=support.add_allowed_folder,
         add_allowed_command=support.add_allowed_command,
+        remove_allowed_folder=support.remove_allowed_folder,
+        remove_allowed_command=support.remove_allowed_command,
         add_always_allow=support.add_always_allow,
         register_mcp_server=support.register_mcp_server,
         set_mcp_enabled=support.set_mcp_enabled,

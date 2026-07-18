@@ -1462,6 +1462,22 @@ def create_gateway_app(
         """Append a command to the allowed_commands list and persist to device-permissions.og."""
         return control_plane.add_allowed_command(payload.command)
 
+    # T2b — DELETE /config/permissions/folders (remove allowed folder)
+    @config.delete("/permissions/folders")
+    async def delete_allowed_folder(payload: AllowedFolderRequest) -> Any:
+        """Remove a folder path from the allowed_paths list and persist to device-permissions.og."""
+        return await anyio.to_thread.run_sync(
+            lambda: control_plane.remove_allowed_folder(payload.path)
+        )
+
+    # T2b — DELETE /config/permissions/commands (remove allowed command)
+    @config.delete("/permissions/commands")
+    async def delete_allowed_command(payload: AllowedCommandRequest) -> Any:
+        """Remove a command from the allowed_commands list and persist to device-permissions.og."""
+        return await anyio.to_thread.run_sync(
+            lambda: control_plane.remove_allowed_command(payload.command)
+        )
+
     # ---- Multi-provider + routing admin routes ----
 
     @config.get("/providers")

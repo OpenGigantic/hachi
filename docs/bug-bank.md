@@ -2078,6 +2078,14 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** never use `expiresAt <= now` without first guarding `expiresAt > 0`; zero is the "no expiry" sentinel throughout the approval domain.
 - **Locked by:** `frontend/src/lib/store/store.test.ts` — "tickApprovals — live sentinel and mock expiry (BB-77)".
 
+### BB-78 — Permission removals and operator-tool toggles silently reverted on reload
+
+- **Symptom:** Removing an allowed folder/command in Settings → Permissions, or toggling an operator tool, took effect in the UI but reverted to the previous state on the next hard reload. The Safety section header promised "Narrow it any time."
+- **Root cause:** `removeFolder`, `removeCommand`, and `toggleOpTool` in `store.ts` only mutated local Zustand state — no gateway call was made. In contrast, the add paths (`addFolderLive`, `addCommandLive`) already called POST routes. The DELETE routes `DELETE /config/permissions/folders` and `DELETE /config/permissions/commands` did not exist in the backend.
+- **Fix:** Added `remove_allowed_folder` / `remove_allowed_command` methods to `HachiSupportService` (cli/main.py), wired them through `GatewayControlPlane` (control_plane.py), and exposed them as `DELETE /config/permissions/folders` and `/commands` in fastapi_app.py. Added `removeFolderLive`, `removeCommandLive`, `toggleOpToolLive` to config.ts (store only mutates on 2xx; shows blocked toast on failure). Rewired PermissionsSection.tsx to use the Live functions. Regenerated OpenAPI schema (BB-4).
+- **Avoid:** never wire a destructive UI action to a bare store mutation; always mirror the add-path pattern (Live function → gateway → store-on-2xx).
+- **Locked by:** `frontend/src/lib/data/domains/config.test.ts` — "removeFolderLive/removeCommandLive/toggleOpToolLive — persist to gateway (BB-78)"; `tests/test_g1_wave1.py` — "test_delete_allowed_folder/command_*".
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
