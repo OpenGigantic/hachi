@@ -713,10 +713,11 @@ function Step4({
           </div>
         </div>
       </div>
-      <label style={{ display: 'flex', alignItems: 'center', gap: 11, cursor: 'pointer' }}>
-        <Switch checked={routine} onChange={onToggle} />
-        <span style={{ fontSize: 14 }}>Set up this routine and keep it on watch</span>
-      </label>
+      <Switch
+        checked={routine}
+        onChange={onToggle}
+        label="Set up this routine and keep it on watch"
+      />
     </div>
   );
 }

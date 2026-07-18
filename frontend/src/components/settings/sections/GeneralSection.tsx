@@ -86,7 +86,7 @@ export default function GeneralSection() {
               integrators.
             </div>
           </div>
-          <Switch checked={operator} onChange={toggleOperator} />
+          <Switch checked={operator} onChange={toggleOperator} ariaLabel="Operator mode" />
         </div>
       </div>
 
@@ -227,7 +227,7 @@ export default function GeneralSection() {
             <Icon name={themeIcon} size={17} />
           </span>
           <div style={{ flex: 1, fontSize: 14 }}>Dark mode</div>
-          <Switch checked={isDark} onChange={() => toggleTheme()} />
+          <Switch checked={isDark} onChange={() => toggleTheme()} ariaLabel="Dark mode" />
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '11px 0' }}>

@@ -406,6 +406,7 @@ export default function PermissionsSection() {
               <Switch
                 checked={rule.on}
                 onChange={() => void setAskRuleLive(rule.id, !rule.on)}
+                ariaLabel={rule.label}
               />
             </div>
           ))
@@ -499,7 +500,7 @@ export default function PermissionsSection() {
                   {tool.scope}
                 </div>
               </div>
-              <Switch checked={tool.on} onChange={() => void toggleOpToolLive(tool.id)} />
+              <Switch checked={tool.on} onChange={() => void toggleOpToolLive(tool.id)} ariaLabel={tool.label} />
             </div>
           ))}
         </div>
