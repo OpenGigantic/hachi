@@ -501,18 +501,14 @@ function Home() {
                     onDecline={() => declineApproval(a.id)}
                   />
                 ))}
-                {/* LOW-010: show overflow count when more than 3 approvals */}
                 {approvals.length > 3 && (
-                  <div
-                    style={{
-                      fontSize: '13px',
-                      color: 'var(--hachi-trust)',
-                      padding: '6px 4px',
-                      cursor: 'default',
-                    }}
+                  <button
+                    type="button"
+                    className="hachi-more-approvals-link"
+                    onClick={() => navigate({ to: '/approvals' as any })}
                   >
-                    + {approvals.length - 3} more waiting — scroll down in the Leash tab to see all
-                  </div>
+                    + {approvals.length - 3} more waiting on the leash →
+                  </button>
                 )}
               </div>
             </div>
