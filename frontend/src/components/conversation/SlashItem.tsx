@@ -1,15 +1,17 @@
 // SlashItem — a row in the "/" slash-command autocomplete popup.
 
 interface SlashItemProps {
+  id?: string
   cmd: string
   desc: string
   active: boolean
   onPick: () => void
 }
 
-export function SlashItem({ cmd, desc, active, onPick }: SlashItemProps) {
+export function SlashItem({ id, cmd, desc, active, onPick }: SlashItemProps) {
   return (
     <button
+      id={id}
       type="button"
       role="option"
       aria-selected={active}
