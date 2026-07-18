@@ -12,7 +12,7 @@
 
 import React, { useState, useRef } from 'react';
 import { Icon } from '../icons/Icon';
-import { useFocusTrap } from '../../lib/hooks/useFocusTrap';
+import { Modal } from '../ui/Modal';
 import { probeProvider, type ProviderSpec } from '../../lib/data/domains/providers';
 import { inputStyle, labelStyle } from './shared';
 
@@ -77,7 +77,6 @@ export function AddProviderDialog({
   onSave: (name: string, spec: ProviderSpec) => Promise<void>;
   onClose: () => void;
 }) {
-  const trapRef = useFocusTrap<HTMLDivElement>(true);
   const headerIdRef = useRef(0);
 
   const [name, setName] = useState(initial?.name ?? 'anthropic');
@@ -174,13 +173,6 @@ export function AddProviderDialog({
     }
   }
 
-  function onKeyDown(e: React.KeyboardEvent) {
-    if (e.key === 'Escape') {
-      e.stopPropagation();
-      onClose();
-    }
-  }
-
   const showModelSelect = models.length > 0 && !manualModel;
 
   const linkBtn: React.CSSProperties = {
@@ -194,39 +186,8 @@ export function AddProviderDialog({
     marginTop: 6,
   };
 
-  const backdropStyle: React.CSSProperties = {
-    position: 'fixed',
-    inset: 0,
-    background: 'rgba(28,26,32,.4)',
-    display: 'grid',
-    placeItems: 'center',
-    padding: 24,
-    zIndex: 60,
-  };
-  const panelStyle: React.CSSProperties = {
-    width: 500,
-    maxWidth: '96vw',
-    maxHeight: '88vh',
-    background: 'var(--hachi-surface)',
-    border: '0.5px solid var(--hachi-line)',
-    borderRadius: 18,
-    overflow: 'hidden',
-    boxShadow: '0 24px 60px rgba(28,26,32,.24)',
-    display: 'flex',
-    flexDirection: 'column',
-  };
-
   return (
-    <div style={backdropStyle} onClick={onClose}>
-      <div
-        ref={trapRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="add-provider-title"
-        style={panelStyle}
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={onKeyDown}
-      >
+    <Modal onClose={onClose} titleId="add-provider-title" dirtyGuard={!!apiKey} width={500}>
         {/* Header */}
         <div
           style={{
@@ -640,7 +601,6 @@ export function AddProviderDialog({
             {saving ? 'Saving…' : isEditing ? 'Save changes' : 'Add provider'}
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
