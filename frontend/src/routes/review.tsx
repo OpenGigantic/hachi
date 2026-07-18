@@ -15,20 +15,7 @@ import type { AgentInteraction } from '../lib/data/types';
 import { loadInteractions, rateInteraction } from '../lib/data/domains/interactions';
 import { extractInjectedAttachments } from '../lib/data/domains/chat';
 import { PendingCard } from '../components/ui/PendingCard';
-
-// ---- helpers ----
-
-function fmt(cost: number | null): string {
-  if (cost == null) return '—';
-  return `$${cost.toFixed(4)}`;
-}
-
-function fmtTokens(n: number | null): string {
-  if (n == null) return '—';
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
+import { fmtUSD, fmtTokens } from '../lib/ui/format';
 
 // ---- sub-component: a single interaction card ----
 
@@ -73,13 +60,13 @@ function InteractionCard({ ix }: { ix: AgentInteraction }) {
         {ix.tokenCost != null && (
           <>
             <span style={{ opacity: 0.4 }}>·</span>
-            <span>{fmt(ix.tokenCost)}</span>
+            <span style={{ fontVariantNumeric: 'tabular-nums' }}>{ix.tokenCost != null ? fmtUSD(ix.tokenCost) : '—'}</span>
           </>
         )}
         {ix.tokens != null && (
           <>
             <span style={{ opacity: 0.4 }}>·</span>
-            <span>{fmtTokens(ix.tokens)} tok</span>
+            <span style={{ fontVariantNumeric: 'tabular-nums' }}>{ix.tokens != null ? fmtTokens(ix.tokens) : '—'} tok</span>
           </>
         )}
         <div style={{ flex: 1 }} />

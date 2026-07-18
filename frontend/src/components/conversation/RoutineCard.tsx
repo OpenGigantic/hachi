@@ -5,7 +5,7 @@ import React from 'react'
 import { useStore } from '../../lib/store/store'
 import { Icon } from '../icons/Icon'
 import type { ChatMessage } from '../../lib/data/types'
-import { fmtDollar } from './helpers'
+import { fmtUSD } from './helpers'
 
 interface RoutineCardProps {
   routine: NonNullable<ChatMessage['routine']>
@@ -135,7 +135,7 @@ export const RoutineCard = React.memo(function RoutineCard({ routine, msgId }: R
               fontVariantNumeric: 'tabular-nums',
             }}
           >
-            {fmtDollar(routine.costPerRun)}/run
+            {fmtUSD(routine.costPerRun)}/run
           </span>
         )}
       </div>

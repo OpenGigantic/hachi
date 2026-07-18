@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // Live run — /run
 // Prototype markup: Hachi Web App.dc.html lines 1239–1310
 // Logic: lines 1927–2012, 2452–2471 (openRun, runTick, runAllowLeash,
@@ -21,12 +21,7 @@ import { Terminal } from "../components/ui/Terminal";
 import { LeashPrompt } from "../components/brand/LeashPrompt";
 import { useFocusTrap } from "../lib/hooks/useFocusTrap";
 import { statusMeta } from "../lib/ui/status";
-
-// ---- helpers ----
-
-function fmtMoney(n: number): string {
-  return "$" + Number(n).toFixed(2);
-}
+import { fmtUSD } from "../lib/ui/format";
 
 // Mirror prototype stepMeta — icon + color per step state.
 function stepMeta(state: string): { icon: string; color: string } {
@@ -90,8 +85,8 @@ function RunSurface({ onBack }: RunSurfaceProps) {
     ? "Hachi is blocked — needs you"
     : "Hachi is working";
 
-  const spentStr = fmtMoney(runSpent);
-  const budgetStr = fmtMoney(runView?.budget ?? 1.0);
+  const spentStr = fmtUSD(runSpent);
+  const budgetStr = fmtUSD(runView?.budget ?? 1.0);
 
   const canStop = !runDone && !runLeash;
 

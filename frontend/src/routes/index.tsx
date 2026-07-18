@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // Route: / — Home ("Today")
 // Prototype markup: Hachi Web App.dc.html lines 87–211
 // Logic: lines 2189–2201 (renderVals home section)
@@ -13,12 +13,7 @@ import { LeashPrompt } from '../components/brand/LeashPrompt';
 import { useCountdown } from '../lib/hooks/useCountdown';
 import type { Integration } from '../lib/data/types';
 import { statusMeta } from '../lib/ui/status';
-
-// ---- Local helpers ----
-
-function fmtMoney(n: number): string {
-  return '$' + Number(n).toFixed(2);
-}
+import { fmtUSD } from '../lib/ui/format';
 
 type RiskKey = 'low' | 'medium' | 'high';
 
@@ -166,7 +161,7 @@ function RunCardHome({ title, status, progress, meta, spent, budget, onClick }: 
       >
         <span>{meta}</span>
         <span style={{ fontVariantNumeric: 'tabular-nums' }}>
-          spent {fmtMoney(spent)} of {fmtMoney(budget)}
+          spent {fmtUSD(spent)} of {fmtUSD(budget)}
         </span>
       </div>
     </div>
@@ -707,7 +702,7 @@ function RoutineRow({ routine: w }: RoutineRowProps) {
           fontVariantNumeric: 'tabular-nums',
         }}
       >
-        {fmtMoney(w.cost)}/run
+        {fmtUSD(w.cost)}/run
       </span>
     </div>
   );
@@ -752,7 +747,7 @@ function FinishedRow({ item: f }: FinishedRowProps) {
           fontVariantNumeric: 'tabular-nums',
         }}
       >
-        {fmtMoney(f.cost)}
+        {fmtUSD(f.cost)}
       </span>
     </div>
   );
@@ -874,8 +869,8 @@ function BudgetSummary({ spent, budget }: BudgetSummaryProps) {
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: '13px', color: 'var(--hachi-muted)' }}>
           {unlimited
-            ? `spent ${fmtMoney(spent)} today — no budget set`
-            : `spent ${fmtMoney(spent)} of ${fmtMoney(budget)} today`}
+            ? `spent ${fmtUSD(spent)} today — no budget set`
+            : `spent ${fmtUSD(spent)} of ${fmtUSD(budget)} today`}
         </div>
         <div
           style={{
