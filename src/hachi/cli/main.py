@@ -3701,8 +3701,54 @@ def _launch_cockpit(resume_session_id: str | None = None) -> None:
         server.stop()
 
 
+def _run_once(prompt: str) -> None:
+    """Run a single agent turn non-interactively and print the reply.
+
+    Powers ``hachi run --once`` (and the bare positional ``hachi run "<task>"``):
+    boots an agent, runs one :meth:`AgentSession.chat` turn, writes ONLY the reply
+    to stdout so it pipes byte-clean into scripts and CI, then exits. Diagnostics
+    and errors go through ``console`` (Rich/stderr-ish) so they never contaminate
+    the piped reply on success.
+    """
+    try:
+        agent: AgentSession = boot_agent()
+    except Exception as exc:  # noqa: BLE001 - any boot failure is a clean exit 1
+        console.print(f"[bold red]Failed to boot agent:[/] {exc}")
+        console.print(
+            "[yellow]Hint: set your provider API key (e.g. ANTHROPIC_API_KEY) "
+            "or run `hachi setup`.[/yellow]"
+        )
+        raise typer.Exit(1) from None
+
+    try:
+        response = agent.chat(prompt)
+    except Exception as exc:  # noqa: BLE001 - a turn failure is a clean exit 1
+        console.print(f"[bold red]Error:[/] {exc}")
+        raise typer.Exit(1) from None
+    finally:
+        try:
+            agent.shutdown()
+        except Exception:  # noqa: BLE001 - shutdown is best-effort
+            pass
+
+    # Raw echo (not console.print): keep stdout unwrapped and ANSI-free so the
+    # reply pipes cleanly into `jq`, files, and downstream commands.
+    typer.echo(response)
+
+
 @app.command()
 def run(
+    prompt: str | None = typer.Argument(
+        None,
+        help="One-shot task text. With this (or --once) Hachi runs a single turn, "
+        "prints the reply, and exits — no TUI. Quote multi-word prompts.",
+    ),
+    once: bool = typer.Option(
+        False,
+        "--once",
+        help="Run a single turn and exit instead of opening the TUI. Reads the "
+        "prompt from the argument, or from stdin when piped.",
+    ),
     repl: bool = typer.Option(
         False,
         "--repl",
@@ -3725,8 +3771,36 @@ def run(
     Start Hachi.
 
     Default: Textual TUI.
+    One-shot: ``hachi run --once "your task"`` (or pipe a prompt via stdin) runs a
+    single turn, prints the reply, and exits — no TUI. Handy in scripts and CI.
     Fallback: pass --repl for the legacy terminal REPL.
     """
+    # --resume / --continue are no-argument session pickers; a stray token after
+    # them (e.g. the old `hachi run --resume <id>` form) now binds to `prompt`, so
+    # reject that combination explicitly instead of silently running a one-shot.
+    if (resume or continue_latest) and prompt is not None:
+        console.print(
+            "[bold red]Error:[/] --resume/--continue take no argument. Use them "
+            'alone to pick a session, or `hachi run --once "your task"` for a '
+            "one-shot run."
+        )
+        raise typer.Exit(2)
+
+    # One-shot: an explicit --once, or any positional prompt, means "single turn,
+    # no TUI". --once with no argument reads the prompt from stdin when piped.
+    if once or prompt is not None:
+        text = (prompt or "").strip()
+        if not text and once and not sys.stdin.isatty():
+            text = sys.stdin.read().strip()
+        if not text:
+            console.print(
+                "[bold red]Error:[/] one-shot mode needs a prompt — pass it as an "
+                'argument (hachi run --once "your task") or pipe it via stdin.'
+            )
+            raise typer.Exit(2)
+        _run_once(text)
+        return
+
     _launch_assistant(repl=repl, resume=resume, continue_latest=continue_latest)
 
 

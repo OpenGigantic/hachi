@@ -73,7 +73,7 @@ Tier-1 or Tier-2 skills (wave-2 enforcement; tracked as a follow-up).
 `.og` files must never contain literal API keys, passwords, tokens, or other credentials.
 
 - Reference credentials by **environment variable name** (e.g. `api_key_env = "ANTHROPIC_API_KEY"`).
-- Store secrets in the secret store (`hachi secret set <name>`) and reference by key name.
+- Store secrets in the secret store (`hachi secrets --set <name>`) and reference by key name.
 - The CI `security` job (which runs `security-audit --fail-on-medium` on PRs) scans all
   tracked files including `.og` files for secret patterns.
 
