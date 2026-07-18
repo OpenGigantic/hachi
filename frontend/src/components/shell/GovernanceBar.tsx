@@ -52,6 +52,7 @@ export function GovernanceBar() {
   const operator = useStore((s) => s.operator);
 
   const pm = postureMeta(safety);
+  const remaining = budget > 0 ? Math.max(0, budget - spent) : 0;
   const pct = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0;
   const overBudget = budget > 0 && spent > budget;
 
@@ -113,7 +114,6 @@ export function GovernanceBar() {
           flexShrink: 0,
         }}
       >
-        <span style={{ color: "var(--hachi-muted)" }}>spent</span>
         <span
           style={{
             color: overBudget ? "var(--hachi-danger)" : "var(--hachi-ink)",
@@ -121,7 +121,7 @@ export function GovernanceBar() {
             userSelect: "text",
           }}
         >
-          ${spent.toFixed(2)}
+          ${remaining.toFixed(2)}
         </span>
         {budget > 0 && (
           <>

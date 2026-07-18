@@ -295,26 +295,15 @@ function Conversation() {
       <div
         className="hachi-conv-header"
         style={{
+          position: 'relative',
           display: 'flex',
           alignItems: 'center',
-          gap: 16,
           padding: '0 32px',
           height: 68,
           flexShrink: 0,
           borderBottom: '0.5px solid var(--hachi-line)',
         }}
       >
-        <h1
-          style={{
-            margin: 0,
-            fontFamily: 'var(--font-display)',
-            fontWeight: 500,
-            fontSize: 22,
-            lineHeight: '26px',
-          }}
-        >
-          Conversation
-        </h1>
         {/* M8 MED-020: session title — clickable to open session picker */}
         <div style={{ position: 'relative' }}>
           <button
@@ -328,15 +317,17 @@ function Conversation() {
               display: 'inline-flex',
               alignItems: 'center',
               gap: 5,
-              maxWidth: 200,
+              maxWidth: 320,
               padding: '4px 8px',
               borderRadius: 8,
               border: '0.5px solid transparent',
               background: pickerOpen ? 'var(--hachi-cream)' : undefined,
               cursor: 'pointer',
               font: 'inherit',
-              fontSize: 13,
-              color: 'var(--hachi-muted)',
+              fontSize: 16,
+              fontWeight: 500,
+              fontFamily: 'var(--font-display)',
+              color: 'var(--hachi-ink)',
             }}
           >
             <span
@@ -364,26 +355,17 @@ function Conversation() {
             />
           )}
         </div>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            fontSize: 13,
-            color: 'var(--hachi-muted)',
-          }}
-        >
-          <span>{chatState}</span>
-        </div>
-        <div style={{ flex: 1 }} />
         <span
           style={{
+            position: 'absolute',
+            left: '50%',
+            transform: 'translateX(-50%)',
             fontSize: 13,
             color: 'var(--hachi-muted)',
-            fontVariantNumeric: 'tabular-nums',
+            pointerEvents: 'none',
           }}
         >
-          spent {fmtDollar(spent)} of {fmtDollar(budget)} today
+          {chatState}
         </span>
       </div>
 

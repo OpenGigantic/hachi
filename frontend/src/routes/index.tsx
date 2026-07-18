@@ -431,41 +431,38 @@ function Home() {
       <div
         className="hachi-home-header"
         style={{
+          position: 'relative',
           display: 'flex',
           alignItems: 'center',
-          gap: '16px',
           padding: '0 32px',
           height: '68px',
           flexShrink: 0,
           borderBottom: '0.5px solid var(--hachi-line)',
         }}
       >
-        <div>
-          <h1
-            style={{
-              margin: 0,
-              fontFamily: 'var(--font-display)',
-              fontWeight: 500,
-              fontSize: '22px',
-              lineHeight: '26px',
-            }}
-          >
-            Today
-          </h1>
-        </div>
-        <div
+        <h1
           style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            fontSize: '13px',
-            color: 'var(--hachi-muted)',
+            margin: 0,
+            fontFamily: 'var(--font-display)',
+            fontWeight: 500,
+            fontSize: '22px',
+            lineHeight: '26px',
           }}
         >
-          <span>{hachiText}</span>
-        </div>
-        <div style={{ flex: 1 }} />
-        <span style={{ fontSize: '13px', color: 'var(--hachi-muted)' }}>{today}</span>
+          Today
+        </h1>
+        <span
+          style={{
+            position: 'absolute',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            fontSize: '13px',
+            color: 'var(--hachi-muted)',
+            pointerEvents: 'none',
+          }}
+        >
+          {hachiText}
+        </span>
       </div>
 
       {/* scrollable body */}
