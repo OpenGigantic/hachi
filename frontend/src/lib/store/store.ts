@@ -775,11 +775,19 @@ export const useStore = create<State & Actions>()(
           toast("Stayed put — Hachi is resting", "success");
         },
         tickApprovals: () => {
+          // Live approvals have no server-sent expiry (expiresAt=0). Only mock
+          // data uses countdowns, so skip the expiry pass entirely in live mode.
+          if (get().dataMode === "live") return;
           const now = Date.now();
-          const expired = get().approvals.filter((a) => a.expiresAt <= now);
+          // expiresAt=0 is the sentinel for "no expiry" — never treat it as expired.
+          const expired = get().approvals.filter(
+            (a) => a.expiresAt > 0 && a.expiresAt <= now
+          );
           if (expired.length) {
             set((s) => ({
-              approvals: s.approvals.filter((a) => a.expiresAt > now),
+              approvals: s.approvals.filter(
+                (a) => a.expiresAt <= 0 || a.expiresAt > now
+              ),
               history: [
                 ...expired.map((a) => ({
                   id: a.id,

@@ -2025,6 +2025,59 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `tests/test_docs_cli_reference.py` (introspects the Typer app; asserts every `hachi <cmd>`
   in the reference docs resolves to a real command/subcommand).
 
+### BB-76 — `<button>` with no base `background` rule renders the UA ButtonFace grey
+
+- **Symptom:** The conversation-header session picker and the composer mic button rendered
+  as cold `#F0F0F0` grey chips on Hachi's warm bone canvas (`#FBF7EF`) — visibly unthemed,
+  as if they belonged to a different app. Reported by the user as "not blending to the theme".
+- **Root cause:** Both used the codebase idiom `background: open ? 'var(--hachi-cream)' : undefined`
+  in an inline `style`. React **omits** a property whose value is `undefined`, so the rest
+  state declared no background at all and fell through to the User-Agent stylesheet, which
+  paints `<button>` with `ButtonFace` (`#F0F0F0` on Windows/Chrome). The idiom itself is
+  correct and deliberate — an inline background would out-specify the `.class:hover` rule and
+  silently kill hover — but it *requires* the class to supply the rest-state background.
+  `.hachi-session-title-btn` and `.hachi-composer-voice-btn` defined only `:hover`.
+  `.hachi-rating-btn` is the correct precedent: it pairs `:hover` with `background: var(--hachi-canvas)`.
+- **Fix:** Added the missing base `background` rules in `frontend/src/styles/interactive.css`.
+  While there, gave the session-picker trigger a real state model — bare at rest (it reads as
+  the page heading), `--hachi-cream` on hover, and on open it takes the dropdown panel's own
+  skin (`--hachi-surface` + `--hachi-line` hairline) so trigger and panel read as one object.
+  The open state is keyed off `[aria-expanded='true']` so the visual and a11y states cannot
+  drift; it is ordered **after** `:hover` because the two have equal specificity (0,2,0).
+- **Avoid:** never let an interactive `<button>` end up with zero `background` declarations.
+  If the `.tsx` hands the rest state to CSS via `: undefined`, the class MUST declare a base
+  `background` (use `transparent` for ghost buttons). Corollary: do **not** "fix" this by
+  putting a literal background in the inline style — inline beats `:hover` and kills it.
+- **Third instance:** `.hachi-leash-always-btn` (`routes/approvals.tsx`,
+  `components/brand/LeashPrompt.tsx`) had the same defect — reproduced live by injecting a
+  pending approval into the store, which rendered a raw grey "Always allow …" button beside
+  the outlined Decline and solid-red Allow once. Fixed with the same base rule.
+- **Scope boundary:** all three *reproduced* instances are fixed. A wider sweep found ~26
+  further classes in `interactive.css` that define a `:hover` background with no base rule;
+  most are fine because their `.tsx` sets an inline background — but that is the mirror-image
+  hazard (an inline background out-specifies `:hover`, so those hover effects may be silently
+  dead). Not audited here.
+- **Locked by:** `frontend/tests/interactive-css.test.ts` — asserts the guarded classes
+  declare a base background, plus two anti-vacuity guards (the stylesheet actually loaded;
+  the parser can still detect the defect). Verified by reverting the CSS fix: the guard
+  fails, then passes again once restored.
+- **Testing gotcha (cost two gate failures):** that test lives outside `src/` deliberately.
+  `frontend/tsconfig.json` scopes `include` to `src` and the project has **no `@types/node`**,
+  so importing `node:fs` from a test under `src/` passes Vitest but breaks `tsc --noEmit`
+  — failing both the `frontend typecheck` and `frontend build` gate steps. The obvious
+  browser-side workaround is a trap: **Vitest stubs CSS imports to `''` even with `?raw`**
+  (default `css: false`), so the file reads empty and every assertion passes *vacuously*.
+  Node-side tests that read files belong in `frontend/tests/`, and any test that loads a
+  fixture should assert the fixture is non-empty.
+
+### BB-77 — Live approvals auto-declined in ~1 second after appearing
+
+- **Symptom:** Any pending approval visible on Home or The leash vanished within one second and was logged as "timed out — Hachi stayed put", even when the gateway sent no expiry.
+- **Root cause:** `adaptApproval()` (approvals.ts) correctly sets `expiresAt: 0` as a sentinel for "no server expiry." But `tickApprovals()` (store.ts) tested `a.expiresAt <= now`, and `0 <= Date.now()` is always true — so every live approval expired immediately. The shared 1-second interval in `useCountdown.ts` called `tickApprovals()` whenever any approval card was mounted.
+- **Fix:** (1) `tickApprovals` returns early when `dataMode === 'live'` (belt-and-braces). (2) The expiry filter now guards `a.expiresAt > 0 && a.expiresAt <= now`; the keep-filter mirrors it. (3) The `ApprovalCard` in `routes/index.tsx` renders "no auto-decline — Hachi waits until you decide" when `expiresAt <= 0`, matching the existing copy in `routes/approvals.tsx`.
+- **Avoid:** never use `expiresAt <= now` without first guarding `expiresAt > 0`; zero is the "no expiry" sentinel throughout the approval domain.
+- **Locked by:** `frontend/src/lib/store/store.test.ts` — "tickApprovals — live sentinel and mock expiry (BB-77)".
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
