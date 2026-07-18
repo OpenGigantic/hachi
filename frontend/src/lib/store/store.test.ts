@@ -12,6 +12,7 @@
 // reintroduce fake data into a real run.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Approval } from "../data/types";
 
 vi.mock("../data/client", () => ({
   USE_MOCKS: false,
@@ -86,5 +87,49 @@ describe("live run — scripted demo queue must never fire (BB-36 gap-2 investig
     const state = useStore.getState();
     expect(state.runLeash).toBeNull();
     expect(state.finished.some((f) => f.result === FAKE_RESULT)).toBe(false);
+  });
+});
+
+// ---- T1 / BB-77: tickApprovals must not auto-decline live approvals with expiresAt=0 ----
+
+function approvalWith(overrides: Partial<Approval>): Approval {
+  return {
+    id: 1,
+    icon: "mail",
+    request: "test request",
+    why: "test why",
+    action: "test action",
+    op: "test-op",
+    policy: "asks first",
+    touches: [],
+    risk: "low",
+    scope: "test",
+    expiresAt: Date.now() + 60000,
+    totalMs: 60000,
+    ...overrides,
+  };
+}
+
+describe("tickApprovals — live sentinel and mock expiry (BB-77)", () => {
+  it("live approval with expiresAt=0 survives ticking", () => {
+    useStore.setState({
+      dataMode: "live",
+      approvals: [approvalWith({ expiresAt: 0 })],
+      history: [],
+    });
+    useStore.getState().tickApprovals();
+    expect(useStore.getState().approvals).toHaveLength(1);
+    expect(useStore.getState().history).toHaveLength(0);
+  });
+
+  it("mock past-expiry approval is auto-declined", () => {
+    useStore.setState({
+      dataMode: "mock",
+      approvals: [approvalWith({ expiresAt: Date.now() - 1000 })],
+      history: [],
+    });
+    useStore.getState().tickApprovals();
+    expect(useStore.getState().approvals).toHaveLength(0);
+    expect(useStore.getState().history[0].decision).toMatch(/timed out/);
   });
 });

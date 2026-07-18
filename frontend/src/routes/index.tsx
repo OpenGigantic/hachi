@@ -137,8 +137,14 @@ export function ApprovalCard({ approval, onAllow, onDecline }: ApprovalCardProps
               color: 'var(--hachi-muted)',
             }}
           >
-            <Icon name="clock" size={13} />
-            auto-declines in {countdown}
+            {approval.expiresAt > 0 ? (
+              <>
+                <Icon name="clock" size={13} />
+                auto-declines in {countdown}
+              </>
+            ) : (
+              'no auto-decline — Hachi waits until you decide'
+            )}
           </div>
         </div>
       </div>
