@@ -506,13 +506,13 @@ function RunSurface({ onBack }: RunSurfaceProps) {
             </span>
           </div>
 
-          {/* scrollable terminal wrapper */}
+          {/* scrollable terminal wrapper — no overflow here; Terminal manages its own scroll */}
           <div
-            className="hachi-run-output hachi-scroll"
+            className="hachi-run-output"
             style={{
               flex: 1,
               minHeight: 0,
-              overflow: "auto",
+              display: "flex",
               padding: "0 24px 24px",
             }}
           >
@@ -555,11 +555,13 @@ function RunSurface({ onBack }: RunSurfaceProps) {
 
 const RunOutputTerminal = memo(function RunOutputTerminal() {
   const runLines = useStore((s) => s.runLines);
+  const runDone = useStore((s) => s.runDone);
   return (
     <Terminal
       lines={runLines}
       prompt=""
-      style={{ display: "block", minHeight: "100%" }}
+      streaming={!runDone}
+      style={{ height: "100%", flex: 1 }}
     />
   );
 });
