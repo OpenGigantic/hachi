@@ -5,157 +5,9 @@ import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
 import type { OgNode } from '../lib/data/types'
 import { loadOg } from '../lib/data/domains/og'
+import { OgExplainer } from '../components/ui/OgExplainer'
 
-// ── .og explainer banner (dismissible, persisted in localStorage) ──────────────
-const OG_EXPLAINER_KEY = 'hachi.og.explainer.dismissed'
-
-function OgExplainerBanner() {
-  const [dismissed, setDismissed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(OG_EXPLAINER_KEY) === '1'
-    } catch {
-      return false
-    }
-  })
-
-  if (dismissed) return null
-
-  function dismiss() {
-    try {
-      localStorage.setItem(OG_EXPLAINER_KEY, '1')
-    } catch {
-      // ignore storage errors (private browsing, quota exceeded)
-    }
-    setDismissed(true)
-  }
-
-  return (
-    <div
-      role="note"
-      aria-label="ObjectGraph explainer"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        padding: '11px 16px',
-        borderRadius: 12,
-        background: 'var(--hachi-brand-tint)',
-        border: '0.5px solid var(--hachi-brand)',
-        fontSize: 13,
-        color: 'var(--hachi-ink)',
-        lineHeight: '20px',
-      }}
-    >
-      <Icon name="sparkles" size={14} />
-      <span style={{ flex: 1 }}>
-        <strong style={{ fontWeight: 600 }}>.og three-pass reading</strong> loads
-        only the index (~30 tokens) on first pass, so Hachi avoids paying for full
-        skill files on every turn.{' '}
-        <span style={{ position: 'relative', display: 'inline-block' }}>
-          <WhyTooltip />
-        </span>
-      </span>
-      <button
-        className="hachi-ghost-icon-btn-bg"
-        aria-label="Dismiss explainer"
-        onClick={dismiss}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: 26,
-          height: 26,
-          borderRadius: 6,
-          border: 'none',
-          background: 'transparent',
-          color: 'var(--hachi-muted)',
-          cursor: 'pointer',
-          flexShrink: 0,
-          fontSize: 16,
-          lineHeight: 1,
-        }}
-      >
-        ×
-      </button>
-    </div>
-  )
-}
-
-const TOOLTIP_W = 260
-
-function WhyTooltip() {
-  const [visible, setVisible] = useState(false)
-  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null)
-  const triggerRef = useRef<HTMLSpanElement>(null)
-
-  const measure = useCallback(() => {
-    if (!triggerRef.current) return
-    const r = triggerRef.current.getBoundingClientRect()
-    const vw = window.innerWidth
-    // Start tooltip left-aligned with the trigger, then clamp so it stays on screen
-    const rawLeft = r.left
-    const left = Math.min(rawLeft, vw - TOOLTIP_W - 8)
-    setCoords({ top: r.bottom + 6, left: Math.max(8, left) })
-  }, [])
-
-  const show = useCallback(() => { measure(); setVisible(true) }, [measure])
-  const hide = useCallback(() => setVisible(false), [])
-
-  return (
-    <>
-      <span
-        ref={triggerRef}
-        tabIndex={0}
-        aria-describedby="og-why-tooltip"
-        role="button"
-        style={{
-          color: 'var(--hachi-brand)',
-          cursor: 'help',
-          borderBottom: '1px dashed var(--hachi-brand)',
-          outline: 'none',
-        }}
-        onFocus={show}
-        onBlur={hide}
-        onMouseEnter={show}
-        onMouseLeave={hide}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') visible ? hide() : show()
-        }}
-      >
-        Why?
-      </span>
-      {visible && coords && createPortal(
-        <span
-          id="og-why-tooltip"
-          role="tooltip"
-          style={{
-            position: 'fixed',
-            top: coords.top,
-            left: coords.left,
-            zIndex: 9999,
-            background: 'var(--hachi-surface)',
-            border: '0.5px solid var(--hachi-line)',
-            borderRadius: 10,
-            padding: '10px 13px',
-            fontSize: 12,
-            color: 'var(--hachi-muted)',
-            lineHeight: '18px',
-            width: TOOLTIP_W,
-            boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
-            whiteSpace: 'normal',
-            pointerEvents: 'none',
-          }}
-        >
-          LLM context is expensive. Loading 30-token index passes for 50 skill
-          nodes costs ~1 500 tokens; loading full files would cost ~50 000+. The
-          agent reads deeper (dense → full) only when it confirms a node is
-          relevant.
-        </span>,
-        document.body,
-      )}
-    </>
-  )
-}
+const OG_WHY = 'LLM context is expensive. Loading 30-token index passes for 50 skill nodes costs ~1 500 tokens; loading full files would cost ~50 000+. The agent reads deeper (dense → full) only when it confirms a node is relevant.'
 
 // ── palette constants ─────────────────────────────────────────────────────────
 const OG_KIND_ICON: Record<string, string> = {
@@ -1215,7 +1067,11 @@ function OgExplorer() {
           }}
         >
           {/* .og explainer banner */}
-          <OgExplainerBanner />
+          <OgExplainer
+            headline=".og three-pass reading"
+            body="loads only the index (~30 tokens) on first pass, so Hachi avoids paying for full skill files on every turn."
+            whyTooltip={OG_WHY}
+          />
 
           {/* description */}
           <div

@@ -10,70 +10,7 @@ import { useStore } from '../lib/store/store';
 import { Icon } from '../components/icons/Icon';
 import type { Skill, KennelItem } from '../lib/data/types';
 import { loadSkills, loadKennel } from '../lib/data/domains/skills';
-
-// ---- .og explainer localStorage key ----
-const OG_EXPLAINER_KEY = 'hachi-og-explainer-dismissed';
-
-// ---- .og explainer panel (E6-T1) -----------------------------------
-
-function OgExplainerPanel() {
-  const [dismissed, setDismissed] = useState(() =>
-    typeof localStorage !== 'undefined' && localStorage.getItem(OG_EXPLAINER_KEY) === '1'
-  );
-
-  function dismiss() {
-    localStorage.setItem(OG_EXPLAINER_KEY, '1');
-    setDismissed(true);
-  }
-
-  if (dismissed) return null;
-
-  return (
-    <div
-      style={{
-        background: 'var(--hachi-trust-tint)',
-        border: '0.5px solid var(--hachi-trust)',
-        borderRadius: 14,
-        padding: '16px 18px',
-        display: 'flex',
-        gap: 14,
-        alignItems: 'flex-start',
-      }}
-      role="note"
-      aria-label="What is a .og skill file"
-    >
-      <span style={{ color: 'var(--hachi-trust)', display: 'inline-flex', flexShrink: 0, marginTop: 1 }}>
-        <Icon name="file" size={18} />
-      </span>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontWeight: 500, fontSize: 14, color: 'var(--hachi-ink)', marginBottom: 4 }}>
-          What is a .og skill file?
-        </div>
-        <div style={{ fontSize: 13, color: 'var(--hachi-muted)', lineHeight: '20px' }}>
-          Skills are stored as <code style={{ fontFamily: 'var(--font-mono)', background: 'var(--hachi-cream)', padding: '1px 5px', borderRadius: 4 }}>.og</code> (ObjectGraph) files. Hachi reads them in three passes — first a short routing index, then summaries, then full content only when needed — so it uses far fewer tokens than loading a whole document. You can browse, add, and remove skills from the kennel below.
-        </div>
-      </div>
-      <button
-        type="button"
-        className="hachi-ghost-icon-btn-bg"
-        onClick={dismiss}
-        aria-label="Dismiss .og explainer"
-        style={{
-          border: 'none',
-          background: 'transparent',
-          color: 'var(--hachi-muted)',
-          cursor: 'pointer',
-          display: 'inline-flex',
-          padding: 4,
-          borderRadius: 6,
-          flexShrink: 0,
-        }}
-      >
-        <Icon name="x" size={15} />
-      </button>
-    </div>
-  );
-}
+import { OgExplainer } from '../components/ui/OgExplainer';
 
 // ---- local hover-state helpers (not in store) ----------------
 function SkillCard({ sk, operator }: { sk: Skill; operator: boolean }) {
@@ -321,7 +258,10 @@ function Skills() {
           }}
         >
           {/* E6-T1: .og explainer panel (dismissible, localStorage) */}
-          <OgExplainerPanel />
+          <OgExplainer
+            headline="What is a .og skill file?"
+            body={<>Skills are stored as <code style={{ fontFamily: 'var(--font-mono)', background: 'var(--hachi-cream)', padding: '1px 5px', borderRadius: 4 }}>.og</code> (ObjectGraph) files. Hachi reads them in three passes — first a short routing index, then summaries, then full content only when needed — so it uses far fewer tokens than loading a whole document. You can browse, add, and remove skills from the kennel below.</>}
+          />
 
           {/* ---- Installed section ---- */}
           <section>
