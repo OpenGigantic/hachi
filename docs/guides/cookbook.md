@@ -67,10 +67,14 @@ The Textual TUI opens. Type your message and press **Enter**.
 **Resume a previous session:**
 
 ```bash
-hachi run --resume <session-id>
-# or interactively pick from the list:
+# Interactively pick a past session to resume (numbered list):
+hachi run --resume
+
+# Or jump straight back into the most recent session:
+hachi run --continue
+
+# List sessions first if you want to see what's there:
 hachi session list
-hachi run --resume $(hachi session list --json | jq -r '.[0].id')
 ```
 
 ---
@@ -389,7 +393,7 @@ survive restarts.
 
 ```bash
 hachi schedule list
-hachi schedule delete <schedule-id>
+hachi schedule remove <schedule-id>
 ```
 
 ---
@@ -539,10 +543,6 @@ hachi doctor
 
 # JSON output for scripting
 hachi doctor --json
-
-# Check a specific integration
-hachi doctor --check google
-hachi doctor --check voice
 ```
 
 **Common issues:**

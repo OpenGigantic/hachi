@@ -2000,6 +2000,31 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   especially on config classes where operators rely on the doc to understand the actual effect.
 - **Locked by:** BB-73 tests (the behavior the docstring described is now real).
 
+### BB-75 — Cookbook/security-guide documented CLI commands & flags that never existed
+
+- **Symptom:** Copy-pasting from the user-facing docs errored. `hachi run --once "…"` and
+  `echo … | hachi run --once` (cookbook §3, the entire "one-shot task from the CLI" recipe)
+  → `No such option: --once`; `hachi run --resume <session-id>` → `Got unexpected extra
+  argument(s)`; `hachi doctor --check google|voice` → `No such option: --check`;
+  `hachi schedule delete <id>` → `No such command 'delete'`; `hachi secret set <name>`
+  (og-security.md) → `No such command 'secret'`.
+- **Root cause:** Doc drift. One-shot mode was documented but never implemented (no
+  `--once`/one-shot path existed anywhere in `cli/`); `--resume` is a no-argument interactive
+  picker, not an id-taking flag; `doctor` never had `--check`; the schedule subcommand is
+  `remove`, not `delete`; the credential command is `hachi set` / `hachi secrets --set`,
+  not `secret set`.
+- **Fix:** Implemented `hachi run --once` (+ bare positional `hachi run "<task>"`, + piped
+  stdin) via `_run_once()` in `cli/main.py` — boots an agent, runs one `chat` turn, raw-echoes
+  ONLY the reply to stdout (so it pipes byte-clean), then exits. `--resume`/`--continue` now
+  reject a stray positional with a guided error. Corrected the four stale doc references in
+  `docs/guides/cookbook.md` and `docs/reference/og-security.md`.
+- **Avoid:** documenting a CLI command/flag before it is registered — and renaming/removing
+  one without grepping the reference docs. `--once` reads stdin only when piped
+  (`not sys.stdin.isatty()`) so it never blocks on a TTY.
+- **Locked by:** `tests/test_cli_run_once.py` (7 tests — one-shot behavior) and
+  `tests/test_docs_cli_reference.py` (introspects the Typer app; asserts every `hachi <cmd>`
+  in the reference docs resolves to a real command/subcommand).
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
