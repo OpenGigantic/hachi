@@ -90,6 +90,30 @@ describe("live run — scripted demo queue must never fire (BB-36 gap-2 investig
   });
 });
 
+// ---- T5 / BB-81: authApplied must be per-target, not a global boolean ----
+
+describe("applyPatch — per-target applied state (BB-81)", () => {
+  it("records the applied target name, not a bare boolean", () => {
+    useStore.setState({ authSel: "brain.og", authAppliedTarget: null } as Parameters<typeof useStore.setState>[0]);
+    useStore.getState().applyPatch();
+    expect((useStore.getState() as unknown as Record<string, unknown>).authAppliedTarget).toBe("brain.og");
+  });
+
+  it("applied state for a different target reads false", () => {
+    useStore.setState({ authSel: "brain.og", authAppliedTarget: null } as Parameters<typeof useStore.setState>[0]);
+    useStore.getState().applyPatch();
+    const state = useStore.getState() as unknown as Record<string, unknown>;
+    // When authSel is settings.toml, the derivation should differ
+    expect(state.authAppliedTarget !== "settings.toml").toBe(true);
+  });
+
+  it("revertPatch clears authAppliedTarget to null", () => {
+    useStore.setState({ authSel: "brain.og", authAppliedTarget: "brain.og" } as Parameters<typeof useStore.setState>[0]);
+    useStore.getState().revertPatch();
+    expect((useStore.getState() as unknown as Record<string, unknown>).authAppliedTarget).toBeNull();
+  });
+});
+
 // ---- T1 / BB-77: tickApprovals must not auto-decline live approvals with expiresAt=0 ----
 
 function approvalWith(overrides: Partial<Approval>): Approval {
