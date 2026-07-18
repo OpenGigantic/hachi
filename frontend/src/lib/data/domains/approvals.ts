@@ -144,11 +144,9 @@ function adaptAuditEntry(raw: GatewayPermissionAudit): AuditEntry {
   }
 
   return {
-    ts: new Date().toLocaleTimeString("en-GB", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }),
+    // Gateway's PermissionAuditSnapshot carries no timestamp field — render "—"
+    // rather than fabricate the fetch time as if it were the decision time.
+    ts: "—",
     op: raw.operation ?? raw.tool ?? "unknown",
     target: raw.target ?? "",
     policy: raw.reason ?? raw.operation ?? "",

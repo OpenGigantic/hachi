@@ -2151,6 +2151,21 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** never render navigation-intent content as a `<div>` with `cursor: default`; never reference navigation locations by informal names.
 - **Locked by:** `frontend/tests/interactive-css.test.ts` — "overflow link hover treatment (BB-86)" verifies the `:hover` underline rule exists in `interactive.css`.
 
+### BB-87 — Audit timestamps fabricated at fetch time; history "when" frozen as "just now"
+
+- **Symptom 1:** The operator audit log showed a fabricated timestamp (`new Date().toLocaleTimeString()` called at fetch time) for every historical gateway-sourced audit entry — every page reload re-dated the entire table to the current time.
+- **Symptom 2:** Past-decisions history rows always showed "just now" regardless of how long ago the decision was made.
+- **Root cause 1:** `frontend/src/lib/data/domains/approvals.ts` adapter called `new Date().toLocaleTimeString()` when adapting `PermissionAuditSnapshot` entries, which carry no timestamp field.
+- **Root cause 2:** `store.ts:resolveApproval` and `tickApprovals` wrote the literal string `"just now"` into `HistoryItem.when` with no real timestamp alongside.
+- **Fix:**
+  - `approvals.ts`: gateway audit entries now get `ts: "—"` (no timestamp from server → render nothing).
+  - `types.ts`: added `ts?: number` to `HistoryItem`.
+  - `store.ts`: both call sites now write `ts: Date.now()` alongside `when: "just now"`.
+  - `approvals.tsx`: history row renders `fmtRelative(item.ts)` when `ts` is present, else falls back to `item.when`.
+  - Created `frontend/src/lib/ui/format.ts` with `fmtUSD`, `fmtTokens`, `fmtRelative`, `fmtDate`.
+- **Avoid:** never call `new Date()` when adapting server data that has no timestamp field; always store a real `ts: Date.now()` epoch when creating in-memory time-sensitive records.
+- **Locked by:** `frontend/src/lib/ui/format.test.ts` — covers all four format functions including the relative-time cases.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
