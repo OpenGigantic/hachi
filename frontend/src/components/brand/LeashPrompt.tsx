@@ -168,7 +168,7 @@ export function LeashPrompt({
               fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
               fontSize: 13,
               lineHeight: '20px',
-              color: 'var(--text-muted, var(--hachi-muted, #8A8580))',
+              color: 'var(--text-muted, var(--hachi-muted, #696460))',
             }}
           >
             why: {why}
@@ -183,7 +183,7 @@ export function LeashPrompt({
             fontSize: 12,
             lineHeight: '18px',
             fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
-            color: 'var(--text-muted, var(--hachi-muted, #8A8580))',
+            color: 'var(--text-muted, var(--hachi-muted, #696460))',
             background: 'var(--hachi-trust-tint, #E4EAF3)',
             borderRadius: 'var(--radius-md, 10px)',
             padding: '8px 12px',
@@ -209,7 +209,7 @@ export function LeashPrompt({
             wordBreak: 'break-word',
           }}
         >
-          <span style={{ color: 'var(--hachi-brand, #D64933)' }}>
+          <span style={{ color: 'var(--hachi-brand, #C94230)' }}>
             {'hachi ▸'}
           </span>{' '}
           {action}
@@ -223,7 +223,7 @@ export function LeashPrompt({
             fontSize: 12,
             lineHeight: '18px',
             fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
-            color: 'var(--text-muted, var(--hachi-muted, #8A8580))',
+            color: 'var(--text-muted, var(--hachi-muted, #696460))',
             display: 'flex',
             alignItems: 'center',
             gap: 6,
@@ -250,7 +250,7 @@ export function LeashPrompt({
             fontSize: 12,
             lineHeight: '18px',
             fontFamily: 'var(--font-mono, JetBrains Mono, monospace)',
-            color: 'var(--text-muted, var(--hachi-muted, #8A8580))',
+            color: 'var(--text-muted, var(--hachi-muted, #696460))',
           }}
         >
           auto-declines in {fmtCountdown(countdown)}
@@ -297,9 +297,9 @@ export function LeashPrompt({
             height: 38,
             padding: '0 14px',
             borderRadius: 'var(--radius-md, 10px)',
-            border: '1.5px solid var(--hachi-brand, #D64933)',
+            border: '1.5px solid var(--hachi-brand, #C94230)',
             background: 'transparent',
-            color: 'var(--hachi-brand, #D64933)',
+            color: 'var(--hachi-brand, #C94230)',
             fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
             fontSize: 14,
             fontWeight: 500,
@@ -325,7 +325,7 @@ export function LeashPrompt({
             borderRadius: 'var(--radius-md, 10px)',
             border: `1.5px solid ${alwaysArmed ? 'var(--hachi-working, #E0922E)' : 'var(--hachi-line, #E2D9C9)'}`,
             background: alwaysArmed ? 'var(--hachi-working-tint, #FBEBD6)' : undefined,
-            color: alwaysArmed ? 'var(--hachi-working-fg, #A8651A)' : 'var(--text-muted, var(--hachi-muted, #8A8580))',
+            color: alwaysArmed ? 'var(--hachi-working-fg, #A8651A)' : 'var(--text-muted, var(--hachi-muted, #696460))',
             fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
             fontSize: 13,
             fontWeight: 500,
@@ -348,7 +348,7 @@ export function LeashPrompt({
           fontSize: 13,
           lineHeight: '20px',
           fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
-          color: 'var(--text-muted, var(--hachi-muted, #8A8580))',
+          color: 'var(--text-muted, var(--hachi-muted, #696460))',
           borderTop: '0.5px solid var(--border-hairline, var(--hachi-line, #E2D9C9))',
           paddingTop: 12,
         }}
@@ -356,7 +356,7 @@ export function LeashPrompt({
         <HachiMark
           size={16}
           variant="knockout"
-          style={{ color: 'var(--text-muted, var(--hachi-muted, #8A8580))' }}
+          style={{ color: 'var(--text-muted, var(--hachi-muted, #696460))' }}
         />
         you hold the leash
       </div>

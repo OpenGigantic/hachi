@@ -69,7 +69,7 @@ const mcpMeta: Record<string, StatusMeta> = {
   },
   loading: {
     bg: 'var(--hachi-trust-tint)',
-    fg: '#1A5CAE',
+    fg: 'var(--hachi-trust)',
     dot: 'var(--hachi-trust)',
     text: 'loading',
   },
@@ -677,7 +677,7 @@ function IntCard({
             alignItems: 'center',
             gap: 7,
             fontSize: 12,
-            color: '#922B21',
+            color: 'var(--hachi-danger-fg)',
             background: 'var(--hachi-danger-tint)',
             padding: '7px 10px',
             borderRadius: 8,
@@ -2127,7 +2127,7 @@ function Integrations() {
                 background: 'var(--hachi-working-tint)',
                 border: '0.5px solid var(--hachi-working)',
                 fontSize: 13,
-                color: '#7C5108',
+                color: 'var(--hachi-working-fg)',
               }}
               role="status"
             >

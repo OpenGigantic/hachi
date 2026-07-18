@@ -13,12 +13,12 @@ export interface ToastProps {
 const TONE_STYLES: Record<ToastTone, { bg: string; color: string; dot: string }> = {
   success: {
     bg: 'var(--hachi-success-tint)',
-    color: 'var(--hachi-success)',
+    color: 'var(--hachi-success-fg)',  /* -fg: text on tint bg (design-token contract) */
     dot: 'var(--hachi-success)',
   },
   blocked: {
     bg: 'var(--hachi-danger-tint)',
-    color: 'var(--hachi-danger)',
+    color: 'var(--hachi-danger-fg)',   /* -fg: text on tint bg (design-token contract) */
     dot: 'var(--hachi-danger)',
   },
   info: {
