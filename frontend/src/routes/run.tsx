@@ -144,7 +144,6 @@ function RunSurface({ onBack }: RunSurfaceProps) {
 
   const backBtnStyle: CSSProperties = {
     border: "none",
-    background: "transparent",
     color: "var(--hachi-muted)",
     cursor: "pointer",
     display: "inline-flex",

@@ -756,7 +756,6 @@ function McpServerRow({ server: s, isLast }: McpServerRowProps) {
   const enabled = ext.enabled ?? true
   const [toggling, setToggling] = useState(false)
   const [deleting, setDeleting] = useState(false)
-  const [deleteHover, setDeleteHover] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => () => { if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current) }, [])
@@ -923,9 +922,9 @@ function McpServerRow({ server: s, isLast }: McpServerRowProps) {
       {/* delete button — single click shows confirm label, second click fires */}
       <button
         type="button"
+        className="hachi-mcp-delete-btn"
+        data-confirm={String(confirmDelete)}
         onClick={handleDelete}
-        onMouseEnter={() => setDeleteHover(true)}
-        onMouseLeave={() => setDeleteHover(false)}
         onBlur={handleDeleteBlur}
         onKeyDown={handleDeleteKeyDown}
         disabled={deleting}
@@ -944,15 +943,6 @@ function McpServerRow({ server: s, isLast }: McpServerRowProps) {
           height: 26,
           padding: confirmDelete ? '0 8px' : '0 4px',
           borderRadius: 7,
-          border: confirmDelete
-            ? '0.5px solid var(--hachi-danger)'
-            : 'none',
-          background: confirmDelete
-            ? 'var(--hachi-danger-tint)'
-            : deleteHover
-            ? 'var(--hachi-cream)'
-            : 'transparent',
-          color: confirmDelete ? 'var(--hachi-danger)' : 'var(--hachi-muted)',
           cursor: deleting ? 'not-allowed' : 'pointer',
           opacity: deleting ? 0.5 : 1,
           font: '500 11.5px var(--font-body)',
@@ -1852,7 +1842,6 @@ function AddMcpRow({ onAdd }: AddMcpRowProps) {
         borderStyle: 'solid',
         borderColor: 'var(--hachi-line)',
         cursor: 'pointer',
-        background: 'transparent',
         transition: 'background var(--dur-fast) var(--ease)',
         color: 'var(--hachi-trust)',
         width: '100%',

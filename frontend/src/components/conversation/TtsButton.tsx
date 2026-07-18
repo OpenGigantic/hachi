@@ -44,7 +44,6 @@ export function TtsButton({ text }: { text: string }) {
         padding: '3px 9px',
         borderRadius: 8,
         border: '0.5px solid var(--hachi-line)',
-        background: 'transparent',
         color: speaking ? 'var(--hachi-brand)' : 'var(--hachi-muted)',
         font: '500 12px var(--font-body)',
         cursor: 'pointer',

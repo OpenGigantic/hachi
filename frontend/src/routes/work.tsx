@@ -273,7 +273,6 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
             aria-label="Close detail panel"
             style={{
               border: 'none',
-              background: 'transparent',
               color: 'var(--hachi-muted)',
               cursor: 'pointer',
               display: 'inline-flex',

@@ -601,7 +601,6 @@ function Home() {
                     padding: '13px',
                     paddingLeft: '16px',
                     border: 'none',
-                    background: 'transparent',
                     color: 'var(--hachi-trust)',
                     font: '500 13px var(--font-body)',
                     cursor: 'pointer',
