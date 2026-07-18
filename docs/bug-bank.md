@@ -2094,6 +2094,14 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** consent and browse mode are mutually exclusive — setting one must always clear the other.
 - **Locked by:** `frontend/src/components/overlays/KennelConsent.test.tsx` — "askKennel — closes browse panel before showing consent (BB-79)".
 
+### BB-80 — Run terminal scroll-follow was inert; caret had no class (reduced-motion rule never fired)
+
+- **Symptom:** The run output terminal did not auto-scroll to new lines during a live run. Additionally, the `[class*="hachi-caret"]` reduced-motion CSS rule never applied because the caret span had no class.
+- **Root cause:** Two layered problems: (1) `run.tsx` wrapped `<Terminal>` in a div with `overflow: auto` and also passed `style={{ display: 'block', minHeight: '100%' }}` — this collapsed Terminal's internal flex layout so the output region never overflowed and the rAF pin was a no-op. (2) The blinking caret span was anonymous (`aria-hidden="true"` only), so `[class*="hachi-caret"]` in the `<style>` block never matched.
+- **Fix:** Removed `overflow: auto` from the run wrapper div (it now passes `display: flex` to let Terminal own scrolling). Terminal's style changed to `height: 100%`. Added `className="hachi-caret"` to the caret span. Added `streaming?: boolean` prop (default true): when false, hides the caret and shows "run ended" copy. Added state-based following flag + "↓ Latest" pill. Added `role="log" aria-live="polite"` to the output region.
+- **Avoid:** the outer scroll container must never be a wrapper that also sizes its child; Terminal must own its own overflow. And any CSS rule targeting `[class*="x"]` is dead without the class.
+- **Locked by:** `frontend/src/components/ui/Terminal.test.tsx` — "Terminal — streaming prop controls caret (BB-80)".
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

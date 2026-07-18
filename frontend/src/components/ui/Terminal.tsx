@@ -1,4 +1,4 @@
-import { CSSProperties, ReactNode, UIEvent, useEffect, useRef } from 'react';
+import { CSSProperties, ReactNode, UIEvent, useEffect, useRef, useState } from 'react';
 
 export type TerminalLineTone = 'default' | 'muted' | 'brand' | 'working' | 'success' | 'danger';
 
@@ -13,6 +13,8 @@ export interface TerminalProps {
   prompt?: string;
   children?: ReactNode;
   style?: CSSProperties;
+  /** When false: hides the blinking caret and renders "run ended" in the prompt bar. Default true. */
+  streaming?: boolean;
 }
 
 const TONE_COLOR: Record<TerminalLineTone, string> = {
@@ -24,8 +26,10 @@ const TONE_COLOR: Record<TerminalLineTone, string> = {
   danger: '#C0392B',
 };
 
-export function Terminal({ lines = [], prompt, children, style }: TerminalProps) {
+export function Terminal({ lines = [], prompt, children, style, streaming = true }: TerminalProps) {
   const outputRef = useRef<HTMLDivElement>(null);
+  // Both state (for pill re-render) and ref (for rAF pin without stale reads).
+  const [following, setFollowing] = useState(true);
   const followOutputRef = useRef(true);
   const scrollRafRef = useRef<number | null>(null);
 
@@ -57,7 +61,17 @@ export function Terminal({ lines = [], prompt, children, style }: TerminalProps)
 
   const handleOutputScroll = (event: UIEvent<HTMLDivElement>) => {
     const el = event.currentTarget;
-    followOutputRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+    followOutputRef.current = isNearBottom;
+    setFollowing(isNearBottom);
+  };
+
+  const jumpToLatest = () => {
+    const el = outputRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    followOutputRef.current = true;
+    setFollowing(true);
+    el?.focus();
   };
 
   const surfaceStyle: CSSProperties = {
@@ -71,6 +85,7 @@ export function Terminal({ lines = [], prompt, children, style }: TerminalProps)
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
+    position: 'relative',
     ...style,
   };
 
@@ -94,7 +109,7 @@ export function Terminal({ lines = [], prompt, children, style }: TerminalProps)
   };
 
   const promptLabelStyle: CSSProperties = {
-    color: '#E25A44',  // Torii red in dark context
+    color: streaming ? '#E25A44' : 'var(--hachi-muted)',
     fontWeight: 'var(--weight-medium)' as CSSProperties['fontWeight'],
     userSelect: 'none',
     flexShrink: 0,
@@ -109,7 +124,16 @@ export function Terminal({ lines = [], prompt, children, style }: TerminalProps)
   return (
     <div style={surfaceStyle}>
       {/* output lines */}
-      <div ref={outputRef} onScroll={handleOutputScroll} style={outputStyle}>
+      <div
+        ref={outputRef}
+        onScroll={handleOutputScroll}
+        style={outputStyle}
+        role="log"
+        aria-live="polite"
+        aria-atomic="false"
+        tabIndex={0}
+        aria-label="Run output"
+      >
         {lines.map((line, i) => (
           <div
             key={i}
@@ -125,25 +149,60 @@ export function Terminal({ lines = [], prompt, children, style }: TerminalProps)
         {children}
       </div>
 
+      {/* Jump to latest pill — shown when user has scrolled away mid-stream */}
+      {!following && streaming && (
+        <button
+          type="button"
+          onClick={jumpToLatest}
+          style={{
+            position: 'absolute',
+            bottom: '48px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: '#2A2730',
+            border: '0.5px solid #3A3740',
+            borderRadius: 'var(--radius-pill)',
+            color: '#FBF7EF',
+            fontSize: '12px',
+            fontFamily: 'var(--font-mono)',
+            padding: '4px 12px',
+            cursor: 'pointer',
+            whiteSpace: 'nowrap',
+            zIndex: 1,
+          }}
+        >
+          ↓ Latest
+        </button>
+      )}
+
       {/* prompt bar */}
       <div style={promptBarStyle}>
         <span style={promptLabelStyle}>hachi ▸</span>
-        {prompt !== undefined && (
-          <span style={promptTextStyle}>{prompt}</span>
+        {!streaming ? (
+          <span style={{ color: 'var(--hachi-muted)', fontSize: 'var(--type-mono-size)' }}>
+            run ended
+          </span>
+        ) : (
+          <>
+            {prompt !== undefined && (
+              <span style={promptTextStyle}>{prompt}</span>
+            )}
+            {/* blinking caret — className enables the reduced-motion rule */}
+            <span
+              className="hachi-caret"
+              style={{
+                display: 'inline-block',
+                width: '8px',
+                height: '14px',
+                background: '#E25A44',
+                animation: 'hachi-caret-blink 1s step-end infinite',
+                flexShrink: 0,
+                alignSelf: 'center',
+              }}
+              aria-hidden="true"
+            />
+          </>
         )}
-        {/* blinking caret */}
-        <span
-          style={{
-            display: 'inline-block',
-            width: '8px',
-            height: '14px',
-            background: '#E25A44',
-            animation: 'hachi-caret-blink 1s step-end infinite',
-            flexShrink: 0,
-            alignSelf: 'center',
-          }}
-          aria-hidden="true"
-        />
       </div>
 
       <style>{`
