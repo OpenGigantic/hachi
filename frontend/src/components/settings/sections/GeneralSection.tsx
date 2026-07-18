@@ -52,6 +52,8 @@ export default function GeneralSection() {
   // Pin the chosen tier locally so a concurrent loadSetup re-hydration can't
   // briefly revert the selection while the apply round-trip is in flight.
   const [pendingTier, setPendingTier] = useState<WizardTier | null>(null);
+  // Keyboard cursor: set on arrow-key navigation, cleared on commit or blur-out.
+  const [highlighted, setHighlighted] = useState<WizardTier | null>(null);
   useEffect(() => {
     if (pendingTier !== null && tier === pendingTier) setPendingTier(null);
   }, [tier, pendingTier]);
@@ -100,27 +102,47 @@ export default function GeneralSection() {
           aria-label="Setup tier"
           style={{ display: 'flex', flexDirection: 'column', gap: 9 }}
           onKeyDown={(e) => {
-            if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-            e.preventDefault();
-            const idx = TIER_OPTIONS.findIndex((opt) => opt.k === effectiveTier);
-            const dir = e.key === 'ArrowDown' ? 1 : -1;
-            const next = TIER_OPTIONS[(idx + dir + TIER_OPTIONS.length) % TIER_OPTIONS.length];
-            handleSetTier(next.k);
-            requestAnimationFrame(() => {
-              (e.currentTarget.querySelector(`[data-tier="${next.k}"]`) as HTMLElement | null)?.focus();
-            });
+            const ARROW = new Set(['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End']);
+            if (ARROW.has(e.key)) {
+              e.preventDefault();
+              const current = highlighted ?? effectiveTier;
+              const idx = TIER_OPTIONS.findIndex((opt) => opt.k === current);
+              let nextIdx: number;
+              if (e.key === 'Home') nextIdx = 0;
+              else if (e.key === 'End') nextIdx = TIER_OPTIONS.length - 1;
+              else {
+                const dir = (e.key === 'ArrowDown' || e.key === 'ArrowRight') ? 1 : -1;
+                nextIdx = (idx + dir + TIER_OPTIONS.length) % TIER_OPTIONS.length;
+              }
+              const next = TIER_OPTIONS[nextIdx];
+              const container = e.currentTarget;
+              setHighlighted(next.k);
+              requestAnimationFrame(() => {
+                (container?.querySelector(`[data-tier="${next.k}"]`) as HTMLElement | null)?.focus();
+              });
+            } else if ((e.key === 'Enter' || e.key === ' ') && highlighted !== null) {
+              e.preventDefault();
+              handleSetTier(highlighted);
+              setHighlighted(null);
+            }
+          }}
+          onBlur={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+              setHighlighted(null);
+            }
           }}
         >
           {TIER_OPTIONS.map((opt) => {
-            const sel = effectiveTier === opt.k;
+            const committed = effectiveTier === opt.k;
+            const isFocused = highlighted === opt.k;
             return (
               <button
                 key={opt.k}
                 data-tier={opt.k}
                 role="radio"
-                aria-checked={sel}
-                tabIndex={sel ? 0 : -1}
-                onClick={() => handleSetTier(opt.k)}
+                aria-checked={committed}
+                tabIndex={highlighted !== null ? (isFocused ? 0 : -1) : (committed ? 0 : -1)}
+                onClick={() => { handleSetTier(opt.k); setHighlighted(null); }}
                 style={{
                   display: 'flex',
                   gap: 13,
@@ -128,8 +150,14 @@ export default function GeneralSection() {
                   textAlign: 'left',
                   padding: 14,
                   borderRadius: 12,
-                  border: `1px solid ${sel ? 'var(--hachi-brand)' : 'var(--hachi-line)'}`,
-                  background: sel ? 'var(--hachi-brand-tint)' : 'var(--hachi-canvas)',
+                  border: committed
+                    ? '1px solid var(--hachi-brand)'
+                    : '0.5px solid var(--hachi-line)',
+                  background: committed
+                    ? 'var(--hachi-brand-tint)'
+                    : isFocused
+                    ? 'var(--hachi-cream)'
+                    : 'var(--hachi-canvas)',
                   cursor: 'pointer',
                   font: 'inherit',
                 }}
@@ -141,8 +169,8 @@ export default function GeneralSection() {
                     width: 18,
                     height: 18,
                     borderRadius: '50%',
-                    border: `2px solid ${sel ? 'var(--hachi-brand)' : 'var(--hachi-line)'}`,
-                    background: sel ? 'var(--hachi-brand)' : 'transparent',
+                    border: `2px solid ${committed ? 'var(--hachi-brand)' : 'var(--hachi-line)'}`,
+                    background: committed ? 'var(--hachi-brand)' : 'transparent',
                     marginTop: 2,
                   }}
                 />
