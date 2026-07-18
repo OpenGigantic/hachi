@@ -5,7 +5,7 @@ import React, { useEffect, useState } from 'react'
 import { useStore } from '../../lib/store/store'
 import { Icon } from '../icons/Icon'
 import type { ActionCard } from '../../lib/data/types'
-import { fmtDollar, statusMeta } from './helpers'
+import { fmtUSD, statusMeta } from './helpers'
 
 interface ActionCardRowProps {
   card: ActionCard
@@ -122,7 +122,7 @@ export const ActionCardRow = React.memo(function ActionCardRow({ card, msgId, op
               flexShrink: 0,
             }}
           >
-            {fmtDollar(card.cost)}
+            {fmtUSD(card.cost)}
           </span>
         )}
 

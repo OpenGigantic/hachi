@@ -1,9 +1,7 @@
 // Pure formatting/lookup helpers shared by the conversation screen's
 // message, attachment, and action-card rendering.
 
-export function fmtDollar(n: number): string {
-  return '$' + Number(n).toFixed(2)
-}
+export { fmtUSD } from '../../lib/ui/format'
 
 // Derive an attachment's icon, tint, type label, and image-ness from its name +
 // media type. Ports the prototype `_attMeta` so chips look consistent whether the

@@ -22,11 +22,12 @@ const COMMA_FMT = new Intl.NumberFormat('en-US')
 
 /**
  * Format a token count.
- * 0 → "0"; < 10 000 → comma-separated ("1,234"); ≥ 10 000 → K abbreviation ("12.3K").
+ * 0 → "0"; < 10 000 → comma-separated ("1,234"); ≥ 10 000 → K ("12.3K"); ≥ 1M → M ("1.2M").
  */
 export function fmtTokens(n: number): string {
   if (n === 0) return '0'
   if (n < 10_000) return COMMA_FMT.format(n)
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M'
   const k = n / 1000
   return k.toFixed(1).replace(/\.0$/, '') + 'K'
 }

@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // Work screen — /work
 // Prototype markup: Hachi Web App.dc.html lines 448–667
 // Logic:           Hachi Web App.dc.html lines 2233–2313
@@ -22,21 +22,7 @@ import { loadOperator } from '../lib/data/domains/operator'
 import { useFocusTrap } from '../lib/hooks/useFocusTrap'
 import { PendingCard } from '../components/ui/PendingCard'
 import { statusMeta } from '../lib/ui/status'
-
-// ---- helpers ------------------------------------------------
-
-function m(n: number): string {
-  return '$' + Number(n).toFixed(2)
-}
-
-// Cost formatter for the spend analytics view. Keeps sub-cent amounts visible
-// (a real $0.0012 Haiku turn rendered as "$0.00" with plain toFixed(2), making
-// the Spend tab look broken). Shows 4 decimals when below a cent, 2 otherwise.
-function mc(n: number): string {
-  const v = Number(n) || 0
-  if (v > 0 && v < 0.01) return '$' + v.toFixed(4)
-  return '$' + v.toFixed(2)
-}
+import { fmtUSD } from '../lib/ui/format'
 
 function stepMeta(state: string): { icon: string; color: string } {
   const m: Record<string, { icon: string; color: string }> = {
@@ -153,19 +139,19 @@ function computeSpend(
   const modelRows = spendModels.map(mm => ({
     name: mm.name,
     color: mm.color,
-    costStr: mm.cost ? mc(mm.cost) : 'free',
+    costStr: mm.cost ? fmtUSD(mm.cost) : 'free',
     costColor: mm.cost ? 'var(--hachi-ink)' : 'var(--hachi-success)',
   }))
-  const spendTotalCost = mc(spendModels.reduce((a, mm) => a + mm.cost, 0))
+  const spendTotalCost = fmtUSD(spendModels.reduce((a, mm) => a + mm.cost, 0))
 
   return {
     spendBars,
     linePts,
     areaPts,
-    cumLast: mc(maxCum),
+    cumLast: fmtUSD(maxCum),
     stats: {
       tokens: tokensSession.toLocaleString(),
-      cost: mc(costSession),
+      cost: fmtUSD(costSession),
       reclaimed: (reclaimed / 1000).toFixed(0) + 'K',
       effective: (effective / 1000).toFixed(1) + 'K',
     },
@@ -277,7 +263,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
               <Pill status={item.status} />
             </div>
             <div style={{ fontSize: '13px', color: 'var(--hachi-muted)', marginTop: '5px' }}>
-              {item.owner} · {item.when} · spent {m(item.cost ?? 0)}
+              {item.owner} · {item.when} · spent {fmtUSD(item.cost ?? 0)}
             </div>
           </div>
           <button
@@ -471,7 +457,7 @@ function WorkDetail({ item, packRoster, onClose, onRetry, onCancelRun, onRunNow,
                         </span>
                         <span style={{ flex: 1, fontSize: '13px' }}>{h.when}</span>
                         <span style={{ fontSize: '13px', color: 'var(--hachi-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                          {m(h.cost)}
+                          {fmtUSD(h.cost)}
                         </span>
                       </div>
                     )
@@ -1417,7 +1403,7 @@ function Work() {
                     minWidth: '54px',
                     textAlign: 'right',
                   }}>
-                    {m(w.cost)}
+                    {fmtUSD(w.cost)}
                   </span>
                   <span style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}>
                     <Icon name="chevron-right" size={16} />

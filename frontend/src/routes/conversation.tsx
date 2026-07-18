@@ -30,8 +30,6 @@ import { SessionPicker } from '../components/conversation/SessionPicker'
 import { MessageItem } from '../components/conversation/MessageItem'
 import { StarterButton } from '../components/conversation/StarterButton'
 import { ConversationComposer } from '../components/conversation/ConversationComposer'
-import { fmtDollar } from '../components/conversation/helpers'
-
 // ---- chat starters (prototype renderVals lines 2209–2213) -----------
 // HIGH-019: integrations required to show certain starters
 
@@ -312,7 +310,9 @@ function Conversation() {
             aria-haspopup="menu"
             aria-expanded={pickerOpen}
             onClick={() => setPickerOpen((v) => !v)}
-            title={sessionLabel}
+            // Names the action as well as the session — the bare label told users nothing
+            // about the picker. Keeps the full title, which the 320px maxWidth truncates.
+            title={`${sessionLabel} — switch conversation`}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -320,8 +320,8 @@ function Conversation() {
               maxWidth: 320,
               padding: '4px 8px',
               borderRadius: 8,
-              border: '0.5px solid transparent',
-              background: pickerOpen ? 'var(--hachi-cream)' : undefined,
+              // Background + border live in interactive.css, keyed off aria-expanded:
+              // an inline value would out-specify the :hover rule and kill it.
               cursor: 'pointer',
               font: 'inherit',
               fontSize: 16,
