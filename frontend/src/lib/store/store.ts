@@ -179,6 +179,8 @@ interface State {
     keyAlreadySet: boolean;
     /** Onboarding wizard tier; gates which setup steps + integrations appear. Distinct from `safety`. */
     tier: 'lightning' | 'recommended' | 'enhanced' | 'power';
+    /** True once the wizard has been completed end-to-end; openSetup resets to step 0 when true. */
+    completed: boolean;
   };
   // kennel consent overlay
   kennelConsent: KennelConsentItem | null;
@@ -421,7 +423,7 @@ const domainDefaults = (): Omit<State, "operator" | "theme"> => ({
   reconnecting: false,
   toast: null,
   palette: { open: false, query: "" },
-  setup: { open: false, step: 0, key: "", safety: "standard", routine: true, google: false, channel: false, mode: 'onboard' as const, keyAlreadySet: false, tier: 'lightning' },
+  setup: { open: false, step: 0, key: "", safety: "standard", routine: true, google: false, channel: false, mode: 'onboard' as const, keyAlreadySet: false, tier: 'lightning', completed: false },
   kennelConsent: null,
   kennelBrowseOpen: false,
   taskCap: 1.0,
@@ -695,7 +697,16 @@ export const useStore = create<State & Actions>()(
 
         // setup
         openSetup: () =>
-          set((s) => ({ setup: { ...s.setup, open: true, step: 0, mode: 'onboard' as const } })),
+          set((s) => ({
+            setup: {
+              ...s.setup,
+              open: true,
+              // Preserve partial progress so the user resumes where they left off.
+              // Reset to step 0 only when starting fresh or after completing the wizard.
+              step: s.setup.step > 0 && !s.setup.completed ? s.setup.step : 0,
+              mode: 'onboard' as const,
+            },
+          })),
         openSetupEditProvider: () =>
           set((s) => ({ setup: { ...s.setup, open: true, step: 1, mode: 'edit-provider' as const } })),
         closeSetup: () =>
@@ -743,7 +754,7 @@ export const useStore = create<State & Actions>()(
                     ]
                   : s.routines;
               return {
-                setup: { ...s.setup, open: false },
+                setup: { ...s.setup, open: false, completed: true },
                 safety: su.safety,
                 routines: newRoutines,
               };
