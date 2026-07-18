@@ -2143,6 +2143,14 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** never duplicate approval-card markup; the design contract for equal-weight decisions lives ONCE in `LeashPrompt`.
 - **Locked by:** `frontend/src/components/brand/LeashPrompt.test.tsx` — "LeashPrompt — button weighting (T10 / BB-85)"; `frontend/src/routes/-index.ApprovalCard.test.tsx` — "Home ApprovalCard — action row layout" (structural invariant still holds via LeashPrompt's layout).
 
+### BB-86 — Overflow approval count was non-interactive text with wrong terminology
+
+- **Symptom:** When more than 3 approvals were pending, `routes/index.tsx` showed a `<div>` reading "scroll down in the Leash tab to see all" — `cursor: default`, no keyboard access, terminology "Leash tab" instead of the correct route `/approvals`. Impossible to navigate from keyboard.
+- **Root cause:** The overflow count was rendered as a plain div with `cursor: default` instead of a navigable element. The copy referenced a "tab" that doesn't exist in the current navigation model.
+- **Fix:** Replaced with a `<button className="hachi-more-approvals-link">` that calls `navigate({ to: '/approvals' })` on click. Label updated to `+ N more waiting on the leash →`. Resting `background: transparent` placed in the CSS class (not inline) per BB-76 so `:hover { text-decoration: underline }` can override it.
+- **Avoid:** never render navigation-intent content as a `<div>` with `cursor: default`; never reference navigation locations by informal names.
+- **Locked by:** `frontend/tests/interactive-css.test.ts` — "overflow link hover treatment (BB-86)" verifies the `:hover` underline rule exists in `interactive.css`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

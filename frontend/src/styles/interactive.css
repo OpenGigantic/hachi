@@ -242,6 +242,23 @@
   border-color: #d3c8b4;
 }
 
+/* "+ N more waiting on the leash →" overflow button on Home screen.
+ * Looks like a link but is a <button> for semantic correctness (it triggers
+ * navigation, not a URL). Base background must be here so :hover can add
+ * text-decoration without fighting a higher-specificity inline value (BB-76). */
+.hachi-more-approvals-link {
+  background: transparent;
+  border: none;
+  color: var(--hachi-trust);
+  font: 500 13px var(--font-body);
+  cursor: pointer;
+  padding: 6px 4px;
+  display: block;
+}
+.hachi-more-approvals-link:hover {
+  text-decoration: underline;
+}
+
 .hachi-home-ask-input:focus {
   border-color: var(--hachi-brand);
   box-shadow: 0 0 0 2px var(--hachi-brand-tint);
