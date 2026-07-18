@@ -78,7 +78,8 @@ function Authoring() {
   const authSource = useStore((s) => s.authSource)
   const authSel = useStore((s) => s.authSel)
   const authMode = useStore((s) => s.authMode)
-  const authApplied = useStore((s) => s.authApplied)
+  const authAppliedTarget = useStore((s) => s.authAppliedTarget)
+  const authApplied = authAppliedTarget === authSel
 
   const selectAuthTarget = useStore((s) => s.selectAuthTarget)
   const setAuthMode = useStore((s) => s.setAuthMode)

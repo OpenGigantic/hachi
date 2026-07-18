@@ -138,7 +138,7 @@ interface State {
   authSource: DiffLine[];
   authSel: string;
   authMode: "diff" | "source";
-  authApplied: boolean;
+  authAppliedTarget: string | null;
   ogSel: string;
   ogView: "graph" | "tree";
   spendTurns: SpendTurn[];
@@ -398,7 +398,7 @@ const domainDefaults = (): Omit<State, "operator" | "theme"> => ({
   authSource: USE_MOCKS ? authSource : [],
   authSel: "deep_research.og",
   authMode: "diff",
-  authApplied: false,
+  authAppliedTarget: null,
   ogSel: "brain",
   ogView: "graph",
   spendTurns: USE_MOCKS ? spendTurns : [],
@@ -996,7 +996,7 @@ export const useStore = create<State & Actions>()(
         applyPatch: (reindexed_ms?: number) => {
           const sel = get().authSel;
           set((s) => ({
-            authApplied: true,
+            authAppliedTarget: sel,
             authTargets: s.authTargets.map((t) =>
               t.name === sel ? { ...t, dirty: false } : t
             ),
@@ -1010,7 +1010,7 @@ export const useStore = create<State & Actions>()(
         revertPatch: () => {
           const sel = get().authSel;
           set((s) => ({
-            authApplied: false,
+            authAppliedTarget: null,
             authTargets: s.authTargets.map((t) =>
               t.name === sel ? { ...t, dirty: true } : t
             ),

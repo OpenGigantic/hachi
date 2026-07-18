@@ -2102,6 +2102,14 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** the outer scroll container must never be a wrapper that also sizes its child; Terminal must own its own overflow. And any CSS rule targeting `[class*="x"]` is dead without the class.
 - **Locked by:** `frontend/src/components/ui/Terminal.test.tsx` — "Terminal — streaming prop controls caret (BB-80)".
 
+### BB-81 — Authoring "Written to …" badge shown for the wrong target after switching
+
+- **Symptom:** Apply a patch to `brain.og`, then click `settings.toml` — the "Written to ~/.hachi/skills/settings.toml · skill re-indexed" line and the Revert button appeared, claiming a patch was applied to a file that was never touched.
+- **Root cause:** `authApplied` in the store was a global `boolean`. Switching `authSel` did not reset it, so any previously-applied target would show the badge on every subsequent target.
+- **Fix:** Replaced `authApplied: boolean` with `authAppliedTarget: string | null`. `applyPatch()` sets it to the current `authSel`; `revertPatch()` clears it to `null`. In `authoring.tsx`, `const authApplied = authAppliedTarget === authSel` — a different selected target simply doesn't match, no reset needed.
+- **Avoid:** never use a global boolean flag for "this action was performed" when the action is scoped to a selected item; track the item identity instead.
+- **Locked by:** `frontend/src/lib/store/store.test.ts` — "applyPatch — per-target applied state (BB-81)".
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
