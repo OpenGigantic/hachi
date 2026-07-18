@@ -10,6 +10,7 @@ import { Icon } from '../components/icons/Icon'
 import { ConnectorLogo } from '../components/icons/ConnectorLogo'
 import { Switch } from '../components/ui/Switch'
 import { ConfirmButton } from '../components/ui/ConfirmButton'
+import { Button } from '../components/ui/Button'
 import { Modal } from '../components/ui/Modal'
 import { PendingCard } from '../components/ui/PendingCard'
 import type { Integration, McpServer, McpTool } from '../lib/data/types'
@@ -461,20 +462,12 @@ function CredentialDialog({ connectorId, connectorName, fields, connectorSource,
 
           {/* Actions */}
           <div style={{ display: 'flex', gap: 10, padding: '0 22px 22px' }}>
-            <CancelBtn onClick={onClose} disabled={submitting} />
-            <button
-              type="submit"
-              disabled={submitting}
-              aria-busy={submitting}
-              style={{
-                flex: 1, height: 42, borderRadius: 10, border: '0.5px solid transparent',
-                background: 'var(--hachi-brand-hover)', color: 'var(--hachi-canvas)',
-                font: '500 14px var(--font-body)', cursor: submitting ? 'not-allowed' : 'pointer',
-                opacity: submitting ? 0.75 : 1, transition: 'background var(--dur-fast) var(--ease)',
-              }}
-            >
-              {submitting ? 'Saving…' : 'Save credentials'}
-            </button>
+            <Button variant="secondary" onClick={() => { if (!submitting) onClose() }} disabled={submitting} style={{ flex: 1, height: 42 }}>
+              Cancel
+            </Button>
+            <Button variant="primary" type="submit" loading={submitting} style={{ flex: 1, height: 42 }}>
+              Save credentials
+            </Button>
           </div>
         </form>
     </Modal>
@@ -1824,61 +1817,15 @@ function AddMcpDialog({ onClose }: AddMcpDialogProps) {
               padding: '0 22px 22px',
             }}
           >
-            <CancelBtn onClick={onClose} disabled={state.submitting} />
-            <SubmitBtn loading={state.submitting} />
+            <Button variant="secondary" onClick={onClose} disabled={state.submitting} style={{ flex: 1, height: 42 }}>
+              Cancel
+            </Button>
+            <Button variant="primary" type="submit" loading={state.submitting} style={{ flex: 1, height: 42 }}>
+              Register server
+            </Button>
           </div>
         </form>
     </Modal>
-  )
-}
-
-function CancelBtn({ onClick, disabled }: { onClick: () => void; disabled?: boolean }) {
-  return (
-    <button
-      type="button"
-      className="hachi-cancel-btn"
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        flex: 1,
-        height: 42,
-        borderRadius: 10,
-        border: '1px solid var(--hachi-trust)',
-        background: 'transparent',
-        color: 'var(--hachi-trust)',
-        font: '500 14px var(--font-body)',
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        opacity: disabled ? 0.65 : 1,
-        transition: 'background var(--dur-fast) var(--ease)',
-      }}
-    >
-      Cancel
-    </button>
-  )
-}
-
-function SubmitBtn({ loading }: { loading: boolean }) {
-  return (
-    <button
-      type="submit"
-      className="hachi-mcp-submit-btn"
-      disabled={loading}
-      aria-busy={loading}
-      style={{
-        flex: 1,
-        height: 42,
-        borderRadius: 10,
-        border: '0.5px solid transparent',
-        background: 'var(--hachi-brand-hover)',
-        color: 'var(--hachi-canvas)',
-        font: '500 14px var(--font-body)',
-        cursor: loading ? 'not-allowed' : 'pointer',
-        opacity: loading ? 0.75 : 1,
-        transition: 'background var(--dur-fast) var(--ease)',
-      }}
-    >
-      {loading ? 'Registering…' : 'Register server'}
-    </button>
   )
 }
 
