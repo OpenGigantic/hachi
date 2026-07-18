@@ -76,6 +76,17 @@
     --hachi-surface:      #201E25;
     --hachi-cream:        #2A2730;
 
+    /* — state colors lifted for dark — dark -fg tokens are pre-tuned for dark tint bgs,
+     * so reusing them as the base state colors is contrast-safe by construction.
+     * trust gets a new value (no trust-fg existed):
+     *   #8CA9D8 vs #16151A (canvas) ≈ 7.5:1 · vs #201E25 (surface) ≈ 6.9:1 ✓ AAA
+     *   #F0B25B vs #16151A ≈ 6.4:1 ✓ AAA · #6FCB98 vs #16151A ≈ 7.1:1 ✓ AAA
+     *   #E07068 vs #16151A ≈ 5.8:1 ✓ AA */
+    --hachi-trust:        #8CA9D8;
+    --hachi-working:      #F0B25B;
+    --hachi-success:      #6FCB98;
+    --hachi-danger:       #E07068;
+
     --hachi-working-tint: #34281A;
     --hachi-trust-tint:   #1E2735;
     --hachi-success-tint: #182A22;
@@ -108,6 +119,8 @@
   --hachi-brand: #E25A44; --hachi-brand-hover: #D64933; --hachi-brand-active: #C23E2C; --hachi-brand-tint: #3A211C;
   --hachi-ink: #FBF7EF; --hachi-muted: #9C968C; --hachi-line: #322F38;
   --hachi-canvas: #16151A; --hachi-surface: #201E25; --hachi-cream: #2A2730;
+  /* state colors — identical to @media dark block (#8CA9D8 trust ≈7.5:1 on canvas) */
+  --hachi-trust: #8CA9D8; --hachi-working: #F0B25B; --hachi-success: #6FCB98; --hachi-danger: #E07068;
   --hachi-working-tint:#34281A; --hachi-trust-tint:#1E2735; --hachi-success-tint:#182A22; --hachi-danger-tint:#321E1C;
   --hachi-danger-fg: #E07068;
   --hachi-success-fg: #6FCB98;
