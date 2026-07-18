@@ -3,11 +3,12 @@
 // Pending approvals queue with countdown + history + operator audit log.
 // ============================================================
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useStore } from "../lib/store/store";
 import { useCountdown } from "../lib/hooks/useCountdown";
 import { Icon } from "../components/icons/Icon";
+import { ConfirmButton } from "../components/ui/ConfirmButton";
 import { HachiMark } from "../components/brand/HachiMark";
 import type { Approval, HistoryItem, AuditEntry } from "../lib/data/types";
 
@@ -172,21 +173,6 @@ function ApprovalCard({
   const rm = riskMeta(approval.risk);
   const isHighRisk = approval.risk === "high";
   const cdPct = Math.max(0, Math.min(100, (ms / approval.totalMs) * 100));
-
-  // "Always allow" grants a standing permission — arm on first click, require a
-  // second click (or auto-disarm after 4s) to confirm.
-  const [alwaysArmed, setAlwaysArmed] = useState(false);
-  const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (armTimerRef.current) clearTimeout(armTimerRef.current); }, []);
-  function handleAlwaysAllowClick() {
-    if (!alwaysArmed) {
-      setAlwaysArmed(true);
-      armTimerRef.current = setTimeout(() => setAlwaysArmed(false), 4000);
-      return;
-    }
-    if (armTimerRef.current) clearTimeout(armTimerRef.current);
-    onAlwaysAllow();
-  }
 
   return (
     <div
@@ -471,29 +457,14 @@ function ApprovalCard({
         >
           Allow once
         </button>
-        <button
-          type="button"
-          className="hachi-leash-always-btn"
-          onClick={handleAlwaysAllowClick}
-          aria-label={
-            alwaysArmed
-              ? `Confirm: always allow ${approval.scope}`
-              : `Always allow ${approval.scope} — grants a standing permission`
-          }
-          style={{
-            flex: 1,
-            height: 40,
-            borderRadius: 10,
-            border: `0.5px solid ${alwaysArmed ? "var(--hachi-working)" : "transparent"}`,
-            background: alwaysArmed ? "var(--hachi-working-tint)" : undefined,
-            color: alwaysArmed ? "var(--hachi-working-fg)" : "var(--hachi-muted)",
-            font: "500 14px var(--font-body)",
-            cursor: "pointer",
-            transition: "background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease)",
-          }}
-        >
-          {alwaysArmed ? "Click to confirm" : `Always allow ${approval.scope}`}
-        </button>
+        <ConfirmButton
+          label={`Always allow ${approval.scope}`}
+          confirmLabel={`Always allow ${approval.scope} — confirm`}
+          onConfirm={onAlwaysAllow}
+          tone="neutral"
+          ariaLabel={`Always allow ${approval.scope} — grants a standing permission`}
+          style={{ flex: 1, height: 40, borderRadius: 10, font: "500 14px var(--font-body)" }}
+        />
       </div>
     </div>
   );

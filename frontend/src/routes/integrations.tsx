@@ -9,6 +9,7 @@ import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
 import { ConnectorLogo } from '../components/icons/ConnectorLogo'
 import { Switch } from '../components/ui/Switch'
+import { ConfirmButton } from '../components/ui/ConfirmButton'
 import { useFocusTrap } from '../lib/hooks/useFocusTrap'
 import type { Integration, McpServer, McpTool } from '../lib/data/types'
 import type { IntegrationExtended, McpServerExtended } from '../lib/data/domains/integrations'
@@ -759,32 +760,20 @@ function IntCard({
         </button>
         {/* Show "Clear / Disconnect" button when connected or for apikey when configured */}
         {(connected || (hasCredentialFields && configured)) && (
-          <button
-            className="hachi-disconnect-btn"
-            onClick={onDisconnect}
-            disabled={connectLoading || disconnectLoading}
-            aria-busy={disconnectLoading}
-            style={{
-              height: 34,
-              padding: '0 14px',
-              borderRadius: 10,
-              border: disconnectError ? '0.5px solid var(--hachi-danger)' : 'none',
-              background: 'transparent',
-              color: disconnectError ? 'var(--hachi-danger)' : 'var(--hachi-muted)',
-              font: '500 13px var(--font-body)',
-              cursor: connectLoading || disconnectLoading ? 'not-allowed' : 'pointer',
-              opacity: connectLoading || disconnectLoading ? 0.65 : 1,
-              transition: 'background var(--dur-fast) var(--ease)',
-            }}
-          >
-            {disconnectLoading
-              ? 'Clearing…'
-              : disconnectError
-              ? 'Retry'
-              : hasCredentialFields
-              ? 'Clear'
-              : 'Disconnect'}
-          </button>
+          disconnectLoading ? (
+            <span style={{ fontSize: 13, color: 'var(--hachi-muted)', padding: '0 4px' }}>
+              Clearing…
+            </span>
+          ) : (
+            <ConfirmButton
+              label={disconnectError ? 'Retry' : hasCredentialFields ? 'Clear' : 'Disconnect'}
+              confirmLabel={hasCredentialFields ? 'Clear?' : 'Disconnect?'}
+              onConfirm={onDisconnect}
+              tone="danger"
+              ariaLabel={hasCredentialFields ? 'Clear credentials' : 'Disconnect integration'}
+              style={{ opacity: connectLoading ? 0.65 : 1 }}
+            />
+          )
         )}
       </div>
     </div>

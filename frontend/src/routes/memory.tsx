@@ -19,6 +19,7 @@ import {
   delFact as delFactRemote,
 } from '../lib/data/domains/memory'
 import { Icon } from '../components/icons/Icon'
+import { ConfirmButton } from '../components/ui/ConfirmButton'
 import type { MemGroup, Fact, BlockedItem, RecallHit, Session, SkillUsage } from '../lib/data/types'
 
 // ============================================================
@@ -147,9 +148,14 @@ function FactCard({
               <GhostIconBtn onClick={onEdit} hoverBg="var(--hachi-cream)" hoverColor="var(--hachi-trust)" aria-label="Edit fact">
                 <Icon name="pencil" size={15} />
               </GhostIconBtn>
-              <GhostIconBtn onClick={onDelete} hoverBg="var(--hachi-cream)" hoverColor="var(--hachi-danger)" aria-label="Delete fact">
-                <Icon name="trash" size={15} />
-              </GhostIconBtn>
+              <ConfirmButton
+                label="Delete"
+                confirmLabel="Delete?"
+                onConfirm={onDelete}
+                tone="danger"
+                icon="trash"
+                ariaLabel="Delete fact"
+              />
             </div>
           </div>
         </>
@@ -869,14 +875,19 @@ function Memory() {
                         editingText={editingText}
                         onEdit={() => startEditFact(fact.id)}
                         onDelete={() => {
+                          const factText = fact.text
+                          const groupId  = g.id
                           // 1. Optimistic: remove from store immediately
-                          delFact(g.id, fact.id)
-                          // 2. Network: DELETE /memory/facts/{fact_id}
-                          //    On failure, loadMemory() inside delFactRemote reverts and
-                          //    we show the error to the user.
-                          void delFactRemote(g.id, fact.id).catch((err: unknown) => {
+                          delFact(groupId, fact.id)
+                          // 2. Network delete
+                          void delFactRemote(groupId, fact.id).catch((err: unknown) => {
                             const msg = err instanceof Error ? err.message : 'Failed to delete fact'
                             showToast(msg, 'blocked')
+                          })
+                          // 3. Undo toast — re-adds the fact content to recover from deletion
+                          showToast('Fact forgotten', 'success', {
+                            label: 'Undo',
+                            onAction: () => { void addFactRemote(groupId, factText) },
                           })
                         }}
                         onSetEditText={setEditText}

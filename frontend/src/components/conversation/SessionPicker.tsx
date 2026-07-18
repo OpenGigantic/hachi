@@ -3,6 +3,7 @@
 
 import { useEffect, useRef } from 'react'
 import { Icon } from '../icons/Icon'
+import { ConfirmButton } from '../ui/ConfirmButton'
 import type { Session } from '../../lib/data/types'
 
 interface SessionPickerProps {
@@ -143,27 +144,15 @@ export function SessionPicker({ sessions, activeId, onSwitch, onNew, onDelete, o
                 </div>
               </div>
             </button>
-            <button
-              type="button"
-              className="hachi-session-delete-btn"
-              aria-label={`Delete ${s.title}`}
-              onClick={() => onDelete(s.id)}
-              style={{
-                width: 28,
-                height: 28,
-                borderRadius: 8,
-                border: 'none',
-                background: 'transparent',
-                color: 'var(--hachi-muted)',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: 'pointer',
-                flexShrink: 0,
-              }}
-            >
-              <Icon name="trash" size={13} />
-            </button>
+            <ConfirmButton
+              label="Delete"
+              confirmLabel="Delete?"
+              onConfirm={() => onDelete(s.id)}
+              tone="danger"
+              icon="trash"
+              ariaLabel={`Delete ${s.title}`}
+              style={{ flexShrink: 0 }}
+            />
           </div>
         )
       })}

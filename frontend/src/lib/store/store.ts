@@ -83,6 +83,7 @@ import type {
   AskRule,
   OpTool,
   Toast,
+  ToastItem,
   ChatMessage,
   ActionCard,
   RunPackMember,
@@ -161,7 +162,7 @@ interface State {
   configLoaded: boolean;
   reconnecting: boolean;
   // toast
-  toast: Toast | null;
+  toasts: ToastItem[];
   // palette
   palette: { open: boolean; query: string };
   // setup
@@ -233,8 +234,8 @@ interface Actions {
   toggleTheme: () => void;
   toggleOperator: () => void;
   // toast
-  showToast: (message: string, tone?: Toast["tone"]) => void;
-  dismissToast: () => void;
+  showToast: (message: string, tone?: Toast["tone"], action?: Toast["action"]) => void;
+  dismissToast: (id: string) => void;
   // palette
   openPalette: () => void;
   closePalette: () => void;
@@ -421,7 +422,7 @@ const domainDefaults = (): Omit<State, "operator" | "theme"> => ({
   provider: { name: "anthropic", model: "claude-sonnet-4-5", key: "" },
   configLoaded: false,
   reconnecting: false,
-  toast: null,
+  toasts: [],
   palette: { open: false, query: "" },
   setup: { open: false, step: 0, key: "", safety: "standard", routine: true, google: false, channel: false, mode: 'onboard' as const, keyAlreadySet: false, tier: 'lightning', completed: false },
   kennelConsent: null,
@@ -457,9 +458,13 @@ export const useStore = create<State & Actions>()(
       // ---- helpers ----
       // Auto-dismiss timing lives in ToastHost (not here) so it can pause while
       // the toast is hovered and use a longer duration for error/"blocked" tones.
-      const toast = (message: string, tone?: Toast["tone"]) => {
-        set({ toast: { message, tone } });
-      };
+      const toast = (message: string, tone?: Toast["tone"], action?: Toast["action"]) => {
+        const id = String(nextId());
+        set((s) => {
+          const next = [...s.toasts, { id, message, tone, action }];
+          return { toasts: next.length > 3 ? next.slice(-3) : next };
+        });
+      };;
 
       const getText = (id: number): string => {
         const m = get().messages.find((x) => x.id === id);
@@ -687,8 +692,8 @@ export const useStore = create<State & Actions>()(
         toggleOperator: () => set((s) => ({ operator: !s.operator })),
 
         // toast
-        showToast: (message, tone) => toast(message, tone),
-        dismissToast: () => set({ toast: null }),
+        showToast: (message, tone, action) => toast(message, tone, action),
+        dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 
         // palette
         openPalette: () => set({ palette: { open: true, query: "" } }),
