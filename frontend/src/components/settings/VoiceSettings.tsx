@@ -1,8 +1,8 @@
-// VoiceSettings — the "Voice" settings panel.
+﻿// VoiceSettings â€” the "Voice" settings panel.
 //
 // Friendly front: a status hero with a one-click "Test voice", a provider toggle,
 // and a voice picker you can audition (click a voice to hear it). The technical
-// bits — API-key env-var names, models, custom base URLs — collapse under
+// bits â€” API-key env-var names, models, custom base URLs â€” collapse under
 // "Advanced". One "Save voice settings" button persists the whole form.
 //
 // Data: GET/PUT /voice/config, POST /voice/speak (preview/test). UI-only redesign.
@@ -16,42 +16,11 @@ import {
   type VoiceConfigPatch,
 } from '../../lib/data/domains/voice';
 import { Icon } from '../icons/Icon';
-import { cardStyle, sectionHeadingStyle, inputStyle, labelStyle, PanelHeader } from './shared';
+import { cardStyle, sectionHeadingStyle, PanelHeader } from './shared';
+import { Input } from '../ui/Input';
 
 const OPENAI_VOICES = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
 const SAMPLE_TEXT = "Hi, I'm Hachi. This is how I'll sound.";
-
-function Field({
-  label,
-  value,
-  onChange,
-  type = 'text',
-  placeholder,
-  hint,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  type?: string;
-  placeholder?: string;
-  hint?: string;
-}) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-      <label style={{ ...labelStyle, marginBottom: 0, fontWeight: 500 }}>{label}</label>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        style={inputStyle}
-        onFocus={(e) => (e.currentTarget.style.borderColor = 'var(--hachi-trust)')}
-        onBlur={(e) => (e.currentTarget.style.borderColor = 'var(--hachi-line)')}
-      />
-      {hint && <span style={{ fontSize: 11, color: 'var(--hachi-muted)' }}>{hint}</span>}
-    </div>
-  );
-}
 
 export default function VoiceSettings() {
   const [config, setConfig] = useState<VoiceConfig | null>(null);
@@ -139,7 +108,7 @@ export default function VoiceSettings() {
       await audio.play();
     } catch (e: unknown) {
       setPreviewError(
-        e instanceof Error ? e.message : 'Could not play — check your API key under Advanced.'
+        e instanceof Error ? e.message : 'Could not play â€” check your API key under Advanced.'
       );
       setPreviewing(null);
     }
@@ -182,7 +151,7 @@ export default function VoiceSettings() {
       <div>
         <PanelHeader title="Voice" subtitle="Talk to Hachi, and let it talk back." />
         <div style={{ ...cardStyle, fontSize: 13, color: 'var(--hachi-muted)' }}>
-          Loading voice config…
+          Loading voice configâ€¦
         </div>
       </div>
     );
@@ -215,7 +184,7 @@ export default function VoiceSettings() {
             </div>
             <div style={{ fontSize: 12.5, color: 'var(--hachi-muted)', marginTop: 2 }}>
               {configured
-                ? `Listening with Whisper · speaking with ${spokenVoice} (${ttsProvider})`
+                ? `Listening with Whisper Â· speaking with ${spokenVoice} (${ttsProvider})`
                 : 'Add an API key under Advanced to enable speech.'}
             </div>
           </div>
@@ -238,7 +207,7 @@ export default function VoiceSettings() {
             }}
           >
             <Icon name={previewing === '__test__' ? 'volume-2' : 'play'} size={14} />
-            {previewing === '__test__' ? 'Playing…' : 'Test voice'}
+            {previewing === '__test__' ? 'Playingâ€¦' : 'Test voice'}
           </button>
         </div>
 
@@ -284,12 +253,12 @@ export default function VoiceSettings() {
 
           {ttsProvider === 'elevenlabs' ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <Field
+              <Input
                 label="ElevenLabs voice ID"
                 value={elVoiceId}
                 onChange={setElVoiceId}
                 placeholder="21m00Tcm4TlvDq8ikWAM"
-                hint='Find voice IDs in your ElevenLabs dashboard. Default: "Rachel".'
+                helperText='Find voice IDs in your ElevenLabs dashboard. Default: "Rachel".'
               />
               <button
                 type="button"
@@ -310,13 +279,13 @@ export default function VoiceSettings() {
                 }}
               >
                 <Icon name={previewing === 'voice:el' ? 'volume-2' : 'play'} size={13} />
-                {previewing === 'voice:el' ? 'Playing…' : 'Preview voice'}
+                {previewing === 'voice:el' ? 'Playingâ€¦' : 'Preview voice'}
               </button>
             </div>
           ) : (
             <>
               <div style={{ fontSize: 12, color: 'var(--hachi-muted)', marginBottom: 8 }}>
-                Voice <span style={{ opacity: 0.8 }}>— click one to hear it</span>
+                Voice <span style={{ opacity: 0.8 }}>â€” click one to hear it</span>
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                 {voices.map((v) => {
@@ -425,7 +394,7 @@ export default function VoiceSettings() {
           {advancedOpen && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 18 }}>
               <div style={{ fontSize: 12.5, color: 'var(--hachi-muted)' }}>
-                Keys are referenced by the name of the environment variable that holds them — they
+                Keys are referenced by the name of the environment variable that holds them â€” they
                 are never stored in settings directly.
               </div>
 
@@ -440,25 +409,25 @@ export default function VoiceSettings() {
               >
                 Speech-to-text (Whisper)
               </div>
-              <Field
+              <Input
                 label="STT API key env var"
                 value={sttApiKeyEnv}
                 onChange={setSttApiKeyEnv}
                 placeholder="OPENAI_API_KEY"
-                hint="Defaults to OPENAI_API_KEY."
+                helperText="Defaults to OPENAI_API_KEY."
               />
-              <Field
+              <Input
                 label="STT model"
                 value={sttModel}
                 onChange={setSttModel}
                 placeholder="whisper-1"
               />
-              <Field
+              <Input
                 label="STT base URL"
                 value={sttBaseUrl}
                 onChange={setSttBaseUrl}
                 placeholder="https://api.openai.com/v1"
-                hint="Override for self-hosted or compatible endpoints."
+                helperText="Override for self-hosted or compatible endpoints."
               />
 
               {ttsProvider === 'openai' ? (
@@ -475,15 +444,15 @@ export default function VoiceSettings() {
                   >
                     Text-to-speech (OpenAI)
                   </div>
-                  <Field
+                  <Input
                     label="TTS API key env var"
                     value={ttsApiKeyEnv}
                     onChange={setTtsApiKeyEnv}
                     placeholder="OPENAI_API_KEY"
-                    hint="Defaults to OPENAI_API_KEY."
+                    helperText="Defaults to OPENAI_API_KEY."
                   />
-                  <Field label="TTS model" value={ttsModel} onChange={setTtsModel} placeholder="tts-1" />
-                  <Field
+                  <Input label="TTS model" value={ttsModel} onChange={setTtsModel} placeholder="tts-1" />
+                  <Input
                     label="TTS base URL"
                     value={ttsBaseUrl}
                     onChange={setTtsBaseUrl}
@@ -504,12 +473,12 @@ export default function VoiceSettings() {
                   >
                     Text-to-speech (ElevenLabs)
                   </div>
-                  <Field
+                  <Input
                     label="ElevenLabs API key env var"
                     value={elApiKeyEnv}
                     onChange={setElApiKeyEnv}
                     placeholder="ELEVENLABS_API_KEY"
-                    hint="Name of the env var holding your ElevenLabs API key."
+                    helperText="Name of the env var holding your ElevenLabs API key."
                   />
                 </>
               )}
@@ -535,7 +504,7 @@ export default function VoiceSettings() {
               opacity: saving ? 0.6 : 1,
             }}
           >
-            {saving ? 'Saving…' : 'Save voice settings'}
+            {saving ? 'Savingâ€¦' : 'Save voice settings'}
           </button>
           {saveOk && <span style={{ fontSize: 13, color: 'var(--hachi-trust)' }}>Saved</span>}
           {saveError && <span style={{ fontSize: 13, color: 'var(--hachi-danger)' }}>{saveError}</span>}
