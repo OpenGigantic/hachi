@@ -3,7 +3,7 @@
 // Pending approvals queue with countdown + history + operator audit log.
 // ============================================================
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useStore } from "../lib/store/store";
 import { useCountdown } from "../lib/hooks/useCountdown";
@@ -191,8 +191,29 @@ function ApprovalCard({
   const rm = riskMeta(approval.risk);
   const cdPct = Math.max(0, Math.min(100, (ms / approval.totalMs) * 100));
 
+  // Aria-live announcement — fires only at 30s and 10s thresholds (never per-second).
+  const lastAnnounced = useRef<number | null>(null);
+  const [announcement, setAnnouncement] = useState('');
+  useEffect(() => {
+    const secs = Math.ceil(ms / 1000);
+    if (secs <= 10 && lastAnnounced.current !== 10) {
+      lastAnnounced.current = 10;
+      setAnnouncement('Approval auto-declines in 10 seconds');
+    } else if (secs <= 30 && secs > 10 && lastAnnounced.current !== 30) {
+      lastAnnounced.current = 30;
+      setAnnouncement('Approval auto-declines in 30 seconds');
+    }
+  }, [ms]);
+
   return (
-    <LeashPrompt
+    <>
+      <span
+        aria-live="polite"
+        style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap' }}
+      >
+        {announcement}
+      </span>
+      <LeashPrompt
       request={approval.request}
       why={approval.why}
       action={approval.action}
@@ -204,6 +225,7 @@ function ApprovalCard({
       onAlwaysAllow={onAlwaysAllow}
       onDecline={onDecline}
     />
+    </>
   );
 }
 
@@ -337,6 +359,24 @@ function Approvals() {
   const loadedApprovals = useStore((s) => s.loaded.approvals);
   const safety = useStore((s) => s.safety);
 
+  const queueRef = useRef<HTMLDivElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const prevLengthRef = useRef(approvals.length);
+
+  // After a card is resolved and removed, move focus to the next card's first
+  // action button; if the queue is now empty, focus the heading.
+  useEffect(() => {
+    if (approvals.length < prevLengthRef.current) {
+      const firstBtn = queueRef.current?.querySelector<HTMLButtonElement>('button');
+      if (firstBtn) {
+        firstBtn.focus();
+      } else {
+        headingRef.current?.focus();
+      }
+    }
+    prevLengthRef.current = approvals.length;
+  }, [approvals.length]);
+
   // Refresh gateway data on navigate-to this screen
   useEffect(() => { void loadApprovals(); }, []);
 
@@ -371,6 +411,8 @@ function Approvals() {
         }}
       >
         <h1
+          ref={headingRef}
+          tabIndex={-1}
           style={{
             margin: 0,
             fontFamily: "var(--font-display)",
@@ -426,7 +468,7 @@ function Approvals() {
 
           {/* Pending approvals */}
           {hasPending && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div ref={queueRef} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               {approvals.map((a) => (
                 <ApprovalCard
                   key={a.id}
