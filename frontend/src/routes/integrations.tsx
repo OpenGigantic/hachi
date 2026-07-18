@@ -10,7 +10,7 @@ import { Icon } from '../components/icons/Icon'
 import { ConnectorLogo } from '../components/icons/ConnectorLogo'
 import { Switch } from '../components/ui/Switch'
 import { ConfirmButton } from '../components/ui/ConfirmButton'
-import { useFocusTrap } from '../lib/hooks/useFocusTrap'
+import { Modal } from '../components/ui/Modal'
 import { PendingCard } from '../components/ui/PendingCard'
 import type { Integration, McpServer, McpTool } from '../lib/data/types'
 import type { IntegrationExtended, McpServerExtended } from '../lib/data/domains/integrations'
@@ -172,7 +172,6 @@ interface CredentialDialogProps {
 }
 
 function CredentialDialog({ connectorId, connectorName, fields, connectorSource, onClose, onSaved }: CredentialDialogProps) {
-  const trapRef = useFocusTrap<HTMLDivElement>(true)
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(fields.map((f) => [f.key, '']))
   )
@@ -184,14 +183,6 @@ function CredentialDialog({ connectorId, connectorName, fields, connectorSource,
   const [testResult, setTestResult] = useState<CredentialTestResult | null | 'testing'>(null)
   // Whether the test endpoint is available (404 means hide the button).
   const [testAvailable, setTestAvailable] = useState<boolean | null>(null)
-
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape' && !submitting) onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose, submitting])
 
   // Probe once on open whether the test endpoint is available (404 → hide button).
   useEffect(() => {
@@ -258,26 +249,6 @@ function CredentialDialog({ connectorId, connectorName, fields, connectorSource,
     }
   }
 
-  const backdropStyle: CSSProperties = {
-    position: 'fixed',
-    inset: 0,
-    background: 'rgba(28,26,32,.4)',
-    display: 'grid',
-    placeItems: 'center',
-    padding: 24,
-    zIndex: 60,
-  }
-
-  const panelStyle: CSSProperties = {
-    width: 480,
-    maxWidth: '96vw',
-    background: 'var(--hachi-surface)',
-    border: '0.5px solid var(--hachi-line)',
-    borderRadius: 18,
-    overflow: 'hidden',
-    boxShadow: '0 24px 60px rgba(28,26,32,.24)',
-  }
-
   const fieldWrapStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 5 }
   const labelStyle: CSSProperties = { fontSize: 12, fontWeight: 500, color: 'var(--hachi-muted)' }
 
@@ -297,15 +268,12 @@ function CredentialDialog({ connectorId, connectorName, fields, connectorSource,
   }
 
   return (
-    <div style={backdropStyle} onClick={submitting ? undefined : onClose}>
-      <div
-        ref={trapRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="cred-dialog-title"
-        style={panelStyle}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <Modal
+      onClose={() => { if (!submitting) onClose() }}
+      titleId="cred-dialog-title"
+      dirtyGuard={submitting || Object.values(values).some((v) => v.length > 0)}
+      width={480}
+    >
         {/* Header */}
         <div style={{ padding: '20px 22px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
@@ -509,8 +477,7 @@ function CredentialDialog({ connectorId, connectorName, fields, connectorSource,
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -1255,16 +1222,6 @@ const initialFormState: FormState = {
 
 function AddMcpDialog({ onClose }: AddMcpDialogProps) {
   const [state, dispatch] = useReducer(formReducer, initialFormState)
-  const trapRef = useFocusTrap<HTMLDivElement>(true)
-
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape' && !state.submitting) onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose, state.submitting])
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (state.submitting) return
@@ -1309,26 +1266,6 @@ function AddMcpDialog({ onClose }: AddMcpDialogProps) {
     }
   }
 
-  const backdropStyle: CSSProperties = {
-    position: 'fixed',
-    inset: 0,
-    background: 'rgba(28,26,32,.4)',
-    display: 'grid',
-    placeItems: 'center',
-    padding: 24,
-    zIndex: 60,
-  }
-
-  const panelStyle: CSSProperties = {
-    width: 520,
-    maxWidth: '96vw',
-    background: 'var(--hachi-surface)',
-    border: '0.5px solid var(--hachi-line)',
-    borderRadius: 18,
-    overflow: 'hidden',
-    boxShadow: '0 24px 60px rgba(28,26,32,.24)',
-  }
-
   const fieldWrapStyle: CSSProperties = {
     display: 'flex',
     flexDirection: 'column',
@@ -1368,15 +1305,12 @@ function AddMcpDialog({ onClose }: AddMcpDialogProps) {
   const isStdio = state.transport === 'stdio'
 
   return (
-    <div style={backdropStyle} onClick={state.submitting ? undefined : onClose}>
-      <div
-        ref={trapRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="add-mcp-dialog-title"
-        style={panelStyle}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <Modal
+      onClose={() => { if (!state.submitting) onClose() }}
+      titleId="add-mcp-dialog-title"
+      dirtyGuard={state.submitting}
+      width={520}
+    >
         {/* Header */}
         <div
           style={{
@@ -1894,8 +1828,7 @@ function AddMcpDialog({ onClose }: AddMcpDialogProps) {
             <SubmitBtn loading={state.submitting} />
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   )
 }
 
