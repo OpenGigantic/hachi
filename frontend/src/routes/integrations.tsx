@@ -11,6 +11,7 @@ import { ConnectorLogo } from '../components/icons/ConnectorLogo'
 import { Switch } from '../components/ui/Switch'
 import { ConfirmButton } from '../components/ui/ConfirmButton'
 import { useFocusTrap } from '../lib/hooks/useFocusTrap'
+import { PendingCard } from '../components/ui/PendingCard'
 import type { Integration, McpServer, McpTool } from '../lib/data/types'
 import type { IntegrationExtended, McpServerExtended } from '../lib/data/domains/integrations'
 import {
@@ -2050,6 +2051,7 @@ function IntCardWithStatus({ integration: i }: IntCardWithStatusProps) {
 
 function Integrations() {
   const integrations = useStore((s) => s.integrations)
+  const loadedIntegrations = useStore((s) => s.loaded.integrations)
   const mcpServers = useStore((s) => s.mcpServers)
   const mcpTools = useStore((s) => s.mcpTools)
   const operator = useStore((s) => s.operator)
@@ -2138,7 +2140,9 @@ function Integrations() {
             >
               Your accounts
             </h2>
-            {integrations.length === 0 ? (
+            {!loadedIntegrations ? (
+              <PendingCard label="Loading integrations…" />
+            ) : integrations.length === 0 ? (
               <div
                 style={{
                   background: 'var(--hachi-surface)',

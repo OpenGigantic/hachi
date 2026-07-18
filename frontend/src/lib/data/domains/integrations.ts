@@ -437,6 +437,8 @@ export async function loadIntegrations(): Promise<void> {
     if (!_hasEverSucceeded) {
       hydrate({ integrations: [], mcpServers: [], mcpTools: [] });
     }
+  } finally {
+    useStore.getState().setLoaded("integrations");
   }
 }
 

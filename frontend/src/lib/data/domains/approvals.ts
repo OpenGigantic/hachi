@@ -184,6 +184,8 @@ export async function loadApprovals(): Promise<void> {
     }
     // Reconnecting flag is now managed centrally by client.ts via the
     // registered callback — no per-domain setReconnecting calls needed here.
+  } finally {
+    useStore.getState().setLoaded("approvals");
   }
 }
 

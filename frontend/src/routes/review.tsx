@@ -14,6 +14,7 @@ import { Markdown } from '../components/ui/Markdown';
 import type { AgentInteraction } from '../lib/data/types';
 import { loadInteractions, rateInteraction } from '../lib/data/domains/interactions';
 import { extractInjectedAttachments } from '../lib/data/domains/chat';
+import { PendingCard } from '../components/ui/PendingCard';
 
 // ---- helpers ----
 
@@ -339,6 +340,7 @@ function InteractionCard({ ix }: { ix: AgentInteraction }) {
 
 function Review() {
   const interactions = useStore((s) => s.interactions) as AgentInteraction[];
+  const loadedReview = useStore((s) => s.loaded.review);
 
   useEffect(() => { void loadInteractions(); }, []);
 
@@ -382,7 +384,9 @@ function Review() {
         style={{ flex: 1, overflow: 'auto', padding: '24px 32px 64px' }}
       >
         <div style={{ maxWidth: 880, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {interactions.length === 0 ? (
+          {!loadedReview ? (
+            <PendingCard label="Loading interactions…" />
+          ) : interactions.length === 0 ? (
             <div
               style={{
                 background: 'var(--hachi-surface)',
