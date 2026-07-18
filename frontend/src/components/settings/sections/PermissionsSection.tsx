@@ -204,6 +204,8 @@ export default function PermissionsSection() {
   // store update matched pendingSafety — before the PUT response arrived —
   // which let a concurrent loadConfig() overwrite the UI mid-flight.
   const [pendingSafety, setPendingSafety] = useState<SafetyLevel | null>(null);
+  // Keyboard cursor: set on arrow-key navigation, cleared on commit or blur-out.
+  const [highlighted, setHighlighted] = useState<SafetyLevel | null>(null);
 
   const [addingFolder, setAddingFolder] = useState(false);
   const [addingCommand, setAddingCommand] = useState(false);
@@ -262,27 +264,47 @@ export default function PermissionsSection() {
             aria-label="Safety level"
             style={{ display: 'flex', flexDirection: 'column', gap: 9 }}
             onKeyDown={(e) => {
-              if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-              e.preventDefault();
-              const idx = SAFETY_LEVELS.findIndex((lvl) => lvl.k === effectiveSafety);
-              const dir = e.key === 'ArrowDown' ? 1 : -1;
-              const next = SAFETY_LEVELS[(idx + dir + SAFETY_LEVELS.length) % SAFETY_LEVELS.length];
-              handleSetSafety(next.k);
-              requestAnimationFrame(() => {
-                (e.currentTarget.querySelector(`[data-safety-level="${next.k}"]`) as HTMLElement | null)?.focus();
-              });
+              const ARROW = new Set(['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End']);
+              if (ARROW.has(e.key)) {
+                e.preventDefault();
+                const current = highlighted ?? effectiveSafety;
+                const idx = SAFETY_LEVELS.findIndex((lvl) => lvl.k === current);
+                let nextIdx: number;
+                if (e.key === 'Home') nextIdx = 0;
+                else if (e.key === 'End') nextIdx = SAFETY_LEVELS.length - 1;
+                else {
+                  const dir = (e.key === 'ArrowDown' || e.key === 'ArrowRight') ? 1 : -1;
+                  nextIdx = (idx + dir + SAFETY_LEVELS.length) % SAFETY_LEVELS.length;
+                }
+                const next = SAFETY_LEVELS[nextIdx];
+                const container = e.currentTarget;
+                setHighlighted(next.k);
+                requestAnimationFrame(() => {
+                  (container?.querySelector(`[data-safety-level="${next.k}"]`) as HTMLElement | null)?.focus();
+                });
+              } else if ((e.key === 'Enter' || e.key === ' ') && highlighted !== null) {
+                e.preventDefault();
+                handleSetSafety(highlighted);
+                setHighlighted(null);
+              }
+            }}
+            onBlur={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                setHighlighted(null);
+              }
             }}
           >
             {SAFETY_LEVELS.map((lvl) => {
-              const sel = effectiveSafety === lvl.k;
+              const committed = effectiveSafety === lvl.k;
+              const isFocused = highlighted === lvl.k;
               return (
                 <button
                   key={lvl.k}
                   data-safety-level={lvl.k}
                   role="radio"
-                  aria-checked={sel}
-                  tabIndex={sel ? 0 : -1}
-                  onClick={() => handleSetSafety(lvl.k)}
+                  aria-checked={committed}
+                  tabIndex={highlighted !== null ? (isFocused ? 0 : -1) : (committed ? 0 : -1)}
+                  onClick={() => { handleSetSafety(lvl.k); setHighlighted(null); }}
                   style={{
                     display: 'flex',
                     gap: 13,
@@ -290,8 +312,14 @@ export default function PermissionsSection() {
                     textAlign: 'left',
                     padding: 14,
                     borderRadius: 12,
-                    border: `1px solid ${sel ? 'var(--hachi-brand)' : 'var(--hachi-line)'}`,
-                    background: sel ? 'var(--hachi-brand-tint)' : 'var(--hachi-canvas)',
+                    border: committed
+                      ? '1px solid var(--hachi-brand)'
+                      : '0.5px solid var(--hachi-line)',
+                    background: committed
+                      ? 'var(--hachi-brand-tint)'
+                      : isFocused
+                      ? 'var(--hachi-cream)'
+                      : 'var(--hachi-canvas)',
                     cursor: 'pointer',
                     font: 'inherit',
                   }}
@@ -303,8 +331,8 @@ export default function PermissionsSection() {
                       width: 18,
                       height: 18,
                       borderRadius: '50%',
-                      border: `2px solid ${sel ? 'var(--hachi-brand)' : 'var(--hachi-line)'}`,
-                      background: sel ? 'var(--hachi-brand)' : 'transparent',
+                      border: `2px solid ${committed ? 'var(--hachi-brand)' : 'var(--hachi-line)'}`,
+                      background: committed ? 'var(--hachi-brand)' : 'transparent',
                       marginTop: 2,
                     }}
                   />
