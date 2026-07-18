@@ -160,6 +160,8 @@ interface State {
   provider: Provider;
   /** True once loadConfig has received a real response (success or error-with-defaults). */
   configLoaded: boolean;
+  /** Per-domain settled flags — true once the first load completes (success or error). */
+  loaded: { approvals: boolean; work: boolean; review: boolean; memory: boolean; integrations: boolean };
   reconnecting: boolean;
   // toast
   toasts: ToastItem[];
@@ -227,6 +229,7 @@ interface Actions {
   // Shallow-merge a slice of gateway-derived state into the store. Domain
   // loaders call this after mapping a gateway response to UI types.
   hydrate: (patch: Partial<State>) => void;
+  setLoaded: (domain: keyof State['loaded']) => void;
   setReconnecting: (v: boolean) => void;
   // operator / theme
   setOperator: (v: boolean) => void;
@@ -421,6 +424,7 @@ const domainDefaults = (): Omit<State, "operator" | "theme"> => ({
   opTools: USE_MOCKS ? opTools : [],
   provider: { name: "anthropic", model: "claude-sonnet-4-5", key: "" },
   configLoaded: false,
+  loaded: { approvals: false, work: false, review: false, memory: false, integrations: false },
   reconnecting: false,
   toasts: [],
   palette: { open: false, query: "" },
@@ -670,6 +674,7 @@ export const useStore = create<State & Actions>()(
           }
           set(patch as Partial<State & Actions>);
         },
+        setLoaded: (domain) => set((s) => ({ loaded: { ...s.loaded, [domain]: true } })),
         setReconnecting: (v) => set({ reconnecting: v }),
 
         // operator / theme

@@ -20,6 +20,7 @@ import {
 import { loadSpend } from '../lib/data/domains/spend'
 import { loadOperator } from '../lib/data/domains/operator'
 import { useFocusTrap } from '../lib/hooks/useFocusTrap'
+import { PendingCard } from '../components/ui/PendingCard'
 
 // ---- helpers ------------------------------------------------
 
@@ -1033,6 +1034,7 @@ function Work() {
   const failed = useStore(s => s.failed)
   const packRoster = useStore(s => s.packRoster)
   const selectedWork = useStore(s => s.selectedWork) as WorkItem | null
+  const loadedWork = useStore(s => s.loaded.work)
 
   // store actions
   const setWorkFilter = useStore(s => s.setWorkFilter)
@@ -1442,7 +1444,9 @@ function Work() {
               )
             })}
 
-            {workEmpty && (
+            {!loadedWork ? (
+              <PendingCard label="Loading work…" />
+            ) : workEmpty ? (
               <div style={{
                 textAlign: 'center',
                 padding: '48px 0',
@@ -1466,7 +1470,7 @@ function Work() {
                 </button>
                 {' '}or set up a routine.
               </div>
-            )}
+            ) : null}
           </div>
         )}
 

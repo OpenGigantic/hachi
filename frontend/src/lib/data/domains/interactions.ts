@@ -103,6 +103,8 @@ async function _loadInteractionsImpl(): Promise<void> {
       // fabricated interaction data as if it were real gateway data.
       useStore.getState().hydrate({ interactions: [] });
     }
+  } finally {
+    useStore.getState().setLoaded("review");
   }
 }
 

@@ -21,6 +21,7 @@ import {
 import { Icon } from '../components/icons/Icon'
 import { ConfirmButton } from '../components/ui/ConfirmButton'
 import type { MemGroup, Fact, BlockedItem, RecallHit, Session, SkillUsage } from '../lib/data/types'
+import { PendingCard } from '../components/ui/PendingCard'
 
 // ============================================================
 // Valid vault collection names accepted by POST /memory/facts
@@ -288,6 +289,7 @@ function Memory() {
   const blocked = useStore((s) => s.blocked)
   const proposed = useStore((s) => s.proposed)
   const recall = useStore((s) => s.recall)
+  const loadedMemory = useStore((s) => s.loaded.memory)
   const sessions = useStore((s) => s.sessions)
   const skillUsage = useStore((s) => s.skillUsage)
   const editingFactId = useStore((s) => s.editingFactId)
@@ -844,6 +846,9 @@ function Memory() {
               )}
 
               {/* ---- memory groups ---- */}
+              {!loadedMemory && filteredGroups.length === 0 && (
+                <PendingCard label="Loading memory…" />
+              )}
               {filteredGroups.map((g: MemGroup) => (
                 <div key={g.id}>
                   {/* LOW-004: group header always visible (groups are filtered to non-empty) */}

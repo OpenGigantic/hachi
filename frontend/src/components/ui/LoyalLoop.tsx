@@ -2,6 +2,8 @@ import { CSSProperties } from 'react';
 
 export interface LoyalLoopProps {
   size?: number;
+  /** Accessible label for the spinner. Defaults to "Hachi is working". */
+  label?: string;
 }
 
 /**
@@ -10,7 +12,7 @@ export interface LoyalLoopProps {
  * Animates stroke-dashoffset via the `hachi-loop-dash` keyframe from motion.css.
  * Respects prefers-reduced-motion.
  */
-export function LoyalLoop({ size = 48 }: LoyalLoopProps) {
+export function LoyalLoop({ size = 48, label = 'Hachi is working' }: LoyalLoopProps) {
   // The path follows the hachi-loop.svg geometry (viewBox 0 0 100 56, translated +11,0)
   // Stroke length ~240 (matching the keyframe `to { stroke-dashoffset: -240 }`)
   const strokeWidth = 9;
@@ -41,7 +43,7 @@ export function LoyalLoop({ size = 48 }: LoyalLoopProps) {
       width={width}
       height={height}
       role="img"
-      aria-label="Hachi is working"
+      aria-label={label}
       style={svgStyle}
     >
       <style>{`

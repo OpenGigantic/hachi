@@ -12,6 +12,7 @@ import { HachiMark } from "../components/brand/HachiMark";
 import { LeashPrompt } from "../components/brand/LeashPrompt";
 import type { Approval, HistoryItem, AuditEntry } from "../lib/data/types";
 import { fmtRelative } from "../lib/ui/format";
+import { PendingCard } from "../components/ui/PendingCard";
 
 // localStorage key for dismissing the "What is the leash?" info band
 const LEASH_INFO_KEY = "hachi.leash-info-dismissed";
@@ -317,6 +318,7 @@ function Approvals() {
   const history = useStore((s) => s.history);
   const auditLog = useStore((s) => s.auditLog);
   const operator = useStore((s) => s.operator);
+  const loadedApprovals = useStore((s) => s.loaded.approvals);
 
   // Refresh gateway data on navigate-to this screen
   useEffect(() => { void loadApprovals(); }, []);
@@ -420,8 +422,10 @@ function Approvals() {
             </div>
           )}
 
-          {/* Empty state */}
-          {noPending && (
+          {/* Loading / empty state */}
+          {!loadedApprovals ? (
+            <PendingCard label="Checking the queue…" />
+          ) : noPending ? (
             <div
               style={{
                 display: "flex",
@@ -449,7 +453,7 @@ function Approvals() {
                 Hachi is on watch. It will ask here before doing anything risky.
               </div>
             </div>
-          )}
+          ) : null}
 
           {/* Runs without a leash check */}
           <div>
@@ -527,7 +531,9 @@ function Approvals() {
                 overflow: "hidden",
               }}
             >
-              {history.length > 0 ? (
+              {!loadedApprovals ? (
+                <PendingCard label="Loading past decisions…" />
+              ) : history.length > 0 ? (
                 history.map((h) => <HistoryRow key={h.id} item={h} />)
               ) : (
                 <div
