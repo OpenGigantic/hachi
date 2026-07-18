@@ -2118,6 +2118,15 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** never gate wizard advancement in the handler alone — the button itself must be disabled so the constraint is visible in the UI and testable without firing click events.
 - **Locked by:** `frontend/src/components/overlays/SetupWizard.test.tsx` — "SetupWizard — key step gate (BB-82)".
 
+### BB-83 — Toast queue capped at 1; arm-then-confirm had no cooldown protection
+
+- **Symptom (T8a):** Only one toast could exist at a time; a 4th toast pushed the 1st out silently. `dismissToast()` was a bare `set({ toast: null })` with no id parameter — no way to dismiss a specific toast. The live region was inside the conditional `<Toast>` element, not the always-mounted wrapper, so screen readers missed announcements. Action button support and correct auto-dismiss per tone were absent.
+- **Symptom (T8b):** "Always allow" on both approval cards had hand-rolled arm logic with no cooldown — a fast double-click within the same tick could confirm instantly. The arm pattern was duplicated across `approvals.tsx` and `LeashPrompt.tsx`.
+- **Root cause (T8a):** Single `toast: Toast | null` state; `ToastHost` role on conditional child. **(T8b):** No shared primitive; `handleAlwaysAllowClick` checked armed state but not elapsed time since arming.
+- **Fix:** `types.ts`: added `action?` and `ToastItem extends Toast { id: string }`. Store: `toasts: ToastItem[]` (cap 3, drop oldest); `showToast(msg, tone?, action?)` appends; `dismissToast(id)` by id. `ToastHost`: always-mounted wrapper gets `role="status" aria-live="polite"`; renders stack; timer on oldest toast. New `ConfirmButton` component: arm → cooldown check → confirm; auto-disarm after armWindowMs or blur. Applied to: SessionPicker (session delete), memory (fact delete + undo toast), integrations (Clear/Disconnect), LeashPrompt + approvals (Always allow).
+- **Avoid:** never use a single-slot for toasts; never do arm-then-confirm without a cooldown delay; always put the live region on a permanently-mounted element.
+- **Locked by:** `frontend/src/lib/store/store.test.ts` — "toast queue — append / cap / dismiss (BB-83)"; `frontend/src/components/ui/ConfirmButton.test.tsx` — "ConfirmButton — arm-then-confirm (BB-83)".
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

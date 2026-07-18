@@ -295,6 +295,13 @@ export interface OpTool {
 export interface Toast {
   message: string;
   tone?: "success" | "working" | "blocked" | "info";
+  /** Optional single action (e.g. "Undo"). Presence extends auto-dismiss to 6s. */
+  action?: { label: string; onAction: () => void };
+}
+
+/** Toast with a store-assigned id for targeted dismissal. */
+export interface ToastItem extends Toast {
+  id: string;
 }
 
 // ----- chat message + action cards -----

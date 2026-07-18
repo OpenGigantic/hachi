@@ -157,3 +157,48 @@ describe("tickApprovals — live sentinel and mock expiry (BB-77)", () => {
     expect(useStore.getState().history[0].decision).toMatch(/timed out/);
   });
 });
+
+// ---- T8a / BB-83: toast queue (append/cap/dismiss) ----
+
+describe('toast queue — append / cap / dismiss (BB-83)', () => {
+  beforeEach(() => {
+    useStore.setState({ toasts: [] });
+  });
+
+  it('showToast appends a toast with a unique id', () => {
+    useStore.getState().showToast('hello', 'success');
+    const { toasts } = useStore.getState();
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].message).toBe('hello');
+    expect(toasts[0].id).toBeTruthy();
+  });
+
+  it('a fourth toast drops the oldest (cap=3)', () => {
+    useStore.getState().showToast('a', 'success');
+    useStore.getState().showToast('b', 'success');
+    useStore.getState().showToast('c', 'success');
+    useStore.getState().showToast('d', 'success');
+    const { toasts } = useStore.getState();
+    expect(toasts).toHaveLength(3);
+    expect(toasts.map((t) => t.message)).toEqual(['b', 'c', 'd']);
+  });
+
+  it('dismissToast removes the targeted toast by id', () => {
+    useStore.getState().showToast('x', 'success');
+    useStore.getState().showToast('y', 'success');
+    const { toasts: before } = useStore.getState();
+    useStore.getState().dismissToast(before[0].id);
+    const { toasts: after } = useStore.getState();
+    expect(after).toHaveLength(1);
+    expect(after[0].message).toBe('y');
+  });
+
+  it('showToast preserves the action callback', () => {
+    const onAction = vi.fn();
+    useStore.getState().showToast('Fact forgotten', 'success', { label: 'Undo', onAction });
+    const { toasts } = useStore.getState();
+    expect(toasts[0].action?.label).toBe('Undo');
+    toasts[0].action?.onAction();
+    expect(onAction).toHaveBeenCalledOnce();
+  });
+});

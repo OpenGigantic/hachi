@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef, CSSProperties } from 'react'
+import React, { useState, useEffect, CSSProperties } from 'react'
 import { HachiMark } from './HachiMark'
+import { ConfirmButton } from '../ui/ConfirmButton'
 
 /** localStorage key — suppress leash explanation after first interaction. */
 const LEASH_EXPLAIN_KEY = 'hachi.leash-explain-dismissed'
@@ -89,25 +90,8 @@ export function LeashPrompt({
   const handleAllowOnce = () => { markSeen(); onAllowOnce() }
   const handleDecline = () => { markSeen(); onDecline() }
 
-  // "Always allow" grants a *standing* permission — arm on first click and require
-  // a second click to confirm (auto-disarms after 4s so a stray tap can't grant it).
-  const [alwaysArmed, setAlwaysArmed] = useState(false)
-  const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => () => { if (armTimerRef.current) clearTimeout(armTimerRef.current) }, [])
-  const handleAlwaysAllowClick = () => {
-    if (!alwaysArmed) {
-      setAlwaysArmed(true)
-      armTimerRef.current = setTimeout(() => setAlwaysArmed(false), 4000)
-      return
-    }
-    if (armTimerRef.current) clearTimeout(armTimerRef.current)
-    markSeen()
-    onAlwaysAllow()
-  }
-
   const [declineFocused, setDeclineFocused] = useState(false)
   const [allowFocused, setAllowFocused] = useState(false)
-  const [alwaysFocused, setAlwaysFocused] = useState(false)
   const focusRing = '2px solid var(--hachi-brand-tint, #FBE7E0)'
 
   return (
@@ -311,32 +295,20 @@ export function LeashPrompt({
         >
           Allow once
         </button>
-        <button
-          type="button"
-          className="hachi-leash-always-btn"
-          onClick={handleAlwaysAllowClick}
-          onFocus={() => setAlwaysFocused(true)}
-          onBlur={() => setAlwaysFocused(false)}
-          aria-label={alwaysArmed ? 'Confirm: always allow this' : 'Always allow — grants a standing permission'}
+        <ConfirmButton
+          label="Always allow"
+          confirmLabel="Always allow — confirm"
+          onConfirm={() => { markSeen(); onAlwaysAllow() }}
+          tone="neutral"
+          ariaLabel="Always allow — grants a standing permission"
           style={{
             flex: 1,
             height: 38,
-            padding: '0 10px',
             borderRadius: 'var(--radius-md, 10px)',
-            border: `1.5px solid ${alwaysArmed ? 'var(--hachi-working, #E0922E)' : 'var(--hachi-line, #E2D9C9)'}`,
-            background: alwaysArmed ? 'var(--hachi-working-tint, #FBEBD6)' : undefined,
-            color: alwaysArmed ? 'var(--hachi-working-fg, #A8651A)' : 'var(--text-muted, var(--hachi-muted, #696460))',
             fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
             fontSize: 13,
-            fontWeight: 500,
-            cursor: 'pointer',
-            outline: alwaysFocused ? focusRing : 'none',
-            outlineOffset: 2,
-            transition: 'background var(--dur-fast, 120ms) var(--ease, cubic-bezier(.2,.7,.3,1)), border-color var(--dur-fast, 120ms) var(--ease, cubic-bezier(.2,.7,.3,1))',
           }}
-        >
-          {alwaysArmed ? 'Click to confirm' : 'Always allow'}
-        </button>
+        />
       </div>
 
       {/* Footer caption */}
