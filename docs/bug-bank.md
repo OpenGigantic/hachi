@@ -2135,6 +2135,14 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** never pipe raw `user_text` from the gateway directly to a display layer — the gateway concatenates the prompt-injection preamble into the same field.
 - **Locked by:** `frontend/src/lib/data/domains/chat.test.ts` — "extractInjectedAttachments — strip tool-protocol injection (BB-84)".
 
+### BB-85 — Two approval card implementations disagreed: low/medium risk showed filled "Allow once" on approvals screen
+
+- **Symptom:** `routes/index.tsx:ApprovalCard` and `routes/approvals.tsx:ApprovalCard` were independent implementations. The approvals screen made "Allow once" a solid filled brand-red button for low AND medium risk — the visually dominant choice was the one that bypasses the leash, violating Nielsen error-prevention. `LeashPrompt` (the design-correct card) was used in conversation/run but not on the dedicated approval screens.
+- **Root cause:** Two separate `ApprovalCard` implementations instead of one shared component. `routes/approvals.tsx` rendered `background: var(--hachi-brand)` on Allow once for non-high-risk approvals.
+- **Fix:** Extended `LeashPrompt` props (`riskPill`, `touches`, `countdown: string|null`, `countdownBar`, `headerTestId`, `actionsTestId`). Button weighting now in ONE place: low/medium both outlined, high = Decline solid trust. Deleted `fmtCountdown` from `LeashPrompt` (uses `useCountdown().label` from caller). Both `ApprovalCard` functions replaced with `<LeashPrompt />` composition. `hachi-leash-decline-high-btn` class added to `interactive.css` (resting background in class per BB-76).
+- **Avoid:** never duplicate approval-card markup; the design contract for equal-weight decisions lives ONCE in `LeashPrompt`.
+- **Locked by:** `frontend/src/components/brand/LeashPrompt.test.tsx` — "LeashPrompt — button weighting (T10 / BB-85)"; `frontend/src/routes/-index.ApprovalCard.test.tsx` — "Home ApprovalCard — action row layout" (structural invariant still holds via LeashPrompt's layout).
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
