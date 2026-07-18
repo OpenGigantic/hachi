@@ -64,6 +64,7 @@ export const ConversationComposer = memo(function ConversationComposer({
   const voiceMenuRef = useRef<HTMLDivElement>(null)
   const voiceBtnRef = useRef<HTMLButtonElement>(null)
   const [slashIdx, setSlashIdx] = useState(-1)
+  const [slashDismissed, setSlashDismissed] = useState(false)
   const [uploading, setUploading] = useState(false)
 
   // ── voice state ──
@@ -82,9 +83,10 @@ export const ConversationComposer = memo(function ConversationComposer({
     voiceModeRef.current = voiceMode
   }, [voiceMode])
 
+  // Reset slashDismissed veto whenever the user clears the slash prefix
   useEffect(() => {
-    if (!slashOpen) setSlashIdx(-1)
-  }, [slashOpen])
+    if (!composer.startsWith('/')) setSlashDismissed(false)
+  }, [composer])
 
   useEffect(() => {
     const ta = textareaRef.current
@@ -104,6 +106,15 @@ export const ConversationComposer = memo(function ConversationComposer({
   }, [])
 
   const canSend = (composer.trim().length > 0 || pendingAttachments.length > 0) && !streaming
+
+  const firstToken = composer.startsWith('/') ? composer.split(' ')[0] : ''
+  const filtered = SLASH_ITEMS.filter((i) => i.cmd.startsWith(firstToken))
+  const menuVisible = slashOpen && !slashDismissed && filtered.length > 0
+
+  // Drive slashIdx: 0 when menu opens or filtered list changes, -1 when hidden
+  useEffect(() => {
+    setSlashIdx(menuVisible ? 0 : -1)
+  }, [menuVisible, filtered.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleInput(e: React.ChangeEvent<HTMLTextAreaElement>) {
     setComposer(e.target.value)
@@ -337,7 +348,7 @@ export const ConversationComposer = memo(function ConversationComposer({
     if (slashOpen) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
-        setSlashIdx((i) => Math.min(i + 1, SLASH_ITEMS.length - 1))
+        setSlashIdx((i) => Math.min(i + 1, Math.max(0, filtered.length - 1)))
         return
       }
       if (e.key === 'ArrowUp') {
@@ -345,14 +356,14 @@ export const ConversationComposer = memo(function ConversationComposer({
         setSlashIdx((i) => Math.max(i - 1, 0))
         return
       }
-      if (e.key === 'Enter' && slashIdx >= 0) {
+      if (e.key === 'Enter') {
         e.preventDefault()
-        handleSlashPick(SLASH_ITEMS[slashIdx].cmd)
+        if (filtered[slashIdx]) handleSlashPick(filtered[slashIdx].cmd)
         return
       }
       if (e.key === 'Escape') {
         e.preventDefault()
-        setComposer('')
+        setSlashDismissed(true)
         return
       }
     }
@@ -360,7 +371,7 @@ export const ConversationComposer = memo(function ConversationComposer({
       e.preventDefault()
       if (canSend) startTask(composer)
     }
-  }, [slashOpen, slashIdx, canSend, composer, startTask, setComposer])
+  }, [slashOpen, slashIdx, filtered, canSend, composer, startTask, setSlashDismissed])
 
   const dictating = voiceMode === 'dictate'
   const isPush = voiceMode === 'push'
@@ -376,14 +387,18 @@ export const ConversationComposer = memo(function ConversationComposer({
       }}
     >
       <div
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={menuVisible}
         style={{
           maxWidth: 760,
           margin: '0 auto',
           position: 'relative',
         }}
       >
-        {slashOpen && (
+        {menuVisible && (
           <div
+            id="hachi-slash-listbox"
             style={{
               position: 'absolute',
               bottom: 'calc(100% + 8px)',
@@ -399,9 +414,10 @@ export const ConversationComposer = memo(function ConversationComposer({
             role="listbox"
             aria-label="Slash commands"
           >
-            {SLASH_ITEMS.map((item, idx) => (
+            {filtered.map((item, idx) => (
               <SlashItem
                 key={item.cmd}
+                id={`slash-item-${idx}`}
                 cmd={item.cmd}
                 desc={item.desc}
                 active={idx === slashIdx}
@@ -541,7 +557,8 @@ export const ConversationComposer = memo(function ConversationComposer({
               placeholder="Message Hachi…  /  for commands"
               aria-label="Message Hachi"
               aria-autocomplete="list"
-              aria-expanded={slashOpen}
+              aria-controls="hachi-slash-listbox"
+              aria-activedescendant={menuVisible && slashIdx >= 0 ? `slash-item-${slashIdx}` : undefined}
               style={{
                 flex: 1,
                 resize: 'none',
@@ -645,28 +662,24 @@ export const ConversationComposer = memo(function ConversationComposer({
               </button>
             )}
 
-            {canSend && (
-              <button
-                type="button"
-                className="hachi-retry-btn"
-                aria-label="Send message"
-                onClick={handleSend}
-                style={{
-                  flexShrink: 0,
-                  width: 42,
-                  height: 42,
-                  borderRadius: 10,
-                  border: '0.5px solid transparent',
-                  background: 'var(--hachi-brand)',
-                  color: 'var(--hachi-canvas)',
-                  display: 'grid',
-                  placeItems: 'center',
-                  cursor: 'pointer',
-                }}
-              >
-                <Icon name="send" size={16} />
-              </button>
-            )}
+            <button
+              type="button"
+              className="hachi-mcp-submit-btn"
+              aria-label="Send message"
+              onClick={handleSend}
+              disabled={!canSend}
+              style={{
+                flexShrink: 0,
+                width: 42,
+                height: 42,
+                borderRadius: 10,
+                border: '0.5px solid transparent',
+                display: 'grid',
+                placeItems: 'center',
+              }}
+            >
+              <Icon name="send" size={16} />
+            </button>
           </div>
         )}
 
