@@ -155,7 +155,7 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
       </div>
 
       {/* Operator view toggle */}
-      <label
+      <div
         className="hachi-sidebar-operator-toggle"
         style={{
           display: 'flex',
@@ -179,8 +179,9 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
         <Switch
           checked={operator}
           onChange={(v) => setOperator(v)}
+          ariaLabel="Operator view"
         />
-      </label>
+      </div>
 
       {/* Budget widget */}
       <BudgetWidget spent={spent} budget={budget} onClick={handleBudgetClick} />

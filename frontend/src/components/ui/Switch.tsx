@@ -1,18 +1,29 @@
 import { CSSProperties, useId } from 'react';
 
+const VISUALLY_HIDDEN: CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  margin: -1,
+  padding: 0,
+  overflow: 'hidden',
+  clip: 'rect(0,0,0,0)',
+  whiteSpace: 'nowrap',
+  border: 0,
+};
+
 export interface SwitchProps {
   checked: boolean;
   onChange: (v: boolean) => void;
   label?: string;
+  /** Accessible name when no visible label is provided. */
+  ariaLabel?: string;
   disabled?: boolean;
 }
 
-export function Switch({ checked, onChange, label, disabled = false }: SwitchProps) {
+export function Switch({ checked, onChange, label, ariaLabel, disabled = false }: SwitchProps) {
   const id = useId();
 
-  // WCAG 2.5.5/2.5.8 — the interactive hit area is 44x44 even though the
-  // visual pill stays compact (40x24); the pill is centered inside a
-  // padded, invisible hit box rather than inflating the graphic itself.
   const hitAreaStyle: CSSProperties = {
     position: 'relative',
     display: 'inline-flex',
@@ -21,7 +32,6 @@ export function Switch({ checked, onChange, label, disabled = false }: SwitchPro
     width: '44px',
     height: '44px',
     margin: '-10px -2px',
-    cursor: disabled ? 'not-allowed' : 'pointer',
     flexShrink: 0,
   };
 
@@ -59,30 +69,24 @@ export function Switch({ checked, onChange, label, disabled = false }: SwitchPro
   };
 
   const labelStyle: CSSProperties = {
-    font: 'var(--text-body)',
+    fontFamily: 'var(--font-body)',
+    fontSize: 'var(--type-body-size)',
     color: disabled ? 'var(--text-muted)' : 'var(--text-default)',
   };
 
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if (disabled) return;
-    if (e.key === ' ' || e.key === 'Enter') {
-      e.preventDefault();
-      onChange(!checked);
-    }
-  }
-
   return (
     <label htmlFor={id} style={wrapStyle}>
-      <span
+      <input
         id={id}
+        type="checkbox"
         role="switch"
-        aria-checked={checked}
-        aria-disabled={disabled}
-        tabIndex={disabled ? -1 : 0}
-        style={hitAreaStyle}
-        onClick={() => !disabled && onChange(!checked)}
-        onKeyDown={handleKeyDown}
-      >
+        checked={checked}
+        onChange={(e) => !disabled && onChange(e.target.checked)}
+        disabled={disabled}
+        aria-label={!label ? ariaLabel : undefined}
+        style={VISUALLY_HIDDEN}
+      />
+      <span style={hitAreaStyle} aria-hidden="true">
         <span style={trackStyle}>
           <span style={thumbStyle} />
         </span>

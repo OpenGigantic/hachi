@@ -916,6 +916,7 @@ function McpServerRow({ server: s, isLast }: McpServerRowProps) {
           checked={enabled}
           onChange={handleToggle}
           disabled={toggling}
+          ariaLabel={enabled ? 'Disable server' : 'Enable server'}
         />
       </span>
 
