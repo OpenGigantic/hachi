@@ -2127,6 +2127,14 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** never use a single-slot for toasts; never do arm-then-confirm without a cooldown delay; always put the live region on a permanently-mounted element.
 - **Locked by:** `frontend/src/lib/store/store.test.ts` — "toast queue — append / cap / dismiss (BB-83)"; `frontend/src/components/ui/ConfirmButton.test.tsx` — "ConfirmButton — arm-then-confirm (BB-83)".
 
+### BB-84 — Tool-protocol injection text rendered verbatim in chat history and Review
+
+- **Symptom:** Conversation history re-loaded from the gateway showed raw injection text beneath the user's message (`[Attached image: hachi logo.png]\n(Use the view_image tool with path: …)`). Review screen rendered `##` headings and `**bold**` as literal characters.
+- **Root cause:** `reconstructMessagesFromEvents` (chat.ts) and `loadSessionMessages` set the user message `text` directly from `payload.user_text` / `m.content`, which the gateway stores with the full prompt-injection block. `review.tsx` rendered the Hachi `agentOutput` field with `{ix.agentOutput}` (plain text node) and the user input with `whiteSpace: pre-wrap`.
+- **Fix:** New exported pure function `extractInjectedAttachments(text)` strips `\n?[Attached (image|file): name]\n(Use the \w+ tool with path: …)` blocks (multiline, global), returns `{ text, attachments: { name }[] }`. Applied to `role === 'you'` in both adapter paths. Extracted attachments merged into the message's `attachments` array (displayed as chips by `MessageItem`). In `review.tsx`: user cell applies `extractInjectedAttachments`, Hachi cell renders via `<Markdown>` (imported from `../components/ui/Markdown`).
+- **Avoid:** never pipe raw `user_text` from the gateway directly to a display layer — the gateway concatenates the prompt-injection preamble into the same field.
+- **Locked by:** `frontend/src/lib/data/domains/chat.test.ts` — "extractInjectedAttachments — strip tool-protocol injection (BB-84)".
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

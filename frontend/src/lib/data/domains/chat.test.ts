@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildTurnKey, reconstructMessagesFromEvents } from './chat'
+import { buildTurnKey, extractInjectedAttachments, reconstructMessagesFromEvents } from './chat'
 
 describe('reconstructMessagesFromEvents', () => {
   it('reconstructs text and tool state in event order', () => {
@@ -57,6 +57,32 @@ describe('reconstructMessagesFromEvents', () => {
     expect(result.messages).toHaveLength(20_000)
     expect(result.messages.at(-1)?.text).toBe('xxxxxxxxxx')
     expect(elapsedMs).toBeLessThan(800)
+  })
+})
+
+describe('extractInjectedAttachments — strip tool-protocol injection (BB-84)', () => {
+  const SAMPLE =
+    'explain the image\n\n[Attached image: hachi logo.png]\n(Use the view_image tool with path: C:\\Users\\foo\\blobs\\f89b)'
+
+  it('strips injection block and returns name', () => {
+    const result = extractInjectedAttachments(SAMPLE)
+    expect(result.text).toBe('explain the image')
+    expect(result.attachments).toEqual([{ name: 'hachi logo.png' }])
+  })
+
+  it('passes through text with no injection unchanged', () => {
+    const result = extractInjectedAttachments('just a normal message')
+    expect(result.text).toBe('just a normal message')
+    expect(result.attachments).toHaveLength(0)
+  })
+
+  it('extracts two attachments from one message', () => {
+    const two =
+      'caption\n\n[Attached image: a.png]\n(Use the view_image tool with path: /tmp/a)' +
+      '\n\n[Attached file: b.pdf]\n(Use the read_file tool with path: /tmp/b)'
+    const result = extractInjectedAttachments(two)
+    expect(result.text).toBe('caption')
+    expect(result.attachments).toEqual([{ name: 'a.png' }, { name: 'b.pdf' }])
   })
 })
 

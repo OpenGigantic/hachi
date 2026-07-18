@@ -1167,6 +1167,29 @@ async function loadSessionEventsWindow(
 /**
  * Replay an ordered list of gateway event records into a ChatMessage array.
  *
+/**
+ * Strip tool-protocol injection blocks from a user message and return the
+ * attachments they described.
+ *
+ * Pattern (multiline, global):
+ *   \n?[Attached image|file: <name>]\n(Use the <tool> tool with path: <path>)
+ *
+ * Applied only to `role === 'you'` history messages — never to the live send path.
+ */
+export function extractInjectedAttachments(text: string): {
+  text: string;
+  attachments: { name: string }[];
+} {
+  const attachments: { name: string }[] = [];
+  const pattern = /\n?\[Attached (?:image|file): ([^\]]+)\]\n\(Use the \w+ tool with path:[^)]*\)/g;
+  const cleaned = text.replace(pattern, (_match, name: string) => {
+    attachments.push({ name });
+    return "";
+  });
+  return { text: cleaned.trimEnd(), attachments };
+}
+
+/**
  * The gateway's GET /sessions/{id}/events endpoint returns the same event
  * envelopes that the SSE stream emits in real-time (confirmed by inspecting
  * runtime_events.py). We walk them in order:
@@ -1197,14 +1220,22 @@ export function reconstructMessagesFromEvents(events: GatewayEventRecord[]): {
     switch (eventType) {
       case "session.turn.started": {
         // Open a new user + hachi message pair
-        const userText =
+        const rawUserText =
           typeof payload.user_text === "string" && payload.user_text
             ? payload.user_text
             : "(message)";
+        const { text: userText, attachments: injectedAttachments } =
+          extractInjectedAttachments(rawUserText);
         const youId = Date.now() + reconstructed.length;
         const hachiId = youId + 1;
         reconstructed.push(
-          { id: youId, role: "you" as const, text: userText, cards: [], routine: null },
+          {
+            id: youId, role: "you" as const, text: userText,
+            cards: [], routine: null,
+            ...(injectedAttachments.length > 0
+              ? { attachments: injectedAttachments.map((a) => ({ name: a.name, mediaType: "", size: 0 })) }
+              : {}),
+          },
           { id: hachiId, role: "hachi" as const, text: "", cards: [], routine: null }
         );
         currentHachiIndex = reconstructed.length - 1;
@@ -1545,8 +1576,18 @@ export async function loadSessionMessages(
   let baseId = Date.now();
   for (const m of msgs) {
     const role = m.role === "user" ? "you" as const : "hachi" as const;
-    const text = typeof m.content === "string" ? m.content : "";
-    result.push({ id: baseId++, role, text, cards: [], routine: null });
+    const rawText = typeof m.content === "string" ? m.content : "";
+    if (role === "you") {
+      const { text, attachments: injected } = extractInjectedAttachments(rawText);
+      result.push({
+        id: baseId++, role, text, cards: [], routine: null,
+        ...(injected.length > 0
+          ? { attachments: injected.map((a) => ({ name: a.name, mediaType: "", size: 0 })) }
+          : {}),
+      });
+    } else {
+      result.push({ id: baseId++, role, text: rawText, cards: [], routine: null });
+    }
   }
   return result;
 }
