@@ -943,7 +943,7 @@ export const useStore = create<State & Actions>()(
           const k = get().kennel.find((x) => x.id === kennelId);
           if (k) set({ kennelConsent: k });
         },
-        askKennel: (item) => set({ kennelConsent: item }),
+        askKennel: (item) => set({ kennelConsent: item, kennelBrowseOpen: false }),
         confirmKennel: () => {
           const k = get().kennelConsent;
           if (!k) return;
