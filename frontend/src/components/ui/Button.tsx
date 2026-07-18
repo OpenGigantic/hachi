@@ -1,56 +1,50 @@
-import { CSSProperties, ReactNode, AriaAttributes } from 'react';
+import { CSSProperties, ReactNode, AriaAttributes, forwardRef } from 'react';
+import { LoyalLoop } from './LoyalLoop';
 
 export interface ButtonProps extends AriaAttributes {
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
-  size?: 'sm' | 'md';
+  size?: 'md' | 'lg';
   type?: 'button' | 'submit' | 'reset';
   onClick?: () => void;
   disabled?: boolean;
+  loading?: boolean;
+  className?: string;
   children?: ReactNode;
   style?: CSSProperties;
 }
 
-export function Button({
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button({
   variant = 'primary',
   size = 'md',
   type = 'button',
   onClick,
   disabled = false,
+  loading = false,
+  className,
   children,
   style,
   ...ariaProps
-}: ButtonProps) {
-  const height = size === 'sm' ? '32px' : '40px';
-  const px = size === 'sm' ? 'var(--space-3)' : 'var(--space-4)';
-  const fontSize = size === 'sm' ? 'var(--type-small-size)' : 'var(--type-body-size)';
+}, ref) {
+  const isDisabled = disabled || loading;
+  const height = size === 'lg' ? '44px' : '40px';
+  const px = size === 'lg' ? 'var(--space-5)' : 'var(--space-4)';
 
   const variantClass = `hachi-btn-${variant}`;
 
   const variantStyles: CSSProperties = (() => {
     switch (variant) {
       case 'primary':
-        return {
-          color: 'var(--hachi-canvas)',
-          border: 'none',
-        };
+        return { color: 'var(--hachi-canvas)', border: 'none' };
       case 'secondary':
-        return {
-          color: 'var(--hachi-trust)',
-          border: '0.5px solid var(--hachi-trust)',
-        };
+        return { color: 'var(--hachi-trust)', border: '0.5px solid var(--hachi-trust)' };
       case 'ghost':
-        return {
-          border: 'none',
-        };
+        return { border: 'none' };
       case 'danger':
-        return {
-          color: 'var(--hachi-canvas)',
-          border: 'none',
-        };
+        return { color: 'var(--hachi-canvas)', border: 'none' };
     }
   })();
 
-  const disabledStyles: CSSProperties = disabled
+  const disabledStyles: CSSProperties = isDisabled
     ? { opacity: 0.45, cursor: 'not-allowed', pointerEvents: 'none' }
     : { cursor: 'pointer' };
 
@@ -62,8 +56,8 @@ export function Button({
     height,
     padding: `0 ${px}`,
     borderRadius: 'var(--radius-md)',
-    font: 'var(--text-body)',
-    fontSize,
+    fontFamily: 'var(--font-body)',
+    fontSize: 'var(--type-body-size)',
     fontWeight: 'var(--weight-medium)' as CSSProperties['fontWeight'],
     lineHeight: 1,
     letterSpacing: 0,
@@ -77,15 +71,17 @@ export function Button({
 
   return (
     <button
+      ref={ref}
       type={type}
-      className={variantClass}
+      className={[variantClass, className].filter(Boolean).join(' ')}
       onClick={onClick}
-      disabled={disabled}
-      aria-disabled={disabled || undefined}
+      disabled={isDisabled}
+      aria-disabled={isDisabled || undefined}
+      aria-busy={loading || undefined}
       style={baseStyles}
       {...ariaProps}
     >
-      {children}
+      {loading ? <LoyalLoop size={14} label="Loading…" /> : children}
     </button>
   );
-}
+});

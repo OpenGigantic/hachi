@@ -13,6 +13,7 @@
 import React, { useState, useRef } from 'react';
 import { Icon } from '../icons/Icon';
 import { Modal } from '../ui/Modal';
+import { Button } from '../ui/Button';
 import { probeProvider, type ProviderSpec } from '../../lib/data/domains/providers';
 import { inputStyle, labelStyle } from './shared';
 
@@ -566,40 +567,21 @@ export function AddProviderDialog({
             flexShrink: 0,
           }}
         >
-          <button
-            type="button"
+          <Button
+            variant="secondary"
             onClick={onClose}
-            style={{
-              flex: 1,
-              height: 42,
-              borderRadius: 10,
-              border: '1px solid var(--hachi-trust)',
-              background: 'transparent',
-              color: 'var(--hachi-trust)',
-              font: '500 14px var(--font-body)',
-              cursor: 'pointer',
-            }}
+            style={{ flex: 1, height: 42 }}
           >
             Cancel
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
             onClick={() => void handleSubmit()}
-            disabled={saving}
-            style={{
-              flex: 1,
-              height: 42,
-              borderRadius: 10,
-              border: 'none',
-              background: 'var(--hachi-brand-hover)',
-              color: 'var(--hachi-canvas)',
-              font: '500 14px var(--font-body)',
-              cursor: saving ? 'default' : 'pointer',
-              opacity: saving ? 0.6 : 1,
-            }}
+            loading={saving}
+            style={{ flex: 1, height: 42 }}
           >
-            {saving ? 'Saving…' : isEditing ? 'Save changes' : 'Add provider'}
-          </button>
+            {isEditing ? 'Save changes' : 'Add provider'}
+          </Button>
         </div>
     </Modal>
   );
