@@ -10,8 +10,10 @@ import { useState, useEffect } from 'react';
 import { createFileRoute } from '@tanstack/react-router';
 import { useStore } from '../lib/store/store';
 import { Icon } from '../components/icons/Icon';
+import { Markdown } from '../components/ui/Markdown';
 import type { AgentInteraction } from '../lib/data/types';
 import { loadInteractions, rateInteraction } from '../lib/data/domains/interactions';
+import { extractInjectedAttachments } from '../lib/data/domains/chat';
 
 // ---- helpers ----
 
@@ -114,7 +116,7 @@ function InteractionCard({ ix }: { ix: AgentInteraction }) {
               wordBreak: 'break-word',
             }}
           >
-            {ix.userInput}
+            {extractInjectedAttachments(ix.userInput).text}
           </div>
         </div>
       )}
@@ -134,14 +136,13 @@ function InteractionCard({ ix }: { ix: AgentInteraction }) {
               fontSize: 13,
               color: 'var(--hachi-ink)',
               lineHeight: '20px',
-              whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
               maxHeight: 200,
               overflow: 'auto',
             }}
             className="hachi-scroll"
           >
-            {ix.agentOutput}
+            <Markdown text={ix.agentOutput} />
           </div>
         </div>
       )}
