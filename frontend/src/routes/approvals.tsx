@@ -148,12 +148,28 @@ const auditDColor: Record<string, string> = {
   automatic: "var(--hachi-muted)",
 };
 
-// ---- unchecked actions list (prototype literal) ----
-const UNCHECKED_ACTIONS = [
-  "Reading files inside your project folder",
-  "Searching the web to answer a question",
-  "Reading your calendar and inbox (not sending)",
-];
+// ---- unchecked actions per safety level ----
+// Backend has no canonical list; these are typical for each level.
+const UNCHECKED_BY_LEVEL: Record<string, string[]> = {
+  guarded: [
+    "Reading files inside your project folder",
+  ],
+  standard: [
+    "Reading files inside your project folder",
+    "Searching the web to answer a question",
+    "Reading your calendar and inbox (not sending)",
+  ],
+  open: [
+    "Reading files inside your project folder",
+    "Searching the web to answer a question",
+    "Reading your calendar and inbox (not sending)",
+    "Running shell commands in folders you approved",
+    "Sending drafts you pre-approved",
+  ],
+};
+function uncheckedActionsFor(level: string): string[] {
+  return UNCHECKED_BY_LEVEL[level] ?? UNCHECKED_BY_LEVEL.standard;
+}
 
 // ============================================================
 // ApprovalCard — renders one pending approval with live countdown
@@ -319,6 +335,7 @@ function Approvals() {
   const auditLog = useStore((s) => s.auditLog);
   const operator = useStore((s) => s.operator);
   const loadedApprovals = useStore((s) => s.loaded.approvals);
+  const safety = useStore((s) => s.safety);
 
   // Refresh gateway data on navigate-to this screen
   useEffect(() => { void loadApprovals(); }, []);
@@ -483,10 +500,9 @@ function Approvals() {
                   color: "var(--hachi-ink)",
                 }}
               >
-                Honest about it: these run without asking, on your current
-                safety level.
+                Typical for the <strong>{safety}</strong> level — these run without asking.
               </div>
-              {UNCHECKED_ACTIONS.map((u, i) => (
+              {uncheckedActionsFor(safety).map((u, i) => (
                 <div
                   key={i}
                   style={{
