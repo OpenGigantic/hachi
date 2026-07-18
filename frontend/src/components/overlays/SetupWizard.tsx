@@ -34,6 +34,8 @@ async function startIntegrationOAuth(id: string): Promise<void> {
   }
 }
 
+const KEY_STEP = 1;
+
 const SAFETY_LEVELS = [
   {
     k: 'guarded' as const,
@@ -133,8 +135,16 @@ export function SetupWizard() {
           : 'var(--hachi-line)'
       );
 
+  // A key is "ok" when the user already has one configured server-side, or
+  // when they typed a new key and it passed validation this session.
+  const keyOk = setup.keyAlreadySet || keyValidation.status === 'valid';
+
   const nextLabel = isEditProvider ? 'Save' : step >= 4 ? 'Finish' : step === 0 ? 'Get started' : 'Next';
-  const skipLabel = isEditProvider ? '' : step >= 4 ? '' : 'Skip';
+  // Skip is hidden on the key step unless the user already has a key — they can
+  // skip past without re-entering it. On all other steps Skip advances normally.
+  const showSkip = !isEditProvider && step < 4 && !(step === KEY_STEP && !setup.keyAlreadySet);
+  // "Set up later" is a soft-exit only on the key step in onboard mode.
+  const showSetUpLater = !isEditProvider && step === KEY_STEP;
   const canBack   = !isEditProvider && step > 0;
 
   // On the final step, also fire the live gateway apply call (additive to the
@@ -266,10 +276,18 @@ export function SetupWizard() {
             <GhostBtn onClick={setupBack}>Back</GhostBtn>
           )}
           <div style={{ flex: 1 }} />
-          {skipLabel && (
-            <GhostBtn onClick={closeSetup}>{skipLabel}</GhostBtn>
+          {showSetUpLater && (
+            <GhostBtn onClick={closeSetup}>Set up later</GhostBtn>
           )}
-          <PrimaryBtn onClick={handleNext}>{nextLabel}</PrimaryBtn>
+          {showSkip && (
+            <GhostBtn onClick={setupNext}>Skip</GhostBtn>
+          )}
+          <PrimaryBtn
+            onClick={handleNext}
+            disabled={!isEditProvider && step === KEY_STEP && !keyOk}
+          >
+            {nextLabel}
+          </PrimaryBtn>
         </div>
       </div>
     </div>
@@ -405,19 +423,19 @@ function Step1({
           </div>
         )}
         {keyValidation.status === 'format-error' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: 'var(--hachi-danger)', marginTop: 8 }}>
+          <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: 'var(--hachi-danger)', marginTop: 8 }}>
             <Icon name="alert" size={15} />
             {keyValidation.message}
           </div>
         )}
         {keyValidation.status === 'invalid' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: 'var(--hachi-danger)', marginTop: 8 }}>
+          <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: 'var(--hachi-danger)', marginTop: 8 }}>
             <Icon name="alert" size={15} />
             {keyValidation.message}
           </div>
         )}
         {keyValidation.status === 'network-error' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: 'var(--hachi-muted)', marginTop: 8 }}>
+          <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, color: 'var(--hachi-muted)', marginTop: 8 }}>
             <Icon name="alert" size={15} />
             {keyValidation.message}
           </div>
@@ -751,21 +769,22 @@ function GhostBtn({ onClick, children }: { onClick: () => void; children: React.
   );
 }
 
-function PrimaryBtn({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+function PrimaryBtn({ onClick, children, disabled }: { onClick: () => void; children: React.ReactNode; disabled?: boolean }) {
   return (
     <button
       type="button"
       className="hachi-mcp-submit-btn"
       onClick={onClick}
+      disabled={disabled}
       style={{
         height: 40,
         padding: '0 22px',
         borderRadius: 10,
         border: '0.5px solid transparent',
-        background: 'var(--hachi-brand-hover)',
-        color: 'var(--hachi-canvas)',
+        background: disabled ? 'var(--hachi-line)' : 'var(--hachi-brand-hover)',
+        color: disabled ? 'var(--hachi-muted)' : 'var(--hachi-canvas)',
         font: '500 14px var(--font-body)',
-        cursor: 'pointer',
+        cursor: disabled ? 'not-allowed' : 'pointer',
         transition: 'background var(--dur-fast) var(--ease)',
       }}
     >

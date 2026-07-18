@@ -2110,6 +2110,14 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** never use a global boolean flag for "this action was performed" when the action is scoped to a selected item; track the item identity instead.
 - **Locked by:** `frontend/src/lib/store/store.test.ts` — "applyPatch — per-target applied state (BB-81)".
 
+### BB-82 — Setup wizard let users advance past the key step with no key
+
+- **Symptom:** Clicking "Next" on the API-key step (step 1) advanced the wizard even when no key was entered and none was pre-configured server-side. "Skip" called `closeSetup()` (closing the wizard) rather than advancing to the next step. Re-opening the wizard always reset to step 0, losing any partial progress. The wizard never set a `completed` flag, so `openSetup()` had no way to distinguish "resume in progress" from "start over after finish."
+- **Root cause:** `handleNext` called `setupNext()` unconditionally; the primary button had no `disabled` prop; `skipLabel` onClick was `closeSetup`; `openSetup()` always wrote `step: 0`; no `completed` field existed.
+- **Fix:** Added `keyOk = setup.keyAlreadySet || keyValidation.status === 'valid'`. Primary button is disabled when `!keyOk` on KEY_STEP. Skip calls `setupNext()`. Added "Set up later" (calls `closeSetup()`) visible only on KEY_STEP. Skip hidden on KEY_STEP unless `keyAlreadySet`. Added `completed: boolean` to setup state; `setupNext()` sets it when finishing step ≥ 4. `openSetup()` preserves step when `step > 0 && !completed`.
+- **Avoid:** never gate wizard advancement in the handler alone — the button itself must be disabled so the constraint is visible in the UI and testable without firing click events.
+- **Locked by:** `frontend/src/components/overlays/SetupWizard.test.tsx` — "SetupWizard — key step gate (BB-82)".
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
