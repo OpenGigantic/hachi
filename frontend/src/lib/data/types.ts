@@ -44,7 +44,10 @@ export interface HistoryItem {
   icon: string;
   request: string;
   decision: ApprovalDecision | string;
+  /** Pre-formatted display label ("just now", fixture strings). Use ts when available. */
   when: string;
+  /** Unix-ms timestamp of the decision event — set by store actions, absent in fixture data. */
+  ts?: number;
   color: string;
 }
 

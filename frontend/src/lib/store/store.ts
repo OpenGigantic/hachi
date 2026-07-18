@@ -533,6 +533,7 @@ export const useStore = create<State & Actions>()(
               request: a.request,
               decision,
               when: "just now",
+              ts: Date.now(),
               color,
             }
           : undefined;
@@ -811,6 +812,7 @@ export const useStore = create<State & Actions>()(
                   request: a.request,
                   decision: "timed out — Hachi stayed put",
                   when: "just now",
+                  ts: Date.now(),
                   color: "var(--hachi-muted)",
                 })),
                 ...s.history,

@@ -11,6 +11,7 @@ import { Icon } from "../components/icons/Icon";
 import { HachiMark } from "../components/brand/HachiMark";
 import { LeashPrompt } from "../components/brand/LeashPrompt";
 import type { Approval, HistoryItem, AuditEntry } from "../lib/data/types";
+import { fmtRelative } from "../lib/ui/format";
 
 // localStorage key for dismissing the "What is the leash?" info band
 const LEASH_INFO_KEY = "hachi.leash-info-dismissed";
@@ -215,7 +216,7 @@ function HistoryRow({ item }: { item: HistoryItem }) {
             marginTop: 2,
           }}
         >
-          {item.decision} · {item.when}
+          {item.decision} · {item.ts !== undefined ? fmtRelative(item.ts) : item.when}
         </div>
       </div>
     </div>
