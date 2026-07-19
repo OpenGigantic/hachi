@@ -1,3 +1,4 @@
+import { Link } from '@tanstack/react-router'
 import { Icon } from '../icons/Icon'
 
 export interface NavItemProps {
@@ -5,20 +6,20 @@ export interface NavItemProps {
   icon: string
   active: boolean
   badge?: number
-  onClick: () => void
+  route: string
+  onNavigate?: () => void
 }
 
-export function NavItem({ label, icon, active, badge, onClick }: NavItemProps) {
-  const fg = 'var(--hachi-ink)'
+export function NavItem({ label, icon, active, badge, route, onNavigate }: NavItemProps) {
   const iconColor = active ? 'var(--hachi-brand)' : 'var(--hachi-muted)'
   const fontWeight = active ? '500' : '400'
 
   return (
-    <button
-      type="button"
-      className="hachi-nav-item"
-      onClick={onClick}
+    <Link
+      to={route as never}
+      onClick={onNavigate}
       aria-current={active ? 'page' : undefined}
+      className="hachi-nav-item"
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -28,12 +29,13 @@ export function NavItem({ label, icon, active, badge, onClick }: NavItemProps) {
         borderRadius: '10px',
         border: 'none',
         background: 'transparent',
-        color: fg,
+        color: 'var(--hachi-ink)',
         font: 'inherit',
         fontWeight,
         fontSize: '14px',
         cursor: 'pointer',
         textAlign: 'left',
+        textDecoration: 'none',
         transition: 'background var(--dur) var(--ease)',
       }}
     >
@@ -61,6 +63,6 @@ export function NavItem({ label, icon, active, badge, onClick }: NavItemProps) {
           {badge}
         </span>
       )}
-    </button>
+    </Link>
   )
 }

@@ -286,9 +286,27 @@ function Skills() {
                   textAlign: 'center',
                   color: 'var(--hachi-muted)',
                   fontSize: 14,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: 16,
                 }}
               >
-                No skills installed yet — browse the kennel to add some.
+                <span>No skills installed yet.</span>
+                <button
+                  type="button"
+                  className="hachi-browse-kennel-btn"
+                  onClick={openKennelBrowse}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    height: 36, padding: '0 16px', borderRadius: 8,
+                    background: 'var(--hachi-brand)', color: 'var(--hachi-canvas)',
+                    border: 'none', cursor: 'pointer', font: 'inherit',
+                    fontSize: 14, fontWeight: 500,
+                  }}
+                >
+                  Browse the kennel
+                </button>
               </div>
             ) : (
               <div
