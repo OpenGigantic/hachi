@@ -5,15 +5,9 @@
 /* ── Shell: mobile top-bar and drawer overlay ── */
 
 @media (max-width: 767px) {
-  /* The drawer backdrop — covers the page when the drawer is open */
-  .hachi-drawer-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.35);
-    z-index: 199;
-  }
-
-  /* The drawer itself slides in from the left */
+  /* The drawer itself slides in from the left.
+     Always mounted so the transform transition fires. Closed: off-screen + invisible
+     (visibility keeps it out of the tab order). Open: on-screen. */
   .hachi-sidebar-drawer {
     position: fixed;
     top: 0;
@@ -22,9 +16,33 @@
     width: 280px;
     z-index: 200;
     overflow-y: auto;
+    overscroll-behavior: contain;
     box-shadow: 4px 0 24px rgba(0, 0, 0, 0.15);
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform 0.22s var(--ease, cubic-bezier(0.4, 0, 0.2, 1)),
+                visibility 0s linear 0.22s;
+  }
+  .hachi-sidebar-drawer[data-open='true'] {
     transform: translateX(0);
-    transition: transform 0.22s var(--ease, cubic-bezier(0.4, 0, 0.2, 1));
+    visibility: visible;
+    transition: transform 0.22s var(--ease, cubic-bezier(0.4, 0, 0.2, 1)),
+                visibility 0s linear 0s;
+  }
+
+  /* Backdrop: always mounted, fades in/out with opacity */
+  .hachi-drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 199;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.22s var(--ease, cubic-bezier(0.4, 0, 0.2, 1));
+  }
+  .hachi-drawer-backdrop[data-open='true'] {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   /* Mobile top-bar: always visible, holds hamburger + brand title */
@@ -369,6 +387,36 @@
     border-bottom: 0.5px solid var(--hachi-line) !important;
     max-height: 240px !important;
     padding: 16px 16px 20px !important;
+  }
+
+  /* T28.1 — Conversation header: the absolute-positioned status span overlaps the
+     session-title button at 375px. De-absolute it so the header wraps naturally. */
+  .hachi-conv-header > span[data-status] {
+    position: static !important;
+    transform: none !important;
+    margin-left: auto;
+  }
+
+  /* T28.1 — same fix for the Home header status span */
+  .hachi-home-header > span[data-status] {
+    position: static !important;
+    transform: none !important;
+    margin-left: auto;
+  }
+
+  /* T28.2 — Home ask row: stack input + button vertically on narrow viewports */
+  .hachi-home-ask-form {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  .hachi-home-ask-form > button {
+    width: 100% !important;
+    justify-content: center !important;
+  }
+
+  /* T28.3 — Work spend stat grid: 4-col → 2-col on mobile */
+  .hachi-spend-stat-grid {
+    grid-template-columns: 1fr 1fr !important;
   }
 }
 

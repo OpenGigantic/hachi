@@ -7,6 +7,7 @@ import { NavItem } from './NavItem'
 import { BudgetWidget } from './BudgetWidget'
 import { useStore } from '../../lib/store/store'
 import { useIsMobile } from '../../lib/hooks/useMediaQuery'
+import { isMac } from '../../lib/ui/platform'
 import type { Run } from '../../lib/data/types'
 
 interface NavEntry {
@@ -104,17 +105,19 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
       >
         <Icon name="search" size={15} />
         <span style={{ flex: 1, textAlign: 'left' }}>Search or jump…</span>
-        <span
-          style={{
-            fontFamily: 'var(--font-mono)',
-            fontSize: '11px',
-            border: '0.5px solid var(--hachi-line)',
-            borderRadius: '5px',
-            padding: '1px 5px',
-          }}
-        >
-          ⌘K
-        </span>
+        {!onNavClick && (
+          <span
+            style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: '11px',
+              border: '0.5px solid var(--hachi-line)',
+              borderRadius: '5px',
+              padding: '1px 5px',
+            }}
+          >
+            {isMac() ? '⌘K' : 'Ctrl K'}
+          </span>
+        )}
       </button>
 
       {/* Nav list — flexes and scrolls when taller than the sidebar, so the
@@ -235,51 +238,30 @@ export function Sidebar() {
           <span className="hachi-topbar-title">hachi</span>
         </div>
 
-        {/* Backdrop */}
-        {drawerOpen && (
-          <div
-            className="hachi-drawer-backdrop"
-            aria-hidden="true"
-            onClick={() => setDrawerOpen(false)}
-          />
-        )}
+        {/* Backdrop — always mounted; opacity driven by data-open so transition fires */}
+        <div
+          className="hachi-drawer-backdrop"
+          data-open={drawerOpen ? 'true' : 'false'}
+          aria-hidden="true"
+          onClick={() => setDrawerOpen(false)}
+        />
 
-        {/* Drawer */}
+        {/* Drawer — always mounted; transform driven by data-open so slide transition fires.
+            visibility: hidden when closed keeps it out of the tab order. */}
         <aside
           id="hachi-drawer"
           className="hachi-sidebar-drawer"
+          data-open={drawerOpen ? 'true' : 'false'}
           aria-label="Navigation"
           role="navigation"
           style={{
             background: 'var(--hachi-surface)',
             borderRight: '0.5px solid var(--hachi-line)',
-            display: drawerOpen ? 'flex' : 'none',
+            display: 'flex',
             flexDirection: 'column',
-            padding: '16px',
+            padding: '8px 8px 12px',
           }}
         >
-          {/* Close button inside drawer */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
-            <button
-              type="button"
-              aria-label="Close navigation"
-              onClick={() => setDrawerOpen(false)}
-              style={{
-                width: '44px',
-                height: '44px',
-                borderRadius: '10px',
-                border: 'none',
-                background: 'transparent',
-                color: 'var(--hachi-muted)',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Icon name="x" size={18} />
-            </button>
-          </div>
           <SidebarContents onNavClick={() => setDrawerOpen(false)} />
         </aside>
       </>
