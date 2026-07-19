@@ -1182,6 +1182,7 @@ export const useStore = create<State & Actions>()(
                 text: trimmed,
                 cards: [],
                 routine: null,
+                ts: Date.now(),
                 attachments: attachmentSnapshot.map((a) => ({
                   name: a.name,
                   mediaType: a.mediaType,
@@ -1194,6 +1195,7 @@ export const useStore = create<State & Actions>()(
                 text: "",
                 cards: [],
                 routine: null,
+                ts: Date.now(),
               },
             ]),
           }));
@@ -1207,7 +1209,7 @@ export const useStore = create<State & Actions>()(
                 streaming: false,
                 messages: s.messages.map((m) =>
                   m.id === hachiId
-                    ? { ...m, text: m.text || "Something went wrong — please try again." }
+                    ? { ...m, text: m.text || "Something went wrong — please try again.", error: true }
                     : m
                 ),
               }));
@@ -1311,7 +1313,7 @@ export const useStore = create<State & Actions>()(
                 streaming: false,
                 messages: s.messages.map((m) =>
                   m.id === retryHachiId
-                    ? { ...m, text: m.text || "Something went wrong — please try again." }
+                    ? { ...m, text: m.text || "Something went wrong — please try again.", error: true }
                     : m
                 ),
               }));
