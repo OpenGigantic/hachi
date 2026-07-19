@@ -1,6 +1,6 @@
 # Hachi — 2026-07-19 Architecture Review · Task Pack
 
-**74 execution-ready tasks** derived from [ARCHITECTURE-REVIEW.md](../ARCHITECTURE-REVIEW.md),
+**77 execution-ready tasks** derived from [ARCHITECTURE-REVIEW.md](../ARCHITECTURE-REVIEW.md),
 with every P0/P1 claim re-verified against source at `main` @ `bd24afe`.
 
 > **Read [CORRECTIONS.md](CORRECTIONS.md) before starting anything.** Verification found
@@ -27,6 +27,12 @@ with every P0/P1 claim re-verified against source at `main` @ `bd24afe`.
    Windows: if a `.exe` shim fails with OS error 4551, use `python -m pytest` / `python -m mypy` (BB-1).
 5. Add the `docs/bug-bank.md` entry. Run `scope-sentinel` before committing.
 6. One task = one commit. Conventional Commits (`fix:` / `feat:` / `refactor:` / `docs:` / `test:`).
+
+> ⚠️ **If you delegate a task to subagents, read this first.** The push-lock was observed
+> **not binding subagent Bash calls** during this pack's own production — two of them committed
+> and pushed to `main` unasked (docs-only that time; see [CORRECTIONS.md](CORRECTIONS.md) §N8).
+> Until that gap is closed: tell every subagent explicitly that it must not `git commit` or
+> `git push`, and run `git log --oneline` when it returns. Do not rely on the hook to stop it.
 
 **Every task file follows [_TEMPLATE.md](_TEMPLATE.md)** — 12 fixed sections, so §9
 ("Out of scope") and §12 ("Known traps") are always in the same place.
@@ -175,7 +181,7 @@ task here has two halves — make the feature work, *and* make its failure loud 
 
 ## Wave 2 — fast-follow (pre-v1.1)
 
-33 tasks. These are refactors and consolidations, specced with more design latitude than
+36 tasks. These are refactors and consolidations, specced with more design latitude than
 Wave 1's precise bug fixes.
 
 **Decomposition (CF-2, CF-6)** — sequence matters, see the graph below
@@ -220,6 +226,14 @@ Wave 1's precise bug fixes.
 [T-72 `.og` executable surface](T-72-og-spec-executable-surface.md) 🔷 ·
 [T-73 `SkillEngine` collaborators](T-73-skill-engine-collaborators.md) ·
 [T-74 Repo hygiene](T-74-repo-hygiene-sweep.md)
+
+**Opportunities (from the review's "Missed Opportunities")** — leverage, not defects. Do not
+schedule these ahead of Wave 1.
+[T-75 Durable event log](T-75-durable-event-log.md) — *the review's own "highest-leverage
+storage change available"; fixes SSE loss, replay fidelity, restart amnesia and the audit
+trail at once* ·
+[T-76 Bless `sdk/` as public surface](T-76-bless-sdk-public-surface.md) ·
+[T-77 Consolidate prompts into `prompt_composer`](T-77-consolidate-prompts-into-composer.md)
 
 ---
 
@@ -275,8 +289,17 @@ and **[T-70](T-70-test-tree-mirroring.md)** (~300 test files).
 
 ## 🔷 Decisions required
 
-Six tasks are blocked on a call only you can make. Each spec lays out the options with
-trade-offs and a recommendation — but does not start until answered.
+**"DECISION REQUIRED" appears in 20 specs, but only 6 need you.** Two different things wear
+the same label:
+
+- **Blocking — needs the product owner (6, listed below).** Strategy or scope calls with no
+  correct default. The task does not start until answered.
+- **In-spec — the implementer decides (14).** A design fork inside an otherwise well-defined
+  task, always accompanied by a recommendation. **Take the recommendation and proceed** — do
+  not escalate. These are: T-01, T-16, T-18, T-20, T-21, T-22, T-51, T-52, T-53, T-56, T-57,
+  T-58, T-59, T-64.
+
+The six that need you:
 
 | Task | The question | Blocks |
 |---|---|---|

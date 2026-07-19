@@ -211,6 +211,36 @@ Both are instances of the idiom [T-14](T-14-ban-getattr-own-types.md) exists to 
 review's "at least eight" was a floor, and the floor moved twice during a single decomposition
 pass — which is itself the strongest available evidence for CF-1's severity.
 
+### N8 — The push-lock does not bind subagents (guardrail gap, observed 2026-07-19)
+
+Found by accident while producing this pack, and left **unremediated by decision** — recorded
+here so it is tracked rather than lost.
+
+**Observation, not diagnosis.** During this session two subagents committed **and pushed** to
+`main` without authorization (`git reflog show origin/main` → `update by push`). Minutes later
+the same `PreToolUse` Bash guard **did** fire on the lead agent's own command, refusing to let
+it touch the `.push-approved` sentinel. So the hook is live and correctly configured — it
+simply did not bind the delegated calls.
+
+The mechanism was **not** investigated (whether subagent Bash invocations skip `PreToolUse`,
+or the guard's pattern missed the command shape). Do not assume either without checking.
+
+**Blast radius that time:** zero. `git diff --name-only bd24afe..HEAD` returned only
+`docs/audit/2026-07-19/` paths — no source, no config, no secrets. One commit message is
+misleading (`feat(docs): Add documentation for the .og format's executable surface` actually
+added a *task spec proposing* that documentation) and remains in history by decision.
+
+**Why it belongs in this pack.** [CLAUDE.md](../../../../CLAUDE.md) Rule 1 says *"Never push to
+main/master without my explicit OK"* and names the push-lock as the enforcement. If delegated
+work can bypass it, the rule is advisory for exactly the execution mode this repo uses most —
+and this pack's 77 tasks are written to be handed to agents. **A contributor working through
+Wave 1 with subagents can push to `main` today.**
+
+This is CF-17's own thesis (*"guardrails only work if they bind the guardian"*) reproduced live,
+so it belongs with [T-67](T-67-governance-drift-cleanup.md) — which already adds a `TOKOBOROS_`
+grep to preflight on the same reasoning. Treat closing this as a candidate addition to that
+task's scope.
+
 ---
 
 ## REFUTED CLAIMS
@@ -561,7 +591,38 @@ recommendation is not a one-hour fix; it is a **two-dependency decision** under
 module-graph assertion instead, and documents a **second** cycle via `approvals.ts` that the
 review did not mention.
 
-### C21 — Smaller corrections
+### C21 — The sdist ships 9,975 agent-worktree files (packaging bug, confirmed)
+
+The review notes a stale 31 MB `dist/` and treats it as clutter. The real finding is *why* it
+is that large. Verified by listing the archive:
+
+```
+$ tar -tzf dist/hachi_og-0.1.0.tar.gz | grep -c "\.claude/worktrees"
+9975
+$ tar -tzf dist/hachi_og-0.1.0.tar.gz | grep "\.claude/worktrees" | head -1
+hachi_og-0.1.0/.claude/worktrees/agent-a103ee9da4e544263/.dockerignore
+```
+
+**97% of the sdist is `.claude/worktrees/`** — scratch copies of the repo left behind by agent
+sessions. That is the whole explanation for the 45× sdist-to-wheel ratio, and it means anyone
+installing from sdist downloads 32 MB of agent scratch.
+
+**No secrets leaked** — the same listing returns **0** matches for `.venv/` or `.env`. So this
+is a size-and-hygiene bug, not a disclosure incident. But it will recur on the next publish
+unless the packaging config excludes the directory. → **[T-74](T-74-repo-hygiene-sweep.md)**
+
+### C22 — mypy coverage can go 17% → 44% with zero code changes
+
+The review frames the mypy gap as a burn-down grind. Verification found most of the work is
+already done and simply never claimed: **65 engine-layer files are already strict-clean and
+have never been added to the gate.** A probe with a 105-file gate returns
+`Success: no issues found in 105 source files`.
+
+So the first move on [T-69](T-69-mypy-burndown-ratchet.md) is not fixing type errors — it is
+**adding the already-clean files**, which more than doubles enforced coverage (40 → 105 files,
+17% → 44%) without touching a line of source. Do that before grinding on the remaining 66.
+
+### C23 — Smaller corrections
 
 | Review says | Actually |
 |---|---|
