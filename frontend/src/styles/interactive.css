@@ -402,3 +402,13 @@
   background: var(--hachi-surface);
   border-color: var(--hachi-line);
 }
+
+/* Scroll-to-latest pill (JumpToLatest) — base required so :hover can override (BB-76). */
+.hachi-jump-pill {
+  background: var(--hachi-surface);
+  color: var(--hachi-ink);
+  transition: background var(--dur-fast) var(--ease);
+}
+.hachi-jump-pill:hover {
+  background: var(--hachi-cream);
+}
