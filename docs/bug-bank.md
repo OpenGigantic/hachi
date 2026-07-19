@@ -2166,6 +2166,14 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** never call `new Date()` when adapting server data that has no timestamp field; always store a real `ts: Date.now()` epoch when creating in-memory time-sensitive records.
 - **Locked by:** `frontend/src/lib/ui/format.test.ts` — covers all four format functions including the relative-time cases.
 
+### BB-88 — Markdown parser infinite loop on pipe-delimited lines that lack a separator row
+
+- **Symptom:** Vitest worker hung indefinitely (no timeout, no output) when a test rendered a `<Markdown>` component whose source contained a `|…|`-delimited line NOT followed by a `---`-style separator row.
+- **Root cause:** `parseBlocks` in `Markdown.tsx` included `!TABLE_ROW_RE.test(rawLines[i])` in the paragraph-accumulation stop condition. A pipe-delimited line that failed the table-header+separator check fell through to the paragraph branch; the inner `while` exited immediately (stop condition matched line 0), produced an empty `lines` array (no block pushed), and `i` was never incremented — infinite spin.
+- **Fix:** Removed `!TABLE_ROW_RE.test(rawLines[i])` from the paragraph stop condition. Pipe-delimited lines that don't form a valid table are now absorbed into paragraphs as plain text (the table-detection check at the top of the outer loop handles the valid-table path before the paragraph fallback is ever reached).
+- **Avoid:** never add a line pattern to the paragraph stop condition unless that same pattern is also handled by an earlier branch that ALWAYS increments `i`; any stop condition that causes an empty `lines` result without advancing `i` produces an infinite outer loop.
+- **Locked by:** `frontend/src/components/ui/Markdown.test.tsx` — "does not produce a table without a separator row" passes the failing input directly to the component.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

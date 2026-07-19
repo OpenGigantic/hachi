@@ -269,3 +269,115 @@ describe('Markdown — XSS / link sanitization (HACHI-001)', () => {
     expect(html).toContain('&lt;img')
   })
 })
+
+// T31 — Tables
+describe('Markdown — tables (T31)', () => {
+  it('renders a basic table with <table>, <th scope="col">, and <td>', () => {
+    const text = '| Name | Age |\n|---|---|\n| Alice | 30 |\n| Bob | 25 |'
+    const html = renderToString(<Markdown text={text} />)
+    expect(html).toContain('<table')
+    expect(html).toContain('<th')
+    expect(html).toContain('scope="col"')
+    expect(html).toContain('<td')
+    expect(html).toContain('Alice')
+    expect(html).toContain('Bob')
+    expect(html).toContain('Name')
+    expect(html).toContain('Age')
+  })
+
+  it('wraps table in overflow-x: auto container', () => {
+    const text = '| A | B |\n|---|---|\n| 1 | 2 |'
+    const html = renderToString(<Markdown text={text} />)
+    expect(html).toContain('overflow-x')
+    expect(html).toContain('auto')
+  })
+
+  it('renders inline formatting inside table cells', () => {
+    const text = '| Name | Status |\n|---|---|\n| **Alice** | `active` |'
+    const html = renderToString(<Markdown text={text} />)
+    expect(html).toContain('<strong')
+    expect(html).toContain('<code')
+  })
+
+  it('does not produce a table without a separator row', () => {
+    const text = '| A | B |\n| 1 | 2 |'
+    const html = renderToString(<Markdown text={text} />)
+    expect(html).not.toContain('<table')
+  })
+})
+
+// T31 — Blockquotes
+describe('Markdown — blockquotes (T31)', () => {
+  it('renders > lines as <blockquote> with a left border color', () => {
+    const html = renderToString(<Markdown text="> This is quoted text" />)
+    expect(html).toContain('<blockquote')
+    expect(html).toContain('This is quoted text')
+    expect(html).toContain('border-left')
+  })
+
+  it('collects consecutive > lines into one blockquote', () => {
+    const text = '> Line one\n> Line two'
+    const html = renderToString(<Markdown text={text} />)
+    const count = (html.match(/<blockquote/g) ?? []).length
+    expect(count).toBe(1)
+    expect(html).toContain('Line one')
+    expect(html).toContain('Line two')
+  })
+
+  it('renders inline formatting inside blockquotes', () => {
+    const html = renderToString(<Markdown text="> **bold** and _italic_" />)
+    expect(html).toContain('<strong')
+    expect(html).toContain('<em')
+  })
+})
+
+// T31 — Horizontal rule
+describe('Markdown — horizontal rule (T31)', () => {
+  it('renders --- as <hr>', () => {
+    const html = renderToString(<Markdown text={"Line above\n---\nLine below"} />)
+    expect(html).toContain('<hr')
+    expect(html).toContain('Line above')
+    expect(html).toContain('Line below')
+  })
+
+  it('renders *** as <hr>', () => {
+    const html = renderToString(<Markdown text="***" />)
+    expect(html).toContain('<hr')
+  })
+
+  it('renders ___ as <hr>', () => {
+    const html = renderToString(<Markdown text="___" />)
+    expect(html).toContain('<hr')
+  })
+})
+
+// T31 — Nested lists
+describe('Markdown — nested lists (T31)', () => {
+  it('renders a flat unordered list as <ul><li>', () => {
+    const text = '- Alpha\n- Beta\n- Gamma'
+    const html = renderToString(<Markdown text={text} />)
+    expect(html).toContain('<ul')
+    expect(html).toContain('<li')
+    expect(html).toContain('Alpha')
+    expect(html).toContain('Beta')
+    expect(html).toContain('Gamma')
+  })
+
+  it('renders indented list items as nested <ul>', () => {
+    const text = '- Parent\n  - Child\n  - Child 2'
+    const html = renderToString(<Markdown text={text} />)
+    const ulCount = (html.match(/<ul/g) ?? []).length
+    expect(ulCount).toBeGreaterThanOrEqual(2)
+    expect(html).toContain('Parent')
+    expect(html).toContain('Child')
+    expect(html).toContain('Child 2')
+  })
+
+  it('renders ordered list with nested sub-items', () => {
+    const text = '1. First\n2. Second\n   1. Sub'
+    const html = renderToString(<Markdown text={text} />)
+    expect(html).toContain('<ol')
+    expect(html).toContain('First')
+    expect(html).toContain('Sub')
+  })
+})
