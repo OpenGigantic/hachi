@@ -190,17 +190,25 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
 
 // ---- Block-level parser ---------------------------------------------
 
+interface ListItem { text: string; depth: number }
+
 type BlockNode =
   | { kind: 'heading'; level: number; text: string }
-  | { kind: 'ul'; items: string[] }
-  | { kind: 'ol'; items: string[] }
+  | { kind: 'ul'; items: ListItem[] }
+  | { kind: 'ol'; items: ListItem[] }
   | { kind: 'paragraph'; lines: string[] }
   | { kind: 'code'; lang: string; code: string }
   | { kind: 'blank' }
+  | { kind: 'blockquote'; lines: string[] }
+  | { kind: 'hr' }
+  | { kind: 'table'; headers: string[]; rows: string[][] }
 
 const HEADING_RE = /^(#{1,6})\s+(.*)$/
-const UL_RE = /^[-*]\s+(.*)$/
-const OL_RE = /^\d+\.\s+(.*)$/
+const UL_RE = /^( *)[-*]\s+(.+)$/
+const OL_RE = /^( *)\d+\.\s+(.+)$/
+const HR_RE = /^(\*{3,}|-{3,}|_{3,})\s*$/
+const TABLE_ROW_RE = /^\|(.+)\|$/
+const TABLE_SEP_RE = /^\|[\s\-:|]+\|/
 
 // When isStreaming is true, an unclosed fenced code block is flagged so the
 // renderer can show the styled container immediately (no FOUC on fence close).
@@ -260,38 +268,78 @@ function parseBlocks(text: string, opts: ParseOptions = {}): BlockNode[] {
       continue
     }
 
-    // Unordered list — collect consecutive UL lines
+    // Horizontal rule (must come before list/paragraph so `---` isn't a stray paragraph)
+    if (HR_RE.test(line)) {
+      blocks.push({ kind: 'hr' })
+      i++
+      continue
+    }
+
+    // Blockquote — collect consecutive `> ` lines
+    if (line.startsWith('> ') || line === '>') {
+      const bqLines: string[] = []
+      while (i < rawLines.length && (rawLines[i].startsWith('> ') || rawLines[i] === '>')) {
+        bqLines.push(rawLines[i].startsWith('> ') ? rawLines[i].slice(2) : '')
+        i++
+      }
+      blocks.push({ kind: 'blockquote', lines: bqLines })
+      continue
+    }
+
+    // Table — pipe-row followed immediately by a separator row
+    if (TABLE_ROW_RE.test(line) && i + 1 < rawLines.length && TABLE_SEP_RE.test(rawLines[i + 1])) {
+      const parseRow = (l: string): string[] =>
+        l.replace(/^\||\|$/g, '').split('|').map((c) => c.trim())
+      const headers = parseRow(line)
+      i += 2 // skip header + separator
+      const rows: string[][] = []
+      while (i < rawLines.length && TABLE_ROW_RE.test(rawLines[i])) {
+        rows.push(parseRow(rawLines[i]))
+        i++
+      }
+      blocks.push({ kind: 'table', headers, rows })
+      continue
+    }
+
+    // Unordered list — collect consecutive UL lines (including indented sub-items)
     if (UL_RE.test(line)) {
-      const items: string[] = []
-      while (i < rawLines.length && UL_RE.test(rawLines[i])) {
-        const mm = UL_RE.exec(rawLines[i])
-        items.push(mm ? mm[1] : rawLines[i])
+      const items: ListItem[] = []
+      let mm: RegExpExecArray | null
+      while (i < rawLines.length && (mm = UL_RE.exec(rawLines[i]))) {
+        const depth = Math.min(Math.floor(mm[1].length / 2), 3)
+        items.push({ text: mm[2], depth })
         i++
       }
       blocks.push({ kind: 'ul', items })
       continue
     }
 
-    // Ordered list — collect consecutive OL lines
+    // Ordered list — collect consecutive OL lines (including indented sub-items)
     if (OL_RE.test(line)) {
-      const items: string[] = []
-      while (i < rawLines.length && OL_RE.test(rawLines[i])) {
-        const mm = OL_RE.exec(rawLines[i])
-        items.push(mm ? mm[1] : rawLines[i])
+      const items: ListItem[] = []
+      let mm: RegExpExecArray | null
+      while (i < rawLines.length && (mm = OL_RE.exec(rawLines[i]))) {
+        const depth = Math.min(Math.floor(mm[1].length / 2), 3)
+        items.push({ text: mm[2], depth })
         i++
       }
       blocks.push({ kind: 'ol', items })
       continue
     }
 
-    // Regular paragraph — collect non-blank, non-structural lines
+    // Regular paragraph — collect non-blank, non-structural lines.
+    // Note: pipe-delimited lines that don't form a valid table (no separator row)
+    // are allowed in paragraphs — they must not be excluded here or the outer
+    // while loop would spin forever without advancing `i`.
     const lines: string[] = []
     while (
       i < rawLines.length &&
       rawLines[i].trim() !== '' &&
       !HEADING_RE.test(rawLines[i]) &&
+      !HR_RE.test(rawLines[i]) &&
       !UL_RE.test(rawLines[i]) &&
       !OL_RE.test(rawLines[i]) &&
+      !(rawLines[i].startsWith('> ') || rawLines[i] === '>') &&
       !rawLines[i].startsWith('```') &&
       !rawLines[i].startsWith('~~~')
     ) {
@@ -787,6 +835,49 @@ const CodeBlock = memo(function CodeBlock({ lang, code }: { lang: string; code: 
   )
 })
 
+// ---- Nested list renderer -------------------------------------------
+
+interface ListTreeNode { text: string; children: ListTreeNode[] }
+
+function buildListTree(items: ListItem[]): ListTreeNode[] {
+  const root: ListTreeNode[] = []
+  const stack: ListTreeNode[][] = [root]
+
+  for (const item of items) {
+    const depth = Math.min(item.depth, 2)
+    while (stack.length > depth + 1) stack.pop()
+    while (stack.length < depth + 1) {
+      const parent = stack[stack.length - 1]
+      if (parent.length === 0) parent.push({ text: '', children: [] })
+      stack.push(parent[parent.length - 1].children)
+    }
+    stack[stack.length - 1].push({ text: item.text, children: [] })
+  }
+  return root
+}
+
+function renderTreeNodes(nodes: ListTreeNode[], kind: 'ul' | 'ol', depth: number, kp: string): ReactNode {
+  const Tag = kind === 'ul' ? 'ul' as const : 'ol' as const
+  const listStyle = kind === 'ul' ? (depth === 0 ? 'disc' : 'circle') : 'decimal'
+  return (
+    <Tag
+      key={kp}
+      style={{ margin: depth === 0 ? '0.25em 0' : '0.1em 0', paddingLeft: '1.5em', listStyleType: listStyle }}
+    >
+      {nodes.map((n, ni) => (
+        <li key={`${kp}-${ni}`} style={{ lineHeight: 'inherit', margin: '0.1em 0' }}>
+          {n.text ? renderInline(n.text, `${kp}-${ni}-t`) : null}
+          {n.children.length > 0 && renderTreeNodes(n.children, kind, depth + 1, `${kp}-${ni}-c`)}
+        </li>
+      ))}
+    </Tag>
+  )
+}
+
+function renderNestedList(items: ListItem[], kind: 'ul' | 'ol', key: string): ReactNode {
+  return renderTreeNodes(buildListTree(items), kind, 0, key)
+}
+
 // ---- Render blocks --------------------------------------------------
 
 function renderBlock(block: BlockNode, blockIdx: number): ReactNode {
@@ -811,43 +902,83 @@ function renderBlock(block: BlockNode, blockIdx: number): ReactNode {
     }
 
     case 'ul':
-      return (
-        <ul
-          key={key}
-          style={{
-            margin: '0.25em 0',
-            paddingLeft: '1.5em',
-            listStyleType: 'disc',
-          }}
-        >
-          {block.items.map((item, ii) => (
-            <li key={`${key}-li${ii}`} style={{ lineHeight: 'inherit', margin: '0.1em 0' }}>
-              {renderInline(item, `${key}-li${ii}`)}
-            </li>
-          ))}
-        </ul>
-      )
+      return renderNestedList(block.items, 'ul', key)
 
     case 'ol':
-      return (
-        <ol
-          key={key}
-          style={{
-            margin: '0.25em 0',
-            paddingLeft: '1.5em',
-            listStyleType: 'decimal',
-          }}
-        >
-          {block.items.map((item, ii) => (
-            <li key={`${key}-li${ii}`} style={{ lineHeight: 'inherit', margin: '0.1em 0' }}>
-              {renderInline(item, `${key}-li${ii}`)}
-            </li>
-          ))}
-        </ol>
-      )
+      return renderNestedList(block.items, 'ol', key)
 
     case 'code':
       return <CodeBlock key={key} lang={block.lang} code={block.code} />
+
+    case 'hr':
+      return (
+        <hr
+          key={key}
+          style={{ border: 'none', borderTop: '0.5px solid var(--hachi-line)', margin: '0.8em 0' }}
+        />
+      )
+
+    case 'blockquote': {
+      const bqContent: ReactNode[] = []
+      block.lines.forEach((bql, bqi) => {
+        if (bqi > 0) bqContent.push(<br key={`${key}-bqbr${bqi}`} />)
+        renderInline(bql, `${key}-bq${bqi}`).forEach((n, ni) =>
+          bqContent.push(<span key={`${key}-bq${bqi}-s${ni}`}>{n}</span>)
+        )
+      })
+      return (
+        <blockquote
+          key={key}
+          style={{
+            margin: '0.4em 0',
+            padding: '6px 12px',
+            borderLeft: '2px solid var(--hachi-line)',
+            color: 'var(--hachi-muted)',
+          }}
+        >
+          {bqContent}
+        </blockquote>
+      )
+    }
+
+    case 'table':
+      return (
+        <div key={key} style={{ overflowX: 'auto', margin: '0.6em 0' }}>
+          <table style={{ borderCollapse: 'collapse', fontSize: '13px', width: '100%' }}>
+            <thead>
+              <tr>
+                {block.headers.map((h, hi) => (
+                  <th
+                    key={hi}
+                    scope="col"
+                    style={{
+                      padding: '6px 10px', textAlign: 'left', fontWeight: 500,
+                      borderBottom: '1px solid var(--hachi-line)',
+                      color: 'var(--hachi-muted)', whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {renderInline(h, `${key}-th${hi}`)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {block.rows.map((row, ri) => (
+                <tr key={ri}>
+                  {row.map((cell, ci) => (
+                    <td
+                      key={ci}
+                      style={{ padding: '5px 10px', borderBottom: '0.5px solid var(--hachi-line)' }}
+                    >
+                      {renderInline(cell, `${key}-td${ri}-${ci}`)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
 
     case 'paragraph': {
       // Within a paragraph, individual lines are separated by <br> to preserve
