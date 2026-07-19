@@ -336,6 +336,10 @@ export interface ChatMessage {
   cards: ActionCard[];
   routine?: RoutineProposal | null;
   attachments?: Pick<PendingAttachment, "name" | "mediaType" | "size">[];
+  /** Unix-ms when the message was created; absent for historical messages with no server timestamp. */
+  ts?: number;
+  /** Structural error flag — true when the hachi bubble represents a failed turn. */
+  error?: boolean;
 }
 
 // ----- run pack (live run) -----

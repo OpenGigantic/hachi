@@ -3,7 +3,7 @@
 // Wrapped in React.memo so that updating the last streaming message text does
 // NOT re-render every prior (stable) message in the list.
 
-import { memo } from 'react'
+import { memo, useState, useCallback } from 'react'
 import { Icon } from '../icons/Icon'
 import { HachiMark } from '../brand/HachiMark'
 import { Markdown } from '../ui/Markdown'
@@ -13,6 +13,7 @@ import { TtsButton } from './TtsButton'
 import { StreamingCursor } from './StreamingText'
 import { ActionCardRow } from './ActionCardRow'
 import { RoutineCard } from './RoutineCard'
+import { fmtRelative } from '../../lib/ui/format'
 
 interface MessageItemProps {
   msg: ChatMessage
@@ -23,12 +24,47 @@ interface MessageItemProps {
   lastUsedModel?: string | null
 }
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    }).catch(() => {/* clipboard unavailable */})
+  }, [text])
+
+  return (
+    <button
+      type="button"
+      className="hachi-ghost-icon-btn-bg"
+      onClick={handleCopy}
+      title={copied ? 'Copied!' : 'Copy message'}
+      aria-label={copied ? 'Copied!' : 'Copy message'}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        padding: '3px 9px',
+        borderRadius: 8,
+        border: '0.5px solid var(--hachi-line)',
+        color: copied ? 'var(--hachi-success-fg)' : 'var(--hachi-muted)',
+        font: '500 12px var(--font-body)',
+        cursor: 'pointer',
+      }}
+    >
+      <Icon name={copied ? 'check' : 'copy'} size={13} />
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  )
+}
+
 export const MessageItem = memo(function MessageItem({ msg, isLast, isStreaming, operator, onRetry, lastUsedModel }: MessageItemProps) {
   const isYou = msg.role === 'you'
   const isHachi = msg.role === 'hachi'
   const showCursor = isStreaming && isHachi && isLast
-  // Detect error state: streaming ended but message text is the error string
-  const isError = isHachi && !isStreaming && msg.text === 'Something went wrong — please try again.'
+  // Structural error flag takes precedence; fall back to text match for old persisted messages.
+  const isError = isHachi && !isStreaming && (msg.error === true || msg.text === 'Something went wrong — please try again.')
 
   if (isYou) {
     const hasAttachments = !!(msg.attachments && msg.attachments.length > 0)
@@ -139,7 +175,7 @@ export const MessageItem = memo(function MessageItem({ msg, isLast, isStreaming,
             paddingTop: 4,
           }}
         >
-          {/* text + blinking cursor (cursor is isolated to avoid re-rendering siblings) */}
+          {/* text + blinking cursor */}
           <div
             style={{
               fontSize: 15,
@@ -150,31 +186,48 @@ export const MessageItem = memo(function MessageItem({ msg, isLast, isStreaming,
               minWidth: 0,
             }}
           >
-            {/* FIX 1: always render Markdown (even during streaming) so the DOM
-                node is stable across the streaming→done transition (no remount/FOUC).
-                The isStreaming prop tells the parser to treat unclosed fences as valid
-                code blocks so the chrome appears immediately. */}
             <Markdown text={msg.text} isStreaming={showCursor} />
             {showCursor && <StreamingCursor />}
           </div>
 
-          {/* TTS speak button — only on completed messages with text */}
+          {/* action row: [Copy] [Listen] [via model] · timestamp */}
           {!showCursor && msg.text && !isError && (
-            <TtsButton text={msg.text} />
-          )}
-
-          {/* FIX 4: last-used model badge — only on final completed assistant message */}
-          {!showCursor && isLast && lastUsedModel && (
             <div
               style={{
-                fontSize: 11,
-                color: 'var(--hachi-muted)',
-                opacity: 0.7,
-                fontFamily: 'var(--font-mono, monospace)',
-                letterSpacing: '0.01em',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                flexWrap: 'wrap',
               }}
             >
-              via {lastUsedModel}
+              <CopyButton text={msg.text} />
+              <TtsButton text={msg.text} />
+              {isLast && lastUsedModel && (
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--hachi-muted)',
+                    fontFamily: 'var(--font-mono, monospace)',
+                    opacity: 0.7,
+                  }}
+                >
+                  via {lastUsedModel}
+                </span>
+              )}
+              {msg.ts && (
+                <time
+                  dateTime={new Date(msg.ts).toISOString()}
+                  title={new Date(msg.ts).toLocaleString()}
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--hachi-muted)',
+                    marginLeft: 'auto',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}
+                >
+                  {fmtRelative(msg.ts)}
+                </time>
+              )}
             </div>
           )}
 
