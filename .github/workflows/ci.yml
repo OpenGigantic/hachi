@@ -1,0 +1,288 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    # Verify the suite passes on Linux, macOS, and Windows so platform-specific
+    # regressions (paths, subprocess env, notifier/audio backends, Windows encoding)
+    # are caught. windows-latest covers the primary dev platform.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Run tests
+        run: uv run pytest -q
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync dependencies
+        run: uv sync --extra dev --extra security
+
+      - name: Run security audit
+        run: uv run python -m hachi.cli.main security-audit --json --fail-on-high
+        continue-on-error: true
+
+      - name: Strict security audit (fail on medium)
+        run: uv run python -m hachi.cli.main security-audit --json --fail-on-high --fail-on-medium
+        if: github.event_name == 'pull_request'
+
+      # ---------------------------------------------------------------------------
+      # Dependency CVE scan (E11/T11.4 / G-A5)
+      # Policy: on PRs this is a hard gate — no new high-severity CVEs may land.
+      # On push to main it is advisory (continue-on-error) because upstream CVEs
+      # in transitive deps can appear at any time and are outside our control; the
+      # finding is still surfaced in the job log for triage.
+      # Known CVEs that are under active remediation (bump PRs open) may be
+      # suppressed here with --ignore-vuln <ID> with a written justification
+      # comment.  Do not add ignores without a tracking issue.
+      # Current outstanding CVEs (2026-06-19): see job summary below.
+      #   aiohttp <3.14.0  — transitive via chromadb/uvicorn; bump tracked in
+      #                      https://github.com/OpenGigantic/hachi/issues/TBD
+      #   starlette <1.3.1 — transitive via fastapi; upgrade fastapi to lift starlette
+      #   cryptography <48.0.1 — GHSA-537c-gmf6-5ccf; bump to >=48.0.1 in pyproject
+      # ---------------------------------------------------------------------------
+      - name: Dependency CVE scan — pip-audit (advisory on main)
+        run: uv run pip-audit --skip-editable
+        continue-on-error: ${{ github.event_name != 'pull_request' }}
+
+      # ---------------------------------------------------------------------------
+      # SAST — bandit (E11/T11.4)
+      # -ll means medium+ severity only. Low-severity findings are noisy and not
+      # actionable at this stage; revisit when the medium backlog reaches zero.
+      # Findings in src/ with existing # noqa: BXXX / # nosec suppressions are
+      # respected. Do NOT add bulk suppressions — fix or accept each individually.
+      # ---------------------------------------------------------------------------
+      - name: SAST — bandit (medium+ severity)
+        run: uv run bandit -r src -ll --exit-zero
+        # exit-zero: bandit findings are currently medium only (0 high) and are
+        # pre-existing in src/ (owned by other agents this session). We surface the
+        # report but do not block until the owning team has triaged each finding.
+        # Change to omit --exit-zero once src/ medium findings are resolved.
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      # T1.3: ruff is now a hard gate on every push and PR.
+      # Pre-existing ruff state (2026-06-19): 1 error in src/hachi/core/browser.py
+      # (F401 unused import) and 3 in tests/ (I001, F401 x2).  These must be fixed
+      # before this gate will pass green on main.  They are trivial auto-fixable
+      # errors; the owning team should run `uv run ruff check --fix src tests`
+      # and commit the result.
+      - name: Lint (ruff)
+        run: uv run ruff check src tests
+
+      # T1.3: mypy on the full src tree is still non-blocking on main because there
+      # are 483 pre-existing errors across 64 files (chromadb typing issues in
+      # memory_vault.py, og_engine/engine.py annotation gaps, community_packs.py).
+      # These are NOT caused by this session's changes and are outside our ownership
+      # scope (owned by source agents).  Making this blocking today would turn main
+      # red immediately for unrelated debt.
+      # Strategy: the scoped strict gate (mypy-strict-gate.ini) IS blocking on PRs
+      # and covers 48 files that are already clean.  The full-tree check here is
+      # advisory on both main and PRs — it records the error count trend over time.
+      # Full burn-down is tracked as a Phase 3 sustained effort.
+      - name: Type check — full tree (advisory)
+        run: uv run mypy src --ignore-missing-imports
+        continue-on-error: true
+
+      # T1.3: Scoped strict gate — blocks on PRs, advisory on main.
+      # Covers 48 core/og_engine/gateway files that are already type-clean.
+      # Any PR that introduces a new error in these files will fail CI.
+      - name: Type check — strict gate on clean files (blocking on PRs)
+        run: uv run python -m mypy --config-file mypy-strict-gate.ini
+        if: github.event_name == 'pull_request'
+
+      # -----------------------------------------------------------------------
+      # Guardrails Phase 2 — the Rails. Mirrors scripts/preflight.py.
+      # import-linter is a HARD gate: the architectural layering is green, so a new
+      # cross-layer import (e.g. the domain importing the gateway) fails CI here.
+      # deptry/vulture/complexity are advisory (continue-on-error) until their
+      # baselines reach zero — see pyproject [tool.importlinter]/[tool.deptry]/
+      # [tool.vulture]/[tool.ruff.lint.pylint].
+      # -----------------------------------------------------------------------
+      - name: Architecture — import-linter (blocking)
+        run: uv run lint-imports
+
+      - name: Dependencies — deptry (advisory)
+        run: uv run deptry src
+        continue-on-error: true
+
+      - name: Dead code — vulture (advisory)
+        run: uv run vulture
+        continue-on-error: true
+
+      - name: Complexity — PLR outliers (advisory)
+        run: uv run ruff check src --select PLR0911,PLR0912,PLR0913,PLR0915 --statistics
+        continue-on-error: true
+
+      # Guardrails Phase 3 — keep the ADRs well-formed and indexed. Advisory (baseline clean).
+      - name: ADR docs — adr-lint (advisory)
+        run: uv run python scripts/check_adrs.py
+        continue-on-error: true
+
+  skill-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Lint shipped .og skill files
+        run: uv run python scripts/lint_skills.py
+
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: ObjectGraph benchmark (token-savings + M1 retrieval)
+        run: uv run hachi skill benchmark --suite fast --json --threshold 0.80
+
+  eval:
+    # Regression gate for the agent loop (P4 Eval). Replays the curated eval
+    # corpus (DEFAULT_REPLAY_SUITE) through the REAL ExecutionLoop driven by a
+    # scripted LLM — deterministic, no API key needed — and FAILS if any case
+    # regresses. `hachi eval run` exits non-zero on any case failure, so this
+    # job blocks merges that break the loop's control-flow contracts.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Run eval regression suite
+        run: uv run hachi eval run
+
+  frontend-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Sync Python dependencies
+        run: uv sync --extra dev
+
+      - name: Install frontend dependencies
+        run: npm install --prefix frontend
+
+      - name: Export OpenAPI schema
+        run: uv run hachi gateway-openapi --output openapi/hachi-openapi.json
+
+      - name: Verify generated API artifacts are current
+        run: npm run --prefix frontend check:api
+
+      - name: Frontend typecheck
+        run: npm run --prefix frontend typecheck
+
+  docker-smoke:
+    # Real verification of the Docker self-host recipe (AUDIT P0-4): the compose file must
+    # be valid and BOTH images must build — the previous string-only test stayed green over
+    # a missing frontend/Dockerfile and unwritable /root volumes. ubuntu-latest ships Docker
+    # + compose v2.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Provide a dummy gateway token secret
+        run: |
+          mkdir -p .hachi
+          echo "ci-smoke-token" > .hachi/gateway_api_token.txt
+
+      - name: Validate compose config
+        run: docker compose config
+
+      - name: Build images (backend + frontend)
+        run: docker compose build
