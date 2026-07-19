@@ -570,10 +570,15 @@ function IntCard({
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 500, fontSize: 15, display: 'flex', alignItems: 'center', gap: 6 }}>
             {i.name}
-            {/* Show key icon when apikey connector is configured */}
+            {/* Show configured indicator when apikey connector is wired */}
             {hasCredentialFields && connected && (
-              <span title="Credentials configured" style={{ lineHeight: 0 }}>
-                <Icon name="key" size={12} style={{ color: 'var(--hachi-success)', flexShrink: 0 }} />
+              <span
+                title="Credentials configured"
+                aria-label="Credentials configured"
+                tabIndex={0}
+                style={{ lineHeight: 0, display: 'inline-flex', cursor: 'default' }}
+              >
+                <Icon name="circle-check" size={14} style={{ color: 'var(--hachi-success)', flexShrink: 0 }} />
               </span>
             )}
           </div>
