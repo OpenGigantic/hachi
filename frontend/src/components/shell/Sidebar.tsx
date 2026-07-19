@@ -17,25 +17,45 @@ interface NavEntry {
   icon: string
 }
 
-const NAV_ITEMS: NavEntry[] = [
-  { key: 'home',         route: '/',            label: 'Today',        icon: 'home'      },
-  { key: 'conversation', route: '/conversation', label: 'Conversation', icon: 'chat'      },
-  { key: 'work',         route: '/work',         label: 'Work',         icon: 'work'      },
-  { key: 'approvals',    route: '/approvals',    label: 'The leash',    icon: 'leash'     },
-  { key: 'memory',       route: '/memory',       label: 'Memory',       icon: 'memory'    },
-  { key: 'skills',       route: '/skills',       label: 'The library',  icon: 'skills'    },
-  { key: 'og',           route: '/og',           label: 'OG explorer',  icon: 'network'   },
-  { key: 'authoring',    route: '/authoring',    label: 'Authoring',    icon: 'file-code' },
-  { key: 'integrations', route: '/integrations', label: 'Integrations', icon: 'plug'      },
-  { key: 'review',       route: '/review',       label: 'Review',       icon: 'eye'       },
-  { key: 'settings',     route: '/settings',     label: 'Settings',     icon: 'settings'  },
+interface NavGroup {
+  label: string | null
+  items: NavEntry[]
+}
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    label: null,
+    items: [
+      { key: 'home',         route: '/',            label: 'Today',        icon: 'home'   },
+      { key: 'conversation', route: '/conversation', label: 'Conversation', icon: 'chat'  },
+      { key: 'work',         route: '/work',         label: 'Work',         icon: 'work'  },
+      { key: 'approvals',    route: '/approvals',    label: 'The leash',    icon: 'leash' },
+      { key: 'memory',       route: '/memory',       label: 'Memory',       icon: 'memory'},
+    ],
+  },
+  {
+    label: 'Build',
+    items: [
+      { key: 'skills',    route: '/skills',    label: 'The library', icon: 'skills'    },
+      { key: 'og',        route: '/og',        label: 'OG explorer', icon: 'network'   },
+      { key: 'authoring', route: '/authoring', label: 'Authoring',   icon: 'file-code' },
+    ],
+  },
+  {
+    label: 'System',
+    items: [
+      { key: 'integrations', route: '/integrations', label: 'Integrations', icon: 'plug'     },
+      { key: 'review',       route: '/review',       label: 'Review',       icon: 'eye'      },
+      { key: 'settings',     route: '/settings',     label: 'Settings',     icon: 'settings' },
+    ],
+  },
 ]
 
 /** Inner sidebar contents — shared between desktop fixed sidebar and mobile drawer. */
 function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
-  const navigate = useNavigate()
   const location = useLocation()
 
+  const navigate = useNavigate()
   const operator = useStore((s) => s.operator)
   const setOperator = useStore((s) => s.setOperator)
   const openPalette = useStore((s) => s.openPalette)
@@ -59,7 +79,6 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
   const currentPath = location.pathname
 
   const handleBudgetClick = () => {
-    // Land directly on the Spend tab (not the default Active tab).
     setWorkFilter('spend')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     navigate({ to: '/work' as any })
@@ -127,34 +146,47 @@ function SidebarContents({ onNavClick }: { onNavClick?: () => void }) {
         style={{
           display: 'flex',
           flexDirection: 'column',
-          gap: '2px',
+          gap: '4px',
           flex: 1,
           minHeight: 0,
           overflowY: 'auto',
         }}
       >
-        {NAV_ITEMS.map((item) => {
-          const isActive = currentPath === item.route
-          const badge = item.key === 'approvals' ? pendingApprovals : undefined
-          return (
-            <React.Fragment key={item.key}>
-              {item.key === 'skills' && (
-                <hr style={{ border: 'none', borderTop: '0.5px solid var(--hachi-line)', margin: '6px 0' }} />
-              )}
-              <NavItem
-                label={item.label}
-                icon={item.icon}
-                active={isActive}
-                badge={badge}
-                onClick={() => {
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  navigate({ to: item.route as any })
-                  onNavClick?.()
+        {NAV_GROUPS.map((group, gi) => (
+          <React.Fragment key={group.label ?? '__primary'}>
+            {gi > 0 && (
+              <hr style={{ border: 'none', borderTop: '0.5px solid var(--hachi-line)', margin: '6px 0 2px' }} />
+            )}
+            {group.label && (
+              <span
+                style={{
+                  padding: '2px 12px',
+                  fontSize: '12px',
+                  fontWeight: 500,
+                  color: 'var(--hachi-muted)',
+                  letterSpacing: '0.01em',
                 }}
-              />
-            </React.Fragment>
-          )
-        })}
+              >
+                {group.label}
+              </span>
+            )}
+            {group.items.map((item) => {
+              const isActive = currentPath === item.route
+              const badge = item.key === 'approvals' ? pendingApprovals : undefined
+              return (
+                <NavItem
+                  key={item.key}
+                  label={item.label}
+                  icon={item.icon}
+                  active={isActive}
+                  badge={badge}
+                  route={item.route}
+                  onNavigate={onNavClick}
+                />
+              )
+            })}
+          </React.Fragment>
+        ))}
       </div>
 
       {/* Operator view toggle */}

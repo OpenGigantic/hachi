@@ -8,7 +8,7 @@
 // This reduces cognitive load on a trust-critical feature (MED-019).
 // ============================================================
 
-import React, { useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import {
@@ -19,6 +19,7 @@ import {
   delFact as delFactRemote,
 } from '../lib/data/domains/memory'
 import { Icon } from '../components/icons/Icon'
+import { HachiMascot } from '../components/brand/HachiMascot'
 import { ConfirmButton } from '../components/ui/ConfirmButton'
 import type { MemGroup, Fact, BlockedItem, RecallHit, Session, SkillUsage } from '../lib/data/types'
 import { PendingCard } from '../components/ui/PendingCard'
@@ -318,6 +319,8 @@ function Memory() {
   // MED-019: sub-view tabs — "Recall" vs "Audit & History"
   const [activeTab, setActiveTab] = useState<MemTab>('recall')
 
+  const addFactInputRef = useRef<HTMLTextAreaElement>(null)
+
   // --- inline add-fact form state ---
   // addFormOpen: whether the inline form is visible
   const [addFormOpen, setAddFormOpen] = useState(false)
@@ -337,6 +340,12 @@ function Memory() {
     }))
     .filter((g) => g.facts.length > 0)
   const memEmpty = q.length > 0 && filteredGroups.length === 0
+  const vaultEmpty = q.length === 0 && memGroups.every((g: MemGroup) => g.facts.length === 0)
+
+  const openAddFact = useCallback(() => {
+    setAddFormOpen(true)
+    setTimeout(() => addFactInputRef.current?.focus(), 50)
+  }, [])
 
   // --- session renderVals ---
   const sessionRows = sessions.map((s: Session) => ({
@@ -766,6 +775,7 @@ function Memory() {
                     </label>
                     <textarea
                       id="add-fact-text"
+                      ref={addFactInputRef}
                       value={addFactText}
                       onChange={(e) => setAddFactText(e.target.value)}
                       rows={3}
@@ -915,7 +925,7 @@ function Memory() {
                 </div>
               ))}
 
-              {/* ---- empty state ---- */}
+              {/* ---- empty state (search, no results) ---- */}
               {memEmpty && (
                 <div
                   style={{
@@ -925,6 +935,41 @@ function Memory() {
                   }}
                 >
                   No memories match "{memSearch}".
+                </div>
+              )}
+
+              {/* ---- first-run card (vault empty, no search) ---- */}
+              {vaultEmpty && !addFormOpen && (
+                <div
+                  style={{
+                    background: 'var(--hachi-surface)',
+                    border: '0.5px solid var(--hachi-line)',
+                    borderRadius: 16,
+                    padding: '40px 24px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 16,
+                    textAlign: 'center',
+                  }}
+                >
+                  <HachiMascot state="on-watch" scale={3} decor={false} />
+                  <p style={{ margin: 0, fontSize: 15, color: 'var(--hachi-muted)' }}>
+                    Nothing remembered yet.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={openAddFact}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                      height: 36, padding: '0 16px', borderRadius: 8,
+                      background: 'var(--hachi-brand)', color: 'var(--hachi-canvas)',
+                      border: 'none', cursor: 'pointer', font: 'inherit',
+                      fontSize: 14, fontWeight: 500,
+                    }}
+                  >
+                    Add a fact
+                  </button>
                 </div>
               )}
             </>
