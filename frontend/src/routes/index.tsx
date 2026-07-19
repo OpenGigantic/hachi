@@ -353,6 +353,7 @@ function Home() {
 
             <form
               onSubmit={handleHomeSubmit}
+              className="hachi-home-ask-form"
               style={{ display: 'flex', gap: '10px', alignItems: 'stretch' }}
             >
               <input

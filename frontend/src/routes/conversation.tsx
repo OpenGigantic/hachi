@@ -374,6 +374,7 @@ function Conversation() {
           )}
         </div>
         <span
+          data-status
           style={{
             position: 'absolute',
             left: '50%',

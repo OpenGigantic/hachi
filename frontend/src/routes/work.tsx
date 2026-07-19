@@ -697,7 +697,7 @@ function SpendLens() {
       </div>
 
       {/* stat cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '12px' }}>
+      <div className="hachi-spend-stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '12px' }}>
         <div style={{ background: 'var(--hachi-surface)', border: '0.5px solid var(--hachi-line)', borderRadius: '14px', padding: '15px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '12px', color: 'var(--hachi-muted)', marginBottom: '9px' }}>
             <Icon name="hash" size={14} />
