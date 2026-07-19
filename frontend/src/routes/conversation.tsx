@@ -8,7 +8,7 @@
 // keeps only the route's own state and layout.
 
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
-import { createFileRoute, useSearch } from '@tanstack/react-router'
+import { createFileRoute, useSearch, useNavigate } from '@tanstack/react-router'
 import { useStore } from '../lib/store/store'
 import { Icon } from '../components/icons/Icon'
 import { HachiMark } from '../components/brand/HachiMark'
@@ -82,6 +82,7 @@ function Conversation() {
   // Optional `?session=<id>` search param — set by memory.tsx when navigating
   // to a past session so we display that session's transcript instead of the active one.
   const { session: sessionParam } = useSearch({ from: '/conversation' })
+  const navigate = useNavigate()
 
   // Memoize the messages array passed to the list: re-create only when length,
   // last id, or streaming flag changes (not on every token flush of the tail).
@@ -245,6 +246,9 @@ function Conversation() {
   const activeSession = sessions.find((s) => s.active) ?? null
   const sessionLabel = activeSession?.title ?? 'New conversation'
 
+  // True when we're displaying a historical session that is not the live one.
+  const isPastSession = !!(sessionParam && sessionParam !== activeSessionId)
+
   // HIGH-019: filter chat starters to those whose integration is connected (or have no requirement)
   const connectedIntegrationNames = new Set(
     (integrations as Integration[]).filter((i) => i.status === 'connected').map((i) => i.name)
@@ -375,6 +379,43 @@ function Conversation() {
         {srAnnouncement}
       </div>
 
+      {/* Past-session read-only banner */}
+      {isPastSession && (
+        <div
+          role="status"
+          style={{
+            background: 'var(--hachi-cream)',
+            borderBottom: '0.5px solid var(--hachi-line)',
+            padding: '10px 32px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            fontSize: 13,
+            color: 'var(--hachi-muted)',
+            flexShrink: 0,
+          }}
+        >
+          <Icon name="lock" size={13} />
+          Viewing a past conversation — read-only
+          <button
+            type="button"
+            className="hachi-ghost-icon-btn-bg"
+            onClick={() => navigate({ to: '/conversation' })}
+            style={{
+              marginLeft: 'auto',
+              padding: '4px 10px',
+              borderRadius: 8,
+              border: '0.5px solid var(--hachi-line)',
+              font: '500 12px var(--font-body)',
+              color: 'var(--hachi-brand)',
+              cursor: 'pointer',
+            }}
+          >
+            Back to current conversation
+          </button>
+        </div>
+      )}
+
       {/* ---- transcript scroll area ---- */}
       <div
         ref={scrollRef}
@@ -485,12 +526,14 @@ function Conversation() {
         </div>
       </div>
 
-      {/* ---- composer ---- */}
-      <ConversationComposer
-        onOpenSessionsPicker={() => setPickerOpen(true)}
-        onStartContinuous={() => setContinuousOpen(true)}
-        gatewayReady={gatewayVoiceReady ?? false}
-      />
+      {/* ---- composer (hidden while viewing a past session) ---- */}
+      {!isPastSession && (
+        <ConversationComposer
+          onOpenSessionsPicker={() => setPickerOpen(true)}
+          onStartContinuous={() => setContinuousOpen(true)}
+          gatewayReady={gatewayVoiceReady ?? false}
+        />
+      )}
 
       {/* ---- continuous voice overlay ---- */}
       <ContinuousVoice
