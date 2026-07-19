@@ -30,6 +30,7 @@ import { SessionPicker } from '../components/conversation/SessionPicker'
 import { MessageItem } from '../components/conversation/MessageItem'
 import { StarterButton } from '../components/conversation/StarterButton'
 import { ConversationComposer } from '../components/conversation/ConversationComposer'
+import { JumpToLatest } from '../components/ui/JumpToLatest'
 // ---- chat starters (prototype renderVals lines 2209–2213) -----------
 // HIGH-019: integrations required to show certain starters
 
@@ -97,7 +98,9 @@ function Conversation() {
   )
 
   const scrollRef = useRef<HTMLDivElement>(null)
+  // followOutputRef drives the rAF pin (non-stale); followingState drives the pill render.
   const followOutputRef = useRef(true)
+  const [following, setFollowing] = useState(true)
   const scrollRafRef = useRef<number | null>(null)
   // M8: session picker open state
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -228,7 +231,18 @@ function Conversation() {
   const handleTranscriptScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
-    followOutputRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 96
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 96
+    followOutputRef.current = atBottom
+    setFollowing(atBottom)
+  }, [])
+
+  const jumpToLatest = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    followOutputRef.current = true
+    setFollowing(true)
+    el.focus()
   }, [])
 
   const chatEmpty = messages.length === 0
@@ -417,11 +431,15 @@ function Conversation() {
       )}
 
       {/* ---- transcript scroll area ---- */}
+      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+        {!following && (streaming || messages.length > 0) && (
+          <JumpToLatest onClick={jumpToLatest} label="↓ New reply" />
+        )}
       <div
         ref={scrollRef}
         onScroll={handleTranscriptScroll}
         className="hachi-scroll"
-        style={{ flex: 1, overflow: 'auto', padding: '28px 0' }}
+        style={{ height: '100%', overflow: 'auto', padding: '28px 0' }}
       >
         <div
           className="hachi-transcript-inner"
@@ -525,6 +543,7 @@ function Conversation() {
           )}
         </div>
       </div>
+      </div>{/* end transcript scroll wrapper */}
 
       {/* ---- composer (hidden while viewing a past session) ---- */}
       {!isPastSession && (
