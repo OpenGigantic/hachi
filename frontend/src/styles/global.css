@@ -46,6 +46,11 @@ body { background: var(--hachi-canvas); font-family: var(--font-body); }
   to { stroke-dashoffset: -260; }
 }
 
+@keyframes hachi-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+
 @keyframes ogflow {
   to { stroke-dashoffset: -18; }
 }

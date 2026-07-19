@@ -653,8 +653,6 @@ function Home() {
             </div>
           </div>
 
-          {/* ---- Budget summary (always visible) ---- */}
-          <BudgetSummary spent={spent} budget={budget} />
         </div>
       </div>
     </div>
@@ -836,71 +834,6 @@ function FirstRunPanel({ onStart, onSetup }: FirstRunPanelProps) {
           Connect integrations
         </button>
       </div>
-    </div>
-  );
-}
-
-interface BudgetSummaryProps {
-  spent: number;
-  budget: number;
-}
-
-function BudgetSummary({ spent, budget }: BudgetSummaryProps) {
-  // Guard against budget === 0 (division by zero → NaN/Infinity)
-  const unlimited = budget <= 0;
-  const pct = unlimited ? 0 : Math.min(100, Math.round((spent / budget) * 100));
-  const isHigh = !unlimited && pct >= 80;
-
-  return (
-    <div
-      style={{
-        background: 'var(--hachi-surface)',
-        border: '0.5px solid var(--hachi-line)',
-        borderRadius: '16px',
-        padding: '16px 18px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '14px',
-      }}
-    >
-      <span style={{ color: 'var(--hachi-muted)', display: 'inline-flex' }}>
-        <Icon name="dollar" size={16} />
-      </span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: '13px', color: 'var(--hachi-muted)' }}>
-          {unlimited
-            ? `spent ${fmtUSD(spent)} today — no budget set`
-            : `spent ${fmtUSD(spent)} of ${fmtUSD(budget)} today`}
-        </div>
-        <div
-          style={{
-            marginTop: '6px',
-            height: '3px',
-            borderRadius: '999px',
-            background: 'var(--hachi-line)',
-            overflow: 'hidden',
-          }}
-        >
-          <div
-            style={{
-              width: `${pct}%`,
-              height: '100%',
-              background: isHigh ? 'var(--hachi-working)' : 'var(--hachi-trust)',
-              borderRadius: '999px',
-              transition: 'width var(--dur-slow) var(--ease)',
-            }}
-          />
-        </div>
-      </div>
-      <span
-        style={{
-          fontSize: '12px',
-          color: isHigh ? 'var(--hachi-working)' : 'var(--hachi-muted)',
-          fontVariantNumeric: 'tabular-nums',
-        }}
-      >
-        {unlimited ? 'unlimited' : `${pct}%`}
-      </span>
     </div>
   );
 }
