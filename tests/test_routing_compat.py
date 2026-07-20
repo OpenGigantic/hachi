@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 from hachi.core.llm import AnthropicClient, BaseLLMClient, LLMResponse, TokenUsage
@@ -137,6 +138,27 @@ class TestSubAgentD2Regression:
         # check the type of exception, NOT a network call.
         with pytest.raises((ValueError, Exception)):
             SubAgentRuntime._create_client("claude-haiku-4-5", session_client=None)
+
+    def test_no_session_client_default_anthropic_has_bounded_timeout(self, monkeypatch) -> None:
+        """BB-95 follow-up: the delegation-path default AnthropicClient (no
+        session_client, no explicit `timeout=` at sub_agent.py's
+        `AnthropicClient(model=model, max_tokens=4096)`) must not construct
+        with an unbounded SDK timeout -- a sub-agent hanging forever is
+        exactly the "autonomous agent hangs unattended" story T-23 exists to
+        close, and this call site bypasses create_llm_client entirely.
+        """
+        from hachi.core.sub_agent import SubAgentRuntime
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake-test-key")
+
+        client = SubAgentRuntime._create_client("claude-haiku-4-5", session_client=None)
+        assert isinstance(client, AnthropicClient)
+
+        # Read the SDK object's own resolved timeout -- not an argument we passed in.
+        resolved = client.client.timeout
+        assert resolved is not None, "sub-agent's default AnthropicClient has NO timeout"
+        seconds = resolved.read if isinstance(resolved, httpx.Timeout) else float(resolved)
+        assert seconds == 60.0
 
     def test_explicit_model_override_preserves_openai_provider(self) -> None:
         """Explicit model= override with an OpenAI session reuses OpenAI provider."""

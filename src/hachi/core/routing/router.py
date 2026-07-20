@@ -298,7 +298,13 @@ class ModelRouter:
         # Fallback: use create_llm_client directly.
         from hachi.core.llm import create_llm_client
 
-        return create_llm_client({"kind": desc.provider, "model": desc.id})
+        # BB-95: thread the resilience policy's configured timeout through so a
+        # non-default `[routing.resilience].timeout_s` reaches the wire on this
+        # path too. Pass the float, never `self._resilience` itself (RetryPolicy) —
+        # `core/llm.py` must not import from `core/resilience.py` (circular import).
+        return create_llm_client(
+            {"kind": desc.provider, "model": desc.id}, timeout_s=self._resilience.timeout_s
+        )
 
     def _get_recorder(self, provider_name: str) -> HealthRecorder:
         """Return (or create) the HealthRecorder for *provider_name*.

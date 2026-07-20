@@ -117,7 +117,12 @@ def register_memory_tools(
                     from hachi.core.llm import AnthropicClient
                     from hachi.core.llm import Message as LLMMessage
 
-                    client = AnthropicClient()
+                    # BB-95: explicit, bounded timeout for this background
+                    # consolidation call -- matches memory_vault.py's identical
+                    # memory-consolidation-engine convention (30s), tighter than
+                    # AnthropicClient's general 60s default since this runs on
+                    # the durable job-queue worker, not the user-facing turn.
+                    client = AnthropicClient(timeout=30.0)
                     prompt = (
                         "You are a memory consolidation engine.\n"
                         f"New Compound Fact to save: '{content}'\n\n"
