@@ -132,6 +132,9 @@ class GatewayControlPlane:
         set_capability_enabled: Callable[[str, bool], dict[str, Any]] | None = None,
         add_memory_fact: Callable[[str, str], dict[str, Any]] | None = None,
         delete_memory_fact: Callable[[str], dict[str, Any]] | None = None,
+        # T-08 A2/A3 — MemoryGardener review surface
+        get_memory_gardener_diffs: Callable[[], list[dict[str, Any]]] | None = None,
+        decide_memory_gardener_diff: Callable[[str, str], dict[str, Any]] | None = None,
         # G1 — new handlers
         update_limits: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         add_allowed_folder: Callable[[str], dict[str, Any]] | None = None,
@@ -210,6 +213,9 @@ class GatewayControlPlane:
         self._set_capability_enabled = set_capability_enabled
         self._add_memory_fact = add_memory_fact
         self._delete_memory_fact = delete_memory_fact
+        # T-08 A2/A3 — MemoryGardener review surface
+        self._get_memory_gardener_diffs = get_memory_gardener_diffs
+        self._decide_memory_gardener_diff = decide_memory_gardener_diff
         # G1 — new handlers
         self._update_limits = update_limits
         self._add_allowed_folder = add_allowed_folder
@@ -1003,6 +1009,23 @@ class GatewayControlPlane:
         if self._delete_memory_fact is None:
             return {"ok": False, "error": "memory vault not available"}
         return self._delete_memory_fact(fact_id)
+
+    def memory_gardener_diffs(self) -> Any:
+        """Return pending MemoryGardener review proposals (GET /memory/diffs — T-08 A2).
+
+        No-handler fallback returns an empty list (mirrors ``skills()``/``memory()``)
+        rather than raising, since this route is polled by a UI screen that should
+        render "nothing pending" rather than an error before any session has booted.
+        """
+        proposals = self._get_memory_gardener_diffs() if self._get_memory_gardener_diffs else []
+        return {"pending_review": proposals}
+
+    def decide_memory_gardener_diff(self, proposal_id: str, action: str) -> Any:
+        """Approve or reject a pending gardener proposal (POST /memory/diffs/{id} — T-08 A3)."""
+        handler = self._require_handler(
+            self._decide_memory_gardener_diff, "memory gardener decision"
+        )
+        return handler(proposal_id, action)
 
     # ==========================================
     # G1 — new gateway handlers

@@ -4,8 +4,9 @@
 // Screen-local state: memSearch, recallQuery, recallDone, hovered buttons.
 // All domain mutations via useStore.
 //
-// Layout: two tabs — "Recall" (semantic search) and "Audit" (history/sessions).
-// This reduces cognitive load on a trust-critical feature (MED-019).
+// Layout: three tabs — "Recall" (semantic search), "Audit" (history/sessions),
+// and "Gardener" (T-08 A3: MemoryGardener pending_review proposals). Tabs
+// reduce cognitive load on a trust-critical feature (MED-019).
 // ============================================================
 
 import React, { useCallback, useEffect, useRef, useState } from 'react'
@@ -18,10 +19,19 @@ import {
   saveFact as saveFactRemote,
   delFact as delFactRemote,
 } from '../lib/data/domains/memory'
+import { loadGardenerDiffs, decideGardenerDiff } from '../lib/data/domains/memoryGardener'
 import { Icon } from '../components/icons/Icon'
 import { HachiMascot } from '../components/brand/HachiMascot'
 import { ConfirmButton } from '../components/ui/ConfirmButton'
-import type { MemGroup, Fact, BlockedItem, RecallHit, Session, SkillUsage } from '../lib/data/types'
+import type {
+  MemGroup,
+  Fact,
+  BlockedItem,
+  RecallHit,
+  Session,
+  SkillUsage,
+  GardenerProposal,
+} from '../lib/data/types'
 import { PendingCard } from '../components/ui/PendingCard'
 
 // ============================================================
@@ -225,14 +235,131 @@ function FactCard({
 }
 
 // ============================================================
+// Gardener proposal card — T-08 A3 (MemoryGardener pending_review)
+// ============================================================
+const GARDENER_KIND_LABEL: Record<string, string> = {
+  dedup_same_name: 'Duplicate node',
+  merge_similar: 'Similar content',
+  supersede_contradiction: 'Possible contradiction',
+  expire_stale: 'Expired',
+}
+
+function GardenerProposalCard({
+  proposal,
+  onDecide,
+}: {
+  proposal: GardenerProposal
+  onDecide: (id: string, action: 'approve' | 'reject') => Promise<void>
+}) {
+  const [deciding, setDeciding] = useState<'approve' | 'reject' | null>(null)
+
+  const decide = (action: 'approve' | 'reject') => {
+    if (deciding) return
+    setDeciding(action)
+    void onDecide(proposal.id, action).finally(() => setDeciding(null))
+  }
+
+  return (
+    <div
+      style={{
+        background: 'var(--hachi-surface)',
+        border: '0.5px solid var(--hachi-line)',
+        borderRadius: '16px',
+        padding: '18px',
+        display: 'flex',
+        gap: '14px',
+        alignItems: 'flex-start',
+      }}
+    >
+      <div
+        style={{
+          flexShrink: 0,
+          width: '38px',
+          height: '38px',
+          borderRadius: '10px',
+          background: 'var(--hachi-brand-tint)',
+          display: 'grid',
+          placeItems: 'center',
+          color: 'var(--hachi-brand)',
+        }}
+      >
+        <Icon name="repeat" size={19} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 500, fontSize: '15px', marginBottom: '4px' }}>
+          {GARDENER_KIND_LABEL[proposal.kind] ?? proposal.kind}
+        </div>
+        <div style={{ fontSize: '14px', color: 'var(--hachi-muted)', lineHeight: '22px' }}>
+          {proposal.nameA}
+          {proposal.nameB && (
+            <span style={{ color: 'var(--hachi-ink)' }}> ↔ {proposal.nameB}</span>
+          )}
+        </div>
+        {proposal.reason && (
+          <div style={{ fontSize: '12.5px', color: 'var(--hachi-muted)', marginTop: '6px' }}>
+            {proposal.reason}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: '9px', marginTop: '14px' }}>
+          <TextBtn
+            disabled={deciding !== null}
+            onClick={() => decide('reject')}
+            style={{
+              height: '34px',
+              padding: '0 14px',
+              borderRadius: '10px',
+              border: '1px solid var(--hachi-trust)',
+              background: 'transparent',
+              color: 'var(--hachi-trust)',
+              font: '500 13px var(--font-body)',
+              cursor: 'pointer',
+            }}
+            hoverStyle={{ background: 'var(--hachi-trust-tint)' }}
+          >
+            {deciding === 'reject' ? 'Rejecting…' : 'Reject'}
+          </TextBtn>
+          <TextBtn
+            disabled={deciding !== null}
+            onClick={() => decide('approve')}
+            style={{
+              height: '34px',
+              padding: '0 14px',
+              borderRadius: '10px',
+              border: '0.5px solid transparent',
+              background: 'var(--hachi-brand-hover)',
+              color: 'var(--hachi-canvas)',
+              font: '500 13px var(--font-body)',
+              cursor: 'pointer',
+            }}
+            hoverStyle={{ background: 'var(--hachi-brand-active)' }}
+          >
+            {deciding === 'approve' ? 'Applying…' : 'Approve'}
+          </TextBtn>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ============================================================
 // Tab bar — local sub-view switcher
 // ============================================================
-type MemTab = 'recall' | 'audit'
+type MemTab = 'recall' | 'audit' | 'gardener'
 
-function TabBar({ active, onChange }: { active: MemTab; onChange: (t: MemTab) => void }) {
-  const tabs: { key: MemTab; label: string; icon: string }[] = [
+function TabBar({
+  active,
+  onChange,
+  gardenerCount,
+}: {
+  active: MemTab
+  onChange: (t: MemTab) => void
+  /** T-08 A3: pending-review count shown as a badge on the Gardener tab. */
+  gardenerCount: number
+}) {
+  const tabs: { key: MemTab; label: string; icon: string; badge?: number }[] = [
     { key: 'recall', label: 'Recall', icon: 'sparkles' },
     { key: 'audit', label: 'Audit & History', icon: 'shield' },
+    { key: 'gardener', label: 'Gardener', icon: 'repeat', badge: gardenerCount || undefined },
   ]
   return (
     <div
@@ -271,6 +398,26 @@ function TabBar({ active, onChange }: { active: MemTab; onChange: (t: MemTab) =>
           >
             <Icon name={t.icon} size={14} />
             {t.label}
+            {!!t.badge && (
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minWidth: '16px',
+                  height: '16px',
+                  padding: '0 4px',
+                  borderRadius: '999px',
+                  background: 'var(--hachi-brand)',
+                  color: 'var(--hachi-canvas)',
+                  fontSize: '10.5px',
+                  fontWeight: 600,
+                  lineHeight: 1,
+                }}
+              >
+                {t.badge}
+              </span>
+            )}
           </button>
         )
       })}
@@ -304,9 +451,14 @@ function Memory() {
   const approveProposed = useStore((s) => s.approveProposed)
   const rejectProposed = useStore((s) => s.rejectProposed)
   const showToast = useStore((s) => s.showToast)
+  // T-08 A3: MemoryGardener pending_review proposals.
+  const gardenerDiffs = useStore((s) => s.gardenerDiffs)
 
   // --- load on mount (refresh-on-navigate; bootstrapLiveData also runs on app mount) ---
-  useEffect(() => { void loadMemory() }, [])
+  useEffect(() => {
+    void loadMemory()
+    void loadGardenerDiffs()
+  }, [])
 
   // --- local state ---
   const [memSearch, setMemSearch] = useState('')
@@ -482,7 +634,7 @@ function Memory() {
           }}
         >
           {/* ---- MED-019: tab switcher ---- */}
-          <TabBar active={activeTab} onChange={setActiveTab} />
+          <TabBar active={activeTab} onChange={setActiveTab} gardenerCount={gardenerDiffs.length} />
 
           {/* ============================================================
               TAB: Recall — semantic search + proposed change + memory groups
@@ -1198,6 +1350,32 @@ function Memory() {
                   }}
                 >
                   No audit data yet — history will appear here as Hachi works.
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ============================================================
+              TAB: Gardener — MemoryGardener pending_review proposals (T-08 A3)
+              ============================================================ */}
+          {activeTab === 'gardener' && (
+            <>
+              {gardenerDiffs.length === 0 ? (
+                <div
+                  style={{
+                    textAlign: 'center',
+                    padding: '60px 0',
+                    color: 'var(--hachi-muted)',
+                    fontSize: '14px',
+                  }}
+                >
+                  No pending memory-hygiene proposals right now.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {gardenerDiffs.map((p) => (
+                    <GardenerProposalCard key={p.id} proposal={p} onDecide={decideGardenerDiff} />
+                  ))}
                 </div>
               )}
             </>

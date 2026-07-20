@@ -214,6 +214,46 @@ class MemoryFactDeleteResponse(BaseModel):
     ok: bool
 
 
+class MemoryGardenerProposalModel(BaseModel):
+    """One MemoryGardener ``pending_review`` proposal (T-08 A2).
+
+    Field set mirrors ``hachi.core.memory_gardener.GardeningProposal`` exactly —
+    the dataclass that ``AgentSession.snapshot_gardener_diffs()`` serialises via
+    ``dataclasses.asdict``.
+    """
+
+    id: str
+    kind: str
+    name_a: str
+    name_b: str = ""
+    reason: str = ""
+    confidence: float = 1.0
+    file_path_a: str = ""
+    file_path_b: str = ""
+    auto_applied: bool = False
+
+
+class MemoryGardenerDiffsResponse(BaseModel):
+    """Response for GET /memory/diffs (T-08 A2)."""
+
+    pending_review: list[MemoryGardenerProposalModel] = Field(default_factory=list)
+
+
+class MemoryGardenerDecisionRequest(BaseModel):
+    """Body for POST /memory/diffs/{proposal_id} (T-08 A3)."""
+
+    action: Literal["approve", "reject"]
+
+
+class MemoryGardenerDecisionResponse(BaseModel):
+    """Response for POST /memory/diffs/{proposal_id} (T-08 A3)."""
+
+    ok: bool
+    id: str
+    action: str
+    proposal: MemoryGardenerProposalModel
+
+
 class OpenAIMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
     role: str
@@ -2207,6 +2247,29 @@ def create_gateway_app(
         Returns: ``{"ok": true}``
         """
         return control_plane.delete_memory_fact(fact_id=fact_id)
+
+    # T-08 A2 — GET /memory/diffs: MemoryGardener pending_review proposals.
+    @memory_router.get("/diffs", response_model=MemoryGardenerDiffsResponse)
+    async def get_memory_diffs() -> Any:
+        """Return pending MemoryGardener review proposals from the last gardener run."""
+        return control_plane.memory_gardener_diffs()
+
+    # T-08 A3 — POST /memory/diffs/{proposal_id}: approve/reject write-back.
+    @memory_router.post("/diffs/{proposal_id}", response_model=MemoryGardenerDecisionResponse)
+    async def post_memory_diff_decision(
+        proposal_id: str, payload: MemoryGardenerDecisionRequest
+    ) -> Any:
+        """Approve or reject a pending MemoryGardener proposal.
+
+        Body: ``{"action": "approve"|"reject"}``. Approve applies the proposal via
+        an append-only ``::changelog`` note (never overwrites node content — the
+        gardener's governance rule); reject drops it without touching any ``.og``
+        file. Both persist the updated ``pending_diffs.json``. Raises 404 when
+        ``proposal_id`` is not currently pending.
+        """
+        return await anyio.to_thread.run_sync(
+            lambda: control_plane.decide_memory_gardener_diff(proposal_id, payload.action)
+        )
 
     # response_model_exclude_unset=True: the no-handler fallback
     # (control_plane.og_graph() -> {"nodes": []}, control_plane.py:886-890) has no

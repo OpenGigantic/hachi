@@ -142,6 +142,19 @@ export interface ProposedChange {
   to: string;
 }
 
+// ----- memory gardener (T-08 A3) -----
+export interface GardenerProposal {
+  id: string;
+  kind: string;
+  nameA: string;
+  nameB: string;
+  reason: string;
+  confidence: number;
+  filePathA: string;
+  filePathB: string;
+  autoApplied: boolean;
+}
+
 // ----- skills / kennel -----
 export interface Skill {
   id: string;

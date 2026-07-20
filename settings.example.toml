@@ -385,6 +385,27 @@ interval_seconds = 604800
 limit = 1000
 
 # ---------------------------------------------------------------------------
+# [memory_gardener] — M3 nightly memory-hygiene automation (T-08)
+# ---------------------------------------------------------------------------
+[memory_gardener]
+# type: bool, default: false
+# effect: master switch — when true, a resident daemon wakes every
+# `interval_seconds` and runs MemoryGardener over the memory/*.og directory,
+# deduplicating/superseding/expiring nodes and writing pending_diffs.json for
+# the GET /memory/diffs review surface (approve/reject via
+# POST /memory/diffs/{id}).
+enabled = false
+
+# type: int, default: 86400 (1 day)
+# effect: seconds between gardening runs.
+interval_seconds = 86400
+
+# type: float, default: 0.70
+# effect: Jaccard similarity threshold above which two different-named nodes
+# are proposed as merge candidates.
+similarity_threshold = 0.70
+
+# ---------------------------------------------------------------------------
 # [channels] — inbound messaging channels
 # ---------------------------------------------------------------------------
 [channels.telegram]

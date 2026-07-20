@@ -3266,6 +3266,35 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `test_active_runtime_is_clean_after_the_previous_test` (a declaration-order-dependent pair that
   pins the fixture's cross-test-boundary guarantee directly, independent of full-suite ordering).
 
+### BB-120 — `add_mcp_server_live` re-add crashed under T-36's duplicate-registration guard
+
+- **Symptom:** re-registering an already-live MCP server (a supported action —
+  `cli/main.py`'s register-server path re-registers an existing server name in
+  place, and `AgentSession.add_mcp_server_live` is called from a live session's
+  `if agent is not None:` gate) raised `ValueError` instead of refreshing the
+  server's tools.
+- **Root cause:** `add_mcp_server_live` (`gateway/orchestrator.py`) called the
+  private, non-idempotent `MCPManager._register_server_tools` directly, with no
+  `unregister` first. T-36 (BB-111) had correctly added a duplicate-name guard to
+  `ToolRegistry.register` to stop tool schemas silently duplicating on re-add —
+  but that guard turned this same call path into a hard crash on re-add, because
+  nothing unregistered the server's existing tools before re-mounting them.
+- **Fix:** `add_mcp_server_live` now calls the public, idempotent
+  `MCPManager.register_server_tools` (`orchestrator.py` ~:966), which unregisters
+  any stale tools for the server name before re-mounting — so a re-add refreshes
+  the server's tools in place instead of hitting `ToolRegistry.register`'s
+  duplicate-name guard.
+- **Avoid:** re-adding an already-live resource (MCP server, skill, etc.) is a
+  supported user action, not an edge case — always route it through the
+  idempotent public API (`register_server_tools`), never the private
+  `_register_server_tools`/equivalent, or a duplicate-registration guard added
+  for a different reason (T-36 was about duplicate tool schemas, not re-add)
+  will turn a supported action into a crash.
+- **Locked by:** `tests/test_mcp_lifecycle.py` —
+  `TestAddMcpServerLiveReregister::test_readd_live_server_does_not_raise_and_has_no_duplicate_schema`.
+  (Fix shipped in an earlier commit; this entry was owed and is being added
+  alongside T-08/BB-126.)
+
 ### BB-121 — Two implemented provider kinds were rejected by the config schema
 
 - **Symptom:** setting `[provider] kind = "gemini"` (documented at
@@ -3678,6 +3707,70 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `test_agent_session_shutdown_does_not_close_the_still_shared_store` (regression
   proofs — verified failing before the fix); plus 3 correctness-lock tests in the
   same file for the "prefer an attached store" contract.
+
+### BB-126 — MemoryGardener shipped with a writer, a reader, and no connection between them
+
+- **Symptom:** M3 memory gardening (dedupe / supersede / expire over `memory/*.og`)
+  never ran. `pending_diffs.json` was never written, and the "TUI Memory-Diff
+  screen" named in the module docstring did not exist in either UI.
+- **Root cause:** three independent dead layers. (1) `MemoryGardener.run()` — the
+  only writer — had zero production callers; every construction site was in
+  tests. (2) `AgentSession.snapshot_gardener_diffs` — the only reader — also had
+  zero callers: no gateway route, no TUI screen, no CLI command. (3) Even when
+  called, that reader did `getattr(self.memory, "memory_dir", None)` against a
+  `MemoryManager`, which has no `memory_dir` attribute — so it returned `[]`
+  before touching the file. The correct path is `get_hachi_paths().memory_dir`.
+  **A fourth, previously-unreachable defect surfaced only once (1)–(3) were
+  fixed:** the reader's dead code also referenced
+  `GardeningResult._PENDING_DIFFS_FILE` — that constant is declared on
+  `MemoryGardener`, not `GardeningResult` — so fixing the `getattr` alone would
+  have traded a silent `[]` for an `AttributeError`. Nobody had ever gotten far
+  enough to hit it before this task, and the audit's own §3.3 source read did not
+  catch it either — proof that the getattr-masking bug wasn't just returning the
+  wrong answer, it was hiding a second broken line behind it.
+- **Fix:** Option A — wired up end-to-end (recorded in `docs/DECISIONS.md`):
+  - **A1 (schedule):** `gateway/orchestrator.py`'s `_start_memory_gardener`
+    mirrors `_start_eval_report_scheduler` exactly (daemon thread, sleep loop,
+    `min(interval, 3600)` wake cap, try/except that logs, started from
+    `boot_agent` behind a new opt-in `[memory_gardener]` section). The section's
+    `MemoryGardenerSettings` model is registered on `ResolvedConfig` in the same
+    commit (see BB-101 — the reflective
+    `test_all_settings_models_are_registered_on_resolved_config` guard would
+    otherwise fail by name).
+  - **A2 (route):** `GET /memory/diffs` + a `GatewayControlPlane` handler + an
+    `_InProcessGatewayRuntime.get_memory_gardener_diffs()` method make
+    `snapshot_gardener_diffs` reachable for the first time; its `getattr` bug (and
+    the `GardeningResult._PENDING_DIFFS_FILE` bug above) are both fixed in the
+    same change. OpenAPI + frontend types regenerated (BB-4).
+  - **A3 (surface + write-back):** the approve/reject path that did not exist at
+    all before this task. `GardeningProposal` gained a stable, deterministic `id`
+    (hash of its identifying fields) so a client can round-trip
+    `GET /memory/diffs` → `POST /memory/diffs/{id}` without depending on list
+    order. `MemoryGardener.decide()` applies an approval through the same
+    append-only `::changelog` mechanism the auto-apply dedup path already used —
+    never overwriting node content (the module's own governance rule) — or drops
+    a rejection without touching any `.og` file; either way it re-persists
+    `pending_diffs.json` so the decision survives the next `GET`. The web
+    frontend's Memory screen gained a "Gardener" tab (list + Approve/Reject)
+    wired through a new `memoryGardener.ts` domain module using the same
+    non-optimistic POST-then-mutate pattern BB-106 established for approvals.
+  - `GardeningResult.load`'s swallowed exception was promoted from
+    `logger.debug` to `logger.warning(..., exc_info=True)` now that a corrupt
+    `pending_diffs.json` silently degrades a live route, not just an unused one.
+- **Avoid:** a `getattr(self.x, "field", None)` against one of our OWN types is
+  not defensive coding — it converts "this attribute does not exist" into a
+  silent empty result. Before shipping a read-model method, grep for its caller;
+  a snapshot method with no caller is a dead feature, not future-proofing. AND:
+  fixing a getattr-masking bug can uncover a SECOND bug that was hiding behind
+  it (dead code is never type-checked by a passing test suite) — re-run the
+  method's own tests immediately after unmasking it, don't assume the exposed
+  code path was already correct just because it existed.
+- **Locked by:** `tests/test_memory_gardener_wiring.py` (17 tests: config
+  registration, A1 scheduler-on-interval + 3600s cap + boot_agent AST check, A2
+  reader-fix + route end-to-end, A3 `MemoryGardener.decide()` + route
+  approve/reject/404 + the debug→warning logging fix) and
+  `frontend/src/lib/data/domains/memoryGardener.test.ts` (6 tests: adapter shape
+  + the BB-106 non-optimistic decision pattern).
 
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,

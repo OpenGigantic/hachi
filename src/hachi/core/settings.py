@@ -280,6 +280,34 @@ class EvalReportSettings(BaseModel):
     limit: int = 1000
 
 
+class MemoryGardenerSettings(BaseModel):
+    """Optional ``[memory_gardener]`` config section — T-08 A1, M3 memory hygiene.
+
+    When ``enabled=True`` the gateway boots a resident daemon thread (mirrors
+    :class:`EvalReportSettings` / ``_start_eval_report_scheduler`` exactly) that
+    wakes every ``interval_seconds`` (default: one day) and runs
+    :class:`~hachi.core.memory_gardener.MemoryGardener` over
+    ``get_hachi_paths().memory_dir``, writing ``pending_diffs.json`` for the
+    ``GET /memory/diffs`` route.
+
+    Default is ``False`` so the feature is completely dormant unless the operator
+    opts in by setting ``[memory_gardener] enabled = true`` in ``settings.toml``.
+
+    Attributes:
+        enabled:               Master switch.  Defaults to ``False`` (opt-in).
+        interval_seconds:      Seconds between gardening runs.  Default 86400 (1 day).
+        similarity_threshold:  Jaccard threshold forwarded to
+                                :class:`~hachi.core.memory_gardener.MemoryGardener`
+                                for near-duplicate merge proposals.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = False
+    interval_seconds: int = 86400  # 1 day
+    similarity_threshold: float = 0.70
+
+
 class VoiceSettings(BaseModel):
     """Optional ``[voice]`` config section (Initiative F — Voice Platform).
 
@@ -471,6 +499,12 @@ class ResolvedConfig(BaseModel):
     # Without this field the section was silently dropped by extra="ignore" and the
     # loader reported the user's own documented key as unknown (BB-101).
     eval_reports: EvalReportSettings = Field(default_factory=EvalReportSettings)
+    # Optional [memory_gardener] section — absent = daemon off (opt-in, default False).
+    # T-08 (BB-101-class guard): without this field the section would be silently
+    # dropped by extra="ignore" and the loader would report the user's own
+    # documented key as unknown — see test_all_settings_models_are_registered_on_
+    # resolved_config in tests/test_eval_report_config.py.
+    memory_gardener: MemoryGardenerSettings = Field(default_factory=MemoryGardenerSettings)
     # [mcp_servers.<name>] sections — Model Context Protocol servers registered via the
     # UI/CLI. Kept as raw dicts (parsed by MCPServerConfig.from_toml_entry at boot) so the
     # section survives model_dump() — without this field it was silently dropped and
