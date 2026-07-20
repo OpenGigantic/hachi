@@ -18,6 +18,7 @@ from hachi.tui.cockpit.base import CockpitView
 from hachi.tui.theme import (
     AMBER,
     BORDER_MUTED,
+    DANGER,
     FOREGROUND,
     GREEN,
     MUTED,
@@ -31,6 +32,8 @@ if TYPE_CHECKING:
 # Colour aliases matching the design
 _DIM = "#6E6A74"
 _BORDER = BORDER_MUTED
+
+_DEGRADED_TEXT = "⚠ can't reach Hachi — spend data unknown, not zero"
 
 # ▓░ bar parameters
 _BAR_WIDTH = 14
@@ -116,18 +119,23 @@ class ResourcesView(CockpitView):  # type: ignore[misc]
     def populate(self, data: CockpitData) -> None:
         """Populate all four meter cards from spend data."""
         sp = data.spend()
+        # A failed live spend() call must not render as a legitimate $0 /
+        # empty session — that is indistinguishable from a healthy, idle
+        # one. Show an explicit unavailable banner on the two spend-derived
+        # cards instead of the (now honest-empty) zeroed SpendSnapshot.
+        degraded = data.degraded("spend") is not None
 
         # ------------------------------------------------------------------
         # Card 1: tokens (session)
         # ------------------------------------------------------------------
         tokens_card = self.query_one("#res-tokens", MeterCard)
-        tokens_card.update(self._build_tokens(sp))
+        tokens_card.update(self._build_degraded() if degraded else self._build_tokens(sp))
 
         # ------------------------------------------------------------------
         # Card 2: cost (by model)
         # ------------------------------------------------------------------
         cost_card = self.query_one("#res-cost", MeterCard)
-        cost_card.update(self._build_cost(sp))
+        cost_card.update(self._build_degraded() if degraded else self._build_cost(sp))
 
         # ------------------------------------------------------------------
         # Card 3: throughput (static labels where API has no metric)
@@ -144,6 +152,15 @@ class ResourcesView(CockpitView):  # type: ignore[misc]
     # ------------------------------------------------------------------
     # Internal builders
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_degraded() -> Text:
+        """Explicit unavailable banner shown instead of a card's normal
+        content when the live spend() call failed — distinct from both the
+        populated state and a genuine empty/zero session."""
+        t = Text()
+        t.append(_DEGRADED_TEXT, style=f"bold {DANGER}")
+        return t
 
     @staticmethod
     def _build_tokens(sp: object) -> Text:

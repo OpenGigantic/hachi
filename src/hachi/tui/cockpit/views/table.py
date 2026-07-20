@@ -30,6 +30,7 @@ from textual.widgets import Static
 from hachi.tui.theme import (
     BORDER_MUTED,
     BRAND,
+    DANGER,
     FOREGROUND,
     MUTED,
     SURFACE,
@@ -311,6 +312,7 @@ class CockpitTable(Widget):
         self._countdown: str = ""
         self._flag: str = ""
         self._empty_text: str = ""
+        self._empty_degraded: bool = False
 
     def compose(self) -> ComposeResult:
         """Compose the table layout."""
@@ -338,6 +340,7 @@ class CockpitTable(Widget):
         countdown: str = "",
         flag: str = "",
         empty_text: str = "",
+        degraded: bool = False,
     ) -> None:
         """Load new data into the table and re-render.
 
@@ -352,6 +355,9 @@ class CockpitTable(Widget):
                 (e.g. the approvals auto-deny countdown).
             flag: Optional warning text shown in a bottom-left red line.
             empty_text: Text shown when rows is empty.
+            degraded: When True, *empty_text* means "unknown" (a failed live
+                call), not "known empty" — rendered in DANGER, not MUTED, so
+                it cannot be mistaken for the reassuring empty state.
         """
         self._columns = columns
         self._rows = rows
@@ -362,6 +368,7 @@ class CockpitTable(Widget):
         self._countdown = countdown
         self._flag = flag
         self._empty_text = empty_text
+        self._empty_degraded = degraded
         # Clamp selection to new row count.
         self._sel = max(0, min(self._sel, len(rows) - 1)) if rows else 0
         self._render_all()
@@ -458,10 +465,12 @@ class CockpitTable(Widget):
 
         if not self._rows:
             if self._empty_text:
+                color = DANGER if self._empty_degraded else MUTED
+                classes = "ct-empty ct-empty-degraded" if self._empty_degraded else "ct-empty"
                 rows_container.mount(
                     Static(
-                        Text(self._empty_text, style=f"bold {MUTED}"),
-                        classes="ct-empty",
+                        Text(self._empty_text, style=f"bold {color}"),
+                        classes=classes,
                     )
                 )
             return
