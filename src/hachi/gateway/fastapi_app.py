@@ -306,6 +306,37 @@ class SkillAddRequest(BaseModel):
     kennel_id: str
 
 
+class OgNodeModel(BaseModel):
+    """One ObjectGraph node with per-pass token estimates (GET /og/graph).
+
+    Field set derived from ``og_graph_from_engine`` (``gateway/orchestrator.py``),
+    the function that actually builds this payload -- not from the frontend's
+    hand-written ``GatewayOgNode`` mirror, which T-38 found already drifted.
+    """
+
+    id: str
+    name: str
+    kind: str
+    index: int
+    dense: int
+    full: int
+    deps: list[str] = []
+
+
+class OgGraphResponse(BaseModel):
+    """Response for ``GET /og/graph`` (T-38 / BB-115).
+
+    ``count`` defaults to 0 because ``GatewayControlPlane.og_graph()``
+    (``gateway/control_plane.py``) falls back to ``{"nodes": []}`` -- no ``count``
+    key -- when no ``get_og_graph`` handler is wired. The real payload built by
+    ``og_graph_from_engine`` always includes ``count``; the default only tolerates
+    the no-handler fallback shape without misdeclaring the field's type.
+    """
+
+    nodes: list[OgNodeModel]
+    count: int = 0
+
+
 class AuthoringGenerateRequest(BaseModel):
     """Body for POST /authoring/targets/{name}/generate (G1-T2 / CRIT-002)."""
 
@@ -419,23 +450,39 @@ def _error_response(
 
 
 def _resolve_session_store() -> Any:
-    """Return the process-wide ``SessionStore`` (preferred) or a fresh fallback, else None.
+    """Return the process-wide ``SessionStore`` if one has been booted, else ``None``.
 
     Mirrors the ``ProcessSharedServices`` access pattern used elsewhere in this module so
     durable ingress idempotency (AUDIT P0-3) reads/writes the same database the rest of the
     gateway uses. Patched in tests to point at an isolated DB.
+
+    T-10 / BB-42 recurrence: this used to fall back to a brand-new ``SessionStore()``
+    whenever ``ProcessSharedServices.session_store`` was unset — which, since the
+    attribute was never declared (and nothing ever assigned it), was EVERY call on
+    this per-message hot path. That fallback ran full schema init/migrations and was
+    never closed, leaking a sqlite3/WAL connection per message for the life of the
+    process. All three current callers (``post_message`` idempotency check,
+    ``get_interactions``, ``put_interaction_rating``) already treat ``None`` as
+    "durable idempotency/interactions unavailable for this request" — so once a real
+    shared store exists (attached by ``boot_agent``) that already-handled ``None``
+    path is preferable to silently opening-and-abandoning a private one here.
     """
     try:
         from hachi.gateway.shared_services import ProcessSharedServices
 
         shared = ProcessSharedServices.instance()
-        store = getattr(shared, "session_store", None) if shared is not None else None
+        store = shared.session_store if shared is not None else None
         if store is not None:
             return store
-        from hachi.core.session_store import SessionStore
-
-        return SessionStore()
-    except Exception:  # pragma: no cover - store is best-effort; never break the turn
+        return None
+    except Exception:
+        # T-10: never break the turn — but never fail silently either. A caller
+        # degrading to "no durable idempotency for this request" should be visible.
+        _log.warning(
+            "_resolve_session_store: could not resolve a SessionStore; durable ingress "
+            "idempotency is disabled for this request",
+            exc_info=True,
+        )
         return None
 
 
@@ -1081,16 +1128,21 @@ def create_gateway_app(
             from hachi.gateway.shared_services import ProcessSharedServices
 
             _shared = ProcessSharedServices.instance()
-            if _shared is not None and hasattr(_shared, "session_store"):
-                _store = _shared.session_store
-                if _store is not None and hasattr(_store, "delete_empty_sessions"):
-                    removed = _store.delete_empty_sessions()
+            if _shared is not None and _shared.session_store is not None:
+                removed = _shared.session_store.delete_empty_sessions()
             else:
-                # Fallback: instantiate a fresh store (same DB file).
+                # Fallback: instantiate a fresh store (same DB file). T-10 / BB-42
+                # recurrence: this one is NOT the process-shared instance, so it
+                # must be shut down here — otherwise its sqlite3/WAL connection
+                # leaks for the rest of the process lifetime (mirrors the correct
+                # fallback shape already in core/cost.py).
                 from hachi.core.session_store import SessionStore
 
                 _store = SessionStore()
-                removed = _store.delete_empty_sessions()
+                try:
+                    removed = _store.delete_empty_sessions()
+                finally:
+                    _store.shutdown()
         except Exception:
             _log.warning("cleanup_empty_sessions: failed to delete empty sessions", exc_info=True)
         return {"removed": removed}
@@ -2156,7 +2208,14 @@ def create_gateway_app(
         """
         return control_plane.delete_memory_fact(fact_id=fact_id)
 
-    @og_router.get("/graph")
+    # response_model_exclude_unset=True: the no-handler fallback
+    # (control_plane.og_graph() -> {"nodes": []}, control_plane.py:886-890) has no
+    # "count" key at all. Without exclude_unset, FastAPI would fill the declared
+    # default (count=0) into that response and change its wire shape. With it, a
+    # key is only emitted when the underlying dict actually set it -- so the real
+    # og_graph_from_engine payload (which always sets "count" explicitly) keeps
+    # reporting it, and the fallback stays exactly {"nodes": []}.
+    @og_router.get("/graph", response_model=OgGraphResponse, response_model_exclude_unset=True)
     async def get_og_graph() -> Any:
         """Return the ObjectGraph node graph with per-pass token estimates."""
         return control_plane.og_graph()

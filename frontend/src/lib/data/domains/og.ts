@@ -7,26 +7,19 @@ import { apiGet, USE_MOCKS } from "../client";
 import { registerLoader } from "../live";
 import { useStore } from "../../store/store";
 import type { OgNode } from "../types";
+import type { components } from "../schema";
 
-// ---- Gateway shape ----
-
-interface GatewayOgNode {
-  id: string;
-  name: string;
-  kind?: string;
-  index?: number;
-  dense?: number;
-  full?: number;
-  deps?: string[];
-}
-
-interface GatewayOgGraph {
-  nodes: GatewayOgNode[];
-}
+// ---- Gateway shapes: DERIVED from the generated OpenAPI schema, not
+// hand-mirrored (T-38 / BB-115). `GET /og/graph` now declares
+// `response_model=OgGraphResponse` on the backend, so these are real types,
+// not `unknown`. Regenerate with `npm run generate:api` after any gateway
+// change (BB-4).
+type GatewayOgNode = components["schemas"]["OgNodeModel"];
+type GatewayOgGraph = components["schemas"]["OgGraphResponse"];
 
 // ---- Pure adapter ----
 
-function adaptOgNode(raw: GatewayOgNode): OgNode {
+export function adaptOgNode(raw: GatewayOgNode): OgNode {
   const validKinds = new Set<OgNode["kind"]>(["root", "skill", "leaf"]);
   const kind: OgNode["kind"] = validKinds.has(raw.kind as OgNode["kind"])
     ? (raw.kind as OgNode["kind"])

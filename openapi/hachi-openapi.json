@@ -10228,7 +10228,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "title": "Response Get Og Graph Og Graph Get"
+                  "$ref": "#/components/schemas/OgGraphResponse"
                 }
               }
             }
@@ -13884,6 +13884,75 @@
           "memory"
         ],
         "title": "MemoryRequest"
+      },
+      "OgGraphResponse": {
+        "properties": {
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/OgNodeModel"
+            },
+            "type": "array",
+            "title": "Nodes"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "nodes"
+        ],
+        "title": "OgGraphResponse",
+        "description": "Response for ``GET /og/graph`` (T-38 / BB-115).\n\n``count`` defaults to 0 because ``GatewayControlPlane.og_graph()``\n(``gateway/control_plane.py``) falls back to ``{\"nodes\": []}`` -- no ``count``\nkey -- when no ``get_og_graph`` handler is wired. The real payload built by\n``og_graph_from_engine`` always includes ``count``; the default only tolerates\nthe no-handler fallback shape without misdeclaring the field's type."
+      },
+      "OgNodeModel": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "index": {
+            "type": "integer",
+            "title": "Index"
+          },
+          "dense": {
+            "type": "integer",
+            "title": "Dense"
+          },
+          "full": {
+            "type": "integer",
+            "title": "Full"
+          },
+          "deps": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Deps",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "index",
+          "dense",
+          "full"
+        ],
+        "title": "OgNodeModel",
+        "description": "One ObjectGraph node with per-pass token estimates (GET /og/graph).\n\nField set derived from ``og_graph_from_engine`` (``gateway/orchestrator.py``),\nthe function that actually builds this payload -- not from the frontend's\nhand-written ``GatewayOgNode`` mirror, which T-38 found already drifted."
       },
       "OpenAIChatRequest": {
         "properties": {

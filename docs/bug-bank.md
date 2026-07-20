@@ -3199,6 +3199,486 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** `tests/test_loop_backstop_cancel.py` —
   `test_token_safety_ceiling_is_preflight_through_a_resilient_client`
 
+### BB-119 — Channel and schedule sessions were invisible to /sessions, audit and spend — and never governed at all
+
+- **Symptom:** A Telegram/WhatsApp conversation, or a task fired by `hachi schedule run-due` /
+  `run-now`, never appeared in `GET /sessions`, contributed nothing to the permission-audit view,
+  and was absent from spend reporting — even with a gateway runtime live in the same process. A
+  gated action taken from one of these sessions never reached the approval registry either: it
+  silently auto-approved (`unrestricted`) or instantly denied (`guided`/`sandbox`) with no request
+  ever created.
+- **Root cause:** Four boot sites called `boot_agent()` directly instead of going through
+  `_InProcessGatewayRuntime`'s session-registration bookkeeping: `GatewaySessionRunner`
+  (constructed twice in `cli/commands/channel.py`, once for Telegram and once for WhatsApp) kept
+  its own private `_agents` dict, and `cli/commands/schedule.py` called `boot_agent()` as a bare
+  local at **both** `schedule_run_due` (`:169`) and `schedule_run_now` (`:205`) — the second site
+  is easy to miss and the architecture review's own remediation list missed it entirely. Every
+  gateway read model (`recent_sessions`, `permission_audit`, `subagent_reports`, `mcp_inventory`,
+  ...) resolves through `_InProcessGatewayRuntime._agents`, so an agent in any other map — or in
+  no map at all — is structurally unreachable. Independently, because `approval_surface="gateway"`
+  (BB-90 / T-01) is only threaded through `_boot_session_agent`, none of these four sites ever
+  selected `RegistryApprover` either — **not** an orphaned-approval bug (the review's framing);
+  no approval was created on these paths at all.
+- **Fix:** Added `_InProcessGatewayRuntime.boot_registered_session(client_id, surface)`
+  (`cli/main.py`), which reuses `_boot_session_agent` (hence `approval_surface="gateway"`) and a
+  new shared `_register_agent` helper (factored out of `register_connection`'s own bookkeeping, so
+  the two registration paths cannot diverge). Channels pass it through the existing
+  `GatewaySessionRunner(boot=…)` seam via a new `_governed_channel_boot` /
+  `_build_channel_runner` pair in `cli/commands/channel.py`; both schedule sites call a new
+  `_boot_scheduler_agent()` in `cli/commands/schedule.py`. When no gateway runtime is active in
+  the process (`_ACTIVE_RUNTIME is None` — the common case for a standalone channel process or a
+  cron-invoked `run-due`), both fall back to a direct `boot_agent()` and log a WARNING naming
+  exactly what is degraded, rather than failing or staying silent. Interim pending the CF-2
+  runtime extraction (T-41); `channels/runner.py` is unchanged — the `boot=` seam it already
+  exposed was sufficient.
+- **Avoid:** every entry point that creates an agent session must register it in the one session
+  map the read models query — a second private map (or no map) makes the sessions invisible
+  rather than merely unmanaged. And a governance property (which approver a session gets) rides
+  on the SAME boot path as visibility — routing a session through the registered boot helper is
+  what makes both true simultaneously; testing only "was a function called" would have missed
+  either half.
+- **Locked by:** `tests/test_governed_session_entry_points.py` —
+  `test_channel_runner_boots_through_the_gateway_runtime`,
+  `test_schedule_run_due_boots_through_the_gateway_runtime`,
+  `test_schedule_run_now_boots_through_the_gateway_runtime` (plus WhatsApp and no-gateway-fallback
+  coverage in the same file). Cross-references BB-90 (T-01), whose `approval_surface`/
+  `select_action_approver` mechanism this task threads through the two non-web entry points.
+- **Follow-up (same BB-N, caught by the full-suite gate, not the scoped run):** the new
+  `schedule.py` / `channel.py` dependency on `hachi.cli.main._ACTIVE_RUNTIME` made
+  `tests/test_schedule_run_now.py::test_run_now_known_schedule_success` and
+  `::test_run_now_agent_error_exits` order-dependent — they passed in isolation but failed in the
+  full suite (`2 failed, 4463 passed`). Root cause: `_ACTIVE_RUNTIME` is reassigned by *production*
+  code (`cli/main.py`, `global _ACTIVE_RUNTIME; _ACTIVE_RUNTIME = runtime`, fired whenever a real
+  `_InProcessGatewayRuntime` boots, e.g. via `_start_gateway_server`), not only by tests through
+  `monkeypatch` — and `monkeypatch` only reverts its own `setattr` calls, so a test that boots a
+  *real* runtime (`tests/test_cockpit_gaps.py` reproduces it directly) leaks the global into every
+  later test in the same worker that reads it. Fixed with a third autouse fixture,
+  `_isolate_active_gateway_runtime` in `tests/conftest.py`, matching the existing
+  `_restore_os_environ` fixture's shape immediately above it (same bug class: a global mutated by
+  production code, not just by monkeypatch-tracked tests) — snapshot/restore unconditionally so it
+  corrects the leak regardless of how the global was mutated, and is a no-op for tests that already
+  isolate it correctly via `monkeypatch`. **Avoid:** when a fix introduces a new module-global read
+  from a shared/CLI-owned module, check whether that global is *also* mutated by production code
+  (not just by tests) before assuming `monkeypatch`-based tests are sufficient protection — grep for
+  every `global <name>` assignment site, not just the test call sites. **Locked by:**
+  `tests/test_governed_session_entry_points.py` —
+  `test_direct_mutation_of_active_runtime_does_not_leak_to_later_tests` /
+  `test_active_runtime_is_clean_after_the_previous_test` (a declaration-order-dependent pair that
+  pins the fixture's cross-test-boundary guarantee directly, independent of full-suite ordering).
+
+### BB-121 — Two implemented provider kinds were rejected by the config schema
+
+- **Symptom:** setting `[provider] kind = "gemini"` (documented at
+  `docs/guides/configuration.md:385`, and the natural free-tier choice for a user with
+  no Anthropic key) crashed config loading with a pydantic `literal_error`. `hachi
+  doctor` separately reported `unknown provider kind: 'gemini'`. Same for
+  `chatgpt-web`.
+- **Root cause:** `core/llm.py create_llm_client` implements `kind == "gemini"` and
+  `kind == "chatgpt-web"`, but `ProviderKind` in `core/settings.py` is a `Literal` that
+  listed neither, so `ResolvedConfig.model_validate` rejected the value at
+  `config_loader.load_effective_config`. `ConfigDict(extra="ignore")` does not help —
+  this is an invalid *value* for a declared field, not an unknown key. The rejection was
+  doubled because `core/config_validate._VALID_KINDS` derives from the same literal.
+- **Fix:** added both kinds to `ProviderKind` (the `HACHI_UNOFFICIAL=1` ToS gate for
+  `chatgpt-web` stays at the client-construction boundary in `core/llm.py`, which is a
+  better place to enforce it than a parse error), documented `gemini` in
+  `settings.example.toml`, and added a ToS note to the configuration guide. Locked with
+  an AST-derived test that fails whenever `create_llm_client` grows a `kind == "..."`
+  branch with no matching `ProviderKind` member.
+- **Avoid:** a provider is not supported until the schema accepts it. When you add a
+  branch to a factory keyed on a config value, extend the `Literal` in the same commit —
+  and prefer a test that derives the expected set from the implementation over one that
+  hardcodes it, or the two lists drift again.
+- **Locked by:** `tests/test_provider_kinds.py` —
+  `test_provider_kind_literal_covers_every_implemented_kind`
+
+### BB-122 — Pending approvals carried no deadline; the enforced 180 s timeout was unreadable from outside the waiting thread
+
+- **Symptom:** No client could tell how long an approval had left. `list_pending()`
+  returned six fields, none temporal, and the `permission.requested` SSE event the same
+  — so the gateway invented a 60 s `expiresAt` to fill the gap (later deleted by T-15)
+  and the web UI hardcoded `expiresAt: 0` and hid the countdown entirely.
+- **Root cause:** `_PendingEntry` (`core/approvals.py`) had three slots — request, event,
+  decision — and no time. The timeout was a `RegistryApprover.__init__` argument
+  consumed once as a stack-local inside `threading.Event.wait(timeout=…)`, so it existed
+  only for the duration of the blocking call and was never recorded anywhere readable.
+- **Fix:** `_PendingEntry` now records `created_at_ms` and `expires_at_ms` (wall clock,
+  epoch ms — comparable to JS `Date.now()`), computed from a single `time.time()` call
+  so the two can never drift apart. `PendingApprovalRegistry.create()` accepts an
+  optional `timeout` (the value that will actually be enforced) and a new
+  `_deadline_for()` accessor lets `RegistryApprover._build_and_park` read back the exact
+  stored values — never a second clock read. `list_pending()` and the
+  `permission.requested` payload surface both as `created_at` / `expires_at`, `None`
+  when no timeout was supplied (an honest absence, not a fabricated default).
+  `HandlerApprover` is unchanged — it never parks anything in the registry.
+- **Avoid:** if a value governs behaviour, record it where the state lives — a policy
+  that exists only as a stack-local inside a blocking call cannot be reported, and the
+  gap will be filled with a fabrication. When two payloads must report the identical
+  clock read (an entry and its SSE event), compute the timestamp once and read it back;
+  never call `time.time()` twice for what is conceptually one moment.
+- **Locked by:** `tests/test_action_approval.py` —
+  `test_pending_entry_carries_the_deadline_that_is_actually_enforced`,
+  `test_entry_parked_without_a_timeout_reports_no_deadline`
+
+### BB-114 — The gateway's error envelope was absent from its own OpenAPI spec
+
+- **Symptom:** `openapi/hachi-openapi.json` had no `ErrorResponse`, so generated clients had no
+  typed error shape — while the gateway returned `{code, message, details}` from 7 exception
+  handlers and 21 in-route returns (28 emissions total). The frontend hand-mirrors the envelope
+  in `parseError` (`frontend/src/lib/data/client.ts:104-121`) instead of importing it.
+- **Root cause:** FastAPI only emits a model into `components.schemas` when a route DECLARES it
+  (`response_model=` or `responses=`). `grep -c "responses=" src/hachi/gateway/fastapi_app.py`
+  returned 0 before the fix — not one route or router declared any error response, and
+  `ErrorResponse` was only ever constructed inside function bodies and serialised into a bare
+  `JSONResponse`.
+- **Fix:** a shared `_ERROR_RESPONSES` mapping (400/401/403/404/409/410/429/500/503 — 422
+  deliberately excluded, FastAPI's `RequestValidationError` handler already owns it) passed as
+  `responses=` on each of the gateway's 19 `APIRouter`s (`system` gets a reduced mapping without
+  401, since its public routes cannot return an auth error). Purely additive — no runtime
+  behaviour changed (`raise HTTPException` stayed at 46 sites, `_error_response(` at 29).
+- **Avoid:** returning a `JSONResponse` built from a Pydantic model does NOT put that model in
+  the spec. If a shape is part of your contract, some route has to declare it. And when you lock
+  a contract with a test, don't stop at "the schema has the right key names" — trigger the real
+  response and validate the real body against the real model, so spec and runtime can't quietly
+  drift apart again.
+- **Known and NOT fixed (separate decision):** 46 `raise HTTPException` sites still return
+  Starlette's `{"detail": ...}`, a different shape from the envelope. Unifying them is a breaking
+  wire-format change affecting the frontend's `ApiError` decoding.
+- **Locked by:** `tests/test_gateway_openapi_contract.py` —
+  `test_openapi_declares_the_error_envelope`, which (beyond checking the schema/`$ref` shape)
+  triggers a real 401 via `TestClient` and validates the actual response body against the real
+  `ErrorResponse` model.
+
+### BB-115 — The generated OpenAPI types were CI-gated but imported by nothing, because almost nothing was typed
+
+- **Symptom:** `frontend/src/lib/data/schema.d.ts` (thousands of generated lines) had zero
+  importers, while the real frontend↔gateway contract lived in 60 hand-written
+  `interface Gateway*` blocks across 14 domain files. The `check:api` step regenerated and
+  diff-gated a file no code read, so it could never catch a frontend/gateway disagreement — the
+  exact regression class the repo had already suffered ("FE wired to nonexistent gateway
+  routes"). `og.ts`'s hand-written `GatewayOgGraph` had already drifted from the real payload:
+  it declared only `nodes`, while the backend always returns `{nodes, count}`.
+- **Root cause:** only 9 of ~100 gateway operations declared a `response_model`. The other 91,
+  including `GET /og/graph`, were annotated `-> Any` with no `response_model=`, so FastAPI
+  published an EMPTY schema (`"application/json": unknown` in the generated TypeScript) — there
+  was almost nothing a willing developer could have imported even if they'd tried.
+- **Fix:** piloted on the smallest domain. Added `OgNodeModel`/`OgGraphResponse`
+  (`src/hachi/gateway/fastapi_app.py`) and `response_model=OgGraphResponse` to `GET /og/graph`
+  (typed-operation count 9 → 10), regenerated, and rewrote
+  `frontend/src/lib/data/domains/og.ts` to derive its raw types from
+  `components["schemas"][...]` instead of hand-mirroring them. The adapter layer into
+  `types.ts` (`adaptOgNode`) is unchanged except for being exported so `og.test.ts` can call the
+  real function instead of a re-implemented copy.
+- **Avoid:** a route annotated `-> Any` with no `response_model=` publishes an EMPTY schema.
+  Before claiming an OpenAPI document is a contract, count how many of its operations actually
+  declare a response — and before adding a CI gate on a generated artifact, confirm something
+  imports it. Separately: `response_model=` is a runtime filter, not just documentation — it
+  fills in declared defaults for fields the underlying dict omits (here, a `count: int = 0`
+  default would have turned the honest no-handler fallback `{"nodes": []}` into
+  `{"nodes": [], "count": 0}` on the wire, breaking two pre-existing tests that pinned the old
+  shape). `response_model_exclude_unset=True` fixes this the right way: a field is only emitted
+  when the underlying dict actually set it, so the real payload (which always sets `count`)
+  keeps reporting it while the honest fallback keeps its old, honest shape — verified against
+  the installed FastAPI/pydantic source (`TypeAdapter.dump_python(..., exclude_unset=True)`),
+  not assumed.
+- **Locked by:** `tests/test_gateway_openapi_contract.py` —
+  `test_og_graph_route_declares_a_response_schema`;
+  `frontend/src/lib/data/domains/og.test.ts` — `adaptOgNode` tests (imports the real exported
+  function, not a re-implemented copy).
+
+### BB-116 — Four stacked retry layers turned one failed LLM call into up to 13-21 provider calls and up to ~9-12s of blocked thread
+
+- **Symptom:** a transient provider failure took several seconds to surface as an error, during
+  which a gateway worker thread was parked, and the provider received far more calls than a
+  single retry policy should allow for a single turn. Whether an Anthropic 529 failed over to
+  the configured fallback model or just burned loop retries against the same overloaded primary
+  depended on which of two layers saw it first.
+- **Root cause:** four independent retriers with no knowledge of each other — (1)
+  `core/loop.py`'s `_stream_generate` (deleted by this fix), 3 attempts, backoff 1.0/2.0s; (2)
+  `core/resilience.py`'s `resilient_call`, 3 attempts, backoff 0.5/1.0s (default); (3) the
+  fallback chain (`ResilientClient._call_with_chain`) wrapping *each* element in (2); and (4) the
+  `anthropic` SDK's own `DEFAULT_MAX_RETRIES = 2` (verified against the installed **0.105.2**
+  package, `_constants.py:10` / `_client.py:156`), never overridden. Worse, (1) and (2) used
+  unrelated definitions of "transient": `loop._RETRYABLE_STATUS` = `{408,409,429,500,502,503,
+  504,529}` with message-substring fallback, vs `resilience._TRANSIENT_STATUS_CODES` =
+  `{429,500,502,503,504}` with exception-class-name matching — so 408/409/529 retried at one
+  layer and were terminal at the other. Streaming was the worst case:
+  `ResilientClient.generate_stream` called the primary directly with no retry of its own, then
+  degraded to `generate()` over the chain with `include_primary=False` on ANY failure.
+  **Correction to the architecture review's own arithmetic (verify-by-measurement, not
+  recomputation):** the review's naive "3 loop attempts × (1 + 3 + 3 chain attempts) = 21 calls,
+  ~16s" (and this pack's corrected "~12s") assume every retry attempt actually executes. It
+  doesn't hold once the (unrelated, pre-existing, untouched-by-this-task) circuit breaker enters
+  the picture: `HealthRecorder` objects are reused across the loop's repeated top-level retries
+  (not reset between them), so a fallback's `consecutive_failures` carries over and the breaker
+  (`breaker_threshold=5` default) can open partway through, short-circuiting later attempts
+  without calling the client at all. **Measured** (not recomputed) against
+  `tests/test_resilience.py::test_streaming_failure_does_not_amplify_provider_calls`'s scenario:
+  pre-fix **13 provider calls** (not 21) at `backoff_base_s=0.0`, and **9.01s** of real sleep (not
+  12s or 16s) at the framework's real default backoff constants. Post-fix: **9 calls, 4.50s**
+  (matches the target arithmetic exactly — the breaker never trips at that lower volume).
+- **Fix:** resilience is the sole retry owner. One `is_transient()` (`core/resilience.py`, the
+  union of both status sets `{408,409,429,500,502,503,504,529}` + class-name matching + the
+  loop's old message-hint fallback for exceptions carrying neither) used by everything;
+  `core/loop.py`'s `_is_retryable_llm_error`/`_RETRYABLE_STATUS`/`_RETRYABLE_HINTS`/
+  `_MAX_LLM_RETRIES`/`_LLM_RETRY_BASE_DELAY` deleted; `_stream_generate` is now a single pass
+  (drive the generator, propagate the exception — no retry). `ResilientClient.generate_stream`
+  gained its own bounded pre-output retry (same `RetryPolicy`, same backoff formula as
+  `resilient_call`), gated on `chunks_yielded == 0` — the exact H7 "never re-invoke a stream that
+  already emitted output" rule, moved rather than lost. The `LLM_RETRY` runtime event is
+  re-homed onto a new `ResilientClient.on_retry` sink (set by
+  `ExecutionLoop._wire_retry_events` whenever `_turn_client` is a `ResilientClient`) fired from
+  both `resilient_call`'s existing `on_failover` hook and the new streaming retry, so the
+  UI-visible "retrying…" signal survives even though loop.py no longer retries anything itself.
+  A **bare (non-resilient) `_turn_client` now gets zero retries** — this is intentional: wrap it
+  in a `ResilientClient` to opt in (most production sessions do, via `ModelRouter`; a few direct
+  paths — e.g. `core/sub_agent.py`'s delegation client — do not, and lose the old loop-level
+  retry as a result; noted, not fixed, out of this task's scope).
+  **SDK `max_retries` decision:** left at the SDK's default (`2`, i.e. up to 3 HTTP requests per
+  resilience-level call) rather than forced to `0`. Overriding it lives in `core/llm.py`
+  (`anthropic.Anthropic(...)` construction), outside this task's file scope, and — more
+  importantly — several call sites construct `AnthropicClient`/`OpenAICompatibleClient` directly
+  without ever wrapping them in a `ResilientClient` (`core/sub_agent.py`, `tools/memory_tools.py`);
+  for those, the SDK's own retry is the *only* resilience they have, and forcing it off everywhere
+  would have stripped it from paths this task cannot see, let alone fix. Documented in
+  `core/resilience.py`'s module docstring.
+  **BB-95 residual gap also closed:** `ModelRouter._build_client`'s primary path
+  (`provider.build_llm_client(desc.id)`) now forwards `timeout_s=self._resilience.timeout_s`
+  too (previously only the `create_llm_client` fallback did), and
+  `AnthropicProvider`/`OpenAICompatProvider.build_llm_client` now pop+forward it. The separate,
+  still-open half of BB-95 (`_build_client` also hardcodes `max_tokens=4096` regardless of the
+  caller's configured budget) is **not** touched here — different bug (a token-budget guardrail,
+  not a retry/timeout concern), and a different task tracks `max_tokens` forwarding (T-27,
+  already landed, fixed `ResilientClient` forwarding `inner.max_tokens` to the loop's pre-flight
+  ceiling — a related but distinct gap from `_build_client`'s hardcoded construction default).
+- **Avoid:** exactly one component may own retry for a given operation. When adding a resilience
+  wrapper around existing code, DELETE the retry it replaces in the same commit — and check the
+  vendor SDK, which usually retries too. Separately: **a worked-example arithmetic in a design
+  doc or review is a hypothesis, not a fact** — a pre-existing, unrelated mechanism (here, a
+  circuit breaker whose state persists across the very retry attempts being counted) can make
+  naive multiplicative call-count math wrong in either direction; measure the real number in the
+  regression test, and if the theoretical and measured numbers disagree, trust the measurement
+  and say so.
+- **Locked by:** `tests/test_resilience.py` —
+  `test_streaming_failure_does_not_amplify_provider_calls`,
+  `test_one_transient_taxonomy_for_loop_and_resilience`;
+  `tests/test_llm_retry_event.py` (new) —
+  `test_llm_retry_event_fires_from_resilient_client_streaming_retry`,
+  `test_llm_retry_event_fires_from_fallback_chain_retry`,
+  `test_loop_module_has_no_second_retry_predicate`;
+  `tests/test_loop_resilience.py::test_transient_llm_error_is_retried` (amended — see its
+  docstring for why the amendment is a correction, not a weakening);
+  `tests/test_routing_router.py::TestResilienceTimeoutForwarding::
+  test_primary_provider_path_forwards_configured_timeout` (the BB-95 residual-gap half).
+
+### BB-123 — Demo fixtures shipped in every production web bundle (untree-shakable by construction)
+
+- **Symptom:** `npm run build` with `VITE_HACHI_USE_MOCKS` unset still emitted the entire
+  394-line fixture corpus (`frontend/src/lib/data/fixtures.ts`) into the production
+  bundle's main entry chunk — confirmed by building and running the new
+  `scripts/check_bundle.py`, which reported 6 fixture-only markers (e.g. `"Your name is
+  Sam. You go by Sam in messages"`, `"can't reach 127.0.0.1:5432"`) inside
+  `dist/assets/index-*.js` before the fix; a raw grep also confirmed
+  `priya@studio.co`/`"Sending email to Priya"` were present.
+- **Root cause:** `frontend/src/lib/store/store.ts` statically imported `../data/fixtures`
+  and referenced every binding unconditionally inside `domainDefaults()` (~30
+  `USE_MOCKS ? fixture : liveDefault` ternaries). `USE_MOCKS` is a *computed* export
+  (`String(import.meta.env.VITE_HACHI_USE_MOCKS).toLowerCase() === "true"`, `client.ts:30`),
+  not a literal, so Rollup could never constant-fold the ternaries or prove the
+  `USE_MOCKS ?` arms dead, and retained the whole module. Nothing in the gate inspected
+  build output.
+  Switching to a dynamic `import("../data/fixtures")` (still gated at runtime on the same
+  `USE_MOCKS`) is **not sufficient on its own** — verified by building both ways. The
+  culprit is specifically `String(x).toLowerCase()`: no minifier evaluates arbitrary
+  `String.prototype` calls, even once Vite has replaced `import.meta.env.X` with a literal
+  object, so Rollup still can't prove the `await import(...)` unreachable and still emits
+  `fixtures.ts` as its own chunk (`fixtures-<hash>.js`) in *every* build — merely
+  unreferenced from the entry HTML, not absent from `dist/assets/`. A guard that greps the
+  whole `dist/assets/` directory (the only way to check "not in the shipped output" — there
+  is no manifest of what a browser actually fetches to check against instead) still fails
+  on that orphan chunk.
+- **Fix:** Two layers, both required.
+  1. `domainDefaults()` (`frontend/src/lib/store/store.ts`) now returns live defaults
+     (`[]`/`0`/`null`) unconditionally; mock seeding moved to a new `seedMockFixtures()`,
+     called once from `routes/__root.tsx` behind `dataMode === "mock"`.
+  2. A build-time-foldable flag, `__HACHI_USE_MOCKS__`, injected via `vite.config.ts`'s
+     `define` (computed once, in Node, at config-load time — sidestepping the
+     `String.prototype` folding problem entirely) and declared in `vite-env.d.ts`.
+     `seedMockFixtures()` checks it *first*, as an unconditional early return, so when
+     mocks are off Rollup can prove everything after it (including the dynamic import)
+     unreachable and drops `fixtures.ts` from the build **entirely** — no orphan chunk.
+     The runtime `USE_MOCKS` check stays as a second, defensive guard. Verified
+     empirically: building with `VITE_HACHI_USE_MOCKS` unset produces zero
+     `fixtures-*.js` chunk and zero fixture-only marker hits anywhere under
+     `dist/assets/`; building with it set to `true` reproduces the exact same chunk
+     content, proving the seed path still works.
+  Added `scripts/check_bundle.py` as a **blocking** preflight step
+  (`"frontend bundle purity (no demo fixtures)"`, registered immediately after
+  `"frontend build"`) that greps `frontend/dist/assets/*.js` for a small, explicit marker
+  list and fails the gate on any hit; raises `FileNotFoundError` (never a silent pass) if
+  `dist/assets` is missing or has no `.js` files.
+- **Avoid:** (1) A `flag ? demoData : realData` ternary keeps `demoData` alive in the
+  bundle unless `flag` folds to a build-time literal — assert on the *built artifact*,
+  never trust the bundler. (2) A dynamic `import()` alone does not guarantee absence from
+  `dist/` — it only guarantees the module becomes its own chunk; the chunk is still
+  *emitted* unless the bundler can prove the import call itself unreachable, which needs a
+  genuinely foldable condition (a `vite.config.ts` `define` literal, not a runtime string
+  comparison). (3) When picking literal markers for a bundle-purity guard, verify each one
+  is not *also* hardcoded somewhere the fix is deliberately not touching (here: 13
+  `dataMode === "live"` mock forks in `store.ts` still hardcode
+  `priya@studio.co`/`"Sending email to Priya"`/`"reader-1"`/`gmail.send(to=` inline — out
+  of scope per T-22 §9, Wave-2 CF-16 work) — a marker sourced from untouched code makes a
+  blocking guard permanently red.
+- **Locked by:** `scripts/check_bundle.py` (preflight step
+  `"frontend bundle purity (no demo fixtures)"`, `scripts/preflight.py`), pinned by
+  `tests/test_bundle_guard.py` (`test_checker_flags_a_marker`,
+  `test_checker_refuses_to_pass_on_a_missing_dist`,
+  `test_checker_refuses_to_pass_on_an_empty_dist`, +3 more); and
+  `frontend/src/lib/store/store.test.ts` —
+  `seedMockFixtures — no-op guard when mocks are disabled`.
+
+### BB-124 — Any settings write baked transient env overrides (incl. HACHI_PERMISSION_TIER) permanently into settings.toml
+
+- **Symptom:** a permission tier (or model, or token cap) set via an environment variable
+  or a project `.env` for one run became permanent — it survived unsetting the variable —
+  after any unrelated settings change anywhere in the CLI, gateway, or even an LLM
+  `set_agent_config` tool call. `settings.toml` also grew a wall of default sections
+  (`[meta]`, `[memory]`, `[events]`, `[jobs]`, `[retention]`, …) the user never wrote.
+  Reproduced directly: seed a file with only `[agent] name = "Hachi"`, set
+  `HACHI_PERMISSION_TIER=unrestricted`, call `provider_admin.add_or_update_provider()` (an
+  unrelated write) — `settings.toml` gained `[permissions]\ntier = "unrestricted"` plus
+  every other section's defaults.
+- **Root cause:** all 15 writers called `load_effective_config()` (defaults + file + env +
+  CLI, `core/config_loader.py:267-312`) and handed the whole merged `ResolvedConfig` to
+  `write_global_config()`, which `model_dump(exclude_none=True)`s it and replaces every
+  top-level section wholesale with `doc[key] = value`. Nothing on that path tracked which
+  layer a value came from. `HACHI_PERMISSION_TIER` enters via `_env_overrides`
+  (`:248-249`), and `env_get` also reads a project `.env`, so no shell export was even
+  required.
+- **Fix:** writers now read the FILE layer only via a new public
+  `read_global_config_file()` (a thin wrapper over the pre-existing `_read_toml`), mutate
+  that plain dict (or, where a sub-value needs schema validation/defaulting — e.g.
+  `ProviderSettings`/`RoutingSettings` construction in `provider_admin.py`, or per-field
+  type coercion in `tools/config_tools.py`'s `_apply_config_patch` — a freshly-constructed
+  model built from the caller's own input, never a re-validation of the merged/file dict),
+  and write the dict back via a new `write_global_config_dict()`. The dict is never
+  re-validated through `ResolvedConfig.model_validate()` for the WRITE payload — doing so
+  re-inflates every default field and reproduces the bug. 12 of the 15 sites were
+  converted: `channels/telegram_setup.py` (`save_allowlist`), `cli/main.py` (6 sites:
+  `update_provider`, `update_permissions`, `update_memory`, `set_capability_enabled`,
+  `update_limits`, `config-set`), `gateway/provider_admin.py` (all 3:
+  `add_or_update_provider`, `remove_provider`, `set_routing`), `gateway/voice_endpoints.py`
+  (`set_voice_config`), and `tools/config_tools.py`'s **injected** writer
+  (`_make_set_agent_config`, mounted by `register_config_tools` — the LLM-facing
+  `set_agent_config` tool). Two sites deliberately keep merged semantics — they are
+  first-run bootstraps that *create* the file from defaults + setup answers, not unrelated
+  writes: `gateway/workspace.py:142` (`ensure_workspace`, fires only when
+  `settings.toml` doesn't exist yet) and `core/onboarding.py:533`
+  (`OnboardingService.apply_setup`). Each carries a comment explaining why. `_CONFIG_LOCK`
+  moved from `gateway/provider_admin.py` into `core/config_loader.py` and is now taken
+  **inside** `write_global_config()`/`write_global_config_dict()`; `provider_admin.py`'s
+  own three `with _CONFIG_LOCK:` blocks were removed (a plain `threading.Lock` is not
+  reentrant — leaving both would self-deadlock the first provider write).
+  **One site is a known, tracked gap, not an oversight:** `gateway/fastapi_app.py:2535`
+  (the Tavily-connector-configured-via-UI persist of `[search] provider = "tavily"`) is
+  still on the old merged `write_global_config()` path — it was out of scope for this pass
+  (file owned by a concurrent agent in the same wave) and should be converted with the same
+  `read_global_config_file()`/`write_global_config_dict()` pattern as a follow-up.
+- **Avoid:** never persist the output of a layered/merged config resolver. Read the layer
+  you own, mutate it, write it back. A writer that reads `load_effective_config()` is a
+  bug — including one wired into an agent-facing tool, which is easy to miss because it
+  doesn't look like a "settings page."
+- **Locked by:** `tests/test_config_write_file_layer.py` —
+  `test_env_override_is_not_persisted_by_unrelated_write` (drives
+  `provider_admin.add_or_update_provider`) and
+  `test_env_override_is_not_persisted_by_set_agent_config_tool` (drives the LLM-facing
+  `set_agent_config` tool via `register_config_tools` + a real `ToolRegistry`). Both set
+  `HACHI_PERMISSION_TIER` and assert on the bytes of `settings.toml` on disk, not on a
+  returned object.
+
+### BB-125 — `ProcessSharedServices.session_store` was read in three places and declared in none (BB-42 recurrence)
+
+- **Symptom:** every "prefer the process-shared SessionStore" branch was dead. The
+  gateway's durable ingress-idempotency path (`POST /sessions/{id}/messages`, i.e.
+  the hot path — once per message) opened a brand-new `SessionStore()` — full
+  schema init/migrations — and never shut it down, holding a `sessions.db-wal`/
+  `-shm` handle open for the life of the process. Windows gateways accumulated
+  handles until restart. Two other readers (`cleanup_empty_sessions` and
+  `core/cost.py`'s daily-spend ledger) had the identical dead branch.
+- **Root cause:** `ProcessSharedServices` had no `session_store` field and nothing
+  ever assigned one (`grep -rn "\.session_store\s*=" src/` → no hits before this
+  fix), yet three sites read it: `gateway/fastapi_app.py` `_resolve_session_store`
+  via `getattr(shared, "session_store", None)`, `gateway/fastapi_app.py`
+  `cleanup_empty_sessions` via a `hasattr(_shared, "session_store")` guard, and
+  `core/cost.py` `_get_shared_session_store` via another defaulted `getattr`. All
+  three therefore always took the fallback. `boot_agent` already created the store
+  and passed it to `BootDeps`, `register_session_tools`, `set_session_store`, and
+  the idle sweep — but never attached it to `_shared`.
+- **This is a BB-42 recurrence, one level down.** BB-42 was "imported a
+  `_get_session_store` symbol that has never existed"; its own fix reintroduced
+  the identical failure as "getattr an attribute that has never existed" — and the
+  docstring describing BB-42 sat four lines above the new instance in
+  `core/cost.py`, describing the bug class while the code below it committed it
+  again.
+- **A second, more severe failure class was found (not in the original CF-1
+  finding) while implementing the literal "attach it and read it directly" fix:**
+  naively assigning `_shared.session_store = session_store` at boot with no other
+  change reintroduces, for the session store, exactly what BB-45 already fixed for
+  the `Scheduler` and what the existing `vault.is_shared` flag already guards
+  against for `MemoryVault` — `AgentSession.shutdown()` unconditionally called
+  `self._session_store.shutdown()`. `cli/main.py`'s `_InProcessGatewayRuntime`
+  keeps up to `HACHI_GATEWAY_MAX_SESSIONS` (100) concurrent `AgentSession` objects
+  alive in one process and calls `.shutdown()` on perfectly ordinary events —
+  closing a browser tab (`close_connection`), replacing a session on reboot
+  (`_register_agent`), a provider-config-driven agent rebuild (`_reload_agents`) —
+  not just full process exit. Once the store is genuinely shared, an unguarded
+  close in any ONE of those silently poisons the sqlite3/WAL connection every
+  sibling session, the ingress-idempotency hot path, and the daily-spend ledger
+  depend on, for the rest of the process lifetime (all three readers degrade to
+  "no shared store" rather than raising — so nothing would have surfaced this in
+  production until spend/idempotency data quietly went missing).
+- **Fix:** declared `session_store: Any = field(default=None)` on the dataclass;
+  attached the store in `boot_agent` right after it is constructed; converted all
+  three reads to direct attribute access (a future typo is now an
+  `AttributeError`, not a silent `None`); removed `_resolve_session_store`'s
+  fallback entirely (its three callers already treat `None` as "durable
+  idempotency/interactions unavailable for this request" — confirmed by reading
+  every call site before choosing this shape) and turned its blanket
+  `except Exception: return None` into a `logger.warning`; kept
+  `cleanup_empty_sessions`'s fallback (a maintenance route, not the hot path) but
+  now close it in a `finally`, mirroring the shape `core/cost.py` already had
+  right; and added an is-still-shared identity guard in `AgentSession.shutdown()`
+  — mirroring the `vault.is_shared` guard a few lines above it in the same
+  method — so a session only closes its own store once a newer session has
+  already taken over the shared slot.
+- **Avoid:** `getattr(x, "field", None)` / `hasattr(x, "field")` against one of OUR
+  OWN types is not defensive — it converts "this attribute was never implemented"
+  into a silently-taken fallback. Read declared attributes directly and let
+  `AttributeError` be loud. When you fix a bug of this class, grep for the
+  *shape* (getattr-default, hasattr-guard, wrong-symbol-import), not just the
+  symbol — BB-42 came back through different syntax with the same effect. AND:
+  before publishing a per-instance-constructed resource onto a process-wide
+  singleton, audit every place that resource's *owning* object already closes it
+  on its own teardown — an unguarded close on a newly-shared resource is a worse
+  bug than the leak you just fixed (BB-45 hit this for the `Scheduler`; `vault`
+  carries a dedicated `is_shared` flag for exactly this reason).
+- **A note on regression-test design for this bug shape:** `ProcessSharedServices`
+  is a plain (non-frozen, non-slotted) dataclass, so `shared.session_store = fake`
+  succeeds as an ordinary instance attribute *whether or not the field is
+  declared* — a test shaped "manually attach a fake store, assert the reader
+  returns it" cannot fail against the pre-fix code, because the readers'
+  `getattr(..., None)` already finds a manually-set attribute today. The
+  properties that actually discriminate fixed from unfixed code are (1) class-level
+  `__dataclass_fields__` membership, and (2) counting real construction/shutdown
+  calls when nothing has been attached (the realistic default-boot state).
+- **Locked by:** `tests/test_shared_session_store.py` —
+  `test_shared_services_declares_session_store`,
+  `test_resolve_session_store_does_not_leak_a_new_store_per_call`,
+  `test_cleanup_empty_sessions_closes_its_fallback_store`,
+  `test_agent_session_shutdown_does_not_close_the_still_shared_store` (regression
+  proofs — verified failing before the fix); plus 3 correctness-lock tests in the
+  same file for the "prefer an attached store" contract.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
