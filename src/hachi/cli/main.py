@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 import threading
+import uuid
 from dataclasses import asdict
 from datetime import date as _date
 from pathlib import Path
@@ -36,7 +37,11 @@ from hachi.cli.commands.pack import ogpack_app
 from hachi.cli.commands.schedule import schedule_app
 from hachi.cli.commands.session import session_app
 from hachi.cli.commands.skill import skill_app
-from hachi.core.config_loader import load_effective_config, write_global_config
+from hachi.core.config_loader import (
+    load_effective_config,
+    read_global_config_file,
+    write_global_config_dict,
+)
 from hachi.core.credential_vault import CredentialVault
 from hachi.core.onboarding import (
     OnboardingService,
@@ -289,6 +294,29 @@ class _InProcessGatewayRuntime:
             raise GatewayProtocolError("Unknown session_id")
         return agent
 
+    def _register_agent(self, session_id: str, agent: AgentSession) -> None:
+        """Insert *agent* into the session map under *session_id*.
+
+        Shared bookkeeping for :meth:`register_connection` and
+        :meth:`boot_registered_session` (T-20) so the two registration paths
+        cannot diverge: every entry point that boots an agent must land it in
+        the ONE map every read model (``recent_sessions``,
+        ``permission_audit``, ``subagent_reports``, ...) queries, or the
+        session is invisible rather than merely unmanaged (BB-119).
+        """
+        with self._agents_lock:
+            replaced_agent = self._agents.get(session_id)
+            self._agents[session_id] = agent
+            # Ensure a per-session chat lock exists (idempotent for re-registrations).
+            if session_id not in self._chat_locks:
+                self._chat_locks[session_id] = threading.Lock()
+
+        if replaced_agent is not None:
+            try:
+                replaced_agent.shutdown()
+            except Exception:
+                pass
+
     def register_connection(
         self,
         session_id: str,
@@ -311,19 +339,40 @@ class _InProcessGatewayRuntime:
                     self._pending_resume_session_id = None
                     resume_session_id = pending
         agent = self._boot_session_agent(session_id, resume_session_id=resume_session_id)
-        replaced_agent: AgentSession | None = None
-        with self._agents_lock:
-            replaced_agent = self._agents.get(session_id)
-            self._agents[session_id] = agent
-            # Ensure a per-session chat lock exists (idempotent for re-registrations).
-            if session_id not in self._chat_locks:
-                self._chat_locks[session_id] = threading.Lock()
+        self._register_agent(session_id, agent)
 
-        if replaced_agent is not None:
-            try:
-                replaced_agent.shutdown()
-            except Exception:
-                pass
+    def boot_registered_session(self, *, client_id: str, surface: str) -> AgentSession:
+        """Boot an agent registered in the gateway's session map (channels, schedules).
+
+        T-20 interim path (documented, pending the CF-2 runtime extraction —
+        see T-41): channel and schedule entry points call this instead of
+        ``boot_agent()`` directly, so their sessions are registered the same
+        way a web session is — reachable by every read model that iterates
+        ``_agents`` (``recent_sessions``, ``permission_audit``,
+        ``subagent_reports``, ``mcp_inventory``, ...) — and, because this
+        reuses :meth:`_boot_session_agent` (which already passes
+        ``approval_surface="gateway"``), gated with the same
+        ``RegistryApprover`` as any other governed session (BB-119; see
+        BB-90 / T-01 for the approver-selection fix this builds on).
+
+        Args:
+            client_id: Identifies the calling client (e.g. ``"telegram"``,
+                ``"whatsapp"``, ``"scheduler"``). Folded into the generated
+                session id for traceability; no ``ConnectRequest`` /
+                control-plane session record is created — see
+                ``docs/audit/2026-07-19/tasks/T-20-govern-channel-schedule-sessions.md``
+                §5 for the scoping decision.
+            surface: The non-web entry surface booting this session (e.g.
+                ``"channel"``, ``"schedule"``). Folded into the generated
+                session id.
+
+        Returns:
+            A booted, registered :class:`AgentSession`.
+        """
+        session_id = f"{surface}:{client_id}:{uuid.uuid4().hex[:12]}"
+        agent = self._boot_session_agent(session_id)
+        self._register_agent(session_id, agent)
+        return agent
 
     def close_connection(self, session_id: str) -> None:
         with self._agents_lock:
@@ -648,9 +697,13 @@ class _InProcessGatewayRuntime:
         if not isinstance(provider, dict):
             raise GatewayProtocolError("provider payload must be an object")
 
-        config = load_effective_config()
-        current_provider_kind = str(config.provider.kind).strip()
-        current_provider_model = str(config.provider.model).strip()
+        # BB-124: read the FILE layer only — load_effective_config() merges in
+        # env/CLI/defaults, and persisting THAT view would bake a transient
+        # override (e.g. HACHI_PERMISSION_TIER) permanently into settings.toml.
+        doc = read_global_config_file()
+        provider_doc: dict = dict(doc.get("provider") or {})
+        current_provider_kind = str(provider_doc.get("kind") or "anthropic").strip()
+        current_provider_model = str(provider_doc.get("model") or "claude-haiku-4-5").strip()
         kind = provider.get("kind")
         model = provider.get("model")
         base_url = provider.get("base_url")
@@ -669,7 +722,7 @@ class _InProcessGatewayRuntime:
                 raise GatewayProtocolError(
                     f"provider.kind must be one of: {', '.join(sorted(_valid_kinds))}"
                 )
-            config.provider.kind = kind_text  # type: ignore[assignment]
+            provider_doc["kind"] = kind_text
 
         if model is not None:
             model_text = str(model).strip()
@@ -677,24 +730,27 @@ class _InProcessGatewayRuntime:
                 raise GatewayProtocolError("provider.model cannot be empty")
             from hachi.core.onboarding import resolve_provider_model
 
-            config.provider.model = resolve_provider_model(
-                str(config.provider.kind),
+            provider_doc["model"] = resolve_provider_model(
+                str(provider_doc.get("kind") or "anthropic"),
                 model_text,
                 previous_kind=current_provider_kind,
                 previous_model=current_provider_model,
             )
-        elif kind is not None and str(config.provider.kind).strip() != current_provider_kind:
+        elif (
+            kind is not None
+            and str(provider_doc.get("kind") or "").strip() != current_provider_kind
+        ):
             from hachi.core.onboarding import resolve_provider_model
 
-            config.provider.model = resolve_provider_model(
-                str(config.provider.kind),
+            provider_doc["model"] = resolve_provider_model(
+                str(provider_doc.get("kind") or "anthropic"),
                 None,
                 previous_kind=current_provider_kind,
                 previous_model=current_provider_model,
             )
 
         if base_url is not None:
-            config.provider.base_url = str(base_url).strip() or None
+            provider_doc["base_url"] = str(base_url).strip() or None
 
         # API key handling — persist raw secrets to the secret store + process
         # env (never the config file); record only the env-var NAME. A raw key may
@@ -706,26 +762,33 @@ class _InProcessGatewayRuntime:
             api_key_ref = None
 
         if api_key_env is not None:
-            config.provider.api_key_env = str(api_key_env).strip() or None
+            provider_doc["api_key_env"] = str(api_key_env).strip() or None
 
         if raw_api_key:
             env_name = persist_provider_api_key(
-                str(config.provider.kind),
+                str(provider_doc.get("kind") or "anthropic"),
                 str(raw_api_key),
-                api_key_env=config.provider.api_key_env,
+                api_key_env=provider_doc.get("api_key_env"),
                 secret_store=create_default_secret_store(),
             )
             if env_name:
-                config.provider.api_key_ref = env_name
-                config.provider.api_key_env = env_name
+                provider_doc["api_key_ref"] = env_name
+                provider_doc["api_key_env"] = env_name
         elif api_key_ref is not None:
-            config.provider.api_key_ref = str(api_key_ref).strip() or None
+            provider_doc["api_key_ref"] = str(api_key_ref).strip() or None
 
-        write_global_config(config)
+        doc["provider"] = provider_doc
+        write_global_config_dict(doc)
         # Provider/credential changes are baked into the LLM client at boot, so
         # reboot any live session to apply them without a manual restart.
         self._reload_agents()
-        return config.model_dump(mode="python", exclude_none=True)
+        # The response echoes "the effective config after this change" — same
+        # API contract as before this fix. Building it from `doc` (validated,
+        # never re-persisted) rather than a merged env-aware read keeps this
+        # purely a display concern; only the FILE write is file-layer-only.
+        from hachi.core.settings import ResolvedConfig
+
+        return ResolvedConfig.model_validate(doc).model_dump(mode="python", exclude_none=True)
 
     def validate_provider(self, payload: dict) -> dict:
         provider = payload.get("provider", payload)
@@ -770,14 +833,20 @@ class _InProcessGatewayRuntime:
         if ask_before is not None and not isinstance(ask_before, dict):
             raise GatewayProtocolError("permissions.ask_before must be an object")
 
-        config = load_effective_config()
+        # BB-124: read the FILE layer only — see update_provider() above.
+        doc = read_global_config_file()
+        permissions_doc: dict = dict(doc.get("permissions") or {})
         if tier:
-            config.permissions.tier = tier  # type: ignore[assignment]
+            permissions_doc["tier"] = tier
         if isinstance(ask_before, dict):
             # Only the recognised "Ask before…" rule keys may be set; each value
             # must be a boolean. This persists the Settings panel toggles so they
-            # survive a reload (the rule labels live in the frontend).
-            valid_keys = set(config.permissions.ask_before.model_dump().keys())
+            # survive a reload (the rule labels live in the frontend). Validate
+            # against the SCHEMA's own field names — never a merged instance.
+            from hachi.core.settings import AskBeforeSettings
+
+            valid_keys = set(AskBeforeSettings.model_fields.keys())
+            ask_before_doc: dict = dict(permissions_doc.get("ask_before") or {})
             for key, value in ask_before.items():
                 if key not in valid_keys:
                     raise GatewayProtocolError(
@@ -785,11 +854,13 @@ class _InProcessGatewayRuntime:
                     )
                 if not isinstance(value, bool):
                     raise GatewayProtocolError(f"permissions.ask_before.{key} must be a boolean")
-                setattr(config.permissions.ask_before, key, value)
+                ask_before_doc[key] = value
+            permissions_doc["ask_before"] = ask_before_doc
 
-        write_global_config(config)
+        doc["permissions"] = permissions_doc
+        write_global_config_dict(doc)
 
-        # Bug 7: write_global_config persists the tier to settings.toml, but
+        # Bug 7: write_global_config_dict persists the tier to settings.toml, but
         # PermissionGate reads device-permissions.og (not settings.toml).  A tier
         # change must therefore regenerate the .og so that (a) fresh boots pick it up
         # and (b) boot_agent's reconcile step can detect the drift.
@@ -818,27 +889,35 @@ class _InProcessGatewayRuntime:
                     "update_permissions: failed to regenerate device-permissions.og", exc_info=True
                 )
 
-        return config.model_dump(mode="python", exclude_none=True)
+        from hachi.core.settings import ResolvedConfig
+
+        return ResolvedConfig.model_validate(doc).model_dump(mode="python", exclude_none=True)
 
     def update_memory(self, payload: dict) -> dict:
         memory = payload.get("memory", payload)
         if not isinstance(memory, dict):
             raise GatewayProtocolError("memory payload must be an object")
 
-        config = load_effective_config()
+        # BB-124: read the FILE layer only — see update_provider() above.
+        doc = read_global_config_file()
+        memory_doc: dict = dict(doc.get("memory") or {})
         if "enable_session_history" in memory:
             value = memory["enable_session_history"]
             if not isinstance(value, bool):
                 raise GatewayProtocolError("memory.enable_session_history must be a boolean")
-            config.memory.enable_session_history = value
+            memory_doc["enable_session_history"] = value
         if "enable_semantic_memory" in memory:
             value = memory["enable_semantic_memory"]
             if not isinstance(value, bool):
                 raise GatewayProtocolError("memory.enable_semantic_memory must be a boolean")
-            config.memory.enable_semantic_memory = value
+            memory_doc["enable_semantic_memory"] = value
 
-        write_global_config(config)
-        return config.model_dump(mode="python", exclude_none=True)
+        doc["memory"] = memory_doc
+        write_global_config_dict(doc)
+
+        from hachi.core.settings import ResolvedConfig
+
+        return ResolvedConfig.model_validate(doc).model_dump(mode="python", exclude_none=True)
 
     def list_models(self) -> list[dict]:
         """Return provider-specific model lists using live discovery when possible.
@@ -1620,15 +1699,28 @@ class _InProcessGatewayRuntime:
 
         Mirrors update_permissions: load config, mutate, write, return result.
         """
-        config = load_effective_config()
-        if cap_id not in config.capabilities:
+        # BB-124: read the FILE layer only — see update_provider() above. The
+        # set of VALID capability ids still comes from the schema defaults
+        # (capabilities are never env-overridden) unioned with whatever the
+        # file already has — matching what load_effective_config() always
+        # exposed (built-ins are seeded by default_config(), not the file).
+        from hachi.core.settings import default_config
+
+        doc = read_global_config_file()
+        capabilities_doc: dict = dict(doc.get("capabilities") or {})
+        known_ids = set(default_config().capabilities.keys()) | set(capabilities_doc.keys())
+        if cap_id not in known_ids:
             raise GatewayProtocolError(f"unknown capability '{cap_id}'")
-        config.capabilities[cap_id].enabled = bool(enabled)
-        write_global_config(config)
+
+        entry: dict = dict(capabilities_doc.get(cap_id) or {})
+        entry["enabled"] = bool(enabled)
+        capabilities_doc[cap_id] = entry
+        doc["capabilities"] = capabilities_doc
+        write_global_config_dict(doc)
         return {
             "id": cap_id,
             "enabled": bool(enabled),
-            "configured": bool(config.capabilities[cap_id].configured),
+            "configured": bool(entry.get("configured", False)),
         }
 
     # ------ Memory CRUD ------
@@ -1695,11 +1787,13 @@ class _InProcessGatewayRuntime:
         per_task = payload.get("per_task_cap_usd")
         daily = payload.get("daily_cap_usd")
 
-        config = load_effective_config()
+        # BB-124: read the FILE layer only — see update_provider() above.
+        doc = read_global_config_file()
+        limits_doc: dict = dict(doc.get("limits") or {})
         if per_task is not None:
             try:
                 val = float(per_task)
-                config.limits.max_turn_cost_usd = val if val > 0 else None
+                limits_doc["max_turn_cost_usd"] = val if val > 0 else None
             except (TypeError, ValueError):
                 raise GatewayProtocolError("per_task_cap_usd must be a number") from None
         if daily is not None:
@@ -1707,12 +1801,16 @@ class _InProcessGatewayRuntime:
                 val = float(daily)
                 # max_daily_cost_usd is the rolling calendar-day cap; distinct from
                 # max_session_cost_usd which caps a single conversation session.
-                config.limits.max_daily_cost_usd = val if val > 0 else None
+                limits_doc["max_daily_cost_usd"] = val if val > 0 else None
             except (TypeError, ValueError):
                 raise GatewayProtocolError("daily_cap_usd must be a number") from None
 
-        write_global_config(config)
-        return config.model_dump(mode="python", exclude_none=True)
+        doc["limits"] = limits_doc
+        write_global_config_dict(doc)
+
+        from hachi.core.settings import ResolvedConfig
+
+        return ResolvedConfig.model_validate(doc).model_dump(mode="python", exclude_none=True)
 
     def add_allowed_folder(self, folder_path: str) -> dict:
         """Append a folder path to device-permissions.og allowed_paths.
@@ -4361,29 +4459,32 @@ def config_set(
       limits.max_session_cost_usd  (alias: session_cost_cap_usd).
     Changes take effect on the next ``hachi run``.
     """
-    cfg = load_effective_config()
+    # BB-124: read the FILE layer only — load_effective_config() merges in
+    # env/CLI/defaults, and persisting that view would bake a transient
+    # override (e.g. HACHI_PERMISSION_TIER) permanently into settings.toml.
+    doc = read_global_config_file()
 
     canonical = _CONFIG_KEY_ALIASES.get(key, key)
     try:
         if canonical == "provider.model":
-            cfg.provider.model = value
+            doc.setdefault("provider", {})["model"] = value
         elif canonical == "provider.base_url":
-            cfg.provider.base_url = value
+            doc.setdefault("provider", {})["base_url"] = value
         elif canonical == "permissions.tier":
             if value not in {"sandbox", "guided", "unrestricted"}:
                 console.print(
                     "[red]permission tier must be one of:[/red] sandbox, guided, unrestricted"
                 )
                 raise typer.Exit(1)
-            cfg.permissions.tier = value
+            doc.setdefault("permissions", {})["tier"] = value
         elif canonical == "agent.max_tokens":
-            cfg.agent.max_tokens = int(value)
+            doc.setdefault("agent", {})["max_tokens"] = int(value)
         elif canonical == "limits.max_session_cost_usd":
             parsed = float(value)
             if parsed < 0:
                 console.print("[red]session_cost_cap_usd must be >= 0[/red]")
                 raise typer.Exit(1)
-            cfg.limits.max_session_cost_usd = parsed
+            doc.setdefault("limits", {})["max_session_cost_usd"] = parsed
         else:
             console.print(f"[red]Cannot set:[/red] {key!r}  (not a writable key)")
             console.print(
@@ -4396,7 +4497,7 @@ def config_set(
         console.print(f"[red]Invalid value for {key}:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    write_global_config(cfg)
+    write_global_config_dict(doc)
 
     if as_json:
         print(json.dumps({"key": key, "value": value, "ok": True}))

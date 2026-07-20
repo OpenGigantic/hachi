@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -42,20 +43,49 @@ def _make_config(**kwargs: Any) -> ResolvedConfig:
 
 
 def _patch_config(config: ResolvedConfig):
-    """Context manager: patch load_effective_config + write_global_config."""
-    written: list[ResolvedConfig] = []
+    """Context manager: patch the loader(s) + write_global_config_dict.
+
+    BB-124: writers now read/write the FILE layer only
+    (read_global_config_file / write_global_config_dict), never
+    load_effective_config()'s merged view — but provider_admin's read-only
+    helpers (list_providers, get_routing, list_all_models, ...) still call
+    load_effective_config() deliberately (it's fine for a READ to see the
+    merged/effective state). `ctx_load` patches BOTH loaders to the same
+    underlying `config`, so callers of this helper don't need to know which
+    one a given function under test uses. Tests still build `config` as a
+    ResolvedConfig for convenience (attribute access, Pydantic-validated
+    fixtures); `_fake_read` converts it to the plain file-layer dict shape
+    the real write path uses.
+    """
+    written: list[dict[str, Any]] = []
 
     def _fake_load(**_kwargs: Any) -> ResolvedConfig:
         return config
 
-    def _fake_write(cfg: ResolvedConfig, **_kwargs: Any) -> Path:
-        # Mutate in-place so subsequent calls see the change
-        config.__dict__.update(cfg.__dict__)
-        written.append(cfg)
+    def _fake_read(**_kwargs: Any) -> dict[str, Any]:
+        return config.model_dump(mode="python", exclude_none=True)
+
+    def _fake_write(payload: dict[str, Any], **_kwargs: Any) -> Path:
+        # Re-validate into the SAME `config` reference so subsequent calls in
+        # the same test see the change — mirrors "write persisted, next read
+        # sees it" against a real settings.toml.
+        nonlocal config
+        config = ResolvedConfig.model_validate(payload)
+        written.append(payload)
         return Path("/tmp/fake-settings.toml")
 
-    ctx_load = patch("hachi.gateway.provider_admin.load_effective_config", side_effect=_fake_load)
-    ctx_write = patch("hachi.gateway.provider_admin.write_global_config", side_effect=_fake_write)
+    @contextmanager
+    def _ctx_load() -> Any:
+        with (
+            patch("hachi.gateway.provider_admin.load_effective_config", side_effect=_fake_load),
+            patch("hachi.gateway.provider_admin.read_global_config_file", side_effect=_fake_read),
+        ):
+            yield
+
+    ctx_load = _ctx_load()
+    ctx_write = patch(
+        "hachi.gateway.provider_admin.write_global_config_dict", side_effect=_fake_write
+    )
     return ctx_load, ctx_write, written
 
 

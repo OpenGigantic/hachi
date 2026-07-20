@@ -4,6 +4,7 @@ import logging
 import os
 import stat
 import sys
+import threading
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,18 @@ from hachi.core.paths import (
 from hachi.core.settings import ResolvedConfig, default_config
 
 logger = logging.getLogger(__name__)
+
+# Lock protecting all load->mutate->write critical sections to prevent lost-update
+# races between concurrent callers (e.g. two simultaneous PUT /config/providers).
+#
+# BB-124: this used to live only in gateway/provider_admin.py and guarded just
+# that module's three writers. It now lives here and is taken inside every
+# writer (write_global_config / write_global_config_dict) so ALL writer call
+# sites are serialised against each other, not only provider_admin's. It is a
+# plain (non-reentrant) threading.Lock — callers must NOT also wrap a call to
+# either writer in their own `with _CONFIG_LOCK:` block, or the second
+# acquisition will deadlock.
+_CONFIG_LOCK = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Known top-level keys in ResolvedConfig (read from model fields — not hard-coded)
@@ -299,17 +312,14 @@ def load_effective_config(
     return ResolvedConfig.model_validate(merged)
 
 
-def write_global_config(config: ResolvedConfig, paths: HachiPaths | None = None) -> Path:
-    paths = paths or get_hachi_paths()
-    ensure_directories(paths)
+def _prune_empty_sections(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop a handful of top-level sections when they carry no real content.
 
-    if paths.global_config_toml.exists():
-        doc = tomlkit.parse(paths.global_config_toml.read_text(encoding="utf-8"))
-    else:
-        doc = tomlkit.document()
-        doc.add(tomlkit.comment("Hachi user settings"))
-
-    payload = config.model_dump(mode="python", exclude_none=True)
+    ``providers`` / ``channels`` / ``limits`` are all "present but empty" in a
+    freshly-defaulted config, and writing them verbatim would clutter
+    settings.toml with tables the user never asked for. Mutates and returns
+    *payload*.
+    """
     # Don't write an empty providers table — it's the default and would clutter the file.
     if not payload.get("providers"):
         payload.pop("providers", None)
@@ -321,13 +331,120 @@ def write_global_config(config: ResolvedConfig, paths: HachiPaths | None = None)
     # Same for limits: only persist once a cap is actually set, else it's an empty table.
     if not payload.get("limits"):
         payload.pop("limits", None)
+    return payload
+
+
+def _strip_none(value: Any) -> Any:
+    """Recursively drop ``None`` values from dicts/lists.
+
+    Mirrors Pydantic's ``exclude_none=True`` semantics for plain
+    FILE-LAYER dicts, which never go through ``model_dump`` — a writer that
+    mutates a dict to explicitly clear a field (e.g. ``base_url = None``)
+    needs the same "absent, not null" behaviour tomlkit requires (it cannot
+    serialise a bare ``None``).
+    """
+    if isinstance(value, dict):
+        return {k: _strip_none(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_strip_none(v) for v in value]
+    return value
+
+
+def _write_toml_document(payload: dict[str, Any], paths: HachiPaths) -> Path:
+    """Shared atomic-write body for both ``write_global_config`` and
+    ``write_global_config_dict``.
+
+    Reads the on-disk document (if any) via tomlkit (preserving comments/
+    formatting), replaces each top-level key present in *payload* wholesale,
+    then does an atomic tmp-file + ``os.replace`` so a crash mid-write can't
+    truncate settings.toml. Callers are responsible for taking
+    :data:`_CONFIG_LOCK` — this function does not lock.
+    """
+    ensure_directories(paths)
+
+    if paths.global_config_toml.exists():
+        doc = tomlkit.parse(paths.global_config_toml.read_text(encoding="utf-8"))
+    else:
+        doc = tomlkit.document()
+        doc.add(tomlkit.comment("Hachi user settings"))
+
     for key, value in payload.items():
         doc[key] = value
 
-    # Atomic write: serialize to a temp file then os.replace, so a crash mid-write
-    # can't truncate settings.toml (which would silently reset the user's config).
     target: Path = paths.global_config_toml
     tmp = target.with_name(f"{target.name}.tmp")
     tmp.write_text(tomlkit.dumps(doc), encoding="utf-8")
     os.replace(tmp, target)
     return target
+
+
+def write_global_config(config: ResolvedConfig, paths: HachiPaths | None = None) -> Path:
+    """Persist the given (already-merged) :class:`ResolvedConfig` wholesale.
+
+    BB-124: this dumps and writes EVERY field of *config* — including
+    whatever the environment layer and built-in defaults contributed to it.
+    It is only safe to call with a config that was intentionally built from
+    the merged view, e.g. the two first-run bootstraps
+    (``gateway/workspace.py`` / ``core/onboarding.py``) that materialise a
+    starter file from defaults + the user's setup answers. Every other
+    writer must use :func:`read_global_config_file` /
+    :func:`write_global_config_dict` instead, so a transient env override
+    (or an unrelated default) is never baked into the file.
+    """
+    paths = paths or get_hachi_paths()
+    with _CONFIG_LOCK:
+        payload = config.model_dump(mode="python", exclude_none=True)
+        _prune_empty_sections(payload)
+        return _write_toml_document(payload, paths)
+
+
+def read_global_config_file(
+    paths: HachiPaths | None = None,
+    *,
+    strict: bool = False,
+) -> dict[str, Any]:
+    """Return ONLY what is written in the global settings.toml — no defaults,
+    no environment, no project layer, no CLI overrides.
+
+    This is the FILE layer: a thin public wrapper over the pre-existing
+    :func:`_read_toml`. A writer must read the config via this function
+    (never :func:`load_effective_config`) before mutating it, so that
+    transient env overrides — and unrelated Pydantic defaults — are never
+    persisted back into the file (BB-124).
+
+    The returned dict must be treated as a plain dict all the way through to
+    :func:`write_global_config_dict`. Do NOT round-trip it through
+    ``ResolvedConfig.model_validate()`` — that re-inflates every missing
+    field with its class default, and the next write would persist all of
+    them, reproducing the exact bug this function exists to avoid.
+
+    Args:
+        paths: Override the resolved :class:`HachiPaths` (useful in tests).
+        strict: When ``True`` (or ``HACHI_CONFIG_STRICT=1``), raise on
+            malformed TOML or unknown top-level keys instead of logging a
+            warning.
+    """
+    strict = strict or bool(os.environ.get("HACHI_CONFIG_STRICT"))
+    paths = paths or get_hachi_paths()
+    ensure_directories(paths)
+    return _read_toml(paths.global_config_toml, primary=True, strict=strict)
+
+
+def write_global_config_dict(payload: dict[str, Any], paths: HachiPaths | None = None) -> Path:
+    """Persist a FILE-LAYER dict (as returned by :func:`read_global_config_file`)
+    verbatim — no defaults, no re-validation through ``ResolvedConfig``.
+
+    Takes :data:`_CONFIG_LOCK` internally, same as :func:`write_global_config`,
+    so all converted writers serialise against each other (and against the
+    two remaining ``ResolvedConfig``-based bootstrap writers).
+
+    Args:
+        payload: A plain dict — normally ``read_global_config_file()``'s
+            return value, mutated in place by the caller.
+        paths: Override the resolved :class:`HachiPaths` (useful in tests).
+    """
+    paths = paths or get_hachi_paths()
+    with _CONFIG_LOCK:
+        clean = _strip_none(payload)
+        _prune_empty_sections(clean)
+        return _write_toml_document(clean, paths)

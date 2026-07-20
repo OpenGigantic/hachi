@@ -15,8 +15,13 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from typing import Any
 
-from hachi.core.config_loader import load_effective_config, write_global_config
+from hachi.core.config_loader import (
+    load_effective_config,
+    read_global_config_file,
+    write_global_config_dict,
+)
 from hachi.core.credential_vault import CredentialVault
 from hachi.core.paths import HachiPaths
 
@@ -95,9 +100,16 @@ def load_allowlist(*, paths: HachiPaths | None = None) -> list[str]:
 
 
 def save_allowlist(allowlist: list[str], *, paths: HachiPaths | None = None) -> None:
-    """Persist the Telegram chat-id allowlist to the global config."""
-    config = load_effective_config(paths=paths)
-    config.channels.telegram.allowlist = [
-        str(entry).strip() for entry in allowlist if str(entry).strip()
-    ]
-    write_global_config(config, paths=paths)
+    """Persist the Telegram chat-id allowlist to the global config.
+
+    BB-124: reads the FILE layer only (not load_effective_config()'s merged
+    view), so a transient env override can't be baked into settings.toml by
+    this unrelated write.
+    """
+    doc = read_global_config_file(paths=paths)
+    channels_doc: dict[str, Any] = dict(doc.get("channels") or {})
+    telegram_doc: dict[str, Any] = dict(channels_doc.get("telegram") or {})
+    telegram_doc["allowlist"] = [str(entry).strip() for entry in allowlist if str(entry).strip()]
+    channels_doc["telegram"] = telegram_doc
+    doc["channels"] = channels_doc
+    write_global_config_dict(doc, paths=paths)

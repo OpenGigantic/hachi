@@ -133,6 +133,11 @@ def ensure_workspace():
     _heal_legacy_brand(secondary_brain, bundled_default)
 
     # Create canonical TOML config if it doesn't exist
+    # BB-124: deliberately KEEP the merged write here — this is a first-run
+    # bootstrap that only fires when settings.toml is absent, and its whole
+    # job is to materialise a starter file from the merged/default view.
+    # Converting it to read_global_config_file()/write_global_config_dict()
+    # would write an empty document. Do not "finish the job" on this one.
     if not paths.global_config_toml.exists():
         write_global_config(load_effective_config(paths=paths), paths=paths)
 

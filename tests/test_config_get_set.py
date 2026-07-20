@@ -50,10 +50,6 @@ def _patch_cfg(cfg: ResolvedConfig | None = None):
     return patch("hachi.cli.main.load_effective_config", return_value=cfg or _real_cfg())
 
 
-def _patch_write():
-    return patch("hachi.cli.main.write_global_config")
-
-
 def _patch_workspace():
     return patch("hachi.cli.main.get_workspace_dir", return_value=Path("/home/user/.hachi"))
 
@@ -117,88 +113,115 @@ class TestConfigGet:
         assert "Unknown key" in result.output
 
 
-# ─── config-set (mutates the REAL nested config object) ──────────────────────
+# ─── config-set (BB-124: drives a REAL settings.toml, not a mocked object) ───
+#
+# config-set now reads/writes the FILE layer only
+# (read_global_config_file / write_global_config_dict), never the merged
+# load_effective_config() / write_global_config() pair — persisting the
+# merged view is exactly the bug that let a transient env override get baked
+# permanently into settings.toml. Mocking those two names (the old approach
+# below, `_patch_cfg` + `_patch_write`) no longer intercepts anything config-set
+# calls, so these tests drive the real command against a tmp_path settings.toml,
+# the same pattern TestConfigRoundTrip below already used — this is a STRONGER
+# check than the old "was the mock called with this object" assertion, not a
+# weaker one: it proves the value actually reaches disk and reads back.
 
 
 class TestConfigSet:
-    def test_set_provider_model(self) -> None:
-        cfg = _real_cfg()
-        with _patch_cfg(cfg), _patch_write() as mock_write:
-            result = runner.invoke(app, ["config-set", "provider.model", "claude-opus-4-8"])
-        assert result.exit_code == 0, result.output
-        assert cfg.provider.model == "claude-opus-4-8"
-        mock_write.assert_called_once_with(cfg)
+    @staticmethod
+    def _patched_paths(tmp_path: Path, monkeypatch) -> HachiPaths:
+        for var in _ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        paths = _tmp_paths(tmp_path)
+        monkeypatch.setattr("hachi.cli.main.get_hachi_paths", lambda: paths)
+        monkeypatch.setattr("hachi.core.config_loader.get_hachi_paths", lambda: paths)
+        monkeypatch.setattr("hachi.cli.main.get_workspace_dir", lambda: tmp_path)
+        return paths
 
-    def test_set_safety_tier_alias_maps_to_permissions_tier(self) -> None:
-        cfg = _real_cfg()
-        with _patch_cfg(cfg), _patch_write():
-            result = runner.invoke(app, ["config-set", "safety_tier", "sandbox"])
+    def test_set_provider_model(self, tmp_path: Path, monkeypatch) -> None:
+        self._patched_paths(tmp_path, monkeypatch)
+        result = runner.invoke(app, ["config-set", "provider.model", "claude-opus-4-8"])
         assert result.exit_code == 0, result.output
-        assert cfg.permissions.tier == "sandbox"
 
-    def test_set_permissions_tier_canonical(self) -> None:
-        cfg = _real_cfg()
-        with _patch_cfg(cfg), _patch_write():
-            result = runner.invoke(app, ["config-set", "permissions.tier", "unrestricted"])
+        get_res = runner.invoke(app, ["config-get", "provider.model", "--json"])
+        assert get_res.exit_code == 0, get_res.output
+        assert json.loads(get_res.output)["provider.model"] == "claude-opus-4-8"
+
+    def test_set_safety_tier_alias_maps_to_permissions_tier(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        self._patched_paths(tmp_path, monkeypatch)
+        result = runner.invoke(app, ["config-set", "safety_tier", "sandbox"])
         assert result.exit_code == 0, result.output
-        assert cfg.permissions.tier == "unrestricted"
 
-    def test_set_tier_invalid_exits_1(self) -> None:
-        cfg = _real_cfg()
-        with _patch_cfg(cfg), _patch_write():
-            result = runner.invoke(app, ["config-set", "safety_tier", "danger"])
+        get_res = runner.invoke(app, ["config-get", "permissions.tier"])
+        assert get_res.exit_code == 0, get_res.output
+        assert "sandbox" in get_res.output
+
+    def test_set_permissions_tier_canonical(self, tmp_path: Path, monkeypatch) -> None:
+        self._patched_paths(tmp_path, monkeypatch)
+        result = runner.invoke(app, ["config-set", "permissions.tier", "unrestricted"])
+        assert result.exit_code == 0, result.output
+
+        get_res = runner.invoke(app, ["config-get", "permissions.tier"])
+        assert get_res.exit_code == 0, get_res.output
+        assert "unrestricted" in get_res.output
+
+    def test_set_tier_invalid_exits_1(self, tmp_path: Path, monkeypatch) -> None:
+        self._patched_paths(tmp_path, monkeypatch)
+        result = runner.invoke(app, ["config-set", "safety_tier", "danger"])
         assert result.exit_code == 1
         assert "sandbox" in result.output
 
-    def test_set_max_tokens_alias(self) -> None:
-        cfg = _real_cfg()
-        with _patch_cfg(cfg), _patch_write():
-            result = runner.invoke(app, ["config-set", "max_tokens", "16384"])
+    def test_set_max_tokens_alias(self, tmp_path: Path, monkeypatch) -> None:
+        self._patched_paths(tmp_path, monkeypatch)
+        result = runner.invoke(app, ["config-set", "max_tokens", "16384"])
         assert result.exit_code == 0, result.output
-        assert cfg.agent.max_tokens == 16384
 
-    def test_set_max_tokens_non_int_exits_1(self) -> None:
-        cfg = _real_cfg()
-        with _patch_cfg(cfg), _patch_write():
-            result = runner.invoke(app, ["config-set", "max_tokens", "not-a-number"])
+        get_res = runner.invoke(app, ["config-get", "agent.max_tokens", "--json"])
+        assert get_res.exit_code == 0, get_res.output
+        assert json.loads(get_res.output)["agent.max_tokens"] == 16384
+
+    def test_set_max_tokens_non_int_exits_1(self, tmp_path: Path, monkeypatch) -> None:
+        self._patched_paths(tmp_path, monkeypatch)
+        result = runner.invoke(app, ["config-set", "max_tokens", "not-a-number"])
         assert result.exit_code == 1
 
-    def test_set_cost_cap_alias(self) -> None:
-        cfg = _real_cfg()
-        with _patch_cfg(cfg), _patch_write():
-            result = runner.invoke(app, ["config-set", "session_cost_cap_usd", "2.5"])
+    def test_set_cost_cap_alias(self, tmp_path: Path, monkeypatch) -> None:
+        self._patched_paths(tmp_path, monkeypatch)
+        result = runner.invoke(app, ["config-set", "session_cost_cap_usd", "2.5"])
         assert result.exit_code == 0, result.output
-        assert cfg.limits.max_session_cost_usd == 2.5
 
-    def test_set_cost_cap_canonical(self) -> None:
-        cfg = _real_cfg()
-        with _patch_cfg(cfg), _patch_write():
-            result = runner.invoke(app, ["config-set", "limits.max_session_cost_usd", "3"])
+        get_res = runner.invoke(app, ["config-get", "session_cost_cap_usd", "--json"])
+        assert get_res.exit_code == 0, get_res.output
+        assert json.loads(get_res.output)["session_cost_cap_usd"] == 2.5
+
+    def test_set_cost_cap_canonical(self, tmp_path: Path, monkeypatch) -> None:
+        self._patched_paths(tmp_path, monkeypatch)
+        result = runner.invoke(app, ["config-set", "limits.max_session_cost_usd", "3"])
         assert result.exit_code == 0, result.output
-        assert cfg.limits.max_session_cost_usd == 3.0
 
-    def test_set_negative_cost_cap_exits_1(self) -> None:
-        cfg = _real_cfg()
+        get_res = runner.invoke(app, ["config-get", "limits.max_session_cost_usd", "--json"])
+        assert get_res.exit_code == 0, get_res.output
+        assert json.loads(get_res.output)["limits.max_session_cost_usd"] == 3.0
+
+    def test_set_negative_cost_cap_exits_1(self, tmp_path: Path, monkeypatch) -> None:
+        self._patched_paths(tmp_path, monkeypatch)
         # A leading '-' is parsed as an option, so a negative value needs the
         # '--' separator to reach the command's own >= 0 validation.
-        with _patch_cfg(cfg), _patch_write():
-            result = runner.invoke(app, ["config-set", "session_cost_cap_usd", "--", "-1"])
+        result = runner.invoke(app, ["config-set", "session_cost_cap_usd", "--", "-1"])
         assert result.exit_code == 1
         assert ">= 0" in result.output or "session_cost_cap_usd" in result.output
 
-    def test_set_unknown_key_exits_1(self) -> None:
-        cfg = _real_cfg()
-        with _patch_cfg(cfg), _patch_write():
-            result = runner.invoke(app, ["config-set", "no.such.key", "value"])
+    def test_set_unknown_key_exits_1(self, tmp_path: Path, monkeypatch) -> None:
+        self._patched_paths(tmp_path, monkeypatch)
+        result = runner.invoke(app, ["config-set", "no.such.key", "value"])
         assert result.exit_code == 1
         assert "Cannot set" in result.output
 
-    def test_json_output_on_success(self) -> None:
-        cfg = _real_cfg()
-        with _patch_cfg(cfg), _patch_write():
-            result = runner.invoke(
-                app, ["config-set", "provider.model", "claude-haiku-4-5", "--json"]
-            )
+    def test_json_output_on_success(self, tmp_path: Path, monkeypatch) -> None:
+        self._patched_paths(tmp_path, monkeypatch)
+        result = runner.invoke(app, ["config-set", "provider.model", "claude-haiku-4-5", "--json"])
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)
         assert data["ok"] is True

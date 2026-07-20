@@ -114,6 +114,36 @@ def _restore_os_environ():  # type: ignore[no-untyped-def]
             os.environ[key] = value
 
 
+@pytest.fixture(autouse=True)
+def _isolate_active_gateway_runtime():  # type: ignore[no-untyped-def]
+    """Snapshot ``hachi.cli.main._ACTIVE_RUNTIME`` before each test and restore
+    it after (T-20 / BB-119 follow-up).
+
+    ``_ACTIVE_RUNTIME`` is a process-wide module global assigned by PRODUCTION
+    code (``cli/main.py``, when a real ``_InProcessGatewayRuntime`` boots via
+    ``_start_gateway_server``) — not only by tests via ``monkeypatch``. Same
+    shape of bug as ``_restore_os_environ`` above: ``monkeypatch`` only reverts
+    its OWN ``setattr`` calls, so a test that boots a REAL runtime (rather than
+    monkeypatching the attribute) leaks it into every later test in the same
+    worker that reads it — which ``cli/commands/schedule.py``'s and
+    ``cli/commands/channel.py``'s governed-boot helpers both do. A plain
+    unconditional restore (not a diff of recorded changes) fixes the leak
+    regardless of *how* the global was mutated, and is a no-op for the tests
+    that already isolate it correctly via ``monkeypatch`` (this fixture's
+    teardown runs after monkeypatch's own undo, restoring the same value it
+    already put back).
+    """
+    try:
+        import hachi.cli.main as cli_main
+    except ImportError:
+        # Package not yet importable (e.g. missing dependency in partial CI env).
+        yield
+        return
+    before = getattr(cli_main, "_ACTIVE_RUNTIME", None)
+    yield
+    cli_main._ACTIVE_RUNTIME = before
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _flush_shared_services_at_session_end() -> None:  # type: ignore[return]
     """Flush ChromaDB WAL files once after all tests complete.

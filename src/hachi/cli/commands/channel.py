@@ -2,14 +2,71 @@
 
 from __future__ import annotations
 
+import logging
+from typing import TYPE_CHECKING
+
 import typer
 from rich.console import Console
 
-console = Console()
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
-channel_app = typer.Typer(
-    help="Talk to Hachi from external chat apps (Telegram, WhatsApp, …)."
-)
+    from hachi.channels.runner import GatewaySessionRunner
+    from hachi.gateway.orchestrator import AgentSession
+
+console = Console()
+_logger = logging.getLogger(__name__)
+
+channel_app = typer.Typer(help="Talk to Hachi from external chat apps (Telegram, WhatsApp, …).")
+
+
+def _governed_channel_boot(client_id: str) -> Callable[[], AgentSession]:
+    """Build a ``GatewaySessionRunner`` ``boot=`` seam that registers the
+    session through the live gateway runtime (T-20 / BB-119).
+
+    When an ``_InProcessGatewayRuntime`` is active in this process (e.g. a
+    combined/embedded deployment), the booted agent is registered in
+    ``_agents`` exactly like a web session — visible to ``/sessions``, the
+    audit view and spend — and, because ``boot_registered_session`` reuses
+    ``_boot_session_agent`` (``approval_surface="gateway"``), gets the same
+    ``RegistryApprover`` as any other governed session.
+
+    Falls back to a direct, ungoverned ``boot_agent()`` with a loud WARNING
+    when no runtime is active in this process — the common case for a
+    standalone ``hachi channel telegram`` / ``whatsapp`` process, which runs
+    in its own OS process separate from ``hachi serve`` (compare BB-71, where
+    a similar degradation was swallowed at DEBUG instead of announced).
+    """
+
+    def _boot() -> AgentSession:
+        import hachi.cli.main as _main_mod
+
+        runtime = getattr(_main_mod, "_ACTIVE_RUNTIME", None)
+        if runtime is not None:
+            return runtime.boot_registered_session(client_id=client_id, surface="channel")
+
+        from hachi.gateway.orchestrator import boot_agent
+
+        _logger.warning(
+            "channel session (client_id=%s) not registered with the gateway — "
+            "no active runtime in this process; it will not appear in "
+            "/sessions or the audit view",
+            client_id,
+        )
+        return boot_agent()
+
+    return _boot
+
+
+def _build_channel_runner(client_id: str = "telegram") -> GatewaySessionRunner:
+    """Construct a ``GatewaySessionRunner`` wired to the governed boot seam.
+
+    The seam itself (``boot=``, ``channels/runner.py:20``) is untouched by
+    T-20 — only what gets passed through it changes.
+    """
+    from hachi.channels.runner import GatewaySessionRunner
+
+    return GatewaySessionRunner(boot=_governed_channel_boot(client_id))
 
 
 @channel_app.command("telegram")
@@ -36,7 +93,6 @@ def channel_telegram(
     import time
 
     from hachi.channels import ChannelRouter
-    from hachi.channels.runner import GatewaySessionRunner
     from hachi.channels.telegram import TelegramAdapter
     from hachi.channels.telegram_setup import (
         load_allowlist,
@@ -111,7 +167,7 @@ def channel_telegram(
         pass
 
     adapter = TelegramAdapter(token)
-    runner = GatewaySessionRunner()
+    runner = _build_channel_runner("telegram")
     router = ChannelRouter(runner, allowlist=allowlist or None)
     console.print("[green]Telegram bot running.[/green] Press Ctrl+C to stop.")
     try:
@@ -155,11 +211,10 @@ def channel_whatsapp(
 ) -> None:
     """Run a WhatsApp webhook receiver that relays inbound messages to Hachi."""
     from hachi.channels import ChannelRouter
-    from hachi.channels.runner import GatewaySessionRunner
     from hachi.channels.whatsapp import WhatsAppAdapter, WhatsAppWebhookServer
 
     allowlist = {a.strip() for a in allow.split(",") if a.strip()} if allow else set()
-    runner = GatewaySessionRunner()
+    runner = _build_channel_runner("whatsapp")
     router = ChannelRouter(runner, allowlist=list(allowlist) if allowlist else None)
     adapter = WhatsAppAdapter()
 
