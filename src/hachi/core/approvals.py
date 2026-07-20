@@ -42,6 +42,7 @@ calls ``threading.Event.wait(timeout=...)`` — a **synchronous blocking call**.
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from typing import Any, Protocol, cast, runtime_checkable
@@ -88,12 +89,20 @@ class ActionApprover(Protocol):
 class _PendingEntry:
     """Internal entry tracking one pending approval request."""
 
-    __slots__ = ("request", "event", "decision")
+    __slots__ = ("request", "event", "decision", "created_at_ms", "expires_at_ms")
 
-    def __init__(self, request: PermissionRequest) -> None:
+    def __init__(self, request: PermissionRequest, timeout: float | None = None) -> None:
         self.request = request
         self.event: threading.Event = threading.Event()
         self.decision: PermissionDecision | None = None
+        # Wall clock (not monotonic): a deadline a browser renders must be
+        # comparable to Date.now(). Computed once here — expires_at_ms is
+        # derived arithmetically from created_at_ms, never a second
+        # time.time() call, so the two can never drift apart.
+        self.created_at_ms: int = int(time.time() * 1000)
+        self.expires_at_ms: int | None = (
+            self.created_at_ms + int(timeout * 1000) if timeout is not None else None
+        )
 
 
 class PendingApprovalRegistry:
@@ -124,13 +133,21 @@ class PendingApprovalRegistry:
 
     # ── Public API (stable — consumed by Agent B) ──
 
-    def create(self, request: PermissionRequest) -> str:
+    def create(self, request: PermissionRequest, timeout: float | None = None) -> str:
         """Store *request* and return its ``request_id``.
 
         A :class:`threading.Event` is created for each entry so that
         :meth:`wait` can block until :meth:`resolve` is called.
+
+        Args:
+            request: The request to park.
+            timeout: The seconds this entry will actually be waited on for
+                     (e.g. the caller's ``RegistryApprover`` timeout), used to
+                     compute ``expires_at_ms``. ``None`` (the default) records
+                     no deadline rather than fabricating one — callers that
+                     never enforce a timeout should not claim one exists.
         """
-        entry = _PendingEntry(request)
+        entry = _PendingEntry(request, timeout=timeout)
         with self._lock:
             self._entries[request.request_id] = entry
         return cast(str, request.request_id)
@@ -140,7 +157,11 @@ class PendingApprovalRegistry:
 
         Each dict contains:
             ``request_id``, ``operation``, ``tool``, ``target``,
-            ``reason``, ``policy_summary``.
+            ``reason``, ``policy_summary``, ``created_at``, ``expires_at``.
+
+        ``created_at`` / ``expires_at`` are epoch milliseconds (wall clock,
+        comparable to JS ``Date.now()``). ``expires_at`` is ``None`` when the
+        entry was parked via :meth:`create` without a ``timeout``.
         """
         with self._lock:
             return [
@@ -151,10 +172,29 @@ class PendingApprovalRegistry:
                     "target": e.request.target,
                     "reason": e.request.reason,
                     "policy_summary": e.request.policy_summary,
+                    "created_at": e.created_at_ms,
+                    "expires_at": e.expires_at_ms,
                 }
                 for e in self._entries.values()
                 if not e.event.is_set()
             ]
+
+    def _deadline_for(self, request_id: str) -> tuple[int, int | None]:
+        """Return ``(created_at_ms, expires_at_ms)`` recorded for *request_id*.
+
+        Internal accessor so callers that already know the timeout (e.g.
+        ``RegistryApprover``) can read back the exact values :meth:`create`
+        computed — without a second ``time.time()`` call that could drift by
+        a millisecond from what was actually stored.
+
+        Raises:
+            KeyError: if *request_id* is unknown (it must be read immediately
+                      after :meth:`create`, before any resolve/timeout/cleanup
+                      can remove it).
+        """
+        with self._lock:
+            entry = self._entries[request_id]
+        return entry.created_at_ms, entry.expires_at_ms
 
     def resolve(self, request_id: str, decision: PermissionDecision) -> bool:
         """Record *decision* and unblock any thread waiting on *request_id*.
@@ -417,7 +457,11 @@ class RegistryApprover:
             reason=detail or summary,
             policy_summary=f"action:{action}",
         )
-        request_id = self._registry.create(request)
+        request_id = self._registry.create(request, timeout=self._timeout)
+        # Read back the deadline create() just computed rather than calling
+        # time.time() again here — keeps the entry and the SSE payload
+        # reporting the identical value.
+        created_at_ms, expires_at_ms = self._registry._deadline_for(request_id)
         self._emit(
             "permission.requested",
             {
@@ -427,6 +471,8 @@ class RegistryApprover:
                 "target": request.target,
                 "reason": request.reason,
                 "policy_summary": request.policy_summary,
+                "created_at": created_at_ms,
+                "expires_at": expires_at_ms,
             },
         )
         return request_id
