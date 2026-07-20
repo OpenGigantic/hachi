@@ -541,24 +541,15 @@ export const useStore = create<State & Actions>()(
               color,
             }
           : undefined;
-        const auditEntry: AuditEntry = {
-          ts: new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-          op: a?.op ?? "unknown",
-          target: a?.action ?? "",
-          policy: a?.policy ?? "",
-          decision:
-            decision === "allowed once"
-              ? "allowed once"
-              : decision === "always allowed"
-              ? "allowed"
-              : "declined",
-        };
+        // The audit log is server truth, hydrated from GET /permissions/audit
+        // (approvals.ts:loadApprovals). Never unshift a client-invented row into it —
+        // gateway rows carry no timestamp and render "—", so a fabricated row with a
+        // real clock reading looks MORE authoritative than the real ones. See BB-87.
         set((s) => ({
           approvals: s.approvals.filter((x) => x.id !== id),
           history: historyEntry
             ? [historyEntry, ...s.history]
             : s.history,
-          auditLog: [auditEntry, ...s.auditLog],
         }));
       };
 
