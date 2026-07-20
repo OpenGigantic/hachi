@@ -158,6 +158,48 @@ describe("tickApprovals — live sentinel and mock expiry (BB-77)", () => {
   });
 });
 
+// ---- T-19 / BB-97: audit log is server truth — never client-fabricated (BB-87 recurrence) ----
+
+describe("audit log is server truth — never client-fabricated (BB-87 recurrence)", () => {
+  const seeded: Approval[] = [
+    {
+      id: 1, icon: "mail", request: "send_email", why: "reply",
+      action: "send_email → priya@studio.co", op: "action", policy: "asks first",
+      touches: [], risk: "high", scope: "action", expiresAt: 0, totalMs: 0,
+    },
+  ];
+
+  beforeEach(() => {
+    useStore.getState().hydrate({
+      dataMode: "live",
+      approvals: [...seeded],
+      auditLog: [],
+      history: [],
+    });
+  });
+
+  it("resolving an approval does not write into the server-hydrated audit log", () => {
+    useStore.getState().allowApproval(1);
+
+    // The audit table is hydrated ONLY from GET /permissions/audit.
+    expect(useStore.getState().auditLog).toHaveLength(0);
+    // …but the client-side "past decisions" list is still updated.
+    expect(useStore.getState().history).toHaveLength(1);
+    expect(useStore.getState().approvals).toHaveLength(0);
+  });
+
+  it("declineAll does not inject one fabricated row per approval", () => {
+    useStore.getState().hydrate({
+      approvals: [seeded[0], { ...seeded[0], id: 2 }, { ...seeded[0], id: 3 }],
+      auditLog: [],
+      history: [],
+    });
+    useStore.getState().declineAll();
+    expect(useStore.getState().auditLog).toHaveLength(0);
+    expect(useStore.getState().history).toHaveLength(3);
+  });
+});
+
 // ---- T8a / BB-83: toast queue (append/cap/dismiss) ----
 
 describe('toast queue — append / cap / dismiss (BB-83)', () => {
