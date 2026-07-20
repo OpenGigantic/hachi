@@ -67,14 +67,49 @@ class _FakeConfig:
         }
 
 
+# ---------------------------------------------------------------------------
+# BB-124 / T-03: the CLI runtime's config-mutating handlers (update_provider,
+# update_permissions, update_memory, ...) now read/write the FILE layer only
+# (hachi.cli.main.read_global_config_file / write_global_config_dict), never
+# the merged view (load_effective_config / write_global_config) — persisting
+# the merged view is exactly the bug that let a transient env override (e.g.
+# HACHI_PERMISSION_TIER) get baked permanently into settings.toml. These
+# three helpers replace the old `monkeypatch.setattr(...load_effective_config...)`
+# / `...write_global_config...` pairs with equivalents targeting the new
+# names and the plain-dict shape the handlers now use.
+# ---------------------------------------------------------------------------
+
+
+def _patch_read(monkeypatch, doc: dict) -> None:
+    """Patch hachi.cli.main.read_global_config_file to return a frozen `doc`
+    snapshot.
+
+    Mirrors this file's pre-existing pattern of a STATIC config across
+    repeated calls within one test (the old fixtures used `lambda: cfg`,
+    always returning the same object) — paired with the no-op/capture write
+    helpers below, which likewise never fed a write back into a later read.
+    """
+    monkeypatch.setattr("hachi.cli.main.read_global_config_file", lambda: dict(doc))
+
+
+def _patch_write_noop(monkeypatch) -> None:
+    monkeypatch.setattr("hachi.cli.main.write_global_config_dict", lambda _payload: None)
+
+
+def _patch_write_capture(monkeypatch) -> list[dict]:
+    captured: list[dict] = []
+    monkeypatch.setattr("hachi.cli.main.write_global_config_dict", captured.append)
+    return captured
+
+
 def test_update_provider_accepts_supported_kinds(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
     cfg.provider.kind = "openai-compatible"
     cfg.provider.model = "gpt-4.1-mini"
 
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    _patch_read(monkeypatch, cfg.model_dump())
+    _patch_write_noop(monkeypatch)
 
     anthropic = runtime.update_provider(
         {"provider": {"kind": "anthropic", "model": "gpt-4.1-mini"}}
@@ -105,8 +140,8 @@ def test_update_provider_persists_raw_api_key_securely(monkeypatch) -> None:
     cfg = _FakeConfig()
     store = _FakeStore()
 
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    _patch_read(monkeypatch, cfg.model_dump())
+    _patch_write_noop(monkeypatch)
     monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: store)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")  # register for auto-cleanup
 
@@ -128,8 +163,8 @@ def test_update_provider_treats_raw_key_in_api_key_ref_as_secret(monkeypatch) ->
     cfg = _FakeConfig()
     store = _FakeStore()
 
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    _patch_read(monkeypatch, cfg.model_dump())
+    _patch_write_noop(monkeypatch)
     monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: store)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
 
@@ -146,8 +181,8 @@ def test_update_provider_preserves_env_name_api_key_ref(monkeypatch) -> None:
     cfg = _FakeConfig()
     store = _FakeStore()
 
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    _patch_read(monkeypatch, cfg.model_dump())
+    _patch_write_noop(monkeypatch)
     monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: store)
 
     result = runtime.update_provider(
@@ -190,8 +225,8 @@ def test_update_provider_rejects_invalid_kind_and_blank_model(monkeypatch) -> No
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
 
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    _patch_read(monkeypatch, cfg.model_dump())
+    _patch_write_noop(monkeypatch)
 
     with pytest.raises(GatewayProtocolError, match="provider.kind must be"):
         runtime.update_provider({"provider": {"kind": "not-real"}})
@@ -204,8 +239,8 @@ def test_update_provider_currently_accepts_malformed_base_url(monkeypatch) -> No
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
 
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    _patch_read(monkeypatch, cfg.model_dump())
+    _patch_write_noop(monkeypatch)
 
     result = runtime.update_provider(
         {
@@ -246,8 +281,8 @@ def test_update_permissions_rejects_invalid_tier(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
 
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    _patch_read(monkeypatch, cfg.model_dump())
+    _patch_write_noop(monkeypatch)
 
     with pytest.raises(GatewayProtocolError, match="permissions.tier must be"):
         runtime.update_permissions({"permissions": {"tier": "root"}})
@@ -257,8 +292,8 @@ def test_update_permissions_accepts_supported_tiers(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
 
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    _patch_read(monkeypatch, cfg.model_dump())
+    _patch_write_noop(monkeypatch)
 
     for tier in ("sandbox", "guided", "unrestricted"):
         result = runtime.update_permissions({"permissions": {"tier": tier}})
@@ -269,8 +304,8 @@ def test_update_memory_is_idempotent_for_noop_payload(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
 
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    _patch_read(monkeypatch, cfg.model_dump())
+    _patch_write_noop(monkeypatch)
 
     baseline = runtime.update_memory({"memory": {}})
     repeated = runtime.update_memory({"memory": {}})
@@ -284,8 +319,8 @@ def test_update_memory_partial_write_preserves_other_fields(monkeypatch) -> None
     runtime = _InProcessGatewayRuntime()
     cfg = _FakeConfig()
 
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    _patch_read(monkeypatch, cfg.model_dump())
+    _patch_write_noop(monkeypatch)
 
     result = runtime.update_memory({"memory": {"enable_session_history": False}})
 
@@ -304,9 +339,8 @@ def _real_cfg() -> ResolvedConfig:
 def test_update_permissions_persists_ask_before_rule(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
     cfg = _real_cfg()
-    captured: list[ResolvedConfig] = []
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", captured.append)
+    captured = _patch_write_capture(monkeypatch)
+    _patch_read(monkeypatch, cfg.model_dump(mode="python", exclude_none=True))
 
     result = runtime.update_permissions({"permissions": {"ask_before": {"delete_files": False}}})
 
@@ -314,15 +348,26 @@ def test_update_permissions_persists_ask_before_rule(monkeypatch) -> None:
     # Untouched rules keep their default (on).
     assert result["permissions"]["ask_before"]["network_egress"] is True
     assert result["permissions"]["ask_before"]["spend_over_threshold"] is True
-    # The same config object was handed to write_global_config (persisted).
-    assert captured and captured[0].permissions.ask_before.delete_files is False
+
+    # T-03 / CORRECTIONS.md "Four tests will legitimately fail under a
+    # correct fix" (#1): the ORIGINAL assertion here was
+    #   `captured[0].permissions.ask_before.delete_files is False`
+    # which encoded the merged-write bug as the CONTRACT — it asserted the
+    # very SAME ResolvedConfig object handed to write_global_config was what
+    # got persisted. Under the fix, the writer persists a plain FILE-LAYER
+    # dict (never a re-validated ResolvedConfig), so that attribute access
+    # would now raise AttributeError on a dict. This is a deliberate,
+    # pre-authorized contract correction, not a weakening: the assertion
+    # still proves the identical fact (the mutation reached the writer),
+    # just via the dict shape that is now what's actually persisted to disk.
+    assert captured and captured[0]["permissions"]["ask_before"]["delete_files"] is False
 
 
 def test_update_permissions_tier_and_ask_before_together(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
     cfg = _real_cfg()
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    _patch_read(monkeypatch, cfg.model_dump(mode="python", exclude_none=True))
+    _patch_write_noop(monkeypatch)
 
     result = runtime.update_permissions(
         {"permissions": {"tier": "sandbox", "ask_before": {"network_egress": False}}}
@@ -335,8 +380,8 @@ def test_update_permissions_tier_and_ask_before_together(monkeypatch) -> None:
 def test_update_permissions_rejects_unknown_ask_before_key(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
     cfg = _real_cfg()
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    _patch_read(monkeypatch, cfg.model_dump(mode="python", exclude_none=True))
+    _patch_write_noop(monkeypatch)
 
     with pytest.raises(GatewayProtocolError, match="not a recognised rule"):
         runtime.update_permissions({"permissions": {"ask_before": {"format_disk": True}}})
@@ -345,8 +390,8 @@ def test_update_permissions_rejects_unknown_ask_before_key(monkeypatch) -> None:
 def test_update_permissions_rejects_non_bool_ask_before_value(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
     cfg = _real_cfg()
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    _patch_read(monkeypatch, cfg.model_dump(mode="python", exclude_none=True))
+    _patch_write_noop(monkeypatch)
 
     with pytest.raises(GatewayProtocolError, match="must be a boolean"):
         runtime.update_permissions({"permissions": {"ask_before": {"delete_files": "yes"}}})
@@ -355,8 +400,8 @@ def test_update_permissions_rejects_non_bool_ask_before_value(monkeypatch) -> No
 def test_update_permissions_rejects_non_object_ask_before(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
     cfg = _real_cfg()
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    _patch_read(monkeypatch, cfg.model_dump(mode="python", exclude_none=True))
+    _patch_write_noop(monkeypatch)
 
     with pytest.raises(GatewayProtocolError, match="ask_before must be an object"):
         runtime.update_permissions({"permissions": {"ask_before": ["delete_files"]}})

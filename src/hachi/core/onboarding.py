@@ -523,6 +523,13 @@ class OnboardingService:
                 if cap_state.enabled:
                     install_optional_skill_pack(cap_id)
 
+        # BB-124: deliberately KEEP the merged write here — the onboarding
+        # wizard *constructs* the initial config from defaults + the user's
+        # setup answers and persists it as a whole; this is a first-run
+        # bootstrap, not an unrelated settings tweak. Converting it to
+        # read_global_config_file()/write_global_config_dict() would break
+        # the setup wizard (it would write only whatever was already on
+        # disk, discarding the answers layered on top of the defaults).
         write_global_config(config, paths=self.paths)
 
         state = self.resume_state()

@@ -357,46 +357,33 @@ def test_pending_resume_not_consumed_when_agents_already_exist() -> None:
 def test_update_limits_runtime_writes_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """update_limits writes max_turn_cost_usd (per-task) and max_daily_cost_usd (daily)."""
-    from types import SimpleNamespace
+    """update_limits writes max_turn_cost_usd (per-task) and max_daily_cost_usd (daily).
 
+    BB-124: update_limits now reads/writes the FILE layer only
+    (read_global_config_file / write_global_config_dict) — never the merged
+    load_effective_config() / write_global_config() pair — so this drives the
+    new names with a plain file-layer dict rather than an attribute-mutable
+    fake, and asserts on what was actually HANDED to the writer.
+    """
     from hachi.cli.main import _InProcessGatewayRuntime
 
-    class _FakeLimits:
-        max_turn_cost_usd: float | None = None
-        max_session_cost_usd: float | None = None
-        max_daily_cost_usd: float | None = None
-
-    class _FakeConfig:
-        limits = _FakeLimits()
-        provider = SimpleNamespace(
-            kind="anthropic", model="haiku", base_url=None, api_key_ref=None, api_key_env=None
-        )
-        permissions = SimpleNamespace(tier="guided")
-        memory = SimpleNamespace(enable_session_history=True, enable_semantic_memory=True)
-        capabilities: dict = {}
-        channels = SimpleNamespace(telegram=SimpleNamespace(allowlist=[]))
-
-        def model_dump(self, *, mode: str = "python", exclude_none: bool = False) -> dict:
-            return {
-                "limits": {
-                    "max_turn_cost_usd": self.limits.max_turn_cost_usd,
-                    "max_session_cost_usd": self.limits.max_session_cost_usd,
-                    "max_daily_cost_usd": self.limits.max_daily_cost_usd,
-                }
-            }
-
-    cfg = _FakeConfig()
-    written: list[Any] = []
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda c: written.append(c))
+    initial_doc: dict[str, Any] = {
+        "limits": {
+            "max_turn_cost_usd": None,
+            "max_session_cost_usd": None,
+            "max_daily_cost_usd": None,
+        }
+    }
+    written: list[dict[str, Any]] = []
+    monkeypatch.setattr("hachi.cli.main.read_global_config_file", lambda: dict(initial_doc))
+    monkeypatch.setattr("hachi.cli.main.write_global_config_dict", written.append)
 
     runtime = _InProcessGatewayRuntime()
     runtime.update_limits({"per_task_cap_usd": 2.0, "daily_cap_usd": 10.0})
 
-    assert cfg.limits.max_turn_cost_usd == 2.0
-    assert cfg.limits.max_daily_cost_usd == 10.0
     assert len(written) == 1
+    assert written[0]["limits"]["max_turn_cost_usd"] == 2.0
+    assert written[0]["limits"]["max_daily_cost_usd"] == 10.0
 
 
 # ---------------------------------------------------------------------------

@@ -378,7 +378,9 @@ def set_voice_config(patch: dict[str, Any]) -> dict[str, Any]:
     """Persist voice config fields and return the updated config summary.
 
     Writes changes to ``~/.hachi/settings.toml`` via
-    :func:`~hachi.core.config_loader.write_global_config`.
+    :func:`~hachi.core.config_loader.write_global_config_dict` — the FILE
+    layer only (BB-124). Using the merged ``load_effective_config()`` view
+    here would bake a transient env override permanently into the file.
 
     Accepted *patch* keys (all optional):
         - ``stt_provider`` — ``"openai"``
@@ -399,8 +401,7 @@ def set_voice_config(patch: dict[str, Any]) -> dict[str, Any]:
     Returns:
         The updated voice config summary from :func:`voice_config`.
     """
-    from hachi.core.config_loader import load_effective_config, write_global_config
-    from hachi.core.settings import VoiceSettings
+    from hachi.core.config_loader import read_global_config_file, write_global_config_dict
     from hachi.gateway._net_guard import is_safe_outbound_url
 
     # Validate base URLs if provided.
@@ -429,9 +430,6 @@ def set_voice_config(patch: dict[str, Any]) -> dict[str, Any]:
             f"must be one of: {', '.join(sorted(_VALID_TTS_PROVIDERS))}"
         )
 
-    current = load_effective_config()
-    current_voice = current.voice or VoiceSettings()
-
     # Apply supported patch fields.
     allowed_fields = {
         "stt_provider",
@@ -450,8 +448,12 @@ def set_voice_config(patch: dict[str, Any]) -> dict[str, Any]:
     if not update:
         return voice_config()
 
-    new_voice = current_voice.model_copy(update=update)
-    new_config = current.model_copy(update={"voice": new_voice})
-    write_global_config(new_config)
+    # BB-124: read/mutate/write the FILE layer only — never the merged config
+    # (see the module-level note above).
+    doc = read_global_config_file()
+    voice_doc: dict[str, Any] = dict(doc.get("voice") or {})
+    voice_doc.update(update)
+    doc["voice"] = voice_doc
+    write_global_config_dict(doc)
 
     return voice_config()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import typer
 from rich.console import Console
@@ -10,16 +11,46 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 
 from hachi.core.paths import get_hachi_paths
-from hachi.gateway.orchestrator import boot_agent
+from hachi.gateway.orchestrator import AgentSession, boot_agent
 from hachi.jobs.scheduler import Scheduler, ScheduleStore
 
 console = Console()
+_logger = logging.getLogger(__name__)
 
 schedule_app = typer.Typer(help="Manage proactive scheduled tasks (cron / interval / once).")
 
 
 def _get_scheduler() -> Scheduler:
     return Scheduler(ScheduleStore(get_hachi_paths().schedules_file))
+
+
+def _boot_scheduler_agent() -> AgentSession:
+    """Boot the agent used by ``hachi schedule run-due`` / ``run-now`` (T-20 / BB-119).
+
+    Routes through the live gateway runtime when one is active in this
+    process, so a scheduler-fired session is registered exactly like a web
+    session — visible to ``/sessions``, the audit view and spend — and,
+    because ``boot_registered_session`` reuses ``_boot_session_agent``
+    (``approval_surface="gateway"``), gated with the same
+    ``RegistryApprover`` as any other governed session.
+
+    Falls back to a direct, ungoverned ``boot_agent()`` with a loud WARNING
+    when no runtime is active in this process — the COMMON case for a
+    cron-invoked ``hachi schedule run-due`` (compare BB-71, where a similar
+    degradation was swallowed at DEBUG instead of announced).
+    """
+    import hachi.cli.main as _main_mod
+
+    runtime = getattr(_main_mod, "_ACTIVE_RUNTIME", None)
+    if runtime is not None:
+        return runtime.boot_registered_session(client_id="scheduler", surface="schedule")
+
+    _logger.warning(
+        "scheduled session not registered with the gateway — no active "
+        "runtime in this process; it will not appear in /sessions or the "
+        "audit view"
+    )
+    return boot_agent()
 
 
 @schedule_app.command("add")
@@ -166,7 +197,7 @@ def schedule_run_due():
         console.print("[dim]No schedules are due.[/dim]")
         return
 
-    agent = boot_agent()
+    agent = _boot_scheduler_agent()
     try:
 
         def fire(schedule):
@@ -202,7 +233,7 @@ def schedule_run_now(
         raise typer.Exit(1)
 
     console.print(f"[cyan]Running[/cyan] '{schedule.name}': {schedule.task}")
-    agent = boot_agent()
+    agent = _boot_scheduler_agent()
     try:
         reply = agent.chat(schedule.task)
         _deliver_schedule_result(schedule, reply)

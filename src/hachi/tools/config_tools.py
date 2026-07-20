@@ -457,6 +457,20 @@ def _safe_config_snapshot(config: Any) -> dict[str, Any]:
 def _apply_config_patch(config: Any, key: str, raw_value: str) -> tuple[Any, str | None]:
     """Apply a single key=value patch to ``config``.
 
+    ``config`` may be either a full :class:`~hachi.core.settings.ResolvedConfig`
+    (the merged view — supported for callers that deliberately want it) or a
+    plain FILE-LAYER dict, as returned by
+    :func:`~hachi.core.config_loader.read_global_config_file`. The production
+    ``set_agent_config`` tool (BB-124) is wired to the file-layer pair
+    (:func:`register_config_tools`) so the LLM cannot bake a transient env
+    override into settings.toml.
+
+    A dict input is mutated and returned AS a dict — it is never round-tripped
+    through ``ResolvedConfig.model_validate()``, which would re-inflate every
+    missing field with its class default and reproduce exactly the bug this
+    fixes: the next write would persist all of those defaults too. A
+    ``ResolvedConfig`` input keeps the legacy merged-model behaviour.
+
     Returns ``(updated_config, error_string | None)``.
     """
     if key in _BLOCKED_CONFIG_KEYS:
@@ -475,14 +489,30 @@ def _apply_config_patch(config: Any, key: str, raw_value: str) -> tuple[Any, str
     if not section or not field:
         return config, f"Invalid key format {key!r} — expected 'section.field'."
 
-    try:
-        raw = config.model_dump(mode="python", exclude_none=True)
-    except AttributeError:
+    from hachi.core.settings import ResolvedConfig
+
+    is_model = isinstance(config, ResolvedConfig)
+    if is_model:
+        raw: dict[str, Any] = config.model_dump(mode="python", exclude_none=True)
+    elif isinstance(config, dict):
+        raw = dict(config)
+    else:
         return config, "Config object does not support model_dump."
 
-    # Coerce value to appropriate type
+    # Look up the section's schema — used (a) to learn a field's TYPE when it
+    # is absent from a sparse file-layer dict (the merged model always has
+    # every default, so this only matters on the dict path), and (b) to
+    # validate the new value against that one field. This is a pure,
+    # class-level schema lookup — never a merged/env-derived value — so it
+    # cannot leak transient state into the eventual write.
+    section_field_info = ResolvedConfig.model_fields.get(section)
+    section_cls = section_field_info.annotation if section_field_info is not None else None
+
+    # Coerce value to appropriate type.
     coerced: Any = raw_value
     existing = raw.get(section, {}).get(field)
+    if existing is None and not is_model and section_cls is not None:
+        existing = getattr(section_cls(), field, None)
     if isinstance(existing, bool):
         if raw_value.lower() in ("true", "1", "yes"):
             coerced = True
@@ -494,19 +524,34 @@ def _apply_config_patch(config: Any, key: str, raw_value: str) -> tuple[Any, str
         # Comma-separated list
         coerced = [v.strip() for v in raw_value.split(",") if v.strip()]
 
-    # Write into the raw dict and re-validate
-    if section not in raw:
-        raw[section] = {}
-    raw[section][field] = coerced
+    if is_model:
+        # Write into the raw dict and re-validate the WHOLE merged object —
+        # legacy behaviour, unchanged, for callers that opted into it.
+        if section not in raw:
+            raw[section] = {}
+        raw[section][field] = coerced
+        try:
+            updated_model = ResolvedConfig.model_validate(raw)
+        except Exception as exc:
+            return config, f"Config validation failed for {key}={raw_value!r}: {exc}"
+        return updated_model, None
 
-    from hachi.core.settings import ResolvedConfig
+    # File-layer dict path: validate ONLY the mutated field against its
+    # section schema, then write ONLY that field into `raw` — the rest of
+    # `raw` (and the file it came from) is untouched, so this never
+    # re-inflates or persists an unrelated default.
+    if section_cls is not None:
+        try:
+            validated_section = section_cls(**{field: coerced})
+        except Exception as exc:
+            return config, f"Config validation failed for {key}={raw_value!r}: {exc}"
+        coerced = getattr(validated_section, field)
 
-    try:
-        updated = ResolvedConfig.model_validate(raw)
-    except Exception as exc:
-        return config, f"Config validation failed for {key}={raw_value!r}: {exc}"
+    section_dict = dict(raw.get(section) or {})
+    section_dict[field] = coerced
+    raw[section] = section_dict
 
-    return updated, None
+    return raw, None
 
 
 def _make_get_agent_config(get_config_fn: Any) -> Any:
@@ -718,16 +763,29 @@ def register_config_tools(
         registry: The agent's ToolRegistry.
         gate:     Optional PermissionGate for tier checks.
     """
-    from hachi.core.config_loader import load_effective_config, write_global_config
+    from hachi.core.config_loader import (
+        load_effective_config,
+        read_global_config_file,
+        write_global_config_dict,
+    )
 
     registry.register(ADD_MCP_SERVER_SCHEMA, _make_add_mcp_server(gate))
     registry.register(REMOVE_MCP_SERVER_SCHEMA, _make_remove_mcp_server(gate))
     registry.register(LIST_MCP_SERVERS_SCHEMA, _make_list_mcp_servers())
+    # get_agent_config is a READ tool — it stays on the merged view so the
+    # agent sees what's actually effective this run (including env
+    # overrides), matching GET /config elsewhere.
     registry.register(
         GET_AGENT_CONFIG_SCHEMA,
         _make_get_agent_config(load_effective_config),
     )
+    # set_agent_config is a WRITE tool — BB-124: it must read/write the FILE
+    # layer only. Injecting load_effective_config/write_global_config here
+    # (the merged view) is exactly the bug this task fixes: the LLM itself
+    # could otherwise bake a transient env override (e.g.
+    # HACHI_PERMISSION_TIER) permanently into settings.toml via an innocuous
+    # agent.name change.
     registry.register(
         SET_AGENT_CONFIG_SCHEMA,
-        _make_set_agent_config(load_effective_config, write_global_config),
+        _make_set_agent_config(read_global_config_file, write_global_config_dict),
     )

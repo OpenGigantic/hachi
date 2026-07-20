@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-from types import SimpleNamespace
 
 import pytest
 
@@ -11,28 +10,27 @@ from hachi.core.runtime_read_models import RuntimeReadModelStore
 from hachi.gateway.control_plane import GatewayProtocolError
 
 
-class _FakeConfig:
-    def __init__(self) -> None:
-        self.memory = SimpleNamespace(
-            enable_session_history=True,
-            enable_semantic_memory=True,
-        )
+def _fake_memory_doc() -> dict:
+    """A file-layer dict shaped like read_global_config_file()'s return value.
 
-    def model_dump(self, mode: str = "python", exclude_none: bool = True):
-        return {
-            "memory": {
-                "enable_session_history": self.memory.enable_session_history,
-                "enable_semantic_memory": self.memory.enable_semantic_memory,
-            }
+    BB-124: update_memory now reads/writes the FILE layer only
+    (read_global_config_file / write_global_config_dict), never
+    load_effective_config() / write_global_config() — the merged view whose
+    persistence is exactly the bug this fixes.
+    """
+    return {
+        "memory": {
+            "enable_session_history": True,
+            "enable_semantic_memory": True,
         }
+    }
 
 
 def test_update_memory_rejects_non_boolean_values(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
-    cfg = _FakeConfig()
 
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    monkeypatch.setattr("hachi.cli.main.read_global_config_file", _fake_memory_doc)
+    monkeypatch.setattr("hachi.cli.main.write_global_config_dict", lambda _payload: None)
 
     with pytest.raises(GatewayProtocolError, match="must be a boolean"):
         runtime.update_memory({"memory": {"enable_session_history": "false"}})
@@ -40,10 +38,9 @@ def test_update_memory_rejects_non_boolean_values(monkeypatch) -> None:
 
 def test_update_memory_accepts_boolean_values(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
-    cfg = _FakeConfig()
 
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-    monkeypatch.setattr("hachi.cli.main.write_global_config", lambda _config: None)
+    monkeypatch.setattr("hachi.cli.main.read_global_config_file", _fake_memory_doc)
+    monkeypatch.setattr("hachi.cli.main.write_global_config_dict", lambda _payload: None)
 
     result = runtime.update_memory(
         {"memory": {"enable_session_history": False, "enable_semantic_memory": False}}

@@ -1,9 +1,18 @@
 """Provider admin — pure config-layer functions for multi-provider management.
 
 Exposed via GatewayControlPlane injected handlers; called by FastAPI routes.
-All persistence goes through load_effective_config / write_global_config (no
-direct file I/O here).  Secrets are stored via CredentialVault, never in the
-config file.
+Read-only helpers use load_effective_config (the merged view — appropriate
+for "what's effectively active"). The three writers (add_or_update_provider,
+remove_provider, set_routing) use read_global_config_file /
+write_global_config_dict instead: BB-124, a writer that persists the merged
+view bakes transient env overrides (and unrelated defaults) permanently into
+settings.toml. Secrets are stored via CredentialVault, never in the config
+file.
+
+The load->mutate->write critical section for each writer is serialised by
+:data:`hachi.core.config_loader._CONFIG_LOCK`, taken INSIDE
+``write_global_config_dict`` — this module must not also acquire it (a plain
+``threading.Lock`` is not reentrant).
 """
 
 from __future__ import annotations
@@ -11,10 +20,13 @@ from __future__ import annotations
 import json
 import logging
 import re
-import threading
 from typing import Any, get_args
 
-from hachi.core.config_loader import load_effective_config, write_global_config
+from hachi.core.config_loader import (
+    load_effective_config,
+    read_global_config_file,
+    write_global_config_dict,
+)
 from hachi.core.credential_vault import CredentialVault
 from hachi.core.onboarding import default_api_key_env_for
 from hachi.core.routing.capability import Capability
@@ -24,10 +36,6 @@ from hachi.core.secret_store import create_default_secret_store
 from hachi.core.settings import ProviderKind, ProviderSettings, RoutingSettings
 
 logger = logging.getLogger(__name__)
-
-# Lock protecting all load→mutate→write critical sections to prevent lost-update
-# races between concurrent callers (e.g. two simultaneous PUT /config/providers).
-_CONFIG_LOCK = threading.Lock()
 
 # All valid provider kinds (derived from the Literal type so settings.py stays canonical)
 _VALID_KINDS: frozenset[str] = frozenset(get_args(ProviderKind))
@@ -136,54 +144,64 @@ def add_or_update_provider(name: str, spec: dict[str, Any]) -> dict[str, Any]:
     headers: dict[str, str] = {str(k): str(v) for k, v in (spec.get("headers") or {}).items()}
     raw_api_key: str = str(spec.get("api_key") or "").strip()
 
-    with _CONFIG_LOCK:
-        config = load_effective_config()
+    # BB-124: read the FILE layer only — never load_effective_config(), whose
+    # merged view (defaults + file + env + CLI) would otherwise get baked
+    # back into settings.toml by write_global_config_dict below.
+    doc = read_global_config_file()
 
-        # Determine the vault key name for this provider's secret
-        vault_key = f"provider.{name}.api_key"
-        api_key_ref: str | None = None
+    # Determine the vault key name for this provider's secret
+    vault_key = f"provider.{name}.api_key"
+    api_key_ref: str | None = None
 
-        fallback_env: str | None = None
-        if raw_api_key:
-            # Store secret in vault only — never write raw key to os.environ
-            # (env leaks the secret to all child processes)
-            vault = CredentialVault(secret_store=create_default_secret_store())
-            vault.set_token(vault_key, raw_api_key)
-            api_key_ref = vault_key
-            # Always record the conventional env-var name as a fallback so the
-            # provider still works if the vault is cleared (e.g. clean install).
-            fallback_env = default_api_key_env_for(kind) or None
+    fallback_env: str | None = None
+    if raw_api_key:
+        # Store secret in vault only — never write raw key to os.environ
+        # (env leaks the secret to all child processes)
+        vault = CredentialVault(secret_store=create_default_secret_store())
+        vault.set_token(vault_key, raw_api_key)
+        api_key_ref = vault_key
+        # Always record the conventional env-var name as a fallback so the
+        # provider still works if the vault is cleared (e.g. clean install).
+        fallback_env = default_api_key_env_for(kind) or None
 
-        # Build the new ProviderSettings
-        ps = ProviderSettings(
-            kind=kind,
-            model=model or _default_model_for_kind(kind),
-            base_url=base_url,
-            allowed_models=allowed_models,
-            headers=headers,
-        )
-        if api_key_ref is not None:
-            ps.api_key_ref = api_key_ref
-            if fallback_env is not None:
-                ps.api_key_env = fallback_env
-        elif name != "__primary__" and (config.providers or {}).get(name) is not None:
-            # Preserve existing api_key_ref when no new key supplied
-            existing = (config.providers or {})[name]
-            ps.api_key_ref = existing.api_key_ref
-            ps.api_key_env = existing.api_key_env
-        elif name == "__primary__":
-            if not api_key_ref:
-                ps.api_key_ref = config.provider.api_key_ref
-                ps.api_key_env = config.provider.api_key_env
+    # Build the new ProviderSettings — construction is via the Pydantic model
+    # purely for field validation/defaulting of the CALLER's own input; only
+    # the resulting dict (never a re-validated whole-document view) is
+    # written back.
+    ps = ProviderSettings(
+        kind=kind,
+        model=model or _default_model_for_kind(kind),
+        base_url=base_url,
+        allowed_models=allowed_models,
+        headers=headers,
+    )
 
-        if name == "__primary__":
-            config.provider = ps
-        else:
-            if config.providers is None:
-                config.providers = {}
-            config.providers[name] = ps
+    existing_providers: dict[str, Any] = dict(doc.get("providers") or {})
+    existing_primary: dict[str, Any] = dict(doc.get("provider") or {})
+    existing_named = existing_providers.get(name) if name != "__primary__" else None
 
-        write_global_config(config)
+    if api_key_ref is not None:
+        ps.api_key_ref = api_key_ref
+        if fallback_env is not None:
+            ps.api_key_env = fallback_env
+    elif name != "__primary__" and isinstance(existing_named, dict):
+        # Preserve existing api_key_ref when no new key supplied — read from
+        # the FILE's own entry, never from the merged/env view.
+        ps.api_key_ref = existing_named.get("api_key_ref")
+        ps.api_key_env = existing_named.get("api_key_env")
+    elif name == "__primary__":
+        if not api_key_ref:
+            ps.api_key_ref = existing_primary.get("api_key_ref")
+            ps.api_key_env = existing_primary.get("api_key_env")
+
+    ps_payload = ps.model_dump(mode="python", exclude_none=True)
+    if name == "__primary__":
+        doc["provider"] = ps_payload
+    else:
+        existing_providers[name] = ps_payload
+        doc["providers"] = existing_providers
+
+    write_global_config_dict(doc)
     return _mask_provider(name, ps)
 
 
@@ -210,23 +228,24 @@ def remove_provider(name: str) -> dict[str, Any]:
     if not re.match(r"^[A-Za-z0-9_-]+$", name):
         raise ValueError("provider name must be alphanumeric/_/- only")
 
-    with _CONFIG_LOCK:
-        config = load_effective_config()
-        if name not in (config.providers or {}):
-            raise ValueError(f"provider {name!r} not found")
+    doc = read_global_config_file()
+    existing_providers: dict[str, Any] = dict(doc.get("providers") or {})
+    if name not in existing_providers:
+        raise ValueError(f"provider {name!r} not found")
 
-        ps = config.providers.pop(name)
+    ps_payload = existing_providers.pop(name)
+    doc["providers"] = existing_providers
 
-        # Best-effort vault cleanup
-        vault_key = f"provider.{name}.api_key"
-        try:
-            vault = CredentialVault(secret_store=create_default_secret_store())
-            if ps.api_key_ref == vault_key:
-                vault.delete_token(vault_key)
-        except Exception:
-            pass
+    # Best-effort vault cleanup
+    vault_key = f"provider.{name}.api_key"
+    try:
+        vault = CredentialVault(secret_store=create_default_secret_store())
+        if isinstance(ps_payload, dict) and ps_payload.get("api_key_ref") == vault_key:
+            vault.delete_token(vault_key)
+    except Exception:
+        pass
 
-        write_global_config(config)
+    write_global_config_dict(doc)
     return {"ok": True, "name": name}
 
 
@@ -282,25 +301,28 @@ def set_routing(default_model: str, capabilities: dict[str, list[str]]) -> dict[
     Returns:
         The new get_routing() snapshot.
     """
-    with _CONFIG_LOCK:
-        config = load_effective_config()
+    doc = read_global_config_file()
 
-        # Validate capability keys
-        valid_cap_names = {c.value for c in Capability}
-        filtered: dict[str, list[str]] = {}
-        for cap_name, models in (capabilities or {}).items():
-            if cap_name not in valid_cap_names:
-                logger.warning("set_routing: unknown capability %r — skipped", cap_name)
-                continue
-            filtered[cap_name] = [str(m).strip() for m in models if str(m).strip()]
+    # Validate capability keys
+    valid_cap_names = {c.value for c in Capability}
+    filtered: dict[str, list[str]] = {}
+    for cap_name, models in (capabilities or {}).items():
+        if cap_name not in valid_cap_names:
+            logger.warning("set_routing: unknown capability %r — skipped", cap_name)
+            continue
+        filtered[cap_name] = [str(m).strip() for m in models if str(m).strip()]
 
-        if config.routing is None:
-            config.routing = RoutingSettings()
+    # Mutate the dict, not a model — preserve any other routing fields
+    # (auto / model_overrides / resilience) already in the file verbatim.
+    # RoutingSettings() is used only as a static schema default, never as a
+    # merged/env-derived value.
+    routing_doc: dict[str, Any] = dict(doc.get("routing") or {})
+    fallback_default_model = routing_doc.get("default_model") or RoutingSettings().default_model
+    routing_doc["default_model"] = str(default_model).strip() or fallback_default_model
+    routing_doc["capabilities"] = filtered
+    doc["routing"] = routing_doc
 
-        config.routing.default_model = str(default_model).strip() or config.routing.default_model
-        config.routing.capabilities = filtered
-
-        write_global_config(config)
+    write_global_config_dict(doc)
     return get_routing()
 
 
