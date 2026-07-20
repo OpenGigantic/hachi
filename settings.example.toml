@@ -119,23 +119,23 @@ delete_files = true
 [limits]
 # type: float | null, default: null
 # effect: rolling calendar-day total spend cap in USD; session is blocked when reached.
-max_daily_cost_usd = null          # e.g. 5.0
+# max_daily_cost_usd = 5.0
 
 # type: float | null, default: null
 # effect: per-session cumulative spend cap in USD.
-max_session_cost_usd = null        # e.g. 1.0
+# max_session_cost_usd = 1.0
 
 # type: float | null, default: null
 # effect: per-turn spend cap in USD; turn is aborted when exceeded.
-max_turn_cost_usd = null           # e.g. 0.10
+# max_turn_cost_usd = 0.10
 
 # type: int | null, default: null
 # effect: per-session token limit (input + output combined).
-max_session_tokens = null          # e.g. 200000
+# max_session_tokens = 200000
 
 # type: int | null, default: null
 # effect: per-turn token limit.
-max_turn_tokens = null             # e.g. 8192
+# max_turn_tokens = 8192
 
 # ---------------------------------------------------------------------------
 # [memory] — session and semantic memory backends
@@ -178,7 +178,7 @@ stt_model = "whisper-1"
 
 # type: str | null, default: null (falls back to HACHI_STT_BASE_URL env var)
 # effect: base URL for the STT endpoint.
-stt_base_url = null
+# stt_base_url = "https://api.example.com/v1"
 
 # [SENSITIVE] type: str | null, default: null
 # effect: env var name holding the STT API key.
@@ -194,7 +194,7 @@ tts_model = "tts-1"
 
 # type: str | null, default: null
 # effect: base URL for the TTS endpoint.
-tts_base_url = null
+# tts_base_url = "https://api.example.com/v1"
 
 # [SENSITIVE] type: str | null, default: null
 # effect: env var name holding the TTS API key.
@@ -210,11 +210,11 @@ tts_provider = "openai"
 
 # [SENSITIVE] type: str | null, default: null
 # effect: env var holding the ElevenLabs API key (only used when tts_provider = "elevenlabs").
-elevenlabs_api_key_env = null
+# elevenlabs_api_key_env = "ELEVENLABS_API_KEY"
 
 # type: str | null, default: null
 # effect: ElevenLabs voice id (only used when tts_provider = "elevenlabs").
-elevenlabs_voice_id = null
+# elevenlabs_voice_id = "21m00Tcm4TlvDq8ikWAM"   # e.g. the "Rachel" demo voice
 
 # type: str, default: "eleven_turbo_v2_5"
 # effect: ElevenLabs model id. Defaults to the low-latency turbo model; use
@@ -228,7 +228,7 @@ elevenlabs_model = "eleven_turbo_v2_5"
 # type: str | null, default: null
 # effect: provider name. Set to "tavily" to enable web_search / extract_url tools.
 # Requires TAVILY_API_KEY in the environment.
-provider = null                    # e.g. "tavily"
+# provider = "tavily"
 
 # type: int, default: 10
 # effect: maximum outbound search/extract calls per agent turn (0 = unlimited).
@@ -352,11 +352,29 @@ exporter = "console"
 
 # type: str | null, default: null
 # effect: OTLP exporter endpoint URL (falls back to OTEL_EXPORTER_OTLP_ENDPOINT env var).
-endpoint = null
+# endpoint = "http://localhost:4318"
 
 # type: bool, default: false
 # effect: also initialise the Prometheus-compatible metrics facade when tracing is on.
 metrics_enabled = false
+
+# ---------------------------------------------------------------------------
+# [eval_reports] — weekly failure-report automation
+# ---------------------------------------------------------------------------
+[eval_reports]
+# type: bool, default: false
+# effect: master switch — when true, a resident daemon wakes every
+# `interval_seconds` and writes eval-report-<stamp>.md / .json into
+# <state_dir>/eval-reports/ summarising recent interaction-log failures.
+enabled = false
+
+# type: int, default: 604800 (1 week)
+# effect: seconds between report runs.
+interval_seconds = 604800
+
+# type: int, default: 1000
+# effect: maximum interaction_log rows loaded per run.
+limit = 1000
 
 # ---------------------------------------------------------------------------
 # [channels] — inbound messaging channels

@@ -180,9 +180,10 @@ class EventsSettings(BaseModel):
     to all registered subscribers (read-models, SSE surface, observability sink,
     and any reactive handlers such as ``file.uploaded → auto_extract``).
 
-    Back-compat: the two primary sync subscribers (read-models append + SSE
-    surface) are registered in the same order as the old direct-call path, so
-    output is byte-identical by construction.
+    Back-compat: the read-models-append and SSE-surface subscribers are
+    registered in the same order as the old direct-call path, so those two
+    outputs match pre-EventBus behavior. The observability sink (and any
+    later ``"*"`` subscriber) is new — it did not run on the direct-call path.
 
     Set ``bus_funnel = false`` in the ``[events]`` config section to opt out of
     the bus and fall back to the legacy direct-call path.
@@ -455,6 +456,10 @@ class ResolvedConfig(BaseModel):
     files: FileSettings = Field(default_factory=FileSettings)
     # Optional [retention] section — absent = conservative defaults (see RetentionSettings).
     retention: RetentionSettings = Field(default_factory=RetentionSettings)
+    # Optional [eval_reports] section — absent = daemon off (opt-in, default False).
+    # Without this field the section was silently dropped by extra="ignore" and the
+    # loader reported the user's own documented key as unknown (BB-101).
+    eval_reports: EvalReportSettings = Field(default_factory=EvalReportSettings)
     # [mcp_servers.<name>] sections — Model Context Protocol servers registered via the
     # UI/CLI. Kept as raw dicts (parsed by MCPServerConfig.from_toml_entry at boot) so the
     # section survives model_dump() — without this field it was silently dropped and
