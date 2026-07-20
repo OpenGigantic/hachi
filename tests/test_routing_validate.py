@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from hachi.core.routing.capability import Capability
-from hachi.core.routing.descriptor import ModelDescriptor
+from hachi.core.routing.descriptor import ModelDescriptor, Pricing
 from hachi.core.routing.policy import RoutingPolicy
 from hachi.core.routing.registry import ModelRegistry
 from hachi.core.routing.validate import RoutingValidationResult, validate_routing
@@ -19,6 +19,23 @@ def _reg(*model_ids: str) -> ModelRegistry:
                 capabilities=frozenset({Capability.REASONING}),
                 context_window=200_000,
                 max_output=8_192,
+            )
+        )
+    return reg
+
+
+def _priced_reg() -> ModelRegistry:
+    """Two REASONING-capable models, priced ~16x apart (BB-30 shape)."""
+    reg = ModelRegistry()
+    for mid, price in (("cheap-model", 0.15), ("pricey-model", 2.50)):
+        reg.register(
+            ModelDescriptor(
+                id=mid,
+                provider="anthropic",
+                capabilities=frozenset({Capability.REASONING}),
+                context_window=200_000,
+                max_output=8_192,
+                pricing=Pricing(input_per_mtok=price, output_per_mtok=price * 4),
             )
         )
     return reg
@@ -83,3 +100,20 @@ class TestValidateRoutingRules:
         result = RoutingValidationResult(ok=True, issues=["a"], warnings=["w"])
         assert result.issues == ["a"]
         assert result.warnings == ["w"]
+
+    def test_costly_capability_override_produces_a_warning(self) -> None:
+        """BB-93: validate_routing() must actually invoke costly_capability_warnings()
+        with the registry — a costly per-capability override must surface as a
+        non-blocking warning, not be silently dropped by an arity TypeError."""
+        policy = RoutingPolicy(
+            default_model="cheap-model",
+            capabilities={"reasoning": ["pricey-model"]},
+        )
+        result = validate_routing(_priced_reg(), policy, providers=None)
+
+        assert result.ok, "a costly override is advisory, never blocking"
+        assert result.warnings, (
+            "BB-30 cost guard produced no warning — costly_capability_warnings() was "
+            "never actually invoked by validate_routing()"
+        )
+        assert any("pricey-model" in w for w in result.warnings)

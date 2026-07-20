@@ -6,12 +6,15 @@ after ok=True) so the two always enforce the same rules.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from hachi.core.routing.capability import Capability
 from hachi.core.routing.policy import RoutingPolicy
 from hachi.core.routing.registry import ModelRegistry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -43,7 +46,7 @@ def validate_routing(
         :class:`~hachi.core.routing.capability.Capability` value.
 
     Advisory warnings (non-blocking):
-      - Re-uses ``policy.costly_capability_warnings()`` (BB-30 guard) to flag
+      - Re-uses ``policy.costly_capability_warnings(registry)`` (BB-30 guard) to flag
         any explicit per-capability override that prices orders-of-magnitude
         more than the default model.
 
@@ -77,8 +80,12 @@ def validate_routing(
 
     # Advisory: costly capability overrides (BB-30).
     try:
-        warnings.extend(policy.costly_capability_warnings())
+        warnings.extend(policy.costly_capability_warnings(registry))
     except Exception:
-        pass
+        logger.warning(
+            "validate_routing: cost-governance warnings could not be computed; "
+            "the BB-30 costly-override guard is not covering this validation",
+            exc_info=True,
+        )
 
     return RoutingValidationResult(ok=not issues, issues=issues, warnings=warnings)
