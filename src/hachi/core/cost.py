@@ -97,13 +97,24 @@ def _get_shared_session_store() -> Any:
     ``hachi.gateway.orchestrator`` that has never existed there, so this lookup
     always raised ``ImportError`` and every call silently fell through to the
     fallback branch.
+
+    BB-42 RECURRED (T-10): the fix above replaced the bad import with a
+    defaulted-``None`` attribute lookup on ``shared`` — but ``ProcessSharedServices``
+    never declared that field either, so the default fired on every call and this
+    function still always returned ``None``. Same outcome as the original bug, new
+    syntax — the docstring above described the failure class while the code below
+    it committed it again. The field is now declared on the dataclass (see
+    ``shared_services.py``), attached by ``boot_agent`` right after it constructs
+    the store, so it is read as a plain attribute below: a future typo or removed
+    field is a loud ``AttributeError`` (caught, same as any other failure here),
+    not another silent, permanent recurrence.
     """
     try:
         from hachi.gateway.shared_services import ProcessSharedServices
 
         shared = ProcessSharedServices.instance()
         if shared is not None:
-            return getattr(shared, "session_store", None)
+            return shared.session_store
     except Exception:
         pass
     return None

@@ -1862,10 +1862,28 @@ class AgentSession:
                 logger.warning("shutdown: failed to capture episodic summary", exc_info=True)
 
         # End the persistent session
+        # T-10 / BB-42 recurrence: session_store is normally the PROCESS-SHARED
+        # singleton published on ProcessSharedServices (see boot_agent) so the
+        # gateway's ingress-idempotency hot path and core/cost.py's daily-spend
+        # ledger reuse it instead of opening a fresh sqlite3/WAL connection per
+        # call. Mirrors H-VAULT above: an individual session MUST NOT close the
+        # shared store on its own shutdown (session delete or config-driven
+        # _reload_agents) — sibling sessions and the gateway's utility call
+        # sites would then see a closed connection for the rest of the process
+        # lifetime. Only close a session's own store once it is no longer the
+        # one `_shared` publishes (a newer session has already taken over the
+        # shared slot), exactly as boot_agent's own reassignment intends.
         if self._session_store and self._session_id:
             try:
                 self._session_store.end_session(self._session_id)
-                self._session_store.shutdown()
+                from hachi.gateway.shared_services import ProcessSharedServices
+
+                _shared_now = ProcessSharedServices.instance()
+                _store_is_shared = (
+                    _shared_now is not None and _shared_now.session_store is self._session_store
+                )
+                if not _store_is_shared:
+                    self._session_store.shutdown()
             except Exception:
                 # HIGH-012: session store shutdown errors should be visible.
                 logger.warning(
@@ -3046,6 +3064,14 @@ def boot_agent(
     scheduler = _get_or_create_shared_scheduler(_shared, get_hachi_paths().schedules_file)
     # Initialize Session Store (Phase 3: cross-session persistence)
     session_store = SessionStore()
+    # T-10 / BB-42 recurrence: publish on the process singleton so the gateway's
+    # ingress-idempotency hot path (fastapi_app._resolve_session_store) and
+    # core/cost.py's daily-spend ledger reuse THIS store instead of opening (and
+    # leaking) a fresh sqlite3/WAL connection per call. Overwrites whatever a
+    # prior session in this process attached — see the is-still-shared guard in
+    # AgentSession.shutdown() below, which stops a session's own shutdown from
+    # closing this out from under sibling sessions / the gateway.
+    _shared.session_store = session_store
 
     # Initialize and register the Long-Term Memory Vault (backend-selectable).
     # backend="chroma" (default) — ChromaDB persistent vault, full semantic tools.

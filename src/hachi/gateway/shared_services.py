@@ -122,6 +122,14 @@ class ProcessSharedServices:
     # sessions in one process each ran their own Scheduler+ScheduleRunner pair).
     scheduler: Any = field(default=None)  # Scheduler | None
     scheduler_runner_started: bool = field(default=False)
+    # T-10 / BB-42 recurrence: the process-wide SessionStore created by boot_agent.
+    # Attached by boot_agent (NOT built in _init) because the store's lifecycle is
+    # owned by the session boot, and _init must stay constructible without one.
+    # Three readers (fastapi_app._resolve_session_store, fastapi_app's
+    # cleanup_empty_sessions, core/cost.py._get_shared_session_store) depend on
+    # this being a REAL declared field — a getattr/hasattr default against an
+    # undeclared attribute is how this stayed dead for so long.
+    session_store: Any = field(default=None)  # SessionStore | None
 
     # ------------------------------------------------------------------
     # Public API

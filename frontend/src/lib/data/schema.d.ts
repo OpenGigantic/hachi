@@ -2133,6 +2133,52 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /**
+         * OgGraphResponse
+         * @description Response for ``GET /og/graph`` (T-38 / BB-115).
+         *
+         *     ``count`` defaults to 0 because ``GatewayControlPlane.og_graph()``
+         *     (``gateway/control_plane.py``) falls back to ``{"nodes": []}`` -- no ``count``
+         *     key -- when no ``get_og_graph`` handler is wired. The real payload built by
+         *     ``og_graph_from_engine`` always includes ``count``; the default only tolerates
+         *     the no-handler fallback shape without misdeclaring the field's type.
+         */
+        OgGraphResponse: {
+            /** Nodes */
+            nodes: components["schemas"]["OgNodeModel"][];
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+        };
+        /**
+         * OgNodeModel
+         * @description One ObjectGraph node with per-pass token estimates (GET /og/graph).
+         *
+         *     Field set derived from ``og_graph_from_engine`` (``gateway/orchestrator.py``),
+         *     the function that actually builds this payload -- not from the frontend's
+         *     hand-written ``GatewayOgNode`` mirror, which T-38 found already drifted.
+         */
+        OgNodeModel: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Kind */
+            kind: string;
+            /** Index */
+            index: number;
+            /** Dense */
+            dense: number;
+            /** Full */
+            full: number;
+            /**
+             * Deps
+             * @default []
+             */
+            deps: string[];
+        };
         /** OpenAIChatRequest */
         OpenAIChatRequest: {
             /** Messages */
@@ -10788,7 +10834,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["OgGraphResponse"];
                 };
             };
             /** @description Invalid request */
