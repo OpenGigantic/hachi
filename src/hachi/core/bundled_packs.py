@@ -1,7 +1,7 @@
 """Bundled packs shipped with Hachi.
 
 These packs live inside the installed package under ``hachi/packs/``.
-:func:`list_bundled_packs` enumerates them; :func:`install_bundled_pack` copies
+:func:`list_bundled_manifests` enumerates them; :func:`install_bundled_pack` copies
 a single pack into the user's skills directory (with consent sheet generation).
 """
 
@@ -32,9 +32,7 @@ def list_bundled_pack_dirs() -> list[Path]:
     root = _bundled_packs_root()
     if not root.exists():
         return []
-    return sorted(
-        p for p in root.iterdir() if p.is_dir() and (p / "pack.toml").exists()
-    )
+    return sorted(p for p in root.iterdir() if p.is_dir() and (p / "pack.toml").exists())
 
 
 def list_bundled_manifests() -> list[OgPackManifest]:

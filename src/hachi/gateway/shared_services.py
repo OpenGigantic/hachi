@@ -22,8 +22,10 @@ Usage::
     same  = ProcessSharedServices.get_or_create(config, brain_dir)
     assert shared is same
 
-    # A caller requesting a *different* memory backend gets its own instance,
-    # keyed by a (brain_dir, memory_backend, memory_graph) fingerprint.
+    # A caller requesting a *different* memory backend (or different retrieval
+    # settings — T-06 / BB-99) gets its own instance, keyed by a (brain_dir,
+    # memory_backend, memory_graph, recall_distance_max, core_memory_max_entries,
+    # decay_half_life_days) fingerprint. See _config_fingerprint().
     other = ProcessSharedServices.get_or_create(alt_config, brain_dir)
     assert other is not shared
 """
@@ -53,13 +55,30 @@ def _config_fingerprint(config: dict[str, Any], brain_dir: str) -> str:
     """Return a stable cache key for a (config, brain_dir) pair.
 
     Only the fields that affect *shared* service construction are included:
-    ``memory.backend``, ``memory.graph``, and ``brain_dir``.  All other
-    per-session config keys are irrelevant to the singleton.
+    ``memory.backend``, ``memory.graph``, ``memory.recall_distance_max``,
+    ``memory.core_memory_max_entries``, ``memory.decay_half_life_days``, and
+    ``brain_dir``.  All other per-session config keys are irrelevant to the
+    singleton.
+
+    T-06 / BB-99: the three retrieval-control fields are included because
+    ``_init`` now threads them into the shared ``MemoryVault`` (see below) —
+    they affect what the singleton actually *is*, not just how it behaves.
+    Leaving them out of the fingerprint means a ``settings.toml`` edit to any
+    of the three would keep serving the stale vault built from whichever
+    config booted first in this process. Read from the raw dict (not the
+    validated ``MemorySettings`` model) so the fingerprint stays a pure
+    function of the input config with no default-inflation, matching
+    ``backend``/``graph`` above.
     """
     memory = config.get("memory", {}) if isinstance(config.get("memory"), dict) else {}
     backend = str(memory.get("backend", "chroma"))
     graph = str(bool(memory.get("graph", False)))
-    raw = f"{brain_dir}|{backend}|{graph}"
+    raw = (
+        f"{brain_dir}|{backend}|{graph}"
+        f"|{memory.get('recall_distance_max')}"
+        f"|{memory.get('core_memory_max_entries')}"
+        f"|{memory.get('decay_half_life_days')}"
+    )
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -298,13 +317,27 @@ class ProcessSharedServices:
         _raw_memory = config.get("memory", {})
         _memory_settings = MemorySettings.model_validate(_raw_memory)
         _provider = resolve_provider(_memory_settings)
-        _provider.initialize(brain_dir=brain_dir)
         if isinstance(_provider, ChromaMemoryProvider):
+            # T-06 / BB-99: the three [memory] retrieval controls (Issue 10 +
+            # M2 decay) are only honoured if they are passed HERE — this is the
+            # vault every session actually uses (boot_agent reuses _shared.vault
+            # whenever it is already non-None, which is always true for the
+            # default chroma backend by the time boot_agent runs).
+            _provider.initialize(
+                brain_dir=brain_dir,
+                recall_distance_max=_memory_settings.recall_distance_max,
+                core_memory_max_entries=_memory_settings.core_memory_max_entries,
+                decay_half_life_days=_memory_settings.decay_half_life_days,
+            )
             vault = _provider.vault
             # Mark as the process-shared vault so an individual AgentSession never
             # closes it on shutdown — only shutdown_all() (atexit) closes it once.
             if vault is not None:
                 vault.is_shared = True
+        else:
+            # in_memory / fts5_only have no recall-distance or decay machinery —
+            # their initialize() ABC signature is (self, brain_dir: str) -> None.
+            _provider.initialize(brain_dir=brain_dir)
 
         # --- MemoryIndex / MemoryWriter (when memory.graph=true) ---
         graph_index: Any = None

@@ -395,10 +395,37 @@ class TestHandlerCorrections:
         assert result == expected
         assert stored == [("s1", expected)]
 
-    def test_extract_fact_is_real_and_degrades_gracefully(self) -> None:
+    def test_extract_fact_is_real_and_degrades_gracefully(self, tmp_path, monkeypatch) -> None:
         # P1-5 made handle_extract_fact a real durable handler; with no vault/LLM
         # resolvable in the test env it must degrade gracefully (status string,
         # never crash, never the old "seam:" placeholder).
+        #
+        # BB-100: memory_vault._get_llm_client() now also resolves the key via
+        # the secret store and a project .env (matching the chat path's
+        # create_llm_client), so this test must isolate both -- otherwise it
+        # depends on the ambient environment rather than deterministically
+        # exercising "no LLM client resolvable". On a machine whose repo root
+        # (pytest's default cwd) has a real .env with a real ANTHROPIC_API_KEY
+        # (true of this very repo's dev checkout), the unisolated call would
+        # build a LIVE AnthropicClient and make a real network call -- exactly
+        # what "degrades gracefully ... unavailable in CI" exists to rule out.
+        import hachi.core.memory_vault as mv
+        import hachi.core.secret_store as secret_store_module
+
+        monkeypatch.setattr(mv, "_llm_client_instance", None, raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)  # _resolve_api_key reads Path.cwd() / ".env"
+
+        class _EmptySecretStore:
+            def get(self, name: str) -> str | None:
+                return None
+
+        monkeypatch.setattr(
+            secret_store_module,
+            "create_default_secret_store",
+            lambda *a, **kw: _EmptySecretStore(),
+        )
+
         from hachi.core.runtime.job_handlers import handle_extract_fact
 
         result = handle_extract_fact(session_id="s2", text="The user prefers dark mode")

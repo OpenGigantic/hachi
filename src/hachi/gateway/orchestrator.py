@@ -2554,10 +2554,50 @@ def _apply_observability_settings(
         )
 
 
+def select_action_approver(
+    *,
+    on_permission_request: Callable[[PermissionRequest], PermissionDecision] | None,
+    approval_surface: str | None,
+    tier: str,
+    emit: Callable[[str, dict[str, Any]], None],
+) -> ActionApprover:
+    """Pick the session-scoped ActionApprover for destructive tool actions.
+
+    Exactly one rule per surface — this is the single place that decides, so the
+    two call sites in ``boot_agent`` (initial boot and the tier-reconcile rebuild)
+    cannot diverge.
+
+    Selection priority:
+      1. TUI path  — on_permission_request is set → HandlerApprover (reuses TUI modal).
+      2. Gateway/API path — approval_surface == "gateway" → RegistryApprover (parks in
+         the PendingApprovalRegistry so Agent B's /approvals endpoint can resolve it).
+      3. No human context at all → PolicyApprover (tier-gated: allow unrestricted, deny
+         guided/sandbox with an actionable message).
+
+    Args:
+        on_permission_request: TUI-style approval handler, if one is connected.
+        approval_surface: Explicit signal for non-TUI callers. ``"gateway"`` selects
+            the registry-backed approver; anything else (including ``None``) falls
+            back to the tier-only policy approver.
+        tier: The active permission tier, used only by the PolicyApprover fallback.
+        emit: Event emitter accepting ``(event_name, payload_dict)``.
+
+    Returns:
+        The selected :class:`~hachi.core.approvals.ActionApprover`.
+    """
+    if on_permission_request is not None:
+        return HandlerApprover(on_permission_request, emit)
+    if approval_surface == "gateway":
+        return RegistryApprover(get_approval_registry(), emit)
+    return PolicyApprover(tier)
+
+
 def boot_agent(
     on_event: Callable[..., None] | None = None,
     on_permission_request: Callable[[PermissionRequest], PermissionDecision] | None = None,
     resume_session_id: str | None = None,
+    *,
+    approval_surface: str | None = None,
 ) -> AgentSession:
     """
     Factory function to initialize and boot the Hachi agent.
@@ -2575,6 +2615,12 @@ def boot_agent(
 
     Args:
         on_event: Optional callback for real-time UI event rendering.
+        approval_surface: Explicit signal for which ActionApprover to select when
+            no on_permission_request handler is supplied — see
+            select_action_approver(). ``"gateway"`` (passed by the gateway's
+            in-process runtime) selects RegistryApprover; the default ``None``
+            (every CLI/schedule/channel boot path) keeps the existing
+            PolicyApprover behavior.
 
     Returns:
         An active AgentSession ready to receive user input.
@@ -2588,18 +2634,26 @@ def boot_agent(
     # ------------------------------------------------------------------
     # Slice 2.2 — EventBus funnel (gated behind [events] bus_funnel=true)
     #
-    # When the flag is OFF (default): the two closures below are used exactly
-    # as before — byte-identical output, zero behavior change.
+    # The flag defaults ON (core/settings.py EventsSettings.bus_funnel=True).
+    # When ON: an EventBus is instantiated below and three sync subscribers
+    # are registered — read-models append, SSE/TUI surface, and
+    # ObservabilitySink — so emit_runtime_event / relay_event publish through
+    # the bus and every subscriber sees the event.
     #
-    # When the flag is ON: an EventBus is instantiated; the same two consumers
-    # (read-models append + SSE/TUI surface) are registered as sync subscribers
-    # in the same order, so publish() produces identical output by construction.
-    # emit_runtime_event / relay_event are then re-bound to publish through the bus.
+    # When OFF: the closures below fall back to the direct-call path
+    # (read-models append + on_event), matching pre-Slice-2.2 behavior.
     # ------------------------------------------------------------------
-    _event_bus: Any = None  # EventBus | None; exposed on ProcessSharedServices below
+    _event_bus: Any = None  # EventBus | None; assigned below when [events] bus_funnel is on.
 
+    # NOTE: both closures read _event_bus at CALL time, not definition time. They must be
+    # defined exactly ONCE. Re-defining either name later would create a new function object
+    # and silently strand every reference already passed by value — the permission gate and
+    # the action approvers are constructed before the bus exists and hold theirs forever.
     def emit_runtime_event(name: str, payload: dict[str, Any] | None = None) -> None:
         event = RuntimeEvent(name=name, payload=payload or {}, timestamp=now_iso())
+        if _event_bus is not None:
+            _event_bus.publish(event)
+            return
         read_models.append_event(event)
         if on_event:
             on_event(event.name, event.payload)
@@ -2608,9 +2662,14 @@ def boot_agent(
         envelopes = adapt_event(event_type, payload)
         for envelope in envelopes:
             event = envelope.primary
-            read_models.append_event(event)
-            if on_event:
-                on_event(event.name, event.payload)
+            if _event_bus is not None:
+                _event_bus.publish(event)
+            else:
+                read_models.append_event(event)
+                if on_event:
+                    on_event(event.name, event.payload)
+            # Aliases: on_event only, never read_models (original behavior preserved).
+            if on_event and envelope.legacy_aliases:
                 for alias in envelope.legacy_aliases:
                     on_event(alias, event.payload)
 
@@ -2637,20 +2696,13 @@ def boot_agent(
         )
 
     # Build the session-scoped ActionApprover for destructive tool actions.
-    # Selection priority:
-    #   1. TUI path  — on_permission_request is set → HandlerApprover (reuses TUI modal).
-    #   2. Gateway/API path — no handler but context exists → RegistryApprover (parks in
-    #      the PendingApprovalRegistry so Agent B's /approvals endpoint can resolve it).
-    #   3. No human context at all → PolicyApprover (tier-gated: allow unrestricted, deny
-    #      guided/sandbox with an actionable message).
-    action_approver: ActionApprover
-    if on_permission_request is not None:
-        action_approver = HandlerApprover(on_permission_request, emit_runtime_event)
-    elif isinstance(runtime_gate, InteractivePermissionGate):
-        # InteractivePermissionGate without a handler = gateway context.
-        action_approver = RegistryApprover(get_approval_registry(), emit_runtime_event)
-    else:
-        action_approver = PolicyApprover(gate.tier)
+    # Selection priority is documented on select_action_approver() itself.
+    action_approver: ActionApprover = select_action_approver(
+        on_permission_request=on_permission_request,
+        approval_surface=approval_surface,
+        tier=gate.tier,
+        emit=emit_runtime_event,
+    )
 
     emit_runtime_event(
         BOOT_PROGRESS,
@@ -2682,12 +2734,12 @@ def boot_agent(
                 )
             else:
                 runtime_gate = gate
-            if on_permission_request is not None:
-                action_approver = HandlerApprover(on_permission_request, emit_runtime_event)
-            elif isinstance(runtime_gate, InteractivePermissionGate):
-                action_approver = RegistryApprover(get_approval_registry(), emit_runtime_event)
-            else:
-                action_approver = PolicyApprover(gate.tier)
+            action_approver = select_action_approver(
+                on_permission_request=on_permission_request,
+                approval_surface=approval_surface,
+                tier=gate.tier,
+                emit=emit_runtime_event,
+            )
             logger.info(
                 "boot_agent: rebuilt gate to tier=%r (was %r per .og)",
                 gate.tier,
@@ -2703,10 +2755,11 @@ def boot_agent(
     max_tokens = config.get("agent", {}).get("max_tokens", 8192)
 
     # ------------------------------------------------------------------
-    # Slice 2.2 — EventBus funnel: rebind emit/relay through the bus when
-    # [events] bus_funnel=true.  Back-compat: the two sync subscribers below
-    # are identical to the original direct-call code path, registered in the
-    # same order, so SSE/TUI output is byte-identical by construction.
+    # Slice 2.2 — EventBus funnel: when [events] bus_funnel=true, an EventBus
+    # is instantiated below and three sync subscribers are registered
+    # (read-models, surface, observability). emit_runtime_event / relay_event
+    # (defined once above) branch on the _event_bus cell at call time, so no
+    # rebind happens here — see the NOTE above their definition.
     # ------------------------------------------------------------------
     from hachi.core.settings import (
         EvalReportSettings,
@@ -2742,27 +2795,6 @@ def boot_agent(
         from hachi.core.obs.sink import ObservabilitySink
 
         _event_bus.subscribe("*", ObservabilitySink().handle, mode="sync", name="observability")
-
-        # Rebind emit_runtime_event to publish through the bus.
-        def emit_runtime_event(  # type: ignore[misc]  # noqa: F811
-            name: str, payload: dict[str, Any] | None = None
-        ) -> None:
-            event = RuntimeEvent(name=name, payload=payload or {}, timestamp=now_iso())
-            _event_bus.publish(event)
-
-        # Rebind relay_event: publish primary events through the bus (so all
-        # subscribers see them) and call on_event directly for legacy aliases
-        # (aliases are NOT appended to read_models, matching the original behavior).
-        def relay_event(  # type: ignore[misc]  # noqa: F811
-            event_type: str, payload: dict[str, Any] | None = None
-        ) -> None:
-            envelopes = adapt_event(event_type, payload)
-            for envelope in envelopes:
-                _event_bus.publish(envelope.primary)
-                # Aliases: on_event only, never read_models (original behavior preserved).
-                if on_event and envelope.legacy_aliases:
-                    for alias in envelope.legacy_aliases:
-                        on_event(alias, envelope.primary.payload)
 
         logger.info("boot_agent: EventBus funnel active (bus_funnel=true)")
     # ------------------------------------------------------------------
@@ -3024,9 +3056,15 @@ def boot_agent(
         _provider = ChromaMemoryProvider(vault=vault)
     else:
         _provider = resolve_provider(_memory_settings)
-        # Issue 10: pass the recall-distance threshold and core-memory cap from the
-        # [memory] config into the ChromaDB vault so settings.toml actually controls
-        # retrieval behaviour. Non-Chroma backends keep the plain initialize() signature.
+        # T-06 / BB-99: the settings that actually control retrieval behaviour
+        # (recall_distance_max, core_memory_max_entries, decay_half_life_days)
+        # are applied by ProcessSharedServices._init (shared_services.py) — that
+        # is the vault every session reuses via the `_shared.vault is not None`
+        # branch above. This `else` only runs when no shared vault exists yet
+        # (e.g. BB-6, before the first session has booted in this process); it
+        # mirrors _init's settings-passing so a vault built directly here is not
+        # silently under-configured. Non-Chroma backends keep the plain
+        # initialize() signature — they have no recall/decay machinery.
         if isinstance(_provider, ChromaMemoryProvider):
             _provider.initialize(
                 brain_dir=str(get_hachi_paths().data_dir),
@@ -3038,6 +3076,34 @@ def boot_agent(
             _provider.initialize(brain_dir=str(get_hachi_paths().data_dir))
         vault = _provider.vault if isinstance(_provider, ChromaMemoryProvider) else None
     memory.set_vault(vault)
+
+    # T-06 / BB-99: make a settings/vault mismatch loud instead of silent. If this
+    # ever fires it means a [memory] retrieval control was configured but the live
+    # vault was built from a different value — the exact failure mode that made
+    # M2 decay inert for every user. Read the properties directly (never a
+    # defaulted getattr — T-14) so a missing property raises instead of passing.
+    if vault is not None:
+        if vault.decay_half_life_days != _memory_settings.decay_half_life_days:
+            logger.warning(
+                "[memory] decay_half_life_days=%s was configured but the live vault "
+                "reports %s — memory settings are not reaching the vault",
+                _memory_settings.decay_half_life_days,
+                vault.decay_half_life_days,
+            )
+        if vault.recall_distance_max != _memory_settings.recall_distance_max:
+            logger.warning(
+                "[memory] recall_distance_max=%s was configured but the live vault "
+                "reports %s — memory settings are not reaching the vault",
+                _memory_settings.recall_distance_max,
+                vault.recall_distance_max,
+            )
+        if vault.core_memory_max_entries != _memory_settings.core_memory_max_entries:
+            logger.warning(
+                "[memory] core_memory_max_entries=%s was configured but the live "
+                "vault reports %s — memory settings are not reaching the vault",
+                _memory_settings.core_memory_max_entries,
+                vault.core_memory_max_entries,
+            )
 
     # P4-06: M4 — fts5_only backend forces graph=True (files are canonical; no Chroma needed)
     from hachi.core.memory_provider import FTS5MemoryProvider

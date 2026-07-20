@@ -273,7 +273,7 @@ class _InProcessGatewayRuntime:
         Returns:
             A booted :class:`AgentSession` ready to receive user input.
         """
-        agent = boot_agent(resume_session_id=resume_session_id)
+        agent = boot_agent(resume_session_id=resume_session_id, approval_surface="gateway")
         # Expose the resident worker to the module-level readiness probe so it
         # can check worker liveness without coupling probe ↔ runtime instance.
         global _GATEWAY_RESIDENT_WORKER  # noqa: PLW0603
@@ -2229,22 +2229,26 @@ class _InProcessGatewayRuntime:
         the agent's installed skill index so the browse panel is never empty.
         """
         try:
-            from hachi.og_engine.bundled_packs import list_bundled_packs
+            from hachi.core.bundled_packs import list_bundled_manifests
 
-            packs = list_bundled_packs()
-            if packs:
+            manifests = list_bundled_manifests()
+            if manifests:
                 return [
                     {
-                        "id": p.get("id") or p.get("name", ""),
-                        "name": p.get("name", ""),
-                        "description": p.get("description", ""),
-                        "version": p.get("version", ""),
-                        "tags": p.get("tags", []),
+                        "id": m.id,
+                        "name": _pack_display_name(m.id),
+                        "description": m.description,
+                        "version": m.semver,
+                        "tags": sorted(m.scope_ids()),
                     }
-                    for p in packs
+                    for m in manifests
                 ]
+            _logger.warning(
+                "get_kennel: no bundled pack manifests found under hachi/packs — "
+                "the kennel will fall back to installed skills"
+            )
         except Exception:
-            pass
+            _logger.warning("get_kennel: bundled pack listing failed", exc_info=True)
 
         # Fallback: expose installed skills as kennel items.
         with self._agents_lock:
@@ -2266,29 +2270,62 @@ class _InProcessGatewayRuntime:
     def add_skill_from_kennel(self, kennel_id: str) -> dict:
         """Install a skill from the kennel (POST /skills/add).
 
-        For bundled packs the skill file is already present; this marks it active
-        in the config and triggers a re-index. For community packs it downloads
-        and installs the .og file.
+        Installs a bundled pack's ``.og`` files into the user's skills
+        directory and re-indexes the live agent (if any) so the pack is
+        visible for the rest of this session.
+
+        Only bundled packs are installed today — there is no remote/community
+        pack registry (that would be a new network surface and a new
+        dependency decision; see T-04 spec ยง9).
 
         Args:
             kennel_id: The kennel item id returned by GET /skills/kennel.
 
         Returns:
-            Dict with ok=True and the installed skill name.
+            Dict with ok=True, the installed pack id, and the installed files.
+
+        Raises:
+            GatewayProtocolError: kennel_id is empty or names an unknown pack —
+                an unknown pack must never report success.
         """
         if not kennel_id.strip():
             raise GatewayProtocolError("kennel_id cannot be empty")
 
-        # Ask the agent to re-index skills (picks up newly activated packs).
+        from hachi.core.bundled_packs import install_bundled_pack
+
+        # BB-5: paths.workspace_dir does not exist — use skills_dir. Deliberately
+        # NOT a local `from hachi.core.paths import get_hachi_paths` here: that
+        # would rebind the name to hachi.core.paths's own attribute and silently
+        # bypass a `patch("hachi.cli.main.get_hachi_paths", ...)` in tests, which
+        # is the established pattern (tests/test_backup_restore.py) for keeping
+        # this call off the developer's real ~/.hachi data dir. The module-level
+        # import at the top of this file already makes the bare call patchable.
+        skills_dir = get_hachi_paths().skills_dir
+        result = install_bundled_pack(kennel_id.strip(), skills_dir, confirm=False)
+        if result is None:
+            raise GatewayProtocolError(f"unknown kennel pack: {kennel_id!r}")
+        manifest, installed_files = result
+
+        # Re-index so the newly installed .og files are visible this session.
         with self._agents_lock:
             agent = next(iter(self._agents.values()), None)
         if agent is not None:
             try:
-                agent.skill_engine.reindex()
+                agent.skill_engine.load_directory(skills_dir)
             except Exception:
-                pass
+                _logger.warning(
+                    "add_skill_from_kennel: re-index after installing %r failed; "
+                    "the pack is on disk but will not be visible until restart",
+                    kennel_id,
+                    exc_info=True,
+                )
 
-        return {"ok": True, "kennel_id": kennel_id, "installed": True}
+        return {
+            "ok": True,
+            "kennel_id": manifest.id,
+            "installed": True,
+            "files": installed_files,
+        }
 
     def delete_memory_fact(self, fact_id: str) -> dict:
         """Delete a fact from the vault by its content-hash id (DELETE /memory/facts/{fact_id}).
@@ -2597,6 +2634,15 @@ class _InProcessGatewayRuntime:
         from hachi.gateway.provider_admin import probe_provider as _probe
 
         return _probe(spec)
+
+
+def _pack_display_name(pack_id: str) -> str:
+    """Derive a kennel display name from a bundled pack id.
+
+    E.g. ``"crm-agent"`` -> ``"Crm Agent"``. Deliberately no translation table
+    (T-04 spec ยง5) — add one only if a specific pack id titles badly.
+    """
+    return pack_id.replace("-", " ").title()
 
 
 def _gateway_readiness_probe() -> tuple[bool, list[str], dict[str, str]]:

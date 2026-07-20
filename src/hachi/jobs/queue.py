@@ -29,7 +29,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from hachi.core.runtime_events import JOB_RETRY
+from hachi.core.runtime_events import JOB_RETRY, JOB_SKIPPED
 
 logger = logging.getLogger(__name__)
 
@@ -448,6 +448,29 @@ class JobWorker:
                     "label": job.name,
                 },
             )
+            # BB-40 / BB-100: a handler that degrades gracefully (e.g. no LLM
+            # client or vault resolvable) returns a "skipped:<reason>" string
+            # instead of raising -- deliberately, so a transient/config-level
+            # gap doesn't trigger a FAILED-job restart retry loop
+            # (core/runtime/job_handlers.py). That left a skip
+            # indistinguishable from a real success to every consumer of
+            # job.completed. Emit an ADDITIONAL, purely informational event
+            # carrying the reason so the jobs surface can tell them apart.
+            # Durable status stays COMPLETED (set above, unchanged) and a
+            # consumer that only understands job.completed/job.failed
+            # degrades gracefully, since this is an extra event, not a
+            # replacement.
+            if isinstance(output, str) and output.startswith("skipped:"):
+                self.on_job_event(
+                    JOB_SKIPPED,
+                    {
+                        "job_id": job.job_id,
+                        "job_name": job.name,
+                        "kind": job.job_type,
+                        "label": job.name,
+                        "reason": output[len("skipped:") :],
+                    },
+                )
         except Exception as e:
             duration = (datetime.now(UTC) - start_time).total_seconds()
             job.attempt += 1
