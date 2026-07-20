@@ -81,7 +81,9 @@ describe("live run — scripted demo queue must never fire (BB-36 gap-2 investig
   });
 
   it("runAllowLeash() in live mode does not start the scripted mock interval", () => {
-    useStore.getState().hydrate({ runLeash: { request: "x", action: "y", why: "z" } });
+    // T-17: runLeash now carries requestId (type conformance update, not a
+    // weakening — the mock fixture has no real gateway request_id).
+    useStore.getState().hydrate({ runLeash: { requestId: "", request: "x", action: "y", why: "z" } });
     useStore.getState().runAllowLeash();
     // Live branch clears the leash + resumes streaming without scheduling runTick.
     const state = useStore.getState();

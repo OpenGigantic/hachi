@@ -355,6 +355,8 @@ export interface RunPackMember {
 // ----- in-context leash -----
 export interface InContextLeash {
   msgId: number;
+  /** Gateway `request_id` from the permission.requested event. Empty when unknown. */
+  requestId: string;
   request: string;
   action: string;
   why: string;

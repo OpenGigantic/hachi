@@ -103,7 +103,7 @@ interface RunQueueItem {
   steps?: { i: number; state: string }[];
   pack?: { id: string; status: string; task?: string };
   spend?: number;
-  leash?: { request: string; action: string; why: string };
+  leash?: { requestId: string; request: string; action: string; why: string };
 }
 
 // ============================================================
@@ -208,7 +208,7 @@ interface State {
   runLines: { text: string; tone?: string }[];
   runStreaming: boolean;
   runDone: boolean;
-  runLeash: { request: string; action: string; why: string } | null;
+  runLeash: { requestId: string; request: string; action: string; why: string } | null;
   runSpent: number;
   runPack: RunPackMember[];
   runSteps: { label: string; state: string }[];
@@ -1261,6 +1261,9 @@ export const useStore = create<State & Actions>()(
                       set({
                         inContext: {
                           msgId: hachiId,
+                          // Mock-mode fixture — never sent to a gateway, so there is
+                          // no real request_id to carry.
+                          requestId: "",
                           request: "Hachi wants to send an email to Priya",
                           action:
                             "gmail.send to: priya@studio.co · Re: Q3 deck feedback",
@@ -1569,7 +1572,7 @@ export const useStore = create<State & Actions>()(
             { line: { text: "✓ reader-2 done — looks clean", tone: "success" }, pack: { id: "p2", status: "done", task: "PR #485 · looks clean" }, spend: 0.01 },
             { line: { text: "→ writer drafting the summary", tone: "muted" }, pack: { id: "p3", status: "working", task: "drafting the summary" }, steps: [{ i: 1, state: "done" }, { i: 2, state: "working" }] },
             { line: { text: "✓ summary ready — 6 PRs · 2 need review", tone: "success" }, pack: { id: "p3", status: "done", task: "summary drafted" }, steps: [{ i: 2, state: "done" }], spend: 0.01 },
-            { leash: { request: "Hachi wants to post the summary", action: "slack.post #eng · \"This week: 6 PRs, 2 need review\"", why: "share the weekly PR summary with your team" }, steps: [{ i: 3, state: "working" }] },
+            { leash: { requestId: "", request: "Hachi wants to post the summary", action: "slack.post #eng · \"This week: 6 PRs, 2 need review\"", why: "share the weekly PR summary with your team" }, steps: [{ i: 3, state: "working" }] },
             { line: { text: "✓ posted to #eng", tone: "success" } },
           ];
           _runStart = Date.now();
