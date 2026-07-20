@@ -1153,9 +1153,9 @@ def create_gateway_app(
                     _wake.clear()
 
                     if await request.is_disconnected():
-                        # P1-4: on browser disconnect also cancel the server-side turn so
-                        # the worker thread stops, not just the coroutine awaiting it.
-                        control_plane.interrupt(session_id)
+                        # T-29: a disconnect is CONNECTION-scoped; the turn is SESSION-scoped.
+                        # Stop this stream only. Cancelling the turn is an explicit user action
+                        # via POST /sessions/{session_id}/interrupt (ownership-checked).
                         break
                     try:
                         batch = control_plane.read_session_events(
