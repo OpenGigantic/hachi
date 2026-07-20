@@ -183,9 +183,15 @@ def handle_extract_fact(
         return "skipped:no_vault"
 
     if ctx.llm_client is None:
+        # BB-40 / BB-100: the client is now resolved via the secret store,
+        # ANTHROPIC_API_KEY, and a project .env (memory_vault._get_llm_client),
+        # not just the raw env var — name all three sources here too, or this
+        # message points an operator nowhere near the real cause (BB-40's own
+        # autopsy called out exactly this failure mode).
         logger.warning(
-            "handle_extract_fact: LLM client not available (ANTHROPIC_API_KEY not set?) — "
-            "skipping. session=%r text_len=%d",
+            "handle_extract_fact: LLM client not available (no Anthropic API key "
+            "resolvable from the secret store, ANTHROPIC_API_KEY, or a project .env "
+            "file?) — skipping. session=%r text_len=%d",
             session_id,
             len(text),
         )
@@ -422,38 +428,55 @@ def _try_index_attachment(file_id: str, name: str, raw_text: str, guarded_text: 
 
 
 def _emit_file_extracted(file_id: str, name: str, media_type: str, sidecar_id: str) -> None:
-    """Publish ``file.extracted`` via a fresh in-process EventBus call."""
+    """Publish ``file.extracted`` on the process-shared EventBus.
+
+    Layering: ``hachi.core.*`` must not import ``hachi.gateway`` at module scope
+    (import-linter "the engine must not import the gateway service"). The lazy,
+    inside-function import below is the sanctioned seam — it is listed in
+    pyproject's ignore_imports for this module. Do NOT hoist it.
+    """
+    from hachi.core.runtime_events import FILE_EXTRACTED, RuntimeEvent, now_iso
+
+    bus: Any = None
     try:
-        from hachi.core.event_bus import EventBus
-        from hachi.core.runtime_events import FILE_EXTRACTED, RuntimeEvent, now_iso
+        from hachi.gateway.shared_services import ProcessSharedServices
 
-        # Fresh bus with no subscribers — publish propagates to any wired bus
-        # only if it was injected.  We re-use the shared _shared bus when
-        # available (best-effort; not required for correctness).
-        bus: Any = None
-        try:
-            from hachi.gateway.orchestrator import _shared  # type: ignore[attr-defined]
-
-            bus = getattr(_shared, "event_bus", None)
-        except Exception:
-            pass
-
-        if bus is None:
-            bus = EventBus()
-
-        event = RuntimeEvent(
-            name=FILE_EXTRACTED,
-            payload={
-                "file_id": file_id,
-                "name": name,
-                "media_type": media_type,
-                "sidecar_id": sidecar_id,
-            },
-            timestamp=now_iso(),
-        )
-        bus.publish(event)
+        shared = ProcessSharedServices.instance()
+        if shared is not None:
+            bus = shared.event_bus
     except Exception:
-        logger.debug("_emit_file_extracted: publish failed (non-fatal)", exc_info=True)
+        logger.warning(
+            "_emit_file_extracted: could not reach ProcessSharedServices; "
+            "file.extracted will not be delivered",
+            exc_info=True,
+        )
+
+    if bus is None:
+        # Legitimate when [events] bus_funnel=false or no session has booted (BB-6) —
+        # but the event IS being dropped, so say so rather than publishing into a
+        # throwaway bus that reaches nobody.
+        logger.warning(
+            "_emit_file_extracted: no shared EventBus (bus_funnel disabled or no live "
+            "session) — dropping file.extracted for file_id=%s",
+            file_id,
+        )
+        return
+
+    try:
+        bus.publish(
+            RuntimeEvent(
+                name=FILE_EXTRACTED,
+                payload={
+                    "file_id": file_id,
+                    "name": name,
+                    "media_type": media_type,
+                    "sidecar_id": sidecar_id,
+                },
+                timestamp=now_iso(),
+            )
+        )
+    except Exception:
+        logger.warning("_emit_file_extracted: publish failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

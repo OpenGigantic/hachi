@@ -643,6 +643,18 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 
 ### BB-40 — Automatic background fact-extraction ("auto-memory") was a complete, silent no-op
 
+> **CORRECTED 2026-07-20 (T-11 / BB-100) — this entry read as fully resolved and was not.**
+> Cause #2's claimed fix below ("changed `extract_facts()`'s gate ... to
+> `if llm_client is None`") was never applied: `git log -L
+> 218,228:src/hachi/core/memory.py` returned exactly **one** commit (`04f2f90`, the
+> original feature commit) right up until BB-100 landed the actual change. The **Locked
+> by** list below was also fabricated — a whole-repo grep (not just `tests/`) found
+> **zero** matches for any of the three named tests, under any name; none of them was
+> ever written. See **BB-100** for the real fix and the real, verified-failing-then-passing
+> locking tests. The rest of this entry is kept for the historical record of what was
+> diagnosed at the time — do not trust its "Fix"/"Locked by" claims below without
+> cross-checking BB-100 first.
+
 - **Symptom:** Hachi's advertised feature — background fact extraction after every
   turn so the user never has to say "remember this" — never wrote a single fact to
   the vault, for any user, in production. No error surfaced anywhere; the job queue
@@ -663,24 +675,30 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
      `MemoryManager._run_fact_extraction`), each of which already gates on
      `client is None` before calling `extract_facts`. This doubly killed
      auto-memory for any user on a non-Anthropic backend (Ollama/Groq/OpenRouter)
-     even after fixing bug 1.
+     even after fixing bug 1. **This cause was diagnosed correctly here and then not
+     fixed — see the correction note above and BB-100.**
   3. The pre-existing test suite (`tests/test_durable_fact_extraction.py`) always
      injected `_vault_factory=lambda: vault`, so it never exercised the real,
      no-factory production code path — which is exactly why this shipped silently.
-- **Fix:** added `get_memory_vault()` to `src/hachi/core/memory_vault.py` — a
-  pure, paths-only constructor (`MemoryVault(brain_dir=str(get_hachi_paths().data_dir))`)
-  with NO import of `hachi.gateway` (the import-linter "engine must not import the
-  gateway service" contract has no ignore entry for this module). Moved the
-  process-shared-vault *preference* (reuse the live session's ChromaDB client
-  instead of opening a second `PersistentClient`) into
-  `build_job_context()`/`job_handlers.py` itself, which already has a frozen,
-  allowed seam to `hachi.gateway.orchestrator` — it now tries
+     **This specific gap is still open as of BB-100:** no test in the repo drives
+     `build_job_context()`'s true no-factory branch against a real `get_memory_vault()`
+     — cause #1's fix is real in the code (verified) but still has no dedicated
+     regression test locking it. Flagged as an open follow-up, not fixed by BB-100.
+- **Fix (cause #1 only — cause #2's claimed fix below was never applied; see the
+  correction note above and BB-100):** added `get_memory_vault()` to
+  `src/hachi/core/memory_vault.py` — a pure, paths-only constructor
+  (`MemoryVault(brain_dir=str(get_hachi_paths().data_dir))`) with NO import of
+  `hachi.gateway` (the import-linter "engine must not import the gateway service"
+  contract has no ignore entry for this module). Moved the process-shared-vault
+  *preference* (reuse the live session's ChromaDB client instead of opening a second
+  `PersistentClient`) into `build_job_context()`/`job_handlers.py` itself, which
+  already has a frozen, allowed seam to `hachi.gateway.orchestrator` — it now tries
   `orchestrator._shared.vault` first and falls back to `get_memory_vault()`.
   Upgraded the swallowed-import log line from `logger.debug` to
   `logger.warning(..., exc_info=True)` so a future regression here is visible.
-  Changed `extract_facts()`'s gate from `if not os.environ.get("ANTHROPIC_API_KEY")`
-  to `if llm_client is None` — the client itself, not an Anthropic-specific env var,
-  is the correct signal that extraction can run.
+  ~~Changed `extract_facts()`'s gate from `if not os.environ.get("ANTHROPIC_API_KEY")`
+  to `if llm_client is None`~~ — **this sentence was false. The gate was untouched by
+  this entry; it was fixed only by BB-100, on 2026-07-20.**
 - **Avoid:** whenever a durable job handler's `build_job_context()`-style no-factory
   branch imports a "get the real service" function, grep to confirm that function
   actually exists before trusting a bare `except Exception: logger.debug(...)` to
@@ -689,10 +707,20 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `_factory=` path is NOT testing the real production code path — always add at
   least one test with no factory injected for the handler's actual no-argument
   resolution branch. Feature gates for "is an LLM client available" must check the
-  resolved client object, never a single provider's env var.
-- **Locked by:** `tests/test_durable_fact_extraction.py::test_build_job_context_resolves_real_vault_with_no_factory`,
+  resolved client object, never a single provider's env var. **And: when a bug-bank
+  Fix section claims a code change, verify the change is actually in the code
+  (`git log -L <start>,<end>:<file>`) before trusting the entry and moving on — this
+  entry's own cause #2 fix was claimed and never landed, undetected for weeks until
+  T-11's audit pass.**
+- **Locked by:** ~~`tests/test_durable_fact_extraction.py::
+  test_build_job_context_resolves_real_vault_with_no_factory`,
   `::test_handle_extract_fact_no_vault_factory_writes_real_fact`, and
-  `::test_extract_facts_does_not_require_anthropic_api_key_when_client_present`.
+  `::test_extract_facts_does_not_require_anthropic_api_key_when_client_present`~~ —
+  **none of these three tests exist anywhere in this repository** (verified by a
+  whole-repo grep of `tests/`, `src/`, and `docs/` — zero matches outside this doc);
+  **this line was entirely fabricated.** Cause #2 is now actually locked by **BB-100**
+  / `tests/test_auto_memory_key_resolution.py`. Cause #1/#3's no-factory-path gap
+  remains unlocked by any test in the repo — see the note under Root cause #3 above.
 
 ### BB-43 — Benchmark headline measured a failed query; the FPR gate was never run against the shipped corpus
 
@@ -2173,6 +2201,490 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Fix:** Removed `!TABLE_ROW_RE.test(rawLines[i])` from the paragraph stop condition. Pipe-delimited lines that don't form a valid table are now absorbed into paragraphs as plain text (the table-detection check at the top of the outer loop handles the valid-table path before the paragraph fallback is ever reached).
 - **Avoid:** never add a line pattern to the paragraph stop condition unless that same pattern is also handled by an earlier branch that ALWAYS increments `i`; any stop condition that causes an empty `lines` result without advancing `i` produces an infinite outer loop.
 - **Locked by:** `frontend/src/components/ui/Markdown.test.tsx` — "does not produce a table without a separator row" passes the failing input directly to the component.
+
+### BB-89 — Sub-agent blocklist named a nonexistent tool; schedule mutators walked free
+
+- **Symptom:** A sub-agent whose role `.og` declares no `::meta tools:` allowlist could call
+  `create_schedule` and `delete_schedule`, creating or deleting the user's durable, recurring,
+  autonomously-firing schedules. `BLOCKED_TOOL_NAMES` is documented as "the security boundary".
+- **Root cause:** Constant-name vs tool-name mismatch. `schedule_tools.py` defines
+  `SCHEDULE_TASK_SCHEMA` whose registered `"name"` is `create_schedule`, and
+  `CANCEL_SCHEDULE_SCHEMA` whose name is `delete_schedule`. The blocklist was written from the
+  constant names, so it blocked the string `"schedule_task"` (a no-op — no such tool) plus the two
+  harmless read/alias tools, and missed both mutators. Nothing validated the strings against real
+  tool names; `test_security_hardening.py` asserted `"schedule_task" in BLOCKED_TOOL_NAMES`,
+  locking the bug in as the contract.
+- **Fix:** Replaced `schedule_task` with `create_schedule`, added `delete_schedule`, declared the
+  two genuinely-unregistered `core_*_agent_profile` entries in `_RESERVED_BLOCKED_NAMES`, and
+  added an integrity test that AST-scans the source tree for tool-schema `name` literals and
+  fails on any blocked name that matches none of them.
+- **Avoid:** A tool name is the `"name"` field of the registered schema — never the Python
+  constant, never the handler function's identifier. Any hand-maintained list of tool names needs
+  a test that resolves every entry against a real schema, or it will rot silently and fail open.
+- **Locked by:** `tests/test_delegation_blocklist_integrity.py` —
+  `test_schedule_mutators_are_blocked_from_sub_agents`,
+  `test_every_blocked_name_is_a_real_tool_name`
+
+### BB-92 — `settings.example.toml` was invalid TOML; copying it silently discarded the user's whole config
+
+- **Symptom:** a user copies `settings.example.toml` to `settings.toml` as the file's own
+  header instructs, edits it, and *nothing* takes effect — no crash, no non-zero exit.
+- **Root cause:** 11 lines used `key = null`. TOML has no null literal, so `tomllib` aborted
+  at line 122. `_read_toml(primary=True)` (`core/config_loader.py:105`) catches
+  `TOMLDecodeError`, logs `logger.error`, and returns `{}` — the process continues on
+  built-in defaults with the entire file ignored. Nothing in CI had ever parsed the example.
+- **Fix:** commented out the 11 assignments (matching the pre-existing line-47 precedent)
+  rather than deleting them or substituting `0`/`""` — `None` means "no cap" and `0` is a
+  live cap, so a value substitution would document behaviour Hachi does not have.
+- **Avoid:** any file the docs tell a user to copy must be parsed by a test. And when
+  asserting "documented keys are real keys", walk `model_fields` by hand — `ResolvedConfig`
+  and all 20 nested section models set `extra="ignore"`, so `model_validate()` accepts
+  anything and asserts nothing.
+- **Locked by:** `tests/test_config_loader.py` — `test_settings_example_toml_parses`,
+  `test_settings_example_toml_keys_are_known_config_fields`
+
+### BB-93 — Routing validation never returned a cost warning (arity error swallowed since inception)
+
+- **Symptom:** `POST` to the routing validate/apply endpoint always returned
+  `warnings: []`, even for a config that pins `reasoning` to a model ~16× the price of
+  `default_model` — exactly the BB-30 trap the guard was written to catch.
+- **Root cause:** `core/routing/validate.py` called
+  `policy.costly_capability_warnings()` with no arguments, but the method requires a
+  positional `registry` (`core/routing/policy.py:56`). Every call raised `TypeError`
+  into a bare `except Exception: pass`, so the warnings list was unconditionally empty.
+  `registry` was already in scope — it is `validate_routing`'s first parameter.
+  `gateway/orchestrator.py` called the same method correctly, so boot-time warnings
+  worked and masked the gap.
+- **Fix:** passed `registry` at the call site and replaced the bare swallow with
+  `logger.warning(..., exc_info=True)`.
+- **Avoid:** never wrap a *single* call in `except Exception: pass` — an arity error is
+  indistinguishable from "no warnings" and survives forever. A test that constructs the
+  result dataclass by hand does not test the function that builds it.
+- **Locked by:** `tests/test_routing_validate.py` —
+  `test_costly_capability_override_produces_a_warning`
+
+### BB-91 — boot_agent defined emit_runtime_event twice; the governance path kept the pre-bus copy
+
+- **Symptom:** LATENT — no confirmed user-visible symptom. With `[events] bus_funnel=true` (the
+  default), every subsystem published runtime events through the `EventBus` **except** the
+  permission/approval subsystem, whose emitter bypassed the bus entirely and therefore could never
+  reach `ObservabilitySink` or any other bus subscriber. Two facts bound the present-day impact to
+  ~zero and both are worth remembering: (a) `ObservabilitySink._SPAN_EVENTS` contains no
+  `permission.*` name, so the sink ignored these events anyway — a second, independent gap; and
+  (b) all six affected call sites sit in branches predicated on `on_permission_request`, which no
+  production caller passes (see BB-90/T-01). The defect would have gone live the moment T-01
+  made `RegistryApprover` reachable.
+- **Root cause:** `gateway/orchestrator.py` `boot_agent` defined `emit_runtime_event` (and
+  `relay_event`) once unconditionally, then **again** ~145 lines later inside
+  `if _events_cfg.bus_funnel:` with `# noqa: F811`. Rebinding a local name creates a new function
+  object; it does not update references already passed by value. Six sites passed the emitter by
+  value **before** the rebind — `InteractivePermissionGate(event_emitter=…)` ×2, `HandlerApprover`
+  ×2, `RegistryApprover` ×2 — and each stores it as `self._emit`. `AgentSession(...)` showed the
+  split in one call expression: the positional `runtime_gate` held the old emitter while the
+  `event_emitter=` keyword on the next line held the new one. The block's own comment claimed the
+  funnel was "byte-identical by construction" while registering a third subscriber the direct path
+  never had.
+- **Fix:** One definition each, reading the `_event_bus` closure cell at call time (`if
+  _event_bus is not None: publish(...) else: <direct path>`), and both redefinitions deleted along
+  with their `# noqa: F811`. The cell is declared before the closures, so a reference captured 100
+  lines earlier follows the bus once it is assigned. Stale comments corrected in
+  `gateway/orchestrator.py` and `core/settings.py`.
+- **Avoid:** Never re-`def` a name that has already been passed as an argument — branch inside the
+  single definition on a closure cell instead. Treat `# noqa: F811` on a second definition of the
+  same callable as a defect, not a style waiver.
+- **Locked by:** `tests/test_emit_runtime_event_single_definition.py` —
+  `test_boot_agent_defines_each_event_closure_once`,
+  `test_late_bound_bus_reaches_a_reference_captured_before_assignment`
+
+### BB-90 — `RegistryApprover` unreachable: every session silently got `PolicyApprover`
+
+- **Symptom:** `GET /approvals` was permanently `{"pending": []}` and the Leash screen was structurally empty. Under `guided`/`sandbox` every gated action was denied instantly with "Connect the TUI or web companion to approve" — while the companion was connected. Under `unrestricted` every gated action was auto-approved with no request and no audit row.
+- **Root cause:** Two compounding defects in `boot_agent` (`gateway/orchestrator.py`). (1) The `RegistryApprover` branch was `elif isinstance(runtime_gate, InteractivePermissionGate)`, but `runtime_gate` only becomes an `InteractivePermissionGate` when `on_permission_request` is truthy — and reaching the `elif` requires it to be `None`. Logically unreachable, and duplicated verbatim in the tier-reconcile block. (2) `on_permission_request` was passed by zero call sites in `src/`, so all five boot paths fell through to `PolicyApprover`. `permission.requested` therefore had no live emitter and `PendingApprovalRegistry` was never populated.
+- **Fix:** Extracted `select_action_approver(...)` as the single selection rule and added an explicit keyword-only `approval_surface` parameter to `boot_agent`; `_InProcessGatewayRuntime._boot_session_agent` (`cli/main.py`) passes `"gateway"`. Both former `if/elif/else` sites now call the helper. Two test doubles (`tests/test_cold_start_resume.py`, `tests/test_gateway_runtime_validation.py`) that hard-coded `boot_agent`'s old positional/keyword signature needed the new keyword-only parameter added to stay in sync — their assertions were untouched.
+- **Avoid:** never branch on a value derived from the same condition you already
+  branched on — and never let a composition root choose a strategy on a signal no
+  caller supplies. If a boot path needs to pick a behaviour, pass it explicitly and
+  pin the choice with a test.
+- **Locked by:** `tests/test_approver_selection.py` — `test_gateway_boot_path_requests_registry_approver`,
+  `test_select_action_approver_maps_gateway_surface_to_registry_approver`,
+  `test_handler_still_wins_over_surface`
+
+### BB-94 — One SSE viewer disconnecting cancelled the whole session's turn
+
+- **Symptom:** closing a browser tab, a proxy blip, or a second viewer navigating away stopped
+  generation mid-turn for every other viewer of the same session. The transcript ended
+  mid-sentence with nothing in the audit trail explaining why.
+- **Root cause:** in `stream_session_events` (`gateway/fastapi_app.py`), the disconnect branch
+  called `control_plane.interrupt(session_id)`. `request.is_disconnected()` is CONNECTION-local;
+  `session_id` is a path parameter shared by every viewer, so a connection-scoped trigger fired a
+  session-scoped cancel. Added as "P1-4" so the Stop button would kill the worker thread — but that
+  requirement was already met by the dedicated, ownership-checked
+  `POST /sessions/{session_id}/interrupt` route.
+- **Fix:** dropped the `interrupt()` call from the disconnect branch; the `break` remains so the
+  abandoned stream still closes. Turn cancellation is now an explicit user action only.
+- **Avoid:** never trigger session-scoped side effects from a connection-scoped signal. Before
+  calling `interrupt`/`close`/`cancel` with a `session_id`, ask whether the thing that triggered it
+  is owned by ONE connection or by the session. (The mirror site in `_openai_event_stream` is
+  correct precisely because its session is minted per request.) Separately: neither
+  `starlette.testclient.TestClient` nor `httpx.ASGITransport` can exercise a mid-stream
+  `request.is_disconnected()` — both run the whole ASGI app call to completion inside a blocking
+  call before handing back a response, and their `receive()` only ever reports `http.disconnect`
+  *after* the body is already complete. A test built on early-exiting a `TestClient.stream()`
+  context manager passes whether or not the code under test is correct (verified: it took ~36s and
+  exited via `max_idle_cycles`, never the disconnect branch). Drive the route coroutine directly
+  with a hand-built `Request`/`receive()` instead when a disconnect must be observed mid-stream.
+- **Locked by:** `tests/test_gateway_sse.py` — `test_stream_disconnect_does_not_interrupt_other_viewers`
+
+### BB-96 — `file.extracted` was published into a throwaway EventBus and reached nobody
+
+- **Symptom:** the `file.extracted` runtime event never arrived — no SSE delivery, no
+  subscriber invocation — after an attachment finished text extraction. No error was
+  logged, because the publish itself "succeeded".
+- **Root cause:** `_emit_file_extracted` (`core/runtime/job_handlers.py`) did
+  `from hachi.gateway.orchestrator import _shared` inside a try/except. `_shared` is not
+  a module-level name in `orchestrator.py` (AST-verified: the only module-level assigns
+  are `logger` and `_SWEEP_INTERVAL_SECONDS`) — it is a local inside `boot_agent`. The
+  `ImportError` was swallowed, `bus` stayed `None`, and the code then constructed a
+  fresh subscriber-less `EventBus()` and published into that. The correct accessor,
+  `ProcessSharedServices.instance()`, already existed and was already used by
+  `core/cost.py` and `gateway/fastapi_app.py`. A `# type: ignore[attr-defined]` on the
+  bad import had silenced the type checker.
+- **Fix:** switched to `ProcessSharedServices.instance().event_bus`, deleted the
+  throwaway `EventBus()` fallback (a bus with no subscribers is a dropped event, not a
+  degraded one), and turned every swallow into a `logger.warning` — including an
+  explicit warning when there is no shared bus at all. `pyproject.toml`'s import-linter
+  `ignore_imports` seam list was updated to match: the now-dead
+  `hachi.core.runtime.job_handlers -> hachi.gateway.orchestrator` entry (import-linter
+  fails on a stale, unmatched ignore) was replaced with
+  `hachi.core.runtime.job_handlers -> hachi.gateway.shared_services`, next to the
+  identical `core.cost` / `core.runtime.resume` seams.
+- **Avoid:** never import a private name from another module's *function* scope and
+  assume it is a module global — grep for a module-level binding first. And never
+  "degrade" by constructing an empty sink: a publish into a subscriber-less bus is
+  indistinguishable from success at the call site. When a `# type: ignore[attr-defined]`
+  is needed to make an import type-check, the import is probably wrong.
+- **Locked by:** `tests/test_file_extracted_event.py` —
+  `test_file_extracted_reaches_the_shared_bus`,
+  `test_file_extracted_warns_when_no_shared_bus`
+
+### BB-97 — Client-fabricated rows in the permission audit log (BB-87 recurrence)
+
+- **Symptom:** Allowing or declining an approval unshifted a locally-invented row — with a `new Date().toLocaleTimeString()` timestamp — into the same `auditLog` slice that `loadApprovals()` hydrates from `GET /permissions/audit`. Because real gateway rows deliberately render `ts: "—"` (they carry no server timestamp), the fabricated row was the ONLY row in the table with a timestamp, i.e. it looked more authoritative than the real ones. `declineAll` injected one per approval.
+- **Root cause:** `resolveApproval` in `frontend/src/lib/store/store.ts` did three writes in one `set()`: filter `approvals` (correct), unshift `history` (correct — client-side "past decisions", no server counterpart), and unshift `auditLog` (wrong — server truth). BB-87 had already removed the fetch-time fabrication in the adapter (`approvals.ts` now renders the `ts: "—"` sentinel) but left this decision-time fabrication in the store untouched — the same class of bug BB-87's "Avoid" line warned about recurred one call site over, in the consumer of the slice rather than the producer.
+- **Fix:** Deleted the `AuditEntry` construction and the `auditLog` write from `resolveApproval`, leaving a comment explaining why the obvious write is absent. `history` and the toast are unchanged, so the user still gets immediate feedback; the audit table now only ever refreshes from the gateway, on the next `loadApprovals()` (triggered by `postDecision`'s `invalidate("approvals")`).
+- **Avoid:** a store slice hydrated from the server has exactly one writer — the loader. Never unshift a locally-constructed record into it, and never invent a timestamp for a row whose server counterpart has none. This is BB-87's recurrence: fixing a fabrication at one call site (the adapter) does not fix the invariant everywhere it applies — grep every writer of a server-hydrated slice, not just the one that first tripped the bug.
+- **Locked by:** `frontend/src/lib/store/store.test.ts` — describe block "audit log is server truth — never client-fabricated (BB-87 recurrence)" ("resolving an approval does not write into the server-hydrated audit log", "declineAll does not inject one fabricated row per approval").
+
+### BB-95 — Anthropic LLM calls had NO timeout (not 600s); the configured `timeout_s` was never read
+
+- **Symptom:** an Anthropic chat turn could hang indefinitely — spinner forever, no error, a
+  parked thread per hung call (`loop.py`/`resilience.py` are fully synchronous, so a blocked
+  socket read blocks an OS thread). Setting `[routing.resilience] timeout_s` changed nothing.
+- **Root cause:** two independent gaps. (1) `create_llm_client` (`core/llm.py:862`) omitted
+  `timeout` at all six returns, so `AnthropicClient.__init__`'s own default of `None` was
+  used. (2) That `None` was passed *explicitly* to `anthropic.Anthropic(timeout=...)`
+  (`llm.py:273`), and in the installed `anthropic` **0.105.2** an explicit `None` is a
+  **given** value: `_base_client.py:932` only substitutes `DEFAULT_TIMEOUT` when
+  `not is_given(timeout)`, and `is_given(None)` is `True`. Verified by executing the
+  installed package: `anthropic.Anthropic(api_key=..., timeout=None)._client.timeout` →
+  `Timeout(timeout=None)` (wait forever), vs. omitting the kwarg entirely →
+  `Timeout(connect=5.0, read=600, write=600, pool=600)`. So httpx received `Timeout(None)`,
+  not the SDK's 600s default (an earlier review draft assumed the latter). The SDK's
+  secondary non-streaming ceiling is gated on `self._client.timeout == DEFAULT_TIMEOUT`
+  (`anthropic/resources/messages/messages.py:987`) and was therefore also disabled.
+  `RetryPolicy.timeout_s` (`core/resilience.py:86`) and `ResilienceSettings.timeout_s`
+  (`core/settings.py:170`) had **zero** readers — a word-boundary grep across `src/` returned
+  only the two definitions and one docstring.
+- **Fix:** `create_llm_client` takes a keyword-only `timeout_s: float = 60.0` (keyword-only so
+  no existing positional call site shifts) and applies it to `AnthropicClient` and all four
+  `OpenAICompatibleClient` returns; the `chatgpt-web` branch (`ChatGPTWebClient` — opt-in,
+  `HACHI_UNOFFICIAL=1`-gated, different transport) is deliberately left alone.
+  `ModelRouter._build_client`'s `create_llm_client` fallback (`core/routing/router.py:301`)
+  now passes `timeout_s=self._resilience.timeout_s` (the float, never the `RetryPolicy`
+  object — `core/llm.py` must stay free of a `core/resilience.py` import, which already
+  imports `llm.py`, or the two modules cycle). `AnthropicClient.__init__`'s docstring — which
+  claimed `None` meant "the SDK default (600s)" — corrected.
+- **Follow-up fix — direct-construction call sites (closed):** two production call sites
+  construct `AnthropicClient` directly, bypassing `create_llm_client` entirely, and passed no
+  `timeout` — `core/sub_agent.py:685` (`AnthropicClient(model=model, max_tokens=4096)`, the
+  sub-agent **delegation path**) and `tools/memory_tools.py:120` (`AnthropicClient()`, the
+  background memory-consolidation job). Both silently inherited the class's own
+  `timeout=None` default and could hang forever — closing this was the point of T-23 (an
+  unattended sub-agent hanging is exactly the story it exists to prevent), so leaving these
+  two sites unbounded would have shipped the fix half-done. Root-caused and closed two ways:
+  (a) **root fix** — `AnthropicClient.__init__`'s own default changed from `timeout: float |
+  None = None` to `timeout: float = 60.0` (`core/llm.py:257`), so *every* direct construction
+  gets a backstop regardless of call site, present or future; the type was narrowed from
+  `float | None` to `float` (matching `OpenAICompatibleClient`'s existing pattern) so a
+  future explicit `timeout=None` is at least a visible, deliberate choice rather than a type-
+  compatible default. This alone fixes `sub_agent.py:685` with no code change there. (b)
+  **narrow fix** — `tools/memory_tools.py:120` additionally now passes an explicit
+  `timeout=30.0`, matching `core/memory_vault.py:304`'s identical
+  memory-consolidation-engine convention (both run on the durable job-queue worker, not the
+  user-facing turn, so the tighter background bound is more consistent than the general 60s
+  default). `core/memory_vault.py:304` itself remains untouched — it already worked.
+- **Residual gap, still not fixed (genuinely deferred, adjacent to T-24):** `ModelRouter`'s
+  *primary* build path, `provider.build_llm_client(desc.id)`
+  (`core/providers/anthropic_provider.py:88`, `core/providers/openai_compat_provider.py:96`),
+  calls `create_llm_client` without forwarding `timeout_s`, so it gets the 60s *default* (the
+  infinite hang is closed there too) but not a non-default configured
+  `[routing.resilience].timeout_s` — only the `router.py:301` fallback (taken when no
+  `ProviderRegistry` is wired, or a provider adapter raises) receives the configured value.
+- **Avoid:** when an SDK distinguishes "not given" from `None` (a `NotGiven` sentinel),
+  passing `None` explicitly is NOT the same as omitting the argument. Verify against the
+  installed package (CLAUDE.md Rule 4) — both a review and a corrections pass got this wrong
+  from the docstring alone. And: a config field with zero readers is a lie; grep `-w` for
+  every new settings field before trusting it is wired. And: a factory-level fix
+  (`create_llm_client`) does not protect direct construction — grep the class name itself
+  (`AnthropicClient(`) for bare call sites, not just the factory's call sites, before calling
+  a "thread it through the factory" fix complete.
+- **Locked by:** `tests/test_llm_env_resolution.py` —
+  `test_create_llm_client_applies_timeout_to_anthropic_sdk_client`,
+  `test_create_llm_client_applies_timeout_to_openai_compatible`,
+  `test_anthropic_client_default_timeout_is_bounded_not_none`;
+  `tests/test_routing_compat.py::TestSubAgentD2Regression::test_no_session_client_default_anthropic_has_bounded_timeout`;
+  `tests/test_memory_tools_queue.py::test_smart_upsert_conflict_resolution_anthropic_client_has_bounded_timeout`
+
+### BB-98 — Kennel "Add" reported success while installing nothing, for every user
+
+- **Symptom:** `GET /skills/kennel` never listed a bundled pack, and clicking **Add** in the
+  web UI showed "Added <pack> — it's ready to use" while no file was written. Requesting a
+  pack id that does not exist also returned `{"ok": true, "installed": true}`.
+- **Root cause:** three independent dead links in one feature. (1)
+  `_InProcessGatewayRuntime.get_kennel` (`cli/main.py`) imported
+  `hachi.og_engine.bundled_packs.list_bundled_packs` — wrong *package* (the module is
+  `hachi.core.bundled_packs`) **and** a symbol that exists nowhere in `src/` (it was named only
+  in that module's own stale docstring). The resulting `ModuleNotFoundError` was swallowed by
+  `except Exception: pass`. (2) `add_skill_from_kennel` validated `kennel_id` as non-empty and
+  then never used it again — no install call existed anywhere in the method — before returning
+  a hardcoded `{"ok": True, "installed": True}` for *any* id, including ids that do not exist.
+  (3) Its re-index call was `agent.skill_engine.reindex()`; `SkillEngine` has no `reindex`
+  method (verified: no `def reindex` anywhere in `src/`), so that raised `AttributeError` into
+  another `except Exception: pass`. No function in `hachi/core/bundled_packs.py` — a fully
+  working, already-tested module (`tests/test_p2_12_agent_packs.py`) — had any production
+  caller at all; it was a green orphan.
+- **Fix:** re-pointed `get_kennel` at `list_bundled_manifests()`, mapping the frozen/slotted
+  `OgPackManifest` (no `name`/`tags` fields) onto the wire dict via a new module-level
+  `_pack_display_name` helper (`"crm-agent"` → `"Crm Agent"`) and `manifest.scope_ids()`.
+  `add_skill_from_kennel` now calls the existing
+  `install_bundled_pack(pack_id, get_hachi_paths().skills_dir, confirm=False)` (BB-5: not
+  `paths.workspace_dir`) and raises `GatewayProtocolError` when it returns `None` for an
+  unknown pack — an unknown pack can no longer report success. The re-index call was corrected
+  to `skill_engine.load_directory(skills_dir)`, the real public re-index entry point
+  (`og_engine/engine.py:540`). Both former `except Exception: pass` sites are now
+  `_logger.warning(..., exc_info=True)`, including a distinct warning for the
+  no-exception-but-empty case (manifest list empty).
+- **Trap found while fixing it:** do not add a *local* `from hachi.core.paths import
+  get_hachi_paths` inside a method that must stay test-patchable. `get_hachi_paths` is already
+  a module-level name in `cli/main.py` (imported once at the top); tests patch it via
+  `patch("hachi.cli.main.get_hachi_paths", ...)` (the pattern in `tests/test_backup_restore.py`),
+  which rewrites that module attribute. A local re-import inside the method instead fetches the
+  attribute straight off `hachi.core.paths` and silently ignores the patch — in a test this
+  means `install_bundled_pack` would write into the *developer's real* `~/.hachi` data dir
+  instead of `tmp_path`. Call the already-imported module-level name bare; do not shadow it.
+- **Avoid:** a `try: from x import y / except Exception: pass` around a *feature's only entry
+  point* is not graceful degradation — it is a permanently disabled feature that reports
+  success. Grep that the module AND the symbol exist before trusting a bare swallow, and never
+  return a hardcoded success literal from a handler that performed no work. A unit test that
+  stubs the handler entirely (`_app(get_kennel=lambda: stub)`, `tests/test_g1_wave1.py`) proves
+  nothing about wiring — it stayed green through all three defects.
+- **Locked by:** `tests/test_kennel_install.py` — `test_get_kennel_lists_real_bundled_packs`,
+  `test_add_skill_from_kennel_actually_installs_og_files`,
+  `test_add_skill_from_kennel_rejects_unknown_pack`.
+
+### BB-99 — `[memory]` recall/decay settings never reached the vault (M2 decay was inert)
+
+- **Symptom:** `recall_distance_max`, `core_memory_max_entries`, and
+  `decay_half_life_days` had no effect. Setting `decay_half_life_days = 30.0` changed
+  nothing — the M2 recency-decay feature was inert for every user, silently, with no
+  exception and no log line.
+- **Root cause:** the only code that passed those settings lived in `boot_agent`'s
+  `else` branch (`gateway/orchestrator.py`), reached only when `_shared.vault is
+  None`. But `boot_agent` calls `ProcessSharedServices.get_or_create()` ~230 lines
+  earlier, whose `_init` unconditionally built the vault via a settings-free
+  `_provider.initialize(brain_dir=brain_dir)` — so on the default `chroma` backend
+  the `else` branch was unreachable (`_shared.vault` was always already non-`None`).
+  On the non-Chroma backends the `else` DID run but failed its
+  `isinstance(_provider, ChromaMemoryProvider)` check and fell to the plain
+  `initialize()` anyway. **Confirmed against source: neither of `boot_agent`'s two
+  branches ever delivered the settings** — the review's fix target (the `if` at
+  `orchestrator.py`) was one level removed from the actual defect, which was in
+  `ProcessSharedServices._init` (`gateway/shared_services.py`). An in-code comment
+  claimed the opposite ("so settings.toml actually controls retrieval behaviour").
+  Compounding it, `_config_fingerprint` keyed only on `brain_dir|backend|graph`, so
+  changing any of the three settings did not even produce a new singleton — fixing
+  the delivery path alone would have worked on boot and silently stopped working on
+  the first `settings.toml` hot-reload.
+- **Fix:** passed the three settings into `_provider.initialize(...)` inside
+  `ProcessSharedServices._init` (`shared_services.py:315-340`) — the site that
+  builds the vault every session actually reuses — added the three raw config keys
+  to `_config_fingerprint` (`shared_services.py:54-83`), corrected the false comment
+  at `orchestrator.py:3059-3067`, and added a boot-time `logger.warning` per setting
+  when the configured value and the live vault's value disagree
+  (`orchestrator.py:3080-3105`). The warning reads three new read-only properties —
+  `decay_half_life_days` / `recall_distance_max` / `core_memory_max_entries`
+  (`memory_vault.py:624-634`) — added over what was previously `_`-prefixed-only
+  state, so neither the warning nor a test needs to reach into private attributes.
+- **Avoid:** when a setting is applied in a branch, prove the branch is reachable on
+  the DEFAULT path before believing the feature works — a settings object that is
+  parsed and then never passed anywhere is a dead feature; grep the parse site for a
+  corresponding consumer. And when a config value affects what a process-level
+  singleton *is* (not just how it behaves once built), it belongs in that
+  singleton's cache-key fingerprint — otherwise a hot-reload silently keeps serving
+  the stale instance built from whichever config booted first.
+- **Locked by:** `tests/test_memory_settings_reach_vault.py` —
+  `test_shared_vault_carries_configured_memory_settings`,
+  `test_shared_services_non_chroma_backend_initializes_without_vault`,
+  `test_fingerprint_changes_when_recall_settings_change`,
+  `test_fingerprint_changes_for_each_of_the_three_settings_independently`,
+  `test_hot_reload_with_tuned_settings_does_not_reuse_stale_singleton`.
+
+### BB-100 — BB-40's `extract_facts` gate was never actually fixed; auto-memory stayed a silent no-op for keyring/`.env` users, and skips still reported as success
+
+- **Symptom:** background fact extraction wrote nothing for any user whose Anthropic key
+  lived in the OS keyring/secret store or a project `.env` file — while chat worked fine
+  for the same user with the same key, because the chat path (`core/llm.py
+  create_llm_client`) resolves through the secret store and `_resolve_api_key`, and the
+  memory path did not. The jobs surface showed every one of those turns as a COMPLETED
+  `extract_fact` job; nothing ever appeared under `jobs/failed`, and a skip was
+  indistinguishable from a real extraction to anything outside the handler.
+- **Root cause:** BB-40's cause #2 was documented as fixed and was not — a recurrence in
+  the strict sense: the same bug, still present. BB-40's own Fix section claims
+  `core/memory.py`'s `extract_facts()` gate was "changed from
+  `if not os.environ.get("ANTHROPIC_API_KEY")` to `if llm_client is None`", but
+  `git log -L 218,228:src/hachi/core/memory.py` returned exactly **one** commit
+  (`04f2f90`, the original P1-5 feature commit that introduced the gate) — the lines were
+  never touched again until this fix. The identical literal env-var check was also live
+  in `core/memory_vault.py`'s `_get_llm_client()` (the client factory the durable job path
+  uses whenever no `_llm_client_factory` is injected — i.e. every real production job), so
+  even if `extract_facts` had correctly gated on `client is None`, the client it received
+  was still `None` for any non-`ANTHROPIC_API_KEY`-exporting user. Compounding both:
+  `handle_extract_fact` returns `"skipped:..."` strings instead of raising (deliberately,
+  to avoid a restart retry loop — `job_handlers.py:154-157`), and `jobs/queue.py`'s
+  success path mapped any non-raising handler outcome to a bare `job.completed` event with
+  no field indicating a skip had occurred.
+- **Fix:** `memory_vault._get_llm_client()` now resolves the key the same way
+  `core/llm.py create_llm_client` does for the chat path — secret store
+  (`create_default_secret_store().get("ANTHROPIC_API_KEY")`, verified against
+  `core/onboarding.py persist_provider_api_key`'s storage convention) first, then
+  `_resolve_api_key("ANTHROPIC_API_KEY")` (env var, then project `.env`) — and passes the
+  resolved key to `AnthropicClient` explicitly instead of relying on the client's own
+  bare `os.environ` fallback. `extract_facts()`'s redundant env-var gate
+  (`core/memory.py`) is deleted and replaced with the `llm_client is None` check BB-40
+  already claimed to have made. `jobs/queue.py`'s success path now emits an additional
+  `job.skipped` event (new constant in `core/runtime_events.py`, alongside
+  `JOB_COMPLETED`) carrying a `reason` field (the text after `"skipped:"`) whenever a
+  handler's output starts with `"skipped:"` — alongside the unchanged `job.completed`
+  event, so the durable status stays COMPLETED (no retry loop introduced) while the skip
+  becomes machine-observable to anything subscribed to job events. The two
+  `logger.warning` calls in `job_handlers.py` that said "(ANTHROPIC_API_KEY not set?)" now
+  name all three resolution sources.
+- **Trap found while fixing it:** the new `.env` fallback inside `_get_llm_client` made an
+  *existing, previously-passing* test — `tests/test_slice22_wiring.py::
+  TestHandlerCorrections::test_extract_fact_is_real_and_degrades_gracefully` — reach a
+  **live** Anthropic API call using this repo's own dev-checkout `.env` key (confirmed:
+  the call returned `"extracted:1"`, i.e. a real extraction against the real API). That
+  test had only ever passed because the *old*, narrower env-var-only gate reliably
+  returned `None` in any test process that didn't export `ANTHROPIC_API_KEY` — never
+  because the test isolated itself from the ambient environment. Fixed by isolating that
+  test the same way this task's own new tests do (`monkeypatch.chdir(tmp_path)` + a stub
+  secret store + resetting the memoised `_llm_client_instance` global); its assertion is
+  byte-for-byte unchanged.
+- **Avoid:** when a bug-bank entry records a fix, verify the fix is actually in the code
+  (`git log -L <start>,<end>:<file>`) before trusting the entry and moving on to the next
+  bug — BB-40's cause #2 was diagnosed correctly and then never landed, and the entry read
+  as fully resolved for weeks with a fabricated "Locked by" line reinforcing the false
+  impression. Separately: before adding a `.env`/secret-store fallback to a function that
+  existing *unmocked* tests already call with no factories/mocks, grep for those call
+  sites first — a fallback that reads real local files by design (the "sanctioned"
+  lazy-at-call-time shape per BB-2) will pick up a real `.env`/keyring credential on any
+  developer machine that has one, silently turning a unit test into a live, billable
+  network call. `tests/conftest.py`'s `HACHI_DISABLE_DOTENV_AUTOLOAD=1` only gates
+  `cli.main`'s import-time merge — it does **not** gate `core/llm.py _resolve_api_key`'s
+  own independent, per-call `.env` read, which stays live in every test process
+  regardless of that flag.
+- **Locked by:** `tests/test_auto_memory_key_resolution.py` —
+  `test_memory_llm_client_resolves_key_from_project_dotenv`,
+  `test_memory_llm_client_resolves_key_from_secret_store`,
+  `test_memory_llm_client_returns_none_when_no_key_resolvable_anywhere`,
+  `test_extract_facts_does_not_gate_on_the_env_var`,
+  `test_extract_facts_skips_cleanly_when_llm_client_is_none`,
+  `test_skipped_extraction_is_distinguishable_from_success`.
+
+### BB-101 — `[eval_reports]` was documented, implemented, and rejected by the config schema
+
+- **Symptom:** adding the documented `[eval_reports] enabled = true` to `settings.toml`
+  did nothing — the weekly failure-report daemon never started — AND the loader logged
+  "contains unknown top-level key(s): eval_reports". With `HACHI_CONFIG_STRICT=1` the
+  same documented config raised `ValueError` and failed the boot outright.
+- **Root cause:** `EvalReportSettings` existed and `boot_agent` read
+  `config.get("eval_reports", {})`, but `ResolvedConfig` declared no `eval_reports`
+  field. `model_config = ConfigDict(extra="ignore")` therefore dropped the section at
+  `config_loader.load_effective_config`'s `ResolvedConfig.model_validate(merged)`, so the
+  post-dump dict boot reads never contained it and `enabled` was always `False`. The same
+  absence made `_known_config_keys()` (which derives from `ResolvedConfig.model_fields`)
+  classify the user's key as unknown. `mcp_servers` carries a comment describing this
+  exact mechanism from a previous occurrence.
+- **Fix:** added `eval_reports: EvalReportSettings = Field(default_factory=EvalReportSettings)`
+  to `ResolvedConfig` (`src/hachi/core/settings.py`) and documented the section — as a
+  live, parsed `[eval_reports]` table with its real defaults, not a fully-commented block
+  — in `settings.example.toml`, so `tests/test_config_loader.py::
+  test_settings_example_toml_keys_are_known_config_fields` (T-02) actually exercises it.
+  A fully-commented block would satisfy "still parses" but contributes no key to
+  `tomllib.loads()`, so T-02's subset lock would never see it. (A boot-time
+  `logger.info` at the daemon-start call site in `orchestrator.py` is still open — that
+  file was owned by a concurrent agent this run and out of scope here.)
+- **Avoid:** a settings model is not a setting until it is a field on `ResolvedConfig`.
+  With `extra="ignore"`, an unregistered section is dropped silently AND reported to the
+  user as their typo. Whenever you add a `*Settings` model, add the `ResolvedConfig`
+  field in the same commit and assert the round-trip in a test — and if you also
+  document it in `settings.example.toml`, make sure the keys actually parse (not fully
+  commented out), or the subset-test lock never sees them.
+- **Locked by:** `tests/test_eval_report_config.py` —
+  `test_eval_reports_section_survives_resolved_config`,
+  `test_eval_reports_is_not_an_unknown_key`, and
+  `test_all_settings_models_are_registered_on_resolved_config` (generalised: walks every
+  `*Settings` model defined in `hachi.core.settings` and fails by name if it is not
+  reachable from `ResolvedConfig`'s field graph, independent of whether the section was
+  also added to `settings.example.toml` — so a future model that skips both still fails
+  loudly here).
+
+### BB-102 — A stalled stream defeated both the wall-clock deadline and the stop button
+
+- **Symptom:** a turn whose provider accepted the request and then stopped delivering chunks
+  hung indefinitely. The 600s wall-clock limit never fired, `[TIME LIMIT REACHED]` was never
+  returned, and pressing Stop did nothing. From the UI the agent looked dead, not failed.
+- **Root cause:** in `ExecutionLoop._stream_generate` (`core/loop.py:673`), both the cancel
+  check and the wall-clock-deadline check sat AFTER the blocking `chunk = next(gen)` call. They
+  were only reachable once another chunk arrived — the prior comment said so verbatim ("as soon
+  as the next chunk arrives"). Nothing between creating the generator and calling `next()` on it
+  could interrupt the read. The module is fully synchronous (`grep -c "async def" core/loop.py`
+  → 0), so no asyncio timeout was available in place. BB-95 (this task's dependency) closed the
+  transport-level gap for Anthropic, but a transport read timeout — on any provider — only
+  bounds *inter-byte* silence. It does nothing against a server that stays connected and keeps
+  the socket warm (SSE keep-alives, periodic whitespace) while producing no real content, which
+  never trips a read timeout at all. That residual case is what this bug closes.
+- **Fix:** the generator is now drained on a daemon worker thread into a `queue.Queue`; the loop
+  thread waits on the queue with a bounded timeout (`_STREAM_POLL_INTERVAL_S = 0.1s`, capped
+  against the time remaining to `self._wall_deadline`) and evaluates the cancel flag and
+  wall-clock deadline on every wakeup — whether or not a chunk arrived — so neither check is
+  ever downstream of the blocking read. The worker only ever enqueues one of `"chunk"` /
+  `"done"` / `"error"`; `on_delta` and all loop/turn state are touched only by the loop thread,
+  so a worker still blocked on a dead socket after the loop thread has raised and moved on
+  cannot call back into a turn it has already abandoned. Exception types (`_StreamCancelled`,
+  `_StreamTimedOut`, both unchanged) and `run()`'s handlers keep the partial-text semantics
+  exactly as before — only the reachability of the checks changed.
+- **Considered and rejected:** a watchdog thread that reaches into the provider transport to
+  close the socket directly. It would genuinely unblock the read rather than abandoning it, but
+  needs different code per client (the Anthropic SDK's stream context manager vs. `httpx`
+  streaming) and breaks the `BaseLLMClient` abstraction.
+- **Avoid:** a timeout/cancel check placed after a blocking call is not a timeout — it is a
+  post-condition. Any "check the deadline every iteration" loop must be able to wake up WITHOUT
+  the thing it is waiting for (a message, a chunk, a socket read). A transport-level timeout
+  (BB-95) is the necessary first line of defence, not a substitute for this one.
+- **Locked by:** `tests/test_loop_backstop_cancel.py` —
+  `test_wall_deadline_fires_when_stream_stops_delivering_chunks`,
+  `test_cancel_fires_when_stream_stops_delivering_chunks`.
 
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,

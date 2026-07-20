@@ -289,19 +289,53 @@ def _get_llm_client() -> Any:
     MemoryVault callers.
 
     Returns:
-        Shared AnthropicClient, or None when ANTHROPIC_API_KEY is not set.
+        Shared AnthropicClient, or None when no Anthropic API key is resolvable.
     """
     global _llm_client_instance
     if _llm_client_instance is not None:
         return _llm_client_instance
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+
+    # BB-40 / BB-100 — resolve the key the same way the chat path does
+    # (core/llm.py create_llm_client): secret store first, then
+    # _resolve_api_key (explicit -> env var -> project .env). Checking
+    # os.environ["ANTHROPIC_API_KEY"] alone made auto-memory a silent no-op
+    # for every user who stored their key in the keyring/secret store or a
+    # project .env file instead of a literal shell-exported env var.
+    # "ANTHROPIC_API_KEY" is the conventional secret-store key name: the
+    # onboarding paste-key flow (core/onboarding.py persist_provider_api_key)
+    # writes the Anthropic key under this exact name (it matches
+    # _PROVIDER_DEFAULTS["anthropic"]["api_key_env"]) and sets
+    # config.provider.api_key_ref to the same string.
+    # Layering: core->core imports only; NEVER import hachi.gateway here (see
+    # the module-level NOTE above get_memory_vault()).
+    from hachi.core.llm import _resolve_api_key
+
+    api_key: str | None = None
+    try:
+        from hachi.core.secret_store import create_default_secret_store
+
+        api_key = create_default_secret_store().get("ANTHROPIC_API_KEY")
+    except Exception:
+        logger.warning(
+            "_get_llm_client: secret store lookup failed; falling back to env/.env",
+            exc_info=True,
+        )
+    api_key = api_key or _resolve_api_key("ANTHROPIC_API_KEY")
+
+    if not api_key:
+        logger.warning(
+            "_get_llm_client: no Anthropic API key resolvable from the secret store, "
+            "the ANTHROPIC_API_KEY environment variable, or a project .env file — "
+            "background memory operations (auto-memory) are DISABLED for this process"
+        )
         return None
+
     with _llm_client_lock:
         # Double-checked locking: re-check after acquiring the lock.
         if _llm_client_instance is None:
             from hachi.core.llm import AnthropicClient
 
-            _llm_client_instance = AnthropicClient(timeout=30.0)
+            _llm_client_instance = AnthropicClient(api_key=api_key, timeout=30.0)
     return _llm_client_instance
 
 
@@ -612,6 +646,26 @@ class MemoryVault:
     @property
     def episodic_collection(self) -> Any:
         return self._lazy_collection("episodic_collection")
+
+    # ------------------------------------------------------------------
+    # T-06 / BB-99: read-only accessors over the effective [memory] retrieval
+    # settings this vault was actually constructed with. Production code and
+    # tests must read these instead of the `_`-prefixed attributes directly
+    # (T-14 bans reaching into private state) — they exist so a caller can
+    # verify the settings a vault reports match what was configured, rather
+    # than assuming a config field that was merely parsed also took effect.
+    # ------------------------------------------------------------------
+    @property
+    def decay_half_life_days(self) -> float | None:
+        return self._decay_half_life_days
+
+    @property
+    def recall_distance_max(self) -> float | None:
+        return self._recall_distance_max
+
+    @property
+    def core_memory_max_entries(self) -> int:
+        return self._core_memory_max_entries
 
     # ==========================================
     # Lifecycle

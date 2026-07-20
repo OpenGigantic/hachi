@@ -215,13 +215,19 @@ def extract_facts(
         A short status string suitable for use as a job output, e.g.
         ``"extracted:3"`` or ``"extracted_typed:2"``.
     """
-    import os
-
     from hachi.core.llm import Message as _LLMMessage
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        logger.debug("extract_facts: ANTHROPIC_API_KEY not set — skipping")
-        return "skipped:no_api_key"
+    # BB-40 / BB-100: this used to hardcode a check for
+    # os.environ["ANTHROPIC_API_KEY"], even though both callers
+    # (MemoryManager._run_fact_extraction and handle_extract_fact) already
+    # gate on `client is None` before ever calling this function. That
+    # doubly killed auto-memory for any user whose key was resolvable
+    # (keyring/secret store, project .env) but not a literal shell-exported
+    # env var. The resolved client object -- not a single provider's env
+    # var -- is the correct signal that extraction can run.
+    if llm_client is None:
+        logger.warning("extract_facts: called with llm_client=None — skipping")
+        return "skipped:no_llm_client"
 
     if not text or len(text.strip()) < 10:
         return "skipped:too_short"

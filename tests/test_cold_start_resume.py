@@ -190,6 +190,8 @@ class TestColdStartResume:
             on_event: Any = None,
             on_permission_request: Any = None,
             resume_session_id: str | None = None,
+            *,
+            approval_surface: str | None = None,
         ) -> _ScriptedAgent:
             agent = _ScriptedAgent(session_store, resume_session_id)
             booted_agents.append(agent)

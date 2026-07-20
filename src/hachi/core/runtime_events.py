@@ -48,6 +48,14 @@ SUBAGENT_COMPLETED = "subagent.completed"
 JOB_STARTED = "job.started"
 JOB_COMPLETED = "job.completed"
 JOB_FAILED = "job.failed"
+# BB-100: emitted ADDITIONALLY (not instead of JOB_COMPLETED) when a handler
+# degrades gracefully and returns a "skipped:<reason>" string rather than
+# raising. Durable status stays COMPLETED (see job_handlers.py's docstring for
+# why a raise would cause an unhelpful restart retry loop) -- this is a purely
+# informational signal so a skip is distinguishable from a real success from
+# outside the handler. An unaware consumer that only understands
+# JOB_COMPLETED/JOB_FAILED degrades gracefully, since this is an extra event.
+JOB_SKIPPED = "job.skipped"
 
 # MCP lifecycle
 MCP_SERVER_STARTING = "mcp.server.starting"
