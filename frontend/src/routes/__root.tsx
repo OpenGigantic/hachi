@@ -3,7 +3,7 @@ import { createRootRoute, Outlet } from '@tanstack/react-router'
 import { Sidebar } from '../components/shell/Sidebar'
 import { GovernanceBar } from '../components/shell/GovernanceBar'
 import { GlobalOverlays } from '../components/overlays'
-import { useStore } from '../lib/store/store'
+import { useStore, seedMockFixtures } from '../lib/store/store'
 import { bootstrapLiveData } from '../lib/data/bootstrap'
 import { useIsMobile } from '../lib/hooks/useMediaQuery'
 import { useBodyScrollLock } from '../lib/hooks/useBodyScrollLock'
@@ -41,6 +41,13 @@ function RootLayout() {
   // Each loader degrades to seeded fixtures on failure, so this never blanks the UI.
   useEffect(() => {
     if (dataMode === 'live') void bootstrapLiveData()
+  }, [dataMode])
+
+  // Mock mode (VITE_HACHI_USE_MOCKS=true): seed the demo-fixture corpus once, behind a
+  // dynamic import, instead of the module-scope import domainDefaults() used to carry.
+  // T-22 / BB-123 -- see store.ts's seedMockFixtures() and scripts/check_bundle.py.
+  useEffect(() => {
+    if (dataMode === 'mock') void seedMockFixtures()
   }, [dataMode])
 
   return (
