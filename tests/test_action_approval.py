@@ -32,6 +32,7 @@ from hachi.core.permissions import (
     InteractivePermissionGate,
     PermissionDecision,
     PermissionGate,
+    PermissionRequest,
     generate_permissions_og,
 )
 
@@ -299,6 +300,45 @@ class TestRegistryApprover:
         registry = PendingApprovalRegistry()
         result = registry.resolve("nonexistent-id", PermissionDecision(action="approve"))
         assert result is False
+
+    def test_pending_entry_carries_the_deadline_that_is_actually_enforced(self) -> None:
+        """The advertised deadline must equal the timeout RegistryApprover really waits.
+
+        Regression (BB-122): the registry stored no deadline; the 180 s timeout lived
+        only as a stack-local inside threading.Event.wait(), so list_pending() and the
+        permission.requested SSE payload carried no temporal fields at all.
+        """
+        events: list[tuple[str, dict]] = []
+        registry = PendingApprovalRegistry()
+        approver = RegistryApprover(
+            registry, emit=lambda name, payload: events.append((name, payload)), timeout=30.0
+        )
+
+        # Park a request without blocking: drive _build_and_park directly.
+        request_id = approver._build_and_park("send_email", "priya@studio.co", "reply")
+
+        entry = next(e for e in registry.list_pending() if e["request_id"] == request_id)
+        assert entry["expires_at"] - entry["created_at"] == 30_000
+
+        name, payload = events[0]
+        assert name == "permission.requested"
+        assert payload["expires_at"] == entry["expires_at"]
+        assert payload["created_at"] == entry["created_at"]
+
+    def test_entry_parked_without_a_timeout_reports_no_deadline(self) -> None:
+        """An honest absence, not a fabricated default."""
+        registry = PendingApprovalRegistry()
+        registry.create(
+            PermissionRequest(
+                request_id="req-1",
+                operation="action",
+                tool="t",
+                target="x",
+                reason="r",
+                policy_summary="p",
+            )
+        )
+        assert registry.list_pending()[0]["expires_at"] is None
 
 
 # ==========================================
