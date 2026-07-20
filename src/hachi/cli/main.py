@@ -1075,6 +1075,56 @@ class _InProcessGatewayRuntime:
             results.append({"fact": fact, "score": score, "src": src})
         return results
 
+    def get_memory_gardener_diffs(self) -> list[dict]:
+        """Return pending MemoryGardener proposals (route: GET /memory/diffs — T-08 A2).
+
+        Makes AgentSession.snapshot_gardener_diffs() reachable. Mirrors get_memory()/
+        get_skills(): returns an empty list before any session has booted rather than
+        erroring, since this route backs a passive UI list.
+        """
+        with self._agents_lock:
+            agent = next(iter(self._agents.values()), None)
+        if agent is None:
+            return []
+        return agent.snapshot_gardener_diffs()
+
+    def decide_memory_gardener_diff(self, proposal_id: str, action: str) -> dict:
+        """Approve or reject a pending gardener proposal (route: POST /memory/diffs/{id}).
+
+        T-08 A3: the write-back path that did not exist before this task. Operates
+        directly on pending_diffs.json under get_hachi_paths().memory_dir —
+        independent of any live agent session, since MemoryGardener.run() (A1)
+        always writes there regardless of which (if any) session is currently
+        booted, so a decision made while no chat session is open still lands.
+
+        Args:
+            proposal_id: A GardeningProposal.id from a prior GET /memory/diffs response.
+            action:      "approve" (apply via an append-only ::changelog note and
+                         record under auto_applied) or "reject" (drop without
+                         touching any .og file).
+
+        Returns:
+            ``{"ok": True, "id": proposal_id, "action": action, "proposal": {...}}``.
+
+        Raises:
+            fastapi.HTTPException: 404 when proposal_id is not a currently pending
+            proposal (already decided, or superseded by a newer gardener run).
+        """
+        from dataclasses import asdict
+
+        from fastapi import HTTPException as _HTTPException
+
+        from hachi.core.memory_gardener import MemoryGardener
+
+        gardener = MemoryGardener(get_hachi_paths().memory_dir)
+        try:
+            decided = gardener.decide(proposal_id, approve=(action == "approve"))
+        except KeyError as exc:
+            raise _HTTPException(
+                status_code=404, detail=f"Unknown gardener proposal id {proposal_id!r}"
+            ) from exc
+        return {"ok": True, "id": proposal_id, "action": action, "proposal": asdict(decided)}
+
     def get_og_graph(self) -> dict:
         """Return the ObjectGraph node graph (route: GET /og/graph).
 
@@ -3154,6 +3204,13 @@ def _build_gateway_control_plane(
         # Memory CRUD:
         add_memory_fact=runtime.add_memory_fact if runtime else None,
         delete_memory_fact=runtime.delete_memory_fact if runtime else None,
+        # T-08 A2/A3 — MemoryGardener review surface. get_memory_gardener_diffs needs
+        # a live agent (mirrors get_memory/get_skills); decide_memory_gardener_diff
+        # operates directly on the filesystem so it is always available via `support`
+        # (mirrors get_kennel/register_mcp_server — see BB-6 for the runtime-vs-support
+        # distinction this file already relies on).
+        get_memory_gardener_diffs=runtime.get_memory_gardener_diffs if runtime else None,
+        decide_memory_gardener_diff=support.decide_memory_gardener_diff,
         # G1 — new handlers:
         update_limits=support.update_limits,
         add_allowed_folder=support.add_allowed_folder,

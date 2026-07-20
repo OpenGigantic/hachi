@@ -2952,3 +2952,62 @@ generic `_OPENAI_COMPAT_PRESETS` fall-through (§3.6 of the task) is commented i
 green), incl. the AST-derived `test_provider_kind_literal_covers_every_implemented_kind`,
 which fails whenever `create_llm_client` grows a `kind == "..."` branch with no matching
 `ProviderKind` member.
+
+## T-08 — MemoryGardener: wired up end-to-end (Option A) (2026-07-20/21) **[ADR]**
+
+**Decision.** Option **A** of the two in
+`docs/audit/2026-07-19/tasks/T-08-memory-gardener.md` §5 — wire the gardener up
+end-to-end (schedule + route + review surface with a real write-back), not Option B
+(delete the dead surface, keep the algorithm with a `STATUS: not wired` docstring). The
+task doc's own §5 *recommends* Option B, but the decision to ship Option A instead was
+made in the task pack itself before implementation started (recorded here per the
+task's own step-6 instruction, not re-litigated).
+
+**Why.** Recorded so a future reader does not mistake the task doc's Option-B
+recommendation for what actually shipped. All three pieces landed together — the task's
+own out-of-scope guard ("do not wire the writer and leave the reader broken") is exactly
+the drift Option A forbids landing in parts:
+
+- **A1 — schedule.** `gateway/orchestrator.py`'s `_start_memory_gardener` mirrors
+  `_start_eval_report_scheduler` (the E5 precedent) verbatim: daemon thread, sleep loop,
+  `min(interval_seconds, 3600)` wake cap, try/except that logs, started from
+  `boot_agent` behind a new opt-in `[memory_gardener]` section
+  (`MemoryGardenerSettings`, registered on `ResolvedConfig` in the same commit — the
+  T-07/BB-101 reflective guard in `tests/test_eval_report_config.py` would otherwise
+  fail by name).
+- **A2 — route.** `GET /memory/diffs` makes `AgentSession.snapshot_gardener_diffs`
+  reachable for the first time, via a new `GatewayControlPlane` handler and
+  `_InProcessGatewayRuntime.get_memory_gardener_diffs()`. Fixed the reader's `getattr`
+  bug (BB-5 class) **and** a second, previously-unreachable bug the getattr bug had been
+  hiding (`GardeningResult._PENDING_DIFFS_FILE` — that constant lives on
+  `MemoryGardener`, not `GardeningResult`). OpenAPI + frontend types regenerated (BB-4);
+  `check:api` and `typecheck` both clean.
+- **A3 — surface + write-back.** This is the piece the source task explicitly flagged as
+  "where the real cost is," and it is where most of the new code lives.
+  `GardeningProposal` gained a stable `id` (deterministic hash of its identifying
+  fields) so `GET /memory/diffs` → `POST /memory/diffs/{id}` round-trips without
+  depending on list order. `MemoryGardener.decide()` applies an approval through the
+  same append-only `::changelog` mechanism `_apply_dedup` already used — never
+  overwriting node content, per the module's own governance rule — or drops a rejection
+  untouched; either way it re-persists `pending_diffs.json`. The web frontend's Memory
+  screen gained a third "Gardener" tab (list + Approve/Reject), wired through a new
+  `memoryGardener.ts` domain module that follows the same non-optimistic
+  POST-then-mutate pattern BB-106 established for the Approvals screen — a failed
+  decision leaves the card in place instead of pretending the `.og` files changed.
+
+**What this decision leaves standing (deliberately).** No cross-run persistence of
+rejected decisions: a rejected proposal can be re-detected (and re-offered) by a later
+gardener tick, since nothing records "the user already said no to this specific pair"
+outside the current `pending_diffs.json` snapshot. Approve/reject is scoped to a single
+proposal at a time — no bulk actions. `SUPERSEDE_CONTRADICTION` is defensively handled
+in `_apply_reviewed_proposal` but no detector currently emits it (only
+`_find_similar_content`/`_find_expired`/`_find_dedup_same_name` run today). None of these
+were asked for by the task and are not implied by "wire it up" — they are noted here so a
+future reader does not mistake an absence for an oversight.
+
+**Locked by.** `docs/bug-bank.md` BB-126; `tests/test_memory_gardener_wiring.py` (17
+tests — config registration, A1 scheduler-on-interval + 3600s cap + boot_agent AST
+check, A2 reader-fix + route end-to-end, A3 decide()/route approve+reject+404, and the
+`GardeningResult.load` debug→warning fix); `frontend/src/lib/data/domains/
+memoryGardener.test.ts` (6 tests, incl. the BB-106 non-optimistic pattern verified to
+fail against an optimistic implementation).

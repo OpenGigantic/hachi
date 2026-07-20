@@ -10214,6 +10214,271 @@
         ]
       }
     },
+    "/memory/diffs": {
+      "get": {
+        "tags": [
+          "memory"
+        ],
+        "summary": "Get Memory Diffs",
+        "description": "Return pending MemoryGardener review proposals from the last gardener run.",
+        "operationId": "get_memory_diffs_memory_diffs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryGardenerDiffsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the resource's current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The session existed but is no longer active",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited by the upstream AI provider",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unhandled server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Runtime or upstream provider unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/memory/diffs/{proposal_id}": {
+      "post": {
+        "tags": [
+          "memory"
+        ],
+        "summary": "Post Memory Diff Decision",
+        "description": "Approve or reject a pending MemoryGardener proposal.\n\nBody: ``{\"action\": \"approve\"|\"reject\"}``. Approve applies the proposal via\nan append-only ``::changelog`` note (never overwrites node content \u2014 the\ngardener's governance rule); reject drops it without touching any ``.og``\nfile. Both persist the updated ``pending_diffs.json``. Raises 404 when\n``proposal_id`` is not currently pending.",
+        "operationId": "post_memory_diff_decision_memory_diffs__proposal_id__post",
+        "parameters": [
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Proposal Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryGardenerDecisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryGardenerDecisionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict with the resource's current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The session existed but is no longer active",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited by the upstream AI provider",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unhandled server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Runtime or upstream provider unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/og/graph": {
       "get": {
         "tags": [
@@ -13870,6 +14135,120 @@
         ],
         "title": "MemoryFactAddRequest",
         "description": "Body for POST /memory/facts."
+      },
+      "MemoryGardenerDecisionRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "reject"
+            ],
+            "title": "Action"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "MemoryGardenerDecisionRequest",
+        "description": "Body for POST /memory/diffs/{proposal_id} (T-08 A3)."
+      },
+      "MemoryGardenerDecisionResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "proposal": {
+            "$ref": "#/components/schemas/MemoryGardenerProposalModel"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok",
+          "id",
+          "action",
+          "proposal"
+        ],
+        "title": "MemoryGardenerDecisionResponse",
+        "description": "Response for POST /memory/diffs/{proposal_id} (T-08 A3)."
+      },
+      "MemoryGardenerDiffsResponse": {
+        "properties": {
+          "pending_review": {
+            "items": {
+              "$ref": "#/components/schemas/MemoryGardenerProposalModel"
+            },
+            "type": "array",
+            "title": "Pending Review"
+          }
+        },
+        "type": "object",
+        "title": "MemoryGardenerDiffsResponse",
+        "description": "Response for GET /memory/diffs (T-08 A2)."
+      },
+      "MemoryGardenerProposalModel": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "name_a": {
+            "type": "string",
+            "title": "Name A"
+          },
+          "name_b": {
+            "type": "string",
+            "title": "Name B",
+            "default": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "confidence": {
+            "type": "number",
+            "title": "Confidence",
+            "default": 1.0
+          },
+          "file_path_a": {
+            "type": "string",
+            "title": "File Path A",
+            "default": ""
+          },
+          "file_path_b": {
+            "type": "string",
+            "title": "File Path B",
+            "default": ""
+          },
+          "auto_applied": {
+            "type": "boolean",
+            "title": "Auto Applied",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "name_a"
+        ],
+        "title": "MemoryGardenerProposalModel",
+        "description": "One MemoryGardener ``pending_review`` proposal (T-08 A2).\n\nField set mirrors ``hachi.core.memory_gardener.GardeningProposal`` exactly \u2014\nthe dataclass that ``AgentSession.snapshot_gardener_diffs()`` serialises via\n``dataclasses.asdict``."
       },
       "MemoryRequest": {
         "properties": {

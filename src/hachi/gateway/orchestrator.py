@@ -730,19 +730,33 @@ class AgentSession:
         )
 
     def snapshot_gardener_diffs(self) -> list[dict]:
-        """Return pending memory-diff proposals from the last gardener run.
+        """Return pending memory-diff proposals from the last gardener run (T-08 A2).
 
-        Reads the pending_diffs.json file written by MemoryGardener.run().
-        Returns an empty list if the file is missing or unreadable.
+        Reads the pending_diffs.json file written by MemoryGardener.run(). Returns
+        an empty list if the file is missing or unreadable.
+
+        BB-5 / T-08: previously read ``getattr(self.memory, "memory_dir", None)`` —
+        ``MemoryManager`` has no such attribute, so the getattr default always fired
+        and this returned ``[]`` before ever touching the file. The real memory
+        directory is ``get_hachi_paths().memory_dir``, the same path
+        MemoryIndex/MemoryWriter already use (shared_services.py) and the same path
+        :func:`~hachi.gateway.orchestrator._start_memory_gardener` (A1) writes to.
+
+        T-08: this method's original (dead, unreachable) code also referenced
+        ``GardeningResult._PENDING_DIFFS_FILE`` — that constant is declared on
+        ``MemoryGardener``, not ``GardeningResult``, so it would have raised
+        ``AttributeError`` the moment the getattr-masking bug above was fixed
+        without also fixing this. Caught by
+        tests/test_memory_gardener_wiring.py — a second, previously-unreachable
+        defect the T-08 spec's own §3.3 audit did not catch either, because
+        nothing ever got far enough to execute this line before A1/A2 existed.
         """
-        from hachi.core.memory_gardener import GardeningResult
-
-        memory_dir = getattr(self.memory, "memory_dir", None)
-        if memory_dir is None:
-            return []
-        diffs_path = memory_dir / GardeningResult._PENDING_DIFFS_FILE
-        result = GardeningResult.load(diffs_path)
         from dataclasses import asdict
+
+        from hachi.core.memory_gardener import GardeningResult, MemoryGardener
+
+        diffs_path = get_hachi_paths().memory_dir / MemoryGardener._PENDING_DIFFS_FILE
+        result = GardeningResult.load(diffs_path)
 
         return [asdict(p) for p in result.pending_review]
 
@@ -2333,6 +2347,53 @@ def _start_eval_report_scheduler(
     )
 
 
+# ==========================================
+# T-08 A1 — Memory gardener scheduler
+# ==========================================
+
+
+def _start_memory_gardener(
+    memory_dir: Path,
+    settings: Any,
+) -> None:
+    """Start a background daemon thread that runs MemoryGardener on an interval (T-08 A1).
+
+    Mirrors :func:`_start_eval_report_scheduler` exactly: daemon thread, sleep loop,
+    try/except that logs at debug level and never raises.  The thread wakes at most
+    every ``min(interval_seconds, 3600)`` seconds so a 1-day interval does not leave
+    the process unkillable for an hour if the thread gets stuck.
+
+    Args:
+        memory_dir: ``get_hachi_paths().memory_dir`` — the ``.og`` memory directory
+                    the gardener reads/writes (BB-5: resolve via ``paths.py``, never
+                    ``getattr`` a Hachi-owned type for this).
+        settings:   :class:`~hachi.core.settings.MemoryGardenerSettings` validated
+                    from config.
+    """
+    import threading as _threading
+    import time as _time
+
+    from hachi.core.memory_gardener import MemoryGardener
+
+    sleep_seconds = min(settings.interval_seconds, 3600)
+
+    def _gardener_loop() -> None:
+        while True:
+            _time.sleep(sleep_seconds)
+            try:
+                MemoryGardener(memory_dir, settings.similarity_threshold).run()
+            except Exception:
+                logger.debug("_start_memory_gardener: tick failed", exc_info=True)
+
+    t = _threading.Thread(target=_gardener_loop, name="hachi-memory-gardener", daemon=True)
+    t.start()
+    logger.info(
+        "_start_memory_gardener: started (interval=%ds, sleep=%ds)",
+        settings.interval_seconds,
+        sleep_seconds,
+    )
+
+
 def _sweep_once(
     job_queue: "JobQueue",
     now: "Any | None" = None,
@@ -2774,6 +2835,7 @@ def boot_agent(
         EvalReportSettings,
         EventsSettings,
         JobsSettings,
+        MemoryGardenerSettings,
         RetentionSettings,
     )
 
@@ -3792,6 +3854,19 @@ def boot_agent(
         _start_eval_report_scheduler(
             session_store, get_hachi_paths(), _eval_cfg, emit_runtime_event
         )
+
+    # ------------------------------------------------------------------
+    # T-08 A1 — Memory gardener scheduler (opt-in, default off).
+    # Mirrors the [eval_reports] block above: daemon thread, sleep loop, never
+    # raises. Gated by [memory_gardener] enabled = true in settings.toml.
+    # ------------------------------------------------------------------
+    _gardener_cfg = MemoryGardenerSettings.model_validate(config.get("memory_gardener", {}))
+    if _gardener_cfg.enabled:
+        # Mirrors BB-101's fix for [eval_reports]: log at the boot_agent call site
+        # too, so "enabled and started" is distinguishable from "enabled but the
+        # config never arrived" (the daemon's own start log only fires once running).
+        logger.info("[memory_gardener] enabled — memory gardening daemon starting")
+        _start_memory_gardener(get_hachi_paths().memory_dir, _gardener_cfg)
 
     emit_runtime_event(
         BOOT_COMPLETE,

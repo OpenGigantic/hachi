@@ -6,12 +6,21 @@ it appends ``::changelog`` entries and ``supersedes`` edges.
 Auto-applies only whitelisted low-risk changes (exact-name deduplication: the same
 node name appearing in more than one file — keep newest, mark older as superseded).
 Controversial proposals (near-duplicate content, contradiction detection, expiry) are
-returned as ``pending_review`` items that the user can approve via the TUI Memory-Diff
-screen.
+returned as ``pending_review`` items.
+
+T-08 (Option A — wired): a resident daemon (``gateway/orchestrator.py``'s
+``_start_memory_gardener``, opt-in via ``[memory_gardener] enabled = true``) calls
+:meth:`MemoryGardener.run` on an interval. ``pending_review`` proposals are reachable
+via ``GET /memory/diffs`` and decided (approve/reject) via
+``POST /memory/diffs/{proposal_id}`` — see :meth:`MemoryGardener.decide`, which applies
+an approval through the same append-only ``::changelog`` mechanism as the auto-apply
+path. The web frontend's Memory screen ("Gardener" tab) is the review surface; there is
+no TUI Memory-Diff screen.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -39,14 +48,27 @@ class ProposalKind(StrEnum):
 class GardeningProposal:
     """A single proposed memory change from the gardener."""
 
-    kind: str                      # ProposalKind value
-    name_a: str                    # primary node name
-    name_b: str = ""               # second node (for merge/supersede proposals)
+    kind: str  # ProposalKind value
+    name_a: str  # primary node name
+    name_b: str = ""  # second node (for merge/supersede proposals)
     reason: str = ""
     confidence: float = 1.0
     file_path_a: str = ""
     file_path_b: str = ""
     auto_applied: bool = False
+    # T-08 A3: stable identifier so a client can round-trip GET /memory/diffs ->
+    # POST /memory/diffs/{id} without relying on list order (which can shift between
+    # two gardener runs). Deterministic from the identifying fields, so the SAME
+    # proposal re-detected on the next scheduled tick keeps the same id. Backward
+    # compatible with JSON written before this field existed: __post_init__ fills it
+    # in when absent (empty string), and GardeningResult.load() passes it straight
+    # through once persisted.
+    id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            basis = f"{self.kind}|{self.name_a}|{self.name_b}|{self.file_path_a}|{self.file_path_b}"
+            self.id = hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass
@@ -58,7 +80,7 @@ class GardeningResult:
     pending_review: list[GardeningProposal] = field(default_factory=list)
 
     def save(self, path: Path) -> None:
-        """Persist the result to a JSON file for the TUI to read."""
+        """Persist the result to a JSON file for the review surface to read."""
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(
@@ -83,7 +105,12 @@ class GardeningResult:
             pending = [GardeningProposal(**p) for p in raw.get("pending_review", [])]
             return cls(run_ts=raw.get("run_ts", ""), auto_applied=auto, pending_review=pending)
         except Exception:
-            logger.debug("GardeningResult.load failed", exc_info=True)
+            # T-08 Option A: a swallowed-to-debug corrupt-file read used to mean a
+            # user's approve/reject silently landed on an empty result with zero
+            # signal. Now wired to a live route, this must be loud (warning level,
+            # not debug) — see acceptance criteria in docs/audit/2026-07-19/tasks/
+            # T-08-memory-gardener.md §8.
+            logger.warning("GardeningResult.load failed for %s", path, exc_info=True)
             return cls()
 
 
@@ -145,6 +172,7 @@ def _parse_dir(memory_dir: Path) -> dict[str, list[_ParsedNode]]:
 # Scoring helpers
 # ---------------------------------------------------------------------------
 
+
 def _jaccard(text_a: str, text_b: str) -> float:
     """Word-level Jaccard similarity between two short texts."""
     tok_a = set(re.findall(r"\w+", text_a.lower()))
@@ -162,6 +190,7 @@ def _is_expired(valid_until: str) -> bool:
         return False
     try:
         import datetime
+
         dt = datetime.datetime.fromisoformat(valid_until.replace("Z", "+00:00"))
         return dt < datetime.datetime.now(tz=datetime.UTC)
     except ValueError:
@@ -171,6 +200,7 @@ def _is_expired(valid_until: str) -> bool:
 # ---------------------------------------------------------------------------
 # Changelog writer
 # ---------------------------------------------------------------------------
+
 
 def _append_changelog(file_path: Path, node_name: str, change: str) -> None:
     """Append a ::changelog entry to the file without overwriting any node."""
@@ -220,7 +250,8 @@ class MemoryGardener:
 
         Returns:
             GardeningResult with auto_applied and pending_review lists.
-            Also writes pending_diffs.json to the memory dir for the TUI.
+            Also writes pending_diffs.json to the memory dir for the review surface
+            (``GET /memory/diffs`` — see :meth:`decide` for the write-back path).
         """
         index = _parse_dir(self._memory_dir)
         result = GardeningResult(run_ts=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
@@ -240,7 +271,7 @@ class MemoryGardener:
             else:
                 result.pending_review.append(prop)
 
-        # 3. Persist pending diffs for TUI
+        # 3. Persist pending diffs for the review surface (GET /memory/diffs)
         diffs_path = self._memory_dir / self._PENDING_DIFFS_FILE
         result.save(diffs_path)
 
@@ -255,9 +286,7 @@ class MemoryGardener:
     # Detection
     # ------------------------------------------------------------------
 
-    def _find_dedup_same_name(
-        self, index: dict[str, list[_ParsedNode]]
-    ) -> list[GardeningProposal]:
+    def _find_dedup_same_name(self, index: dict[str, list[_ParsedNode]]) -> list[GardeningProposal]:
         """Find nodes whose name appears in more than one file (safe to auto-merge)."""
         proposals = []
         for name, occurrences in index.items():
@@ -282,9 +311,7 @@ class MemoryGardener:
                 )
         return proposals
 
-    def _find_similar_content(
-        self, index: dict[str, list[_ParsedNode]]
-    ) -> list[GardeningProposal]:
+    def _find_similar_content(self, index: dict[str, list[_ParsedNode]]) -> list[GardeningProposal]:
         """Propose merges for nodes with different names but similar dense text."""
         proposals = []
         names = list(index.keys())
@@ -311,9 +338,7 @@ class MemoryGardener:
                     )
         return proposals
 
-    def _find_expired(
-        self, index: dict[str, list[_ParsedNode]]
-    ) -> list[GardeningProposal]:
+    def _find_expired(self, index: dict[str, list[_ParsedNode]]) -> list[GardeningProposal]:
         """Propose deletion of nodes whose valid_until date has passed."""
         proposals = []
         for name, occurrences in index.items():
@@ -345,3 +370,88 @@ class MemoryGardener:
             )
         except Exception:
             logger.debug("MemoryGardener._apply_dedup failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Manual review (T-08 A3 — approve/reject write-back)
+    # ------------------------------------------------------------------
+
+    def load_pending(self) -> GardeningResult:
+        """Load the last-persisted GardeningResult for this instance's memory_dir."""
+        return GardeningResult.load(self._memory_dir / self._PENDING_DIFFS_FILE)
+
+    def decide(self, proposal_id: str, *, approve: bool) -> GardeningProposal:
+        """Resolve one ``pending_review`` proposal by a human decision.
+
+        Loads the persisted ``pending_diffs.json``, finds the proposal whose
+        stable :attr:`GardeningProposal.id` matches *proposal_id* in the
+        ``pending_review`` list, and either:
+
+        - **approve**: applies it via :func:`_apply_reviewed_proposal` — an
+          append-only ``::changelog`` annotation that never overwrites existing
+          node content (the module governance rule, see module docstring) —
+          moves it into ``auto_applied`` (marked ``auto_applied=True`` to record
+          that it is now resolved), and re-persists.
+        - **reject**: drops it from ``pending_review`` without touching any
+          ``.og`` file, and re-persists.
+
+        Both branches re-write ``pending_diffs.json`` so the decision is durable
+        and observable by the next ``GET /memory/diffs`` — this is the write-back
+        path that did not exist before T-08.
+
+        Args:
+            proposal_id: A :attr:`GardeningProposal.id` from a prior
+                :meth:`run` (or :meth:`load_pending`) result.
+            approve: ``True`` to apply the proposal, ``False`` to discard it.
+
+        Returns:
+            The decided :class:`GardeningProposal` (with ``auto_applied=True``
+            when approved).
+
+        Raises:
+            KeyError: *proposal_id* is not present in the currently persisted
+                ``pending_review`` list (already decided, or superseded by a
+                newer gardener run).
+        """
+        result = self.load_pending()
+        match = next((p for p in result.pending_review if p.id == proposal_id), None)
+        if match is None:
+            raise KeyError(proposal_id)
+
+        result.pending_review = [p for p in result.pending_review if p.id != proposal_id]
+        if approve:
+            _apply_reviewed_proposal(match)
+            match.auto_applied = True
+            result.auto_applied.append(match)
+
+        result.save(self._memory_dir / self._PENDING_DIFFS_FILE)
+        return match
+
+
+def _apply_reviewed_proposal(prop: GardeningProposal) -> None:
+    """Apply a manually-approved proposal via an append-only ``::changelog`` note.
+
+    Mirrors :meth:`MemoryGardener._apply_dedup`'s append-only pattern for the
+    proposal kinds that actually reach ``pending_review`` (``MERGE_SIMILAR``,
+    ``EXPIRE_STALE``, and the reserved ``SUPERSEDE_CONTRADICTION``), so an
+    operator's decision from the Memory Diffs surface (T-08 A3) is durable and
+    auditable without ever overwriting existing node content (the module
+    governance rule — see module docstring).
+
+    ``_append_changelog`` itself no-ops when the target file no longer exists,
+    so this is safe to call even if the underlying ``.og`` file has since been
+    removed.
+    """
+    if prop.kind == ProposalKind.EXPIRE_STALE:
+        _append_changelog(Path(prop.file_path_a), prop.name_a, "expired_confirmed=true")
+        return
+    # MERGE_SIMILAR / SUPERSEDE_CONTRADICTION / DEDUP_SAME_NAME (defensive — the
+    # last only ever auto-applies today, but a future change could route it
+    # through here too): annotate the second node as resolved in favour of the
+    # first, exactly like the auto-apply dedup path does.
+    target_path = Path(prop.file_path_b or prop.file_path_a)
+    target_name = prop.name_b or prop.name_a
+    _append_changelog(
+        target_path,
+        target_name,
+        f"reviewed_supersede_by={prop.name_a}({prop.file_path_a})",
+    )

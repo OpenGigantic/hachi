@@ -1432,6 +1432,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/memory/diffs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Memory Diffs
+         * @description Return pending MemoryGardener review proposals from the last gardener run.
+         */
+        get: operations["get_memory_diffs_memory_diffs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/memory/diffs/{proposal_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Memory Diff Decision
+         * @description Approve or reject a pending MemoryGardener proposal.
+         *
+         *     Body: ``{"action": "approve"|"reject"}``. Approve applies the proposal via
+         *     an append-only ``::changelog`` note (never overwrites node content — the
+         *     gardener's governance rule); reject drops it without touching any ``.og``
+         *     file. Both persist the updated ``pending_diffs.json``. Raises 404 when
+         *     ``proposal_id`` is not currently pending.
+         */
+        post: operations["post_memory_diff_decision_memory_diffs__proposal_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/og/graph": {
         parameters: {
             query?: never;
@@ -2125,6 +2171,84 @@ export interface components {
             group: string;
             /** Text */
             text: string;
+        };
+        /**
+         * MemoryGardenerDecisionRequest
+         * @description Body for POST /memory/diffs/{proposal_id} (T-08 A3).
+         */
+        MemoryGardenerDecisionRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "approve" | "reject";
+        };
+        /**
+         * MemoryGardenerDecisionResponse
+         * @description Response for POST /memory/diffs/{proposal_id} (T-08 A3).
+         */
+        MemoryGardenerDecisionResponse: {
+            /** Ok */
+            ok: boolean;
+            /** Id */
+            id: string;
+            /** Action */
+            action: string;
+            proposal: components["schemas"]["MemoryGardenerProposalModel"];
+        };
+        /**
+         * MemoryGardenerDiffsResponse
+         * @description Response for GET /memory/diffs (T-08 A2).
+         */
+        MemoryGardenerDiffsResponse: {
+            /** Pending Review */
+            pending_review?: components["schemas"]["MemoryGardenerProposalModel"][];
+        };
+        /**
+         * MemoryGardenerProposalModel
+         * @description One MemoryGardener ``pending_review`` proposal (T-08 A2).
+         *
+         *     Field set mirrors ``hachi.core.memory_gardener.GardeningProposal`` exactly —
+         *     the dataclass that ``AgentSession.snapshot_gardener_diffs()`` serialises via
+         *     ``dataclasses.asdict``.
+         */
+        MemoryGardenerProposalModel: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Name A */
+            name_a: string;
+            /**
+             * Name B
+             * @default
+             */
+            name_b: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Confidence
+             * @default 1
+             */
+            confidence: number;
+            /**
+             * File Path A
+             * @default
+             */
+            file_path_a: string;
+            /**
+             * File Path B
+             * @default
+             */
+            file_path_b: string;
+            /**
+             * Auto Applied
+             * @default false
+             */
+            auto_applied: boolean;
         };
         /** MemoryRequest */
         MemoryRequest: {
@@ -10725,6 +10849,223 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Caller is not permitted to perform this action */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict with the resource's current state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The session existed but is no longer active */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Rate limited by the upstream AI provider */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unhandled server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Runtime or upstream provider unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_memory_diffs_memory_diffs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryGardenerDiffsResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Caller is not permitted to perform this action */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict with the resource's current state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The session existed but is no longer active */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Rate limited by the upstream AI provider */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unhandled server error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Runtime or upstream provider unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_memory_diff_decision_memory_diffs__proposal_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryGardenerDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryGardenerDecisionResponse"];
                 };
             };
             /** @description Invalid request */

@@ -36,6 +36,7 @@ import type {
   MemGroup,
   BlockedItem,
   ProposedChange,
+  GardenerProposal,
   Skill,
   KennelItem,
   Integration,
@@ -103,6 +104,8 @@ interface State {
   memGroups: MemGroup[];
   blocked: BlockedItem[];
   proposed: ProposedChange | null;
+  /** T-08 A3: MemoryGardener pending_review proposals (GET /memory/diffs). */
+  gardenerDiffs: GardenerProposal[];
   skills: Skill[];
   kennel: KennelItem[];
   integrations: Integration[];
@@ -373,6 +376,7 @@ const domainDefaults = (): Omit<State, "operator" | "theme"> => ({
   memGroups: [],
   blocked: [],
   proposed: null,
+  gardenerDiffs: [],
   skills: [],
   kennel: [],
   integrations: [],
