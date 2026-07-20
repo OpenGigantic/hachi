@@ -8,8 +8,18 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), ['VITE_', 'HACHI_'])
   const gatewayTarget = env.HACHI_GATEWAY_PROXY_TARGET || 'http://127.0.0.1:8787'
   const gatewayToken = env.HACHI_GATEWAY_TOKEN || ''
+  // T-22 / BB-123: mirrors client.ts's USE_MOCKS, but as a build-time literal instead of
+  // a runtime `String(x).toLowerCase() === "true"` expression, which Rollup can never
+  // constant-fold. Lets store.ts's seedMockFixtures() gate its dynamic
+  // `import("../data/fixtures")` on something the bundler CAN prove false in a mocks-off
+  // build, so the ~400-line demo-fixture corpus is dropped from the build entirely
+  // instead of merely shipping as an unreferenced chunk. See vite-env.d.ts.
+  const useMocks = String(env.VITE_HACHI_USE_MOCKS ?? '').toLowerCase() === 'true'
 
   return {
+    define: {
+      __HACHI_USE_MOCKS__: JSON.stringify(useMocks),
+    },
     plugins: [
       // tanstackRouter MUST come before react
       tanstackRouter({

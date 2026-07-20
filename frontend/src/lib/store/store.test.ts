@@ -34,7 +34,7 @@ vi.mock("../notifications", () => ({
   notifyApprovalPending: vi.fn(),
 }));
 
-import { useStore } from "./store";
+import { seedMockFixtures, useStore } from "./store";
 
 const FAKE_RESULT = "Summarised 6 PRs — 2 need review. Posted to #eng.";
 
@@ -244,5 +244,31 @@ describe('toast queue — append / cap / dismiss (BB-83)', () => {
     expect(toasts[0].action?.label).toBe('Undo');
     toasts[0].action?.onAction();
     expect(onAction).toHaveBeenCalledOnce();
+  });
+});
+
+// ---- T-22 / BB-123: mock-fixture seeding must stay off in a non-mock build ----
+//
+// domainDefaults() no longer references frontend/src/lib/data/fixtures.ts at all — it
+// always returns live ([]/0/null) defaults. seedMockFixtures() is the ONLY remaining
+// path to that module, reached via a dynamic import() gated on two checks:
+// __HACHI_USE_MOCKS__ (a vite.config.ts build-time literal) and USE_MOCKS (client.ts,
+// mocked false for this whole file at the top). Both resolve false in this test run
+// (the real .env sets VITE_HACHI_USE_MOCKS=false, and the mock above pins USE_MOCKS
+// false too), so seedMockFixtures() must be a complete no-op here — this pins that
+// invariant so a future edit can't silently start seeding demo fixtures into what is
+// supposed to be a live/production run.
+
+describe("seedMockFixtures — no-op guard when mocks are disabled (T-22 / BB-123)", () => {
+  it("resolves without mutating the store", async () => {
+    useStore.getState().hydrate({ history: [], runs: [], skills: [], sessions: [] });
+
+    await seedMockFixtures();
+
+    const state = useStore.getState();
+    expect(state.history).toEqual([]);
+    expect(state.runs).toEqual([]);
+    expect(state.skills).toEqual([]);
+    expect(state.sessions).toEqual([]);
   });
 });

@@ -147,6 +147,18 @@ STEPS: list[Step] = [
         in_quick=False,
         needs_frontend=True,
     ),
+    # BLOCKING (T-22 / BB-123): fails the gate if a demo/mock fixture string ever ships
+    # in the production web bundle again. Must run immediately after "frontend build" so
+    # it always inspects fresh output -- see scripts/check_bundle.py's module docstring
+    # for the marker-list scope note (deliberately excludes strings duplicated inline in
+    # store.ts's 13 untouched `dataMode === "live"` mock forks; those remain in-bundle by
+    # design until the Wave-2 CF-16 store-slice work lands).
+    Step(
+        "frontend bundle purity (no demo fixtures)",
+        [["uv", "run", "python", "scripts/check_bundle.py"]],
+        in_quick=False,
+        needs_frontend=True,
+    ),
 ]
 
 

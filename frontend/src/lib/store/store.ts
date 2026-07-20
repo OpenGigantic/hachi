@@ -15,42 +15,16 @@ import {
   stopStreamingLive,
   switchSessionLive,
 } from "../data/domains/chat";
-import {
-  initApprovals,
-  history,
-  runs,
-  routines,
-  finished,
-  failed,
-  memGroups,
-  blocked,
-  proposed,
-  skills,
-  kennel,
-  integrations,
-  mcpServers,
-  mcpTools,
-  ogNodes,
-  authTargets,
-  authSource,
-  spendTurns,
-  spendTidies,
-  spendModels,
-  packRoster,
-  events,
-  toolCalls,
-  auditLog,
-  recall,
-  sessions,
-  skillUsage,
-  askRules,
-  allowedFolders,
-  allowedCommands,
-  opTools,
-  initialSpent,
-  initialBudget,
-  initialTaskSpent,
-} from "../data/fixtures";
+// NOTE (T-22 / BB-123): frontend/src/lib/data/fixtures.ts (the ~400-line demo-fixture
+// corpus) is deliberately NOT imported here at module scope. It used to be, and every
+// binding was referenced unconditionally inside domainDefaults() below via a
+// USE_MOCKS-gated ternary (fixture-or-live-default) -- but USE_MOCKS is a *computed*
+// boolean (client.ts), not a literal Vite/Rollup can constant-fold, so the bundler could
+// never prove those ternary arms dead and shipped the whole fixture corpus (incl. a
+// hardcoded `priya@studio.co` recipient and a fabricated $0.02 cost) to every production
+// build, mock mode or not. Fixtures are now reachable only via the dynamic `import(...)`
+// inside seedMockFixtures() below, on the mock-only path -- see scripts/check_bundle.py,
+// which fails the gate if this ever regresses back to a static import.
 import { apiSend } from "../data/client";
 import type {
   Approval,
@@ -380,48 +354,53 @@ function clearRunIv() { if (_runIv) { clearInterval(_runIv); _runIv = null; } }
 // ============================================================
 // Store
 // ============================================================
+// Every field below is the LIVE default (empty/zeroed) unconditionally -- T-22 / BB-123.
+// Mock mode no longer seeds through this function: seedMockFixtures() (below the store)
+// hydrates the same fields, once, behind a dynamic import, after the store already exists.
+// `dataMode` is the one exception -- it is a boolean, not fixture data, so it is fine for
+// it to stay USE_MOCKS-derived (it is also how seedMockFixtures() decides whether to run).
 const domainDefaults = (): Omit<State, "operator" | "theme"> => ({
   dataMode: USE_MOCKS ? "mock" : "live",
-  spent: USE_MOCKS ? initialSpent : 0,
-  budget: USE_MOCKS ? initialBudget : 5.0,
-  taskSpent: USE_MOCKS ? initialTaskSpent : 0,
-  approvals: USE_MOCKS ? initApprovals() : [],
-  history: USE_MOCKS ? history : [],
-  runs: USE_MOCKS ? runs : [],
-  routines: USE_MOCKS ? routines : [],
-  finished: USE_MOCKS ? finished : [],
-  failed: USE_MOCKS ? failed : [],
-  memGroups: USE_MOCKS ? memGroups : [],
-  blocked: USE_MOCKS ? blocked : [],
-  proposed: USE_MOCKS ? proposed : null,
-  skills: USE_MOCKS ? skills : [],
-  kennel: USE_MOCKS ? kennel : [],
-  integrations: USE_MOCKS ? integrations : [],
-  mcpServers: USE_MOCKS ? mcpServers : [],
-  mcpTools: USE_MOCKS ? mcpTools : [],
-  ogNodes: USE_MOCKS ? ogNodes : [],
-  authTargets: USE_MOCKS ? authTargets : [],
-  authSource: USE_MOCKS ? authSource : [],
+  spent: 0,
+  budget: 5.0,
+  taskSpent: 0,
+  approvals: [],
+  history: [],
+  runs: [],
+  routines: [],
+  finished: [],
+  failed: [],
+  memGroups: [],
+  blocked: [],
+  proposed: null,
+  skills: [],
+  kennel: [],
+  integrations: [],
+  mcpServers: [],
+  mcpTools: [],
+  ogNodes: [],
+  authTargets: [],
+  authSource: [],
   authSel: "deep_research.og",
   authMode: "diff",
   authAppliedTarget: null,
   ogSel: "brain",
   ogView: "graph",
-  spendTurns: USE_MOCKS ? spendTurns : [],
-  spendTidies: USE_MOCKS ? spendTidies : [],
-  spendModels: USE_MOCKS ? spendModels : [],
-  packRoster: USE_MOCKS ? packRoster : [],
-  events: USE_MOCKS ? events : [],
-  toolCalls: USE_MOCKS ? toolCalls : [],
-  auditLog: USE_MOCKS ? auditLog : [],
-  recall: USE_MOCKS ? recall : [],
-  sessions: USE_MOCKS ? sessions : [],
-  skillUsage: USE_MOCKS ? skillUsage : [],
+  spendTurns: [],
+  spendTidies: [],
+  spendModels: [],
+  packRoster: [],
+  events: [],
+  toolCalls: [],
+  auditLog: [],
+  recall: [],
+  sessions: [],
+  skillUsage: [],
   safety: "standard",
-  askRules: USE_MOCKS ? askRules : [],
-  allowedFolders: USE_MOCKS ? allowedFolders : [],
-  allowedCommands: USE_MOCKS ? allowedCommands : [],
-  opTools: USE_MOCKS ? opTools : [],
+  askRules: [],
+  allowedFolders: [],
+  allowedCommands: [],
+  opTools: [],
   provider: { name: "anthropic", model: "claude-sonnet-4-5", key: "" },
   configLoaded: false,
   loaded: { approvals: false, work: false, review: false, memory: false, integrations: false },
@@ -432,7 +411,7 @@ const domainDefaults = (): Omit<State, "operator" | "theme"> => ({
   kennelConsent: null,
   kennelBrowseOpen: false,
   taskCap: 1.0,
-  dailyCap: USE_MOCKS ? initialBudget : 5.0,
+  dailyCap: 5.0,
   slashOpen: false,
   streaming: false,
   inContext: null,
@@ -1799,3 +1778,66 @@ export const useStore = create<State & Actions>()(
 // This runs once when the store module loads (module scope), avoiding a circular
 // import (client.ts ← store.ts ← client.ts) by using a callback injection pattern.
 registerReconnectCallback((v) => useStore.getState().setReconnecting(v));
+
+/**
+ * Mock-mode-only fixture seed (T-22 / BB-123). `domainDefaults()` above always returns
+ * LIVE defaults now ([]/0/null) -- this is the only place fixtures.ts is ever reached,
+ * and it is a dynamic `import()` rather than a module-scope import.
+ *
+ * Two early-return guards, not one:
+ *  - `__HACHI_USE_MOCKS__` is a vite.config.ts `define` LITERAL (true/false baked in at
+ *    build time). Checking it first lets Rollup prove the `await import(...)` below is
+ *    unreachable in a mocks-off build and drop fixtures.ts from the build entirely --
+ *    not just leave it as an unreferenced chunk. See vite-env.d.ts for why the runtime
+ *    `USE_MOCKS` check alone can't get this: it's derived via
+ *    `String(x).toLowerCase() === "true"`, which no minifier constant-folds.
+ *  - `USE_MOCKS` (client.ts) is the actual source of truth and stays as a second,
+ *    defensive check -- if this function is ever reached somewhere the `define` didn't
+ *    apply, behaviour is still correct, just without the dead-code-elimination benefit.
+ *
+ * Call once from wherever mock mode boots (routes/__root.tsx, guarded by
+ * `dataMode === "mock"`) -- see scripts/check_bundle.py for the build-time guard that
+ * fails the gate if this ever regresses back to a static import.
+ */
+export async function seedMockFixtures(): Promise<void> {
+  if (!__HACHI_USE_MOCKS__) return;
+  if (!USE_MOCKS) return;
+  const f = await import("../data/fixtures");
+  useStore.getState().hydrate({
+    spent: f.initialSpent,
+    budget: f.initialBudget,
+    taskSpent: f.initialTaskSpent,
+    dailyCap: f.initialBudget,
+    approvals: f.initApprovals(),
+    history: f.history,
+    runs: f.runs,
+    routines: f.routines,
+    finished: f.finished,
+    failed: f.failed,
+    memGroups: f.memGroups,
+    blocked: f.blocked,
+    proposed: f.proposed,
+    skills: f.skills,
+    kennel: f.kennel,
+    integrations: f.integrations,
+    mcpServers: f.mcpServers,
+    mcpTools: f.mcpTools,
+    ogNodes: f.ogNodes,
+    authTargets: f.authTargets,
+    authSource: f.authSource,
+    spendTurns: f.spendTurns,
+    spendTidies: f.spendTidies,
+    spendModels: f.spendModels,
+    packRoster: f.packRoster,
+    events: f.events,
+    toolCalls: f.toolCalls,
+    auditLog: f.auditLog,
+    recall: f.recall,
+    sessions: f.sessions,
+    skillUsage: f.skillUsage,
+    askRules: f.askRules,
+    allowedFolders: f.allowedFolders,
+    allowedCommands: f.allowedCommands,
+    opTools: f.opTools,
+  });
+}
