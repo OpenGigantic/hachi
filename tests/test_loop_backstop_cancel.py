@@ -607,3 +607,96 @@ def test_user_cancel_result_prefix() -> None:
     assert result.startswith("[CANCELLED]")
     assert "[INCOMPLETE]" not in result
     assert "[TIME LIMIT REACHED]" not in result
+
+
+# ---------------------------------------------------------------------------
+# 8. Stalled stream — deadline and cancel must not be downstream of a blocking
+#    next(gen) call (T-28 / BB-102). A socket that accepts the request and then
+#    stops delivering bytes (not just a slow one) must still be caught by both
+#    backstops.
+# ---------------------------------------------------------------------------
+
+
+class _HungStreamLLM:
+    """Yields one chunk, then stalls — a socket that accepts and stops delivering.
+
+    The stall is bounded (`released.wait(10.0)`) so a failing (pre-fix) run cannot
+    wedge the test suite: the worst case is a slow ~10s test, never a hung one.
+    """
+
+    model = "fake-hung"
+
+    def __init__(self) -> None:
+        self.released = threading.Event()
+
+    def generate(self, **_kw) -> LLMResponse:
+        return LLMResponse(content="hello")
+
+    def generate_stream(self, **_kw):  # noqa: ANN201
+        yield "hello"
+        self.released.wait(10.0)  # stands in for a blocking socket read
+        return LLMResponse(content="hello")  # pragma: no cover — reached only post-fix
+
+
+def test_wall_deadline_fires_when_stream_stops_delivering_chunks() -> None:
+    """A stream that stops delivering chunks must not defeat the wall-clock deadline.
+
+    ExecutionLoop._stream_generate checks the cancel flag and wall-clock deadline
+    AFTER the blocking ``chunk = next(gen)`` call. A socket that never delivers
+    another chunk blocks the loop thread inside that call indefinitely, so the
+    checks downstream of it never run and the deadline can never fire.
+    """
+    llm = _HungStreamLLM()
+    loop = ExecutionLoop(
+        llm,
+        _noop_registry(),
+        SubAgentMemory(),
+        base_system_prompt="x",
+        max_wall_seconds=1.0,
+    )
+    loop.add_user_message("go")
+
+    t0 = time.monotonic()
+    try:
+        result = loop.run(max_iterations=1)
+    finally:
+        llm.released.set()  # never leave the fake's worker parked
+    elapsed = time.monotonic() - t0
+
+    assert "[TIME LIMIT REACHED]" in result, result
+    assert "hello" in result, "the partial text before the stall must be preserved"
+    assert elapsed < 5.0, f"deadline was 1.0s; run() took {elapsed:.1f}s"
+
+
+def test_cancel_fires_when_stream_stops_delivering_chunks() -> None:
+    """cancel() must interrupt a stream that stops delivering chunks, not just a slow one.
+
+    Same defect as the deadline test above — loop.py's cancel check sits on the
+    identical line as the deadline check, right after the blocking next(gen) call.
+    """
+    llm = _HungStreamLLM()
+    loop = ExecutionLoop(
+        llm,
+        _noop_registry(),
+        SubAgentMemory(),
+        base_system_prompt="x",
+        max_wall_seconds=0.0,  # isolate cancel from the wall-clock backstop
+    )
+    loop.add_user_message("go")
+
+    def _cancel_after_first_chunk() -> None:
+        time.sleep(0.2)  # let "hello" land and the fake enter its stall
+        loop.cancel()
+
+    threading.Thread(target=_cancel_after_first_chunk, daemon=True).start()
+
+    t0 = time.monotonic()
+    try:
+        result = loop.run(max_iterations=1)
+    finally:
+        llm.released.set()  # never leave the fake's worker parked
+    elapsed = time.monotonic() - t0
+
+    assert "[CANCELLED]" in result, result
+    assert "hello" in result, "the partial text before the stall must be preserved"
+    assert elapsed < 5.0, f"cancel() should interrupt the stall quickly, took {elapsed:.1f}s"
