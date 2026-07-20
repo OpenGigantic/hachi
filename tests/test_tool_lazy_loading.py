@@ -164,7 +164,19 @@ def test_core_tool_set_size_guard() -> None:
 def test_rare_tools_trimmed_from_core_to_lazy_groups() -> None:
     # Cost trim: rare flagship tools moved out of the always-on core set to cut the
     # per-turn tool-schema footprint (~1.3K tokens). Still reachable via use_tools().
-    from hachi.gateway.orchestrator import _CORE_TOOL_NAMES, _GROUP_BY_TOOL_NAME
+    #
+    # T-39/BB-112: group membership used to live in a hand-maintained orchestrator
+    # table (_GROUP_BY_TOOL_NAME), now deleted. Each tool declares its own group at
+    # its registry.register(...) call, so this exercises the real registration
+    # functions instead of a table that no longer exists.
+    from hachi.gateway.orchestrator import _CORE_TOOL_NAMES
+    from hachi.og_engine.engine import SkillEngine
+    from hachi.tools.delegation_tools import register_delegation_tools
+    from hachi.tools.og_tools import register_og_tools
+
+    reg = ToolRegistry()
+    register_og_tools(reg, SkillEngine())
+    register_delegation_tools(reg)
 
     moved = {
         "delegate_task": "delegation",
@@ -174,7 +186,7 @@ def test_rare_tools_trimmed_from_core_to_lazy_groups() -> None:
     }
     for name, group in moved.items():
         assert name not in _CORE_TOOL_NAMES, f"{name} should be lazy, not core"
-        assert _GROUP_BY_TOOL_NAME.get(name) == group
+        assert reg._groups[name] == group, f"{name} registered as {reg._groups[name]!r}"
 
     # Skill-routing CONTRACT + safety tools must remain always-on: brain.og requires
     # skill_dependencies / check_skill_assertions right after load_skill, and
@@ -192,14 +204,19 @@ def test_rare_tools_trimmed_from_core_to_lazy_groups() -> None:
 
 
 def test_classify_routes_trimmed_tools_to_their_groups() -> None:
-    from hachi.gateway.orchestrator import _CORE_TOOL_NAMES, _GROUP_BY_TOOL_NAME
+    # T-39/BB-112: group_by_name={} mirrors the production classify() call now that
+    # _GROUP_BY_TOOL_NAME is gone; classify()'s rule 4 (leave an explicitly-tagged
+    # tool's group intact) is what makes registration-time group= survive classify().
+    from hachi.gateway.orchestrator import _CORE_TOOL_NAMES
 
     reg = ToolRegistry()
-    for nm in ("read_file", "delegate_task", "save_skill", "skill_dependencies"):
-        reg.register(_tool(nm), lambda **_k: "")
+    reg.register(_tool("read_file"), lambda **_k: "")  # default -> core (in core_names)
+    reg.register(_tool("delegate_task"), lambda **_k: "", group="delegation")
+    reg.register(_tool("save_skill"), lambda **_k: "", group="authoring")
+    reg.register(_tool("skill_dependencies"), lambda **_k: "")  # default -> core (in core_names)
     reg.classify(
         core_names=set(_CORE_TOOL_NAMES),
-        group_by_name=_GROUP_BY_TOOL_NAME,
+        group_by_name={},
         default="integrations",
     )
     core = {s["name"] for s in reg.get_schemas(set())}

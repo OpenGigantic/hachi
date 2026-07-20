@@ -812,3 +812,119 @@ def test_openai_stream_surfaces_finish_reason() -> None:
 
     _, final = drain_stream(client.generate_stream(messages=[Message(role="user", content="q")]))
     assert final.stop_reason == "max_tokens"
+
+
+# ---------------------------------------------------------------------------
+# T-25/BB-117 — LLMResponse.served_model must report the model that ACTUALLY
+# produced the response, not just the client's configured model. Needed so a
+# resilience fallback that serves a turn is attributed correctly (loop.py).
+# ---------------------------------------------------------------------------
+
+
+def test_anthropic_generate_surfaces_served_model() -> None:
+    """Non-streaming: served_model comes from the provider's own Message.model,
+    which can legitimately differ from the client's configured `self.model`
+    (e.g. a dated alias resolves to a concrete snapshot server-side).
+    """
+    from hachi.core.llm import AnthropicClient
+
+    client = AnthropicClient.__new__(AnthropicClient)
+    client.api_key = "sk-test"
+    client.model = "claude-haiku-4-5"
+    client.max_tokens = 1024
+
+    fake_response = MagicMock()
+    fake_response.content = [MagicMock(type="text", text="hi")]
+    fake_response.model = "claude-haiku-4-5-20251001"  # provider-reported, differs from configured
+    fake_response.usage = MagicMock(
+        input_tokens=3,
+        output_tokens=2,
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=0,
+    )
+    mock_client = MagicMock()
+    mock_client.messages.create = MagicMock(return_value=fake_response)
+    client.client = mock_client
+
+    result = client.generate(messages=[Message(role="user", content="hi")])
+    assert result.served_model == "claude-haiku-4-5-20251001"
+
+
+def test_anthropic_generate_stream_surfaces_served_model() -> None:
+    """Streaming: served_model comes from get_final_message().model (same
+    _parse_message code path as the non-streaming case)."""
+    client = _make_anthropic_client()
+
+    fake_stream = MagicMock()
+    fake_stream.__enter__ = MagicMock(return_value=fake_stream)
+    fake_stream.__exit__ = MagicMock(return_value=False)
+    fake_stream.text_stream = iter(["hi"])
+
+    fake_final = MagicMock()
+    fake_final.content = [MagicMock(type="text", text="hi")]
+    fake_final.model = "claude-haiku-4-5-20251001"
+    fake_final.usage = MagicMock(
+        input_tokens=1,
+        output_tokens=1,
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=0,
+    )
+    fake_stream.get_final_message = MagicMock(return_value=fake_final)
+    client.client.messages.stream = MagicMock(return_value=fake_stream)
+
+    _, final = drain_stream(client.generate_stream(messages=[Message(role="user", content="hi")]))
+    assert final.served_model == "claude-haiku-4-5-20251001"
+
+
+def test_openai_generate_surfaces_served_model() -> None:
+    """Non-streaming: served_model comes from the response body's top-level
+    "model" field (standard OpenAI chat-completions wire format)."""
+    client = _make_openai_client()
+    client._http.post = MagicMock(
+        return_value=MagicMock(
+            json=MagicMock(
+                return_value={
+                    "model": "gpt-4o-mini-2024-07-18",
+                    "choices": [{"message": {"content": "hi"}}],
+                    "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+                }
+            ),
+            raise_for_status=MagicMock(),
+        )
+    )
+
+    result = client.generate(messages=[Message(role="user", content="test")])
+    assert result.served_model == "gpt-4o-mini-2024-07-18"
+
+
+def test_openai_generate_served_model_falls_back_to_configured_model() -> None:
+    """When the endpoint omits "model" (common for local servers), served_model
+    falls back to the client's configured model rather than staying None."""
+    client = _make_openai_client()  # client.model == "gpt-test"
+    client._http.post = MagicMock(
+        return_value=MagicMock(
+            json=MagicMock(
+                return_value={
+                    "choices": [{"message": {"content": "hi"}}],
+                    "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+                }
+            ),
+            raise_for_status=MagicMock(),
+        )
+    )
+
+    result = client.generate(messages=[Message(role="user", content="test")])
+    assert result.served_model == "gpt-test"
+
+
+def test_openai_stream_surfaces_served_model() -> None:
+    """Streaming: served_model defaults to the client's configured model (the
+    SSE delta/usage chunks this method parses do not carry a per-chunk model
+    field worth relying on -- CORRECTIONS.md T-25 SS3.3(c))."""
+    client = _make_openai_client()  # client.model == "gpt-test"
+    body = _sse_lines("hi")
+    mock_resp = _make_mock_stream_response(body)
+    client._http.stream = MagicMock(return_value=mock_resp)
+
+    _, final = drain_stream(client.generate_stream(messages=[Message(role="user", content="q")]))
+    assert final.served_model == "gpt-test"

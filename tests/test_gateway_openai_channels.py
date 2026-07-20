@@ -232,7 +232,7 @@ def test_get_or_create_session_returns_stable_id() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _streaming_control_plane() -> GatewayControlPlane:
+def _streaming_control_plane(*, max_active_sessions: int = 100) -> GatewayControlPlane:
     """A control plane that echoes prompts and exposes an event store."""
     from hachi.gateway.control_plane import GatewayEvent
 
@@ -253,7 +253,9 @@ def _streaming_control_plane() -> GatewayControlPlane:
     def read_events(session_id: str, after: int, limit: int) -> list[GatewayEvent]:
         return [e for e in store if e.sequence > after][:limit]
 
-    return GatewayControlPlane(on_chat=on_chat, read_events=read_events)
+    return GatewayControlPlane(
+        on_chat=on_chat, read_events=read_events, max_active_sessions=max_active_sessions
+    )
 
 
 def test_openai_stream_returns_event_stream_content_type() -> None:
@@ -334,3 +336,171 @@ def test_openai_non_stream_unchanged() -> None:
     body = resp.json()
     assert body["object"] == "chat.completion"
     assert body["choices"][0]["message"]["content"] == "echo:hi"
+
+
+# ---------------------------------------------------------------------------
+# T-32 — the non-streaming facade must not share one "__default__" session
+# across callers, and must enforce ownership like every other session-scoped
+# route (BB-109).
+# ---------------------------------------------------------------------------
+
+
+def test_openai_facade_does_not_share_one_default_session() -> None:
+    """T-32: two facade callers must not land in the same server-side session."""
+    seen: list[str] = []
+
+    def _on_chat(session_id: str, prompt: str) -> str:
+        seen.append(session_id)
+        return f"echo:{prompt}"
+
+    cp = GatewayControlPlane(on_chat=_on_chat)
+    app = create_gateway_app(cp)
+    with TestClient(app) as client:
+        for text in ("first caller", "second caller"):
+            resp = client.post(
+                "/v1/chat/completions",
+                json={"messages": [{"role": "user", "content": text}]},
+            )
+            assert resp.status_code == 200
+
+    assert len(set(seen)) == 2, f"both callers shared one session: {seen}"
+
+
+def test_openai_facade_rejects_foreign_session_owner() -> None:
+    """T-32: the facade must perform the ownership check the other 10 routes perform."""
+    import hashlib
+
+    _TOKEN_A = "token-a"
+    _HASH_A = hashlib.sha256(_TOKEN_A.encode()).hexdigest()
+    _HASH_B = hashlib.sha256(b"token-b").hexdigest()
+
+    cp = GatewayControlPlane(on_chat=lambda _sid, prompt: f"echo:{prompt}")
+    app = create_gateway_app(cp, auth_token=_TOKEN_A)
+
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {_TOKEN_A}"}
+        body = {"user": "conversation-1", "messages": [{"role": "user", "content": "hi"}]}
+
+        first = client.post("/v1/chat/completions", json=body, headers=headers)
+        assert first.status_code == 200
+
+        # Re-point that session's owner at a different principal. The key mirrors
+        # the implementation's f"openai:{principal}:{conversation}" scheme; calling
+        # get_or_create_session with no owner kwarg on an already-known key is a
+        # pure lookup and does not re-stamp ownership.
+        session_id = cp.get_or_create_session(f"openai:{_HASH_A}:conversation-1")
+        cp.set_session_owner(session_id, _HASH_B)
+        # BB-108's trap: confirm the stamp actually landed on a LIVE session — a
+        # no-op stamp on a dead/unknown id would make the 403 below pass for the
+        # wrong reason (an ownerless session, which the policy always allows).
+        assert cp.get_session_owner(session_id) == _HASH_B
+
+        denied = client.post("/v1/chat/completions", json=body, headers=headers)
+        assert denied.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# T-33 — the facade must close the ephemeral (per-request) sessions it mints,
+# or the fixed 100-session cap fills permanently (BB-110).
+# ---------------------------------------------------------------------------
+
+
+def test_openai_non_streaming_closes_its_ephemeral_session() -> None:
+    """T-33: a non-streaming request with no client-supplied `user` mints a
+    per-request session (T-32's fallback) and must release it, exactly like
+    the streaming path does.
+    """
+    cp = _control_plane()
+    app = create_gateway_app(cp)
+
+    with TestClient(app) as client:
+        baseline = client.get("/readiness").json()["active_connections"]
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 200
+        after = client.get("/readiness").json()["active_connections"]
+
+    assert after == baseline, f"non-streaming request leaked a session ({baseline} -> {after})"
+
+
+def test_openai_streaming_closes_its_session() -> None:
+    """T-33: a facade session is minted per streaming request and must be released."""
+    cp = _streaming_control_plane()
+    app = create_gateway_app(cp)
+
+    with TestClient(app) as client:
+        baseline = client.get("/readiness").json()["active_connections"]
+
+        with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={"stream": True, "messages": [{"role": "user", "content": "hi"}]},
+        ) as response:
+            assert response.status_code == 200
+            "".join(response.iter_text())  # drain to completion so `finally:` runs
+
+        after = client.get("/readiness").json()["active_connections"]
+
+    assert after == baseline, f"streaming request leaked a session ({baseline} -> {after})"
+
+
+def test_openai_streaming_does_not_approach_the_session_cap() -> None:
+    """T-33: N sequential streaming requests must not accumulate sessions."""
+    cp = _streaming_control_plane(max_active_sessions=3)
+    app = create_gateway_app(cp)
+
+    with TestClient(app) as client:
+        for i in range(6):
+            try:
+                with client.stream(
+                    "POST",
+                    "/v1/chat/completions",
+                    json={"stream": True, "messages": [{"role": "user", "content": f"turn {i}"}]},
+                ) as response:
+                    assert response.status_code == 200, f"request {i} failed — sessions leaked"
+                    "".join(response.iter_text())
+            except RuntimeError as exc:
+                # A leaked-session cap breach raises mid-stream rather than
+                # returning a clean non-200 (the HTTP response line has already
+                # gone out as 200 by the time the handler discovers the cap is
+                # full — Starlette cannot rewrite a status code after
+                # `http.response.start` was sent). Either failure mode proves
+                # the same thing: earlier requests were never released.
+                raise AssertionError(
+                    f"request {i} blew up once the (lowered) session cap was hit "
+                    f"mid-stream — sessions from earlier requests were never closed: {exc}"
+                ) from exc
+
+        assert client.get("/readiness").json()["active_connections"] == 0
+
+
+def test_openai_facade_user_keyed_session_persists_across_requests() -> None:
+    """T-33: a client-supplied `user` id must keep its (non-streaming) session
+    alive for continuity — only the per-request ephemeral (no-`user`) fallback
+    is closed. Only the non-streaming path threads `user` into the session key
+    (T-32); the streaming path always mints a fresh per-request session.
+    """
+    seen: list[str] = []
+
+    def _on_chat(session_id: str, prompt: str) -> str:
+        seen.append(session_id)
+        return f"echo:{prompt}"
+
+    cp = GatewayControlPlane(on_chat=_on_chat)
+    app = create_gateway_app(cp)
+    body = {"user": "conversation-1", "messages": [{"role": "user", "content": "hi"}]}
+
+    with TestClient(app) as client:
+        baseline = client.get("/readiness").json()["active_connections"]
+        first = client.post("/v1/chat/completions", json=body)
+        assert first.status_code == 200
+        mid = client.get("/readiness").json()["active_connections"]
+        second = client.post("/v1/chat/completions", json=body)
+        assert second.status_code == 200
+        after = client.get("/readiness").json()["active_connections"]
+
+    assert len(set(seen)) == 1, "user-keyed session was not reused across requests"
+    assert mid == baseline + 1, "user-keyed session was not created"
+    assert after == mid, "user-keyed session was closed instead of kept alive"

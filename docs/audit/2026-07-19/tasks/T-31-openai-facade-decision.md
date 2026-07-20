@@ -1,14 +1,17 @@
-# T-31 · Decide the fate of the OpenAI-compat facade
+# T-31 · Decide the fate of the OpenAI-compat facade — DECIDED: (a) Keep and fix
 
-> ## ⚠ DECISION REQUIRED — THIS IS A PRODUCT DECISION, NOT AN ENGINEERING ONE
+> ## ✅ DECISION RECORDED — (a) KEEP AND FIX (2026-07-20)
 >
-> **Nothing else in CF-9 starts until this is answered.** [T-32](T-32-facade-session-isolation.md) and
-> [T-33](T-33-facade-session-lifecycle.md) are both blocked on it. Do not "just start fixing" — the
-> correct amount of engineering here ranges from *zero* to *several days* depending on an answer only
-> a product owner can give.
+> The product owner chose **option (a) — keep and fix** on 2026-07-20. Full rationale and which
+> defects the decision leaves standing are recorded in
+> [docs/DECISIONS.md](../../../DECISIONS.md) (§"T-31 — OpenAI-compat facade: keep and fix").
+> [T-32](T-32-facade-session-isolation.md) and [T-33](T-33-facade-session-lifecycle.md) are
+> **unblocked and have landed** (BB-109, BB-110). Defect 3 (multi-turn history) remains explicitly
+> deferred to its own design pass per §9 below — it was NOT speced or started.
 >
-> **If you are an implementer and no decision has been recorded: STOP and ask.** Bring this document
-> and §5's options table with you.
+> *(Original notice, kept for history: "Nothing else in CF-9 starts until this is answered... If
+> you are an implementer and no decision has been recorded: STOP and ask." That applied before
+> 2026-07-20; it no longer applies to this task.)*
 
 |  |  |
 |---|---|
@@ -16,7 +19,8 @@
 | **Severity** | P1 *if kept* — the facade is currently shipped and unflagged |
 | **Wave** | 1 (gate-blocking, before public v1) |
 | **Depends on** | none |
-| **Blocks** | [T-32](T-32-facade-session-isolation.md), [T-33](T-33-facade-session-lifecycle.md) |
+| **Decision** | **(a) Keep and fix** — recorded 2026-07-20, see [docs/DECISIONS.md](../../../DECISIONS.md) |
+| **Blocks** | [T-32](T-32-facade-session-isolation.md), [T-33](T-33-facade-session-lifecycle.md) — both landed |
 | **Effort** | ~half a day to decide (this document) · 0 to ~4 days to execute, depending on the answer |
 | **Difficulty** | High (needs design judgement — read §9) |
 | **Files you will touch** | This document + [docs/DECISIONS.md](../../../DECISIONS.md). **No source files** until a decision is recorded. |

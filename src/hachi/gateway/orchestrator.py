@@ -120,7 +120,7 @@ from hachi.tools.browser_tools import register_browser_tools
 from hachi.tools.config_tools import register_config_tools
 from hachi.tools.delegation_tools import register_delegation_tools
 from hachi.tools.file_tools import register_file_tools
-from hachi.tools.google_tools import GOOGLE_TOOL_NAMES, register_google_tools
+from hachi.tools.google_tools import register_google_tools
 from hachi.tools.memory_tools import register_memory_tools, register_session_tools
 from hachi.tools.messaging_tools import register_messaging_tools
 from hachi.tools.notification_tools import register_notification_tools
@@ -147,6 +147,15 @@ class CapabilityDescriptor:
     requires_scopes: tuple[str, ...]
     setup_hint: str
     factory: Callable[[], Any] | None = None
+    mounts_tools: bool = True
+    """False when this capability's tools are mounted elsewhere (e.g. via TOOL_SPECS).
+
+    The descriptor is still used for status reporting, `iter_enabled()`, and optional
+    skill-pack installation — only the `register_tools` call in boot_agent is skipped.
+    BB-103: `google` is the only capability with two live mount paths — TOOL_SPECS
+    (which carries the session action_approver) and this capability loop (which does
+    not). Set False only on `google`; leave the default True for every other id.
+    """
 
 
 class CapabilityRegistry:
@@ -241,41 +250,14 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
-# Non-core, statically-known tools → their on-demand group. Per-skill REST tools
-# are tagged at registration (group == skill name) and are not listed here.
-_GROUP_BY_TOOL_NAME: dict[str, str] = {
-    # Flagship-but-occasional tools trimmed out of always-on core to cut the per-turn
-    # tool-schema footprint (~1.3K tokens). Discoverable via the system prompt's
-    # "OPTIONAL TOOL GROUPS" list; the model unlocks them with use_tools(group=...).
-    "delegate_task": "delegation",
-    "list_roles": "delegation",
-    "save_skill": "authoring",
-    "skill_changelog": "authoring",
-    "browser_act": "browser",
-    "browser_screenshot": "browser",
-    "python_sandbox": "sandbox",
-    "create_schedule": "schedule",
-    "schedule_task": "schedule",
-    "list_schedules": "schedule",
-    "delete_schedule": "schedule",
-    "cancel_schedule": "schedule",
-    "core_suspend_workflow": "workflow",
-    "send_slack_message": "messaging",
-    "send_discord_message": "messaging",
-    "send_whatsapp_message": "messaging",
-    "send_telegram_message": "messaging",
-    "notify_user": "notifications",
-    "send_email_digest": "notifications",
-    "buffer_notification": "notifications",
-    "flush_notification_digest": "notifications",
-    "view_image": "vision",
-    "transcribe_audio": "voice",
-    "transcribe_and_summarize": "voice",
-    "speak_text": "voice",
-    "play_audio": "voice",
-    "get_audio_info": "voice",
-    **{name: "google" for name in GOOGLE_TOOL_NAMES},
-}
+# T-39/BB-112: the hand-maintained _GROUP_BY_TOOL_NAME table used to live here. It
+# drifted from reality (a dead "schedule_task" entry, a missing
+# "delegate_parallel_tasks" entry that silently fell into "integrations") because
+# nothing checked its strings against the tools actually registered. Every non-core
+# tool now declares its own group="..." at its registry.register(...) call, in the
+# module that defines it (see e.g. tools/schedule_tools.py, tools/delegation_tools.py).
+# classify()'s rule 4 leaves an explicitly-tagged tool's group intact, so
+# group_by_name={} below is not a signature change — it just has nothing left to do.
 
 
 def _coerce_float(*candidates: Any) -> float:
@@ -345,6 +327,11 @@ def _build_capability_registry(config: dict[str, Any]) -> CapabilityRegistry:
                 factory=lambda: __import__(
                     "hachi.integrations.google", fromlist=["GoogleIntegrationHub"]
                 ).GoogleIntegrationHub(),
+                # BB-103: Google's tools are mounted by the TOOL_SPECS entry at
+                # register_google_tools(..., approver=action_approver) instead — that
+                # is the only mount that carries the session's action_approver. Do
+                # NOT flip this to True; that reopens the double mount.
+                mounts_tools=False,
             ),
             CapabilityDescriptor(
                 id="slack",
@@ -969,10 +956,14 @@ class AgentSession:
             return {"ok": False, "tool_count": 0, "status": "failed"}
 
         tool_count = self.mcp_manager.get_server_tool_count(cfg.name)
-        # Register the new server's tools into the live tool registry
-        server = self.mcp_manager._servers.get(cfg.name)
-        if server is not None:
-            self.mcp_manager._register_server_tools(cfg.name, server, registry)
+        # Register the new server's tools into the live tool registry. BB-120: use
+        # the idempotent public register_server_tools (it unregisters any stale
+        # tools for this server name before re-mounting) instead of the private
+        # _register_server_tools — re-adding an already-live server is a supported
+        # user action (cli/main.py's register-server command re-registers an
+        # existing name in place) and must not hit ToolRegistry.register's
+        # duplicate-name guard (BB-111's T-36 fix, left untouched here).
+        self.mcp_manager.register_server_tools(cfg.name, registry)
         # BB-32: reclassify the new server's tools into "mcp" group and ensure
         # the group is always-on for the running loop so the LLM sees them
         # immediately without requiring a use_tools call.
@@ -2929,16 +2920,20 @@ def boot_agent(
     # ProviderRegistry → ModelRegistry → RoutingPolicy → ModelRouter.
     # When [routing] is absent, the policy synthesises a single-model-for-all-caps
     # mapping and default_client() returns the existing `client` unchanged.
+    # BB-104: these six imports live OUTSIDE the try below (deliberately, still
+    # function-local) so an ImportError from a broken install / renamed module /
+    # typo raises loudly at boot instead of being swallowed as "your [routing]
+    # config is bad". Only the construction calls are guarded.
+    from hachi.core.providers.registry import ProviderRegistry
+    from hachi.core.resilience import RetryPolicy
+    from hachi.core.routing.policy import RoutingPolicy
+    from hachi.core.routing.registry import ModelRegistry
+    from hachi.core.routing.router import ModelRouter
+    from hachi.core.settings import ResolvedConfig
+
     _model_router = None
     _provider_registry = None
     try:
-        from hachi.core.providers.registry import ProviderRegistry
-        from hachi.core.resilience import RetryPolicy
-        from hachi.core.routing.policy import RoutingPolicy
-        from hachi.core.routing.registry import ModelRegistry
-        from hachi.core.routing.router import ModelRouter
-        from hachi.core.settings import ResolvedConfig
-
         _resolved_cfg = ResolvedConfig.model_validate(config)
         _provider_registry = ProviderRegistry.from_config(_resolved_cfg, secret_store)
         _model_registry = ModelRegistry.build(_resolved_cfg, _provider_registry)
@@ -2984,10 +2979,22 @@ def boot_agent(
         for _cost_warning in _routing_policy.costly_capability_warnings(_model_registry):
             logger.warning(_cost_warning)
             emit_runtime_event("cost.routing_warning", {"message": _cost_warning})
-    except Exception:
-        logger.debug(
-            "Routing boot: failed to initialise routing layer; falling back to direct client",
+    except Exception as exc:
+        # BB-104: this used to log at debug (quieter than the INFO success path
+        # above), so a broken [routing] config produced zero visible signal — the
+        # session silently fell back to the single default model. Promoted to
+        # WARNING with the exception type named, plus a runtime event, so the
+        # failure is as loud as the fallback it causes is significant.
+        logger.warning(
+            "Routing boot: failed to initialise routing layer (%s: %s); "
+            "falling back to the direct client — [routing] configuration is NOT active",
+            type(exc).__name__,
+            exc,
             exc_info=True,
+        )
+        emit_runtime_event(
+            "routing.boot_failed",
+            {"error": f"{type(exc).__name__}: {exc}"},
         )
         _model_router = None
 
@@ -3391,6 +3398,14 @@ def boot_agent(
     for descriptor in capability_registry.iter_enabled():
         if descriptor.kind != "native_integration":
             continue
+        if not descriptor.mounts_tools:
+            # BB-103: tools are mounted elsewhere (google -> TOOL_SPECS, which carries
+            # the session approver). The descriptor still drives status_snapshot() and
+            # install_optional_skill_pack() above — only the mount step is skipped, for
+            # both the success and the not-available/not-configured stub branch, so a
+            # configured-but-not-connected Google does not also get this loop's generic
+            # stub competing with google_tools.py's own purpose-written one.
+            continue
         if not descriptor.available or not descriptor.configured:
             _register_capability_setup_stub(tool_registry, descriptor)
             continue
@@ -3418,11 +3433,14 @@ def boot_agent(
             native_registration_count += 1
 
     # Classify tools into lazy-loading groups now that every tool is registered.
-    # Per-skill REST tools were already tagged at registration (group == skill name);
-    # classify() leaves those intact and stamps the rest.
+    # T-39/BB-112: non-core tools now declare group="..." at their own register(...)
+    # call (mirroring the pre-existing per-skill REST tool / use_tools pattern), so
+    # classify() has nothing left to assign via name lookup — group_by_name={} is
+    # kept (not dropped from the signature) so a future dynamic table has somewhere
+    # to plug in without a call-site change.
     tool_registry.classify(
         core_names=set(_CORE_TOOL_NAMES),
-        group_by_name=_GROUP_BY_TOOL_NAME,
+        group_by_name={},
         # Google integration tools all share the "google_" prefix → lazy "google" group.
         prefix_groups={"google_": "google"},
         default="integrations",
@@ -3741,6 +3759,10 @@ def boot_agent(
     # ------------------------------------------------------------------
     _eval_cfg = EvalReportSettings.model_validate(config.get("eval_reports", {}))
     if _eval_cfg.enabled:
+        # BB-101 (T-07 debt): distinguish "I enabled it and it started" from "I
+        # enabled it and the config never arrived" at the boot_agent call site —
+        # the daemon's own thread-start log only fires once it is already running.
+        logger.info("[eval_reports] enabled — weekly failure-report daemon starting")
         _start_eval_report_scheduler(
             session_store, get_hachi_paths(), _eval_cfg, emit_runtime_event
         )

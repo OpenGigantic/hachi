@@ -114,6 +114,16 @@ STEPS: list[Step] = [
     # indexed (no orphans, NNNN-kebab names, required sections). Baseline is clean, so this can
     # ratchet to blocking; kept advisory for one cycle like the other rails. See scripts/check_adrs.py.
     Step("adr-lint (docs)", [["uv", "run", "python", "scripts/check_adrs.py"]], blocking=False),
+    # Advisory rail (CF-1 / T-14 / BB-107): a defaulted getattr against one of our own
+    # types converts a missing attribute into a silent fallback -- it masked four dead
+    # features in the 2026-07-19 audit. Baseline is clean (fully allowlisted with a
+    # reason per entry); ratchet to blocking once the allowlist has been stable for one
+    # cycle. See scripts/check_getattr.py.
+    Step(
+        "getattr-lint (own types)",
+        [["uv", "run", "python", "scripts/check_getattr.py"]],
+        blocking=False,
+    ),
     Step("eval regression", [["uv", "run", "hachi", "eval", "run"]]),
     Step(
         "frontend typecheck",

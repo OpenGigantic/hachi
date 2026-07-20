@@ -118,7 +118,7 @@ def build_core_registry():  # noqa: ANN201 — avoids circular import in type hi
     counts are accurate.
     """
     from hachi.core.loop import ToolRegistry
-    from hachi.gateway.orchestrator import _CORE_TOOL_NAMES, _GROUP_BY_TOOL_NAME
+    from hachi.gateway.orchestrator import _CORE_TOOL_NAMES
     from hachi.tools.memory_tools import register_memory_tools, register_session_tools
     from hachi.tools.og_tools import USE_TOOLS_SCHEMA, _make_use_tools, register_og_tools
     from hachi.tools.os_tools import register_os_tools
@@ -147,9 +147,16 @@ def build_core_registry():  # noqa: ANN201 — avoids circular import in type hi
         pass  # playwright not installed; schema absent but not a test-failure condition
 
     # Stamp lazy-loading groups (mirrors the orchestrator's classify call).
+    # T-39/BB-112: the hand-maintained _GROUP_BY_TOOL_NAME table was deleted from
+    # orchestrator.py — every non-core tool now declares group="..." at its own
+    # register(...) call (see tools/og_tools.py, tools/browser_tools.py, etc.), so
+    # classify()'s rule 4 ("tools already tagged with an explicit non-core group are
+    # left intact") reproduces the old table's assignments without it. This registry
+    # is built from the same register_*_tools functions the orchestrator calls, so
+    # group_by_name={} is exactly equivalent here, mirroring the real call site.
     registry.classify(
         core_names=set(_CORE_TOOL_NAMES),
-        group_by_name=_GROUP_BY_TOOL_NAME,
+        group_by_name={},
         prefix_groups={"google_": "google"},
         default="integrations",
     )

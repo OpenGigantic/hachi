@@ -159,7 +159,10 @@ _CANCEL_ALIAS_SCHEMA = {
 
 def register_schedule_tools(registry: ToolRegistry, scheduler: Scheduler) -> None:
     """Mount the scheduling tools onto the provided ToolRegistry."""
-    registry.register(SCHEDULE_TASK_SCHEMA, _make_schedule_task(scheduler))
-    registry.register(LIST_SCHEDULES_SCHEMA, _make_list_schedules(scheduler))
-    registry.register(CANCEL_SCHEDULE_SCHEMA, _make_cancel_schedule(scheduler))
-    registry.register(_CANCEL_ALIAS_SCHEMA, _make_cancel_schedule(scheduler))
+    # T-39/BB-112: lazy under "schedule" (was _GROUP_BY_TOOL_NAME, now at registration).
+    # NOTE: SCHEDULE_TASK_SCHEMA's registered tool "name" is "create_schedule" — the
+    # constant/handler-function name "schedule_task" is never itself a tool name.
+    registry.register(SCHEDULE_TASK_SCHEMA, _make_schedule_task(scheduler), group="schedule")
+    registry.register(LIST_SCHEDULES_SCHEMA, _make_list_schedules(scheduler), group="schedule")
+    registry.register(CANCEL_SCHEDULE_SCHEMA, _make_cancel_schedule(scheduler), group="schedule")
+    registry.register(_CANCEL_ALIAS_SCHEMA, _make_cancel_schedule(scheduler), group="schedule")

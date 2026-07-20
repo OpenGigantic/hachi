@@ -183,11 +183,30 @@ def test_google_tool_names_all_prefixed_google() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_orchestrator_group_dict_includes_google_tools() -> None:
-    """_GROUP_BY_TOOL_NAME must map every GOOGLE_TOOL_NAMES entry to 'google'."""
-    from hachi.gateway.orchestrator import _GROUP_BY_TOOL_NAME
+def test_google_tool_names_resolve_to_google_group_via_prefix() -> None:
+    """T-39/BB-112 contract correction: the orchestrator's _GROUP_BY_TOOL_NAME table
+    (which used to splat ``{name: "google" for name in GOOGLE_TOOL_NAMES}`` into
+    itself) has been deleted. Every GOOGLE_TOOL_NAMES entry must still resolve to the
+    "google" group -- now via the surviving prefix_groups={"google_": "google"} rule
+    in the production classify() call (gateway/orchestrator.py), which is a
+    convention rule rather than a name list and so cannot drift the way the deleted
+    table could (see test_google_tool_names_all_prefixed_google above).
+    """
+    from hachi.core.loop import ToolRegistry
+    from hachi.gateway.orchestrator import _CORE_TOOL_NAMES
     from hachi.tools.google_tools import GOOGLE_TOOL_NAMES
 
+    reg = ToolRegistry()
     for name in GOOGLE_TOOL_NAMES:
-        assert name in _GROUP_BY_TOOL_NAME, f"{name!r} missing from _GROUP_BY_TOOL_NAME"
-        assert _GROUP_BY_TOOL_NAME[name] == "google"
+        reg.register(
+            {"name": name, "description": "stub", "input_schema": {"type": "object"}},
+            lambda: "ok",
+        )
+    reg.classify(
+        core_names=set(_CORE_TOOL_NAMES),
+        group_by_name={},
+        prefix_groups={"google_": "google"},
+        default="integrations",
+    )
+    for name in GOOGLE_TOOL_NAMES:
+        assert reg._groups[name] == "google", f"{name!r} resolved to {reg._groups[name]!r}"
