@@ -38,6 +38,7 @@ _RISK_COLOR: dict[str, str] = {
 _COUNTDOWN_TEXT = "⧖ approvals auto-deny in 180s — you decide before then"
 _UNGATED_FLAG = "⚠ ungated tool — this approval bypasses your policy"
 _EMPTY_TEXT = "✓ no approvals waiting — Hachi is resting"
+_DEGRADED_TEXT = "⚠ can't reach Hachi — approvals unknown, not empty"
 
 
 def _approval_inspector(
@@ -132,6 +133,14 @@ class ApprovalsView(CockpitView):  # type: ignore[misc]
         idx = max(0, min(idx, len(self._approvals) - 1))
         return _approval_inspector(self._approvals[idx])
 
+    def _empty_state(self) -> tuple[str, bool]:
+        """Return (empty_text, degraded) — DEGRADED when the last live
+        approvals() call failed, so the view never shows the reassuring
+        "no approvals waiting" text for a gateway we simply can't reach."""
+        if self._data is not None and self._data.degraded("approvals") is not None:
+            return _DEGRADED_TEXT, True
+        return _EMPTY_TEXT, False
+
     def _rebuild(self) -> None:
         """Build columns, rows, footer and inspector then call table.load()."""
         table = self.query_one(CockpitTable)
@@ -149,6 +158,7 @@ class ApprovalsView(CockpitView):  # type: ignore[misc]
         countdown = _COUNTDOWN_TEXT if self._approvals else ""
         # Flag when any approval looks high-risk / ungated.
         flag = _UNGATED_FLAG if any(a.risk == "high" for a in self._approvals) else ""
+        empty_text, degraded = self._empty_state()
 
         table.load(
             columns=columns,
@@ -158,7 +168,8 @@ class ApprovalsView(CockpitView):  # type: ignore[misc]
             inspector_title=title,
             countdown=countdown,
             flag=flag,
-            empty_text=_EMPTY_TEXT,
+            empty_text=empty_text,
+            degraded=degraded,
         )
 
     def move_selection(self, delta: int) -> None:
@@ -168,6 +179,7 @@ class ApprovalsView(CockpitView):  # type: ignore[misc]
         fields, actions, title = self._inspector_for_index(table.selected_index)
         countdown = _COUNTDOWN_TEXT if self._approvals else ""
         flag = _UNGATED_FLAG if any(a.risk == "high" for a in self._approvals) else ""
+        empty_text, degraded = self._empty_state()
         table.load(
             columns=[
                 TableColumn("age", 6),
@@ -182,7 +194,8 @@ class ApprovalsView(CockpitView):  # type: ignore[misc]
             inspector_title=title,
             countdown=countdown,
             flag=flag,
-            empty_text=_EMPTY_TEXT,
+            empty_text=empty_text,
+            degraded=degraded,
         )
 
     def toggle_inspector(self) -> None:

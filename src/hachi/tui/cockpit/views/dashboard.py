@@ -43,6 +43,16 @@ def _bar(filled: int, total: int = 10, filled_char: str = "▓", empty_char: str
     return filled_char * filled + empty_char * (total - filled)
 
 
+def _degraded_panel_text(domain: str) -> Text:
+    """Explicit unavailable banner for a panel whose data source failed —
+    distinct from that panel's own "no pending approvals" / "no active
+    tasks" empty state, which claims a known-empty result rather than an
+    unreachable gateway."""
+    t = Text()
+    t.append(f"  ⚠ can't reach Hachi — {domain} unknown", style=f"bold {DANGER}")
+    return t
+
+
 def _needs_you_text(top: Approval | None) -> Text:
     """Build the needs-you panel body."""
     t = Text()
@@ -135,8 +145,10 @@ def _recent_text(audit: list) -> Text:  # type: ignore[type-arg]
     for entry in audit[:6]:
         t.append(f"  {entry.ts}  ", style=MUTED)
         decision_col = (
-            GREEN if entry.decision in ("allowed", "automatic")
-            else DANGER if entry.decision == "declined"
+            GREEN
+            if entry.decision in ("allowed", "automatic")
+            else DANGER
+            if entry.decision == "declined"
             else MUTED
         )
         t.append(f"{entry.op[:20]:<22}", style=decision_col)
@@ -222,6 +234,13 @@ class DashboardView(CockpitView):  # type: ignore[misc]
         snap = data.dashboard()
         agents = data.agents()
         audit = data.audit(limit=6)
+        # dashboard() covers approvals/spend/active_jobs in one aggregate
+        # call; audit() is fetched separately. A failed live call must not
+        # render its (now honest-empty) zeroed snapshot as though nothing
+        # were pending — that reads as a healthy, idle cockpit rather than
+        # an unreachable one.
+        dash_degraded = data.degraded("dashboard") is not None
+        audit_degraded = data.degraded("audit") is not None
 
         tb = snap.trust_bar
         approvals = list(snap.pending_approvals)
@@ -243,7 +262,10 @@ class DashboardView(CockpitView):  # type: ignore[misc]
         ny = Text()
         label_col = BRAND if self._top_approval else MUTED
         ny.append("needs you\n", style=label_col)
-        ny.append_text(_needs_you_text(self._top_approval))
+        if dash_degraded:
+            ny.append_text(_degraded_panel_text("approvals"))
+        else:
+            ny.append_text(_needs_you_text(self._top_approval))
         self.query_one("#needs-you-panel", Static).update(ny)
 
         # ── the pack ────────────────────────────────────────────────────────
@@ -256,20 +278,29 @@ class DashboardView(CockpitView):  # type: ignore[misc]
         # ── spend ────────────────────────────────────────────────────────────
         spend = Text()
         spend.append("spend today\n", style=MUTED)
-        spend.append_text(_spend_text(tb))
+        if dash_degraded:
+            spend.append_text(_degraded_panel_text("spend"))
+        else:
+            spend.append_text(_spend_text(tb))
         self.query_one("#spend-panel", Static).update(spend)
 
         # ── work queue ───────────────────────────────────────────────────────
         work = Text()
         n_tasks = len(snap.active_jobs)
         work.append(f"work queue  ({n_tasks} active)\n", style=MUTED)
-        work.append_text(_work_queue_text(list(snap.active_jobs)))
+        if dash_degraded:
+            work.append_text(_degraded_panel_text("work queue"))
+        else:
+            work.append_text(_work_queue_text(list(snap.active_jobs)))
         self.query_one("#work-panel", Static).update(work)
 
         # ── recent (audit tail) ──────────────────────────────────────────────
         recent = Text()
         recent.append("recent  (audit tail)\n", style=MUTED)
-        recent.append_text(_recent_text(audit))
+        if audit_degraded:
+            recent.append_text(_degraded_panel_text("audit"))
+        else:
+            recent.append_text(_recent_text(audit))
         self.query_one("#recent-panel", Static).update(recent)
 
     def decide_top(self, action: str) -> None:

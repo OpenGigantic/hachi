@@ -27,6 +27,8 @@ if TYPE_CHECKING:
     from hachi.tui.cockpit.data import CockpitData
 
 _DIM = "#6E6A74"
+_EMPTY_TEXT = "no audit events yet"
+_DEGRADED_TEXT = "⚠ can't reach Hachi — audit log unknown, not empty"
 
 _DECISION_COLOR: dict[str, str] = {
     "allowed": GREEN,
@@ -131,6 +133,14 @@ class AuditView(CockpitView):  # type: ignore[misc]
         seq = len(self._entries) - idx
         return _audit_inspector(seq, self._entries[idx])
 
+    def _empty_state(self) -> tuple[str, bool]:
+        """Return (empty_text, degraded) — DEGRADED when the last live
+        audit() call failed, so the view never claims a known-empty log for
+        a gateway we simply can't reach."""
+        if self._data is not None and self._data.degraded("audit") is not None:
+            return _DEGRADED_TEXT, True
+        return _EMPTY_TEXT, False
+
     def _rebuild(self) -> None:
         """Build columns, rows and inspector then call table.load()."""
         table = self.query_one(CockpitTable)
@@ -143,13 +153,15 @@ class AuditView(CockpitView):  # type: ignore[misc]
         ]
         rows = self._build_rows()
         fields, actions, title = self._inspector_for_index(table.selected_index)
+        empty_text, degraded = self._empty_state()
         table.load(
             columns=columns,
             rows=rows,
             inspector_fields=fields,
             inspector_actions=actions,
             inspector_title=title,
-            empty_text="no audit events yet",
+            empty_text=empty_text,
+            degraded=degraded,
         )
 
     def move_selection(self, delta: int) -> None:
@@ -157,6 +169,7 @@ class AuditView(CockpitView):  # type: ignore[misc]
         table = self.query_one(CockpitTable)
         table.move_selection(delta)
         fields, actions, title = self._inspector_for_index(table.selected_index)
+        empty_text, degraded = self._empty_state()
         table.load(
             columns=[
                 TableColumn("seq", 5, align="right"),
@@ -169,7 +182,8 @@ class AuditView(CockpitView):  # type: ignore[misc]
             inspector_fields=fields,
             inspector_actions=actions,
             inspector_title=title,
-            empty_text="no audit events yet",
+            empty_text=empty_text,
+            degraded=degraded,
         )
 
     def toggle_inspector(self) -> None:
