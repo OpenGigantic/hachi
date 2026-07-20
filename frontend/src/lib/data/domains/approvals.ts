@@ -194,15 +194,32 @@ registerLoader("approvals", loadApprovals);
 
 // ============================================================
 // 7. Mutation wrappers
-//    Each does the optimistic store update first, then POSTs to gateway.
-//    The optimistic update is unconditional; gateway call is skipped on mocks.
+//    Each POSTs to the gateway FIRST and mutates the store only once the
+//    gateway confirms the decision (postDecision's outcome is "ok"). This
+//    used to be optimistic-first — see BB-106: an optimistic mutation ahead
+//    of a decision the gateway never receives leaves the UI showing
+//    "allowed"/"declined" while the agent stays blocked until the 180s
+//    server-side timeout auto-denies it. The gateway call is skipped (and
+//    always reports "ok") when USE_MOCKS is set.
 // ============================================================
+
+/**
+ * Outcome of a single decision POST.
+ *  - "ok"         — 2xx from the gateway (or USE_MOCKS, which never calls it).
+ *  - "unknown-id" — the numeric UI id has no known request_id (id-map miss).
+ *                   NOT silent: the caller must surface this, not proceed as
+ *                   if the gateway had been told.
+ *  - "failed"     — apiSend threw (network error OR a decoded 4xx/5xx
+ *                   ApiError — a non-2xx status is NOT a success).
+ */
+type DecisionOutcome = "ok" | "unknown-id" | "failed";
 
 async function postDecision(
   uiId: number,
   action: "approve" | "deny" | "allow_once",
   rationale?: string
-): Promise<void> {
+): Promise<DecisionOutcome> {
+  let outcome: DecisionOutcome = "ok";
   if (!USE_MOCKS) {
     const requestId = requestIdForUiId(uiId);
     if (requestId) {
@@ -213,115 +230,127 @@ async function postDecision(
           { action, rationale: rationale ?? "" }
         );
       } catch {
-        // Network errors are surfaced centrally via client.ts reconnect callback.
+        // A rejected apiSend is either a genuine network failure or a decoded
+        // 4xx/5xx ApiError — either way it is NOT a success, and the caller
+        // must not treat it as one (see BB-106). client.ts's reconnect
+        // callback only covers network errors; HTTP-status failures reach
+        // only here, so this is the one place that can report them.
+        outcome = "failed";
       }
+    } else {
+      // Unknown request_id (id-map miss). Report it honestly instead of
+      // returning as if the gateway had been told (see BB-106).
+      outcome = "unknown-id";
     }
-    // If requestId is unknown (e.g. fixture item), skip the POST — the
-    // store action has already updated the UI optimistically.
   }
   // Mark the approvals domain stale so a revisit to /approvals refetches
   // the updated pending list rather than showing the now-stale snapshot.
+  // Fires on every outcome, including failure — a stale cached list is wrong
+  // after a failed decision too.
   invalidate("approvals");
+  return outcome;
 }
+
+const DECISION_FAILED_MESSAGE =
+  "Couldn't send that decision — Hachi is still waiting. Try again.";
 
 /**
  * Allow the request once (maps to "allow_once" on the gateway).
- * Optimistic: calls store.allowApproval immediately.
+ * Non-optimistic: awaits the gateway POST first and mutates the store only
+ * on success, so a failed or unmapped decision never removes the card while
+ * pretending it worked (see BB-106).
  */
 export async function approve(id: number): Promise<void> {
-  useStore.getState().allowApproval(id);
-  await postDecision(id, "allow_once");
+  const outcome = await postDecision(id, "allow_once");
+  if (outcome === "ok") {
+    useStore.getState().allowApproval(id);
+    return;
+  }
+  useStore.getState().showToast(DECISION_FAILED_MESSAGE, "blocked");
 }
 
 /**
  * Always allow this operation (maps to "approve" on the gateway).
- * Optimistic: calls store.alwaysApproval immediately.
+ * Non-optimistic — see approve().
  */
 export async function allowAlways(id: number): Promise<void> {
-  useStore.getState().alwaysApproval(id);
-  await postDecision(id, "approve");
+  const outcome = await postDecision(id, "approve");
+  if (outcome === "ok") {
+    useStore.getState().alwaysApproval(id);
+    return;
+  }
+  useStore.getState().showToast(DECISION_FAILED_MESSAGE, "blocked");
 }
 
 /**
  * Decline the request (maps to "deny" on the gateway).
- * Optimistic: calls store.declineApproval immediately.
+ * Non-optimistic — see approve().
  */
 export async function decline(id: number, reason?: string): Promise<void> {
-  useStore.getState().declineApproval(id, reason);
-  await postDecision(id, "deny", reason);
+  const outcome = await postDecision(id, "deny", reason);
+  if (outcome === "ok") {
+    useStore.getState().declineApproval(id, reason);
+    return;
+  }
+  useStore.getState().showToast(DECISION_FAILED_MESSAGE, "blocked");
 }
 
 /**
  * Decline all pending requests.
- * Optimistic: calls store.declineAll immediately, then fires individual POSTs.
+ * Resolves each id individually and clears from the store only the ones the
+ * gateway actually confirmed — the bulk store.declineAll() action is NOT
+ * called optimistically, so a partial failure leaves the still-pending
+ * approvals on screen instead of disappearing along with the rest.
  */
 export async function declineAll(): Promise<void> {
-  // Snapshot the current ids before the store action clears them
+  // Snapshot the current ids before any store mutation.
   const ids = useStore.getState().approvals.map((a) => a.id);
-  useStore.getState().declineAll();
-  // Fire individual denies in parallel; failures are soft (reconnecting flag)
-  await Promise.allSettled(ids.map((id) => postDecision(id, "deny")));
-}
-
-// ============================================================
-// 8. In-context leash helper
-//    For the chat/run LeashPrompt that fires from the SSE
-//    "permission.requested" event. That event carries no request_id
-//    (see InContextLeash in types.ts), so we can only match by
-//    comparing the `request` text against pending approval `request`
-//    fields. This is a best-effort match: if multiple approvals are
-//    pending the first one wins. The `chat.ts` allowLeashLive /
-//    denyLeashLive functions should call these so the decision
-//    reaches the gateway (requires a chat.ts update by its owner).
-// ============================================================
-
-/**
- * Allow the first pending approval whose `request` field matches the given
- * request text (case-insensitive prefix). Falls back to the very first pending
- * approval if no text match is found. No-ops when there are no pending approvals.
- *
- * Intended to be called from `allowLeashLive` (chat.ts) once that module is
- * updated to wire in-context leash decisions to the gateway.
- */
-export async function approveFirstMatching(requestText?: string): Promise<void> {
-  const approvals = useStore.getState().approvals;
-  if (approvals.length === 0) return;
-
-  let target = approvals[0];
-  if (requestText) {
-    const needle = requestText.toLowerCase();
-    const matched = approvals.find(
-      (a) => a.request.toLowerCase().includes(needle) || needle.includes(a.request.toLowerCase())
+  const outcomes = await Promise.allSettled(ids.map((id) => postDecision(id, "deny")));
+  let failedCount = 0;
+  outcomes.forEach((result, i) => {
+    if (result.status === "fulfilled" && result.value === "ok") {
+      useStore.getState().declineApproval(ids[i]);
+    } else {
+      failedCount += 1;
+    }
+  });
+  if (failedCount > 0) {
+    useStore.getState().showToast(
+      failedCount === 1
+        ? "Couldn't send 1 decision — Hachi is still waiting. Try again."
+        : `Couldn't send ${failedCount} decisions — Hachi is still waiting. Try again.`,
+      "blocked"
     );
-    if (matched) target = matched;
   }
-
-  await approve(target.id);
 }
 
 /**
- * Deny the first pending approval (same matching logic as approveFirstMatching).
- *
- * Intended to be called from `denyLeashLive` (chat.ts).
+ * Resolve a pending approval by its gateway request_id (allow once).
+ * Returns false when the id is unknown (never seen by the /approvals
+ * loader) instead of silently minting a numeric id for it — an id we've
+ * never actually seen from the gateway has no business being posted as if
+ * it were real (see T-18 / BB-106).
  */
-export async function denyFirstMatching(requestText?: string): Promise<void> {
-  const approvals = useStore.getState().approvals;
-  if (approvals.length === 0) return;
+export async function approveByRequestId(requestId: string): Promise<boolean> {
+  const uiId = _idByRequestId.get(requestId);
+  if (uiId === undefined) return false;
+  await approve(uiId);
+  return true;
+}
 
-  let target = approvals[0];
-  if (requestText) {
-    const needle = requestText.toLowerCase();
-    const matched = approvals.find(
-      (a) => a.request.toLowerCase().includes(needle) || needle.includes(a.request.toLowerCase())
-    );
-    if (matched) target = matched;
-  }
-
-  await decline(target.id);
+/**
+ * Decline a pending approval by its gateway request_id. Returns false if
+ * unknown — see approveByRequestId().
+ */
+export async function declineByRequestId(requestId: string, reason?: string): Promise<boolean> {
+  const uiId = _idByRequestId.get(requestId);
+  if (uiId === undefined) return false;
+  await decline(uiId, reason);
+  return true;
 }
 
 // ============================================================
-// 9. Real-time Leash sync
+// 8. Real-time Leash sync
 //    chat.ts calls loadApprovals() on the SSE `permission.requested` and
 //    `permission.decided` events so the Leash screen mirrors the authoritative
 //    /approvals registry (real request_ids → cards remain approvable). No

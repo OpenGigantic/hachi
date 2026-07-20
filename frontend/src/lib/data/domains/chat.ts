@@ -14,7 +14,7 @@ import { apiGet, apiSend, USE_MOCKS, isNetworkError, ApiError } from "../client"
 import { streamSSE } from "../sse";
 import { registerLoader } from "../live";
 import { useStore } from "../../store/store";
-import { approveFirstMatching, denyFirstMatching, loadApprovals } from "./approvals";
+import { approveByRequestId, declineByRequestId, loadApprovals } from "./approvals";
 import { loadDailySpend } from "./spend";
 import { ensureNotificationPermission, notifyApprovalPending } from "../../notifications";
 import type { Session, ActionCard } from "../types";
@@ -556,7 +556,11 @@ function driveRunSlice(eventType: string, payload: Record<string, unknown>): voi
 // 7. SSE event handler — conversation + run slice
 // ============================================================
 
-function handleSseMessage(eventType: string, payload: Record<string, unknown>): void {
+// Exported for testing only (approvals.test.ts) — no behaviour change. This is
+// the seam the "permission.requested" field-mapping regression test exercises
+// directly; the file already exports several other internals for the same reason
+// (buildTurnKey, reconstructMessagesFromEvents, extractInjectedAttachments).
+export function handleSseMessage(eventType: string, payload: Record<string, unknown>): void {
   // Guard: drop events from a stale SSE stream (e.g. user switched sessions while
   // a turn was in-flight).  _streamSessionId is the gateway UUID this stream was
   // opened for; _liveSessionId is the currently active gateway UUID.  If they
@@ -615,12 +619,25 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
     }
 
     case "permission.requested": {
-      const request = typeof payload.request === "string" ? payload.request : "Permission requested";
-      const action = typeof payload.action === "string" ? payload.action : "";
-      const why = typeof payload.why === "string" ? payload.why : "";
+      // The gateway's real wire fields (core/approvals.py, core/permissions.py —
+      // all three emitters agree): request_id / operation / tool / target / reason /
+      // policy_summary. There is no "request" / "action" / "why" key on the wire —
+      // reading those (as this used to) meant every field silently fell back to its
+      // default, and request_id was discarded outright. See BB-105.
+      const requestId = typeof payload.request_id === "string" ? payload.request_id : "";
+      const operation = typeof payload.operation === "string" ? payload.operation : "";
+      const tool = typeof payload.tool === "string" ? payload.tool : "";
+      const target = typeof payload.target === "string" ? payload.target : "";
+      const reason = typeof payload.reason === "string" ? payload.reason : "";
+      const request = tool || "Permission requested";
+      // Composed the same way approvals.ts's adaptApproval() composes `action`
+      // (`${tool || operation} → ${target}`) so the in-context leash and the
+      // /approvals list agree on what they show for the same event.
+      const action = `${tool || operation} → ${target}`;
+      const why = reason;
       const msgId = _hachiMsgId ?? 0;
       store.hydrate({
-        inContext: { msgId, request, action, why },
+        inContext: { msgId, requestId, request, action, why },
       });
       // M10: notify the user if they've switched to another tab
       notifyApprovalPending(request);
@@ -633,7 +650,7 @@ function handleSseMessage(eventType: string, payload: Record<string, unknown>): 
       void loadApprovals();
       if (isLive) {
         // Also surface on the run view
-        store.hydrate({ runLeash: { request, action, why }, runStreaming: false });
+        store.hydrate({ runLeash: { requestId, request, action, why }, runStreaming: false });
         _textLineActive = false;
       }
       break;
@@ -1031,11 +1048,13 @@ export async function allowLeashLive(): Promise<void> {
   if (!ic) return;
   // Clear the leash immediately (optimistic UI update)
   store.hydrate({ inContext: null });
-  // Best-effort: POST the decision to the gateway so the backend unblocks.
-  // We match by request text since InContextLeash carries no request_id.
-  // Errors are soft — the SSE stream continues regardless.
+  // Resolve by the gateway's own request_id (see approvals.ts). Best-effort:
+  // errors — including an unmapped/unknown request_id — are soft here, the
+  // SSE stream continues regardless. approveByRequestId itself never throws
+  // for an unknown id (it returns false); the try/catch below only guards
+  // against a genuine network/POST failure.
   try {
-    await approveFirstMatching(ic.request);
+    await approveByRequestId(ic.requestId);
   } catch {
     // Gateway POST failed — SSE stream continues, decision is best-effort
   }
@@ -1045,9 +1064,9 @@ export async function denyLeashLive(): Promise<void> {
   const store = useStore.getState();
   const ic = store.inContext;
   store.hydrate({ inContext: null });
-  // Best-effort: POST the deny decision to the gateway.
+  // Resolve by the gateway's own request_id (see approvals.ts).
   try {
-    await denyFirstMatching(ic?.request);
+    await declineByRequestId(ic?.requestId ?? "");
   } catch {
     // Gateway POST failed — proceed with local stream abort
   }
