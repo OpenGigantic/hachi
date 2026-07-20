@@ -39,8 +39,7 @@ def _make_search_skills(engine: SkillEngine):
         results = engine.search(query)
         if not results:
             return (
-                "No matching skills found. The user may need to add a .og file to "
-                "~/.hachi/skills/"
+                "No matching skills found. The user may need to add a .og file to ~/.hachi/skills/"
             )
         return json.dumps(results, indent=2)
 
@@ -490,6 +489,8 @@ def register_og_tools(registry: ToolRegistry, engine: SkillEngine):
     registry.register(LOAD_SKILL_SCHEMA, _make_load_skill(engine))
     registry.register(SKILL_DEPENDENCIES_SCHEMA, _make_skill_dependencies(engine))
     registry.register(CHECK_SKILL_ASSERTIONS_SCHEMA, _make_check_skill_assertions(engine))
-    registry.register(SKILL_CHANGELOG_SCHEMA, _make_skill_changelog(engine))
+    # T-39/BB-112: authoring tools are rare/flagship — lazy under "authoring" (was
+    # _GROUP_BY_TOOL_NAME, now declared here at registration).
+    registry.register(SKILL_CHANGELOG_SCHEMA, _make_skill_changelog(engine), group="authoring")
     registry.register(SKILL_TRAVERSE_HINTS_SCHEMA, _make_skill_traverse_hints(engine))
-    registry.register(SAVE_SKILL_SCHEMA, _make_save_skill(engine))
+    registry.register(SAVE_SKILL_SCHEMA, _make_save_skill(engine), group="authoring")

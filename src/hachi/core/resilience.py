@@ -345,6 +345,11 @@ class ResilientClient(BaseLLMClient):  # type: ignore[misc]
         self._fallbacks: list[tuple[BaseLLMClient, HealthRecorder]] = fallbacks or []
         # Expose `model` attribute from inner for cost tracking / introspection.
         self.model: str = getattr(inner, "model", "unknown")
+        # Expose `max_tokens` too: the loop's pre-flight token-safety ceiling reads it
+        # off the turn client (loop.py's _safety_ceiling_exceeded). Without it the
+        # ceiling silently degrades to a post-hoc check whenever [routing] is enabled
+        # (BB-118) -- enabling a cost feature must never weaken a safety guardrail.
+        self.max_tokens: int = getattr(inner, "max_tokens", 0) or 0
 
     def _call_with_chain(
         self,
@@ -377,7 +382,16 @@ class ResilientClient(BaseLLMClient):  # type: ignore[misc]
 
             fn = fn_builder(client)
             try:
-                return resilient_call(fn, self._policy, recorder)
+                result = resilient_call(fn, self._policy, recorder)
+                # T-25/BB-117: stamp the client that actually produced this
+                # response so cost attribution follows the server, not the
+                # primary's fixed `self.model` -- this is what makes a failover
+                # to fallback[idx] billable at the fallback's price. isinstance
+                # guard: _call_with_chain is generic (fn_builder can drive any
+                # zero-arg callable, e.g. resilient_call for non-LLM operations).
+                if isinstance(result, LLMResponse) and result.served_model is None:
+                    result.served_model = getattr(client, "model", None)
+                return result
             except Exception as exc:
                 last_exc = exc
                 logger.error(
@@ -439,6 +453,13 @@ class ResilientClient(BaseLLMClient):  # type: ignore[misc]
             )
             latency_ms = (time.monotonic() - t0) * 1000
             self._recorder.record_success(latency_ms)
+            # T-25/BB-117: this success path does NOT go through _call_with_chain
+            # (see the module docstring above) -- it is the path almost every
+            # real turn takes, so a stamp added only in _call_with_chain would
+            # leave it unstamped. Backfill from the primary when the client
+            # itself didn't report one.
+            if response is not None and response.served_model is None:
+                response.served_model = getattr(self._inner, "model", None)
             return response
         except Exception as exc:
             self._recorder.record_failure()
@@ -478,7 +499,10 @@ class ResilientClient(BaseLLMClient):  # type: ignore[misc]
         Delegates to the inner client's ``supports_vision`` property so callers
         need not unwrap the resilience layer.
         """
-        return bool(getattr(self._inner, "supports_vision", False))
+        # BaseLLMClient declares supports_vision with a concrete `False` default
+        # (core/llm.py), so any BaseLLMClient-typed self._inner always has it,
+        # inherited if not overridden -- read it directly (BB-107).
+        return bool(self._inner.supports_vision)
 
     @property
     def _health(self) -> ProviderHealth:

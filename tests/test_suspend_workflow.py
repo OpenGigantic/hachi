@@ -65,10 +65,12 @@ class MockRegistry:
     def __init__(self) -> None:
         self.specs: list[dict] = []
         self.handlers: dict[str, object] = {}
+        self.groups: dict[str, str] = {}
 
-    def register(self, spec: dict, handler: object) -> None:
+    def register(self, spec: dict, handler: object, group: str = "core") -> None:
         self.specs.append(spec)
         self.handlers[spec["name"]] = handler
+        self.groups[spec["name"]] = group
 
 
 class TestRegisterWorkflowTools:

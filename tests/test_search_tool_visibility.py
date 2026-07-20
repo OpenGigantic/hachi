@@ -19,16 +19,17 @@ Fix: add "web_search" and "extract_url" to _CORE_TOOL_NAMES in orchestrator.py.
 from __future__ import annotations
 
 from hachi.core.loop import ToolRegistry
-from hachi.gateway.orchestrator import (
-    _CORE_TOOL_NAMES,
-    _GROUP_BY_TOOL_NAME,
-)
+from hachi.gateway.orchestrator import _CORE_TOOL_NAMES
 
 
 def _make_registry_with_search_tools() -> ToolRegistry:
     """Mirror the production boot sequence for search tools:
     register web_search + extract_url (as register_search_tools does),
     then run classify() with the exact production parameters.
+
+    T-39/BB-112: group_by_name={} mirrors production now that the hand-maintained
+    _GROUP_BY_TOOL_NAME table has been deleted (each tool now declares its group at
+    its own register(...) call instead).
     """
     reg = ToolRegistry()
     # A minimal core tool so core group is non-trivial
@@ -40,7 +41,7 @@ def _make_registry_with_search_tools() -> ToolRegistry:
     # Run production classify() exactly
     reg.classify(
         core_names=set(_CORE_TOOL_NAMES),
-        group_by_name=_GROUP_BY_TOOL_NAME,
+        group_by_name={},
         prefix_groups={"google_": "google"},
         default="integrations",
     )

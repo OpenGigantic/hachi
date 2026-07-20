@@ -312,11 +312,22 @@ def register_messaging_tools(
     # Explicit None check, NOT ``guard or ...``: IdempotencyGuard defines __len__, so an
     # empty (len 0) injected guard is falsy and ``or`` would silently discard it.
     active_guard = guard if guard is not None else IdempotencyGuard()
-    registry.register(SEND_SLACK_MESSAGE_SCHEMA, _make_send_slack(slack_sender, active_guard))
-    registry.register(SEND_DISCORD_MESSAGE_SCHEMA, _make_send_discord(discord_sender, active_guard))
+    # T-39/BB-112: lazy under "messaging" (was _GROUP_BY_TOOL_NAME, now at registration).
     registry.register(
-        SEND_WHATSAPP_MESSAGE_SCHEMA, _make_send_whatsapp(whatsapp_sender, active_guard)
+        SEND_SLACK_MESSAGE_SCHEMA, _make_send_slack(slack_sender, active_guard), group="messaging"
     )
     registry.register(
-        SEND_TELEGRAM_MESSAGE_SCHEMA, _make_send_telegram(telegram_sender, active_guard)
+        SEND_DISCORD_MESSAGE_SCHEMA,
+        _make_send_discord(discord_sender, active_guard),
+        group="messaging",
+    )
+    registry.register(
+        SEND_WHATSAPP_MESSAGE_SCHEMA,
+        _make_send_whatsapp(whatsapp_sender, active_guard),
+        group="messaging",
+    )
+    registry.register(
+        SEND_TELEGRAM_MESSAGE_SCHEMA,
+        _make_send_telegram(telegram_sender, active_guard),
+        group="messaging",
     )

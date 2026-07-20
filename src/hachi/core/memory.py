@@ -852,7 +852,10 @@ class MemoryManager:
 
     @property
     def _skill_start_index(self) -> int:
-        return getattr(self, "_skill_start_idx", 0)
+        # The setter below always sets _skill_start_idx, and __init__ assigns
+        # _skill_start_index = 0 (which routes through that setter) -- so the
+        # backing field is always present by the time anything reads it (BB-107).
+        return self._skill_start_idx
 
     @_skill_start_index.setter
     def _skill_start_index(self, value: int):

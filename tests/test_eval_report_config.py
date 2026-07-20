@@ -145,6 +145,59 @@ def _reachable_settings_models(root: type[BaseModel]) -> set[type[BaseModel]]:
     return seen
 
 
+def test_boot_agent_logs_when_eval_report_daemon_starts() -> None:
+    """T-07 carried-over debt (closes BB-101's last acceptance criterion).
+
+    `boot_agent`'s ``if _eval_cfg.enabled: _start_eval_report_scheduler(...)`` gate was
+    silent at the call site — the daemon logs internally once its thread starts
+    (``_start_eval_report_scheduler: started ...``), but nothing at the `boot_agent`
+    level distinguished "I enabled it and it started" from "I enabled it and the
+    config never arrived" (the exact BB-101 symptom). Structural (AST) check, not a
+    full boot — see tests/test_routing_boot_failure.py's module docstring for why a
+    real `boot_agent()` call is impractical here too.
+    """
+    import ast
+    import inspect
+
+    import hachi.gateway.orchestrator as orch
+
+    tree = ast.parse(inspect.getsource(orch))
+    boot_agent = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "boot_agent"
+    )
+    gate = next(
+        (
+            node
+            for node in ast.walk(boot_agent)
+            if isinstance(node, ast.If)
+            and any(
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name)
+                and n.func.id == "_start_eval_report_scheduler"
+                for n in ast.walk(node)
+            )
+        ),
+        None,
+    )
+    assert gate is not None, "boot_agent no longer calls _start_eval_report_scheduler(...)"
+
+    logs_at_boot = any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "info"
+        and isinstance(n.func.value, ast.Name)
+        and n.func.value.id == "logger"
+        for n in ast.walk(gate)
+    )
+    assert logs_at_boot, (
+        "boot_agent must logger.info(...) at the [eval_reports] enabled gate when the "
+        "daemon starts — otherwise a user cannot tell 'I enabled it and it started' from "
+        "'the config never arrived' (T-07 section 5 / BB-101)"
+    )
+
+
 def test_all_settings_models_are_registered_on_resolved_config() -> None:
     """Every `*Settings` model defined in hachi.core.settings must be reachable
     from ResolvedConfig (directly, or nested inside another registered section).

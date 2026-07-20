@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 from hachi.core.cost import CostSnapshot, CostTracker
 from hachi.core.llm import LLMResponse, TokenUsage, ToolCall
 from hachi.core.loop import ExecutionLoop, ToolRegistry
+from hachi.core.resilience import HealthRecorder, ResilientClient, RetryPolicy
 from hachi.core.sub_agent import SubAgentMemory
 
 # ---------------------------------------------------------------------------
@@ -300,6 +301,42 @@ def test_token_safety_ceiling_is_preflight_not_post_hoc(monkeypatch) -> None:
         f"Pre-flight ceiling check should refuse the 2nd call before it starts, "
         f"got {llm.calls} calls (cumulative would overshoot the 100-token ceiling)"
     )
+
+
+def test_token_safety_ceiling_is_preflight_through_a_resilient_client(monkeypatch) -> None:
+    """Enabling [routing] must not weaken the pre-flight token ceiling.
+
+    ResilientClient forwarded only `model` (resilience.py:347), so the loop's
+    getattr(_turn_client, "max_tokens", 0) at loop.py:831 read 0 and the pre-flight
+    check silently degraded to the post-hoc check it was written to replace.
+    T-27/BB-118.
+    """
+    monkeypatch.setattr(ExecutionLoop, "_TOKEN_SAFETY_CEILING", 100)
+    tracker = CostTracker()
+
+    llm = _RunawayTokenLLM(tokens_per_call=90)
+    llm.max_tokens = 50  # worst-case output tokens for the NEXT call
+
+    policy = RetryPolicy(max_attempts=1, backoff_base_s=0.0)
+    routed = ResilientClient(inner=llm, policy=policy, recorder=HealthRecorder("p", policy))
+    assert getattr(routed, "max_tokens", 0) == 50, "ResilientClient did not forward max_tokens"
+
+    loop = ExecutionLoop(
+        routed,
+        _noop_registry(),
+        SubAgentMemory(),
+        base_system_prompt="x",
+        cost_tracker=tracker,
+        max_tokens=0,
+        max_wall_seconds=0.0,
+    )
+    loop.add_user_message("go")
+    result = loop.run(max_iterations=50)
+
+    assert "[BUDGET LIMIT REACHED]" in result
+    assert "ceiling" in result.lower()
+    # 90 recorded + 50 worst-case = 140 >= 100 => the SECOND call must be refused.
+    assert llm.calls == 1, f"pre-flight should refuse the 2nd call; got {llm.calls}"
 
 
 # ---------------------------------------------------------------------------

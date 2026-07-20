@@ -171,3 +171,29 @@ def test_estimate_tokens_longer_text() -> None:
 
     text = "a" * 400  # 400 bytes → 100 tokens
     assert _estimate_tokens(text) == 100
+
+
+# ---------------------------------------------------------------------------
+# Import-surface regression guard (BB-112 residual)
+# ---------------------------------------------------------------------------
+
+
+def test_build_core_registry_survives_orchestrator_import() -> None:
+    """``build_core_registry()`` must import cleanly from ``hachi.gateway.orchestrator``.
+
+    This is the second time a ``scripts/`` consumer has drifted from orchestrator.py
+    internals: T-39 deleted the hand-maintained ``_GROUP_BY_TOOL_NAME`` table (BB-112)
+    without updating this script's import, which broke every test in this module with
+    an ``ImportError`` raised from inside ``build_core_registry()`` (invisible to
+    ``_import_harness()``'s narrower ``import measure_turn`` try/except in
+    ``test_core_tool_cost_guard.py``, since the failing import is inside a function,
+    not at module scope). The other tests in this file already exercise this import
+    chain indirectly via the module-scoped ``registry`` fixture; this test names the
+    failure mode explicitly so a future drift is diagnosable by test name alone.
+    """
+    from scripts.measure_turn import build_core_registry
+
+    registry = build_core_registry()
+    # A non-empty schema list proves the registry actually built, not just that the
+    # import chain resolved.
+    assert registry.get_schemas(active_groups=set())

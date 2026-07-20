@@ -236,9 +236,18 @@ def register_notification_tools(
         email_notifier: Injectable :class:`EmailNotifier`; defaults to env-based config.
         digest_buffer: Injectable :class:`DigestBuffer`; defaults to the shared instance.
     """
-    registry.register(NOTIFY_USER_SCHEMA, _make_notify_user(notifier))
-    registry.register(SEND_EMAIL_DIGEST_SCHEMA, _make_send_email_digest(email_notifier))
-    registry.register(BUFFER_NOTIFICATION_SCHEMA, _make_buffer_notification(digest_buffer))
+    # T-39/BB-112: lazy under "notifications" (was _GROUP_BY_TOOL_NAME, now at registration).
+    registry.register(NOTIFY_USER_SCHEMA, _make_notify_user(notifier), group="notifications")
     registry.register(
-        FLUSH_NOTIFICATION_DIGEST_SCHEMA, _make_flush_notification_digest(digest_buffer)
+        SEND_EMAIL_DIGEST_SCHEMA, _make_send_email_digest(email_notifier), group="notifications"
+    )
+    registry.register(
+        BUFFER_NOTIFICATION_SCHEMA,
+        _make_buffer_notification(digest_buffer),
+        group="notifications",
+    )
+    registry.register(
+        FLUSH_NOTIFICATION_DIGEST_SCHEMA,
+        _make_flush_notification_digest(digest_buffer),
+        group="notifications",
     )

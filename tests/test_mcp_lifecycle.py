@@ -179,6 +179,78 @@ class TestAgentSessionLive:
 
 
 # ---------------------------------------------------------------------------
+# AgentSession.add_mcp_server_live re-add (BB-120)
+# ---------------------------------------------------------------------------
+
+
+class TestAddMcpServerLiveReregister:
+    """BB-120: re-adding an already-live MCP server must not raise.
+
+    Before T-36 (BB-111), ``add_mcp_server_live`` silently duplicated a schema per
+    re-add because it called the private, non-idempotent
+    ``MCPManager._register_server_tools`` directly with no ``unregister`` first.
+    T-36 correctly added a duplicate-name guard to ``ToolRegistry.register`` — but
+    that guard turned this same path into a crash on re-add, which
+    ``cli/main.py``'s register-server command documents as a *supported* action
+    (overwrite-in-place on an existing server name), reachable from a live session
+    (``cli/main.py``'s ``if agent is not None:`` gate around
+    ``agent.add_mcp_server_live(...)``).
+
+    Drives the REAL chain end-to-end: ``AgentSession.add_mcp_server_live`` ->
+    ``MCPManager.setup_from_config`` -> ``MCPManager._register_server_tools`` /
+    ``register_server_tools`` -> ``ToolRegistry.register`` (with T-36's guard live
+    and untouched). No mocking of ``MCPManager``, ``ToolRegistry``, or
+    ``AgentSession`` — only ``MCPServerConnection._start_inner`` (the connection
+    class's own documented test seam: "Exposed so tests can monkey-patch this
+    method to bypass the actual transport without touching transport internals")
+    is faked, so no real subprocess is spawned.
+    """
+
+    @staticmethod
+    def _cfg():
+        from hachi.core.mcp_client import MCPServerConfig
+
+        return MCPServerConfig(
+            name="demo-server",
+            transport="stdio",
+            command="npx",
+            args=["-y", "@example/demo"],
+        )
+
+    @staticmethod
+    def _fake_start_inner(self) -> bool:  # noqa: ANN001 - patched onto the class
+        self._tools = [{"name": "do_thing", "description": "does a thing"}]
+        return True
+
+    def test_readd_live_server_does_not_raise_and_has_no_duplicate_schema(self) -> None:
+        from hachi.core.mcp_client import MCPManager, MCPServerConnection
+
+        mgr = MCPManager()
+        agent = _agent_with(mgr)
+        agent.loop._persistent_groups = set()
+        registry = agent.loop.registry
+        cfg = self._cfg()
+
+        with patch.object(MCPServerConnection, "_start_inner", self._fake_start_inner):
+            first = agent.add_mcp_server_live(cfg, registry)
+            assert first["ok"] is True, first
+            assert "demo-server_do_thing" in registry._tools
+
+            # Re-add the SAME server name while it is already live -- the exact
+            # supported case documented at cli/main.py's register-server command.
+            second = agent.add_mcp_server_live(cfg, registry)
+
+        assert second["ok"] is True, second
+        assert second["status"] == "ready"
+        assert "demo-server_do_thing" in registry._tools
+        schema_names = [s["name"] for s in registry._schemas]
+        assert schema_names.count("demo-server_do_thing") == 1, (
+            f"expected exactly one schema for demo-server_do_thing after re-add, "
+            f"found {schema_names.count('demo-server_do_thing')}: {schema_names}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # _InProcessGatewayRuntime.delete_mcp_server / set_mcp_enabled
 # ---------------------------------------------------------------------------
 
@@ -221,8 +293,9 @@ class TestRuntimeDelete:
             encoding="utf-8",
         )
 
-        with patch("hachi.core.paths.get_hachi_paths", return_value=paths), patch(
-            "hachi.gateway.workspace.get_skills_dir", return_value=paths.skills_dir
+        with (
+            patch("hachi.core.paths.get_hachi_paths", return_value=paths),
+            patch("hachi.gateway.workspace.get_skills_dir", return_value=paths.skills_dir),
         ):
             first = runtime.delete_mcp_server("slack")
             second = runtime.delete_mcp_server("slack")  # the reported 404 path
@@ -241,8 +314,9 @@ class TestRuntimeDelete:
         runtime, paths, _ = runtime_with_paths
         agent = _attach_live_server(runtime, "weather", ["forecast"])
 
-        with patch("hachi.core.paths.get_hachi_paths", return_value=paths), patch(
-            "hachi.gateway.workspace.get_skills_dir", return_value=paths.skills_dir
+        with (
+            patch("hachi.core.paths.get_hachi_paths", return_value=paths),
+            patch("hachi.gateway.workspace.get_skills_dir", return_value=paths.skills_dir),
         ):
             res = runtime.delete_mcp_server("weather")
 
@@ -256,8 +330,9 @@ class TestRuntimeDelete:
         # Live + declared as an .og node, but NOT in settings.toml and no mcp-*.og file.
         _attach_live_server(runtime, "gmail", ["send"], og_node_names=["gmail"])
 
-        with patch("hachi.core.paths.get_hachi_paths", return_value=paths), patch(
-            "hachi.gateway.workspace.get_skills_dir", return_value=paths.skills_dir
+        with (
+            patch("hachi.core.paths.get_hachi_paths", return_value=paths),
+            patch("hachi.gateway.workspace.get_skills_dir", return_value=paths.skills_dir),
         ):
             res = runtime.delete_mcp_server("gmail")
 
@@ -266,8 +341,9 @@ class TestRuntimeDelete:
         assert doc["mcp_servers"]["gmail"]["enabled"] is False
 
         # A second delete keeps the tombstone (so the bundled server stays gone).
-        with patch("hachi.core.paths.get_hachi_paths", return_value=paths), patch(
-            "hachi.gateway.workspace.get_skills_dir", return_value=paths.skills_dir
+        with (
+            patch("hachi.core.paths.get_hachi_paths", return_value=paths),
+            patch("hachi.gateway.workspace.get_skills_dir", return_value=paths.skills_dir),
         ):
             again = runtime.delete_mcp_server("gmail")
         assert again["ok"] is True
@@ -279,8 +355,9 @@ class TestRuntimeDelete:
         og_file = paths.skills_dir / "mcp-custom.og"
         og_file.write_text("::index\ncustom\n", encoding="utf-8")
 
-        with patch("hachi.core.paths.get_hachi_paths", return_value=paths), patch(
-            "hachi.gateway.workspace.get_skills_dir", return_value=paths.skills_dir
+        with (
+            patch("hachi.core.paths.get_hachi_paths", return_value=paths),
+            patch("hachi.gateway.workspace.get_skills_dir", return_value=paths.skills_dir),
         ):
             res = runtime.delete_mcp_server("custom")
 
@@ -289,8 +366,9 @@ class TestRuntimeDelete:
 
     def test_delete_unknown_is_idempotent_not_404(self, runtime_with_paths) -> None:
         runtime, paths, _ = runtime_with_paths
-        with patch("hachi.core.paths.get_hachi_paths", return_value=paths), patch(
-            "hachi.gateway.workspace.get_skills_dir", return_value=paths.skills_dir
+        with (
+            patch("hachi.core.paths.get_hachi_paths", return_value=paths),
+            patch("hachi.gateway.workspace.get_skills_dir", return_value=paths.skills_dir),
         ):
             res = runtime.delete_mcp_server("does-not-exist")
         assert res["ok"] is True
@@ -298,9 +376,7 @@ class TestRuntimeDelete:
 
 
 class TestRuntimeSetEnabled:
-    def test_disable_og_server_creates_entry_and_applies_live(
-        self, runtime_with_paths
-    ) -> None:
+    def test_disable_og_server_creates_entry_and_applies_live(self, runtime_with_paths) -> None:
         runtime, paths, _ = runtime_with_paths
         agent = _attach_live_server(runtime, "gmail", ["send"], og_node_names=["gmail"])
 

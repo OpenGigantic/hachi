@@ -300,9 +300,7 @@ class TestMCPServerConfig:
         """A list args value in TOML must be accepted directly."""
         from hachi.core.mcp_client import MCPServerConfig
 
-        cfg = MCPServerConfig.from_toml_entry(
-            "s", {"command": "npx", "args": ["-y", "@scope/pkg"]}
-        )
+        cfg = MCPServerConfig.from_toml_entry("s", {"command": "npx", "args": ["-y", "@scope/pkg"]})
         assert cfg.args == ["-y", "@scope/pkg"]
 
 
@@ -535,7 +533,11 @@ class TestHotReload:
         assert result["ok"] is True
         assert result["status"] == "ready"
         manager.setup_from_config.assert_called_once_with(cfg)
-        manager._register_server_tools.assert_called_once()
+        # BB-120: add_mcp_server_live now goes through the idempotent public
+        # register_server_tools (which unregisters-then-registers) instead of the
+        # private, non-idempotent _register_server_tools directly -- the private
+        # method call this test used to assert on no longer happens.
+        manager.register_server_tools.assert_called_once_with(cfg.name, registry)
 
     def test_failed_start_returns_not_ok(self) -> None:
         from hachi.core.mcp_client import MCPServerConfig
@@ -673,9 +675,7 @@ class TestMCPManagerInventory:
         cfg = MCPServerConfig(name="s", transport="stdio", command="python")
 
         # Patch start so we don't actually spawn a process
-        with patch(
-            "hachi.core.mcp_client.MCPServerConnection.start", return_value=False
-        ):
+        with patch("hachi.core.mcp_client.MCPServerConnection.start", return_value=False):
             result = manager.setup_from_config(cfg)
 
         assert result is False  # start returned False
@@ -686,9 +686,7 @@ class TestMCPManagerInventory:
         manager = MCPManager()
         cfg = MCPServerConfig(name="s", transport="http", url="http://localhost:8000")
 
-        with patch(
-            "hachi.core.mcp_client.MCPServerConnection.start", return_value=True
-        ):
+        with patch("hachi.core.mcp_client.MCPServerConnection.start", return_value=True):
             result = manager.setup_from_config(cfg)
 
         assert result is True

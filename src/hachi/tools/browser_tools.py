@@ -186,7 +186,12 @@ def register_browser_tools(
         controller: Inject a controller (tests pass a fake); a real one is created if omitted.
     """
     controller = controller or BrowserController()
+    # browse_web stays in "core" (see orchestrator._CORE_TOOL_NAMES); the richer
+    # click/fill/screenshot actions are lazy under "browser" (T-39/BB-112: declared
+    # here at registration, was _GROUP_BY_TOOL_NAME).
     registry.register(BROWSE_WEB_SCHEMA, _make_browse_web(controller, gate))
-    registry.register(BROWSER_ACT_SCHEMA, _make_browser_act(controller, gate))
-    registry.register(BROWSER_SCREENSHOT_SCHEMA, _make_browser_screenshot(controller, gate))
+    registry.register(BROWSER_ACT_SCHEMA, _make_browser_act(controller, gate), group="browser")
+    registry.register(
+        BROWSER_SCREENSHOT_SCHEMA, _make_browser_screenshot(controller, gate), group="browser"
+    )
     return controller

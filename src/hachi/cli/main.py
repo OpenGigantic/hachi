@@ -1511,7 +1511,11 @@ class _InProcessGatewayRuntime:
         # by the Spend settings breakdown), so both consumers are satisfied.
         config = load_effective_config()
         usage = agent.snapshot_usage()
-        tracker = getattr(getattr(agent, "loop", None), "cost_tracker", None)
+        # AgentSession.loop is always set in __init__ -- read it directly (BB-107).
+        # cost_tracker stays getattr-defaulted: ExecutionLoop.cost_tracker always
+        # exists too, but this keeps the read consistent with the rest of the
+        # codebase's cost_tracker call sites (see check_getattr.py ALLOWLIST).
+        tracker = getattr(agent.loop, "cost_tracker", None)
         models: list[dict] = []
         if tracker is not None and hasattr(tracker, "per_model_snapshot"):
             try:

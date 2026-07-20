@@ -24,7 +24,7 @@ from hachi.core.notifier import (
     DesktopNotifier,
     EmailNotifier,
 )
-from hachi.gateway.orchestrator import _CORE_TOOL_NAMES, _GROUP_BY_TOOL_NAME
+from hachi.gateway.orchestrator import _CORE_TOOL_NAMES
 from hachi.tools.notification_tools import (
     _make_notify_user,
     _make_send_email_digest,
@@ -450,11 +450,14 @@ def test_register_notification_tools_registers_both():
 
 
 def test_registered_in_notifications_group():
+    # T-39/BB-112: notification_tools.py now declares group="notifications" at each
+    # register(...) call; group_by_name={} mirrors production now that
+    # _GROUP_BY_TOOL_NAME is gone. classify()'s rule 4 leaves the explicit tag intact.
     registry = ToolRegistry()
     register_notification_tools(registry)
     registry.classify(
         core_names=set(_CORE_TOOL_NAMES),
-        group_by_name=_GROUP_BY_TOOL_NAME,
+        group_by_name={},
         default="integrations",
     )
     assert registry._groups["notify_user"] == "notifications"

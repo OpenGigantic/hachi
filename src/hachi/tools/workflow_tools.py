@@ -67,4 +67,6 @@ def register_workflow_tools(registry: ToolRegistry) -> None:
             },
         },
         suspend_workflow,
+        # T-39/BB-112: lazy under "workflow" (was _GROUP_BY_TOOL_NAME, now at registration).
+        group="workflow",
     )

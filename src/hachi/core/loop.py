@@ -189,10 +189,24 @@ class ToolRegistry:
             func: The actual Python callable that executes the tool.
             group: Lazy-loading group; "core" tools are always sent to the model,
                    others are sent only when their group is active for the turn.
+
+        Raises:
+            ValueError: If the schema has no ``name``, or if a tool with that name
+                is already registered.  Silent overwrites hid a class of bug where a
+                tool's schema came from one mount and its handler from another (see
+                docs/bug-bank.md, BB-111).  To deliberately re-mount a tool, call
+                :meth:`unregister` first; to swap only the callable, use
+                :meth:`update_handler`.
         """
         tool_name = schema.get("name")
         if not tool_name:
             raise ValueError("Tool schema must contain a 'name' field.")
+        if tool_name in self._tools:
+            raise ValueError(
+                f"Tool {tool_name!r} is already registered. Registering it again would "
+                f"overwrite the existing handler and append a duplicate schema. If this is "
+                f"an intentional re-mount, call unregister([{tool_name!r}]) first."
+            )
 
         self._tools[tool_name] = func
         self._schemas.append(schema)
@@ -811,7 +825,9 @@ class ExecutionLoop:
         # Worst-case tokens the upcoming call could add: its bounded max output
         # tokens (0 if the client doesn't expose one — no client-based estimate
         # possible, falls back to the pure post-hoc check for that call).
-        worst_case_next_call = getattr(self, "_turn_client", None)
+        # ExecutionLoop always sets self._turn_client in __init__ -- a missing
+        # attribute here would be a real bug, not a legitimate absence (BB-107).
+        worst_case_next_call = self._turn_client
         next_call_ceiling_tokens = getattr(worst_case_next_call, "max_tokens", 0) or 0
         projected = snap.total_tokens + next_call_ceiling_tokens
         if projected >= self._TOKEN_SAFETY_CEILING:
@@ -877,6 +893,12 @@ class ExecutionLoop:
         Powers the per-turn ``interaction_log`` (P0-2). Returns an empty list before the
         first run. A copy, so callers can't mutate loop state.
         """
+        # _last_tool_calls is only assigned inside run() (not __init__), so it is
+        # genuinely absent before the first run() call -- that's what "before the
+        # first run" in this docstring means. getattr is correct here, not a bug
+        # (BB-107 checked this against a real, __init__-set attribute by mistake
+        # first; a test caught it -- see tests/test_e2e_loop.py
+        # ::test_last_tool_calls_empty_before_run).
         return list(getattr(self, "_last_tool_calls", []))
 
     @property
@@ -886,6 +908,10 @@ class ExecutionLoop:
         Lets the caller persist a durable WAITING run + arm the wait registry (P0-1).
         Reset at the start of every ``run()``.
         """
+        # _last_suspend is only assigned inside run() (not __init__) -- "reset at
+        # the start of every run()" above means it is genuinely absent before the
+        # first run() call. getattr is correct here (BB-107; see the sibling
+        # last_tool_calls property for the same shape, caught by a real test).
         return getattr(self, "_last_suspend", None)
 
     def run(self, max_iterations: int = 15, turn_context: TurnContext | None = None) -> str:
@@ -1146,7 +1172,15 @@ class ExecutionLoop:
 
                 # Account for token usage / estimated cost and surface it live.
                 if self.cost_tracker is not None:
-                    model_name = getattr(self._turn_client, "model", "unknown")
+                    # T-25/BB-117: prefer the model that actually SERVED this
+                    # response over the turn client's configured identity — when
+                    # a resilience fallback served the turn, response.served_model
+                    # is the fallback, while getattr(self._turn_client, "model",
+                    # ...) would still read the (unchanged) primary. Falls back
+                    # to the old behaviour for any client that leaves it unset.
+                    model_name = response.served_model or getattr(
+                        self._turn_client, "model", "unknown"
+                    )
                     self.cost_tracker.record(model_name, response.usage, feature="chat")
                     self.on_event("usage", self.cost_tracker.snapshot().to_dict())
                     # Per-call cache/cost breakdown (hit-rate + fresh/cached/no-cache

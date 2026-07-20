@@ -225,6 +225,7 @@ class OpenAIChatRequest(BaseModel):
     messages: list[OpenAIMessage]
     model: str | None = None
     stream: bool = False
+    user: str | None = None  # OpenAI's stable end-user id; keys the Hachi session (T-32)
 
 
 class ChannelInboundRequest(BaseModel):
@@ -709,11 +710,70 @@ def create_gateway_app(
     # populated by the CLI layer (MR-2 / UC-AUTH-001 / ADV-014).
     protected_dependencies = [Depends(_require_auth)]
 
-    system = APIRouter(tags=["system"])
-    sessions = APIRouter(prefix="/sessions", tags=["sessions"], dependencies=protected_dependencies)
-    runtime_ops = APIRouter(tags=["runtime"], dependencies=protected_dependencies)
-    config = APIRouter(prefix="/config", tags=["config"], dependencies=protected_dependencies)
-    setup = APIRouter(prefix="/setup", tags=["setup"], dependencies=protected_dependencies)
+    # T-37 (BB-114): the gateway's error envelope (_error_response -> ErrorResponse) is
+    # returned by 7 exception handlers (:549-700, 8 call sites -- one handler emits
+    # either a provider-passthrough status or 503) and 21 in-route returns. Every
+    # _error_response call site in this file was read to build this set:
+    # 400/401/403/404/409/410/429/500/503. 422 is deliberately excluded -- FastAPI
+    # already documents it as HTTPValidationError via the RequestValidationError
+    # handler, and some in-route 422s use the envelope while others are plain
+    # validation failures, so declaring 422 here would collide with FastAPI's own
+    # auto-generated schema for that code (see T-37 task notes). FastAPI only records
+    # a model in components.schemas when some route DECLARES it -- this shared mapping
+    # is what makes the envelope part of the published contract. Declared once per
+    # router (not per route) so the declaration can't drift route-by-route.
+    _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+        400: {"model": ErrorResponse, "description": "Invalid request"},
+        401: {"model": ErrorResponse, "description": "Missing or invalid bearer token"},
+        403: {
+            "model": ErrorResponse,
+            "description": "Caller is not permitted to perform this action",
+        },
+        404: {"model": ErrorResponse, "description": "Resource not found"},
+        409: {
+            "model": ErrorResponse,
+            "description": "Conflict with the resource's current state",
+        },
+        410: {
+            "model": ErrorResponse,
+            "description": "The session existed but is no longer active",
+        },
+        429: {"model": ErrorResponse, "description": "Rate limited by the upstream AI provider"},
+        500: {"model": ErrorResponse, "description": "Unhandled server error"},
+        503: {"model": ErrorResponse, "description": "Runtime or upstream provider unavailable"},
+    }
+    # `system` (:713) is the only router carrying fully-public routes (/, /health,
+    # /readiness) -- its other three routes opt into auth per-route rather than via
+    # router-level `dependencies=`. Declaring 401 here would wrongly claim /health can
+    # return an auth error, which it structurally cannot.
+    _SYSTEM_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+        code: response for code, response in _ERROR_RESPONSES.items() if code != 401
+    }
+
+    system = APIRouter(tags=["system"], responses=_SYSTEM_ERROR_RESPONSES)
+    sessions = APIRouter(
+        prefix="/sessions",
+        tags=["sessions"],
+        dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
+    )
+    runtime_ops = APIRouter(
+        tags=["runtime"],
+        dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
+    )
+    config = APIRouter(
+        prefix="/config",
+        tags=["config"],
+        dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
+    )
+    setup = APIRouter(
+        prefix="/setup",
+        tags=["setup"],
+        dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
+    )
 
     @system.get("/")
     async def get_root() -> Any:
@@ -1001,7 +1061,7 @@ def create_gateway_app(
     # Deletes session rows that have no messages (ghost sessions accumulated before
     # the lazy-row-creation fix landed).  Requires auth; returns {"removed": <int>}.
     @sessions.post("/cleanup-empty")
-    async def cleanup_empty_sessions() -> Any:
+    async def cleanup_empty_sessions(request: Request) -> Any:
         """Delete all empty sessions (no messages) from the SQLite store.
 
         Safe to call at any time.  Sessions that are currently booting (in-memory
@@ -1010,6 +1070,12 @@ def create_gateway_app(
         Returns:
             ``{"removed": <count>}`` — the number of rows deleted.
         """
+        # T-62 (BB-108): no session_id here, so there is nothing to owner-check —
+        # this operation is intentionally global (deletes empty rows across all
+        # owners). Still call _require_auth explicitly, matching every other
+        # handler on this router, rather than relying solely on the router-level
+        # dependency whose return value FastAPI discards.
+        _require_auth(request)
         removed = 0
         try:
             from hachi.gateway.shared_services import ProcessSharedServices
@@ -1036,6 +1102,7 @@ def create_gateway_app(
     @sessions.get("/{session_id}/messages")
     async def get_session_messages(
         session_id: str,
+        request: Request,
         limit: int = Query(default=200, ge=1, le=1000),
     ) -> Any:
         """Return the durable message transcript for *session_id*.
@@ -1057,6 +1124,9 @@ def create_gateway_app(
 
         HTTP 404 when *session_id* is unknown or has no persisted messages.
         """
+        # T-62 (BB-108): this is a transcript endpoint — check ownership before
+        # touching the store, so a 403 never costs a SQLite round-trip.
+        _check_session_ownership(session_id, _require_auth(request))
         # B5: session_transcript hits SQLite — offload to thread so the event loop
         # stays free for SSE keepalives during a long message-history fetch.
         result = await anyio.to_thread.run_sync(
@@ -1590,7 +1660,11 @@ def create_gateway_app(
     # OpenAI-compatible facade — lets users point Open WebUI / LibreChat / any
     # OpenAI client at Hachi. Maps the latest user message to an auto-managed
     # agent session (the agent keeps its own conversation memory).
-    openai_compat = APIRouter(tags=["openai"], dependencies=protected_dependencies)
+    openai_compat = APIRouter(
+        tags=["openai"],
+        dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
+    )
     openai_limiter = RateLimiter(_int_env("HACHI_OPENAI_RATE_LIMIT", 60), 60.0)
 
     @openai_compat.post("/v1/chat/completions")
@@ -1637,10 +1711,49 @@ def create_gateway_app(
         model_name = payload.model or "hachi"
 
         if not payload.stream:
+            # T-32: never share one server-side session across callers. Namespace
+            # by principal (the caller's own token hash, or "anon" in no-auth
+            # mode) so ids cannot collide across bearer tokens; use the client's
+            # OpenAI `user` field for continuity when supplied, otherwise mint a
+            # fresh per-request session — matching what the streaming path
+            # already does below.
+            principal = caller_hash or "anon"
+            conversation = (payload.user or "").strip()
+            session_key = f"openai:{principal}:{conversation or f'req-{uuid.uuid4().hex}'}"
+
             # Full agent turn is synchronous — run in a thread so the event loop stays free.
-            result = await anyio.to_thread.run_sync(
-                lambda: control_plane.complete_chat(prompt, owner_token_hash=caller_hash)
+            session_id = await anyio.to_thread.run_sync(
+                lambda: control_plane.get_or_create_session(
+                    session_key, owner_token_hash=caller_hash
+                )
             )
+            # The ownership check the other 10 session-scoped routes perform.
+            # Must run BEFORE the turn: complete_chat used to run the turn and
+            # only return the session id afterwards, which made a 403 here
+            # meaningless — the unauthorized turn would already have executed,
+            # already mutated memory, and already cost money.
+            _check_session_ownership(session_id, caller_hash)
+            try:
+                result = await anyio.to_thread.run_sync(
+                    lambda: control_plane.send_message(session_id=session_id, prompt=prompt)
+                )
+            finally:
+                # T-33: a session minted for THIS request (no client-supplied
+                # `user`) must be released, or the 100-session cap fills
+                # permanently. A `user`-keyed session is meant to persist for
+                # continuity, so only the ephemeral fallback is closed here.
+                # Never let a teardown failure mask the real turn result/error.
+                if not conversation:
+                    try:
+                        await anyio.to_thread.run_sync(
+                            lambda: control_plane.close_session(session_id)
+                        )
+                    except Exception:
+                        _log.warning(
+                            "OpenAI facade: failed to close session %s",
+                            session_id,
+                            exc_info=True,
+                        )
             reply = result.get("response", "")
             return {
                 "id": chat_id,
@@ -1671,6 +1784,11 @@ def create_gateway_app(
                     session_key, owner_token_hash=caller_hash
                 )
             )
+            # T-32: the same ownership check the non-streaming path performs. A
+            # no-op today (session_key is a fresh per-request UUID, so the
+            # session is always freshly owned by this caller) — kept so "the
+            # facade checks ownership" is true without exceptions.
+            _check_session_ownership(session_id, caller_hash)
 
             # Snapshot the event cursor so only events from THIS turn are forwarded.
             initial = control_plane.read_session_events(session_id=session_id, after=0, limit=10000)
@@ -1774,6 +1892,19 @@ def create_gateway_app(
                         await turn_task
                     except asyncio.CancelledError:
                         pass
+                # T-33: this session was minted for THIS request (session_key is
+                # a fresh UUID) — release it, or the 100-session cap fills
+                # permanently. close_session raises on an already-closed id; a
+                # leaked session is far worse than a swallowed teardown error,
+                # so never let this propagate into the response stream.
+                try:
+                    await anyio.to_thread.run_sync(lambda: control_plane.close_session(session_id))
+                except Exception:
+                    _log.warning(
+                        "OpenAI facade: failed to close session %s",
+                        session_id,
+                        exc_info=True,
+                    )
 
             # Finish chunk signals end of stream.
             yield (
@@ -1815,7 +1946,11 @@ def create_gateway_app(
     # Generic inbound webhook: any platform (Slack Events, Discord, Twilio SMS, a
     # custom form) can POST a message and reach the agent, with per-sender session
     # continuity. Bespoke adapters are optional sugar on top of this.
-    channels_router = APIRouter(tags=["channels"], dependencies=protected_dependencies)
+    channels_router = APIRouter(
+        tags=["channels"],
+        dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
+    )
     # Per-sender abuse protection for the externally-reachable webhook.
     channel_limiter = RateLimiter(_int_env("HACHI_CHANNEL_RATE_LIMIT", 30), 60.0)
     channel_allowlist = _parse_allowlist(os.environ.get("HACHI_CHANNEL_ALLOWLIST"))
@@ -1867,7 +2002,10 @@ def create_gateway_app(
     # companion and other clients can approve/deny agent actions.
     # Both routes are protected by the same auth dependency as all other routes.
     approvals_router = APIRouter(
-        prefix="/approvals", tags=["approvals"], dependencies=protected_dependencies
+        prefix="/approvals",
+        tags=["approvals"],
+        dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
     )
 
     @approvals_router.get("")
@@ -1939,15 +2077,34 @@ def create_gateway_app(
     # Web UI routes (#1–#6)
     # ==========================================
 
-    skills_router = APIRouter(tags=["skills"], dependencies=protected_dependencies)
+    skills_router = APIRouter(
+        tags=["skills"],
+        dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
+    )
     memory_router = APIRouter(
-        prefix="/memory", tags=["memory"], dependencies=protected_dependencies
+        prefix="/memory",
+        tags=["memory"],
+        dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
     )
-    og_router = APIRouter(prefix="/og", tags=["og"], dependencies=protected_dependencies)
+    og_router = APIRouter(
+        prefix="/og",
+        tags=["og"],
+        dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
+    )
     authoring_router = APIRouter(
-        prefix="/authoring", tags=["authoring"], dependencies=protected_dependencies
+        prefix="/authoring",
+        tags=["authoring"],
+        dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
     )
-    spend_router = APIRouter(tags=["spend"], dependencies=protected_dependencies)
+    spend_router = APIRouter(
+        tags=["spend"],
+        dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
+    )
 
     @skills_router.get("/skills")
     async def get_skills() -> Any:
@@ -2090,9 +2247,14 @@ def create_gateway_app(
         prefix="/integrations",
         tags=["integrations"],
         dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
     )
     # Callback does NOT carry the auth dependency — the browser popup calls it directly
     # and does not have the Bearer token.  State validation provides CSRF protection.
+    # T-37: deliberately NOT given _ERROR_RESPONSES either — its one route
+    # (GET /oauth/callback) never emits the {code, message, details} envelope; every
+    # branch returns an HTMLResponse (see :2226 below), so declaring the JSON envelope
+    # here would document a shape this router never actually produces.
     integrations_callback_router = APIRouter(prefix="/integrations", tags=["integrations"])
 
     @integrations_router.get("")
@@ -2505,7 +2667,12 @@ def create_gateway_app(
     # Durable Runs routes (Initiative D)
     # ==========================================
 
-    runs_router = APIRouter(prefix="/runs", tags=["runs"], dependencies=protected_dependencies)
+    runs_router = APIRouter(
+        prefix="/runs",
+        tags=["runs"],
+        dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
+    )
 
     def _check_run_ownership(run_session_id: str, caller_hash: str | None) -> None:
         """H6: apply the same owner filter that ``/sessions`` already enforces.
@@ -2653,7 +2820,12 @@ def create_gateway_app(
     # GET    /files/{id}       — get FileMeta for a single file
     # GET    /files/{id}/content — stream raw bytes (FileResponse)
     # ------------------------------------------------------------------
-    files_router = APIRouter(prefix="/files", tags=["files"], dependencies=protected_dependencies)
+    files_router = APIRouter(
+        prefix="/files",
+        tags=["files"],
+        dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
+    )
 
     # Max upload size guard — read from [files] settings, fallback 50 MB.
     def _files_max_bytes() -> int:
@@ -2831,7 +3003,12 @@ def create_gateway_app(
         voice_config as _voice_config,
     )
 
-    voice_router = APIRouter(prefix="/voice", tags=["voice"], dependencies=protected_dependencies)
+    voice_router = APIRouter(
+        prefix="/voice",
+        tags=["voice"],
+        dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
+    )
 
     _MAX_AUDIO_BYTES = 25 * 1024 * 1024  # 25 MB hard ceiling for audio uploads
 
@@ -2915,6 +3092,7 @@ def create_gateway_app(
         prefix="/interactions",
         tags=["interactions"],
         dependencies=protected_dependencies,
+        responses=_ERROR_RESPONSES,
     )
 
     @interactions_router.get("", response_model=InteractionListResponse)

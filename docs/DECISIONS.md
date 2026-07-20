@@ -2852,3 +2852,61 @@ wrappers at the work seams; the sink enriches them.
   attribute enrichment is unavailable (Phase 0 degraded-mode warning covers this).
 
 **Locked by.** `tests/test_obs_sink.py` (10 tests, post-Phase-2 contract).
+
+---
+
+## T-31 — OpenAI-compat facade: keep and fix (2026-07-20) **[ADR]**
+
+**Decision.** Option **(a) — keep and fix**, of the four options in
+`docs/audit/2026-07-19/tasks/T-31-openai-facade-decision.md` §5. Decided by the product owner on
+2026-07-20; recorded here per that task's §6 step 4, and the task's own header was updated to name
+the chosen option per step 5.
+
+**Why.** The facade is a real differentiator — "your agent, behind an OpenAI URL" — not a stray
+endpoint. It is advertised in `README.md:197` and `:395` as the Open WebUI / LibreChat integration
+path, documented in `ARCHITECTURE.md:161` and `docs/guides/configuration.md:435`, and pinned by 19
+(now 25) tests plus bug-bank entries BB-48 and BB-58. T-31 §3.1 spells out what deleting it would
+orphan — a README promise, three doc sites, the test file, two bug-bank locks — and that is not a
+free cleanup; nothing indicated the feature should be dropped. Against that, the two
+security-relevant defects (cross-principal session sharing; the session leak toward the 100-session
+cap) were each independently estimated at ~half a day and turned out to be exactly that scale, so
+"keep and fix" cost little more than the honest alternatives ((b) flag-gate, (c) demote to a
+passthrough, (d) delete) while keeping the promise already made in three places.
+
+**Executed as part of this decision — same session, two commits' worth of change:**
+- [T-32](../audit/2026-07-19/tasks/T-32-facade-session-isolation.md) (defect 1 — cross-principal
+  session sharing via a hardcoded `"__default__"` key and zero ownership check; **BB-109**). The
+  non-streaming path now keys sessions `f"openai:{principal}:{conversation}"` (the caller's token
+  hash, or `"anon"`, plus the client's OpenAI `user` field or a fresh per-request UUID), and
+  `_check_session_ownership` runs on both paths, between session resolution and the turn.
+- [T-33](../audit/2026-07-19/tasks/T-33-facade-session-lifecycle.md) (defect 2 — the streaming path
+  (and, after T-32, the non-`user`-keyed non-streaming path) minted a session per request and never
+  closed it, so the fixed 100-session cap filled permanently; **BB-110**). Both paths now close
+  their ephemeral, per-request session in a guarded `finally:`; a `user`-keyed session is left open
+  on purpose, because that key exists to let the conversation persist across requests.
+- `src/hachi/gateway/fastapi_app.py`, `tests/test_gateway_openai_channels.py` (19 → 25 tests).
+
+**What this decision leaves standing (deliberately, not by omission).**
+- **Defect 3 — multi-turn history is discarded.** Explicitly deferred to a *separate design pass*
+  (T-31 §9), not folded into T-32/T-33 and not spec'd as an ordinary task. The OpenAI protocol is
+  stateless with client-owned history; Hachi is stateful with server-owned memory, and there is no
+  obviously-right reconciliation — replay the client's history every turn (duplicate memory,
+  unbounded cost), diff and append only what's new (fragile against a client that edits history),
+  honour the system prompt but not prior turns (arbitrary), or keep ignoring history and simply stay
+  honest about it (today's behaviour, minus the dishonesty already closed by T-32/T-33). Each answer
+  is a different product; none of them is "just pass messages through". Still pinned by
+  `test_openai_chat_requires_user_content` (a system-only request 400s).
+- **Defect 4 — false metering and the echoed `model` both stand, unchanged.** T-32/T-33 did not
+  touch either half of this defect — checked by diffing, not assumed (`model_name`/`usage`/
+  `prompt_tokens` do not appear as added or removed lines anywhere in the T-32/T-33 diff). `usage`
+  in the non-streaming response body is still hardcoded to
+  `{"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}`; wiring real `CostTracker`
+  usage remains a follow-up, explicitly out of scope for this pass (T-31 §5(a), T-32/T-33 §9). The
+  `model` field still echoes `payload.model` rather than reporting the model that actually served
+  the turn — it did not fall out of T-32/T-33's session-key/lifecycle changes, so per the batch
+  instructions it was left alone and is reported here rather than silently dropped. BB-58's
+  *validation* of the requested model (`:1613-1633`) is unchanged and was not touched, per T-31
+  §9's explicit instruction not to regress it.
+
+**Locked by.** The task's own header (updated); `docs/bug-bank.md` BB-109, BB-110;
+`tests/test_gateway_openai_channels.py` (25 tests, all green).

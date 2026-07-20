@@ -1031,6 +1031,7 @@ def register_delegation_tools(
             max_cost_per_turn=max_cost_per_turn,
             max_tokens_per_turn=max_tokens_per_turn,
         ),
+        group="delegation",
     )
     registry.register(
         DELEGATE_PARALLEL_TASKS_SCHEMA,
@@ -1047,8 +1048,13 @@ def register_delegation_tools(
             max_cost_per_turn=max_cost_per_turn,
             max_tokens_per_turn=max_tokens_per_turn,
         ),
+        # T-39/BB-112: this was the missing entry — delegate_parallel_tasks had no
+        # group= and no _GROUP_BY_TOOL_NAME entry, so classify() silently dropped it
+        # into "integrations" and use_tools("delegation") only unlocked its 2 siblings.
+        group="delegation",
     )
     registry.register(
         LIST_ROLES_SCHEMA,
         _make_list_roles(),
+        group="delegation",
     )

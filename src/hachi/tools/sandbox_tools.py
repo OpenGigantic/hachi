@@ -216,4 +216,6 @@ def register_sandbox_tools(registry: ToolRegistry, gate: PermissionGate = None) 
             },
         },
         run_python_sandbox,
+        # T-39/BB-112: lazy under "sandbox" (was _GROUP_BY_TOOL_NAME, now at registration).
+        group="sandbox",
     )

@@ -2631,9 +2631,13 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   — in `settings.example.toml`, so `tests/test_config_loader.py::
   test_settings_example_toml_keys_are_known_config_fields` (T-02) actually exercises it.
   A fully-commented block would satisfy "still parses" but contributes no key to
-  `tomllib.loads()`, so T-02's subset lock would never see it. (A boot-time
-  `logger.info` at the daemon-start call site in `orchestrator.py` is still open — that
-  file was owned by a concurrent agent this run and out of scope here.)
+  `tomllib.loads()`, so T-02's subset lock would never see it.
+  **Update (T-07 carried-over debt, closed):** the boot-time `logger.info` at the
+  daemon-start call site (`orchestrator.py`, the `if _eval_cfg.enabled:` gate right
+  before `_start_eval_report_scheduler(...)`) has now been added, so a user can tell
+  "I enabled it and it started" from "I enabled it and the config never arrived" —
+  locked by `tests/test_eval_report_config.py::
+  test_boot_agent_logs_when_eval_report_daemon_starts`.
 - **Avoid:** a settings model is not a setting until it is a field on `ResolvedConfig`.
   With `extra="ignore"`, an unregistered section is dropped silently AND reported to the
   user as their typo. Whenever you add a `*Settings` model, add the `ResolvedConfig`
@@ -2685,6 +2689,515 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** `tests/test_loop_backstop_cancel.py` —
   `test_wall_deadline_fires_when_stream_stops_delivering_chunks`,
   `test_cancel_fires_when_stream_stops_delivering_chunks`.
+
+### BB-103 — Google tools mounted twice; the approver-less mount won, denying every destructive action
+
+- **Symptom:** With Google fully configured AND connected, every destructive Google action
+  (`send_email`, `trash_file`, …) returned *"No approver connected for this session; destructive
+  action blocked."* — permanently, for exactly the users who completed setup. This is an
+  **availability** defect, not a security bypass — a missing approver denies, it does not permit.
+- **Root cause:** Two live mount paths in `boot_agent`. The `TOOL_SPECS` entry
+  (`gateway/orchestrator.py:3345`, `register_google_tools(..., approver=action_approver)`) mounted
+  the hub with the session `action_approver`; the capability loop (`:3421-3454`) then mounted it
+  again from the `google` `CapabilityDescriptor`'s factory, which takes no approver, so
+  `GoogleIntegrationHub.__init__` set `client.approver = None`. `ToolRegistry.register` overwrites
+  handlers last-wins (`core/loop.py:197`), so the approver-less handler survived;
+  `ToolRegistry.get_schemas` de-dupes first-wins (`core/loop.py:330-337`), so the schema the model
+  saw came from the *other* mount — the registry was internally inconsistent, schema from one
+  mount, handler from another. `GoogleHTTPClient.require_approval` fails safe and denies when
+  `self.approver is None` (`integrations/google/client.py:288-292`).
+- **Fix:** Added `CapabilityDescriptor.mounts_tools` (default `True`; `False` on the `google`
+  descriptor only, `gateway/orchestrator.py:361`). The capability loop now `continue`s past
+  **both** the mount call and the `_register_capability_setup_stub` fallback for any
+  `mounts_tools=False` descriptor, immediately after the `kind` check (`:3421-3431`). `TOOL_SPECS`
+  is the single mount path and keeps the approver; `google` is still yielded by `iter_enabled()`
+  so `install_optional_skill_pack()` and `status_snapshot()` are unchanged. `slack`/`notion` are
+  unaffected (default `True`).
+- **Avoid:** One integration, one mount path. When adding an integration, check both `TOOL_SPECS`
+  and the capability registry before adding a second — nothing in `ToolRegistry` detects or warns
+  about a double mount (that guard is T-36, deliberately sequenced *after* this fix, since landing
+  it first would hard-crash boot for every configured Google user). Two audit claims about this
+  finding were wrong and were verified false before this fix was written: the Anthropic API never
+  sees duplicate schema names (`get_schemas` de-dupes first-wins), and a missing approver denies
+  rather than permits — do not describe a "no approver" bug as an open door without checking
+  `require_approval`'s actual fail-safe direction first.
+- **Locked by:** `tests/test_google_double_mount.py` —
+  `test_google_capability_does_not_mount_tools`,
+  `test_google_destructive_action_is_permitted_once_mounted_only_via_tool_specs` (the second
+  calls the real `GoogleHTTPClient.require_approval` end-to-end and asserts the actual allow/deny
+  outcome, not a proxy for it — the pre-fix failure message is the literal production denial
+  string, not a mocked stand-in).
+
+### BB-104 — A routing-layer boot failure silently disabled routing (logged at DEBUG while success logged at INFO)
+
+- **Symptom:** a user configured `[routing]`, and Hachi ran every turn on the single default
+  model as if the section were absent. No error, no warning — at default log level, nothing at
+  all.
+- **Root cause:** `gateway/orchestrator.py`'s routing-boot `except Exception:` (guarding
+  `ProviderRegistry` → `ModelRegistry` → `RoutingPolicy` → `ModelRouter` construction) caught
+  every exception at `logger.debug` and set `_model_router = None`. The success path one branch up
+  logs at `logger.info`, so a working boot was strictly louder than a broken one. The `try` also
+  wrapped six `import` statements alongside the constructors, so an
+  `ImportError`/`AttributeError`/typo anywhere in that block was indistinguishable from a genuine
+  `[routing]` config problem.
+- **Fix:** promoted the failure log to `logger.warning` with the exception type name and
+  `exc_info=True`; added a `routing.boot_failed` runtime event alongside it (matching the existing
+  `cost.routing_warning` pattern a few lines up in the same block); hoisted the six imports out of
+  the `try` so they raise loudly instead of being swallowed. `_model_router = None` on failure is
+  unchanged — the fallback itself was correct, only its silence was not.
+- **Avoid:** a failure must never be logged at a lower level than the corresponding success. And
+  never wrap `import` statements in the same `try` as the logic they support — it turns every
+  packaging or rename error into a false "your config is bad".
+- **Locked by:** `tests/test_routing_boot_failure.py` — `test_routing_boot_failure_logs_at_warning`,
+  `test_routing_boot_failure_names_the_exception_type`,
+  `test_routing_boot_failure_emits_a_runtime_event`,
+  `test_routing_boot_imports_are_outside_the_try`. Structural (AST-based) assertions against the
+  real `boot_agent` source, not a `caplog`-driven boot — booting a real `boot_agent()` in a test
+  needs the whole boot sequence (permissions, skill-engine indexing, MCP servers, LLM client
+  construction) mocked off the developer's real `~/.hachi`, which no test in this repo currently
+  does (and T-26 itself forbids extracting a helper to make the block independently callable); see
+  the module docstring for the full reasoning.
+
+### BB-105 — In-context approvals always resolved `approvals[0]`; the SSE field names never matched
+
+- **Symptom:** Clicking Allow/Deny on an in-context leash prompt resolved the wrong
+  pending approval whenever more than one was pending, and the prompt itself always read
+  "Permission requested" instead of naming the tool and target. Counter-intuitively, this
+  was *also* wrong with exactly one approval pending — the click still resolved that lone
+  approval, but only by accident (the fallback path, not because anything actually
+  matched what the user clicked).
+- **Root cause:** Two layered defects, and the architecture review's own diagnosis of
+  this bug was wrong (see `docs/audit/2026-07-19/tasks/CORRECTIONS.md` §R2) — it blamed a
+  missing `request_id` on the SSE wire. The id was always on the wire (all three backend
+  emitters send it and SSE serialises the payload verbatim); the real defects were
+  entirely frontend: (1) `chat.ts`'s `permission.requested` handler read
+  `payload.request` / `.action` / `.why` — three keys the backend has never emitted; the
+  wire carries `request_id` / `tool` / `target` / `reason`. All three fell back to their
+  defaults, and `request_id` was discarded entirely. (2) Because `InContextLeash` had no
+  id field, `allowLeashLive`/`denyLeashLive` resolved via `approveFirstMatching(ic.request)`,
+  a fuzzy text match whose needle was therefore always the literal `"Permission
+  requested"`. It matched nothing, so the `let target = approvals[0]` fallback fired
+  unconditionally — the first pending approval was resolved every time, right only by
+  coincidence when exactly one was pending.
+- **Fix:** Added `requestId: string` to `InContextLeash` (`lib/data/types.ts`) and to the
+  `runLeash` state shape (`lib/store/store.ts`); `chat.ts`'s `permission.requested` case
+  now reads `request_id` / `tool` / `target` / `reason` off the real payload and composes
+  `action` the same way `approvals.ts`'s `adaptApproval` does, so the two surfaces agree.
+  Added `approveByRequestId` / `declineByRequestId` (`lib/data/domains/approvals.ts`),
+  resolving through the existing `request_id → numeric id` map and reporting `false` for
+  an id the map has never seen rather than minting one for it. Deleted
+  `approveFirstMatching` and `denyFirstMatching` outright, along with the comment block
+  that documented the wrong assumption ("that event carries no request_id"). Backend
+  unchanged — this was purely a frontend field-name and resolution-strategy bug.
+- **Avoid:** never resolve a server-side record by fuzzy-matching its display text —
+  carry the server's identifier end to end. When adapting an event payload, verify the
+  emitter's actual keys against source; a `typeof x === "string" ? x : fallback` guard
+  silently converts a wrong field name into a plausible-looking default, and a fallback
+  string that never varies is invisible in casual testing because it still "looks like"
+  a value.
+- **Locked by:** `frontend/src/lib/data/domains/approvals.test.ts` — "resolves the
+  approval the user clicked, not approvals[0]", "does not fall back to the only pending
+  approval when the leash's id does not match it", "maps the real SSE field names onto
+  the in-context leash".
+
+### BB-106 — Approval decisions failed silently: the card vanished while the gateway stayed blocked
+
+- **Symptom:** Clicking Allow or Decline always removed the approval card and showed a
+  success toast, even when the `POST /approvals/{id}` returned 404/422/500 or was never
+  issued at all (unmapped `request_id`). The agent remained blocked until the 180s
+  server-side timeout auto-denied it, so a user's *approve* could silently become a
+  *deny* three minutes later, with nothing on screen explaining why.
+- **Root cause:** `postDecision` in `frontend/src/lib/data/domains/approvals.ts` had two
+  silent paths: a bare `catch {}` (justified by a comment claiming `client.ts` surfaced
+  failures centrally — it only surfaces genuine *network* errors via `isNetworkError`,
+  not decoded `ApiError` status codes) and an `if (requestId)` guard that skipped the
+  POST entirely on an id-map miss. It returned `Promise<void>`, so callers had no way to
+  distinguish success from either failure mode. `approve`/`allowAlways`/`decline` also
+  ran the optimistic store mutation — which removes the card and fires a success toast —
+  *before* awaiting the POST at all, so the UI had already committed to "it worked"
+  before the network call even started.
+- **Fix:** `postDecision` now returns `"ok" | "unknown-id" | "failed"` instead of
+  `void`. The three wrappers (`approve`, `allowAlways`, `decline`) await it first and
+  mutate the store only on `"ok"`, raising a `"blocked"`-tone toast otherwise (matching
+  the existing house style at `store.ts`'s `runAlwaysAllow`/`icAlwaysAllow`, BB-78's
+  rule). `declineAll` no longer calls the bulk optimistic store action; it resolves each
+  id individually and clears from the store only the ones the gateway actually
+  confirmed, toasting how many failed when any did. `invalidate("approvals")` still
+  fires on every outcome, including failure. Chose the simpler of the two documented
+  options for `isNetworkError`: a genuine network failure now also reports `"failed"`
+  and toasts here (accepting slight duplication with the existing reconnect banner)
+  rather than special-casing it to stay silent.
+- **Avoid:** never `catch {}` a mutation the UI has already claimed succeeded. Mutate the
+  store on a confirmed 2xx (BB-78's rule), and give a mutation function a return type
+  that can express failure — a `Promise<void>` wrapped around a POST that can 404 is a
+  guarantee some caller will treat "didn't throw past my try/catch" as "worked."
+- **Locked by:** `frontend/src/lib/data/domains/approvals.test.ts` — "keeps the approval
+  and warns when the decision POST fails", "does not silently drop the approval when the
+  request_id is unmapped", "declineAll does not clear approvals whose POST failed".
+
+### BB-107 — `getattr(x, "field", None)` against our own types silently disabled four features
+
+- **Symptom:** four separate features were permanently inert while their call sites read
+  as careful defensive code: `ProcessSharedServices.session_store` (declared nowhere —
+  three readers, every "prefer shared store" branch dead, plus a leaked SQLite handle per
+  message; owned by T-10), `MemoryManager.memory_dir` (does not exist — the gardener
+  reader returned `[]` before touching the file; owned by T-08), `ResilientClient.
+  max_tokens` (not exposed — the pre-flight token safety ceiling silently computed 0
+  under routing; owned by T-27), and `AgentSession.reindex_skills` (defined nowhere —
+  authoring saves never re-indexed and reported `reindexed_ms: 0`; this task). Two more
+  turned up while building the checker that did not make the audit's original four:
+  `MemoryManager._session_id` (read in `sync_turn()`, assigned nowhere in the repo — the
+  fact-extraction job's `session_id` payload is always `""`) and `AgentSession.
+  _session_store._current_started_at` (read once in `gateway/orchestrator.py`, assigned
+  nowhere).
+- **Root cause:** a three-argument `getattr` against a Hachi-owned collaborator converts
+  "this attribute was never implemented" into a silently-taken default. `mypy` cannot
+  flag it (the call is well-typed), `ruff` has no rule for it, and it reads as
+  future-proofing — so it survives review indefinitely. The `reindex_skills` /
+  `_session_id` cases are one hop worse: the object handed to `getattr` is a bare local
+  (`agent = next(iter(self._agents.values()), None)`), not `self.<attr>` directly, so a
+  checker that only recognises the literal `self`/`self.<attr>` shape misses its own
+  headline example.
+- **Fix:** added `scripts/check_getattr.py`, a stdlib-only AST rail that flags
+  `getattr(self, "...", default)` / `getattr(self.<attr>, "...", default)` with a
+  literal attribute name, AND `getattr(local, "...", default)` where `local` was bound,
+  earlier in the same function, to a self-owned collaborator via at least one pure
+  container/iterator hop (`next()`, `iter()`, `.values()`, subscripting, …) — the second
+  form is required to catch `reindex_skills`. A zero-hop bare rename (`x = self.foo`) is
+  deliberately excluded from that second form: it fired on `self._chroma_client`
+  (chromadb) and `self._server` (`uvicorn.Server`) during development, both legitimate
+  duck-typing over foreign SDK objects, before the "at least one real hop" rule was
+  added. Every genuinely-existing hit was converted to a direct read (verified against
+  the declaring class's real `__init__`, not guessed — two of the first attempts were
+  wrong because the attribute is only assigned inside `run()`, not `__init__`, and a
+  real test caught it); every genuinely-optional hit was allowlisted with a one-line,
+  path:attr-keyed reason; the already-known and newly-found dead features were filed,
+  not fixed, and allowlisted with a citation to the owning task. Wired into
+  `scripts/preflight.py` as an advisory step next to `adr-lint`.
+- **Avoid:** against a type WE own, a missing attribute is a bug — read it directly and
+  let `AttributeError` be loud. Reserve defaulted `getattr` for foreign/SDK objects and
+  genuinely optional protocol members, and comment why at each site. Before assuming an
+  attribute is "always set in `__init__`, safe to convert", grep for `ClassName.__new__(`
+  in `tests/` — several classes in this codebase (`ExecutionLoop`, `MemoryVault`,
+  `SessionStore`, `AgentSession`, …) are deliberately constructed that way in tests to
+  skip expensive I/O, and genuinely lack anything not set by `__init__` itself. `hasattr`
+  guards on our own types are the same bug in different syntax (left for a future
+  widening, noted in the checker's docstring).
+- **Locked by:** `tests/test_check_getattr.py` —
+  `test_src_tree_has_no_unallowlisted_violations`,
+  `test_detects_defaulted_getattr_on_local_alias_of_self_collaborator`.
+
+### BB-108 — Two session routes could not authorise, because their handlers took no `Request`
+
+- **Symptom:** `GET /sessions/{session_id}/messages` returned a full transcript, and
+  `POST /sessions/cleanup-empty` deleted empty session rows globally, without the
+  per-session ownership check the other nine session routes perform. **Not exploitable
+  as shipped** — both routes still require a valid bearer token via the router-level
+  dependency (`fastapi_app.py:710`/`:713`), and exactly one token exists per process
+  today, so there is no second principal to be protected from.
+- **Root cause:** Structural, not a forgotten line. `get_session_messages(session_id,
+  limit)` and `cleanup_empty_sessions()` declared no `request: Request` parameter, so
+  neither could call `_require_auth(request)` and neither could obtain the caller digest
+  that `_check_session_ownership(session_id, caller_hash)` needs. FastAPI discards a
+  router-level dependency's return value, which is why the nine already-checked handlers
+  re-call `_require_auth` themselves.
+- **Fix:** Both handlers now take `request: Request` (positioned before defaulted
+  params — Python parameter ordering, not FastAPI's, forces this). `get_session_messages`
+  calls `_check_session_ownership(session_id, _require_auth(request))` before touching
+  the transcript store (`fastapi_app.py:1069`, above the `session_transcript` call at
+  `:1072`); `cleanup_empty_sessions` calls `_require_auth(request)` (`:1018`) with a
+  comment documenting that the operation stays global by design — there is no
+  `session_id` to scope it to, and inventing one was explicitly out of scope.
+- **Verified, not assumed:** the exported OpenAPI schema (`app.openapi()`) is
+  byte-identical before and after this change — `Request` is a FastAPI-reserved
+  injectable type, never a schema parameter, matching the 8 pre-existing
+  `request: Request` session handlers. No OpenAPI/frontend-type regeneration was needed
+  for this task, despite the originating task spec assuming the added parameter would
+  change the schema.
+- **Avoid:** when a per-request check needs a value only a `Request` can supply, a
+  handler without a `Request` parameter cannot be checked *at all* — the omission is
+  invisible in a route-by-route review because there is no missing line to spot; audit
+  signatures, not just bodies. Separately, and just as easy to get wrong in the test that
+  locks this: `set_session_owner` silently no-ops for a session that is not "live"
+  (absent from `control_plane._connections`), and a `None`/missing owner means *allow* —
+  so a regression test that stamps a foreign owner and then asserts a 403 must first
+  assert `get_session_owner() == <stamped digest>`, or it risks passing for the wrong
+  reason (an ownerless session, same as every session after a restart) instead of
+  exercising the check at all.
+- **Locked by:** `tests/test_session_route_ownership.py` —
+  `test_session_messages_denies_a_foreign_owner` (asserts the foreign-owner stamp landed,
+  then asserts the live HTTP 403), `test_session_messages_still_serves_the_owner` (normal
+  single-principal path unchanged).
+
+### BB-109 — OpenAI facade shared one `"__default__"` session across all callers, unchecked
+
+- **Symptom:** two unrelated OpenAI clients calling `POST /v1/chat/completions` (non-streaming) got
+  each other's conversation history and each other's accumulated agent memory. No 403 was reachable
+  for a caller who did not own the session.
+- **Root cause:** two failures that compound. (1) The route called
+  `control_plane.complete_chat(prompt, owner_token_hash=...)` without a `session_key`, so every
+  caller resolved to the `"__default__"` default in `complete_chat`/`get_or_create_session`.
+  (2) `_check_session_ownership` had 10 call sites in `fastapi_app.py` and NONE inside the facade —
+  and `get_or_create_session` stamps `owner_token_hash` only when it CREATES a session, so every
+  later caller reused a session owned by someone else with nothing comparing them. BB-48 fixed the
+  *stamping* half in an earlier pass and reads as though the issue was closed; the *checking* half
+  was never added.
+- **Fix:** the non-streaming path now keys sessions `f"openai:{principal}:{conversation}"`
+  (`principal` = the caller's token hash or `"anon"`; `conversation` = the client's OpenAI `user`
+  field or a fresh per-request UUID), and `_check_session_ownership` runs BETWEEN
+  `get_or_create_session` and `send_message` on both the non-streaming and streaming paths
+  (`src/hachi/gateway/fastapi_app.py`, `openai_chat_completions` / `_openai_event_stream`).
+  `OpenAIChatRequest` gained an explicit `user: str | None = None` field instead of riding on
+  `extra="allow"`, so it is now declared in the OpenAPI schema (confirmed by diffing
+  `app.openapi()` against the checked-in spec — the `user` field is the only change, no routes
+  added or removed).
+- **Avoid:** a `session_key` parameter with a shared literal default is a loaded gun — any call site
+  that forgets it silently joins a global session. When a route resolves a session id, the ownership
+  check is part of resolving it, not an optional extra — and it must run BEFORE the side effect,
+  never after: `complete_chat` used to return the session id only once the turn had already run, so
+  the fix splits it into `get_or_create_session` → `_check_session_ownership` → `send_message`.
+- **Locked by:** `tests/test_gateway_openai_channels.py` —
+  `test_openai_facade_does_not_share_one_default_session`,
+  `test_openai_facade_rejects_foreign_session_owner`.
+
+### BB-110 — OpenAI-facade streaming (and, after T-32, ephemeral non-streaming) requests leaked one booted session each, until the cap jammed permanently
+
+- **Symptom:** after ~100 streaming `POST /v1/chat/completions` requests the gateway rejected ALL
+  new sessions — including the web UI's — with "Maximum active sessions reached (100)",
+  permanently, until the process was restarted. `GET /readiness` showed `active_connections`
+  climbing monotonically and never falling. Once T-32 landed, every non-streaming request that
+  omitted the OpenAI `user` field started minting its own per-request session too, and leaked
+  identically.
+- **Root cause:** the streaming path mints `session_key = f"openai-{chat_id}"` from a fresh UUID per
+  request, so `get_or_create_session` always missed and booted a full agent — and `close_session`
+  was never called anywhere in the facade. The cap in `GatewayControlPlane.create_session` is a hard
+  raise with no LRU and no eviction, so the leak was terminal rather than degrading. Verified live
+  while writing the regression test: exceeding a lowered cap mid-stream doesn't even surface as a
+  clean error response — Starlette has already sent the `200` `http.response.start` event before the
+  handler discovers the cap is full (`StreamingResponse.stream_response` sends the status before the
+  first `body_iterator` chunk), so the failure comes out as an unhandled `RuntimeError` ("Caught
+  handled exception, but response already started"), not a rewritable status code.
+- **Fix:** `close_session(session_id)` is now called in `_openai_event_stream`'s existing `finally:`
+  block, and around the non-streaming `send_message` call for sessions that used T-32's ephemeral
+  (no-`user`) fallback — both off the event loop via `anyio.to_thread.run_sync`, guarded so a
+  teardown error can never raise into a partially-sent response stream. Sessions keyed by a
+  client-supplied `user` id are deliberately never closed here — that key exists precisely so the
+  conversation persists across requests.
+- **Avoid:** if a code path CREATES a session, that same path owns closing it — put the close in the
+  `finally:` at the point of creation, not in a reaper. A hard cap with no eviction turns any session
+  leak into a permanent outage, so "who closes this?" is part of writing the create, not a follow-up.
+  Separately: once a `StreamingResponse` generator has yielded even once, the HTTP status is already
+  on the wire, so a later exception from that generator cannot become a clean error response — a
+  regression test that drives a session leak past a lowered cap mid-stream must expect (and assert
+  on) the underlying exception rather than assume a same-status-family error response.
+- **Locked by:** `tests/test_gateway_openai_channels.py` — `test_openai_streaming_closes_its_session`,
+  `test_openai_streaming_does_not_approach_the_session_cap`,
+  `test_openai_non_streaming_closes_its_ephemeral_session`,
+  `test_openai_facade_user_keyed_session_persists_across_requests`.
+
+### BB-111 — ToolRegistry.register silently clobbered duplicate tool names
+
+- **Symptom:** Registering a tool name twice silently replaced the handler (last-wins) while the
+  model kept seeing the first registration's schema (`get_schemas` de-dupes first-wins), so a
+  tool's schema and its handler could come from two different mounts. `_schemas` also grew by one
+  dead dict per duplicate, per boot. No exception, no log line, no test could detect it. The
+  Google double-mount (see the BB-103 entry, fixed by T-35) shipped through this gap.
+- **Root cause:** `core/loop.py` `register()` did `self._tools[name] = func` /
+  `self._schemas.append(schema)` with no membership check — the only validation was that the
+  schema had a non-empty `name`. Two subsystems independently worked around it instead of fixing
+  it: `ToolRegistry.update_handler` exists solely for this (its docstring says so), and
+  `_register_search_tools_for` hand-rolled idempotency for the same reason (checks `"web_search"
+  in tool_registry._tools` before choosing `register` vs `update_handler`).
+- **Fix:** `register()` now raises `ValueError` when the name is already present, and the message
+  points at `unregister()` — the pre-existing public teardown API the MCP lifecycle already uses.
+  Landed strictly after T-35 (BB-103), which removed the one double-mount that would otherwise
+  have crashed boot for every fully-configured Google user — re-verified against source before
+  this change landed: `CapabilityDescriptor.mounts_tools=False` on `google` (`gateway/
+  orchestrator.py`) makes `register_google_tools(..., approver=action_approver)` (via `TOOL_SPECS`)
+  the sole mount path, and the capability loop now skips `google` entirely.
+- **Residual finding (reported, not fixed — out of file scope for this task):**
+  `AgentSession.add_mcp_server_live` (`gateway/orchestrator.py:947-996`) calls
+  `self.mcp_manager._register_server_tools(cfg.name, server, registry)` directly — the private,
+  non-idempotent mount, with no `unregister` first — reachable from the CLI MCP-server-add command
+  (`cli/main.py:1938-2010`) whose own comment documents that re-registering an *existing* server
+  name is a supported case. This is a **live, not boot-time**, path: unreachable from `boot_agent`
+  and untested against a real `ToolRegistry` (`tests/test_mcp_transport_and_config.py::TestHotReload`
+  mocks both `registry` and `manager._register_server_tools`). Before this fix it silently
+  duplicated a schema per re-add; after this fix, re-adding an MCP server under a name that is
+  already live now raises `ValueError` instead. Confirmed by direct repro against real
+  `MCPManager`/`ToolRegistry` objects. The already-idempotent sibling, `register_server_tools`
+  (used by `set_mcp_tools_active`), unregisters before re-mounting and is unaffected — this is the
+  pattern `add_mcp_server_live` should follow. Needs its own task; not fixed here because the fix
+  lives in `gateway/orchestrator.py`, out of this task's scope.
+- **Avoid:** A registry keyed by name must reject duplicates at write time. Anything that needs to
+  re-mount calls `unregister()` first; anything that needs to swap only the callable calls
+  `update_handler()`. Never re-`register()` to overwrite. When auditing a "make X strict" change,
+  grep every call site of the function being tightened, not just the ones a doc named — the MCP
+  hot-reload path above was found by tracing callers, not by the task spec.
+- **Locked by:** `tests/test_tool_registry_duplicate_guard.py` — `test_duplicate_registration_raises`,
+  `test_duplicate_registration_leaves_registry_unchanged`, `test_unregister_then_register_is_allowed`,
+  `test_update_handler_still_works`.
+
+### BB-112 — Tool groups lived in a hand-maintained orchestrator table, and it drifted
+
+- **Symptom:** `use_tools("delegation")` unlocked `delegate_task` and `list_roles` but not
+  `delegate_parallel_tasks`, which had silently landed in the `"integrations"` group instead. The
+  same table also mapped `schedule_task`, a name no registered tool has ever used — the identical
+  phantom name that produced BB-89's security hole in the sub-agent blocklist (same drift class,
+  same file family, same week; T-34 fixed the blocklist, this fixes the grouping table).
+- **Root cause:** Group membership was declared in `_GROUP_BY_TOOL_NAME` in
+  `gateway/orchestrator.py`, hundreds of lines from every `register(...)` call, and consumed by a
+  single `classify()` call with `default="integrations"`. A tool omitted from the table is not an
+  error — it is silently absorbed by the default. Nothing validated the table's 27 hand-written
+  names against real tool schemas: `delegate_parallel_tasks` was added to
+  `delegation_tools.py` (`register_delegation_tools`) without a matching table entry, so
+  `classify()` found it in neither `core_names` nor `group_by_name`, no prefix matched, and it fell
+  through to `default="integrations"`. NOTE: `"integrations"` is a normal, activatable group
+  (`available_groups()` includes it and `use_tools` accepts it) — the defect was *wrong group*,
+  not *unreachable tool*; a nearby BB-32 comment saying "never activated" (about MCP tools, a
+  different mechanism) does not apply here.
+- **Fix:** Each non-core tool now declares `group="..."` at its own `register(...)` call
+  (`classify()` rule 4 already left explicitly-tagged tools intact — this is not a new mechanism,
+  just a wider use of one `use_tools`/per-skill-REST tools already relied on). `_GROUP_BY_TOOL_NAME`
+  was deleted outright from `orchestrator.py` (not just corrected), and the production `classify()`
+  call now passes `group_by_name={}`. `delegate_parallel_tasks` now carries `group="delegation"`.
+  `_CORE_TOOL_NAMES` was deliberately kept unchanged — it is a central per-turn token-budget
+  decision, not a per-tool fact, and has its own size-guard test
+  (`test_tool_lazy_loading.py::test_core_tool_set_size_guard`). The Google `"google_"` prefix rule
+  and the `google_tools.py` re-tag-by-privates poke were deliberately left in place (a convention
+  rule can't drift the way a name table can; threading `group="google"` through nine
+  `GoogleService.register_tools` implementations is a separate, larger task).
+- **Verified, not assumed:** every real `register_*_tools` function was called directly (the same
+  functions `TOOL_SPECS` calls at boot) and the resulting `ToolRegistry._groups` was diffed against
+  the old table's 26 live entries — zero mismatches, plus the one intended change
+  (`delegate_parallel_tasks: integrations → delegation`).
+- **Residual finding (reported, not fixed — file is out of scope for this task):**
+  `scripts/measure_turn.py:121,152` (`build_core_registry()`) imports `_GROUP_BY_TOOL_NAME` and
+  passes it to `classify()`; deleting the table breaks that import and, transitively,
+  `tests/test_measure_turn.py` (7 errors) and `tests/test_core_tool_cost_guard.py` (4 failures) —
+  neither in this task's scoped test list. The fix is mechanical (drop the name from the import,
+  pass `group_by_name={}` at its `classify()` call, mirroring `orchestrator.py`) but `scripts/` is
+  owned by another workstream in this wave; needs a one-line follow-up there.
+- **Avoid:** Metadata about a tool belongs at the tool's registration, not in a central table
+  keyed by tool-name strings. If a table keyed by tool names is unavoidable, it needs a test that
+  resolves every entry against a real schema — see the BB-89 entry for what this same rot costs
+  when the table is a security boundary instead of a UX one. Before deleting a module-level name
+  that other files import, grep the whole tree (not just `tests/`) for its usage — a script under
+  `scripts/` can be a live, un-scoped consumer that a test-file-only search misses.
+- **Locked by:** `tests/test_tool_groups_at_registration.py` —
+  `test_all_delegation_tools_share_the_delegation_group`,
+  `test_register_delegation_tools_wires_all_three_into_delegation`,
+  `test_core_tool_names_all_reference_real_tools`.
+
+### BB-113 — A dead gateway rendered as a healthy TUI cockpit full of fabricated governance data
+
+- **Symptom:** With the gateway down or unreachable, `hachi run` showed a fully populated
+  cockpit: a pending medium-risk approval to write `~/Documents/report.md` (with a working
+  Allow button that would 404), a spend figure, and an audit log — none of it real. Nothing on
+  screen indicated a problem, and the only trace was a `log.debug` line invisible at the
+  default level.
+- **Root cause:** `CockpitData` (`src/hachi/tui/cockpit/data.py`) documented and implemented
+  "methods NEVER raise — they always return real or placeholder data." All 25 read methods
+  wrapped the client call in `except Exception: log.debug(...)` and fell through to
+  `placeholder_*()` from `hachi.client.gaps`, so a *failed live call* (`client is not None`,
+  the call raised) was indistinguishable from *deliberate offline mode* (`client is None`).
+  `decide_approval` was the lone honest method — it already returned `{}` on error instead of
+  fabricating a success response.
+- **Fix:** Split the two cases. `client is None` (deliberate offline) still returns
+  placeholders — untouched, still pinned by `TestCockpitDataOffline`. `client is not None` and
+  the call raised now records a reason via `_degrade(key, exc)`, logs at WARNING (all 25
+  `log.debug` fallbacks moved to `log.warning`, including the 8 already-honest mutation
+  methods for consistency — see BB-71), and returns an honest empty value (`[]`, `([], [])`,
+  or a neutral model built explicitly from `client/models.py`, e.g. `TrustBarSnapshot` fields
+  use `"—"` rather than `""` so `trust_bar.py`'s `snap.tier or "guided"` truthy-fallback can't
+  quietly reintroduce a fabricated default); a later success clears the flag via
+  `_clear_degraded(key)`. The four governance-facing views (`approvals`, `audit`, `resources`,
+  `dashboard`) check `data.degraded(key)` and render an explicit "⚠ can't reach Hachi — …
+  unknown, not empty" message — in a DANGER color, not the reassuring empty state's MUTED —
+  instead of their normal empty/zeroed content.
+- **Avoid:** A fallback must distinguish "no data" from "could not fetch." Never let a caught
+  exception return the same value (or the same placeholder) as a successful-but-empty result,
+  and never log a swallowed failure at DEBUG (BB-71). When a DEGRADED state is added, verify it
+  actually renders differently from both the populated state *and* the reassuring empty state
+  — a data-layer flag nobody reads, or an empty-text swap that keeps the exact same muted
+  styling as "all clear," has not solved the problem.
+- **Locked by:** `tests/test_cockpit_degraded.py` — `test_failed_live_call_returns_empty_not_placeholder`,
+  `test_failed_live_call_records_a_degraded_reason`, `test_offline_mode_still_returns_placeholders`,
+  `test_recovered_call_clears_the_degraded_flag`, plus four view-level render tests
+  (`test_approvals_view_renders_degraded_not_fabricated_row` et al.) that assert on the actual
+  rendered table rows / panel text, not just the facade's return value.
+
+### BB-117 — Failover spend was booked against the primary model, not the fallback that served the turn
+
+- **Symptom:** when a provider failed and a configured fallback served the turn, `/spend`
+  and the per-model breakdown showed usage for the **primary** model — at the primary's
+  price — and zero for the model that actually ran. Cost caps tripped early or late during
+  exactly the failover windows where the numbers matter most.
+- **Root cause:** `ResilientClient.__init__` captures `self.model` once from the primary
+  (`core/resilience.py`, `__init__`) and `_call_with_chain` never updates it while walking
+  the chain — even though it reads the fallback's model to *log* the failover a few lines
+  below. `core/loop.py`'s cost-tracking read then attributed cost via
+  `getattr(self._turn_client, "model", "unknown")`, which is always the (unchanged) primary
+  regardless of who served the turn. The streaming happy path (`ResilientClient.generate_stream`)
+  compounds this: it never goes through `_call_with_chain` at all, so a stamp added only
+  there would have missed almost every real successful turn.
+- **Fix:** added `served_model: str | None = None` to `LLMResponse` (`core/llm.py`,
+  a pydantic `BaseModel` — a defaulted field touches zero of the 36 existing
+  `LLMResponse(...)` construction sites), populated at all four production sites in
+  `core/llm.py`: `AnthropicClient._parse_message` (from the provider's own reported
+  `Message.model`, covering both the non-streaming and streaming Anthropic paths since both
+  route through it), `OpenAICompatibleClient.generate` (from the response body's `"model"`
+  field, falling back to the configured model when the endpoint omits it — both its
+  empty-choices early return and its main return), and `OpenAICompatibleClient.generate_stream`
+  (the configured model — the SSE chunks parsed there carry no per-chunk model field worth
+  relying on, verified rather than assumed per CLAUDE.md Rule 4). Backfilled in
+  `ResilientClient._call_with_chain` (stamps from whichever chain element actually produced
+  the response, guarded by `isinstance(result, LLMResponse)` since the chain is generic) and
+  on `generate_stream`'s streaming success path (stamps from `self._inner` when the client
+  itself left it unset) — the fallback-degrade path already routes through
+  `_call_with_chain`, so it inherits the same backfill for free. `core/loop.py`'s
+  cost-tracking site now prefers `response.served_model`, falling back to the old
+  `getattr(self._turn_client, "model", "unknown")` for any client that leaves the field unset.
+  Left `core/eval/corpus.py` (26 golden fixtures) and `core/unofficial_providers.py` (5
+  sites, opt-in) untouched — both are covered by the chain backfill and neither needed
+  editing since the field is defaulted.
+- **Avoid:** identity of *who served a call* belongs on the RESPONSE (per-call), never on a
+  long-lived client attribute (shared, and stale the moment a chain fails over). Any
+  `getattr(client, "model", ...)` on a decorated client is suspect. When a decorator has
+  more than one code path back to the caller (streaming happy path vs. fallback-degrade vs.
+  non-streaming chain), a fix added to only one path silently misses the others — enumerate
+  every return path before calling a stamp "done".
+- **Locked by:** `tests/test_served_model_attribution.py` (all four tests, incl.
+  `test_cost_is_attributed_to_the_fallback_that_served_the_turn`, which asserts on
+  `CostTracker.per_model_snapshot()` — the real observed behaviour, not just the field's
+  value) and `tests/test_streaming.py`'s five `*_surfaces_served_model`/
+  `*_falls_back_to_configured_model` tests pinning the three `llm.py` production sites.
+
+### BB-118 — Enabling `[routing]` silently degraded the pre-flight token-safety ceiling to a post-hoc check
+
+- **Symptom:** with routing enabled, a single runaway generation could cross the 2,000,000-token
+  safety ceiling by its own full cost before anything noticed. With routing disabled the same
+  ceiling refused the call up front. No error, no log — the guardrail just got weaker when a
+  cost feature was switched on.
+- **Root cause:** `ResilientClient.__init__` forwarded only `model` from the wrapped client
+  (`core/resilience.py:347`); there is no `max_tokens` attribute and no `__getattr__`. The
+  loop's pre-flight check reads `getattr(worst_case_next_call, "max_tokens", 0) or 0`
+  (`core/loop.py:831`, `_safety_ceiling_exceeded`), so it got 0, making
+  `projected == snap.total_tokens` — literally the post-hoc check the S1 docstring right above it
+  says it replaced. With `router is None`, `loop.py:947` leaves `_turn_client` as the raw
+  `AnthropicClient` (which has `max_tokens`, `llm.py:279`), so the bug was invisible in the
+  default configuration. `tests/test_loop_backstop_cancel.py`'s
+  `test_token_safety_ceiling_is_preflight_not_post_hoc` covered the ceiling with a fake that DID
+  expose `max_tokens` directly — green while the routed path was inert.
+- **Fix:** forward `max_tokens` explicitly beside `model` in `ResilientClient.__init__`
+  (`core/resilience.py`). Deliberately NOT a blanket `__getattr__` — that would mask the next
+  missing attribute the same way a defaulted `getattr` masked this one.
+- **Avoid:** a decorator/wrapper class must forward every attribute its callers read, and a
+  `getattr(obj, name, <default>)` against your OWN type is a code smell: it converts a
+  missing attribute into a plausible value instead of an error. When wrapping, test through
+  the wrapper, never against the bare inner object.
+- **Locked by:** `tests/test_loop_backstop_cancel.py` —
+  `test_token_safety_ceiling_is_preflight_through_a_resilient_client`
 
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,

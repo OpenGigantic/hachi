@@ -136,6 +136,17 @@ class LLMResponse(BaseModel):
             "clean completion apart from a max_tokens cutoff mid-tool-call (BB-54)."
         ),
     )
+    served_model: str | None = Field(
+        default=None,
+        description=(
+            "The model that ACTUALLY produced this response, as reported by the "
+            "provider where available (falling back to the serving client's "
+            "configured model otherwise). Differs from a ResilientClient's "
+            "`.model` -- the PRIMARY's identity, fixed at construction -- when a "
+            "resilience fallback served the turn. Cost must be attributed to "
+            "this value, not to the primary (BB-117)."
+        ),
+    )
 
 
 class BaseLLMClient(abc.ABC):
@@ -370,11 +381,17 @@ class AnthropicClient(BaseLLMClient):
         # Guard against non-string values (e.g. an unconfigured test double) —
         # a real Anthropic SDK Message always reports stop_reason as str|None.
         stop_reason = raw_stop_reason if isinstance(raw_stop_reason, str) else None
+        # T-25/BB-117: the Message object reports the model that actually served
+        # the request -- strictly better than the client's configured `self.model`
+        # (this is a @staticmethod, so there is no `self` to fall back to anyway).
+        raw_served_model = getattr(msg, "model", None)
+        served_model = raw_served_model if isinstance(raw_served_model, str) else None
         return LLMResponse(
             content=text_content.strip(),
             tool_calls=tool_calls,
             usage=usage,
             stop_reason=stop_reason,
+            served_model=served_model,
         )
 
     def generate(
@@ -655,9 +672,15 @@ class OpenAICompatibleClient(BaseLLMClient):
         response.raise_for_status()
         data = response.json()
 
+        # T-25/BB-117: the response body's top-level "model" is the OpenAI
+        # chat-completions field for the model that actually served the request;
+        # fall back to the configured model when the endpoint omits it (local
+        # servers often do).
+        served_model = data.get("model") or self.model
+
         choices = data.get("choices", [])
         if not choices:
-            return LLMResponse(content="", tool_calls=[])
+            return LLMResponse(content="", tool_calls=[], served_model=served_model)
 
         message = choices[0].get("message", {})
         content = message.get("content") or ""
@@ -670,6 +693,7 @@ class OpenAICompatibleClient(BaseLLMClient):
             tool_calls=tool_calls,
             usage=usage,
             stop_reason=stop_reason,
+            served_model=served_model,
         )
 
     def generate_stream(
@@ -788,11 +812,16 @@ class OpenAICompatibleClient(BaseLLMClient):
                 self._stream_usage,
             )
 
+        # T-25/BB-117: unlike the non-streaming path, the delta/usage chunks
+        # parsed above are never checked for a per-chunk "model" field here (not
+        # verified against a real provider -- CLAUDE.md Rule 4), so the safe
+        # default is the client's own configured model rather than an assumption.
         return LLMResponse(
             content="".join(text_parts).strip(),
             tool_calls=tool_calls,
             usage=final_usage,
             stop_reason=final_stop_reason,
+            served_model=self.model,
         )
 
     def list_models(self) -> list[str]:
