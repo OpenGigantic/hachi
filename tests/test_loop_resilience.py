@@ -12,6 +12,7 @@ import pytest
 from hachi.core.cost import CostTracker
 from hachi.core.llm import LLMResponse, TokenUsage, ToolCall
 from hachi.core.loop import ExecutionLoop, SuspendWorkflow, ToolRegistry
+from hachi.core.resilience import HealthRecorder, ResilientClient, RetryPolicy
 from hachi.core.sub_agent import SubAgentMemory
 
 
@@ -151,13 +152,26 @@ def test_suspend_pairs_every_tool_use() -> None:
     assert paired == {"t1", "t2"}  # both tool_use blocks answered → valid next turn
 
 
-def test_transient_llm_error_is_retried(monkeypatch) -> None:
-    monkeypatch.setattr("hachi.core.loop.time.sleep", lambda *_a, **_k: None)
+def test_transient_llm_error_is_retried() -> None:
+    """T-24/BB-116: retry now lives in ResilientClient, not ExecutionLoop.
 
+    Before T-24, ExecutionLoop retried a transient streaming failure itself,
+    even against a bare (non-resilient) client -- that was one of the four
+    stacked retry layers T-24 collapsed. The loop-level retry is gone;
+    resilience is the sole retry owner now, so retrying requires opting in
+    by wrapping the client in a ResilientClient (the same pattern used
+    throughout tests/test_resilience.py). This test's INTENT is unchanged
+    ("a transient LLM error is retried with backoff") -- only where that
+    property is enforced has moved, so the test is corrected to match, not
+    weakened (CORRECTIONS.md: a test asserting now-incorrect behaviour may be
+    corrected, never silently relaxed). backoff_base_s=0.0 keeps the
+    assertion on call count, never elapsed wall time.
+    """
     calls = {"n": 0}
 
     class _Flaky:
         model = "fake-model"
+        max_tokens = 4096
 
         def generate(self, **_kwargs) -> LLMResponse:
             calls["n"] += 1
@@ -173,7 +187,9 @@ def test_transient_llm_error_is_retried(monkeypatch) -> None:
                 yield ""
             return response
 
-    loop = ExecutionLoop(_Flaky(), ToolRegistry(), SubAgentMemory(), base_system_prompt="x")
+    policy = RetryPolicy(max_attempts=3, backoff_base_s=0.0)
+    client = ResilientClient(inner=_Flaky(), policy=policy, recorder=HealthRecorder("p", policy))
+    loop = ExecutionLoop(client, ToolRegistry(), SubAgentMemory(), base_system_prompt="x")
     loop.add_user_message("hi")
     assert loop.run(max_iterations=2) == "done"
     assert calls["n"] == 2  # retried exactly once

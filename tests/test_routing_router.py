@@ -389,6 +389,47 @@ class TestHealthFeedback:
         assert provider.health_updates[-1].consecutive_failures == 1
 
 
+class TestResilienceTimeoutForwarding:
+    """T-24/BB-116: closes the residual half of BB-95.
+
+    Only ``ModelRouter._build_client``'s ``create_llm_client`` FALLBACK (taken
+    when no ``ProviderRegistry`` is wired, or a provider adapter raises)
+    forwarded a non-default ``[routing.resilience].timeout_s``. The PRIMARY
+    path -- ``provider.build_llm_client(desc.id)``, taken in normal operation
+    whenever a ``ProviderRegistry`` IS wired -- silently dropped it and every
+    routed client got the 60s *default* transport timeout regardless of what
+    the operator configured.
+    """
+
+    def test_primary_provider_path_forwards_configured_timeout(self) -> None:
+        received_opts: dict[str, object] = {}
+
+        class _RecordingProvider(_FakeProvider):
+            def build_llm_client(self, model_id: str, **opts):  # type: ignore[override]
+                received_opts.update(opts)
+                return super().build_llm_client(model_id, **opts)
+
+        desc = _make_descriptor("model-a", "p1", {Capability.REASONING})
+        registry = ModelRegistry()
+        registry.register(desc)
+        provider = _RecordingProvider("p1", [desc])
+        provider_reg = _FakeProviderRegistry([provider])
+        policy = RoutingPolicy(default_model="model-a")
+        router = ModelRouter(
+            registry=registry,
+            policy=policy,
+            providers=provider_reg,
+            resilience=RetryPolicy(max_attempts=1, timeout_s=17.5),  # non-default
+        )
+
+        router.select(Capability.REASONING)
+
+        assert received_opts.get("timeout_s") == 17.5, (
+            "expected the configured RetryPolicy.timeout_s=17.5 to reach the "
+            f"primary provider-adapter path, got opts={received_opts}"
+        )
+
+
 class TestSyntheticDescriptorProviderInference:
     @pytest.mark.parametrize(
         ("model_id", "expected_provider"),

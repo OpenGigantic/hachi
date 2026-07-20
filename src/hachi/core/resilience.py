@@ -10,6 +10,31 @@ Closes debt D6 (600s Anthropic default; no retry/breaker). Design doc 13 §5.
   - latency and error-rate recording into ``ProviderHealth``
 
 ``resilient_call`` is a generic variant for ``SpeechProvider`` / ``SearchProvider``.
+
+T-24/BB-116 -- retry ownership and the SDK's own ``max_retries``:
+    ``ResilientClient`` / ``resilient_call`` are now the SOLE retry owner for
+    any client that opts in by being wrapped here (``core/loop.py``'s own
+    streaming retry loop, and the two divergent "is this transient"
+    predicates it used to disagree with this module about, are gone).
+
+    The ``anthropic`` SDK (0.105.2) still applies its own
+    ``DEFAULT_MAX_RETRIES = 2`` underneath every call this module makes --
+    deliberately left AT ITS DEFAULT rather than forced to ``max_retries=0``
+    on ``anthropic.Anthropic(...)``. That change lives in ``core/llm.py``
+    (out of this task's file scope) and, more importantly, would strip ALL
+    retry protection from the several call sites that construct
+    ``AnthropicClient``/``OpenAICompatibleClient`` directly and are never
+    wrapped in a ``ResilientClient`` at all (e.g. ``core/sub_agent.py``'s
+    delegation path, ``tools/memory_tools.py``'s background job) -- for
+    those, the SDK's own retry is the ONLY resilience they have. The
+    trade-off, stated plainly: the effective worst-case call budget for a
+    ``ResilientClient``-wrapped chain is up to ``max_attempts x chain_length``
+    resilience-level calls, each of which may itself be up to
+    ``1 + DEFAULT_MAX_RETRIES`` (3) HTTP requests at the SDK layer -- e.g. 9
+    resilience-level calls -> up to 27 HTTP requests, not 9. Still a large
+    reduction from the four-layer-stacked worst case this task closed (up to
+    63 HTTP requests for the same 9-call scenario), and it costs nothing at
+    call sites this module can't see. See BB-116 in docs/bug-bank.md.
 """
 
 from __future__ import annotations
@@ -31,7 +56,13 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 # HTTP status codes / exception patterns that indicate a transient error worth retrying.
-_TRANSIENT_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+#
+# T-24/BB-116: this is the UNION of what used to be two independently-maintained
+# sets that disagreed -- this module's own {429,500,502,503,504} and
+# core/loop.py's (now-deleted) _RETRYABLE_STATUS {408,409,429,500,502,503,504,529}.
+# Dropping 408/409/529 would be a behaviour regression: 529 is "overloaded", the
+# status the default provider (Anthropic) actually returns under load.
+_TRANSIENT_STATUS_CODES: frozenset[int] = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
 
 # Exception type names that are transient (matched by class name substring).
 _TRANSIENT_EXCEPTION_NAMES: tuple[str, ...] = (
@@ -49,18 +80,66 @@ _TRANSIENT_EXCEPTION_NAMES: tuple[str, ...] = (
     "ServiceUnavailable",
 )
 
+# T-24/BB-116: message-substring fallback for exceptions that carry neither a
+# recognised class name nor an HTTP status attribute. Moved here from the
+# deleted core/loop.py._RETRYABLE_HINTS -- it was that module's own last-resort
+# check and had no equivalent in this module before the merge.
+_RETRYABLE_HINTS: tuple[str, ...] = (
+    "overloaded",
+    "rate limit",
+    "timeout",
+    "timed out",
+    "temporarily",
+    "connection",
+)
+
 
 def _is_transient(exc: BaseException) -> bool:
-    """Return ``True`` when *exc* is likely a transient error worth retrying."""
+    """Return ``True`` when *exc* is likely a transient error worth retrying.
+
+    T-24/BB-116: this is now the SOLE definition of "transient" in the
+    codebase -- the union of two strategies that used to live in separate
+    modules and disagree (``core/loop.py``'s now-deleted
+    ``_is_retryable_llm_error`` retried 408/409/529; this function's
+    predecessor did not). Order of checks:
+
+    1. Exception class-name substring match (this function's original
+       strategy) -- e.g. a provider SDK's ``RateLimitError``.
+    2. HTTP status code, probed via ``status_code``, then ``status``, then
+       ``response.status_code`` (the union of both modules' attribute-probing
+       strategies) -- against the union status set above. A *recognised*
+       (present, int) status is conclusive either way; it does not fall
+       through to the message-hint check below.
+    3. Message-substring hints (``_RETRYABLE_HINTS``) -- the last resort for
+       an exception that carries neither of the above (e.g. a bare
+       ``ConnectionError`` with no status attribute at all).
+    """
     cls_name = type(exc).__name__
     for name in _TRANSIENT_EXCEPTION_NAMES:
         if name in cls_name:
             return True
-    # httpx / anthropic SDK may embed the status code as an attribute.
-    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
-    if isinstance(status, int) and status in _TRANSIENT_STATUS_CODES:
-        return True
-    return False
+
+    # httpx / anthropic SDK may embed the status code under different names.
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(exc, "status", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        return status in _TRANSIENT_STATUS_CODES
+
+    message = str(exc).lower()
+    return any(hint in message for hint in _RETRYABLE_HINTS)
+
+
+# Public name -- the one predicate every caller (core/loop.py,
+# ResilientClient's own streaming retry below) should use going forward.
+# `_is_transient` remains the definition site (its existing internal call
+# sites in this module, and tests/test_search_platform.py, patch it by this
+# name) so both names always resolve to the identical function object -- never
+# two implementations that can drift apart.
+is_transient = _is_transient
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +429,16 @@ class ResilientClient(BaseLLMClient):  # type: ignore[misc]
         # ceiling silently degrades to a post-hoc check whenever [routing] is enabled
         # (BB-118) -- enabling a cost feature must never weaken a safety guardrail.
         self.max_tokens: int = getattr(inner, "max_tokens", 0) or 0
+        # T-24/BB-116: optional sink invoked with (attempt, exc) whenever this
+        # client retries -- a resilient_call() attempt inside _call_with_chain
+        # (generate(), or the fallback-chain leg of generate_stream()) or the
+        # primary streaming pre-output retry below. Lets a caller (typically
+        # ExecutionLoop) re-surface the same user-visible LLM_RETRY runtime
+        # event that used to come from the loop's own (now-deleted) retry loop,
+        # without this module depending on ExecutionLoop.on_event. None (the
+        # default) is a silent no-op -- e.g. a bare ResilientClient built
+        # outside a loop, as in this module's own tests.
+        self.on_retry: Callable[[int, BaseException], None] | None = None
 
     def _call_with_chain(
         self,
@@ -382,7 +471,7 @@ class ResilientClient(BaseLLMClient):  # type: ignore[misc]
 
             fn = fn_builder(client)
             try:
-                result = resilient_call(fn, self._policy, recorder)
+                result = resilient_call(fn, self._policy, recorder, on_failover=self.on_retry)
                 # T-25/BB-117: stamp the client that actually produced this
                 # response so cost attribution follows the server, not the
                 # primary's fixed `self.model` -- this is what makes a failover
@@ -436,54 +525,109 @@ class ResilientClient(BaseLLMClient):  # type: ignore[misc]
         tools: list[dict[str, Any]] | None = None,
         dynamic_system: str | None = None,
     ) -> Generator[str, None, LLMResponse]:
-        """Stream text deltas via the primary client (fallback uses generate)."""
-        # Streaming complicates the retry/fallback story; we use the primary directly
-        # for streaming and fall back to generate() on failure.
-        t0 = time.monotonic()
-        try:
-            # Capture and RETURN the inner generator's value (the final LLMResponse).
-            # `yield from` evaluates to the delegated generator's return value; dropping
-            # it makes this generator return None, so callers that read the streamed
-            # response (loop.run → response.usage) crash on a successful stream.
-            response = yield from self._inner.generate_stream(
-                messages=messages,
-                system_prompt=system_prompt,
-                tools=tools,
-                dynamic_system=dynamic_system,
-            )
-            latency_ms = (time.monotonic() - t0) * 1000
-            self._recorder.record_success(latency_ms)
-            # T-25/BB-117: this success path does NOT go through _call_with_chain
-            # (see the module docstring above) -- it is the path almost every
-            # real turn takes, so a stamp added only in _call_with_chain would
-            # leave it unstamped. Backfill from the primary when the client
-            # itself didn't report one.
-            if response is not None and response.served_model is None:
-                response.served_model = getattr(self._inner, "model", None)
-            return response
-        except Exception as exc:
-            self._recorder.record_failure()
-            if self._fallbacks:
-                logger.warning(
-                    "ResilientClient.generate_stream: primary failed (%s); "
-                    "falling back to generate() via chain",
-                    type(exc).__name__,
+        """Stream text deltas via the primary client, retrying pre-output failures.
+
+        T-24/BB-116: resilience is the sole retry owner (core/loop.py's own
+        streaming retry loop is gone). A PRE-output failure on the primary --
+        no chunk has reached the caller yet, so nothing has been double-printed
+        or double-billed -- is retried against THIS client's own policy
+        (``self._policy.max_attempts``, the same exponential backoff
+        ``resilient_call`` uses). This is deliberately NOT routed through
+        ``resilient_call`` itself: that function's ``Callable[[], T]`` contract
+        doesn't fit a generator that must forward chunks to the caller AS THEY
+        ARRIVE, not only after the whole call completes.
+
+        Once ANY chunk has been yielded (mid-stream failure), retries are
+        exhausted, or the failure isn't transient, this degrades to
+        ``generate()`` over the fallback chain with the primary excluded --
+        H7: a stream that already emitted output must NEVER be re-invoked
+        (double-print / double-bill risk). See ``_call_with_chain``'s
+        docstring for the same rule stated there.
+        """
+        last_exc: BaseException | None = None
+
+        for attempt in range(1, self._policy.max_attempts + 1):
+            chunks_yielded = 0
+            t0 = time.monotonic()
+            try:
+                # Capture and RETURN the inner generator's value (the final
+                # LLMResponse). `yield from` evaluates to the delegated
+                # generator's return value; dropping it makes this generator
+                # return None, so callers that read the streamed response
+                # (loop.run -> response.usage) crash on a successful stream.
+                gen = self._inner.generate_stream(
+                    messages=messages,
+                    system_prompt=system_prompt,
+                    tools=tools,
+                    dynamic_system=dynamic_system,
                 )
-                response = self._call_with_chain(
-                    lambda c: (
-                        lambda: c.generate(  # noqa: E731
-                            messages=messages,
-                            system_prompt=system_prompt,
-                            tools=tools,
-                            dynamic_system=dynamic_system,
-                        )
-                    ),
-                    include_primary=False,
-                )
-                if response.content:
-                    yield response.content
+                response: LLMResponse | None = None
+                while True:
+                    try:
+                        chunk = next(gen)
+                    except StopIteration as si:
+                        response = si.value
+                        break
+                    chunks_yielded += 1
+                    yield chunk
+                latency_ms = (time.monotonic() - t0) * 1000
+                self._recorder.record_success(latency_ms)
+                # T-25/BB-117: this success path does NOT go through
+                # _call_with_chain (see the module docstring above) -- it is
+                # the path almost every real turn takes, so a stamp added only
+                # in _call_with_chain would leave it unstamped. Backfill from
+                # the primary when the client itself didn't report one.
+                if response is not None and response.served_model is None:
+                    response.served_model = getattr(self._inner, "model", None)
                 return response
-            raise
+            except Exception as exc:
+                last_exc = exc
+                self._recorder.record_failure()
+                if (
+                    chunks_yielded > 0
+                    or attempt >= self._policy.max_attempts
+                    or not is_transient(exc)
+                ):
+                    break
+                wait = self._policy.backoff_base_s * (2 ** (attempt - 1))
+                logger.warning(
+                    "ResilientClient.generate_stream: primary pre-output failure "
+                    "(attempt %d/%d): %s -- retrying in %.2fs",
+                    attempt,
+                    self._policy.max_attempts,
+                    type(exc).__name__,
+                    wait,
+                )
+                if self.on_retry is not None:
+                    self.on_retry(attempt, exc)
+                time.sleep(wait)
+
+        # Exhausted retries / non-transient / mid-stream failure: degrade to
+        # the fallback chain via generate(), skipping the primary (H7).
+        if self._fallbacks:
+            logger.warning(
+                "ResilientClient.generate_stream: primary failed (%s); "
+                "falling back to generate() via chain",
+                type(last_exc).__name__ if last_exc is not None else "unknown",
+            )
+            response = self._call_with_chain(
+                lambda c: (
+                    lambda: c.generate(  # noqa: E731
+                        messages=messages,
+                        system_prompt=system_prompt,
+                        tools=tools,
+                        dynamic_system=dynamic_system,
+                    )
+                ),
+                include_primary=False,
+            )
+            if response.content:
+                yield response.content
+            return response
+
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("ResilientClient.generate_stream: no attempts made")  # pragma: no cover
 
     def list_models(self) -> list[str]:
         """Delegate to the inner client (no retry needed for model listing)."""

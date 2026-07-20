@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from hachi.core.llm import BaseLLMClient, LLMResponse, Message, TokenUsage
+from hachi.core.loop import ExecutionLoop, ToolRegistry
 from hachi.core.resilience import (
     HealthRecorder,
     ResilientClient,
@@ -23,6 +24,7 @@ from hachi.core.resilience import (
     _is_transient,
     resilient_call,
 )
+from hachi.core.sub_agent import SubAgentMemory
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -370,3 +372,114 @@ class TestResilientClient:
         policy = RetryPolicy(max_attempts=1, backoff_base_s=0.0)
         client = ResilientClient(inner=inner, policy=policy, recorder=_make_recorder())
         assert client.model == "claude-haiku-4-5"
+
+
+# ---------------------------------------------------------------------------
+# T-24/BB-116 — collapse the four stacked retry layers into one
+# ---------------------------------------------------------------------------
+
+
+class _AlwaysFailsCounting(BaseLLMClient):
+    """A client that fails every call and counts how many it received.
+
+    Uses HTTP 503, NOT the T-24 spec §7 sketch's 529. 503 is transient under
+    BOTH taxonomies even BEFORE the fix (loop._RETRYABLE_STATUS *and*
+    resilience's pre-fix _TRANSIENT_STATUS_CODES both include 503), so every
+    layer's retry budget is actually exercised pre-fix and the amplification
+    is reproducible. 529 is only loop-transient pre-fix (resilience's pre-fix
+    _TRANSIENT_STATUS_CODES = {429,500,502,503,504} excludes it) -- using it
+    here would silently cap the PRE-fix call count at 9 (no retry inside any
+    resilient_call attempt), identical to the POST-fix target, so the test
+    could never fail for the right reason (T-24 standing rule 7 / CLAUDE.md
+    Rule 2: a test that passes before the fix is wrong).
+    """
+
+    def __init__(self, model: str = "m") -> None:
+        self.model = model
+        self.max_tokens = 4096
+        self.calls = 0
+
+    def _boom(self) -> None:
+        self.calls += 1
+        exc = RuntimeError("service unavailable")
+        exc.status_code = 503  # type: ignore[attr-defined]
+        raise exc
+
+    def generate(self, *a: Any, **kw: Any) -> LLMResponse:
+        self._boom()
+        return LLMResponse()  # pragma: no cover -- _boom always raises
+
+    def generate_stream(self, *a: Any, **kw: Any) -> Generator[str, None, LLMResponse]:
+        self._boom()
+        yield ""  # pragma: no cover -- never reached
+        return LLMResponse()  # pragma: no cover
+
+
+def test_streaming_failure_does_not_amplify_provider_calls() -> None:
+    """One failing turn must not fan out into a double-digit multiple of provider calls.
+
+    Loop-level retry x resilience-level retry x fallback chain multiply: naive
+    arithmetic gives 3 loop attempts x (1 primary + 3 fb1 + 3 fb2) = 21 provider
+    calls (T-24 spec section 3.5). MEASURED against this test pre-fix: 13, not
+    21 -- the default circuit breaker (breaker_threshold=5) partially
+    self-limits the amplification, because each fallback's HealthRecorder is
+    the SAME object reused across all 3 loop-level retries (not reset between
+    them), so its consecutive-failure count carries over and the breaker trips
+    (and starts short-circuiting calls without invoking `fn()`) partway through
+    the 2nd loop-level attempt. 13 is still far above the post-fix budget, so
+    it still proves real amplification -- just document the observed number,
+    do not repeat the theoretical one (T-24 standing rule 7).
+
+    After collapsing to a single retry owner the budget is max_attempts x
+    chain length = 3 x 3 = 9, and the breaker never trips at that volume.
+    """
+    primary = _AlwaysFailsCounting("primary")
+    fb1 = _AlwaysFailsCounting("fb1")
+    fb2 = _AlwaysFailsCounting("fb2")
+    # backoff_base_s=0.0: assert on CALL COUNT, never on elapsed wall time.
+    policy = RetryPolicy(max_attempts=3, backoff_base_s=0.0)
+    client = ResilientClient(
+        inner=primary,
+        policy=policy,
+        recorder=HealthRecorder("primary", policy),
+        fallbacks=[
+            (fb1, HealthRecorder("fb1", policy)),
+            (fb2, HealthRecorder("fb2", policy)),
+        ],
+    )
+
+    loop = ExecutionLoop(
+        client,
+        ToolRegistry(),
+        SubAgentMemory(),
+        base_system_prompt="x",
+        max_wall_seconds=0.0,
+    )
+    loop.add_user_message("go")
+
+    # Every layer/fallback fails terminally -- the turn must raise, not hang.
+    with pytest.raises(Exception):  # noqa: B017, PT011 -- exact type is provider-specific
+        loop.run(max_iterations=5)
+
+    total = primary.calls + fb1.calls + fb2.calls
+    assert total <= 9, f"expected <= 9 provider calls, got {total}"
+
+
+@pytest.mark.parametrize("status", [408, 409, 429, 500, 502, 503, 504, 529])
+def test_one_transient_taxonomy_for_loop_and_resilience(status: int) -> None:
+    """There must be exactly ONE definition of 'transient' in the codebase.
+
+    Before the fix, loop._RETRYABLE_STATUS retried 408/409/529 and
+    resilience._TRANSIENT_STATUS_CODES did not -- so failover behaviour for an
+    Anthropic 529 depended on which layer observed the error first.
+    """
+    import hachi.core.loop as loop_mod
+    from hachi.core.resilience import is_transient
+
+    exc = RuntimeError("boom")
+    exc.status_code = status  # type: ignore[attr-defined]
+    assert is_transient(exc) is True
+
+    assert not hasattr(loop_mod, "_is_retryable_llm_error"), (
+        "the loop still owns a second retry predicate"
+    )

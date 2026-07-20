@@ -285,7 +285,17 @@ class ModelRouter:
             provider = self._providers.get_by_name(desc.provider)
             if provider is not None:
                 try:
-                    return provider.build_llm_client(desc.id)
+                    # T-24/BB-116: closes the residual half of BB-95 -- until now
+                    # only the create_llm_client() fallback below threaded a
+                    # non-default `[routing.resilience].timeout_s` through; this,
+                    # the PRIMARY path (taken whenever a ProviderRegistry is
+                    # wired, i.e. in normal operation), silently dropped it and
+                    # every routed client got the 60s *default* instead of the
+                    # operator's configured value. Pass the float, never
+                    # `self._resilience` itself (RetryPolicy) -- provider
+                    # adapters must not import core/resilience.py (circular
+                    # import: resilience.py already imports core/llm.py).
+                    return provider.build_llm_client(desc.id, timeout_s=self._resilience.timeout_s)
                 except Exception:
                     logger.debug(
                         "ModelRouter._build_client: provider %r failed for %r; "
