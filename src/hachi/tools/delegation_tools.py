@@ -165,13 +165,34 @@ BLOCKED_TOOL_NAMES = frozenset(
         "core_search_sessions",
         # Workflow control (registered name is core_suspend_workflow)
         "core_suspend_workflow",
-        # Skill authoring + scheduling are privileged main-agent actions
+        # Skill authoring + scheduling are privileged main-agent actions.
+        # NOTE: these are TOOL names (the `"name"` field of the registered schema),
+        # not the Python constant or handler-function names. schedule_tools.py
+        # defines SCHEDULE_TASK_SCHEMA whose tool name is "create_schedule".
         "save_skill",
-        "schedule_task",
+        "create_schedule",  # was "schedule_task" — never a registered tool
         "list_schedules",
-        "cancel_schedule",
+        "delete_schedule",  # the real mutator; was missing entirely
+        "cancel_schedule",  # alias for delete_schedule
     }
 )
+
+
+_RESERVED_BLOCKED_NAMES: frozenset[str] = frozenset(
+    {
+        # Blocked pre-emptively: the handlers exist in tools/memory_tools.py
+        # (save_agent_profile / delete_agent_profile) but are not registered today.
+        # Keeping them blocked means registering them later cannot silently widen
+        # the sub-agent surface. Verified not-registered on 2026-07-19.
+        "core_save_agent_profile",
+        "core_delete_agent_profile",
+    }
+)
+"""Names in BLOCKED_TOOL_NAMES that intentionally do not (yet) map to a registered tool.
+
+Anything blocked but NOT registered and NOT listed here is drift — see
+tests/test_delegation_blocklist_integrity.py.
+"""
 
 
 # ==========================================
