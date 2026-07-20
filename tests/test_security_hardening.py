@@ -51,7 +51,19 @@ def test_sub_agent_blocklist_covers_privileged_tools() -> None:
     # entry silently failed to match).
     assert "core_suspend_workflow" in BLOCKED_TOOL_NAMES
     assert "suspend_workflow" not in BLOCKED_TOOL_NAMES
-    for name in ("save_skill", "schedule_task", "list_schedules", "cancel_schedule"):
+    # BB-89 contract correction: "schedule_task" was never a registered tool name
+    # (it is the handler function's identifier — see schedule_tools.py). The real
+    # registered names are "create_schedule" (the mutator that was previously
+    # unblocked) and "delete_schedule" (the mutator's registered name; "cancel_schedule"
+    # is its alias). Asserting the old "schedule_task" string here is what pinned the
+    # sub-agent blocklist's fail-open hole as the contract — see docs/bug-bank.md BB-89.
+    for name in (
+        "save_skill",
+        "create_schedule",
+        "list_schedules",
+        "delete_schedule",
+        "cancel_schedule",
+    ):
         assert name in BLOCKED_TOOL_NAMES
     # Delegation itself must still be blocked (no recursive spawning).
     assert "delegate_task" in BLOCKED_TOOL_NAMES
