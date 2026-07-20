@@ -254,7 +254,7 @@ class AnthropicClient(BaseLLMClient):
         api_key: str | None = None,
         model: str = "claude-haiku-4-5",
         max_tokens: int = 4096,
-        timeout: float | None = None,
+        timeout: float = 60.0,
     ):
         """
         Initialize the Anthropic client.
@@ -264,7 +264,11 @@ class AnthropicClient(BaseLLMClient):
                 environment variable.
             model: The target Claude model identifier.
             max_tokens: The maximum number of tokens to generate.
-            timeout: Per-request timeout in seconds. None uses the SDK default (600s).
+            timeout: Per-request timeout in seconds. Defaults to 60s (BB-95) so a bare
+                ``AnthropicClient(...)`` construction -- bypassing ``create_llm_client`` --
+                can never be unbounded. Do NOT pass ``None`` explicitly: the SDK treats an
+                explicit ``None`` as a *given* value (not "omitted"), so it is forwarded to
+                httpx verbatim as NO timeout -- calls would wait forever.
         """
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not self.api_key:
@@ -857,9 +861,22 @@ _OPENAI_COMPAT_PRESETS: dict[str, str] = {
 
 
 def create_llm_client(
-    provider_config: dict[str, Any], secret_store: SecretStore | None = None, max_tokens: int = 4096
+    provider_config: dict[str, Any],
+    secret_store: SecretStore | None = None,
+    max_tokens: int = 4096,
+    *,
+    timeout_s: float = 60.0,
 ) -> BaseLLMClient:
-    """Build an LLM client from provider config plus secret references."""
+    """Build an LLM client from provider config plus secret references.
+
+    Args:
+        provider_config: Provider `kind`/`model`/`base_url`/api-key-reference dict.
+        secret_store: Optional secret store for resolving `api_key_ref`.
+        max_tokens: Default max output tokens for the built client.
+        timeout_s: Per-call transport timeout in seconds, applied to the client's
+            underlying HTTP/SDK client (BB-95). Keyword-only so inserting it can
+            never shift `max_tokens` at an existing positional call site.
+    """
     kind = str(provider_config.get("kind", "anthropic")).lower()
     model = str(provider_config.get("model", "claude-haiku-4-5"))
     api_key_ref = provider_config.get("api_key_ref")
@@ -879,7 +896,9 @@ def create_llm_client(
         # Always prefer ANTHROPIC_API_KEY for this kind so a misconfigured
         # api_key_ref (e.g. the legacy default "OPENAI_API_KEY") doesn't shadow it.
         kind_key = _resolve_api_key("ANTHROPIC_API_KEY") or api_key
-        return AnthropicClient(api_key=kind_key, model=model, max_tokens=max_tokens)
+        return AnthropicClient(
+            api_key=kind_key, model=model, max_tokens=max_tokens, timeout=timeout_s
+        )
 
     if kind == "ollama":
         resolved_base = str(
@@ -890,6 +909,7 @@ def create_llm_client(
             model=model,
             api_key=api_key,
             max_tokens=max_tokens,
+            timeout=timeout_s,
             stream_usage=stream_usage,
         )
 
@@ -907,6 +927,7 @@ def create_llm_client(
             model=model,
             api_key=api_key,
             max_tokens=max_tokens,
+            timeout=timeout_s,
             stream_usage=stream_usage,
         )
 
@@ -946,6 +967,7 @@ def create_llm_client(
             model=model,
             api_key=api_key,
             max_tokens=max_tokens,
+            timeout=timeout_s,
             stream_usage=stream_usage,
         )
 
@@ -962,6 +984,7 @@ def create_llm_client(
             model=model,
             api_key=api_key,
             max_tokens=max_tokens,
+            timeout=timeout_s,
             stream_usage=stream_usage,
         )
 

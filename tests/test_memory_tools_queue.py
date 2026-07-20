@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import httpx
+
+import hachi.core.llm as llm_module
 from hachi.core.loop import ToolRegistry
 from hachi.core.memory import MemoryManager
 from hachi.gateway.orchestrator import AgentSession
@@ -46,6 +49,15 @@ class _PrefetchVault(_FakeVault):
         return [{"content": f"prefetch:{query}", "raw_content": f"prefetch:{query}"}]
 
 
+class _ConflictVault(_FakeVault):
+    """semantic_search returns one non-empty hit (with an `id`, unlike
+    _PrefetchVault) so _smart_upsert takes its AnthropicClient consolidation
+    branch instead of the empty-results fast path."""
+
+    def semantic_search(self, _query: str, top_k: int = 3):
+        return [{"id": "existing-1", "content": "Boss is Steve", "raw_content": "Boss is Steve"}]
+
+
 class _SnapshotVault(_FakeVault):
     def __init__(self) -> None:
         self.user_snapshot = ""
@@ -84,6 +96,54 @@ def test_core_save_memory_enqueues_job_when_queue_available() -> None:
     assert len(queue.jobs) == 1
     assert queue.jobs[0].name == "memory_smart_upsert"
     assert queue.jobs[0].job_type == "persist"
+
+
+def test_smart_upsert_conflict_resolution_anthropic_client_has_bounded_timeout(
+    monkeypatch,
+) -> None:
+    """BB-95 follow-up: the memory-consolidation `AnthropicClient()` built inside
+    _smart_upsert (tools/memory_tools.py, reached when semantic_search finds a
+    conflicting existing fact) must carry an explicit, bounded timeout. It used
+    to construct with no timeout argument at all -- inheriting AnthropicClient's
+    old unbounded `None` default -- so a hung connection there could park the
+    durable job-queue worker thread forever.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    captured: list[llm_module.AnthropicClient] = []
+
+    class _SpyAnthropicClient(llm_module.AnthropicClient):
+        """Real AnthropicClient (real __init__, real SDK object) with generate()
+        stubbed so the test never makes a network call."""
+
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            captured.append(self)
+
+        def generate(self, *args, **kwargs) -> llm_module.LLMResponse:
+            return llm_module.LLMResponse(
+                content='{"delete_ids": [], "save_contents": ["Boss is Mike"]}'
+            )
+
+    monkeypatch.setattr(llm_module, "AnthropicClient", _SpyAnthropicClient)
+
+    registry = ToolRegistry()
+    queue = _FakeQueue()
+    register_memory_tools(registry, _ConflictVault(), job_queue=queue)
+
+    tool = registry._tools["core_save_memory"]
+    tool(facts=[{"content": "Mike is my boss now."}])
+    assert len(queue.jobs) == 1
+
+    # Execute the enqueued closure synchronously (mirrors the durable-queue worker).
+    job = queue.jobs[0]
+    job.func(*job.args)
+
+    assert len(captured) == 1, "memory_tools.py did not construct an AnthropicClient"
+    resolved = captured[0].client.timeout
+    assert resolved is not None, "memory-consolidation AnthropicClient has NO timeout"
+    seconds = resolved.read if isinstance(resolved, httpx.Timeout) else float(resolved)
+    assert seconds == 30.0
 
 
 def test_sync_turn_rapid_enqueues_are_processed_once_each() -> None:
