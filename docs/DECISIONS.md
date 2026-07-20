@@ -2910,3 +2910,45 @@ passthrough, (d) delete) while keeping the promise already made in three places.
 
 **Locked by.** The task's own header (updated); `docs/bug-bank.md` BB-109, BB-110;
 `tests/test_gateway_openai_channels.py` (25 tests, all green).
+
+## T-12 — `ProviderKind` schema: add both `gemini` and `chatgpt-web` (2026-07-20) **[ADR]**
+
+**Decision.** Option **(a)** of the three in
+`docs/audit/2026-07-19/tasks/T-12-provider-kinds-schema.md` §5 — add **both** `gemini` and
+`chatgpt-web` to the `ProviderKind` Literal in `core/settings.py`, keeping the
+`HACHI_UNOFFICIAL=1` runtime gate for `chatgpt-web` exactly as it stood at client
+construction (`core/llm.py`). Decided in the task pack itself (recorded as the chosen option
+before implementation, per the pack's instruction not to re-open it); recorded here per the
+task's own §6 step 1.
+
+**Why.** `create_llm_client` already implements both kinds; `ProviderKind` listed neither, so
+`ResolvedConfig.model_validate` rejected the documented `settings.toml` value with a pydantic
+`literal_error` and `hachi doctor` separately reported `unknown provider kind`
+(`docs/guides/configuration.md:385` promises both). Rejected alternatives: **(b)** add only
+`gemini` and delete `chatgpt-web` from the docs — honest, but permanently orphans a working,
+tested factory branch with no config route in, trading one dishonesty (schema says
+"supported", crashes) for another (documented nowhere, unreachable). **(c)** add both but make
+`config_validate.validate_config` additionally require `HACHI_UNOFFICIAL` — more precise about
+the risk, but reads the flag in two places (schema-adjacent validation and client
+construction) that must be kept in sync, for a benefit the runtime gate already delivers.
+**The runtime gate at `llm.py`'s `chatgpt-web` branch already raises a long, explicit ToS
+warning at construction** — a user who sets `kind = "chatgpt-web"` without
+`HACHI_UNOFFICIAL=1` gets that actionable error instead of an unexplained
+`literal_error`, so the schema does not need to duplicate the enforcement. A schema's job is
+to accept configurations the program can act on; refusing to *parse* a value the program
+already implements is the same "two sources of truth" root cause as the rest of CF-1.
+
+**What this decision leaves standing (deliberately).** The `chatgpt-web` factory branch is
+unchanged and still gated; adding it to the Literal does not weaken
+`HACHI_UNOFFICIAL` enforcement (pinned by
+`test_chatgpt_web_schema_acceptance_does_not_weaken_tos_gate`). Moving `chatgpt-web` to an
+opt-in packaging extra remains tracked separately in `docs/strategy/08-roadmap.md:41` /
+`docs/strategy/01-architecture-review.md:260` — explicitly out of scope here. The ordering
+dependency where the explicit `gemini` block in `create_llm_client` must stay *before* the
+generic `_OPENAI_COMPAT_PRESETS` fall-through (§3.6 of the task) is commented in place at
+`core/llm.py`, not restructured.
+
+**Locked by.** `docs/bug-bank.md` BB-121; `tests/test_provider_kinds.py` (12 tests, all
+green), incl. the AST-derived `test_provider_kind_literal_covers_every_implemented_kind`,
+which fails whenever `create_llm_client` grows a `kind == "..."` branch with no matching
+`ProviderKind` member.
