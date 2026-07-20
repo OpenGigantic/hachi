@@ -30,6 +30,7 @@ Performance & concurrency improvements (BE-4):
 import concurrent.futures
 import contextlib
 import logging
+import queue
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -60,6 +61,14 @@ _RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}
 _RETRYABLE_HINTS = ("overloaded", "rate limit", "timeout", "timed out", "temporarily", "connection")
 _MAX_LLM_RETRIES = 3
 _LLM_RETRY_BASE_DELAY = 1.0
+
+# T-28/BB-102 — max time the loop thread waits on the stream-drain queue before
+# it wakes up on its own to re-check cancel/deadline. A blocking `next(gen)`
+# call cannot be interrupted, so responsiveness to cancel()/the wall-clock
+# deadline comes entirely from this poll interval, not from the next chunk
+# arriving. Small enough to keep both checks responsive; large enough not to
+# spin the CPU while idle.
+_STREAM_POLL_INTERVAL_S: float = 0.1
 
 # R5 — Tool-output compression: cap text results before they enter history.
 # Large tool outputs (e.g. full file contents, long web pages) are truncated to
@@ -668,8 +677,18 @@ class ExecutionLoop:
         same retry/backoff constants used elsewhere in this module). Does NOT
         retry mid-stream failures to avoid emitting duplicate output.
 
-        Checks the cancel flag and wall-clock deadline after each chunk so an
-        in-flight generation can be interrupted promptly by cancel() or a timeout.
+        T-28/BB-102: ``next(gen)`` is a blocking call — a socket that stops
+        delivering bytes can block it forever, and nothing *downstream* of that
+        call can interrupt it. So the generator is drained on a daemon worker
+        thread into a queue; THIS thread (the loop thread) waits on the queue
+        with a bounded timeout and evaluates the cancel flag and wall-clock
+        deadline on every wakeup — whether or not a chunk arrived — so neither
+        check is ever downstream of the blocking read. ``on_delta`` is called
+        only from this thread: the worker only ever enqueues, so a worker that
+        outlives the loop's patience (still blocked on a dead socket after this
+        method has raised and moved on) can never itself touch the callback or
+        mutate ``streamed_parts`` after the turn has abandoned the stream.
+
         Raises ``_StreamCancelled`` or ``_StreamTimedOut`` (both internal-only;
         caught immediately in ``run()``) when interrupted mid-stream so the caller
         can commit partial text and return a clean result without touching LLMResponse.
@@ -680,14 +699,55 @@ class ExecutionLoop:
             streamed_parts: list[str] = []
             try:
                 gen = self._turn_client.generate_stream(**kwargs)
-                while True:
+                drain_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+                def _drain(
+                    _gen: Any = gen, _q: "queue.Queue[tuple[str, Any]]" = drain_queue
+                ) -> None:
+                    # Runs on a daemon thread. Owns nothing but the queue: it
+                    # never calls on_delta and never touches loop/turn state,
+                    # so it is safe to abandon mid-read.
                     try:
-                        chunk = next(gen)
-                    except StopIteration as si:
-                        return si.value
+                        while True:
+                            try:
+                                chunk = next(_gen)
+                            except StopIteration as si:
+                                _q.put(("done", si.value))
+                                return
+                            _q.put(("chunk", chunk))
+                    except BaseException as exc:  # noqa: BLE001 — forward, never swallow
+                        _q.put(("error", exc))
+
+                worker = threading.Thread(target=_drain, daemon=True, name="hachi-stream-drain")
+                worker.start()
+                while True:
+                    if self._wall_deadline is not None:
+                        remaining = self._wall_deadline - time.monotonic()
+                        wait_for = max(0.0, min(remaining, _STREAM_POLL_INTERVAL_S))
+                    else:
+                        wait_for = _STREAM_POLL_INTERVAL_S
+                    try:
+                        kind, payload = drain_queue.get(timeout=wait_for)
+                    except queue.Empty:
+                        # No chunk arrived within this poll window — this is the
+                        # wakeup a blocking next(gen) could never deliver on its
+                        # own. Check cancel/deadline regardless of stream state.
+                        if self._cancel_event.is_set():
+                            raise _StreamCancelled("".join(streamed_parts)) from None
+                        if (
+                            self._wall_deadline is not None
+                            and time.monotonic() >= self._wall_deadline
+                        ):
+                            raise _StreamTimedOut("".join(streamed_parts)) from None
+                        continue
+                    if kind == "done":
+                        return payload  # type: ignore[no-any-return]
+                    if kind == "error":
+                        raise payload
+                    # kind == "chunk"
                     chunks_yielded += 1
-                    streamed_parts.append(chunk)
-                    on_delta(chunk)
+                    streamed_parts.append(payload)
+                    on_delta(payload)
                     # Cooperative mid-stream cancel: check after each chunk so an
                     # in-flight generation stops as soon as the next chunk arrives.
                     if self._cancel_event.is_set():
