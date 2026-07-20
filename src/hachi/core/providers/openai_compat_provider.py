@@ -87,13 +87,20 @@ class OpenAICompatProvider:
 
         Args:
             model_id: The model identifier.
-            **opts: Forwarded to ``create_llm_client``.
+            **opts: Forwarded to ``create_llm_client`` (``max_tokens``,
+                ``timeout_s`` -- T-24/BB-116: without popping+forwarding this,
+                ``ModelRouter``'s primary build path silently dropped a
+                non-default ``[routing.resilience].timeout_s`` and every
+                routed OpenAI-compatible client got the 60s default instead).
         """
         config = dict(self._provider_config)
         config["model"] = model_id
         config.setdefault("kind", self._kind)
         max_tokens: int = int(opts.pop("max_tokens", 4096))
-        return create_llm_client(config, secret_store=self._secret_store, max_tokens=max_tokens)
+        timeout_s: float = float(opts.pop("timeout_s", 60.0))
+        return create_llm_client(
+            config, secret_store=self._secret_store, max_tokens=max_tokens, timeout_s=timeout_s
+        )
 
     def health(self) -> ProviderHealth:
         """Return the current health snapshot."""

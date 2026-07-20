@@ -43,6 +43,7 @@ from hachi.core.obs.trace import (
     copy_otel_context,
     detach_otel_context,
 )
+from hachi.core.resilience import ResilientClient
 from hachi.core.runtime_events import (
     BUDGET_EXCEEDED,
     LLM_RETRY,
@@ -55,12 +56,6 @@ from hachi.core.tracing import span
 from hachi.core.turn_context import TurnContext
 
 logger = logging.getLogger(__name__)
-
-# Transient HTTP statuses worth retrying on (rate limit, overloaded, gateway errors).
-_RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}
-_RETRYABLE_HINTS = ("overloaded", "rate limit", "timeout", "timed out", "temporarily", "connection")
-_MAX_LLM_RETRIES = 3
-_LLM_RETRY_BASE_DELAY = 1.0
 
 # T-28/BB-102 — max time the loop thread waits on the stream-drain queue before
 # it wakes up on its own to re-check cancel/deadline. A blocking `next(gen)`
@@ -93,23 +88,6 @@ def _compress_tool_output(text: str, max_chars: int = _TOOL_OUTPUT_MAX_CHARS) ->
         return text
     total = len(text)
     return text[:max_chars] + f"\n[truncated: {total} chars total, showing first {max_chars}]"
-
-
-def _is_retryable_llm_error(exc: Exception) -> bool:
-    """Best-effort detection of transient LLM/provider errors (provider-agnostic).
-
-    Checks an HTTP status code (Anthropic/OpenAI SDK exceptions expose
-    ``status_code``; httpx exposes ``response.status_code``) and falls back to
-    message heuristics for connection/timeout errors that carry no status.
-    """
-    status = getattr(exc, "status_code", None)
-    if status is None:
-        response = getattr(exc, "response", None)
-        status = getattr(response, "status_code", None)
-    if isinstance(status, int):
-        return status in _RETRYABLE_STATUS
-    message = str(exc).lower()
-    return any(hint in message for hint in _RETRYABLE_HINTS)
 
 
 class AgentException(Exception):
@@ -684,12 +662,35 @@ class ExecutionLoop:
         """Shut down the internal thread pool. Call on session close."""
         self._tool_pool.shutdown(wait=wait)
 
-    def _stream_generate(self, on_delta: Callable[[str], None], **kwargs: Any) -> LLMResponse:
-        """Drive generate_stream(), emit per-chunk callbacks, return the LLMResponse.
+    def _emit_llm_retry(self, attempt: int, exc: BaseException) -> None:
+        """Re-surface a resilience-layer retry as the LLM_RETRY runtime event.
 
-        Retries on pre-stream transient errors (bounded exponential backoff,
-        same retry/backoff constants used elsewhere in this module). Does NOT
-        retry mid-stream failures to avoid emitting duplicate output.
+        T-24/BB-116: retries used to be driven from this module's own
+        ``_stream_generate`` loop, which emitted LLM_RETRY directly. That loop
+        is gone -- retries now live in ``ResilientClient``
+        (core/resilience.py) -- so this is the callback ``_wire_retry_events``
+        wires onto ``ResilientClient.on_retry`` to keep the UI's
+        "retrying..." signal alive across the refactor.
+        """
+        self.on_event(LLM_RETRY, {"attempt": attempt, "error": str(exc)})
+
+    def _wire_retry_events(self, client: BaseLLMClient) -> None:
+        """Attach ``_emit_llm_retry`` to *client* when it is resilience-wrapped.
+
+        A bare (non-resilient) ``_turn_client`` has no retries to report and is
+        left untouched -- wrap it in a ``ResilientClient`` to opt in.
+        """
+        if isinstance(client, ResilientClient):
+            client.on_retry = self._emit_llm_retry
+
+    def _stream_generate(self, on_delta: Callable[[str], None], **kwargs: Any) -> LLMResponse:
+        """Drive generate_stream() once, emit per-chunk callbacks, return the LLMResponse.
+
+        T-24/BB-116: retry is no longer this method's job. ``ResilientClient``
+        (core/resilience.py) is the sole retry owner -- it retries a pre-output
+        primary failure itself and fails over to the fallback chain -- so this
+        is a single pass: drive the generator, propagate any exception. A bare
+        (non-resilient) ``_turn_client`` gets no retry at all, by design.
 
         T-28/BB-102: ``next(gen)`` is a blocking call — a socket that stops
         delivering bytes can block it forever, and nothing *downstream* of that
@@ -707,88 +708,58 @@ class ExecutionLoop:
         caught immediately in ``run()``) when interrupted mid-stream so the caller
         can commit partial text and return a clean result without touching LLMResponse.
         """
-        delay = _LLM_RETRY_BASE_DELAY
-        for attempt in range(1, _MAX_LLM_RETRIES + 1):
-            chunks_yielded = 0
-            streamed_parts: list[str] = []
+        streamed_parts: list[str] = []
+        gen = self._turn_client.generate_stream(**kwargs)
+        drain_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+        def _drain(_gen: Any = gen, _q: "queue.Queue[tuple[str, Any]]" = drain_queue) -> None:
+            # Runs on a daemon thread. Owns nothing but the queue: it
+            # never calls on_delta and never touches loop/turn state,
+            # so it is safe to abandon mid-read.
             try:
-                gen = self._turn_client.generate_stream(**kwargs)
-                drain_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
-
-                def _drain(
-                    _gen: Any = gen, _q: "queue.Queue[tuple[str, Any]]" = drain_queue
-                ) -> None:
-                    # Runs on a daemon thread. Owns nothing but the queue: it
-                    # never calls on_delta and never touches loop/turn state,
-                    # so it is safe to abandon mid-read.
-                    try:
-                        while True:
-                            try:
-                                chunk = next(_gen)
-                            except StopIteration as si:
-                                _q.put(("done", si.value))
-                                return
-                            _q.put(("chunk", chunk))
-                    except BaseException as exc:  # noqa: BLE001 — forward, never swallow
-                        _q.put(("error", exc))
-
-                worker = threading.Thread(target=_drain, daemon=True, name="hachi-stream-drain")
-                worker.start()
                 while True:
-                    if self._wall_deadline is not None:
-                        remaining = self._wall_deadline - time.monotonic()
-                        wait_for = max(0.0, min(remaining, _STREAM_POLL_INTERVAL_S))
-                    else:
-                        wait_for = _STREAM_POLL_INTERVAL_S
                     try:
-                        kind, payload = drain_queue.get(timeout=wait_for)
-                    except queue.Empty:
-                        # No chunk arrived within this poll window — this is the
-                        # wakeup a blocking next(gen) could never deliver on its
-                        # own. Check cancel/deadline regardless of stream state.
-                        if self._cancel_event.is_set():
-                            raise _StreamCancelled("".join(streamed_parts)) from None
-                        if (
-                            self._wall_deadline is not None
-                            and time.monotonic() >= self._wall_deadline
-                        ):
-                            raise _StreamTimedOut("".join(streamed_parts)) from None
-                        continue
-                    if kind == "done":
-                        return payload  # type: ignore[no-any-return]
-                    if kind == "error":
-                        raise payload
-                    # kind == "chunk"
-                    chunks_yielded += 1
-                    streamed_parts.append(payload)
-                    on_delta(payload)
-                    # Cooperative mid-stream cancel: check after each chunk so an
-                    # in-flight generation stops as soon as the next chunk arrives.
-                    if self._cancel_event.is_set():
-                        raise _StreamCancelled("".join(streamed_parts))
-                    # Wall-clock deadline check inside the stream loop.
-                    if self._wall_deadline is not None and time.monotonic() >= self._wall_deadline:
-                        raise _StreamTimedOut("".join(streamed_parts))
-            except (_StreamCancelled, _StreamTimedOut):
-                raise  # propagate to run() without retry
-            except Exception as exc:
-                if (
-                    chunks_yielded > 0
-                    or attempt >= _MAX_LLM_RETRIES
-                    or not _is_retryable_llm_error(exc)
-                ):
-                    raise
-                logger.warning(
-                    "LLM stream failed pre-output (attempt %d/%d): %s — retrying in %.1fs",
-                    attempt,
-                    _MAX_LLM_RETRIES,
-                    exc,
-                    delay,
-                )
-                self.on_event(LLM_RETRY, {"attempt": attempt, "error": str(exc)})
-                time.sleep(delay)
-                delay *= 2
-        return LLMResponse()  # unreachable; satisfies type checker
+                        chunk = next(_gen)
+                    except StopIteration as si:
+                        _q.put(("done", si.value))
+                        return
+                    _q.put(("chunk", chunk))
+            except BaseException as exc:  # noqa: BLE001 — forward, never swallow
+                _q.put(("error", exc))
+
+        worker = threading.Thread(target=_drain, daemon=True, name="hachi-stream-drain")
+        worker.start()
+        while True:
+            if self._wall_deadline is not None:
+                remaining = self._wall_deadline - time.monotonic()
+                wait_for = max(0.0, min(remaining, _STREAM_POLL_INTERVAL_S))
+            else:
+                wait_for = _STREAM_POLL_INTERVAL_S
+            try:
+                kind, payload = drain_queue.get(timeout=wait_for)
+            except queue.Empty:
+                # No chunk arrived within this poll window — this is the
+                # wakeup a blocking next(gen) could never deliver on its
+                # own. Check cancel/deadline regardless of stream state.
+                if self._cancel_event.is_set():
+                    raise _StreamCancelled("".join(streamed_parts)) from None
+                if self._wall_deadline is not None and time.monotonic() >= self._wall_deadline:
+                    raise _StreamTimedOut("".join(streamed_parts)) from None
+                continue
+            if kind == "done":
+                return payload  # type: ignore[no-any-return]
+            if kind == "error":
+                raise payload
+            # kind == "chunk"
+            streamed_parts.append(payload)
+            on_delta(payload)
+            # Cooperative mid-stream cancel: check after each chunk so an
+            # in-flight generation stops as soon as the next chunk arrives.
+            if self._cancel_event.is_set():
+                raise _StreamCancelled("".join(streamed_parts))
+            # Wall-clock deadline check inside the stream loop.
+            if self._wall_deadline is not None and time.monotonic() >= self._wall_deadline:
+                raise _StreamTimedOut("".join(streamed_parts))
 
     def _budget_exceeded(self) -> str | None:
         """Return a reason string if a per-session budget cap is hit, else None."""
@@ -947,6 +918,10 @@ class ExecutionLoop:
         self._turn_client = self.llm_client
         if self.router is not None:
             self._resolve_turn_client(user_input_for_turn)
+        # T-24/BB-116: re-home the LLM_RETRY event onto whichever resilience
+        # layer is actually retrying this turn's calls (covers both branches
+        # above -- the router-resolved client and the plain llm_client).
+        self._wire_retry_events(self._turn_client)
 
         # Only "core" tools are sent until the model unlocks groups this turn.
         # BB-32: seed with persistent groups (e.g. "mcp") so MCP tools are
