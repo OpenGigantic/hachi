@@ -6,7 +6,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 ConfigVersion = Literal[1]
 ProviderKind = Literal[
-    "anthropic", "openai-compatible", "openrouter", "groq", "together", "deepseek", "ollama"
+    "anthropic",
+    "openai-compatible",
+    "openrouter",
+    "groq",
+    "together",
+    "deepseek",
+    "ollama",
+    "gemini",
+    # Unofficial, opt-in: create_llm_client() raises unless HACHI_UNOFFICIAL=1 is set.
+    # Listed here so the documented config validates; the ToS gate lives at the
+    # client-construction boundary (core/llm.py), not in the schema (T-12).
+    "chatgpt-web",
 ]
 PermissionTier = Literal["sandbox", "guided", "unrestricted"]
 

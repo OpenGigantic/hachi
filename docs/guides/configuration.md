@@ -384,6 +384,13 @@ so Option 1/2/3 take precedence).  This is the closest Windows equivalent of the
 
 Supported provider kinds: `anthropic`, `openai-compatible`, `openrouter`, `groq`, `together`, `deepseek`, `ollama`, `gemini`, `chatgpt-web`.
 
+> **`chatgpt-web` is unofficial and opt-in.** It uses a reverse-engineered ChatGPT
+> web-session API that may violate OpenAI's Terms of Service and risk account
+> suspension. Setting `kind = "chatgpt-web"` in `settings.toml` is accepted by the
+> config schema, but `create_llm_client` still refuses to build the client unless
+> `HACHI_UNOFFICIAL=1` is set in the environment — see the explicit warning raised at
+> `core/llm.py`. Only use this on accounts you own with full understanding of the risk.
+
 ### Model selection & guardrail (`settings.toml`)
 
 ```toml

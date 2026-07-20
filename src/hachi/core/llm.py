@@ -945,6 +945,12 @@ def create_llm_client(
     if kind == "gemini":
         # Google Gemini — official OpenAI-compatible endpoint (free tier).
         # Falls back to GEMINI_API_KEY then GOOGLE_AI_API_KEY env vars.
+        # ORDERING DEPENDENCY (T-12): "gemini" is also a key in
+        # _OPENAI_COMPAT_PRESETS, and the generic `if kind in _OPENAI_COMPAT_PRESETS`
+        # branch below would build a working-but-degraded client (no API-key
+        # fallback, no gemini-2.0-flash default model). This explicit block wins
+        # ONLY because it is checked first. Do not reorder create_llm_client or
+        # move this block below the generic preset branch.
         if not api_key:
             api_key = _resolve_api_key("GEMINI_API_KEY") or _resolve_api_key("GOOGLE_AI_API_KEY")
         resolved_base = str(base_url or _OPENAI_COMPAT_PRESETS["gemini"])

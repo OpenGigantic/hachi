@@ -27,7 +27,10 @@ imported_from_legacy = false
 # type: str, default: "anthropic"
 # effect: selects the LLM backend.
 # choices: "anthropic" | "openai-compatible" | "openrouter" | "groq"
-#          | "together" | "deepseek" | "ollama"
+#          | "together" | "deepseek" | "ollama" | "gemini" | "chatgpt-web"
+# "chatgpt-web" is an unofficial, reverse-engineered provider that may violate
+# OpenAI's Terms of Service — it additionally requires HACHI_UNOFFICIAL=1 in the
+# environment or create_llm_client() raises. See docs/guides/configuration.md.
 kind = "anthropic"
 
 # type: str, default: "claude-haiku-4-5"
@@ -67,6 +70,11 @@ model = "claude-haiku-4-5"
 # kind = "ollama"
 # base_url = "http://localhost:11434"
 # model = "llama3.1:8b"
+
+# [providers.gemini]
+# kind = "gemini"
+# model = "gemini-2.0-flash"
+# api_key_env = "GEMINI_API_KEY"   # [SENSITIVE] free tier: https://aistudio.google.com/
 
 # ---------------------------------------------------------------------------
 # [agent] — agent identity and per-turn limits
