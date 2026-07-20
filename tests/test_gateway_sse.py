@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane, GatewayEvent
@@ -89,3 +92,94 @@ def test_stream_response_carries_proxy_buffering_headers() -> None:
         assert response.headers.get("cache-control") == "no-cache"
         # Consume the body so the context manager exits cleanly.
         response.read()
+
+
+def test_stream_disconnect_does_not_interrupt_other_viewers() -> None:
+    """T-29: an SSE disconnect is connection-scoped; it must not cancel the session turn.
+
+    ``TestClient.stream()`` cannot exercise this: Starlette's ``TestClient`` (and
+    ``httpx.ASGITransport``, its underlying transport) runs the whole ASGI app call
+    to completion inside a blocking portal call *before* handing a response back to
+    the caller, and its ``receive()`` only ever reports ``http.disconnect`` after
+    the response is already complete. So ``request.is_disconnected()`` can never
+    observe True while the handler's generator is still producing chunks through
+    that harness — a test built on it would pass before AND after the fix, for the
+    wrong reason (proven: it took ~36s and exited via ``max_idle_cycles``, never via
+    the disconnect branch).
+
+    Instead we drive the route coroutine directly with a hand-built ``Request``
+    whose ``receive()`` reports a live connection on the first poll (so the handler
+    reads its first batch of events, standing in for "viewer A read one frame") and
+    a disconnect on every poll after that (standing in for the tab closing) — the
+    same ASGI signal a real server delivers on a genuine socket close.
+    """
+    interrupted: list[str] = []
+
+    def _on_interrupt(session_id: str) -> dict[str, object]:
+        interrupted.append(session_id)
+        return {"interrupted": True}
+
+    cp = GatewayControlPlane(read_events=_read_events, on_interrupt=_on_interrupt)
+    app = create_gateway_app(cp)
+    client = TestClient(app)
+    session_id = client.post(
+        "/sessions",
+        json={
+            "client_id": "viewer-a",
+            "surface": "web",
+            "protocol_version": "1.0",
+            "capabilities": ["events"],
+        },
+    ).json()["session_id"]
+
+    route = next(
+        r for r in app.routes if getattr(r, "path", None) == "/sessions/{session_id}/stream"
+    )
+
+    calls = {"n": 0}
+
+    async def _receive() -> dict[str, object]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        return {"type": "http.disconnect"}
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": f"/sessions/{session_id}/stream",
+        "headers": [],
+        "query_string": b"",
+        "client": ("test", 0),
+        "server": ("test", 80),
+        "scheme": "http",
+        "root_path": "",
+    }
+    request = Request(scope, receive=_receive)
+
+    async def _drive() -> list[str]:
+        # max_idle_cycles is high so the stream does NOT close on its own — the
+        # only way out of the loop is the disconnect branch under test.
+        response = await route.endpoint(
+            session_id=session_id,
+            request=request,
+            after=0,
+            poll_interval=0.0,
+            max_idle_cycles=600,
+        )
+        chunks: list[str] = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk if isinstance(chunk, str) else chunk.decode())
+        return chunks
+
+    chunks = asyncio.run(_drive())
+
+    # Sanity: the harness really did reach the generator and stream real frames
+    # before the simulated disconnect cut it off — not an early error/no-op.
+    assert any(": connected" in c for c in chunks)
+    assert any("tool.call.started" in c for c in chunks)
+
+    # Viewer B is still watching this session: the turn must not have been cancelled.
+    assert interrupted == [], (
+        "SSE disconnect interrupted the session-global turn; it is connection-scoped"
+    )
