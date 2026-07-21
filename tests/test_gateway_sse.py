@@ -160,12 +160,21 @@ def test_stream_disconnect_does_not_interrupt_other_viewers() -> None:
     async def _drive() -> list[str]:
         # max_idle_cycles is high so the stream does NOT close on its own — the
         # only way out of the loop is the disconnect branch under test.
+        #
+        # T-47: calling the raw endpoint function bypasses FastAPI's dependency
+        # injection (the whole reason this harness exists -- see the docstring
+        # above), so `caller_hash` / `cp` -- now explicit Depends-injected
+        # parameters instead of closure captures -- must be supplied by hand,
+        # matching exactly what FastAPI would have resolved for this no-token
+        # app: require_auth(...) -> None, and the same `cp` the test built.
         response = await route.endpoint(
             session_id=session_id,
             request=request,
             after=0,
             poll_interval=0.0,
             max_idle_cycles=600,
+            caller_hash=None,
+            cp=cp,
         )
         chunks: list[str] = []
         async for chunk in response.body_iterator:
