@@ -4001,6 +4001,273 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   (new — proves the value reaches the actual JSON response body through the real ASGI app, for
   both a stale cursor (gap signalled) and an in-bounds cursor (no false gap)).
 
+### BB-130 — Four contract types defined twice; health objects crossed the seam by structural luck
+
+- **Symptom:** No visible failure — which is the point. `SearchResult`, `ExtractResult`, `SearchProvider` and `ProviderHealth` each existed as two unrelated classes (`core/providers/base.py` dataclasses vs `core/providers/search.py` pydantic models for the search three; `core/providers/base.py` vs `core/resilience.py` for `ProviderHealth`), and a `resilience.ProviderHealth` instance was already flowing through four slots annotated `providers.base.ProviderHealth` (`HealthRecorder.snapshot()` → `Provider.update_health` → `Provider.health` → `ProviderRegistry.health()` → `ModelRouter`, wired by `ModelRouter._get_recorder`'s `on_update` sink). It worked only because the field names matched.
+- **Root cause:** `core/providers/base.py` (dataclasses) and `core/providers/search.py` (pydantic) were written for the same three search contracts in different initiatives; `core/resilience.py` grew its own `ProviderHealth` beside the one in `base.py` whose docstring already claimed the recorder produced it. The twins had drifted (`SearchResult.score: float = 0.0` vs `float | None = None`, `extra` present on one and not the other; `ProviderHealth.breaker: str` vs `Literal["closed", "open", "half_open"]`). None of the five files involved is in the blocking mypy gate (`mypy-strict-gate.ini`), so the mismatch was invisible to the only type-aware check that runs on every change.
+- **Fix:** `search.py` made canonical for the three search contracts (`SearchResult`, `ExtractResult`, `SearchProvider`) — it is what the only concrete adapter (`tavily_provider.py`) and the search test suite already used. Deleted the twins from `base.py`; `providers/__init__.py` and `providers/registry.py:get_search` re-point at `search.py`; public `__all__` unchanged. For `ProviderHealth`, the spec's first-choice canonical location (`providers/base.py`) turned out to have a **real** circular import, not a hypothetical one: `providers/base.py` (and `providers/registry.py`, reached via the `providers` package `__init__`) import `hachi.core.routing.capability`, and importing *any* name from the `hachi.core.routing` package eagerly runs `routing/__init__.py` → `routing/router.py` → `core/resilience.py` — confirmed by `uv run pytest` failing collection with `ImportError: cannot import name 'HealthRecorder' from partially initialized module 'hachi.core.resilience'` the moment `resilience.py` imported `ProviderHealth` from `providers.base`. Per the task spec's own documented fallback, `ProviderHealth` now lives in a new dependency-free module, `core/provider_health.py` (stdlib-only: `dataclasses` + `typing`, adopting the `Literal[...]` breaker annotation), which both `resilience.py` and `providers/base.py` import directly; `base.py` re-exports it so `from hachi.core.providers.base import ProviderHealth` is unchanged for every existing consumer (`anthropic_provider.py`, `openai_compat_provider.py`, `registry.py`, three test files). `resilience.py` imports the new module directly rather than through `providers.base`, because merely touching the `providers` package (even just to re-export) re-triggers the same `__init__` cascade and recreates the cycle.
+- **Avoid:** two classes with the same name and the same fields are not "compatible" — they are a fix that will land on one of them. When a docstring says "produced by X and consumed by Y", check that X and Y are talking about the same class. Separately: before making module A import module B to deduplicate a type, verify the reverse edge doesn't already exist *transitively through a package `__init__.py`* — `import X.Y.z` always runs `X/Y/__init__.py` first, so a dependency-free-looking leaf submodule can still import a whole package's eager side effects. A hypothetical cycle check is not a substitute for actually running the import.
+- **Locked by:** `tests/test_twin_contract_types.py` — `test_health_recorder_produces_the_canonical_provider_health` (asserts `resilience.ProviderHealth is providers.base.ProviderHealth` and that `HealthRecorder.snapshot()` returns that exact class, by `is`, not field equality) and `test_contract_types_have_exactly_one_definition` (asserts `providers.SearchResult`/`ExtractResult`/`SearchProvider` are the `search.py` classes by `is`).
+
+### BB-131 — `jobs.db` lived on a second platformdirs root, invisible to every path-based tool
+
+- **Symptom:** `jobs.db` resolved under `%LOCALAPPDATA%\opengigantic\hachi\` while every
+  other Hachi file lived under `%LOCALAPPDATA%\hachi\`. The orphan directory existed on
+  every machine that had ever booted a session and contained exactly one file. Nothing
+  built on `get_hachi_paths()` — `hachi backup`, `hachi restore`, `hachi doctor` — could
+  see the durable job queue, including its dead-letter contents.
+- **Root cause:** `jobs/queue.py::_default_db_path()` called
+  `PlatformDirs("hachi", "opengigantic")` (and created the directory as a side effect)
+  while `core/paths.py::get_hachi_paths()` used
+  `PlatformDirs(appname="hachi", appauthor=False)`. `HachiPaths` had no `jobs_db`
+  property at all, so the file could not even be named through the canonical API. The
+  resolution was **duplicated inline** a third time in
+  `cli/commands/jobs.py::_open_queue()` — a partial fix (only one of the two call
+  sites updated) would have split the queue in two rather than fixing it.
+- **Fix:** Added `HachiPaths.jobs_db` (`state_dir / "jobs.db"`, `core/paths.py`);
+  pointed `_default_db_path()` (`jobs/queue.py`) at it via a new
+  `_migrate_legacy_jobs_db()` that relocates the legacy DB and its `-wal`/`-shm`
+  sidecars once — sidecars moved *before* the main `.db` file so `target.exists()`
+  (the interlock a concurrent boot checks) never reports "done" on a partially-moved
+  state — never overwrites an existing target, and logs at WARNING (not DEBUG) and
+  falls back to a fresh DB at the new path rather than raising if the move fails.
+  Deleted the duplicated resolution in `cli/commands/jobs.py::_open_queue()`; it now
+  calls a bare `SQLiteJobQueue()` so both entry points share one code path.
+- **Avoid:** resolve every user-data path through `get_hachi_paths()` — never
+  construct `PlatformDirs` outside `core/paths.py` (or a documented, isolated
+  migration helper that names the old location only). And when two entry points
+  resolve the same file independently, changing only one of them splits the store:
+  fix both in the same commit and pin it with a test that asserts each side
+  independently equals the *canonical* path, not merely that the two sides equal
+  each other — a mutual-equality check alone can pass "for free" when both sides
+  already agree on the same wrong answer.
+- **Locked by:** `tests/test_jobs_db_path_migration.py` —
+  `test_cli_and_gateway_resolve_the_same_jobs_db`,
+  `test_legacy_jobs_db_is_moved_to_the_canonical_path`,
+  `test_migration_never_overwrites_an_existing_target`,
+  `test_migration_failure_logs_warning_and_does_not_crash_boot`; and
+  `tests/test_p1_09_paths.py::test_jobs_db_uses_platformdirs_state_dir`.
+
+### BB-132 — `shutdown()` silently skipped cleanup for three attributes the constructor never set
+
+- **Symptom:** `AgentSession.shutdown()` stopped the schedule runner, closed the sub-agent LLM
+  client, and closed the browser controller — but read all three via
+  `getattr(self, "_x", None)`. `boot_agent` wrote them onto the finished object instead of
+  passing them to the constructor: the sub-agent-client/browser-controller stash sat right
+  after `AgentSession(...)`, and the schedule-runner/scheduler stash sat ~190 lines later,
+  after `ScheduleRunner.start()`. Any `AgentSession` not built by the real `boot_agent` path —
+  every hand-built session in the test tree, and any future caller — skipped all three
+  cleanups and reported a clean shutdown regardless.
+- **Root cause:** Post-construction attribute stashing, ten writes in total (the source
+  audit's own list named only four; the other six included the three that matter for
+  cleanup). The lifecycle contract lived in inline comments at the assignment sites,
+  thousands of lines from `shutdown()`, and the constructor signature did not express it.
+  Three of the ten (`_sub_agent_client`, `_browser_controller`, `_schedule_runner`) were never
+  declared in `__init__` at all — every read of them was necessarily defensive.
+- **Fix:** Promoted all ten stashes to keyword-only `AgentSession.__init__` parameters, same
+  defaults as the class body previously declared (`max_daily_cost_usd` passed as
+  `max_daily_cost_usd or None` at the `boot_agent` call site to preserve the old
+  `if max_daily_cost_usd:` falsy-collapse). Replaced the four defensive
+  `getattr(self, "_x", None)` reads tied to `shutdown()` and title generation with direct
+  attribute access. `_schedule_runner` could not simply move into the existing construction
+  call: its `fire` callback closes over `session.chat`, and `ScheduleRunner.start()` ran ~190
+  lines *after* the old construction site. Moved the `_fire_schedule` closure +
+  `ScheduleRunner(...)` + the H3 single-thread-start guard ahead of `AgentSession(...)`
+  instead — Python closures are late-binding (the callback resolves `session` when it *runs*,
+  not when it is defined), and `ScheduleRunner`'s first tick never fires sooner than
+  `tick_interval_seconds` (30s default) after `start()`, long after `session` is assigned a
+  few lines later in the same function. `_schedule_runner.start()` still runs before the
+  session is constructed, unchanged in relative order.
+- **Deliberately left:** a fifth `getattr(self, "_schedule_runner", None)` read, in
+  `run_schedule_now()` (pre-existing, added by BB-36), was left untouched.
+  `tests/test_schedule_run_now_gateway.py::test_run_schedule_now_no_schedule_runner_returns_false`
+  builds its session via `AgentSession.__new__`, specifically to assert this method degrades
+  to `False` when `_schedule_runner` was never set at all; converting that read to direct
+  attribute access raises `AttributeError` through that fixture, and the file was outside
+  this fix's scope. Follow-up: align that fixture with the real constructor (mirroring the
+  `test_agent_session_shutdown.py` fix here) and convert the read once it is.
+- **Avoid:** if `shutdown()` (or any lifecycle method) depends on an attribute, that attribute
+  is a constructor argument. `getattr(self, "_own_field", None)` against your own type is a
+  smell — it means construction is incomplete by design. When a background thread's callback
+  closes over the object under construction (a `ScheduleRunner`-shaped problem), prefer
+  starting the thread before construction and relying on Python's late-binding closures over
+  stashing the thread reference on afterwards — but verify the tick/callback interval
+  actually gives the assignment time to land before relying on it; don't assume it.
+- **Locked by:** `tests/test_agent_session_construction.py` —
+  `test_constructor_establishes_every_shutdown_dependency`,
+  `test_shutdown_stops_a_constructor_supplied_schedule_runner`,
+  `test_daily_cap_promotion_preserves_falsy_collapse`,
+  `test_all_ten_promoted_values_reach_their_attributes`,
+  `test_constructor_defaults_match_the_pre_promotion_declared_defaults`.
+  `tests/test_agent_session_shutdown.py::TestAgentSessionShutdown::test_shutdown_shuts_down_tool_pool`
+  was strengthened to build its fixture through the real constructor instead of
+  `AgentSession.__new__`, so it can now catch a dropped constructor argument.
+
+### BB-133 — The `.og` spec omitted every executable tag the runtime acts on
+
+- **Symptom:** `docs/reference/objectgraph-spec.md` contained ZERO occurrences of `::api`,
+  `::tool`, `::config`, `role=env`, `role=integration` or `role=mcp` — and never documented
+  the `role=` node attribute at all — while the parser executed all three block types
+  (`og_engine/parser.py`, `block_type == "config"/"tool"/"api"`) and the gateway scanned
+  every loaded `.og` for all three roles at session boot
+  (`gateway/orchestrator.py`'s three `skill_engine.get_nodes_by_role("mcp"|"env"|"integration")`
+  calls). An installed `.og` could ingest credentials, mount an HTTP-calling tool, and start
+  an MCP subprocess, from a format whose spec said none of that was possible. `::api` was
+  already load-bearing for 10 of the 36 shipped first-party skills, so the spec was not
+  merely incomplete — it described a different format from the one that ships.
+- **Root cause:** the spec tracks the *knowledge* format; the runtime tags accreted in code
+  only, and nothing tied the two together. `scripts/lint_skills.py` (the one blocking-preflight
+  guard that touches every shipped `.og` file) had no concept of "reserved" or "first-party"
+  either, so a community pack declaring `role=mcp` would have linted clean.
+- **Fix:** documented the executable surface in a new `docs/reference/objectgraph-spec.md`
+  §4.7 "Runtime & Integration Tags (Internal)" — all six tokens named, each with a worked
+  example (the real `currency.og` for `::api`; code-derived illustrative examples for the
+  three roles, since none ship), and a security note anchored to the three
+  `get_nodes_by_role` boot scans, cross-linked to T-56/T-58. Recorded the decision (pure
+  Option B for all six, not the task doc's own "split" recommendation) in
+  `docs/DECISIONS.md`. Added a `scripts/lint_skills.py` rule (`is_first_party_skill` +
+  `check_reserved_tags`) that rejects `::config`/`::tool`/`::api` and
+  `role=env`/`role=integration`/`role=mcp` in any `.og` outside `src/hachi/default_skills/`,
+  while allowing them inside it — verified against a real throwaway community-style `.og`
+  declaring `role=mcp`, which the CLI now rejects (exit 1) instead of linting clean. Added a
+  conformance test that derives the parser's block types from the parser source (not a
+  hardcoded copy) and requires each to appear in the spec, so a future
+  `block_type == "..."` branch fails the test automatically until documented.
+- **Avoid:** when a format is the product, its spec is not documentation — it is the
+  contract a third-party reviewer audits against. Any new `block_type ==` branch or
+  `get_nodes_by_role(...)` scan must land in the same PR as its spec section (§4.7) and,
+  if it is meant to stay first-party-only, the same PR as its `scripts/lint_skills.py`
+  reserved-tag entry — the conformance test enforces the spec half; nothing enforces the
+  lint half automatically, so a reviewer must check it by hand.
+- **Locked by:** `tests/test_p5_01_conformance.py` —
+  `test_spec_documents_every_parser_block_type`, `test_spec_documents_every_executable_node_role`;
+  `tests/test_lint_skills_reserved_tags.py` (7 tests, incl. the real CLI entry point
+  rejecting a throwaway community `.og`).
+
+### BB-134 — "Forget" did not forget: deleted facts resurfaced through .og graph recall
+
+- **Symptom:** After `hachi memory forget <id>` (or the agent's `delete_memory` tool),
+  the fact was re-injected into the very next turn's context via the graph-recall
+  block. The CLI concealed it: `hachi memory search` builds a bare `MemoryVault()` with
+  no graph index attached, so it showed only the Chroma view and reported the fact
+  gone. The tool's own docstring and result string told the model the fact had been
+  "removed from all backends".
+- **Root cause:** Facts dual-write to `.og` files and ChromaDB
+  (`core/memory.py::extract_facts`), but `MemoryVault.delete_fact` only removed the
+  Chroma row — `core/memory_writer.py` had no delete/remove path of any kind. The
+  per-turn `build_graph_recall_section` reads `.og` straight off disk via
+  `load_memory_dir`'s `rglob("*.og")`. Two further defects made it worse: (a) the FTS5
+  cleanup was a permanent no-op because `_delete_from_fts5` deleted
+  `WHERE node_id = <chroma sha256>` while `MemoryIndex` stores
+  `"<rel-path>:<node-name>"`, and `refresh()` rebuilds the table from `.og` anyway
+  (so even a coincidental id match would not survive the next write); (b) that
+  cleanup was skipped entirely when `memory.graph=false`, and
+  `delete_user_fact`/`delete_agent_fact` never attempted it at all.
+- **Fix:** Added `MemoryWriter.write_tombstone()` (`core/memory_writer.py`), which
+  appends a node carrying `->[:supersedes=<name>]` — routed to the SAME `.og` file as
+  the node it supersedes, resolved via a new `_find_node_file` helper — plus
+  `->[:role=tombstone]` and `->[:reason=...]`; the tombstone references the forgotten
+  node **by name only**, never by content, so it cannot itself become a new
+  resurrection vector. Made all three vault delete methods
+  (`delete_fact`/`delete_user_fact`/`delete_agent_fact`) share one tri-store helper
+  (`MemoryVault._tri_store_delete`): capture the Chroma document text for the id
+  *before* deleting the row, delete the Chroma row, then resolve every `.og` node
+  whose `dense` equals that captured text (content is the only identifier the two
+  stores share) and tombstone each — unconditionally, even with no graph index
+  attached, so a later `memory.graph=true` flip does not resurrect the fact. Moved
+  supersede suppression into `load_memory_dir` (`core/memory_graph.py`) so it is
+  global rather than traversal-dependent (a tombstone that nothing seeds still
+  suppresses its target); kept `expand_graph`'s own filter as a harmless second
+  layer. Taught `MemoryIndex.refresh()` (`core/memory_index.py`) to skip
+  supersede-suppressed nodes on every rebuild — detected via the lightweight
+  `memory_graph.parse_memory_file` parser, since `og_engine`'s `OGNode` does not
+  surface arbitrary `->[:key=value]` edges. Replaced the bypass
+  `sqlite3.connect(getattr(self._graph_index, "_db_path", None))` in
+  `MemoryVault._delete_from_fts5` with a call to a new public `MemoryIndex.delete_node(node_id)`,
+  resolving the real composite id via a new shared `memory_index.compute_node_id()`
+  (single source of truth for the id format, used by both `refresh()` and the vault —
+  a duplicated copy of that format string is exactly how the original bug happened).
+  Added an optional `memory_dir` constructor param + read-only property to
+  `MemoryVault` (defaults to `get_hachi_paths().memory_dir`, the same directory
+  `MemoryWriter`/`MemoryIndex` already use in production) so the vault can resolve
+  its content-addressed `.og` lookups without depending on a graph index being
+  attached. Corrected the `delete_memory` tool's docstring/result strings
+  (`tools/memory_tools.py`) to describe what now actually happens instead of an
+  unqualified "removed from all backends".
+- **Avoid:** if a write goes to N stores, the delete must go to N stores — and a
+  docstring claiming "all backends" is not evidence that it does. When two stores
+  hold the same data under different identifiers, the delete path needs an explicit
+  identifier-resolution step (here: content match, since only the content is shared
+  verbatim between Chroma and `.og`), and the regression test must read back through
+  the *production* read path (`build_graph_recall_section`), not through the store
+  you just deleted from — a test that hand-seeds an index row under a synthetic id
+  that happens to equal the delete key (as `tests/test_memory_reliability.py`'s FTS5
+  fixture did) can pass while the real id-format mismatch goes uncaught.
+- **Locked by:** `tests/test_memory_forget_is_durable.py` —
+  `test_forgotten_fact_does_not_resurface_via_graph_recall` (the headline lock, red
+  before the fix with `AttributeError: 'MemoryWriter' object has no attribute
+  'write_tombstone'`), `test_tombstone_suppresses_node_even_when_unseeded`,
+  `test_fts5_delete_uses_the_real_node_id`, plus coverage for the emitted `.og` text,
+  the append-only guarantee, and the `memory.graph=false` case across all three vault
+  delete methods. Also repaired `tests/test_memory_reliability.py::TestDeleteSpansAllBackends::test_delete_removes_from_fts5_when_graph_index_attached`,
+  whose `MagicMock` + synthetic-same-id fixture predates this fix and would silently
+  mask the real bug going forward — it now indexes a real `.og` node through a real
+  `MemoryIndex` so the ids line up the way `refresh()` actually assigns them.
+
+### BB-135 — T-47's router extraction turned `/voice/speak`'s deliberately-lazy `speak_stream` import into a module-level one, silently breaking a source-module monkeypatch
+
+- **Symptom:** `tests/test_voice_endpoints.py::test_voice_speak_route_carries_proxy_buffering_headers`
+  failed with `assert 503 == 200` — but **only** when it ran after another test in the
+  same pytest process had already built a gateway app (e.g. `tests/test_authoring_backend.py`
+  first, then this test). Run in isolation (or as the first test to call
+  `create_gateway_app`), it passed, which made the failure look order-dependent/flaky
+  rather than a real code defect.
+- **Root cause:** before T-47, `create_gateway_app` did
+  `from hachi.gateway.voice_endpoints import speak_stream as _voice_speak_stream` **inside**
+  the factory function — a genuinely lazy import, re-executed (and re-bound) every time
+  `create_gateway_app()` ran. T-47 lifted the `/voice/*` handlers into
+  `src/hachi/gateway/routers/voice.py` and turned that into a **module-level** import,
+  bound once when `hachi.gateway.routers.voice` is first imported (which happens via
+  `hachi.gateway.routers.ALL_ROUTERS`, itself imported lazily inside
+  `create_gateway_app` — but Python still only executes a module's top-level statements
+  on its *first* import per process; every subsequent `create_gateway_app()` call in the
+  same test session reuses the cached module and its already-bound name). The regression
+  test does `monkeypatch.setattr(voice_endpoints, "speak_stream", _fake_speak_stream)`
+  on the **source** module (`hachi.gateway.voice_endpoints`) right before calling
+  `create_gateway_app()`, relying on the handler resolving `speak_stream` at call time.
+  Once some earlier test had already imported `hachi.gateway.routers.voice` (there are
+  ~30 other gateway tests that call `create_gateway_app`), the module-level alias
+  `_voice_speak_stream` was frozen to the *original* function object; the later
+  monkeypatch on `voice_endpoints.speak_stream` rebinds an attribute the router module
+  no longer looks at, so the real (unconfigured) provider ran and returned 503.
+- **Fix:** in `src/hachi/gateway/routers/voice.py`, replaced
+  `from hachi.gateway.voice_endpoints import speak_stream as _voice_speak_stream` with
+  `from hachi.gateway import voice_endpoints` (a module import) and changed the call
+  site in `route_voice_speak` from `_voice_speak_stream(...)` to
+  `voice_endpoints.speak_stream(...)`, so the attribute is looked up on the module
+  object fresh on every request — the same lazy-resolution contract the pre-T-47
+  closure had, restored without reintroducing a closure. Left the other three
+  `/voice/*` handlers (`transcribe`, `config` GET/PUT) on their existing bare-name
+  imports since no test exercises a source-module patch against them and the task
+  was scoped to this one regression. Note for future router-extraction work: an
+  explanatory addition to a route handler's **docstring** is picked up verbatim by
+  FastAPI as the OpenAPI operation description, so it round-trips into
+  `openapi/hachi-openapi.json` and `frontend/src/lib/data/schema.d.ts` — the fix
+  narrative here lives in a plain `#` comment instead, to avoid failing the
+  `openapi <-> frontend contract` preflight step with an unrelated diff.
+- **Avoid:** when lifting a handler out of a closure that did a deliberately-lazy
+  in-function import, keep the laziness — import the **module**, not a name from it,
+  and reference `module.attr(...)` at call time. A bare `from x import y as _y` at
+  module scope looks identical to the lazy version at a glance but binds exactly
+  once per process, so it silently breaks any test (present or future) that
+  monkeypatches `x.y` after that module has already been imported once elsewhere in
+  the same suite — a failure mode that will not show up running the affected test
+  file alone, only in full-suite / cross-file ordering.
+- **Locked by:** `tests/test_voice_endpoints.py::test_voice_speak_route_carries_proxy_buffering_headers`
+  (pre-existing test — this fix restores the behavior it already asserted; verified
+  red with `503 == 200` when run after `tests/test_authoring_backend.py` in the same
+  session, green after the fix in that same ordering).
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

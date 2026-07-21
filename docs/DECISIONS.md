@@ -1419,7 +1419,10 @@ forever in "attempt 1 < max_retries" without ever reaching the exhausted branch.
 *`src/hachi/cli/commands/jobs.py`* (new file)
 - `hachi jobs dead-letter`: lists current dead-letter jobs (table or JSON).
 - `hachi jobs redrive`: calls `queue.redrive_dead_letter()`, prints count.
-- Opens the production `SQLiteJobQueue` via `PlatformDirs("hachi", "opengigantic")` / `jobs.db`.
+- Opens the production `SQLiteJobQueue` via a bare `SQLiteJobQueue()` (no explicit `db_path`),
+  which resolves through `_default_db_path()` → `get_hachi_paths().jobs_db` (T-53 / BB-131).
+  Previously this duplicated an inline `PlatformDirs("hachi", "opengigantic")` lookup — a
+  second on-disk root invisible to every `get_hachi_paths()`-based tool; see `docs/bug-bank.md`.
 
 *`src/hachi/cli/main.py`*
 - Imports and registers `jobs_app` under `"jobs"`.
@@ -3011,3 +3014,69 @@ check, A2 reader-fix + route end-to-end, A3 decide()/route approve+reject+404, a
 `GardeningResult.load` debug→warning fix); `frontend/src/lib/data/domains/
 memoryGardener.test.ts` (6 tests, incl. the BB-106 non-optimistic pattern verified to
 fail against an optimistic implementation).
+
+## T-72 — `.og`'s executable surface: internal + lint, for all six tags (2026-07-21) **[ADR]**
+
+**Decision.** `docs/audit/2026-07-19/tasks/T-72-og-spec-executable-surface.md` §5 poses
+two options plus a "split" recommendation (Option A — document `::config`/`::tool`/`::api`
+as public surface, since `::api` already ships in 10 first-party skills; Option B — mark
+all six tokens internal and lint community packs against them). **The product owner chose
+pure Option B for all six** — not the split. `::config`, `::tool`, `::api` (block types)
+and `role=env`, `role=integration`, `role=mcp` (node roles) are now:
+
+1. **Documented as existing**, in a new `docs/reference/objectgraph-spec.md` §4.7 "Runtime
+   & Integration Tags (Internal)" — what each does, its keys, a worked example, and a
+   security note anchored to the three `get_nodes_by_role("mcp"|"env"|"integration")` boot
+   scans in `gateway/orchestrator.py`. This also documents, for the first time, that a
+   `role=` node attribute exists at all (enumerating all five values it can take:
+   `skill`, `native_integration`, `env`, `integration`, `mcp`) — the spec previously never
+   mentioned it.
+2. **Marked internal / first-party-only, not public API, no backward-compat commitment.**
+3. **Mechanically enforced** — `scripts/lint_skills.py` (already a blocking preflight step)
+   now rejects any of the six outside `src/hachi/default_skills/**`, and allows them inside
+   it. A first-party skill using `::api` (10 of them do — `general/currency.og` and nine
+   others) still lints clean; a synthetic community-style `.og` declaring `role=mcp` /
+   `::config` / `::tool` / `::api` does not.
+
+**Why pure B, not the split.** The split's own case for documenting `::api`/`::config`/
+`::tool` as *public* was "`::api` is already de-facto public, so the spec is simply
+wrong" — true, but "the spec should describe what ships" and "third parties may build
+against this and we will support it" are different claims, and only the first is required
+to close the gap this task exists to close (CF-19: the spec had zero occurrences of all six
+tokens). Documenting existence already satisfies "a pack author can learn `::api` exists"
+and "a reviewer can audit a pack against the spec" — the two harms named in the task's own
+§2. It does not require accepting a compatibility commitment for `method`/`endpoint`/
+`schema` today.
+
+The decisive asymmetry is **reversibility**, which the task doc itself names as Option B's
+argument: promoting an internal tag to public later is additive and non-breaking (nothing
+that worked yesterday stops working); the reverse — retracting a tag from public back to
+internal — is a breaking retraction of something third parties may already depend on.
+Pre-v1, with no sandbox or install-time consent story yet ([T-56](../audit/2026-07-19/tasks/T-56-pack-consent-every-install-path.md)
+is still open and cannot state what a pack is consenting *to* until this task landed), the
+asymmetric-risk default is "closed until proven safe to open," not "open until proven
+unsafe." Locking all six down uniformly is also simpler to reason about and to lint than a
+per-tag split — one boundary (`default_skills/`), one rule, no tag-by-tag exceptions to
+maintain as the parser grows. `::api`/`::config`/`::tool`'s *first-party* usage is
+unaffected either way, so the split's main practical benefit (not disrupting the 10 shipped
+skills) is already achieved by "internal + first-party-allowed" without also opening the
+tag to community packs.
+
+**What this does not do (deliberately, per the task's own out-of-scope guard).** It does
+not change the parser or the runtime — `::api`/`::config`/`::tool` still parse and execute
+identically for every node, first-party or not; the lint rule is a source-tree policy
+check, not a runtime gate. It does not fix `role=env`'s plaintext-credential handling
+(`core/integrations.py`'s `load_env_node` reads `KEY=VALUE` pairs straight out of a
+`::dense` block) — that is [T-58](../audit/2026-07-19/tasks/T-58-declarative-integrations-consolidation.md)'s
+subject; this task names the risk in the new spec section and stops. It does not build
+install-path consent — that is T-56's subject; this task gives T-56 the vocabulary
+("internal / reserved / first-party-only") to state what a pack would be consenting to.
+
+**Locked by.** `docs/bug-bank.md` BB-133; `tests/test_p5_01_conformance.py` —
+`test_spec_documents_every_parser_block_type` (derives the parser's block-dispatch tokens
+from source via regex, not a hardcoded copy, so a new `block_type == "..."` branch fails
+automatically) and `test_spec_documents_every_executable_node_role`;
+`tests/test_lint_skills_reserved_tags.py` (7 tests — first-party `::api` allowed, community
+`::api`/`role=mcp`/`role=integration`+`::config`+`::tool` rejected, a clean community pack
+stays clean, the real CLI entry point rejects a throwaway community `.og`, and the no-arg
+preflight invocation is unchanged).
