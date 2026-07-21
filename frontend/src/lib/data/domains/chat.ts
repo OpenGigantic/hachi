@@ -4,10 +4,25 @@
 //        GET /sessions/{id}/stream (SSE), GET /sessions?limit=10
 //
 // Circular-import strategy:
-//   store.ts → (dynamic import) → chat.ts → useStore
-//   store.ts live-mode branches call chat.ts functions via dynamic import().
-//   chat.ts imports useStore directly for reading/writing state (no cycle
-//   because store.ts never statically imports chat.ts).
+//   store.ts ⇄ chat.ts — BOTH directions are static imports today:
+//     store.ts:10-17 imports the *Live functions from this module;
+//     this module imports useStore from ../../store/store (below).
+//   There is a second cycle via approvals.ts: store.ts → chat.ts →
+//   approvals.ts → store.ts (chat.ts imports ./approvals; approvals.ts
+//   imports useStore from ../../store/store).
+//   Both cycles resolve only because every cross-module reference happens
+//   inside a function body, never at module top level. Keep it that way: a
+//   top-level use of an imported binding on either side becomes a TDZ
+//   ("temporal dead zone") error at runtime that `tsc --noEmit` will NOT
+//   catch — only the production build or a real page load will surface it.
+//   Pinned by src/lib/module-graph.test.ts.
+//
+//   History (superseded, kept for context — T-64 / CF-16): this comment used
+//   to claim "no cycle because store.ts never statically imports chat.ts"
+//   and described a store.ts → (dynamic import) → chat.ts → useStore
+//   strategy. That was real once; static imports were added to store.ts
+//   later (the six *Live functions above) without updating this note, so the
+//   claim went checkably false. Corrected once the drift was found.
 // ============================================================
 
 import { apiGet, apiSend, USE_MOCKS, isNetworkError, ApiError } from "../client";
