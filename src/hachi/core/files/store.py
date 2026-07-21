@@ -27,7 +27,7 @@ from typing import IO, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from hachi.core.migrations import apply_migrations
+from hachi.core.migrations import apply_migrations, ensure_schema_version
 from hachi.core.runtime_events import FILE_UPLOADED, RuntimeEvent, now_iso
 
 logger = logging.getLogger(__name__)
@@ -203,9 +203,7 @@ class LocalStorageProvider:
                     break
                 if written + len(chunk) > self._max_size:
                     tmp_path.unlink(missing_ok=True)
-                    raise ValueError(
-                        f"File exceeds maximum allowed size ({self._max_size} bytes)"
-                    )
+                    raise ValueError(f"File exceeds maximum allowed size ({self._max_size} bytes)")
                 tmp.write(chunk)
                 written += len(chunk)
         os.replace(tmp_path, dest)
@@ -351,9 +349,7 @@ def _build_extractor_chain() -> list[ContentExtractor]:
     return chain
 
 
-def find_extractor(
-    chain: list[ContentExtractor], media_type: str
-) -> ContentExtractor | None:
+def find_extractor(chain: list[ContentExtractor], media_type: str) -> ContentExtractor | None:
     """Return the first extractor in *chain* that supports *media_type*."""
     base = media_type.split(";")[0].strip().lower()
     for ext in chain:
@@ -403,6 +399,9 @@ class FileMetaStore:
         try:
             conn.execute(_FILES_SCHEMA)
             conn.commit()
+            # T-54: stamp/verify schema_version on the SAME connection as the
+            # CREATE TABLE above, before any migration — see core/migrations.py.
+            ensure_schema_version(conn, current=1)
             # Run additive migrations (idempotent at every boot).
             apply_migrations(conn, "files", _FILES_MIGRATIONS)
         finally:
@@ -436,9 +435,7 @@ class FileMetaStore:
     def get(self, file_id: str) -> FileMeta | None:
         """Return the :class:`FileMeta` for *file_id*, or ``None``."""
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM files WHERE file_id = ?", (file_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM files WHERE file_id = ?", (file_id,)).fetchone()
         if row is None:
             return None
         return FileMeta(**dict(row))
@@ -446,9 +443,7 @@ class FileMetaStore:
     def list_all(self) -> list[FileMeta]:
         """Return all file records, newest first."""
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM files ORDER BY created_at DESC"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM files ORDER BY created_at DESC").fetchall()
         return [FileMeta(**dict(r)) for r in rows]
 
     def update_status(
@@ -531,9 +526,7 @@ class FilePipeline:
                 break
             size += len(chunk)
             if size > self._max_size:
-                raise ValueError(
-                    f"File exceeds maximum allowed size ({self._max_size} bytes)"
-                )
+                raise ValueError(f"File exceeds maximum allowed size ({self._max_size} bytes)")
             h.update(chunk)
             buf.write(chunk)
         return h.hexdigest(), size, buf.getvalue()
@@ -566,8 +559,7 @@ class FilePipeline:
         # 1. Type validation (before storage).
         if self._allowed_types and base_type not in self._allowed_types:
             raise ValueError(
-                f"Media type not allowed: {base_type!r}. "
-                f"Allowed: {sorted(self._allowed_types)}"
+                f"Media type not allowed: {base_type!r}. Allowed: {sorted(self._allowed_types)}"
             )
 
         # 2. Hash + size check (streams once; size cap enforced in _sha256_stream).

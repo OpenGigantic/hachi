@@ -45,10 +45,6 @@ class HachiPaths:
         return self.data_dir / "chroma_vault"
 
     @property
-    def tui_state_db(self) -> Path:
-        return self.state_dir / "tui_state.db"
-
-    @property
     def schedules_file(self) -> Path:
         return self.state_dir / "schedules.json"
 

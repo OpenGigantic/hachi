@@ -16,7 +16,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
-from hachi.core.migrations import apply_migrations
+from hachi.core.migrations import apply_migrations, ensure_schema_version
 from hachi.core.runtime.state import RunState, RunStatus, WaitCondition, WaitKind
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,9 @@ def _default_db_path() -> Path:
 
     paths = get_hachi_paths()
     data_dir: Path = paths.data_dir
+    # runs.db deliberately stays on data_dir (not state_dir, unlike its SQLite
+    # siblings) — T-53 explicitly deferred that move; see docs/audit/2026-07-19/
+    # tasks/T-53-jobs-db-path-unification.md and T-54 §9 (not an oversight).
     return data_dir / "runs.db"
 
 
@@ -91,6 +94,9 @@ class RunStateStore:
         with self._lock:
             self._conn.executescript(_INITIAL_SCHEMA)
             self._conn.commit()
+            # T-54: stamp/verify schema_version before any migration — same
+            # connection, same lock, see core/migrations.py.
+            ensure_schema_version(self._conn, current=1)
             apply_migrations(self._conn, "runs", _MIGRATIONS)
 
     # ------------------------------------------------------------------

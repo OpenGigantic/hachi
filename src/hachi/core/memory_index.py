@@ -20,7 +20,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from hachi.core.migrations import SchemaTooNewError, ensure_schema_version, set_schema_version
+
 logger = logging.getLogger(__name__)
+
+# T-54: current schema version for memory_index.db. Unlike the other four live
+# SQLite stores, a mismatch here rebuilds instead of raising — see _init_db().
+_SCHEMA_VERSION = 1
 
 _FTS5_SCHEMA = """
 CREATE TABLE IF NOT EXISTS mem_nodes (
@@ -100,6 +106,37 @@ class MemoryIndex:
     def _init_db(self) -> None:
         with self._conn() as conn:
             conn.executescript(_FTS5_SCHEMA)
+            self._ensure_version(conn)
+
+    def _ensure_version(self, conn: sqlite3.Connection) -> None:
+        """Stamp/verify schema_version; rebuild (never raise) on ANY mismatch.
+
+        T-54 Decision 4: memory_index.db is a DERIVED CACHE — refresh() always
+        wipes and rebuilds it wholesale from memory/*.og (see the class docstring
+        and docs/audit/2026-07-19/tasks/T-54-schema-version-tables.md §3.5). A
+        version mismatch therefore has a remedy the other four SQLite stores do
+        not have: drop the data tables, recreate them, stamp the current version,
+        and let the next refresh() repopulate. Do NOT generalise this
+        rebuild-on-mismatch behaviour to any other store — it is only safe here
+        because this data is disposable.
+        """
+        try:
+            stored = ensure_schema_version(conn, current=_SCHEMA_VERSION)
+            mismatch = stored != _SCHEMA_VERSION
+        except SchemaTooNewError:
+            mismatch = True
+        if not mismatch:
+            return
+        logger.info(
+            "MemoryIndex: schema_version mismatch on %s — rebuilding (this is a "
+            "derived cache; the next refresh() repopulates it from memory/*.og)",
+            self._db_path,
+        )
+        conn.execute("DROP TABLE IF EXISTS mem_nodes")
+        conn.execute("DROP TABLE IF EXISTS mem_fts")
+        conn.commit()
+        conn.executescript(_FTS5_SCHEMA)
+        set_schema_version(conn, _SCHEMA_VERSION)
 
     # ------------------------------------------------------------------
     # Indexing
