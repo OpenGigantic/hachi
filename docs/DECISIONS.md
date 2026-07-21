@@ -3080,3 +3080,186 @@ automatically) and `test_spec_documents_every_executable_node_role`;
 `::api`/`role=mcp`/`role=integration`+`::config`+`::tool` rejected, a clean community pack
 stays clean, the real CLI entry point rejects a throwaway community `.og`, and the no-arg
 preflight invocation is unchanged).
+
+## T-61 — Single-tenant authz: delete the C1 ownership machinery (2026-07-21) **[ADR]**
+
+**Decision.** Option **(a) — delete**, of the three options in
+`docs/audit/2026-07-19/tasks/T-61-single-tenant-adr.md` §5 (full reasoning:
+[ADR-0006](architecture/adr/0006-single-tenant-authz.md)). Hachi is honestly single-principal —
+the bearer token IS the identity, and possession of it is full authority over every session, run,
+and interaction. Authentication (`require_auth`'s bearer comparison, the `HACHI_GATEWAY_NO_AUTH`
+loopback-only opt-out, the startup guards) is untouched; only the per-session *ownership* layer
+built on top of it is removed.
+
+**Why.** CF-15 found the ownership system ("C1": sha256 token digests, an in-memory owner map, 403
+branches, owner-filtered lists) could never discriminate between callers, because exactly one
+bearer token exists per process — every authenticated caller hashes to the same digest, so
+`_check_session_ownership` always compared a value to itself. It was also incomplete in ways that
+would matter the moment a second principal appeared: the owner map lived only on
+`GatewayControlPlane._connections` (wiped every restart), `set_session_owner` silently no-op'd for
+a session not yet in that map, and a missing owner was documented policy as *allow* — so the
+system's steady state across a process lifetime was "off." That combination — enough ceremony that
+a reader trusts it, zero capability to enforce anything — is worse than having no control at all,
+and it is exactly why [T-62](../audit/2026-07-19/tasks/T-62-session-messages-ownership-check.md)'s
+missing check on two routes went unnoticed for as long as it did: an inconsistency in a decorative
+control doesn't read as a bug. `CLAUDE.md` already states the product's stance — single-tenant is
+load-bearing, multi-tenant is out of scope pending a decision — so "finish it" (option (b): a
+persisted owner column, rotation-independent principal ids, a token-management surface) would have
+been building toward multi-tenancy's front door, not fixing this defect.
+
+**Executed.** Removed across `src/hachi/gateway/{deps,control_plane}.py` and
+`src/hachi/gateway/routers/{sessions,runs,interactions,channels,openai_compat}.py`:
+`GatewayControlPlane.set_session_owner`/`.get_session_owner` and the `owner_token_hash` connection
+key; `deps.check_session_ownership` (formerly `fastapi_app._check_session_ownership`) and
+`routers/runs.py`'s `_check_run_ownership` wrapper; every 403 call site (nine session routes, three
+run routes, two interaction routes); the owner-stamping on session creation (`POST /sessions` and
+the OpenAI-compat/channel-inbound facades via `get_or_create_session`/`complete_chat`'s
+`owner_token_hash` parameter); the inline owner-filters on `GET /sessions`, `GET /runs`,
+`GET /interactions`; and **the ownership check
+[T-62](../audit/2026-07-19/tasks/T-62-session-messages-ownership-check.md) had just added to
+`GET /sessions/{id}/messages`** in Wave 1 — deleting the machinery means that check goes too,
+coherently, and T-62's own file now records the supersession. `require_auth` (`gateway/deps.py`)
+no longer returns the sha256 digest — its only consumer was ownership — and now returns `bool`
+(`True` when a configured token was validated, `False` in the two pre-existing no-enforcement
+modes); its `CallerHash` dependency alias is renamed `Authenticated` to match. Two unrelated
+features that had opportunistically reused the digest (BB-58's per-request OpenAI rate-limit key;
+T-32's facade session-key namespacing) were adapted to the boolean contract with a fixed
+`"authenticated"`/`"anonymous"` marker rather than deleted — under one token both were already
+single shared buckets per auth mode, not per-principal ones, so no observable behaviour changed.
+
+**Correction to the task spec's own evidence.** T-61 §3.2/§4 asserted
+`grep -rn "owner" src/hachi/core/session_store.py` "returns nothing today," verified against
+`main @ bd24afe`. That was wrong even against that exact commit (`git show bd24afe:...` still
+shows it) — `SessionStore.set_session_owner`/`.get_session_owner` and a persisted
+`owner_token_hash` column have existed there, completely unreferenced by any caller anywhere in
+the codebase, since 2026-06-20 (a "sprint 1" security pass, `6653d1e`). The gateway's enforcement
+was always in-memory-only exactly as CF-15 diagnosed regardless — this was a second, independently
+orphaned "finish it" attempt nothing ever wired up, not evidence the two designs coexisted. Removed
+alongside the gateway-side machinery (safe: no `sessions` query anywhere does `SELECT *`, so the
+column was never serialized into a response) so the ADR's "no ownership symbol survives" claim is
+true of the codebase, not just of the file the stale task spec happened to check.
+
+**Reversibility.** Medium — see ADR-0006's Consequences. The deleted code is in git history and
+the ADR records its exact shape and defects, but reversal should mean building option (b) properly
+(persisted owners, rotation-independent identities, dependency-enforced uniform coverage,
+fail-closed default) rather than restoring `set_session_owner` verbatim.
+
+**Locked by.** `docs/bug-bank.md` BB-136; `tests/test_session_authz_model.py` —
+`test_gateway_is_single_principal_by_decision` (structural: no ownership symbol survives anywhere
+under `hachi.gateway` or in `core/session_store.py`; behavioural: the one authenticated principal
+reaches every session route, including the `/messages` transcript endpoint, with no owner gate).
+Pre-existing ownership-specific
+tests in `test_session_ownership.py`, `test_session_route_ownership.py`, `test_gateway_interrupt.py`,
+`test_gateway_router_extraction.py`, and `test_gateway_openai_channels.py` were rewritten (not
+deleted) to assert the new contract — see the T-61 commit message for the itemized list.
+
+## T-54 — Every SQLite store gains a `schema_version` table (2026-07-21) **[ADR]**
+
+**Decision.** Implemented `docs/audit/2026-07-19/tasks/T-54-schema-version-tables.md` §5
+as written — a **table**, not `PRAGMA user_version` (Decision 1); every existing,
+unstamped database is adopted as **version 1**, never as the running build's `current`
+(Decision 2); the dead `HachiPaths.tui_state_db` property is deleted outright rather than
+versioned (Decision 3). `core/migrations.py` — already the shared home for
+`apply_migrations`'s additive column helper — gains `SCHEMA_VERSION_TABLE`,
+`ensure_schema_version(conn, *, current)`, `set_schema_version(conn, version)`, and a new
+`SchemaTooNewError`:
+
+```sql
+CREATE TABLE IF NOT EXISTS schema_version (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),   -- exactly one row, ever
+    version        INTEGER NOT NULL,
+    app_version    TEXT    NOT NULL,
+    updated_at     TEXT    NOT NULL
+);
+```
+
+All **five** live SQLite stores now call `ensure_schema_version` immediately after their
+`CREATE TABLE IF NOT EXISTS` block and before any `apply_migrations` call: `sessions.db`
+(`core/session_store.py::_migrate_schema`), `files.db`
+(`core/files/store.py::FileMetaStore.__init__`), `runs.db`
+(`core/runtime/store.py::_init_schema`), `jobs.db` (`jobs/queue.py::_init_db`), and
+`memory_index.db` (`core/memory_index.py::_init_db`) — all stamped **current = 1**, since
+T-54 is the version-1 baseline for every one of them. The two ad-hoc
+`PRAGMA table_info` + `ALTER TABLE` blocks (`session_store.py`'s four-column
+`sessions`/one-column `messages` migration, `jobs/queue.py`'s `owner_id` backfill) were
+converted to `apply_migrations` calls, preserving every inline comment that explained
+*why* a column exists (`C1`, `Bug 6`) rather than just *that* it does. `rg -n
+"PRAGMA table_info" src/` now returns exactly one hit — `apply_migrations` itself.
+
+**Fail-on-newer, with one deliberate exception.** `ensure_schema_version` raises
+`SchemaTooNewError` when the stored version exceeds `current` — a database written by a
+newer Hachi build must refuse to open silently, the whole reason this task exists (§2 of
+the task doc: "no way to refuse to open one that is newer than the running build"). Every
+store's constructor lets this propagate; none of the five catches it. The one exception is
+`memory_index.db`: it is a **derived cache**, wholesale-rebuilt from `memory/*.og` on every
+`refresh()` (`MemoryIndex.refresh()` unconditionally `DELETE`s and re-inserts — see the
+task doc §3.5), so a version mismatch — in *either* direction, not only "newer than this
+build" — has a remedy the other four stores do not: drop `mem_nodes`/`mem_fts`, recreate
+them, re-stamp the current version, and let the next `refresh()` repopulate. This exception
+is intentionally not generalised — `SchemaTooNewError`'s docstring and the four
+non-cache stores' call sites both say so explicitly, because "just rebuild it" is exactly
+the wrong instinct for `sessions.db`.
+
+**`app_version` without importing the `cli` edge.** The `schema_version` row's
+`app_version` column needed the installed package version, which `cli/main.py`'s
+`--version` flag already resolves via `importlib.metadata.version("hachi-og")`. `core`
+must not import `cli` (the enforced layering), so `core/migrations.py::_app_version()`
+independently repeats the same stdlib `importlib.metadata` lookup rather than importing
+the CLI's helper — a few duplicated lines, not a layering violation, with the same
+best-effort fallback shape.
+
+**`sessions.db`'s second schema owner.** `CorrectionLog` (`core/user_profile.py`) opens
+its own connection to `sessions.db` and creates `profile_corrections` independently of
+`SessionStore`. `SessionStore` is the sole owner of the `schema_version` row for this
+file — `CorrectionLog` is unchanged and does not read or write it. Version 1 is defined as
+"whatever `sessions.db` contains when either schema owner has run," which already includes
+`profile_corrections`; `CorrectionLog` does not need its own stamp because it has no
+independent migration path to version *against* (`_ensure_table` is, and remains, a bare
+`CREATE TABLE IF NOT EXISTS`). `core/user_profile.py` is out of this task's file list and
+was not touched.
+
+**Why a table, not the pragma (Decision 1, restated).** `PRAGMA user_version` is a bare
+integer: no room for a timestamp or the writing app's version, invisible to `sqlite3 .dump`,
+and trivially clobbered by any code that happens to call `PRAGMA user_version = N` for an
+unrelated reason. A table survives backup/restore visibly — which matters for
+[T-55](../audit/2026-07-19/tasks/T-55-backup-completeness.md) — and a user debugging their
+own data can `SELECT * FROM schema_version` with the stock `sqlite3` CLI, extending the
+"owned data" promise to the metadata layer too.
+
+**Why version 1, not schema archaeology (Decision 2, restated).** Probing an existing
+database for the presence of `owner_token_hash` or similar to infer a "true" historical
+version was considered and rejected: it is guesswork against real user data this task has
+no access to, it is untestable, and it is unnecessary — `apply_migrations`'s additive-only
+discipline already makes every historical shape of these tables forward-compatible. An
+unstamped database is defined as version 1, full stop; a future reader must not mistake
+`version = 1` for "freshly created" — it means "whatever shape shipped before T-54."
+
+**What this decision leaves standing (deliberately).** No rollback/downgrade path —
+`apply_migrations` remains additive-only, and fail-on-newer *is* the downgrade story, not a
+gap in it. No storage consolidation (CF-13's longer-term "one state SQLite + Chroma +
+blobs" recommendation is explicitly out of scope — this task makes that consolidation
+*possible* by giving every store a version to migrate from, it does not start it). No
+versioning of the JSON stores (`schedules.json`, `skill_usage.json`,
+`onboarding_state.json`, `secrets_metadata.json`) or the three ChromaDB
+`PersistentClient` roots — different mechanism, different task, noted in the source task
+doc §9 and not relitigated here. `runs.db` stays on `data_dir` rather than moving to
+`state_dir` with its SQLite siblings — [T-53](../audit/2026-07-19/tasks/T-53-jobs-db-path-unification.md)
+already deferred that move deliberately; a one-line comment at
+`core/runtime/store.py::_default_db_path` now says so explicitly, so the anomaly in the
+task doc's own store inventory (§3.2) does not read as an oversight to the next person who
+greps for it.
+
+**Locked by.** `docs/bug-bank.md` BB-137; `tests/test_migrations.py` —
+`TestSchemaVersion` (6 tests): `test_every_live_sqlite_store_records_a_schema_version`
+(built from the real store constructors, not a hardcoded filename list, so a sixth
+unversioned store added later breaks it), `test_unstamped_database_is_stamped_as_version_one`,
+`test_opening_a_future_version_database_raises`,
+`test_opening_sessions_db_at_a_future_version_raises` and
+`test_opening_runs_db_at_a_future_version_raises` (§8's explicit acceptance criterion —
+the raise must propagate through the real store constructor, not only through
+`ensure_schema_version` called in isolation; verified RED by temporarily disabling the
+`SessionStore` call site and confirming `DID NOT RAISE` before restoring it), and
+`test_memory_index_rebuilds_instead_of_raising_on_version_mismatch` (asserts the stamped
+version is corrected back to current on open — the one check that cannot pass "by
+accident" from `refresh()`'s own unconditional rebuild, which would otherwise mask a
+`MemoryIndex` that never wired the version check at all).

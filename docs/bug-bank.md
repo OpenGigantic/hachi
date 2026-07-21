@@ -4268,6 +4268,137 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   red with `503 == 200` when run after `tests/test_authoring_backend.py` in the same
   session, green after the fix in that same ordering).
 
+### BB-136 — Session-ownership checks could never discriminate, and were off after every restart
+
+- **Symptom:** The gateway appeared to enforce per-caller session isolation (token
+  digests, 403 paths, owner-filtered lists) while enforcing nothing. Two session
+  routes (`GET /sessions/{id}/messages`, `POST /sessions/cleanup-empty`) skipped the
+  check entirely before T-62 closed that specific gap, and after any restart *every*
+  persisted session was ownerless — which the policy defined as "allow."
+- **Root cause:** Exactly one bearer token exists per process
+  (`create_gateway_app(control_plane, auth_token, ...)`; compared once inside
+  `require_auth`/`_require_auth`), so every authenticated caller hashed to the same
+  digest and `_check_session_ownership`/`check_session_ownership` compared a value to
+  itself. Ownership was stored as a key on the in-memory live-connection dict
+  (`GatewayControlPlane._connections[session_id]["owner_token_hash"]`), and
+  `set_session_owner` was a **silent no-op** when the session wasn't in
+  `_connections`. `get_session_owner` returning `None` was documented as allow.
+- **Fix:** ADR-0006 (`docs/architecture/adr/0006-single-tenant-authz.md`) settled the
+  model: **delete the ownership layer, keep authentication.** Removed
+  `GatewayControlPlane.set_session_owner`/`.get_session_owner` and the
+  `owner_token_hash` connection key; `deps.check_session_ownership` (formerly
+  `fastapi_app._check_session_ownership`) and `routers/runs.py`'s
+  `_check_run_ownership` wrapper; every 403 call site across
+  `routers/{sessions,runs,interactions,openai_compat}.py` (nine session routes, three
+  run routes, two interaction routes) — including T-62's `/messages` check, which is
+  now superseded; the owner-stamping on session creation and the two facades
+  (`get_or_create_session`/`complete_chat`'s `owner_token_hash` parameter); and the
+  inline owner-filters on `GET /sessions`, `GET /runs`, `GET /interactions`.
+  `require_auth` (`gateway/deps.py`) no longer returns the sha256 digest — its
+  `CallerHash` dependency alias is renamed `Authenticated` and now carries a plain
+  `bool` (authenticated or not). Two unrelated features that had opportunistically
+  reused the digest (BB-58's OpenAI-compat rate-limit key; T-32's facade
+  session-key namespacing) were adapted to the boolean contract with a fixed
+  `"authenticated"`/`"anonymous"` marker — under one token both were already single
+  shared buckets per auth mode, not per-principal ones, so no observable behaviour
+  changed. **Also found and removed:** `SessionStore.set_session_owner`/
+  `.get_session_owner` and a persisted `owner_token_hash` column migration in
+  `core/session_store.py` — a second, completely orphaned copy of this machinery,
+  unreferenced by any caller since 2026-06-20, that the task's own reproduction
+  steps (§3.2/§4, "grep ... returns nothing today") incorrectly claimed did not
+  exist even against their own cited baseline commit.
+- **Avoid:** never ship a security control that cannot fail. If a comparison can only
+  ever compare a value to itself, it is documentation, not enforcement — and readers
+  will trust it. Either give it a second principal to discriminate, or delete it and
+  state the model plainly. When a dependency's return value exists to feed exactly
+  one downstream consumer, deleting that consumer should also delete (or honestly
+  retype) the value — a type still named `CallerHash` after the hash is gone is
+  itself the next misleading artifact. And when a task's reproduction steps hand you
+  a "you will see X" grep command, run it yourself before relying on it — this one
+  was wrong even against the exact commit it claimed to be verified against.
+- **Locked by:** `tests/test_session_authz_model.py` —
+  `test_gateway_is_single_principal_by_decision` (structural: no ownership symbol
+  survives anywhere under `hachi.gateway` or `core/session_store.py`; behavioural: the
+  one authenticated principal reaches every session route, including `/messages`,
+  with no owner gate).
+
+### BB-137 — No SQLite store recorded a schema version; every migration had to be additive forever
+
+- **Symptom:** No latent runtime failure — the cost was entirely future-tense. No
+  database in Hachi could answer "what shape am I?". A downgraded build would open a
+  newer schema and read it silently with the wrong assumptions, and no non-additive
+  migration (rename, retype, split) had any safe path — the only way to grow a schema
+  was to bolt another `ALTER TABLE ... ADD COLUMN` onto an already ad-hoc block.
+- **Root cause:** No `schema_version` table or `PRAGMA user_version` existed anywhere —
+  the only repo hits for the string were the unrelated obs telemetry envelope
+  (`core/obs/envelope.py:88`). `core/migrations.py` provided `apply_migrations`, which
+  does `ALTER TABLE ... ADD COLUMN` only and has **no version concept**; only 2 of the 5
+  live stores (`files.db`, `runs.db`) called it, while `sessions.db` and `jobs.db`
+  hand-rolled the identical `PRAGMA table_info` + `ALTER` algorithm inline and
+  `memory_index.db` had no migration path at all (`CREATE ... IF NOT EXISTS` plus a full
+  rebuild on every `refresh()`). A sixth declared store, `tui_state.db`
+  (`HachiPaths.tui_state_db`), had zero consumers anywhere in the codebase.
+- **Fix:** Added `SCHEMA_VERSION_TABLE`, `ensure_schema_version`, `set_schema_version`,
+  and `SchemaTooNewError` to `core/migrations.py`, backed by a one-row `schema_version`
+  table (`CHECK (id = 1)` enforces "exactly one row" in the schema itself). Every live
+  store (`sessions.db`, `files.db`, `runs.db`, `jobs.db`, `memory_index.db`) now calls
+  `ensure_schema_version(conn, current=1)` immediately after its
+  `CREATE TABLE IF NOT EXISTS` block and before any `apply_migrations` call. An unstamped
+  legacy DB is stamped version 1 (never the running build's `current` — that would make a
+  future reader mistake "version 1" for "pristine"); a stored version higher than the
+  build's raises `SchemaTooNewError` and every store lets it propagate.
+  `memory_index.db` — a derived cache rebuilt wholesale from `.og` on every `refresh()` —
+  rebuilds on ANY mismatch instead of raising, and is the one store where that shortcut is
+  correct. Both ad-hoc `PRAGMA table_info` migration blocks
+  (`core/session_store.py`, `jobs/queue.py`) were converted to `apply_migrations` calls,
+  preserving their inline comments; `rg -n "PRAGMA table_info" src/` now returns exactly
+  one hit (`apply_migrations` itself). The dead `HachiPaths.tui_state_db` property was
+  deleted rather than versioned (nothing ever opened it), and `README.md` /
+  `docs/architecture/03-tech-debt.md` updated to stop describing it as live.
+- **Avoid:** stamp a version into a store the day you create it, not the day you first
+  need to change its shape non-additively. Retrofitting versions onto databases already
+  in users' hands means guessing what they contain — the only honest answer is "version
+  1, meaning whatever shipped before we started counting" — and a regression test for
+  "every live store has a schema_version table" should be built from the real store
+  constructors, not a hardcoded filename list, so a sixth store added later without a
+  stamp breaks the test instead of silently shipping unversioned.
+- **Locked by:** `tests/test_migrations.py::TestSchemaVersion` (6 tests) —
+  `test_every_live_sqlite_store_records_a_schema_version`,
+  `test_unstamped_database_is_stamped_as_version_one`,
+  `test_opening_a_future_version_database_raises`,
+  `test_opening_sessions_db_at_a_future_version_raises`,
+  `test_opening_runs_db_at_a_future_version_raises`,
+  `test_memory_index_rebuilds_instead_of_raising_on_version_mismatch`.
+
+### BB-138 — `.og` memory provenance always empty: `MemoryManager._session_id` was never assigned
+
+- **Symptom:** No fact the agent extracted for itself ever carried an
+  `->[:evidence=session:<id>]` edge in the `.og` memory graph, and every `event` node
+  from every session appended to a single `memory/journal/unknown.og` instead of
+  `journal/<session-id>.og`. Nothing errored. Session-close *episodes* routed
+  correctly, which made the breakage invisible — the same directory held both correct
+  and broken output.
+- **Root cause:** `MemoryManager.sync_turn` read the session id with
+  `getattr(self, "_session_id", "")` — the only occurrence of `_session_id` in the
+  whole file, and a read. `__init__` never defined the attribute and no setter
+  existed, so the `getattr` default always won and the extraction job was enqueued
+  with `session_id=""`. That empty string flowed through `handle_extract_fact` →
+  `extract_facts` → `MemoryNode(session_id="")` → `MemoryWriter.write_nodes`, where
+  `_node_block` skips the `evidence` edge entirely when the id is falsy and `_route`
+  falls back to `journal/unknown.og`.
+- **Fix:** Declared `self._session_id: str = ""` in `MemoryManager.__init__`, added
+  `set_session_id()` beside the existing `set_vault`/`set_memory_writer` setters,
+  replaced the `getattr` with a direct attribute read in `sync_turn`, and had
+  `AgentSession.set_session_store` propagate the real id via
+  `self.memory.set_session_id(...)` right after `store.start_session()`.
+- **Avoid:** never `getattr(self, "_own_attribute", default)` on your own class — it
+  converts an `AttributeError` you would fix in minutes into a silent default you ship
+  for a year. If an attribute is optional, declare it in `__init__` with its default.
+- **Locked by:** `tests/test_memory_session_provenance.py` —
+  `test_sync_turn_enqueues_job_with_real_session_id` (behavioural lock),
+  `test_written_node_carries_evidence_session_edge` and
+  `test_event_nodes_route_to_the_real_session_journal` (on-disk contract).
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

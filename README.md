@@ -206,6 +206,9 @@ OpenCode users can point tools at.
 > See **[docs/guides/configuration.md](docs/guides/configuration.md)** for the full environment-variable and
 > settings reference.
 
+> Writing a third-party pack or tool against Hachi? **[docs/guides/sdk.md](docs/guides/sdk.md)**
+> documents `hachi.sdk` — the supported, typed, semver'd public surface for pack authors.
+
 ---
 
 ## Quick Start
@@ -482,7 +485,7 @@ hachi/
 ├── Dockerfile                            # Gateway service image
 ├── AGENTS.md                             # Contributor guidance for coding agents
 ├── docs/                                  # Documentation (see docs/README.md for the map)
-│   ├── guides/                            # How-to: configuration, cookbook, memory, git-sync, releasing
+│   ├── guides/                            # How-to: configuration, cookbook, memory, git-sync, releasing, sdk
 │   ├── reference/                         # objectgraph-spec.md, benchmark.md, og-security.md
 │   ├── architecture/                      # Design docs + ADRs (adr/)
 │   ├── DECISIONS.md  ·  AUDIT.md          # Running decision log + architecture review
@@ -618,7 +621,6 @@ data_dir/
 
 state_dir/
 ├── sessions.db                # Session/message persistence
-├── tui_state.db               # Textual UI state
 └── onboarding_state.json      # Setup progress
 ```
 

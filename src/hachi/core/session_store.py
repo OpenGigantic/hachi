@@ -22,6 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from hachi.core.migrations import apply_migrations, ensure_schema_version
 from hachi.core.paths import get_hachi_paths
 
 logger = logging.getLogger(__name__)
@@ -155,32 +156,34 @@ class SessionStore:
         self._migrate_schema()
 
     def _migrate_schema(self) -> None:
-        """Apply additive migrations to databases created by older versions.
+        """Stamp/verify the schema version, then apply migrations for older databases.
 
         ``CREATE TABLE IF NOT EXISTS`` leaves a pre-existing ``sessions`` table
         untouched, so a column added to the definition above never reaches an
         already-created DB. Adding it explicitly (idempotent) keeps old stores
         forward-compatible.
         """
-        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(sessions)")}
-        if "title" not in existing:
-            self._conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
-            self._conn.commit()
-        if "total_tokens" not in existing:
-            self._conn.execute("ALTER TABLE sessions ADD COLUMN total_tokens INTEGER DEFAULT 0")
-            self._conn.commit()
-        if "total_cost_usd" not in existing:
-            self._conn.execute("ALTER TABLE sessions ADD COLUMN total_cost_usd REAL DEFAULT 0.0")
-            self._conn.commit()
-        # C1: session ownership — NULL for legacy rows (backward-compat = allow access).
-        if "owner_token_hash" not in existing:
-            self._conn.execute("ALTER TABLE sessions ADD COLUMN owner_token_hash TEXT")
-            self._conn.commit()
+        # T-54: stamp/verify schema_version FIRST, before any migration runs, so a
+        # database written by a newer build fails loudly here instead of being
+        # silently altered by this (older) build's migration list. SessionStore is
+        # the sole owner of this version row — sessions.db also has a second,
+        # independent schema author (CorrectionLog -> profile_corrections in
+        # core/user_profile.py, out of scope for this task) that does not
+        # participate in it (see docs/DECISIONS.md, T-54 ADR).
+        ensure_schema_version(self._conn, current=1)
+
+        apply_migrations(
+            self._conn,
+            "sessions",
+            [
+                ("title", "TEXT"),
+                ("total_tokens", "INTEGER DEFAULT 0"),
+                ("total_cost_usd", "REAL DEFAULT 0.0"),
+            ],
+        )
         # Bug 6: messages.model column was added after initial release.
-        msg_existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(messages)")}
-        if "model" not in msg_existing:
-            self._conn.execute("ALTER TABLE messages ADD COLUMN model TEXT")
-            self._conn.commit()
+        apply_migrations(self._conn, "messages", [("model", "TEXT")])
+
         # B8: replace single-column idx_msg_session with composite (session_id, id).
         # The composite covers both "all messages for a session" and "messages after
         # cursor X in a session" without write-amplification from two overlapping indexes.
@@ -236,46 +239,6 @@ class SessionStore:
             self._conn.commit()
         logger.debug("Session started: %s (model=%s)", session_id, model)
         return session_id
-
-    def set_session_owner(self, session_id: str, owner_token_hash: str) -> None:
-        """Persist the sha256 hex-digest of the bearer token that created this session.
-
-        C1 — session ownership: called immediately after session creation so that
-        subsequent requests can verify ownership before granting access.
-
-        Args:
-            session_id: The session to tag.
-            owner_token_hash: sha256(bearer_token).hexdigest() for the creating caller.
-        """
-        with self._lock:
-            self._conn.execute(
-                "UPDATE sessions SET owner_token_hash = ? WHERE id = ?",
-                (owner_token_hash, session_id),
-            )
-            self._conn.commit()
-        logger.debug("Session owner set: %s", session_id)
-
-    def get_session_owner(self, session_id: str) -> str | None:
-        """Return the stored owner_token_hash for *session_id*, or None if not set.
-
-        C1 — NULL means the session was created before ownership tracking was
-        introduced; callers should allow access in that case (backward-compat).
-
-        Args:
-            session_id: The session to look up.
-
-        Returns:
-            The sha256 hex-digest string, or None for legacy / anonymous sessions.
-        """
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT owner_token_hash FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        owner: str | None = row["owner_token_hash"]
-        return owner
 
     def end_session(self, session_id: str) -> None:
         """Mark a session as ended and record the final turn count.
