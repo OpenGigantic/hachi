@@ -3608,22 +3608,35 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   **inside** `write_global_config()`/`write_global_config_dict()`; `provider_admin.py`'s
   own three `with _CONFIG_LOCK:` blocks were removed (a plain `threading.Lock` is not
   reentrant — leaving both would self-deadlock the first provider write).
-  **One site is a known, tracked gap, not an oversight:** `gateway/fastapi_app.py:2535`
-  (the Tavily-connector-configured-via-UI persist of `[search] provider = "tavily"`) is
-  still on the old merged `write_global_config()` path — it was out of scope for this pass
-  (file owned by a concurrent agent in the same wave) and should be converted with the same
-  `read_global_config_file()`/`write_global_config_dict()` pattern as a follow-up.
+  **One site was a known, tracked gap, not an oversight — closed by the T-15 follow-up
+  below:** `gateway/fastapi_app.py`'s Tavily-connector-configured-via-UI persist of
+  `[search] provider = "tavily"` (inside `post_credentials`) was still on the old merged
+  `write_global_config()` path — out of scope for this pass (file owned by a concurrent
+  agent in the same wave).
 - **Avoid:** never persist the output of a layered/merged config resolver. Read the layer
   you own, mutate it, write it back. A writer that reads `load_effective_config()` is a
   bug — including one wired into an agent-facing tool, which is easy to miss because it
   doesn't look like a "settings page."
 - **Locked by:** `tests/test_config_write_file_layer.py` —
   `test_env_override_is_not_persisted_by_unrelated_write` (drives
-  `provider_admin.add_or_update_provider`) and
+  `provider_admin.add_or_update_provider`),
   `test_env_override_is_not_persisted_by_set_agent_config_tool` (drives the LLM-facing
-  `set_agent_config` tool via `register_config_tools` + a real `ToolRegistry`). Both set
+  `set_agent_config` tool via `register_config_tools` + a real `ToolRegistry`), and
+  `test_tavily_credentials_persist_does_not_leak_env_override` (T-15 follow-up, below —
+  drives the real `POST /integrations/tavily/credentials` route). All three set
   `HACHI_PERMISSION_TIER` and assert on the bytes of `settings.toml` on disk, not on a
   returned object.
+- **Follow-up fix (closed, T-15):** converted the Tavily persist inside
+  `post_credentials`'s `_store_all` closure (`gateway/fastapi_app.py`) from
+  `load_effective_config()` / `write_global_config()` to
+  `read_global_config_file()` / `write_global_config_dict()`, mutating a plain
+  `dict(doc.get("search") or {})` (so any other `[search]` keys already on disk — e.g.
+  `max_calls_per_turn` — survive) and writing the dict back, same pattern as the other 12
+  writers. Reproduced first, not assumed: with the old code, seeding `settings.toml` with
+  only `[agent] name = "Hachi"`, setting `HACHI_PERMISSION_TIER=unrestricted`, then POSTing
+  a Tavily API key through the real route baked the *entire* merged config — every
+  section's defaults, including `tier = "unrestricted"` — into the file, the same shape as
+  the original bug. Confirms the tracked gap was live, not theoretical.
 
 ### BB-125 — `ProcessSharedServices.session_store` was read in three places and declared in none (BB-42 recurrence)
 
@@ -3771,6 +3784,222 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   approve/reject/404 + the debug→warning logging fix) and
   `frontend/src/lib/data/domains/memoryGardener.test.ts` (6 tests: adapter shape
   + the BB-106 non-optimistic decision pattern).
+
+### BB-127 — ~4,100 green tests could not detect nine completely dead features
+
+- **Symptom:** nine shipped features were inert in production while the full
+  suite passed: the kennel installed nothing (BB-98), routing cost warnings
+  were always empty (BB-93), three `[memory]` settings were ignored (BB-99),
+  `[eval_reports]` was stripped from config and its own key reported back to
+  the user as unknown (BB-101), MemoryGardener never ran (BB-126),
+  `file.extracted` reached nobody (BB-96), the shared `session_store` was
+  never assigned (BB-125), auto-memory was a no-op for non-env-var users
+  (BB-100), and two implemented provider kinds were rejected by the schema
+  (BB-121).
+- **Root cause:** the suite verified **units**, never **wiring**. Every one of
+  the nine had a green unit test — some had two (the kennel's
+  `tests/test_p2_12_agent_packs.py`, which tested the pack module directly
+  that no production code imported, and `tests/test_g1_wave1.py`, which
+  stubbed the gateway handler). No test in the repo called the real
+  `boot_agent`; the two that mentioned it (`tests/test_cold_start_resume.py`,
+  `tests/test_gateway_runtime_validation.py`) both substituted a fake.
+  Combined with the `except Exception: pass` / `getattr(x, "field", None)`
+  idiom at feature boundaries, there was no mechanism — test or runtime — by
+  which a dead feature could announce itself.
+- **Fix:** added `tests/test_feature_liveness.py` — nine tests, one per
+  formerly-dead feature, asserting a live object, a real file, or a real bus
+  delivery (never a mock's recorded call) — and wired it into
+  `scripts/preflight.py` as a **blocking** step ("feature liveness (boot
+  smoke)"), placed right after "eval regression". Four tests (T-06/T-08/T-09/
+  T-10) share ONE real `boot_agent()` boot into an isolated `tmp_path`
+  profile (module-scoped fixture `live_session`); five (T-04/T-05/T-07/T-11/
+  T-12) construct their own tiny isolated environment or are pure functions,
+  because forcing all nine through one boot would not have made the suite
+  more correct, only slower. Measured wall time ~8-13s — kept `in_quick=True`
+  so the fast inner loop still catches the next dead feature. Every assertion
+  was verified failing against its pre-fix shape: five (T-04, T-05, T-07,
+  T-11, T-12) by an actual temporary revert-and-run (Edit the file back to
+  the exact code quoted in the T-0x task spec's "Verified current state",
+  run only that one test, observe the original error, restore, confirm
+  `git diff` is empty); four (T-06, T-08, T-09, T-10) by a grounded argument
+  citing the exact before/after code, because reverting them would have
+  meant editing multiple files (including one this task was explicitly told
+  not to touch) and re-paying the ~9s boot cost per attempt for no added
+  certainty the argument does not already provide.
+- **Avoid:** a unit test that constructs the subject itself, or stubs the
+  handler under test, proves nothing about whether production reaches it.
+  When you ship a feature, add one assertion that the COMPOSITION ROOT wires
+  it — and prove the assertion fails without the wiring. "Tests pass" is not
+  "the feature works". Feature-liveness is boot wiring, not loop mechanics:
+  it belongs in a dedicated suite, NOT in the `hachi eval run` corpus, which
+  scripts the LLM transport (`ScriptedLLMClient.generate` discards
+  `**kwargs`) and asserts on turn trajectories — it structurally cannot see a
+  prompt/feature regression.
+  Two traps this suite's own construction hit, worth naming because the next
+  boot-time test will hit them too: (1) **path isolation is not one
+  `get_hachi_paths` patch.** `boot_agent()`'s call graph resolves paths
+  through *at least six* independent module-level bindings
+  (`hachi.gateway.orchestrator`, `hachi.gateway.workspace`,
+  `hachi.core.session_store`, `hachi.core.secret_store`,
+  `hachi.core.config_loader`, `hachi.og_engine.engine` — each does its own
+  `from hachi.core.paths import get_hachi_paths` at module scope, freezing
+  an independent binding at first import), plus a completely unrelated
+  `PlatformDirs("hachi", "opengigantic")` call inside
+  `hachi.jobs.queue._default_db_path()` that `get_hachi_paths()` has no say
+  over at all. Patching only the one target a spec names and trusting that
+  is sufficient is how a "hermetic" test writes into the developer's real
+  `%LOCALAPPDATA%\hachi` — verify by scanning `sys.modules` for every
+  live binding, not by hand-listing one. (2) **a module-scoped boot fixture
+  and a function-scoped autouse singleton-clearer (`tests/conftest.py`'s
+  `_reset_process_shared_services`) fight, and the autouse fixture wins even
+  on the FIRST test** — pytest sets up the broader-scoped fixture first, so
+  the clear lands after the boot but before every test body, including the
+  one that triggered the boot. The booted objects stay alive (the fixture
+  holds a live reference), but `ProcessSharedServices.instance()` returns
+  `None` inside the test unless something re-registers the singleton under
+  its fingerprint before reading it — do that explicitly per test that needs
+  it; do not fight conftest by trying to make the fixture avoid the clear.
+- **Locked by:** `tests/test_feature_liveness.py` — the whole file (nine
+  tests: `test_liveness_t04_kennel_lists_and_installs_bundled_packs` …
+  `test_liveness_t12_provider_kinds_schema_accepts_gemini_and_chatgpt_web`);
+  `scripts/preflight.py` step "feature liveness (boot smoke)".
+
+### BB-128 — `GET /approvals` bypassed the control plane and fabricated an `expiresAt` deadline the registry never recorded
+
+- **Symptom:** Every pending approval came back with a camelCase `expiresAt = <fetch
+  time> + 60s` — identical across all entries in a response, unrelated to when the
+  request was actually created, and a window that also understated the real
+  `RegistryApprover` timeout (180 s) by 3x. Cosmetic only: the frontend discarded the
+  field (`approvals.ts` hardcodes `expiresAt: 0`), so nothing rendered from it, and it
+  was **not** the cause of the BB-77 auto-decline (CORRECTIONS.md R1 refutes that link
+  on two independent grounds — the frontend never reads the field, and BB-77's real
+  cause, `0 <= Date.now()` always being true, was already fixed). Structurally,
+  `GET /approvals` and `POST /approvals/{id}` were also the **only** routes in
+  `fastapi_app.py` reaching past `GatewayControlPlane` straight into
+  `core.approvals.get_approval_registry()` — every other route (100+ call sites) goes
+  through `control_plane.*`.
+- **Root cause:** `get_approvals()` injected a hardcoded 60 s TTL into any entry missing
+  an `expiresAt` key, to satisfy a countdown the UI never consumed — computed **once per
+  request** (`now + 60s`), not per pending entry, so it was a clock reading, not a
+  deadline. Both approvals routes imported and called `get_approval_registry()` directly
+  instead of going through the control-plane seam like everything else in the file.
+- **Fix:** Added `pending_approvals()` / `resolve_approval(request_id, action,
+  rationale="")` to `GatewayControlPlane` (`gateway/control_plane.py`), backed by two new
+  `_InProcessGatewayRuntime` methods of the same names (`cli/main.py`) — the only places
+  `get_approval_registry()` is now touched from the gateway edge. Wired unconditionally
+  in `_build_gateway_control_plane` via `support.*` (the registry is a process singleton,
+  not gated on a live `AgentSession` — mirrors `get_capabilities=support.capabilities`).
+  `get_approvals()` now returns `{"pending": control_plane.pending_approvals()}`
+  verbatim — no injection loop, no local `import datetime`. `post_approval_decision()`
+  calls `control_plane.resolve_approval(request_id, payload.action, payload.rationale)`;
+  `PermissionDecision` construction moved into `_InProcessGatewayRuntime.resolve_approval`,
+  so `fastapi_app.py` no longer imports `get_approval_registry` or `PermissionDecision` at
+  all. **Reconciled with T-16** (landed first): `PendingApprovalRegistry.list_pending()`
+  already carries real `created_at` / `expires_at` (epoch ms, snake_case, `expires_at is
+  None` when parked without a timeout) — the route now passes these through unchanged
+  instead of colliding with them under a different (camelCase, fabricated) key. Per
+  CORRECTIONS.md §2/R1, this is an honesty/layering cleanup, not a user-facing bug fix —
+  the frontend behaviour is unchanged.
+- **Avoid:** never synthesise a field the backing store does not hold — a fabricated
+  timestamp reads as more authoritative than an honestly absent one. If a client needs a
+  value the store doesn't track, add it to the store first (T-16), then route the read
+  through the seam every other endpoint uses — don't let one router grow a private
+  exception to "everything goes through `GatewayControlPlane`."
+- **Test correction, not a weakening (CORRECTIONS.md "Four tests will legitimately fail",
+  item 4):** `test_get_approvals_returns_pending_list_with_token` previously asserted
+  `body["pending"] == pending`, where `pending` was the *same list object* the old route
+  mutated in place to inject `expiresAt` — so the assertion passed *because* of the
+  fabrication, not despite it (an aliasing trap: mutate-then-compare-to-the-same-object
+  cannot detect the mutation). Routing through the control plane also moved the test's
+  patch target — `hachi.gateway.fastapi_app.get_approval_registry` no longer exists, by
+  design. Rewritten to inject via `GatewayControlPlane(list_pending_approvals=...)` and
+  assert against a freshly-built literal, which would catch either an added or a dropped
+  field. The five `POST /approvals/{id}` tests and the (previously unused and, on
+  inspection, already-broken — its own `with patch(...):` block closed before the
+  returned client was ever used) `_make_app_with_fake_registry` helper in the same class
+  needed the identical patch-target migration; rewritten to inject `resolve_approval=`
+  and assert on the `(request_id, action, rationale)` tuple the route forwards — a
+  strictly more precise check of the route's actual contract with the control plane than
+  the old test's dig into a `PermissionDecision` stand-in's attributes.
+- **Locked by:** `tests/test_gateway_auth_default.py` —
+  `test_get_approvals_does_not_fabricate_expires_at` (new; injects a stub via
+  `GatewayControlPlane(list_pending_approvals=...)` shaped like T-16's real
+  `list_pending()` output — 8 keys including `created_at`/`expires_at` — and asserts no
+  `expiresAt` key is added and `created_at`/`expires_at` pass through unchanged) plus the
+  corrected `test_get_approvals_returns_pending_list_with_token` and the five
+  `test_post_approval_*` tests described above.
+
+### BB-129 — The SSE/events read model silently clamped a stale cursor instead of signalling the gap
+
+- **Symptom:** a client that reconnected with a cursor older than the 2,000-entry ring-buffer
+  trim received a continuous-looking event stream that silently started from the oldest
+  surviving event — everything between its cursor and that survivor (tool calls, approvals,
+  assistant text) was simply missing, with no error, no warning, and nothing in the response
+  that let the client tell "sequence 6..100 never existed" apart from "sequence 6..100 was
+  dropped." A repo-wide grep for `gap|truncat|dropped|missed` found no gap-signalling mechanism
+  anywhere in the codebase before this fix.
+- **Root cause:** `RuntimeReadModelStore.read_events_since` (`core/runtime_read_models.py`)
+  computed `base = self._events[0].sequence`, clamped `start = max(0, after - base + 1)` to
+  avoid a wrong tail-slice wrap, then discarded `base`. Every hop after it —
+  `AgentSession.snapshot_events_since` (`gateway/orchestrator.py`) →
+  `_InProcessGatewayRuntime.read_events` (`cli/main.py`) →
+  `GatewayControlPlane.read_session_events` (`gateway/control_plane.py`) →
+  `SessionEventsResponse` (`gateway/fastapi_app.py`) — carried only the events, never the base.
+  The clamp itself was correct (and stays); the silence around it was the bug.
+- **Fix:** added `RuntimeReadModelStore.oldest_sequence()` (returns the oldest retained
+  sequence, or 0 when empty) and threaded it through all five hops as a **separate scalar** —
+  `AgentSession.snapshot_events_base()` → `_InProcessGatewayRuntime.read_events_base()` → a new
+  `GatewayControlPlane(read_events_base=...)` constructor kwarg (defaults to `None`, emits
+  `base_sequence: 0` when unwired so the many hand-built `GatewayControlPlane` tests keep
+  working) → a new `base_sequence: int` field on `SessionEventsResponse`. The history-replay
+  branch of `read_session_events` also emits `base_sequence: 0` explicitly — it has its own
+  sequence space and no ring, so there is nothing meaningful to report, but the field must be
+  present so the response shape is uniform. Client-side rule: a gap occurred iff
+  `base_sequence > after + 1`. Also corrected the `stream_session_events` route docstring,
+  which claimed the frontend uses `EventSource` (auto-reconnecting) — it actually uses
+  `fetch` + `ReadableStream` (`frontend/src/lib/data/sse.ts`) and does **not** auto-reconnect;
+  callers own retry/backoff.
+- **Design note:** `read_events_since`'s return *type* was deliberately left untouched (still a
+  bare `tuple[RuntimeEventSnapshot, ...]`) rather than turned into a `(base, events)` pair,
+  because several call sites already index/compare it directly — a type change would have
+  rippled through those call sites and broken the existing B4 tests structurally instead of
+  just extending them. `oldest_sequence()` takes the store's lock separately from
+  `read_events_since()`, so a trim can land between the two calls; the only consequence is a
+  harmless false-positive gap (a spurious client refetch), never a false negative, so no
+  cross-call atomicity was added.
+- **Avoid:** when a read path silently repairs a caller's bad/stale input (a clamp, a
+  default-fill, a truncation), the repair itself is fine but it MUST be reported back to the
+  caller. Clamping in silence is a data-integrity bug, not a robustness feature.
+- **Also noted, NOT fixed (out of scope — CORRECTIONS.md §3.7/§9):**
+  `GatewayControlPlane._synthesize_history_events` replays stored transcripts in a *separate*
+  sequence space starting at `seq = 0`, so a client that streams live, disconnects, then
+  refetches once the session is no longer live gets colliding `id:` cursors between the live
+  ring and history replay. Left alone per the task spec — a durable unified sequence space is
+  a bigger design question than this fix.
+- **Test correction, not a weakening (CORRECTIONS.md "Four tests will legitimately fail",
+  item 2):** `tests/test_runtime_read_models.py`'s B4 trim-underflow contract
+  (`test_read_events_since_stale_after_clamps_to_oldest_surviving` and
+  `test_read_events_since_parity_with_scan_after_trim`) previously asserted only that the
+  clamp happened. Every existing assertion in both was kept unchanged (the clamp is still
+  correct); each gained one new assertion pinning `oldest_sequence()` against the same trimmed
+  buffer, so the tests now also cover that the skip is *detectable*, not just survived.
+  `tests/test_gateway_runtime_validation.py::test_runtime_event_buffer_caps_at_2000_and_handles_sparse_cursors`
+  was amended the same way: its existing end-to-end assertions (`len == 2000`,
+  `a_events[0].sequence == 106`) are untouched; it gained an assertion that
+  `runtime.read_events_base(...)` reports the same `106`, proving the value survives the hop
+  from store to runtime. That test's local `_StoreBackedAgent` fake (standing in for
+  `AgentSession`) needed a `snapshot_events_base()` method added to match the widened real
+  interface — a test-double update, not a contract change.
+- **Locked by:** `tests/test_runtime_read_models.py` —
+  `test_read_events_since_exposes_gap_after_trim` (new primary lock) and
+  `test_oldest_sequence_reports_no_gap_for_cursor_within_bounds` (new; pins that an in-bounds
+  cursor gets no false gap), plus the amended
+  `test_read_events_since_stale_after_clamps_to_oldest_surviving` and
+  `test_read_events_since_parity_with_scan_after_trim`;
+  `tests/test_gateway_runtime_validation.py::test_runtime_event_buffer_caps_at_2000_and_handles_sparse_cursors`
+  (amended); `tests/test_gateway_sse.py::test_session_events_response_carries_base_sequence`
+  (new — proves the value reaches the actual JSON response body through the real ASGI app, for
+  both a stale cursor (gap signalled) and an in-bounds cursor (no false gap)).
 
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,

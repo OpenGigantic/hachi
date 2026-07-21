@@ -30,10 +30,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-# UC-PERM-006: approvals inbox REST surface. core/approvals.py is a foundation
-# module that is always present, so these imports are direct.
-from hachi.core.approvals import get_approval_registry
-from hachi.core.permissions import PermissionDecision
 from hachi.core.rate_limit import RateLimiter
 from hachi.core.untrusted_content import guard_untrusted
 from hachi.gateway.control_plane import (
@@ -133,6 +129,12 @@ class SessionEventsResponse(BaseModel):
     session_id: str
     events: list[GatewayEventPayload]
     next_sequence: int
+    # T-30: oldest sequence still retained by the live event ring (0 when the
+    # buffer is empty, or on the history-replay branch which has no ring). A gap
+    # occurred iff base_sequence > after + 1, where `after` is the cursor the
+    # client sent — this lets a reconnecting client detect it read past the
+    # 2000-entry trim boundary instead of silently rendering a truncated stream.
+    base_sequence: int
 
 
 class SessionCloseResponse(BaseModel):
@@ -1279,8 +1281,14 @@ def create_gateway_app(
         """Server-Sent Events stream of runtime events — replaces client polling.
 
         Pushes events as they arrive, then closes after ``max_idle_cycles`` idle
-        polls (an EventSource auto-reconnects, so this stays cheap and robust).
-        Clients resume with the last ``id`` they saw via the ``after`` query param.
+        polls. The frontend consumes this with ``fetch`` + ``ReadableStream``
+        (``frontend/src/lib/data/sse.ts``), not the native ``EventSource`` API
+        (which cannot set an ``Authorization`` header) — it does **not**
+        auto-reconnect; callers own their own retry/backoff policy. Clients that
+        do reconnect resume with the last ``id`` they saw via the ``after`` query
+        param; compare the resumed response's ``base_sequence`` against that
+        cursor to detect whether events were dropped by the ring buffer's trim
+        while disconnected (T-30).
         """
         # C1: ownership check before any streaming starts.
         _check_session_ownership(session_id, _require_auth(request))
@@ -2106,29 +2114,20 @@ def create_gateway_app(
 
         Returns:
             A JSON object ``{"pending": [...]}`` with every unresolved request
-            from the approval registry.  Each entry includes ``expiresAt``
-            (MED-021) — an ISO-8601 timestamp so that the frontend countdown
-            timer can render.
+            from the approval registry, exactly as
+            ``PendingApprovalRegistry.list_pending()`` returns it (T-16):
+            ``request_id``, ``operation``, ``tool``, ``target``, ``reason``,
+            ``policy_summary``, ``created_at``, ``expires_at``. ``created_at``/
+            ``expires_at`` are epoch milliseconds; ``expires_at`` is ``None``
+            when the entry was parked without an enforced timeout. No field on
+            this response is fabricated by the gateway (T-15).
         """
         if not _APPROVALS_AVAILABLE:
             raise HTTPException(
                 status_code=503,
                 detail="Approvals module not yet available — Agent A module pending.",
             )
-        import datetime as _dt
-
-        # MED-021: annotate each pending request with a conservative expiresAt.
-        # The real per-request timeout is tracked inside RegistryApprover; here
-        # we use a 60 s window that covers the default approval timeout.  Forward-
-        # compatible: if the registry ever adds expiresAt itself, we skip injection.
-        _default_ttl_s = 60
-        _now = _dt.datetime.now(_dt.UTC)
-        _expires_at = (_now + _dt.timedelta(seconds=_default_ttl_s)).isoformat()
-        pending = get_approval_registry().list_pending()
-        for item in pending:
-            if "expiresAt" not in item:
-                item["expiresAt"] = _expires_at
-        return {"pending": pending}
+        return {"pending": control_plane.pending_approvals()}
 
     @approvals_router.post("/{request_id}")
     async def post_approval_decision(
@@ -2146,7 +2145,7 @@ def create_gateway_app(
 
         Raises:
             404: When ``request_id`` is not found in the registry.
-            422: When ``action`` is not a valid :class:`PermissionDecision` action.
+            422: When ``action`` is not one of ``approve``/``deny``/``allow_once``.
         """
         if not _APPROVALS_AVAILABLE:
             raise HTTPException(
@@ -2159,8 +2158,7 @@ def create_gateway_app(
                 status_code=422,
                 detail=f"action must be one of: {', '.join(sorted(valid_actions))}",
             )
-        decision = PermissionDecision(action=payload.action, rationale=payload.rationale)
-        resolved = get_approval_registry().resolve(request_id, decision)
+        resolved = control_plane.resolve_approval(request_id, payload.action, payload.rationale)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Unknown request_id: {request_id}")
         return {"resolved": True}
@@ -2587,15 +2585,21 @@ def create_gateway_app(
             if connector_id == "tavily":
                 try:
                     from hachi.core.config_loader import (
-                        load_effective_config,
-                        write_global_config,
+                        read_global_config_file,
+                        write_global_config_dict,
                     )
 
-                    _cfg = load_effective_config()
-                    if _cfg.search.provider != "tavily":
-                        _new_search = _cfg.search.model_copy(update={"provider": "tavily"})
-                        _new_cfg = _cfg.model_copy(update={"search": _new_search})
-                        write_global_config(_new_cfg)
+                    # BB-124: read the FILE layer only — never load_effective_config(),
+                    # whose merged view (defaults + file + env + CLI) would otherwise
+                    # get baked back into settings.toml by the write below (this was
+                    # the one writer T-03 could not reach — file owned by a concurrent
+                    # agent in that wave; converted here as the tracked follow-up).
+                    _doc = read_global_config_file()
+                    _search = dict(_doc.get("search") or {})
+                    if _search.get("provider") != "tavily":
+                        _search["provider"] = "tavily"
+                        _doc["search"] = _search
+                        write_global_config_dict(_doc)
                         _log.info(
                             "post_credentials: persisted [search] provider='tavily'"
                             " to settings.toml"

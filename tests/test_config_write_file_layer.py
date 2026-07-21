@@ -19,9 +19,13 @@ mechanism could, in principle, be used correctly.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+from fastapi.testclient import TestClient
 
 from hachi.core.paths import HachiPaths
+from hachi.gateway.control_plane import GatewayControlPlane
+from hachi.gateway.fastapi_app import create_gateway_app
 
 
 def _paths(tmp_path: Path) -> HachiPaths:
@@ -108,3 +112,50 @@ def test_env_override_is_not_persisted_by_set_agent_config_tool(
     assert "unrestricted" not in text, f"env override leaked into settings.toml:\n{text}"
     assert "[permissions]" not in text, f"unwritten section persisted:\n{text}"
     assert "Renamed" in text
+
+
+def test_tavily_credentials_persist_does_not_leak_env_override(tmp_path: Path, monkeypatch) -> None:
+    """BB-124 follow-up: the Tavily-connector-configured-via-UI persist of
+    ``[search] provider = "tavily"`` was the one writer T-03 flagged but could
+    not reach — ``gateway/fastapi_app.py``'s ``POST /integrations/tavily/credentials``
+    handler, still on the old merged ``load_effective_config()`` /
+    ``write_global_config()`` path (file owned by a concurrent agent in that
+    wave). Converted here to ``read_global_config_file()`` /
+    ``write_global_config_dict()`` (T-15), same pattern as every other writer.
+
+    Drives the REAL POST /integrations/tavily/credentials route (not the
+    config_loader functions in isolation), matching this file's existing
+    convention of proving actual entry points, not just the underlying
+    mechanism in isolation.
+    """
+    paths = _paths(tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.global_config_toml.write_text('[agent]\nname = "Hachi"\n', encoding="utf-8")
+
+    monkeypatch.setenv("HACHI_PERMISSION_TIER", "unrestricted")
+
+    stored: dict[str, str] = {}
+    vault = MagicMock()
+    vault.set_token.side_effect = lambda k, v: stored.__setitem__(k, v)
+    vault.get_token.side_effect = lambda k: stored.get(k)
+
+    with (
+        patch("hachi.core.config_loader.get_hachi_paths", return_value=paths),
+        patch("hachi.integrations.oauth_flow.CredentialVault", return_value=vault),
+    ):
+        client = TestClient(create_gateway_app(GatewayControlPlane()))
+        resp = client.post(
+            "/integrations/tavily/credentials",
+            json={"fields": {"tavily_api_key": "tvly-test-key"}},
+        )
+
+    assert resp.status_code == 200, resp.text
+
+    text = paths.global_config_toml.read_text(encoding="utf-8")
+    # The actual mutation still landed.
+    assert 'provider = "tavily"' in text, f"[search] provider was not persisted:\n{text}"
+    # The transient env override must NOT leak into the file.
+    assert "unrestricted" not in text, f"env override leaked into settings.toml:\n{text}"
+    assert "[permissions]" not in text, f"unwritten section persisted:\n{text}"
+    # The untouched [agent] section from the seed file must survive verbatim.
+    assert 'name = "Hachi"' in text

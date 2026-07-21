@@ -1077,6 +1077,10 @@ class AgentSession:
         """Sequenced events past ``after`` — the single source for gateway polling."""
         return self._read_models.read_events_since(after, limit=limit)
 
+    def snapshot_events_base(self) -> int:
+        """Oldest sequence still retained — lets a gateway caller detect a trim gap (T-30)."""
+        return self._read_models.oldest_sequence()
+
     def snapshot_memory_facts(self) -> dict:
         """Return grouped memory facts, blocked items, and proposed changes for the web UI.
 

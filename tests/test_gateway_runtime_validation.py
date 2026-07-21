@@ -72,6 +72,9 @@ class _StoreBackedAgent:
     def snapshot_events_since(self, after: int, limit: int = 100):
         return self._read_models.read_events_since(after, limit=limit)
 
+    def snapshot_events_base(self) -> int:
+        return self._read_models.oldest_sequence()
+
 
 def _fake_boot_agent(
     on_event=None, on_permission_request=None, resume_session_id=None, *, approval_surface=None
@@ -153,6 +156,13 @@ def test_runtime_event_buffer_caps_at_2000_and_handles_sparse_cursors(monkeypatc
     assert b_events[0].sequence == 106
     assert a_events[0].payload["text"] == "a-105"
     assert b_events[0].payload["text"] == "b-105"
+
+    # T-30: the base accessor must report the same oldest-surviving sequence the
+    # events themselves start from — proving the gap-signal value survives the
+    # hop from RuntimeReadModelStore.oldest_sequence() through
+    # AgentSession.snapshot_events_base() to _InProcessGatewayRuntime.read_events_base().
+    assert runtime.read_events_base("session-a") == 106
+    assert runtime.read_events_base("session-b") == 106
 
     sparse = runtime.read_events("session-a", after=2000, limit=200)
     assert len(sparse) == 105

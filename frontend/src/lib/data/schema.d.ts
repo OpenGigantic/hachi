@@ -463,8 +463,14 @@ export interface paths {
          * @description Server-Sent Events stream of runtime events — replaces client polling.
          *
          *     Pushes events as they arrive, then closes after ``max_idle_cycles`` idle
-         *     polls (an EventSource auto-reconnects, so this stays cheap and robust).
-         *     Clients resume with the last ``id`` they saw via the ``after`` query param.
+         *     polls. The frontend consumes this with ``fetch`` + ``ReadableStream``
+         *     (``frontend/src/lib/data/sse.ts``), not the native ``EventSource`` API
+         *     (which cannot set an ``Authorization`` header) — it does **not**
+         *     auto-reconnect; callers own their own retry/backoff policy. Clients that
+         *     do reconnect resume with the last ``id`` they saw via the ``after`` query
+         *     param; compare the resumed response's ``base_sequence`` against that
+         *     cursor to detect whether events were dropped by the ring buffer's trim
+         *     while disconnected (T-30).
          */
         get: operations["stream_session_events_sessions__session_id__stream_get"];
         put?: never;
@@ -1241,9 +1247,13 @@ export interface paths {
          *
          *     Returns:
          *         A JSON object ``{"pending": [...]}`` with every unresolved request
-         *         from the approval registry.  Each entry includes ``expiresAt``
-         *         (MED-021) — an ISO-8601 timestamp so that the frontend countdown
-         *         timer can render.
+         *         from the approval registry, exactly as
+         *         ``PendingApprovalRegistry.list_pending()`` returns it (T-16):
+         *         ``request_id``, ``operation``, ``tool``, ``target``, ``reason``,
+         *         ``policy_summary``, ``created_at``, ``expires_at``. ``created_at``/
+         *         ``expires_at`` are epoch milliseconds; ``expires_at`` is ``None``
+         *         when the entry was parked without an enforced timeout. No field on
+         *         this response is fabricated by the gateway (T-15).
          */
         get: operations["get_approvals_approvals_get"];
         put?: never;
@@ -1276,7 +1286,7 @@ export interface paths {
          *
          *     Raises:
          *         404: When ``request_id`` is not found in the registry.
-         *         422: When ``action`` is not a valid :class:`PermissionDecision` action.
+         *         422: When ``action`` is not one of ``approve``/``deny``/``allow_once``.
          */
         post: operations["post_approval_decision_approvals__request_id__post"];
         delete?: never;
@@ -2475,6 +2485,8 @@ export interface components {
             events: components["schemas"]["GatewayEventPayload"][];
             /** Next Sequence */
             next_sequence: number;
+            /** Base Sequence */
+            base_sequence: number;
         };
         /**
          * SessionInterruptResponse
