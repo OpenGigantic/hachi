@@ -16,6 +16,7 @@ used only when no resident worker is running.
 
 import json
 import logging
+import shutil
 import sqlite3
 import threading
 import time
@@ -29,6 +30,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from hachi.core.paths import get_hachi_paths
 from hachi.core.runtime_events import JOB_RETRY, JOB_SKIPPED
 
 logger = logging.getLogger(__name__)
@@ -596,13 +598,75 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
 """
 
 
-def _default_db_path() -> Path:
+def _legacy_jobs_db_path() -> Path:
+    """Where jobs.db lived before T-53 (CF-13): a second platformdirs root
+    (``PlatformDirs("hachi", "opengigantic")``) distinct from ``get_hachi_paths()``
+    and invisible to every path-based tool (backup, doctor, restore). Used only by
+    ``_migrate_legacy_jobs_db`` to locate a pre-T-53 install's file for one-time
+    migration — nothing else should resolve the live jobs.db through this.
+    """
     from platformdirs import PlatformDirs
 
     dirs = PlatformDirs("hachi", "opengigantic")
-    state_dir = Path(dirs.user_state_dir)
-    state_dir.mkdir(parents=True, exist_ok=True)
-    return state_dir / "jobs.db"
+    return Path(dirs.user_state_dir) / "jobs.db"
+
+
+def _migrate_legacy_jobs_db(target: Path) -> None:
+    """Move a legacy jobs.db (and its WAL sidecars) to ``target``, once.
+
+    - No-op if ``target`` already exists: never overwrite a live DB.
+    - No-op if the legacy file does not exist: fresh installs pay nothing.
+    - Moves the ``-wal``/``-shm`` sidecars *before* the main ``.db`` file, so
+      ``target.exists()`` — the interlock a concurrent boot checks — only turns
+      true once every part of the move has landed at the destination. A
+      partially-moved state can therefore never look "done" to a racing process.
+    - Uses ``shutil.move`` (works across volumes; ``Path.rename`` raises ``OSError``
+      across devices) rather than ``Path.rename``. WAL mode
+      (``PRAGMA journal_mode=WAL``, set in ``SQLiteJobQueue.__init__``) means the
+      sidecars can hold committed rows the main file does not yet have — moving
+      the ``.db`` alone can silently drop recent commits.
+    - Never raises: a boot must not die because a migration failed. Any failure
+      is logged at WARNING (not DEBUG) with both paths, and the legacy files are
+      left exactly where they were so nothing is lost; the caller falls back to a
+      fresh database at ``target``.
+    - The legacy directory itself is left behind, empty or not — removing
+      directories at boot is a footgun for a marginal tidiness gain.
+    """
+    if target.exists():
+        return
+    legacy = _legacy_jobs_db_path()
+    if not legacy.exists():
+        return
+    try:
+        for suffix in ("-wal", "-shm", ""):
+            src = legacy.with_name(legacy.name + suffix)
+            if src.exists():
+                shutil.move(str(src), str(target.with_name(target.name + suffix)))
+        logger.info("SQLiteJobQueue: migrated legacy jobs.db %s -> %s", legacy, target)
+    except Exception as exc:
+        logger.warning(
+            "SQLiteJobQueue: failed to migrate legacy jobs.db from %s to %s (%s) -- "
+            "starting a fresh database at the new path",
+            legacy,
+            target,
+            exc,
+        )
+
+
+def _default_db_path() -> Path:
+    """Canonical jobs.db path, migrating from the legacy opengigantic root once.
+
+    Before T-53 this resolved under ``PlatformDirs("hachi", "opengigantic")`` — a
+    second on-disk root invisible to ``get_hachi_paths()``-based tooling (backup,
+    doctor, export). Existing users' queued jobs are moved on first access by
+    ``_migrate_legacy_jobs_db``. The queue DB lives under the user *state* dir (not
+    the config dir), matching its SQLite siblings (sessions.db, tui_state.db,
+    memory_index.db, files.db).
+    """
+    target = get_hachi_paths().jobs_db
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _migrate_legacy_jobs_db(target)
+    return target
 
 
 class SQLiteJobQueue(JobQueue):

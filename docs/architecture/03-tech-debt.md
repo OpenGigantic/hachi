@@ -144,9 +144,12 @@ severity.
   risking stale reuse. **(inferred runtime implication)**
 - **Schema wider than write-path:** `ProviderKind` lists 7 kinds (`settings.py:8`) but
   `update_provider`/`validate_provider` accept only 3 (`cli/main.py:471,545`).
-- **Possible `jobs.db` path inconsistency:** `queue.py` uses `appauthor="opengigantic"`
+- ~~**Possible `jobs.db` path inconsistency:** `queue.py` uses `appauthor="opengigantic"`
   vs `paths.py` `appauthor=False` — may resolve to a different Windows folder unless the
-  orchestrator passes an explicit path. **(inferred — worth a one-line check)**
+  orchestrator passes an explicit path. **(inferred — worth a one-line check)**~~
+  **RESOLVED (T-53 / BB-131):** confirmed real, not just inferred — two different Windows
+  folders. `HachiPaths.jobs_db` now names the canonical path and `_default_db_path()`
+  migrates an existing legacy `jobs.db` (and its WAL sidecars) on first access.
 - **Dead `paths.tui_state_db`** (`paths.py:48`) — defined, zero consumers.
 - **Event-name leaks:** `job.retry`, `budget_exceeded`, `llm_retry`, `session_time_limit`
   are raw literals outside `runtime_events.py` — a typed bus contract would miss them.

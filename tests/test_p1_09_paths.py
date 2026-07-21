@@ -5,6 +5,7 @@ Invariants:
   2. RoleResolver: _roles_dir is under get_hachi_paths().data_dir.
   3. RoleResolver legacy shim: an existing ~/.hachi/skills/roles/ dir is checked as fallback.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -109,3 +110,31 @@ def test_role_resolver_lists_builtin_roles(tmp_path, monkeypatch, role):
 
     resolver = sub_agent_mod.RoleResolver()
     assert role in resolver.list_available_roles()
+
+
+# ---------------------------------------------------------------------------
+# SQLiteJobQueue path (T-53)
+# ---------------------------------------------------------------------------
+
+
+def test_jobs_db_uses_platformdirs_state_dir(tmp_path, monkeypatch):
+    """jobs.db resolves to state_dir/jobs.db on the canonical root (T-53)."""
+    import hachi.jobs.queue as queue_mod
+
+    mock_paths = _mock_paths(tmp_path)
+    mock_paths.state_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(queue_mod, "get_hachi_paths", lambda: mock_paths, raising=False)
+    # No legacy file to migrate here -- point the legacy lookup at a path that
+    # cannot exist so this test never touches the developer's real opengigantic
+    # root (the migration itself is covered by tests/test_jobs_db_path_migration.py).
+    monkeypatch.setattr(
+        queue_mod,
+        "_legacy_jobs_db_path",
+        lambda: tmp_path / "no-legacy" / "jobs.db",
+        raising=False,
+    )
+
+    # Compared against the HachiPaths property (not a hand-built literal) so this
+    # also fails with AttributeError in the pre-fix state where the property does
+    # not exist yet.
+    assert queue_mod._default_db_path() == mock_paths.jobs_db

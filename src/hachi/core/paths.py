@@ -92,6 +92,11 @@ class HachiPaths:
         """SQLite database for file metadata (Initiative E — file attachment platform)."""
         return self.state_dir / "files.db"
 
+    @property
+    def jobs_db(self) -> Path:
+        """SQLite database for the durable background job queue (T-53 / BB-131)."""
+        return self.state_dir / "jobs.db"
+
     def journal_shard_path(self, device_id: str | None = None) -> Path:
         """Per-device journal file path for conflict-free git sync.
 

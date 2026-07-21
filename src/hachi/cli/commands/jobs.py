@@ -14,17 +14,18 @@ jobs_app = typer.Typer(help="Manage the durable background job queue.")
 
 
 def _open_queue():  # type: ignore[return]
-    """Open the default SQLiteJobQueue using standard platform paths."""
-    from pathlib import Path
+    """Open the default SQLiteJobQueue using standard platform paths.
 
-    from platformdirs import PlatformDirs
-
+    Passing no ``db_path`` makes ``SQLiteJobQueue.__init__`` resolve through
+    ``hachi.jobs.queue._default_db_path()`` — the queue DB lives under the user
+    state dir (not the config dir). One resolution, one place: this used to
+    duplicate that lookup inline against a *different* platformdirs root
+    (T-53 / BB-131), which could silently split the CLI and the gateway onto two
+    different job databases.
+    """
     from hachi.jobs.queue import SQLiteJobQueue
 
-    # The queue DB lives under the user state dir (not the config dir).
-    dirs = PlatformDirs("hachi", "opengigantic")
-    db_path = Path(dirs.user_state_dir) / "jobs.db"
-    return SQLiteJobQueue(db_path=db_path)
+    return SQLiteJobQueue()
 
 
 @jobs_app.command("dead-letter")
