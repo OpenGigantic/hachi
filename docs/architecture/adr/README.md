@@ -24,6 +24,8 @@ outcome.
 | [0003](0003-event-bus-over-emit-funnel.md) | Event bus over the existing emit funnel | Proposed |
 | [0004](0004-durable-run-state-on-sqlite-job-substrate.md) | Durable run-state on the SQLite job substrate | Proposed |
 | [0005](0005-observability-correlation-and-injected-exporter.md) | Observability via correlation-id + injected exporter | Proposed |
+| [0006](0006-single-tenant-authz.md) | Single-tenant authorization: delete the per-session ownership layer | Accepted |
+| [0007](0007-sdk-public-surface.md) | `hachi.sdk` is the supported public surface | Accepted |
 
 > **Statuses are point-in-time and may lag implementation.** Several of these designs have
 > since shipped; the **outcome of record** for a shipped decision is its `DECISIONS.md` entry,
