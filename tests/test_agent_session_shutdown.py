@@ -16,32 +16,37 @@ from hachi.gateway.orchestrator import AgentSession
 
 
 def _minimal_agent_session() -> AgentSession:
-    """Build a minimal AgentSession instance touching only what shutdown() reads.
+    """Build a minimal AgentSession through the REAL constructor, touching only
+    what shutdown() reads.
 
-    Mirrors the ``_agent_with()`` pattern in tests/test_mcp_lifecycle.py:
-    ``AgentSession.__new__`` + manual attribute wiring, avoiding a full
-    ``boot_agent`` bootstrap (LLM client, vault, DB, etc.) for a pure
-    lifecycle/plumbing test.
+    T-45 (strengthened, not weakened): this fixture used to build the instance
+    via ``AgentSession.__new__`` + manual attribute wiring (mirroring the
+    ``_agent_with()`` pattern in tests/test_mcp_lifecycle.py), which bypasses
+    ``__init__`` entirely — it stayed green no matter what a constructor
+    change did, because it never actually called the constructor. It now goes
+    through the real ``AgentSession(...)`` call with only collaborators
+    mocked, so the ten previously-stashed-by-boot_agent attributes (schedule
+    runner, sub-agent client, browser controller, etc.) come from the
+    constructor's own defaults, and a dropped/renamed constructor argument
+    would fail this fixture with a real TypeError instead of staying silent.
     """
-    agent = AgentSession.__new__(AgentSession)
-    agent.loop = MagicMock()
-    agent.loop.llm_client = None
-    agent.memory = MagicMock()
-    agent.memory.history = []
-    agent.memory.vault = None
-    agent.vault = None
-    agent.integrations = MagicMock()
-    agent.mcp_manager = MagicMock()
-    agent.mcp_manager.server_count = 0
-    agent._schedule_runner = None
-    agent._resident_worker = None
-    agent._job_worker = None
-    agent._session_id = None
-    agent._session_store = None
-    agent._sub_agent_client = None
-    agent._browser_controller = None
-    agent._event_emitter = lambda *_a, **_kw: None
-    return agent
+    loop = MagicMock()
+    loop.llm_client = None
+    memory = MagicMock()
+    memory.history = []
+    memory.vault = None
+    mcp_manager = MagicMock()
+    mcp_manager.server_count = 0
+
+    return AgentSession(
+        loop=loop,
+        skill_engine=MagicMock(),
+        memory=memory,
+        integrations=MagicMock(),
+        mcp_manager=mcp_manager,
+        permission_gate=MagicMock(),
+        model_name="test-model",
+    )
 
 
 class TestAgentSessionShutdown:
