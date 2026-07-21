@@ -183,3 +183,43 @@ def test_stream_disconnect_does_not_interrupt_other_viewers() -> None:
     assert interrupted == [], (
         "SSE disconnect interrupted the session-global turn; it is connection-scoped"
     )
+
+
+def test_session_events_response_carries_base_sequence() -> None:
+    """T-30: GET /sessions/{id}/events exposes base_sequence on the wire, so a
+    reconnecting client can detect it read past a trim boundary instead of
+    silently rendering a stream with a hole in it.
+
+    Client-side gap rule (docs/audit/2026-07-19/tasks/T-30-sse-gap-signal.md §5):
+    a gap occurred iff ``base_sequence > after + 1``. Driven through the real ASGI
+    app with a hand-wired GatewayControlPlane (the pattern at :22-36 above), so
+    this proves the value survives the hop from the runtime accessor into the
+    actual JSON response body — not just that an internal counter clamped.
+    """
+    cp = GatewayControlPlane(read_events=_read_events, read_events_base=lambda _session_id: 5)
+    app = create_gateway_app(cp)
+    with TestClient(app) as client:
+        session_id = client.post(
+            "/sessions",
+            json={
+                "client_id": "c-gap",
+                "surface": "web",
+                "protocol_version": "1.0",
+                "capabilities": ["events"],
+            },
+        ).json()["session_id"]
+
+        # A stale client reconnects with a cursor that predates the trim boundary
+        # (base_sequence=5): it must be TOLD a gap occurred, not left to infer it.
+        stale = client.get(f"/sessions/{session_id}/events", params={"after": 0, "limit": 100})
+        assert stale.status_code == 200
+        stale_body = stale.json()
+        assert stale_body["base_sequence"] == 5
+        assert stale_body["base_sequence"] > 0 + 1, "gap must be detectable on the wire"
+
+        # A client whose cursor is already within bounds must NOT get a false gap.
+        fresh = client.get(f"/sessions/{session_id}/events", params={"after": 10, "limit": 100})
+        assert fresh.status_code == 200
+        fresh_body = fresh.json()
+        assert fresh_body["base_sequence"] == 5
+        assert not (fresh_body["base_sequence"] > 10 + 1), "no false gap for an in-bounds cursor"

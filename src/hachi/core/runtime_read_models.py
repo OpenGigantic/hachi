@@ -439,6 +439,19 @@ class RuntimeReadModelStore:
             start = max(0, after - base + 1)
             return tuple(self._events[start : start + limit])
 
+    def oldest_sequence(self) -> int:
+        """Oldest sequence still retained in the ring, or 0 when empty.
+
+        Clients compare this against their own cursor to detect events dropped by
+        the 2000-entry trim in :meth:`append_event`: a gap occurred iff
+        ``oldest_sequence() > after + 1`` (T-30). Takes the lock separately from
+        :meth:`read_events_since`, so a trim can land between the two calls — the
+        only consequence is a harmless false-positive gap (a spurious refetch),
+        never a false negative, so no atomicity is required across the pair.
+        """
+        with self._lock:
+            return self._events[0].sequence if self._events else 0
+
     def activity(self) -> ActivitySnapshot:
         """Current derived activity (label, state, usage, recent tools)."""
         with self._lock:

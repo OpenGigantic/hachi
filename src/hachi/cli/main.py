@@ -37,6 +37,7 @@ from hachi.cli.commands.pack import ogpack_app
 from hachi.cli.commands.schedule import schedule_app
 from hachi.cli.commands.session import session_app
 from hachi.cli.commands.skill import skill_app
+from hachi.core.approvals import get_approval_registry
 from hachi.core.config_loader import (
     load_effective_config,
     read_global_config_file,
@@ -50,7 +51,7 @@ from hachi.core.onboarding import (
     persist_provider_api_key,
 )
 from hachi.core.paths import get_hachi_paths
-from hachi.core.permissions import PermissionGate
+from hachi.core.permissions import PermissionDecision, PermissionGate
 from hachi.core.secret_scanner import redact_secrets
 from hachi.core.secret_store import create_default_secret_store
 from hachi.core.session_store import SessionStore
@@ -498,6 +499,10 @@ class _InProcessGatewayRuntime:
             for snap in snapshots
         ]
 
+    def read_events_base(self, session_id: str) -> int:
+        """Oldest sequence still retained for ``session_id`` (T-30 gap signal)."""
+        return self._get_agent(session_id).snapshot_events_base()
+
     def session_state(self, session_id: str) -> dict:
         return asdict(self._get_agent(session_id).snapshot_session_state())
 
@@ -582,6 +587,20 @@ class _InProcessGatewayRuntime:
         if agent is None:
             return []
         return [asdict(item) for item in agent.snapshot_permission_audit(limit=limit)]
+
+    def pending_approvals(self) -> list[dict]:
+        """T-15: the only place get_approval_registry() is touched from the gateway
+        edge (alongside :meth:`resolve_approval`). Runtime-independent — the
+        registry is a process singleton, not tied to any booted AgentSession —
+        so this is wired unconditionally in ``_build_gateway_control_plane``.
+        """
+        return get_approval_registry().list_pending()
+
+    def resolve_approval(self, request_id: str, action: str, rationale: str = "") -> bool:
+        """T-15: resolve a pending approval via the process-wide registry."""
+        return get_approval_registry().resolve(
+            request_id, PermissionDecision(action=action, rationale=rationale)
+        )
 
     def subagent_reports(self, query: str, top_k: int) -> list[dict]:
         with self._agents_lock:
@@ -3164,6 +3183,7 @@ def _build_gateway_control_plane(
         on_disconnect=runtime.close_connection if runtime else None,
         on_chat=runtime.chat if runtime else None,
         read_events=runtime.read_events if runtime else None,
+        read_events_base=runtime.read_events_base if runtime else None,
         get_session_state=runtime.session_state if runtime else None,
         get_recent_sessions=runtime.recent_sessions if runtime else None,
         get_session_messages=runtime.session_messages if runtime else None,
@@ -3173,6 +3193,12 @@ def _build_gateway_control_plane(
         get_active_jobs=runtime.active_jobs if runtime else None,
         get_failed_jobs=runtime.failed_jobs if runtime else None,
         get_permission_audit=runtime.permission_audit if runtime else None,
+        # T-15: the approval registry is a process singleton, not gated on a
+        # live AgentSession — wire unconditionally via `support` (always
+        # constructed, unlike `runtime` which is None pre-session), mirroring
+        # get_capabilities=support.capabilities below.
+        list_pending_approvals=support.pending_approvals,
+        resolve_approval=support.resolve_approval,
         get_subagent_reports=runtime.subagent_reports if runtime else None,
         get_capabilities=support.capabilities,
         get_config=support.get_config,

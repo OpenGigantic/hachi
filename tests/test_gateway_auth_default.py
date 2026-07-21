@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -340,32 +340,30 @@ class TestApprovalsEndpoints:
         pending: list[dict] | None = None,
         resolve_returns: bool = True,
     ) -> tuple[TestClient, MagicMock]:
-        """Build a gateway app with a stubbed approval registry."""
+        """Build a gateway app with a stubbed approval registry.
+
+        T-15: injected via ``GatewayControlPlane(list_pending_approvals=...,
+        resolve_approval=...)`` — the control-plane seam — rather than
+        monkeypatching ``hachi.gateway.fastapi_app.get_approval_registry``,
+        which no longer exists (the route reaches the registry only through
+        ``_InProcessGatewayRuntime`` in ``cli/main.py`` now). This also fixes a
+        latent bug in the prior version: its ``with patch(...):`` block closed
+        before returning the client, so the patches were already undone by the
+        time a caller made a request through it — constructor injection has no
+        such lifetime problem.
+        """
         fake_registry = MagicMock()
         fake_registry.list_pending.return_value = pending if pending is not None else []
         fake_registry.resolve.return_value = resolve_returns
 
-        cp = GatewayControlPlane()
-        # Patch get_approval_registry and _APPROVALS_AVAILABLE inside fastapi_app.
-        with (
-            patch(
-                "hachi.gateway.fastapi_app._APPROVALS_AVAILABLE",
-                True,
+        cp = GatewayControlPlane(
+            list_pending_approvals=fake_registry.list_pending,
+            resolve_approval=lambda request_id, action, rationale="": fake_registry.resolve(
+                request_id, SimpleNamespace(action=action, rationale=rationale)
             ),
-            patch(
-                "hachi.gateway.fastapi_app.get_approval_registry",
-                return_value=fake_registry,
-            ),
-            patch(
-                "hachi.gateway.fastapi_app.PermissionDecision",
-                side_effect=lambda action, rationale="": SimpleNamespace(
-                    action=action, rationale=rationale
-                ),
-            ),
-        ):
-            app = create_gateway_app(cp, auth_token=_TOKEN)
-            client = TestClient(app)
-        # We need to keep the patches alive through the request, so rebuild inside test.
+        )
+        app = create_gateway_app(cp, auth_token=_TOKEN)
+        client = TestClient(app)
         return client, fake_registry
 
     def test_get_approvals_returns_401_without_token(self) -> None:
@@ -382,20 +380,25 @@ class TestApprovalsEndpoints:
         resp = client.post("/approvals/req-123", json={"action": "approve"})
         assert resp.status_code == 401
 
-    def test_get_approvals_returns_pending_list_with_token(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        pending = [{"request_id": "req-1", "tool": "write_file", "target": "/tmp/x"}]
-        fake_registry = MagicMock()
-        fake_registry.list_pending.return_value = pending
+    def test_get_approvals_returns_pending_list_with_token(self) -> None:
+        """GET /approvals forwards control_plane.pending_approvals() verbatim.
 
-        monkeypatch.setattr("hachi.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
-        monkeypatch.setattr(
-            "hachi.gateway.fastapi_app.get_approval_registry",
-            lambda: fake_registry,
-        )
+        T-15 correction (CORRECTIONS.md Sec "Four tests will legitimately
+        fail", item 4) — NOT a weakening: the original assertion compared
+        ``body["pending"]`` to the exact same list object handed to the fake
+        registry, so it passed *because* the old route mutated that object in
+        place to inject a fabricated ``expiresAt`` — the test was structurally
+        blind to the bug it existed to catch. Injecting through
+        ``GatewayControlPlane`` (the patch target legitimately moved — the
+        route no longer imports ``get_approval_registry`` at all) and
+        asserting against a freshly-built literal here would catch either an
+        added or a dropped field, which the old aliased comparison could not.
+        """
 
-        cp = GatewayControlPlane()
+        def _list_pending() -> list[dict]:
+            return [{"request_id": "req-1", "tool": "write_file", "target": "/tmp/x"}]
+
+        cp = GatewayControlPlane(list_pending_approvals=_list_pending)
         app = create_gateway_app(cp, auth_token=_TOKEN)
         client = TestClient(app)
 
@@ -403,26 +406,20 @@ class TestApprovalsEndpoints:
         assert resp.status_code == 200
         body = resp.json()
         assert "pending" in body
-        assert body["pending"] == pending
+        # Fresh literal, deliberately NOT the object `_list_pending` returned —
+        # see the aliasing-trap note above.
+        assert body["pending"] == [
+            {"request_id": "req-1", "tool": "write_file", "target": "/tmp/x"}
+        ]
 
-    def test_post_approval_approve_calls_resolve_and_returns_resolved(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        fake_registry = MagicMock()
-        fake_registry.resolve.return_value = True
+    def test_post_approval_approve_calls_resolve_and_returns_resolved(self) -> None:
+        calls: list[tuple[str, str, str]] = []
 
-        monkeypatch.setattr("hachi.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
-        monkeypatch.setattr(
-            "hachi.gateway.fastapi_app.get_approval_registry",
-            lambda: fake_registry,
-        )
-        # PermissionDecision is a frozen dataclass; patch with a simple stub.
-        monkeypatch.setattr(
-            "hachi.gateway.fastapi_app.PermissionDecision",
-            lambda action, rationale="": SimpleNamespace(action=action, rationale=rationale),
-        )
+        def _resolve(request_id: str, action: str, rationale: str = "") -> bool:
+            calls.append((request_id, action, rationale))
+            return True
 
-        cp = GatewayControlPlane()
+        cp = GatewayControlPlane(resolve_approval=_resolve)
         app = create_gateway_app(cp, auth_token=_TOKEN)
         client = TestClient(app)
 
@@ -434,25 +431,21 @@ class TestApprovalsEndpoints:
         assert resp.status_code == 200
         assert resp.json() == {"resolved": True}
 
-        decision_arg = fake_registry.resolve.call_args[0][1]
-        assert decision_arg.action == "approve"
-        assert decision_arg.rationale == "looks safe"
+        # T-15: the route now forwards (request_id, action, rationale) to
+        # control_plane.resolve_approval() rather than constructing a
+        # PermissionDecision itself (that moved to
+        # _InProcessGatewayRuntime.resolve_approval in cli/main.py), so this
+        # asserts the route's actual contract with the control plane.
+        assert calls == [("req-999", "approve", "looks safe")]
 
-    def test_post_approval_deny_action_works(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake_registry = MagicMock()
-        fake_registry.resolve.return_value = True
+    def test_post_approval_deny_action_works(self) -> None:
+        calls: list[tuple[str, str, str]] = []
 
-        monkeypatch.setattr("hachi.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
-        monkeypatch.setattr(
-            "hachi.gateway.fastapi_app.get_approval_registry",
-            lambda: fake_registry,
-        )
-        monkeypatch.setattr(
-            "hachi.gateway.fastapi_app.PermissionDecision",
-            lambda action, rationale="": SimpleNamespace(action=action, rationale=rationale),
-        )
+        def _resolve(request_id: str, action: str, rationale: str = "") -> bool:
+            calls.append((request_id, action, rationale))
+            return True
 
-        cp = GatewayControlPlane()
+        cp = GatewayControlPlane(resolve_approval=_resolve)
         app = create_gateway_app(cp, auth_token=_TOKEN)
         client = TestClient(app)
 
@@ -463,22 +456,10 @@ class TestApprovalsEndpoints:
         )
         assert resp.status_code == 200
         assert resp.json()["resolved"] is True
+        assert calls == [("req-100", "deny", "")]
 
-    def test_post_approval_allow_once_action_works(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake_registry = MagicMock()
-        fake_registry.resolve.return_value = True
-
-        monkeypatch.setattr("hachi.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
-        monkeypatch.setattr(
-            "hachi.gateway.fastapi_app.get_approval_registry",
-            lambda: fake_registry,
-        )
-        monkeypatch.setattr(
-            "hachi.gateway.fastapi_app.PermissionDecision",
-            lambda action, rationale="": SimpleNamespace(action=action, rationale=rationale),
-        )
-
-        cp = GatewayControlPlane()
+    def test_post_approval_allow_once_action_works(self) -> None:
+        cp = GatewayControlPlane(resolve_approval=lambda request_id, action, rationale="": True)
         app = create_gateway_app(cp, auth_token=_TOKEN)
         client = TestClient(app)
 
@@ -489,23 +470,8 @@ class TestApprovalsEndpoints:
         )
         assert resp.status_code == 200
 
-    def test_post_approval_returns_404_when_resolve_returns_false(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        fake_registry = MagicMock()
-        fake_registry.resolve.return_value = False  # unknown id
-
-        monkeypatch.setattr("hachi.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
-        monkeypatch.setattr(
-            "hachi.gateway.fastapi_app.get_approval_registry",
-            lambda: fake_registry,
-        )
-        monkeypatch.setattr(
-            "hachi.gateway.fastapi_app.PermissionDecision",
-            lambda action, rationale="": SimpleNamespace(action=action, rationale=rationale),
-        )
-
-        cp = GatewayControlPlane()
+    def test_post_approval_returns_404_when_resolve_returns_false(self) -> None:
+        cp = GatewayControlPlane(resolve_approval=lambda request_id, action, rationale="": False)
         app = create_gateway_app(cp, auth_token=_TOKEN)
         client = TestClient(app)
 
@@ -516,19 +482,9 @@ class TestApprovalsEndpoints:
         )
         assert resp.status_code == 404
 
-    def test_post_approval_invalid_action_returns_422(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr("hachi.gateway.fastapi_app._APPROVALS_AVAILABLE", True)
-        monkeypatch.setattr(
-            "hachi.gateway.fastapi_app.get_approval_registry",
-            lambda: MagicMock(),
-        )
-        monkeypatch.setattr(
-            "hachi.gateway.fastapi_app.PermissionDecision",
-            lambda action, rationale="": SimpleNamespace(action=action, rationale=rationale),
-        )
-
+    def test_post_approval_invalid_action_returns_422(self) -> None:
+        # Validation happens before control_plane.resolve_approval() is ever
+        # called, so no handler needs to be wired for this case.
         cp = GatewayControlPlane()
         app = create_gateway_app(cp, auth_token=_TOKEN)
         client = TestClient(app)
@@ -553,3 +509,58 @@ class TestApprovalsEndpoints:
 
         resp = client.get("/approvals", headers={"Authorization": f"Bearer {_TOKEN}"})
         assert resp.status_code == 503
+
+    def test_get_approvals_does_not_fabricate_expires_at(self) -> None:
+        """GET /approvals must return data OBTAINED THROUGH the control plane, and
+        must not invent a deadline the registry never recorded.
+
+        Regression (T-15): get_approvals() used to reach around the control plane
+        into get_approval_registry() directly, and injected a fabricated camelCase
+        expiresAt = now + 60s per request — while T-16 gives PendingApprovalRegistry
+        a REAL snake_case created_at/expires_at (epoch ms, derived from the timeout
+        RegistryApprover actually enforces). This test builds its own stub entry
+        (with T-16-shaped keys already on it) and injects it via
+        GatewayControlPlane(list_pending_approvals=...) — the only route into the
+        registry the fixed code should use — then asserts the response is that
+        entry byte-for-byte: no expiresAt was added, and created_at/expires_at
+        passed through unchanged (not recomputed/overwritten by the route).
+        """
+
+        def _list_pending() -> list[dict]:
+            # Fresh list/dict built inside the stub each call, shaped exactly like
+            # PendingApprovalRegistry.list_pending() after T-16 (8 keys, snake_case
+            # created_at/expires_at) — so the route cannot pass this test merely by
+            # forwarding whatever the REAL process-wide registry happens to hold.
+            return [
+                {
+                    "request_id": "req-1",
+                    "operation": "action",
+                    "tool": "write_file",
+                    "target": "/tmp/x",
+                    "reason": "because",
+                    "policy_summary": "action:write_file",
+                    "created_at": 1_752_969_000_000,
+                    "expires_at": 1_752_969_180_000,
+                }
+            ]
+
+        cp = GatewayControlPlane(list_pending_approvals=_list_pending)
+        app = create_gateway_app(cp, auth_token=_TOKEN)
+        client = TestClient(app)
+
+        resp = client.get("/approvals", headers={"Authorization": f"Bearer {_TOKEN}"})
+        assert resp.status_code == 200
+        entry = resp.json()["pending"][0]
+        assert "expiresAt" not in entry, "route must not fabricate a camelCase deadline"
+        assert entry["expires_at"] == 1_752_969_180_000, "T-16's real expires_at must pass through"
+        assert entry["created_at"] == 1_752_969_000_000, "T-16's real created_at must pass through"
+        assert set(entry) == {
+            "request_id",
+            "operation",
+            "tool",
+            "target",
+            "reason",
+            "policy_summary",
+            "created_at",
+            "expires_at",
+        }

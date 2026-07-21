@@ -3008,7 +3008,7 @@
           "sessions"
         ],
         "summary": "Stream Session Events",
-        "description": "Server-Sent Events stream of runtime events \u2014 replaces client polling.\n\nPushes events as they arrive, then closes after ``max_idle_cycles`` idle\npolls (an EventSource auto-reconnects, so this stays cheap and robust).\nClients resume with the last ``id`` they saw via the ``after`` query param.",
+        "description": "Server-Sent Events stream of runtime events \u2014 replaces client polling.\n\nPushes events as they arrive, then closes after ``max_idle_cycles`` idle\npolls. The frontend consumes this with ``fetch`` + ``ReadableStream``\n(``frontend/src/lib/data/sse.ts``), not the native ``EventSource`` API\n(which cannot set an ``Authorization`` header) \u2014 it does **not**\nauto-reconnect; callers own their own retry/backoff policy. Clients that\ndo reconnect resume with the last ``id`` they saw via the ``after`` query\nparam; compare the resumed response's ``base_sequence`` against that\ncursor to detect whether events were dropped by the ring buffer's trim\nwhile disconnected (T-30).",
         "operationId": "stream_session_events_sessions__session_id__stream_get",
         "parameters": [
           {
@@ -9041,7 +9041,7 @@
           "approvals"
         ],
         "summary": "Get Approvals",
-        "description": "List all pending permission requests.\n\nReturns:\n    A JSON object ``{\"pending\": [...]}`` with every unresolved request\n    from the approval registry.  Each entry includes ``expiresAt``\n    (MED-021) \u2014 an ISO-8601 timestamp so that the frontend countdown\n    timer can render.",
+        "description": "List all pending permission requests.\n\nReturns:\n    A JSON object ``{\"pending\": [...]}`` with every unresolved request\n    from the approval registry, exactly as\n    ``PendingApprovalRegistry.list_pending()`` returns it (T-16):\n    ``request_id``, ``operation``, ``tool``, ``target``, ``reason``,\n    ``policy_summary``, ``created_at``, ``expires_at``. ``created_at``/\n    ``expires_at`` are epoch milliseconds; ``expires_at`` is ``None``\n    when the entry was parked without an enforced timeout. No field on\n    this response is fabricated by the gateway (T-15).",
         "operationId": "get_approvals_approvals_get",
         "responses": {
           "200": {
@@ -9158,7 +9158,7 @@
           "approvals"
         ],
         "summary": "Post Approval Decision",
-        "description": "Resolve a pending permission request.\n\nArgs:\n    request_id: The opaque ID from the pending-request list.\n    payload: ``{\"action\": \"approve\"|\"deny\"|\"allow_once\", \"rationale\": \"...\"}``\n\nReturns:\n    ``{\"resolved\": true}`` on success.\n\nRaises:\n    404: When ``request_id`` is not found in the registry.\n    422: When ``action`` is not a valid :class:`PermissionDecision` action.",
+        "description": "Resolve a pending permission request.\n\nArgs:\n    request_id: The opaque ID from the pending-request list.\n    payload: ``{\"action\": \"approve\"|\"deny\"|\"allow_once\", \"rationale\": \"...\"}``\n\nReturns:\n    ``{\"resolved\": true}`` on success.\n\nRaises:\n    404: When ``request_id`` is not found in the registry.\n    422: When ``action`` is not one of ``approve``/``deny``/``allow_once``.",
         "operationId": "post_approval_decision_approvals__request_id__post",
         "parameters": [
           {
@@ -14725,13 +14725,18 @@
           "next_sequence": {
             "type": "integer",
             "title": "Next Sequence"
+          },
+          "base_sequence": {
+            "type": "integer",
+            "title": "Base Sequence"
           }
         },
         "type": "object",
         "required": [
           "session_id",
           "events",
-          "next_sequence"
+          "next_sequence",
+          "base_sequence"
         ],
         "title": "SessionEventsResponse"
       },

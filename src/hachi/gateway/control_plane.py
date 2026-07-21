@@ -94,6 +94,12 @@ class GatewayControlPlane:
         on_disconnect: Callable[[str], None] | None = None,
         on_chat: Callable[[str, str], str] | None = None,
         read_events: Callable[[str, int, int], list[GatewayEvent]] | None = None,
+        # T-30: oldest sequence still retained by the live event ring, so a
+        # reconnecting client can detect it read past the 2000-entry trim
+        # boundary. Defaults to None (many tests build a control plane by hand
+        # without wiring every seam) — the live branch of read_session_events
+        # emits base_sequence: 0 when unwired.
+        read_events_base: Callable[[str], int] | None = None,
         get_session_state: Callable[[str], dict[str, Any]] | None = None,
         get_recent_sessions: Callable[[int], list[dict[str, Any]]] | None = None,
         get_session_messages: Callable[[str, int], list[dict[str, Any]]] | None = None,
@@ -103,6 +109,11 @@ class GatewayControlPlane:
         get_active_jobs: Callable[[], list[dict[str, Any]]] | None = None,
         get_failed_jobs: Callable[[int], list[dict[str, Any]]] | None = None,
         get_permission_audit: Callable[[int], list[dict[str, Any]]] | None = None,
+        # UC-PERM-006 / T-15 — approvals inbox, routed through the seam like every
+        # other read/write instead of the router reaching into
+        # core.approvals.get_approval_registry() directly.
+        list_pending_approvals: Callable[[], list[dict[str, Any]]] | None = None,
+        resolve_approval: Callable[[str, str, str], bool] | None = None,
         get_subagent_reports: Callable[[str, int], list[dict[str, Any]]] | None = None,
         get_capabilities: Callable[[], list[dict[str, Any]]] | None = None,
         get_config: Callable[[], dict[str, Any]] | None = None,
@@ -175,6 +186,7 @@ class GatewayControlPlane:
         self._on_disconnect = on_disconnect
         self._on_chat = on_chat
         self._read_events = read_events
+        self._read_events_base = read_events_base
         self._get_session_state = get_session_state
         self._get_recent_sessions = get_recent_sessions
         self._get_session_messages = get_session_messages
@@ -184,6 +196,8 @@ class GatewayControlPlane:
         self._get_active_jobs = get_active_jobs
         self._get_failed_jobs = get_failed_jobs
         self._get_permission_audit = get_permission_audit
+        self._list_pending_approvals = list_pending_approvals
+        self._resolve_approval = resolve_approval
         self._get_subagent_reports = get_subagent_reports
         self._get_capabilities = get_capabilities
         self._get_config = get_config
@@ -564,6 +578,10 @@ class GatewayControlPlane:
             next_sequence = safe_after
             if batch:
                 next_sequence = batch[-1].sequence
+            # T-30: oldest sequence still retained, so the caller can detect a gap
+            # (base_sequence > after + 1) instead of silently reading a truncated
+            # stream. 0 when the handler is unwired (many tests omit it).
+            base_sequence = self._read_events_base(session_id) if self._read_events_base else 0
             return {
                 "session_id": session_id,
                 "events": [
@@ -576,6 +594,7 @@ class GatewayControlPlane:
                     for event in batch
                 ],
                 "next_sequence": next_sequence,
+                "base_sequence": base_sequence,
             }
 
         # Not a live connection — replay the persisted transcript so a past session
@@ -589,6 +608,10 @@ class GatewayControlPlane:
             "session_id": session_id,
             "events": events,
             "next_sequence": next_sequence,
+            # T-30: history replay (§3.7) has its own sequence space and no ring
+            # trim, so there is nothing meaningful to report — but the field must
+            # be present so the response shape is uniform across both branches.
+            "base_sequence": 0,
         }
 
     def _synthesize_history_events(
@@ -807,6 +830,14 @@ class GatewayControlPlane:
     def permission_audit(self, limit: int = 50) -> Any:
         handler = self._require_handler(self._get_permission_audit, "permission audit")
         return handler(max(1, min(limit, 500)))
+
+    def pending_approvals(self) -> Any:
+        handler = self._require_handler(self._list_pending_approvals, "pending approvals")
+        return handler()
+
+    def resolve_approval(self, request_id: str, action: str, rationale: str = "") -> bool:
+        handler = self._require_handler(self._resolve_approval, "approval decision")
+        return bool(handler(request_id, action, rationale))
 
     def subagent_reports(self, query: str = "recent delegation", top_k: int = 10) -> Any:
         handler = self._require_handler(self._get_subagent_reports, "subagent reports")

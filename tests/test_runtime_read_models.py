@@ -201,7 +201,9 @@ def test_read_events_since_on_trimmed_buffer_returns_oldest_surviving_event() ->
 
 
 def test_read_events_since_stale_after_clamps_to_oldest_surviving() -> None:
-    """after far below base must not wrap to a wrong tail slice (B4 underflow guard)."""
+    """after far below base must not wrap to a wrong tail slice, and the caller
+    must be able to detect the skip (B4 underflow guard, amended by T-30 for the
+    gap signal — the clamp alone is silent)."""
     store = RuntimeReadModelStore()
     for i in range(2001):
         store.append_event(_ev(f"e{i}", {}))
@@ -211,6 +213,10 @@ def test_read_events_since_stale_after_clamps_to_oldest_surviving() -> None:
     assert result[0].sequence == 2
     # Must NOT return a tail slice (the wrong wrap behaviour would yield seq~2001).
     assert result[0].sequence < 100
+    # T-30: the clamp is still correct (unchanged above) — but it must no longer be
+    # silent. oldest_sequence() lets the caller compare against its own cursor and
+    # detect that sequences 1 (and everything the buffer already discarded) is gone.
+    assert store.oldest_sequence() == 2
 
 
 def test_read_events_since_parity_with_scan_after_trim() -> None:
@@ -223,3 +229,51 @@ def test_read_events_since_parity_with_scan_after_trim() -> None:
     reference = tuple(s for s in store._events if s.sequence > cursor)[:100]
     result = store.read_events_since(after=cursor, limit=100)
     assert result == reference
+    # T-30: read_events_since's return *type* is deliberately untouched (§5 design
+    # decision — a separate scalar accessor, not a pair) so this parity assertion
+    # stays valid unmodified. Additionally pin that the new accessor agrees with
+    # the buffer's true oldest surviving entry.
+    assert store.oldest_sequence() == store._events[0].sequence
+
+
+def test_read_events_since_exposes_gap_after_trim() -> None:
+    """T-30: a stale cursor must be able to DETECT the trim, not just be clamped past it.
+
+    Client-side gap rule (docs/audit/2026-07-19/tasks/T-30-sse-gap-signal.md §5):
+    a gap occurred iff ``base_sequence > after + 1``.
+    """
+    store = RuntimeReadModelStore()
+    for i in range(2001):
+        store.append_event(_ev(f"e{i}", {}))
+
+    after = 0
+    batch = store.read_events_since(after=after, limit=5)
+    base = store.oldest_sequence()
+
+    # Clamping still happens — unchanged contract.
+    assert batch[0].sequence == 2
+    # ...and it is now DETECTABLE: base > after + 1 means events were dropped.
+    assert base == 2
+    assert base > after + 1, "a stale cursor must be able to detect the gap"
+
+
+def test_oldest_sequence_reports_no_gap_for_cursor_within_bounds() -> None:
+    """T-30: a client that is NOT stale must not be told a gap occurred.
+
+    Mirrors the gap rule from the previous test in the other direction: a cursor
+    at or after ``oldest_sequence() - 1`` has not missed anything, so
+    ``base_sequence > after + 1`` must be False.
+    """
+    store = RuntimeReadModelStore()
+    for i in range(2001):
+        store.append_event(_ev(f"e{i}", {}))
+
+    base = store.oldest_sequence()
+    # This client's cursor sits exactly at the trim boundary — nothing after it
+    # was dropped (the oldest survivor is base, i.e. cursor+1).
+    after = base - 1
+    assert not (base > after + 1), "a cursor within bounds must not report a false gap"
+
+    # A cursor well ahead of the buffer (already caught up) is equally not a gap.
+    after_ahead = store._events[-1].sequence
+    assert not (base > after_ahead + 1)
