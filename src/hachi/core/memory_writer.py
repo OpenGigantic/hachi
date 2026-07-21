@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,10 @@ class MemoryNode:
 # ---------------------------------------------------------------------------
 
 _UNSAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9_\-]")
+
+# T-51: matches a tombstone node's own `->[:supersedes=<name>]` edge so _route()
+# can find the file the superseded node already lives in.
+_SUPERSEDES_EDGE_RE = re.compile(r"^->\[:supersedes=(.+)\]$")
 
 
 def _slugify(text: str, max_len: int = 48) -> str:
@@ -106,6 +111,21 @@ def _route(node: MemoryNode, memory_dir: Path) -> Path:
         return memory_dir / "profile.og"
     if role == "rule":
         return memory_dir / "agent.og"
+    if role == "tombstone":
+        # T-51: route to the SAME file as the node this tombstone supersedes
+        # (never a new/default file) so a per-file read sees both the
+        # original node and the tombstone that suppresses it. Append-only —
+        # the original node is left untouched on disk.
+        for edge in node.edges:
+            m = _SUPERSEDES_EDGE_RE.match(edge.strip())
+            if m:
+                target_file = _find_node_file(memory_dir, m.group(1))
+                if target_file is not None:
+                    return target_file
+                break
+        # No matching node found anywhere under memory_dir — fall back to the
+        # generic fact location rather than silently dropping the tombstone.
+        return memory_dir / "core_memory.og"
     if role == "person":
         slug = node.person_slug or _slugify(node.dense.split()[0] if node.dense else "person")
         return memory_dir / "people" / f"{slug}.og"
@@ -243,6 +263,48 @@ class MemoryWriter:
         )
         self.write_nodes([node], session_id=session_id)
 
+    def write_tombstone(self, node_name: str, *, reason: str = "forgotten") -> bool:
+        """Append a tombstone node that supersedes *node_name*.
+
+        Append-only (T-51): the original node is left untouched on disk — the
+        ``.og`` graph is an audit artefact (see ``memory_gardener.py`` module
+        docstring) — but every read path suppresses it via the ``supersedes``
+        edge: ``load_memory_dir`` (``memory_graph.py``) drops it from the
+        loaded node index globally, and ``MemoryIndex.refresh()`` skips it
+        when rebuilding the FTS5 index.
+
+        The tombstone references the superseded node **by name only** — its
+        own ``dense``/``keywords`` never copy the original node's content —
+        so it cannot itself become a new resurrection vector (a tombstone
+        whose dense text repeated the forgotten fact would just hand FTS5 and
+        graph recall a new way to surface it).
+
+        Args:
+            node_name: The exact ``::node[...]`` name being forgotten.
+            reason:    Short audit label written as a ``->[:reason=...]`` edge.
+
+        Returns:
+            True when a tombstone was written (a node named *node_name*
+            exists somewhere under this writer's memory_dir); False when
+            there was nothing to tombstone.
+        """
+        if _find_node_file(self._memory_dir, node_name) is None:
+            logger.debug(
+                "write_tombstone: no node named %r found under %s — nothing to tombstone",
+                node_name,
+                self._memory_dir,
+            )
+            return False
+
+        tombstone = MemoryNode(
+            name=f"tombstone-{node_name}-{uuid.uuid4().hex[:10]}",
+            role="tombstone",
+            dense=f"[tombstone] '{node_name}' was forgotten ({reason}).",
+            edges=[f"->[:supersedes={node_name}]", f"->[:reason={reason}]"],
+        )
+        written = self.write_nodes([tombstone])
+        return written > 0
+
 
 # ---------------------------------------------------------------------------
 # Low-level file helpers
@@ -257,6 +319,22 @@ def _read_node_ids(path: Path) -> set[str]:
         return set()
     text = path.read_text(encoding="utf-8", errors="replace")
     return {m.group(1) for m in _NODE_ID_RE.finditer(text)}
+
+
+def _find_node_file(memory_dir: Path, node_name: str) -> Path | None:
+    """Return the .og file under *memory_dir* that already contains ``node_name``.
+
+    Used by the ``tombstone`` role branch in :func:`_route` (T-51) so a
+    tombstone is appended to the SAME file as the node it supersedes.
+    Returns ``None`` when *memory_dir* does not exist or no ``.og`` file
+    under it declares a ``::node[<node_name>]`` block.
+    """
+    if not memory_dir.exists():
+        return None
+    for og_file in memory_dir.rglob("*.og"):
+        if node_name in _read_node_ids(og_file):
+            return og_file
+    return None
 
 
 def _append_blocks(path: Path, blocks: list[str]) -> None:

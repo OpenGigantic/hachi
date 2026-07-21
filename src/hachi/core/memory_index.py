@@ -41,6 +41,22 @@ CREATE VIRTUAL TABLE IF NOT EXISTS mem_fts USING fts5(
 """
 
 
+def compute_node_id(memory_dir: Path, og_file: Path, node_name: str) -> str:
+    """Return the composite ``<rel-path-without-suffix>:<node-name>`` id this
+    index assigns to *node_name* when it lives in *og_file* under *memory_dir*.
+
+    T-51: this is the single source of truth for the id format — used by
+    ``refresh()`` to populate the index AND by any external caller (e.g.
+    ``MemoryVault.delete_fact``) that needs to resolve a node_id for
+    ``delete_node()``. A duplicated, independently-maintained copy of this
+    format string is exactly how the original bug happened (the old
+    ``MemoryVault._delete_from_fts5`` deleted by a bare Chroma SHA-256 that
+    could never equal this composite id — see docs/bug-bank.md).
+    """
+    rel = og_file.relative_to(memory_dir)
+    return f"{rel.with_suffix('')}:{node_name}"
+
+
 class MemoryIndex:
     """SQLite FTS5 index over the ``memory/`` OG graph files.
 
@@ -104,6 +120,25 @@ class MemoryIndex:
             logger.warning("MemoryIndex: og_engine parser not available — index is empty")
             return 0
 
+        # T-51: a tombstone's `->[:supersedes=<name>]` edge must suppress the
+        # superseded node on every rebuild — otherwise write_nodes() calling
+        # refresh() right after the tombstone is appended (memory_writer.py)
+        # would immediately resurrect the row the tombstone was meant to
+        # remove. og_engine's OGNode does not surface arbitrary
+        # ->[:key=value] edges (only role/scope/keywords/requires/
+        # requires_auth), so `supersedes` is detected via the lightweight
+        # memory_graph parser instead, which mirrors memory_graph.py's own
+        # `load_memory_dir` global-suppression rule.
+        from hachi.core.memory_graph import parse_memory_file
+
+        superseded: set[str] = set()
+        for og_file in og_files:
+            try:
+                for gnode in parse_memory_file(og_file):
+                    superseded.update(gnode.supersedes)
+            except Exception as exc:
+                logger.debug("MemoryIndex: supersede-scan skipped %s — %s", og_file, exc)
+
         nodes: list[dict[str, str]] = []
         for og_file in og_files:
             rel = og_file.relative_to(self._memory_dir)
@@ -115,7 +150,9 @@ class MemoryIndex:
                 continue
 
             for node in parsed.nodes:
-                node_id = f"{rel.with_suffix('')}:{node.name}"
+                if node.name in superseded:
+                    continue
+                node_id = compute_node_id(self._memory_dir, og_file, node.name)
                 kw_text = " ".join(node.keywords)
                 searchable = f"{node.name} {kw_text} {node.dense}".strip()
                 nodes.append(
@@ -149,6 +186,32 @@ class MemoryIndex:
 
         logger.debug("MemoryIndex: indexed %d nodes from %d files", len(nodes), len(og_files))
         return len(nodes)
+
+    def delete_node(self, node_id: str) -> bool:
+        """Remove a single node from the FTS5 index by its composite node_id.
+
+        T-51: this is the public seam ``MemoryVault._delete_from_fts5`` calls
+        instead of opening its own bypass ``sqlite3.connect`` against this
+        class's private ``_db_path`` (see docs/bug-bank.md). *node_id* must be
+        the ``<rel-path-without-suffix>:<node-name>`` composite id this class
+        assigns during ``refresh()`` — use :func:`compute_node_id` to derive
+        it rather than reconstructing the format independently.
+
+        Goes through this class's own serialised ``_conn()`` so there is
+        never more than one writer touching ``mem_fts``/``mem_nodes``.
+
+        Returns:
+            True if a row was removed from ``mem_nodes``; False when the id
+            was not present or the delete failed (best-effort — never raises).
+        """
+        try:
+            with self._conn() as conn:
+                cur = conn.execute("DELETE FROM mem_nodes WHERE node_id = ?", (node_id,))
+                conn.execute("DELETE FROM mem_fts WHERE node_id = ?", (node_id,))
+                return cur.rowcount > 0
+        except Exception as exc:
+            logger.debug("MemoryIndex.delete_node: could not remove %s: %s", node_id, exc)
+            return False
 
     # ------------------------------------------------------------------
     # Search
@@ -207,7 +270,7 @@ class MemoryIndex:
 def _sanitize_fts5(query: str) -> str:
     """Strip FTS5 operator characters that would cause a syntax error."""
     # Remove characters that break FTS5 MATCH syntax
-    unsafe = set('"\'()*^~:')
+    unsafe = set("\"'()*^~:")
     cleaned = "".join(c for c in query if c not in unsafe)
     # Collapse whitespace and strip
     return " ".join(cleaned.split())
