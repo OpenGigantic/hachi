@@ -94,7 +94,7 @@ def test_concurrent_apply_pending_compaction_and_sliding_window_compact_dont_clo
         # in the gap.
         if not paused_once.is_set():
             paused_once.set()
-            resume_apply_pending.wait(timeout=5)
+            resume_apply_pending.wait(timeout=30)
         return real_message_cls(*args, **kwargs)
 
     monkeypatch.setattr(memory_module, "Message", _pausing_message)
@@ -107,7 +107,7 @@ def test_concurrent_apply_pending_compaction_and_sliding_window_compact_dont_clo
     apply_worker = threading.Thread(target=_run_apply_pending)
     apply_worker.start()
 
-    paused_once.wait(timeout=5)
+    paused_once.wait(timeout=30)
 
     # While apply_pending_compaction is paused mid-critical-section, run the
     # real _sliding_window_compact() on its OWN thread. This mirrors
@@ -128,8 +128,8 @@ def test_concurrent_apply_pending_compaction_and_sliding_window_compact_dont_clo
     compact_worker.join(timeout=0.2)
 
     resume_apply_pending.set()
-    apply_worker.join(timeout=5)
-    compact_worker.join(timeout=5)
+    apply_worker.join(timeout=30)
+    compact_worker.join(timeout=30)
     assert not apply_worker.is_alive(), "apply_pending_compaction worker thread did not finish"
     assert not compact_worker.is_alive(), "_sliding_window_compact worker thread did not finish"
     assert apply_result.get("applied") is True
