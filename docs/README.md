@@ -14,6 +14,7 @@ convention; everything else lives here.
 - [guides/memory.md](guides/memory.md) — how Hachi remembers across turns and sessions
 - [guides/git-sync.md](guides/git-sync.md) — keep the memory graph in sync across devices
 - [guides/releasing.md](guides/releasing.md) — cut and publish a release
+- [guides/sdk.md](guides/sdk.md) — `hachi.sdk`, the supported public surface for third-party pack authors: install, symbols, stability policy
 
 ## Reference — specifications & measured results
 

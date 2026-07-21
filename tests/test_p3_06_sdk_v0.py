@@ -1,11 +1,15 @@
-"""P3-06: SDK v0 contract tests.
+"""P3-06 / T-76: SDK v0 contract tests.
 
 Validates that:
 1. All documented symbols are importable from ``hachi.sdk``.
 2. The SDK version is a valid semver string.
 3. ``is_compatible()`` correctly compares versions.
 4. ``events`` module exposes the expected event-name constants.
-5. The stable surface does NOT export any private/internal-only symbols.
+5. The stable surface does NOT export any private/internal-only symbols —
+   checked bidirectionally (nothing missing, nothing extra) and pinned to a
+   recorded ``(SDK_VERSION, __all__)`` fingerprint so a widened surface fails
+   without a deliberate version bump.
+6. The package ships a PEP 561 ``py.typed`` marker.
 """
 
 from __future__ import annotations
@@ -46,6 +50,22 @@ def test_sdk_all_list_matches_stable_symbols() -> None:
         assert sym in sdk.__all__, f"{sym!r} not in hachi.sdk.__all__"
 
 
+def test_sdk_all_contains_nothing_beyond_stable_symbols() -> None:
+    """T-76: the stable surface is pinned in BOTH directions.
+
+    The pre-existing tests only checked that every stable symbol is present.
+    Nothing stopped an internal symbol being added to __all__ — which is the
+    one thing a 'stable public surface' must not allow.
+    """
+    import hachi.sdk as sdk
+
+    extra = set(sdk.__all__) - set(_STABLE_SYMBOLS)
+    assert not extra, f"hachi.sdk.__all__ has extra symbols: {extra}"
+
+    missing = set(_STABLE_SYMBOLS) - set(sdk.__all__)
+    assert not missing, f"hachi.sdk.__all__ is missing: {missing}"
+
+
 # ---------------------------------------------------------------------------
 # 2. SDK version is valid semver
 # ---------------------------------------------------------------------------
@@ -58,6 +78,30 @@ def test_sdk_version_is_valid_semver() -> None:
 
     assert _SEMVER_RE.match(SDK_VERSION), f"SDK_VERSION {SDK_VERSION!r} is not semver"
     assert sdk_version() == SDK_VERSION
+
+
+# ---------------------------------------------------------------------------
+# 2b. Surface pinned to a recorded (SDK_VERSION, __all__) fingerprint — the
+# "independently semver'd" promise made mechanical. Changing __all__ without
+# bumping SDK_VERSION (or vice versa) must fail here.
+# ---------------------------------------------------------------------------
+
+# The surface as of SDK_VERSION 0.1.0. Changing __all__ REQUIRES bumping
+# SDK_VERSION and updating this record in the same commit. See docs/guides/sdk.md.
+_SURFACE_BY_VERSION: dict[str, tuple[str, ...]] = {
+    "0.1.0": tuple(sorted(_STABLE_SYMBOLS)),
+}
+
+
+def test_sdk_version_matches_recorded_surface() -> None:
+    import hachi.sdk as sdk
+
+    recorded = _SURFACE_BY_VERSION.get(sdk.SDK_VERSION)
+    assert recorded is not None, (
+        f"SDK_VERSION {sdk.SDK_VERSION!r} has no recorded surface — "
+        "add one to _SURFACE_BY_VERSION when you bump the version."
+    )
+    assert tuple(sorted(sdk.__all__)) == recorded
 
 
 # ---------------------------------------------------------------------------
@@ -141,3 +185,20 @@ def test_base_llm_client_is_abstract() -> None:
     from hachi.sdk import BaseLLMClient
 
     assert issubclass(BaseLLMClient, abc.ABC), "BaseLLMClient must extend abc.ABC"
+
+
+# ---------------------------------------------------------------------------
+# 6. PEP 561 typing marker — T-76 §3.3: without this, every downstream
+# mypy/pyright run against hachi.sdk reports "missing library stubs or
+# py.typed marker" even though the module is fully annotated.
+# ---------------------------------------------------------------------------
+
+
+def test_sdk_ships_py_typed_marker() -> None:
+    from pathlib import Path
+
+    import hachi.sdk as sdk
+
+    assert sdk.__file__ is not None
+    py_typed = Path(sdk.__file__).parent / "py.typed"
+    assert py_typed.is_file(), f"py.typed marker missing at {py_typed}"

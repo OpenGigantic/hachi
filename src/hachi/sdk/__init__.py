@@ -4,9 +4,13 @@ This namespace re-exports the interfaces that external code may safely import
 and depend on.  Everything else inside ``hachi`` is internal and subject
 to change without notice.
 
-Independently semver'd: the SDK minor version increments independently of the
-app release so pack authors can pin ``hachi-og[sdk]`` without pulling in new
-app features.
+Independently semver'd: ``SDK_VERSION`` tracks this surface and is versioned
+separately from the app release — it may stay put across app releases that add
+no SDK-facing capability, or move independently of one that does.
+
+Install with ``pip install hachi-og``. The SDK ships as part of the base
+package; no extra is required — everything it re-exports already lives in
+core dependencies.
 
 Stable surface (v0):
     * Tool authoring  — ToolRegistry, ToolSpec
@@ -15,6 +19,9 @@ Stable surface (v0):
                         render_consent_sheet
     * Runtime events  — all SESSION_*/TOOL_*/MEMORY_*/MCP_*/CHANNEL_* constants
     * Introspection   — sdk_version(), is_compatible()
+
+See ``docs/guides/sdk.md`` for the full stability policy, a runnable example,
+and the ``sdk/`` vs ``client/`` distinction.
 """
 
 from __future__ import annotations
@@ -82,8 +89,6 @@ SDK_VERSION: str = "0.1.0"
 """Current SDK semver string.  Updated on each breaking-or-additive change
 to the stable surface, independently of the app release."""
 
-_MIN_APP_VERSION: str = "0.1.0"
-
 
 def sdk_version() -> str:
     """Return the SDK version string."""
@@ -93,21 +98,32 @@ def sdk_version() -> str:
 def is_compatible(required_sdk_version: str) -> bool:
     """Return True if the running SDK satisfies *required_sdk_version*.
 
-    Uses a simple major-match + minor-GTE rule (no patch sensitivity).
+    Major versions must match exactly; the running minor must be >= the required
+    minor. Patch is not considered. Returns False for a malformed argument.
 
     Args:
-        required_sdk_version: Minimum SDK version string (``"MAJOR.MINOR.PATCH"``).
+        required_sdk_version: Minimum SDK version string (``"MAJOR.MINOR[.PATCH]"``).
 
     Returns:
-        True when ``SDK_VERSION >= required_sdk_version`` (by semver ordering).
+        True when the major versions match and the running minor is >= the
+        required minor. False on a major mismatch, a lower minor, or an
+        unparsable argument.
 
     Example::
 
         from hachi.sdk import is_compatible
         assert is_compatible("0.1.0"), "This pack requires SDK ≥ 0.1.0"
     """
-    def _parse(v: str) -> tuple[int, int, int]:
-        parts = v.split(".")
-        return (int(parts[0]), int(parts[1]), int(parts[2] if len(parts) > 2 else 0))
 
-    return _parse(SDK_VERSION) >= _parse(required_sdk_version)
+    def _parse(v: str) -> tuple[int, int] | None:
+        parts = v.split(".")
+        try:
+            return (int(parts[0]), int(parts[1]))
+        except (IndexError, ValueError):
+            return None
+
+    want = _parse(required_sdk_version)
+    have = _parse(SDK_VERSION)
+    if want is None or have is None:
+        return False
+    return have[0] == want[0] and have[1] >= want[1]
