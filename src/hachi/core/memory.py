@@ -568,6 +568,10 @@ class MemoryManager:
         # there is no re-entrancy and therefore no deadlock risk.  Critical sections
         # are intentionally tiny (single list assignment or a short sentinel scan).
         self._history_lock: threading.Lock = threading.Lock()
+        # Session provenance: stamped onto every extracted MemoryNode so the .og
+        # graph carries `evidence=session:<id>` edges and event nodes route to
+        # journal/<session-id>.og.  Set by AgentSession.set_session_store() (T-50).
+        self._session_id: str = ""
 
     def set_vault(self, vault):
         """Bind the Long-Term Memory Vault to the manager for auto-flushing."""
@@ -576,6 +580,10 @@ class MemoryManager:
     def set_memory_writer(self, writer: Any) -> None:
         """Bind a MemoryWriter for the M1 typed-node write path (P2-05)."""
         self._memory_writer = writer
+
+    def set_session_id(self, session_id: str) -> None:
+        """Bind the owning session's id for memory-node provenance (T-50)."""
+        self._session_id = session_id or ""
 
     # ==========================================
     # Automatic Post-Turn Sync
@@ -612,7 +620,7 @@ class MemoryManager:
             # The handler rebuilds services from config via build_job_context.
             from hachi.jobs.queue import Job, JobStatus
 
-            session_id_val: str = getattr(self, "_session_id", "") or ""
+            session_id_val: str = self._session_id
             job = Job(
                 job_id="",  # Assigned by queue
                 name="fact_extraction",
