@@ -30,6 +30,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from hachi.core.migrations import apply_migrations, ensure_schema_version
 from hachi.core.paths import get_hachi_paths
 from hachi.core.runtime_events import JOB_RETRY, JOB_SKIPPED
 
@@ -660,8 +661,8 @@ def _default_db_path() -> Path:
     second on-disk root invisible to ``get_hachi_paths()``-based tooling (backup,
     doctor, export). Existing users' queued jobs are moved on first access by
     ``_migrate_legacy_jobs_db``. The queue DB lives under the user *state* dir (not
-    the config dir), matching its SQLite siblings (sessions.db, tui_state.db,
-    memory_index.db, files.db).
+    the config dir), matching its SQLite siblings (sessions.db, memory_index.db,
+    files.db).
     """
     target = get_hachi_paths().jobs_db
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -757,11 +758,12 @@ class SQLiteJobQueue(JobQueue):
     def _init_db(self) -> None:
         with self._conn() as conn:
             conn.executescript(_SCHEMA_SQL)
+            # T-54: stamp/verify schema_version before any migration — same
+            # connection as the CREATE TABLE above, see core/migrations.py.
+            ensure_schema_version(conn, current=1)
             # Migration: add owner_id to a pre-existing DB created before func-job
             # ownership was introduced. ALTER ADD COLUMN is a no-op-safe one-shot.
-            cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
-            if "owner_id" not in cols:
-                conn.execute("ALTER TABLE jobs ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
+            apply_migrations(conn, "jobs", [("owner_id", "TEXT NOT NULL DEFAULT ''")])
 
     def _recover_running(self) -> int:
         with self._conn() as conn:

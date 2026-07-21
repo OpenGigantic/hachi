@@ -150,7 +150,9 @@ severity.
   **RESOLVED (T-53 / BB-131):** confirmed real, not just inferred — two different Windows
   folders. `HachiPaths.jobs_db` now names the canonical path and `_default_db_path()`
   migrates an existing legacy `jobs.db` (and its WAL sidecars) on first access.
-- **Dead `paths.tui_state_db`** (`paths.py:48`) — defined, zero consumers.
+- ~~**Dead `paths.tui_state_db`** (`paths.py:48`) — defined, zero consumers.~~
+  **RESOLVED (T-54 / BB-137):** the property is removed. `tui_state.db` never had a
+  consumer and was never created; see `docs/DECISIONS.md` T-54 ADR §Decision 3.
 - **Event-name leaks:** `job.retry`, `budget_exceeded`, `llm_retry`, `session_time_limit`
   are raw literals outside `runtime_events.py` — a typed bus contract would miss them.
 - **Non-atomic `device-permissions.og` writes** (`cli/main.py:1379`) vs crash-safe TOML.
