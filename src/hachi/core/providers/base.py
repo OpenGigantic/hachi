@@ -9,53 +9,20 @@ in the concrete adapter modules (``anthropic_provider.py``, etc.).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from hachi.core.llm import BaseLLMClient
+
+# T-60: re-exported (not defined here) for the existing public import path
+# (``providers.base.ProviderHealth``). The class itself now lives in
+# ``core/provider_health.py`` -- a dependency-free module -- because this
+# module's ``routing.*`` imports below form a real circular import with
+# ``core/resilience.py`` if ``ProviderHealth`` is defined here and
+# ``resilience.py`` imports it from this module (see ``provider_health.py``'s
+# docstring for the exact cycle).
+from hachi.core.provider_health import ProviderHealth
 from hachi.core.routing.capability import Capability
 from hachi.core.routing.descriptor import ModelDescriptor
-
-
-@dataclass
-class ProviderHealth:
-    """Health snapshot for one provider.
-
-    Produced by :class:`~hachi.core.resilience.HealthRecorder` and consumed by
-    :class:`~hachi.core.routing.router.ModelRouter` to skip open-breaker providers.
-    """
-
-    provider: str
-    available: bool = True
-    recent_error_rate: float = 0.0
-    p50_latency_ms: float = 0.0
-    consecutive_failures: int = 0
-    breaker: str = "closed"  # "closed" | "open" | "half_open"
-
-    def is_usable(self) -> bool:
-        """Return ``True`` when the provider may be tried (breaker not fully open)."""
-        return self.available and self.breaker != "open"
-
-
-@dataclass
-class SearchResult:
-    """One search hit from a :class:`SearchProvider`."""
-
-    title: str
-    url: str
-    snippet: str
-    score: float = 0.0
-    extra: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class ExtractResult:
-    """Extracted content from a URL via a :class:`SearchProvider`."""
-
-    url: str
-    content: str
-    title: str = ""
-    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -112,21 +79,6 @@ class SpeechProvider(Protocol):
 
     def synthesize(self, text: str, **opts: Any) -> bytes:
         """Convert text to audio bytes."""
-        ...
-
-
-@runtime_checkable
-class SearchProvider(Protocol):
-    """Vendor adapter for web search and content extraction (Initiative A)."""
-
-    name: str
-
-    def search(self, query: str, **opts: Any) -> list[SearchResult]:
-        """Execute a web search and return ranked results."""
-        ...
-
-    def extract(self, url: str, **opts: Any) -> ExtractResult:
-        """Fetch and extract readable content from *url*."""
         ...
 
 

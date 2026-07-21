@@ -8,13 +8,11 @@ New vendor SDK imports MUST live only in the adapter modules under this package
 from hachi.core.providers.base import (
     AIProvider,
     Embedder,
-    ExtractResult,
-    SearchProvider,
-    SearchResult,
     SpeechProvider,
     StorageProvider,
 )
 from hachi.core.providers.registry import ProviderRegistry
+from hachi.core.providers.search import ExtractResult, SearchProvider, SearchResult
 
 __all__ = [
     "AIProvider",

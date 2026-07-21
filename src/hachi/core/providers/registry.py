@@ -16,10 +16,10 @@ from hachi.core.providers.base import (
     AIProvider,
     Embedder,
     ProviderHealth,
-    SearchProvider,
     SpeechProvider,
     StorageProvider,
 )
+from hachi.core.providers.search import SearchProvider
 from hachi.core.routing.capability import Capability
 
 logger = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ class ProviderRegistry:
 
     def get_search(self) -> SearchProvider | None:
         """Return the first registered SearchProvider, or ``None``."""
-        from hachi.core.providers.base import SearchProvider
+        from hachi.core.providers.search import SearchProvider
 
         for p in self._providers:
             if isinstance(p, SearchProvider):
