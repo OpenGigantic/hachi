@@ -47,6 +47,7 @@ import logging
 import os
 import re as _re
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from hachi.core.memory_guard import scan as guard_scan
@@ -437,6 +438,7 @@ class MemoryVault:
         recall_distance_max: float | None = _DEFAULT_RECALL_DISTANCE_MAX,
         core_memory_max_entries: int = _DEFAULT_CORE_MEMORY_MAX_ENTRIES,
         decay_half_life_days: float | None = None,
+        memory_dir: Path | None = None,
     ):
         """Record vault configuration but defer all ChromaDB I/O.
 
@@ -474,6 +476,16 @@ class MemoryVault:
                         Does NOT apply to ``search_user_profile`` (identity/preference
                         facts are timeless) or ``get_recent_facts`` / ``search_delegations``.
                         Config key: ``memory.decay_half_life_days``.
+            memory_dir: T-51 — root of the ``.og`` memory graph (profile.og,
+                        agent.og, projects/, people/, journal/) this vault
+                        content-addresses into when a delete needs to resolve
+                        which ``.og`` node(s) to tombstone. Defaults to
+                        ``get_hachi_paths().memory_dir`` — the SAME directory
+                        MemoryWriter/MemoryIndex are constructed against in
+                        production (shared_services.py, orchestrator.py), so
+                        a fact deleted through this vault is tombstoned in
+                        the exact ``.og`` tree graph recall reads from.
+                        Override only in tests that need an isolated dir.
         """
         if not brain_dir:
             brain_dir = str(get_hachi_paths().data_dir)
@@ -524,6 +536,14 @@ class MemoryVault:
 
         # P2-04: optional FTS5 graph index; set via attach_graph_index()
         self._graph_index: Any = None
+
+        # T-51: root of the .og memory graph this vault content-addresses
+        # into on delete (see the memory_dir arg docstring above). Resolved
+        # once, at construction — this is static configuration, not per-turn
+        # mutable state (BB-6 forbids the latter, not the former).
+        self._memory_dir: Path = (
+            memory_dir if memory_dir is not None else get_hachi_paths().memory_dir
+        )
 
         # H12: closed flag — set to True by close() under _vault_lock so that
         # subsequent collection-access calls raise RuntimeError rather than
@@ -667,6 +687,11 @@ class MemoryVault:
     def core_memory_max_entries(self) -> int:
         return self._core_memory_max_entries
 
+    @property
+    def memory_dir(self) -> Path:
+        """T-51: the ``.og`` memory-graph root this vault tombstones deletes into."""
+        return self._memory_dir
+
     # ==========================================
     # Lifecycle
     # ==========================================
@@ -754,32 +779,27 @@ class MemoryVault:
         """
         self._graph_index = index
 
-    def _delete_from_fts5(self, fact_id: str) -> None:
-        """Remove a node from the FTS5 SQLite index by node_id (best-effort).
+    def _delete_from_fts5(self, node_id: str) -> None:
+        """Remove a node from the FTS5 index by its composite node_id (best-effort).
 
-        Accesses the MemoryIndex's internal ``_db_path`` directly so we do not
-        need to add a new public API to MemoryIndex (which is outside our edit scope).
-        Errors are logged at DEBUG level and never propagate — the Chroma deletion
-        is the authoritative step.
+        T-51: delegates to ``MemoryIndex.delete_node()`` — the graph index's
+        own public seam — rather than opening a bypass sqlite connection
+        against its private ``_db_path``. *node_id* must be the composite
+        ``<rel-path>:<node-name>`` id ``MemoryIndex`` actually assigns (see
+        ``memory_index.compute_node_id``); the bare Chroma SHA-256 this
+        method used to receive could never match that format (docs/bug-bank.md).
+        A no-op when no graph index is attached. Errors are logged at DEBUG
+        and never propagate — the Chroma deletion is the authoritative step.
 
         Args:
-            fact_id: The SHA-256 fact ID used as ``node_id`` in the FTS5 tables.
+            node_id: The composite ``MemoryIndex`` node_id to remove.
         """
-        import sqlite3
-
-        db_path = getattr(self._graph_index, "_db_path", None)
-        if db_path is None:
+        if self._graph_index is None:
             return
         try:
-            conn = sqlite3.connect(str(db_path), timeout=5, check_same_thread=False)
-            try:
-                with conn:
-                    conn.execute("DELETE FROM mem_fts WHERE node_id = ?", (fact_id,))
-                    conn.execute("DELETE FROM mem_nodes WHERE node_id = ?", (fact_id,))
-            finally:
-                conn.close()
+            self._graph_index.delete_node(node_id)
         except Exception as exc:
-            logger.debug("_delete_from_fts5: could not remove %s: %s", fact_id, exc)
+            logger.debug("_delete_from_fts5: could not remove %s: %s", node_id, exc)
 
     # ==========================================
     # Internal Helpers
@@ -1126,12 +1146,126 @@ class MemoryVault:
                 pass
         return result
 
+    def _resolve_and_tombstone(self, content: str) -> None:
+        """Content-addressed ``.og``/FTS5 resolution for the three ``delete_*`` methods.
+
+        T-51: Chroma and ``.og`` hold the same fact under DIFFERENT identifiers
+        (a content hash vs. an LLM-chosen node name), so the only key shared by
+        both stores is the content itself. Finds every ``.og`` node whose
+        ``dense`` text equals *content*, removes its FTS5 row directly (when a
+        graph index is attached), and writes a tombstone for it so a later
+        ``MemoryIndex.refresh()`` — with or without a graph index ever having
+        been attached — does not resurrect it (§5 item 3 of T-51: this method
+        runs unconditionally, not gated on ``self._graph_index``).
+
+        Best-effort: never raises. A failure here must not mask the Chroma
+        deletion outcome that ``_tri_store_delete`` already computed.
+        """
+        try:
+            from hachi.core.memory_graph import load_memory_dir
+            from hachi.core.memory_index import compute_node_id
+            from hachi.core.memory_writer import MemoryWriter
+
+            matches = [
+                node for node in load_memory_dir(self._memory_dir).values() if node.dense == content
+            ]
+            if not matches:
+                return
+
+            writer = MemoryWriter(memory_dir=self._memory_dir, graph_index=self._graph_index)
+            for node in matches:
+                if self._graph_index is not None and node.source_file:
+                    node_id = compute_node_id(self._memory_dir, Path(node.source_file), node.name)
+                    self._delete_from_fts5(node_id)
+                writer.write_tombstone(node.name)
+        except Exception:
+            logger.debug(
+                "_resolve_and_tombstone: tombstone resolution failed for content=%.80r",
+                content,
+                exc_info=True,
+            )
+
+    def _tri_store_delete(self, fact_id: str, collection_attr: str) -> bool:
+        """Shared tri-store delete for delete_fact/delete_user_fact/delete_agent_fact.
+
+        T-51 ordering:
+          1. Capture the Chroma document text for *fact_id* before the row
+             disappears — content is the only identifier shared by Chroma and
+             ``.og`` (see ``_resolve_and_tombstone``).
+          2. Delete the Chroma row.
+          3. + 4. Resolve and tombstone the matching ``.og`` node(s), removing
+             their FTS5 rows too — regardless of whether step 2 succeeded, and
+             regardless of whether a graph index is attached, so the fact
+             stays suppressed even if ``memory.graph`` is later turned on.
+
+        Args:
+            fact_id: The SHA-256 content hash returned by the matching upsert_*.
+            collection_attr: Key into ``_COLLECTION_SPECS`` (``"collection"``,
+                ``"user_collection"``, or ``"agent_profile"``).
+
+        Returns:
+            True if the Chroma deletion succeeded (or the id was already
+            absent) — matching the historical single-bool contract callers
+            depend on. A partial failure in the FTS5/.og steps is logged but
+            never flips this result.
+        """
+        captured_text: str | None = None
+        try:
+            with self._vault_lock:
+                self._assert_open()
+                got = self._get_collection(collection_attr).get(ids=[fact_id])
+            docs = (got or {}).get("documents") or []
+            if docs:
+                captured_text = docs[0]
+        except Exception as exc:
+            logger.debug(
+                "_tri_store_delete: pre-delete get() failed for %s (%s): %s",
+                fact_id,
+                collection_attr,
+                exc,
+            )
+
+        chroma_ok = True
+        try:
+            with self._vault_lock:
+                self._assert_open()
+                self._get_collection(collection_attr).delete(ids=[fact_id])
+        except Exception as exc:
+            logger.warning(
+                "_tri_store_delete: Chroma deletion failed for %s (%s): %s",
+                fact_id,
+                collection_attr,
+                exc,
+            )
+            chroma_ok = False
+
+        if captured_text:
+            self._resolve_and_tombstone(captured_text)
+
+        return chroma_ok
+
     def delete_fact(self, fact_id: str) -> bool:
-        """Remove a fact from ALL backends: Chroma core_memory + FTS5 index.
+        """Remove a fact from Chroma core_memory, the FTS5 index, and tombstone its .og node.
+
+        T-51: a fact written through the typed extraction path lives in TWO
+        places — Chroma (keyed by a content hash) and an ``.og`` file (keyed
+        by an LLM-chosen node name) — so deleting only the Chroma row let the
+        ``.og`` node survive and get re-injected by graph recall on the very
+        next turn. This method now:
+          1. Captures the Chroma document text for *fact_id* before deleting it
+             (content is the only identifier shared by both stores).
+          2. Deletes the Chroma row.
+          3. Deletes the matching row(s) from the FTS5 index directly (only
+             possible when a graph index is attached).
+          4. Writes an ``.og`` tombstone for every node whose ``dense`` text
+             equals the captured content — unconditionally, even when no graph
+             index is attached, so the fact stays suppressed if ``memory.graph``
+             is later turned on and the index gets rebuilt from ``.og``.
 
         Deletion is idempotent — deleting an ID that does not exist returns True
-        so callers can safely retry.  A partial failure (e.g. FTS5 unreachable)
-        is logged but does not suppress the Chroma deletion result.
+        so callers can safely retry.  A partial failure in steps 3/4 is logged
+        but does not affect the return value — step 2 (the Chroma deletion) is
+        the sole determinant, matching the historical contract callers depend on.
 
         Args:
             fact_id: The SHA-256 content hash returned by upsert_fact.
@@ -1139,24 +1273,7 @@ class MemoryVault:
         Returns:
             True if the Chroma deletion succeeded (or the ID was already absent).
         """
-        chroma_ok = True
-        try:
-            with self._vault_lock:
-                self._assert_open()
-                self._get_collection("collection").delete(ids=[fact_id])
-        except Exception as exc:
-            logger.warning("delete_fact: Chroma deletion failed for %s: %s", fact_id, exc)
-            chroma_ok = False
-
-        # FTS5 graph index: remove matching nodes so "forgotten" facts do not
-        # resurface via BM25 keyword search (UC-MEM-004).
-        # We delete by node_id (which equals the Chroma SHA-256 fact_id for facts
-        # written through this vault) from both mem_fts and mem_nodes tables.
-        # If the graph index is not attached or the id is absent, this is a no-op.
-        if self._graph_index is not None:
-            self._delete_from_fts5(fact_id)
-
-        return chroma_ok
+        return self._tri_store_delete(fact_id, "collection")
 
     def semantic_search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """Semantic similarity search against the core_memory collection.
@@ -1389,21 +1506,20 @@ class MemoryVault:
         return self._guarded_write("user_collection", content, category)
 
     def delete_user_fact(self, fact_id: str) -> bool:
-        """Remove a user profile fact by ID.
+        """Remove a user profile fact from Chroma user_profile, FTS5, and .og (profile.og).
+
+        T-51: ``preference`` nodes dual-write to ``memory/profile.og`` (see
+        ``memory_writer._route``); this used to delete only the Chroma row.
+        See ``delete_fact``'s docstring for the tri-store resolution mechanism
+        this now shares.
 
         Args:
             fact_id: The SHA-256 content hash returned by upsert_user_fact.
 
         Returns:
-            True if the deletion succeeded.
+            True if the Chroma deletion succeeded (or the id was already absent).
         """
-        try:
-            with self._vault_lock:
-                self._assert_open()
-                self._get_collection("user_collection").delete(ids=[fact_id])
-            return True
-        except Exception:
-            return False
+        return self._tri_store_delete(fact_id, "user_collection")
 
     def search_user_profile(self, query: str, top_k: int = 10) -> list[dict[str, Any]]:
         """Semantic search against the user_profile collection.
@@ -1521,14 +1637,17 @@ class MemoryVault:
         return self._guarded_write("agent_profile", content, category)
 
     def delete_agent_fact(self, fact_id: str) -> bool:
-        """Remove a fact from the agent_profile by ID."""
-        try:
-            with self._vault_lock:
-                self._assert_open()
-                self._get_collection("agent_profile").delete(ids=[fact_id])
-            return True
-        except Exception:
-            return False
+        """Remove an agent persona fact from Chroma agent_profile, FTS5, and .og (agent.og).
+
+        T-51: ``rule`` nodes dual-write to ``memory/agent.og`` (see
+        ``memory_writer._route``); this used to delete only the Chroma row.
+        See ``delete_fact``'s docstring for the tri-store resolution mechanism
+        this now shares.
+
+        Returns:
+            True if the Chroma deletion succeeded (or the id was already absent).
+        """
+        return self._tri_store_delete(fact_id, "agent_profile")
 
     def get_agent_snapshot(self) -> str:
         """Retrieve the entire agent profile for injection into the system prompt prefix cache."""

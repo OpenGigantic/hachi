@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -189,71 +188,61 @@ class TestDeleteSpansAllBackends:
         assert fid not in vault._store, "Fact still present in vault store after delete"
 
     def test_delete_removes_from_fts5_when_graph_index_attached(self, tmp_path: Path) -> None:
-        """delete_fact must also remove the node from the FTS5 SQLite index."""
-        # Build a minimal FTS5 db matching what MemoryIndex uses.
-        db_path = tmp_path / "memory_index.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS mem_nodes (
-                node_id    TEXT PRIMARY KEY,
-                file_stem  TEXT NOT NULL,
-                node_type  TEXT NOT NULL DEFAULT 'fact',
-                name       TEXT NOT NULL,
-                keywords   TEXT NOT NULL DEFAULT '',
-                dense      TEXT NOT NULL DEFAULT '',
-                updated_at TEXT NOT NULL
-            );
-            CREATE VIRTUAL TABLE IF NOT EXISTS mem_fts USING fts5(
-                node_id,
-                text,
-                tokenize='porter ascii'
-            );
-            """
-        )
-        import hashlib
+        """delete_fact must also remove the node from the FTS5 SQLite index.
+
+        T-51: MemoryIndex keys FTS5 rows by its own composite
+        "<rel-path>:<node-name>" id, never the bare Chroma SHA-256 fact_id —
+        a row hand-seeded under the bare fid (this fixture's shape before
+        T-51) never occurs in production and would not have caught the real
+        bug (the FTS5 delete was a permanent no-op; see docs/bug-bank.md).
+        The fixture now indexes a REAL .og node through a REAL MemoryIndex
+        so the ids line up exactly the way refresh() actually assigns them.
+        """
+        from hachi.core.memory_index import MemoryIndex
+        from hachi.core.memory_writer import MemoryNode, MemoryWriter
 
         content = "the project uses FastAPI"
-        fid = hashlib.sha256(content.encode()).hexdigest()
-        conn.execute(
-            "INSERT INTO mem_nodes (node_id, file_stem, node_type, name, keywords, dense,"
-            " updated_at) VALUES (?, 'test', 'fact', 'test-node', '', ?, '2026-01-01')",
-            (fid, content),
-        )
-        conn.execute(
-            "INSERT INTO mem_fts (node_id, text) VALUES (?, ?)",
-            (fid, content),
-        )
-        conn.commit()
-        conn.close()
+        memory_dir = tmp_path / "memory"
+        db_path = tmp_path / "memory_index.db"
 
-        # Fake graph index that exposes the db_path attribute used by _delete_from_fts5.
-        graph_index = MagicMock()
-        graph_index._db_path = db_path
+        MemoryWriter(memory_dir=memory_dir).write_nodes(
+            [MemoryNode(name="test-node", role="fact", dense=content)]
+        )
+
+        graph_index = MemoryIndex(memory_dir=memory_dir, db_path=db_path)
+        graph_index.refresh()
+        node_id = "core_memory:test-node"
+        assert graph_index.search("FastAPI", top_k=5), "precondition: node must be indexed"
 
         # Build a real-ish MemoryVault using the FakeVault wrapper for Chroma.
         # We test the vault's delete_fact directly since it owns the FTS5 logic.
         try:
             from hachi.core.memory_vault import MemoryVault
 
-            vault = MemoryVault(brain_dir=str(tmp_path))
+            vault = MemoryVault(brain_dir=str(tmp_path), memory_dir=memory_dir)
             vault._graph_index = graph_index
         except ImportError:
             pytest.skip("chromadb not installed — skipping MemoryVault integration test")
 
-        # Prime the Chroma collection with the fact.
+        # Prime the Chroma collection with the SAME fact text — content match
+        # is how delete_fact resolves which .og/FTS5 node(s) it corresponds to.
+        import hashlib
+
+        fid = hashlib.sha256(content.encode()).hexdigest()
         vault.upsert_fact(content, category="architecture")
 
         # Now delete.
         ok = vault.delete_fact(fid)
         assert ok, "delete_fact returned False — Chroma deletion failed"
 
-        # Verify FTS5 tables are cleaned up.
+        # Verify FTS5 tables are cleaned up — keyed by the REAL composite node_id.
         conn2 = sqlite3.connect(str(db_path))
         nodes_row = conn2.execute(
-            "SELECT COUNT(*) FROM mem_nodes WHERE node_id = ?", (fid,)
+            "SELECT COUNT(*) FROM mem_nodes WHERE node_id = ?", (node_id,)
         ).fetchone()
-        fts_row = conn2.execute("SELECT COUNT(*) FROM mem_fts WHERE node_id = ?", (fid,)).fetchone()
+        fts_row = conn2.execute(
+            "SELECT COUNT(*) FROM mem_fts WHERE node_id = ?", (node_id,)
+        ).fetchone()
         conn2.close()
 
         assert nodes_row[0] == 0, "Node still present in mem_nodes after delete"

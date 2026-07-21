@@ -206,12 +206,16 @@ def register_memory_tools(
             return f"Failed to search memory: {str(e)}"
 
     def delete_memory(fact_id: str) -> str:
-        """Delete a workspace fact by ID from ALL storage backends.
+        """Delete a workspace fact by ID from every storage backend it lives in.
 
-        Removes the fact from:
-          - Chroma core_memory collection (primary semantic store)
-          - FTS5 graph index (if attached) so forgotten facts cannot resurface
-            via keyword search (UC-MEM-004)
+        T-51: a fact saved through core_save_memory is dual-written to Chroma
+        AND an .og memory file. This tool removes it from:
+          - the Chroma core_memory collection (primary semantic store)
+          - the FTS5 graph index, when attached (UC-MEM-004)
+          - the .og memory graph, via an append-only tombstone that suppresses
+            the node on every future read (graph recall, FTS5 rebuilds) — the
+            original .og node is left on disk (the graph is an audit trail)
+            but is no longer surfaced
 
         The operation is idempotent — deleting an absent ID returns a success
         confirmation rather than an error, so callers may safely retry.
@@ -221,8 +225,9 @@ def register_memory_tools(
         ok = vault.delete_fact(fact_id)
         if ok:
             return (
-                f"Memory fact {fact_id} has been removed from all backends "
-                "(Chroma + FTS5 index). It will not appear in future searches."
+                f"Memory fact {fact_id} has been removed from Chroma, the FTS5 index "
+                "(if attached), and tombstoned in the .og memory graph. "
+                "It will not appear in future searches or be re-injected by memory recall."
             )
         return (
             f"MEMORY DELETE FAILED: could not remove fact {fact_id} from Chroma. "

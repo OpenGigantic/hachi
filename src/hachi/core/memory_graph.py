@@ -48,10 +48,10 @@ class GraphNode:
     """A resolved memory node with its typed edges parsed out."""
 
     name: str
-    role: str          # fact | preference | task | event | person | ...
+    role: str  # fact | preference | task | event | person | ...
     dense: str
     keywords: list[str] = field(default_factory=list)
-    status: str = ""   # open | done | blocked (for task nodes)
+    status: str = ""  # open | done | blocked (for task nodes)
     edges: dict[str, list[str]] = field(default_factory=dict)
     # Name this node supersedes (if any).
     supersedes: list[str] = field(default_factory=list)
@@ -63,9 +63,7 @@ class GraphNode:
 # ---------------------------------------------------------------------------
 
 _EDGE_RE = re.compile(r"->?\s*\[:(\w+)=([^\]]+)\]")
-_NODE_BLOCK_RE = re.compile(
-    r"::node\[(?P<name>[^\]]+)\]\n(?P<body>(?:->.*\n)*)", re.MULTILINE
-)
+_NODE_BLOCK_RE = re.compile(r"::node\[(?P<name>[^\]]+)\]\n(?P<body>(?:->.*\n)*)", re.MULTILINE)
 _DENSE_RE = re.compile(r"::dense\n(?P<text>[^\n:][^\n]*(?:\n[^\n:][^\n]*)*)", re.MULTILINE)
 
 
@@ -112,27 +110,45 @@ def parse_memory_file(og_path: Path) -> list[GraphNode]:
             elif key in _TRAVERSAL_EDGES:
                 edges.setdefault(key, []).append(val)
 
-        nodes.append(GraphNode(
-            name=name,
-            role=role,
-            dense=dense_map.get(name, ""),
-            keywords=keywords,
-            status=status,
-            edges=edges,
-            supersedes=supersedes,
-            source_file=str(og_path),
-        ))
+        nodes.append(
+            GraphNode(
+                name=name,
+                role=role,
+                dense=dense_map.get(name, ""),
+                keywords=keywords,
+                status=status,
+                edges=edges,
+                supersedes=supersedes,
+                source_file=str(og_path),
+            )
+        )
 
     return nodes
 
 
 def load_memory_dir(memory_dir: Path) -> dict[str, GraphNode]:
-    """Load all .og files from *memory_dir* into a name→GraphNode map."""
-    index: dict[str, GraphNode] = {}
+    """Load all .og files from *memory_dir* into a name→GraphNode map.
+
+    T-51: suppression is applied HERE, globally, rather than left solely to
+    ``expand_graph``'s traversal-local filter. A node named by ANY
+    ``supersedes`` edge anywhere in the loaded set (e.g. a tombstone written
+    by ``MemoryWriter.write_tombstone``) is dropped before any caller ever
+    seeds or traverses the index. This matters because ``expand_graph``'s own
+    filter only fires when the superseding node is itself part of the result
+    set (seeded by token overlap or reached within 2 hops) — a tombstone that
+    nothing seeds would otherwise suppress nothing, letting a "forgotten"
+    fact resurface via the no-seed fallback (last-5-nodes) in graph_recall.py.
+    """
+    raw: dict[str, GraphNode] = {}
     for og_file in memory_dir.rglob("*.og"):
         for node in parse_memory_file(og_file):
-            index[node.name] = node
-    return index
+            raw[node.name] = node
+
+    superseded: set[str] = set()
+    for node in raw.values():
+        superseded.update(node.supersedes)
+
+    return {name: node for name, node in raw.items() if name not in superseded}
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +260,7 @@ def compose_resume_pack(
     lines: list[str] = []
 
     if query:
-        lines.append(f"[Memory: relevant to \"{query[:80]}\"]")
+        lines.append(f'[Memory: relevant to "{query[:80]}"]')
 
     for node in nodes:
         label = _ROLE_LABEL.get(node.role, node.role.capitalize())
@@ -310,8 +326,10 @@ def retrieve_and_compose(
     scored: list[tuple[int, str]] = []
     for name, node in node_index.items():
         score = sum(
-            1 for tok in q_tokens
-            if tok in name.lower() or tok in node.dense.lower()
+            1
+            for tok in q_tokens
+            if tok in name.lower()
+            or tok in node.dense.lower()
             or any(tok in kw.lower() for kw in node.keywords)
         )
         if score > 0:
