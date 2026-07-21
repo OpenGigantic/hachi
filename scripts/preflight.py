@@ -125,6 +125,17 @@ STEPS: list[Step] = [
         blocking=False,
     ),
     Step("eval regression", [["uv", "run", "hachi", "eval", "run"]]),
+    # BLOCKING (T-13 / CF-1 / BB-127): the structural fix for "~4,100 green tests
+    # could not detect eight completely dead features" -- boots a REAL session
+    # (the only test in the repo that calls the real boot_agent(), not a fake)
+    # into an isolated tmp_path profile and asserts one live property per
+    # formerly-dead T-04..T-12 feature. Measured ~8-10s locally -- kept in_quick
+    # so the fast inner loop still catches the next dead feature.
+    Step(
+        "feature liveness (boot smoke)",
+        [["uv", "run", "pytest", "-q", "tests/test_feature_liveness.py"]],
+        blocking=True,
+    ),
     Step(
         "frontend typecheck",
         [["npm", "run", "--prefix", "frontend", "typecheck"]],
