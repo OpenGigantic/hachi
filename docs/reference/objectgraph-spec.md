@@ -29,6 +29,7 @@
    - 4.4 [Navigation Tags](#44-navigation-tags)
    - 4.5 [Agent Behaviour Tags](#45-agent-behaviour-tags)
    - 4.6 [Complete Tag Reference](#46-complete-tag-reference)
+   - 4.7 [Runtime & Integration Tags (Internal)](#47-runtime--integration-tags-internal--first-party-only)
 5. [Solving All 8 Gaps](#5-solving-all-8-gaps)
    - 5.1 [Gap 1: Query-Aware Partial Loading](#51-gap-1-no-query-aware-partial-loading)
    - 5.2 [Gap 2: Compression Layer](#52-gap-2-no-compression-layer-for-llms)
@@ -561,6 +562,228 @@ sync, command execution, and reproducible lockfile workflows.
 | `::changelog` | Meta | On diff-load | 1 |
 | `::schema-def` | Meta | When type needed | 3 |
 | `::end` | Structural | Closes any block | Any |
+| `::config` | Runtime *(internal — §4.7)* | Never (boot-time only) | Boot |
+| `::tool` | Runtime *(internal — §4.7)* | Never (boot-time only) | Boot |
+| `::api[name]` | Runtime *(internal — §4.7)* | Never (tool-call time) | Any |
+
+The last three rows are **not read by the LLM at all** — unlike every other row in this
+table, which exists to be loaded into an agent's context window at some pass. `::config`,
+`::tool` and `::api` are consumed by Python code (the parser and the gateway), not by the
+model. See §4.7.
+
+---
+
+### 4.7 Runtime & Integration Tags (Internal — First-Party Only)
+
+> **Internal. Not public API.** Everything in this section is reserved for skills bundled
+> with Hachi (`src/hachi/default_skills/**`). `scripts/lint_skills.py` rejects all six
+> tokens documented here in any `.og` file outside that directory — see
+> [`docs/DECISIONS.md`](../DECISIONS.md) ("T-72 — `.og`'s executable surface: internal +
+> lint, for all six tags") for the reversibility rationale. Nothing below is a compatibility
+> commitment: the keys, defaults and behaviour can change without notice, because — unlike
+> every tag in §4.1–§4.6 — these are not content-delivery tags. They are how a `.og` file
+> reaches outside its own text: ingesting credentials, calling arbitrary HTTP endpoints, and
+> starting a subprocess. §"Security note" below says exactly what that means at boot.
+
+Every other tag in this specification describes *knowledge* the reader loads into an
+agent's context. The three block types below and the `role=` node attribute describe
+*actions* the engine takes on the host machine when it loads the file — independent of
+whether an agent ever reads the node's content. This section documents that surface
+because it exists and executes today, not because it is being proposed.
+
+#### `::config`
+
+Key-value configuration block, parsed the same way as every other block
+(`key=value` or `key: value` per line, `#`-prefixed lines ignored) but read by two
+different runtime handlers depending on the owning node's `role=` (below), never by the
+LLM:
+
+- On a `role=integration` node, `core/integrations.py`'s `setup_integration` dispatches on
+  `type` to `_setup_smtp` or `_setup_http`, which read the remaining keys to open a
+  persistent SMTP or HTTP connection.
+- On a `role=mcp` node, `core/mcp_client.py`'s `MCPManager.setup_from_node` reads `command`,
+  `args`, `env_*`-prefixed keys, and `transport` (`stdio` by default, or `sse`/`http` with a
+  `url` and `header_*`-prefixed keys) to launch an MCP server.
+
+`::config` has no `[name]` argument and there is exactly one per node — a second `::config`
+block on the same node overwrites the first (`_parse_key_value_block` returns a plain
+dict; nothing merges).
+
+#### `::tool`
+
+Key-value block that describes the tool schema the engine registers in the `ToolRegistry`
+for a `role=integration` node's handler, so the LLM can call it like any other tool.
+
+```
+::tool
+name=send_email
+description=Send an email via the persistent SMTP connection.
+params=to|recipient email address, subject|email subject line, body|plain-text email body
+::end
+```
+
+`core/integrations.py`'s `_build_tool_schema` reads `name` (required — no name means no
+tool is registered), `description`, and `params` (comma-separated `key|description` pairs;
+every param is currently registered as a required string — there is no way to declare an
+optional or non-string parameter). `role=mcp` nodes do not use `::tool`: MCP servers
+advertise their own tool schemas over the protocol once started.
+
+#### `::api[name]`
+
+Declares one REST endpoint as a callable tool. Unlike `::config`/`::tool`, `::api` is
+**not gated by node role** — the parser sets it on any node that has one, regardless of
+`role=`. This is the real, shipped syntax (`src/hachi/default_skills/general/currency.og`,
+verbatim):
+
+```
+::node[core_currency]
+->[:role=skill]
+->[:keywords=currency, convert, exchange rate, forex, money, fx, fiat]
+
+::api[convert_currency]
+method=GET
+endpoint=https://api.frankfurter.app/latest?amount={amount}&from={base}&to={target}
+schema={"amount": "number", "base": "string", "target": "string"}
+description=Converts fiat currency using real-time European Central Bank rates. Requires 3-letter currency codes (e.g., USD, EUR, JPY).
+```
+
+Ten of the 36 skills shipped in `src/hachi/default_skills/` and `src/hachi/packs/` declare
+an `::api` block this way (`dictionary.og`, `finance.og`, `flight_radar.og`,
+`math_engine.og`, `network.og`, `translator.og`, `weather.og`, `wiki.og`,
+`technical/github.og`, plus `currency.og` above) — it is the format's normal way to give an
+agent a REST tool without a native Python integration.
+
+| Key | Required | Notes |
+|---|---|---|
+| `endpoint` | Yes | URL template; `{placeholder}` segments are filled from the LLM's tool-call arguments. |
+| `method` | No | Defaults to `GET`. |
+| `schema` | No | A JSON object string describing the tool's input parameters (used for LLM tool-call generation). Must parse as valid JSON and must not nest deeper than 20 levels — deeper input is rejected outright (`_check_json_depth`, ADV-025) as a stack-exhaustion guard, not treated as a parse error to fix. |
+| `headers` | No | A JSON object string of extra HTTP headers. Same depth bound as `schema`. |
+| `description` | No | Shown to the LLM alongside the generated tool schema. |
+
+**Quiet-failure trap:** `::api` with no `[name]` argument (bare `::api`) parses to nothing
+— `block_arg` is falsy, the whole block is silently skipped, and no error is raised. A
+node with a bare `::api` block has no REST tool, and nothing in the lint output says so.
+Always give `::api` a `[name]`.
+
+#### The `role=` node attribute
+
+No prior version of this specification documented that a `role=` node attribute exists.
+It is set the same way every other node attribute is — an edge line immediately inside a
+`::node[...]` block — not inside the `::node[...]` brackets themselves:
+
+```
+::node[<name>]
+->[:role=<value>]
+```
+
+`role=` is read by `og_engine/parser.py` into `OGNode.role` (default `"general"` if
+absent) and is what `SkillEngine.get_nodes_by_role(role)` filters on. It takes five known
+values:
+
+| `role=` value | What it does | First-party example |
+|---|---|---|
+| `skill` | The ordinary case — a node contributing routable knowledge/instructions. No special runtime handling beyond normal 3-pass loading. | Nearly every shipped skill, e.g. `currency.og`'s `core_currency` node above. |
+| `native_integration` | A discovery/search entry describing a native Python SDK integration (Google Workspace, Slack, Notion) so it surfaces like a normal skill in `search_skills`. Grouped with `skill` by `og_engine/engine.py`'s `_SKILL_ROLES` — a **lint-severity** distinction only (structural violations are errors, not warnings). **Not** wired to the actual Google/Slack/Notion tool mounts: those are driven by a separate, hardcoded `CapabilityRegistry` in `gateway/orchestrator.py` (`_build_capability_registry`), keyed by capability id, not by scanning `.og` nodes for this role — no `get_nodes_by_role("native_integration")` call exists anywhere in the codebase. | `src/hachi/default_skills/core_integrations.og` (`google_workspace`, `slack`, `notion` nodes). |
+| `env` | **Reserved.** At boot, `IntegrationRuntime.load_env_node` reads the node's **`::dense` block** (not `::config`) as `KEY=VALUE` lines and merges them into an in-memory credential store. This is the plaintext-credential-in-a-file path named in [T-58](../audit/2026-07-19/tasks/T-58-declarative-integrations-consolidation.md) — documented here, not fixed here. | None shipped (§ below). |
+| `integration` | **Reserved.** At boot, `IntegrationRuntime.setup_integration` reads the node's `::config` block, opens a persistent SMTP or HTTP connection, and — via `register_tools` and the node's `::tool` block — registers a live tool the LLM can call. | None shipped. |
+| `mcp` | **Reserved.** At boot, `MCPManager.setup_from_node` reads the node's `::config` block and **starts an MCP server subprocess** (`stdio`) or connects one (`sse`/`http`). | None shipped. |
+
+`skill` and `native_integration` are ordinary first-party role values — nothing in this
+task restricts them. `env`, `integration` and `mcp` are the three roles marked internal by
+[`docs/DECISIONS.md`](../DECISIONS.md) and rejected by `scripts/lint_skills.py` outside
+`src/hachi/default_skills/`.
+
+**No shipped `.og` file uses `role=env`, `role=integration`, or `role=mcp` today** — they
+are live, boot-executed capabilities with zero first-party examples to point to, which is
+exactly why they went undocumented for so long. The two worked examples below are
+illustrative: assembled directly from the keys the handler code above actually reads (not
+invented), but not lifted from a shipped file, because none exists.
+
+*Illustrative — SMTP integration (`role=env` + `role=integration` + `::config` + `::tool`):*
+
+```
+::node[gmail_credentials]
+->[:role=env]
+
+::dense
+GMAIL_ADDRESS=devops@example.com
+GMAIL_APP_PASSWORD=<an-app-password, never a real one in a tracked file>
+
+::node[gmail_smtp]
+->[:role=integration]
+
+::config
+type=smtp
+host=smtp.gmail.com
+port=587
+use_tls=true
+auth_email_key=GMAIL_ADDRESS
+auth_password_key=GMAIL_APP_PASSWORD
+
+::tool
+name=send_email
+description=Send an email via the persistent SMTP connection.
+params=to|recipient email address, subject|email subject line, body|plain-text email body
+```
+
+*Illustrative — starting an MCP server (`role=mcp` + `::config`):*
+
+```
+::node[gmail_mcp]
+->[:role=mcp]
+
+::config
+command=npx
+args=-y @anthropic/mcp-gmail
+env_GMAIL_TOKEN=<token>
+transport=stdio
+```
+
+**Not the same "role" as §4.5/§5.6.** The existing "Role-Scoped Nodes" content earlier in
+this document (§4.5, §5.6 "Gap 6") is about the **`scope`** attribute (`scope=orchestrator`
+/ `scope=worker` / `scope=all`) and the `agent_role` parameter to `search_index` /
+`SkillEngine(agent_role=...)` — that is RBAC **visibility**: which nodes a given caller is
+allowed to see. The `role=` attribute documented here is unrelated: it governs a node's
+**functional behaviour** — what the engine *does* with the node — regardless of who can
+see it. A node can be `scope=all` (visible to everyone) and `role=mcp` (starts a
+subprocess) at the same time; the two attributes are independent.
+
+**Not the same "MCP" as §8.3.** §8.3 "Agentic Tooling (MCP)" documents *exporting the OG
+Reader itself as an MCP tool* so other agent frameworks can call `search_index` /
+`resolve_context` — the OG engine is the MCP **server** consumer's tools are calling into.
+`role=mcp` here is the opposite direction: a `.og` file causes Hachi to **start its own MCP
+client connection to a separate, external MCP server** at boot. Do not conflate the two.
+
+#### Security note: what an installed `.og` can do at boot
+
+Installing a `.og` file is not "adding a document to a knowledge base." `gateway/orchestrator.py`
+scans **every loaded `.og` file** for these three roles once, at session boot, via
+`skill_engine.get_nodes_by_role("mcp" | "env" | "integration")` (grep that symbol for
+current line numbers — they move often; verified present as of `7aa3e86`, 2026-07-21):
+
+- Every `role=mcp` node is handed to `mcp_manager.setup_from_node`, which **starts a
+  subprocess** (or opens an outbound connection for `sse`/`http` transport) — arbitrary
+  command execution. `PermissionGate.is_mcp_server_allowed` is consulted for every
+  non-filesystem server, but a node loaded from outside `<skills_dir>/packs/` is passed in
+  as `trusted=True` (SEC-005) — the gate, not the format, is what distinguishes first-party
+  from installed-pack servers; nothing in the `.og` syntax itself does.
+- Every `role=env` node is handed to `integrations.load_env_node`, which reads its
+  `::dense` block as **plaintext `KEY=VALUE` credentials** into an in-memory store — no
+  encryption, no secret-store indirection at the format level. See
+  [T-58](../audit/2026-07-19/tasks/T-58-declarative-integrations-consolidation.md), which
+  owns fixing this; this section only names the risk.
+- Every `role=integration` node is handed to `integrations.setup_integration`, which opens
+  a persistent SMTP or HTTP connection using those credentials and **mounts a live,
+  LLM-callable tool** (`register_tools`) built from the node's `::tool` block.
+
+None of this requires the agent to do anything — it happens once, automatically, the
+moment the file is loaded at boot, for every `.og` file the engine indexes. This is why
+`env`/`integration`/`mcp` are restricted to first-party skills (this section, `docs/DECISIONS.md`)
+rather than left open to any installed pack: [T-56](../audit/2026-07-19/tasks/T-56-pack-consent-every-install-path.md)
+owns building install-time consent for capabilities like these, and cannot state what a
+pack is consenting *to* until the capabilities themselves have names — which is what this
+section provides.
 
 ---
 

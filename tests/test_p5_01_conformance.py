@@ -70,19 +70,13 @@ def _check(assertion: dict, og: OGFile) -> None:
 
     if "equals" in assertion:
         expected = assertion["equals"]
-        assert value == expected, (
-            f"Path {path!r}: expected {expected!r}, got {value!r}"
-        )
+        assert value == expected, f"Path {path!r}: expected {expected!r}, got {value!r}"
     elif "contains" in assertion:
         needle = assertion["contains"]
         if isinstance(value, str):
-            assert needle in value, (
-                f"Path {path!r}: {needle!r} not found in {value!r}"
-            )
+            assert needle in value, f"Path {path!r}: {needle!r} not found in {value!r}"
         elif isinstance(value, (list, dict)):
-            assert needle in value, (
-                f"Path {path!r}: {needle!r} not found in {value!r}"
-            )
+            assert needle in value, f"Path {path!r}: {needle!r} not found in {value!r}"
         else:
             pytest.fail(f"Path {path!r}: cannot check 'contains' on {type(value).__name__}")
     else:
@@ -182,3 +176,43 @@ def test_conformance_assertions(fixture_name: str) -> None:
 
     for assertion in entry["assertions"]:
         _check(assertion, og)
+
+
+# ---------------------------------------------------------------------------
+# T-72 — the human-readable spec (docs/reference/objectgraph-spec.md) must name
+# every block type the parser executes and every executable node role the
+# runtime acts on. This is a *different* document from the machine-readable
+# conformance fixtures above (SPEC_DIR / "spec/"); see docs/DECISIONS.md and
+# docs/reference/objectgraph-spec.md section 4.7 "Runtime & Integration Tags".
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_OG_SPEC_MD = _REPO_ROOT / "docs" / "reference" / "objectgraph-spec.md"
+_PARSER_PY = _REPO_ROOT / "src" / "hachi" / "og_engine" / "parser.py"
+
+
+def test_spec_documents_every_parser_block_type() -> None:
+    """The .og spec must describe every block the parser executes.
+
+    Regression (T-72 / BB-133): ::config, ::tool and ::api were executed by the
+    parser and appeared ZERO times in the spec — so the format's executable
+    surface (REST calls, tool definitions) was invisible to pack authors and
+    unauditable by reviewers.
+    """
+    spec = _OG_SPEC_MD.read_text(encoding="utf-8")
+    handled = set(re.findall(r'block_type == "([a-z_]+)"', _PARSER_PY.read_text(encoding="utf-8")))
+    assert handled, "parser dispatch not found — did the block dispatch move?"
+
+    missing = sorted(b for b in handled if f"::{b}" not in spec)
+    assert not missing, (
+        f"parser block types missing from {_OG_SPEC_MD.name}: {missing}. "
+        "Document them, or mark them internal and lint against them (T-72)."
+    )
+
+
+def test_spec_documents_every_executable_node_role() -> None:
+    """role=env/integration/mcp ingest credentials, mount HTTP tools and START
+    SUBPROCESSES at session boot. The spec must name them either way."""
+    spec = _OG_SPEC_MD.read_text(encoding="utf-8")
+    missing = [r for r in ("role=env", "role=integration", "role=mcp") if r not in spec]
+    assert not missing, f"executable node roles missing from {_OG_SPEC_MD.name}: {missing}"
