@@ -44,12 +44,21 @@ import math
 import threading
 import time
 from collections.abc import Callable, Generator
-from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
 from hachi.core.llm import BaseLLMClient, LLMResponse, Message
+
+# T-60: import the dependency-free module directly, NOT `providers.base`.
+# `providers/base.py` (and `providers/registry.py`, reached via the
+# `providers` package `__init__`) import `hachi.core.routing.capability`,
+# and touching ANY name in the `hachi.core.routing` package eagerly runs
+# `routing/__init__.py` -> `routing/router.py` -> `core/resilience.py` (this
+# module). Importing from `hachi.core.providers.base` here -- even though it
+# only re-exports `ProviderHealth` -- would still trigger that whole package
+# `__init__` cascade and recreate the cycle. See `provider_health.py`.
+from hachi.core.provider_health import ProviderHealth
 
 logger = logging.getLogger(__name__)
 
@@ -186,38 +195,17 @@ class RetryPolicy(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# ProviderHealth
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class ProviderHealth:
-    """Live health snapshot for one provider instance.
-
-    Attributes:
-        provider: Provider name / registry key.
-        available: ``False`` when the provider is known-broken.
-        recent_error_rate: Fraction of recent calls that failed (0.0–1.0).
-        p50_latency_ms: Median latency of successful calls in milliseconds.
-        consecutive_failures: Number of failures without a success in between.
-        breaker: Current breaker state.
-    """
-
-    provider: str
-    available: bool = True
-    recent_error_rate: float = 0.0
-    p50_latency_ms: float = 0.0
-    consecutive_failures: int = 0
-    breaker: Literal["closed", "open", "half_open"] = "closed"
-
-    def is_usable(self) -> bool:
-        """Return ``True`` when the provider may be tried."""
-        return self.available and self.breaker != "open"
-
-
-# ---------------------------------------------------------------------------
 # HealthRecorder
 # ---------------------------------------------------------------------------
+#
+# T-60: ProviderHealth now lives solely in ``core/provider_health.py`` (a
+# dependency-free module imported both here and by ``providers/base.py``,
+# which re-exports it so every other consumer -- Provider.update_health,
+# Provider.health, ProviderRegistry.health(), ModelRouter -- keeps importing
+# it from ``providers.base`` unchanged). This module used to define its own
+# twin dataclass; HealthRecorder.snapshot() produced THAT one while
+# everything downstream was typed for the ``providers.base`` one, and it only
+# worked because the field names happened to line up. See docs/bug-bank.md.
 
 
 class HealthRecorder:
