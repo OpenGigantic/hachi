@@ -516,6 +516,18 @@ class AgentSession:
         event_emitter: Callable[[str, dict[str, Any]], None] | None = None,
         read_models: RuntimeReadModelStore | None = None,
         job_queue: JobQueue | None = None,
+        *,
+        # --- promoted from boot_agent post-construction stashes (T-45) ---
+        max_daily_cost_usd: float | None = None,
+        sub_agent_client: Any = None,  # closed on shutdown alongside the main client
+        browser_controller: Any = None,  # closed on shutdown (no-op if never used)
+        schedule_runner: Any = None,  # stopped in shutdown()
+        scheduler: Any = None,
+        episodic_top_k: int = 3,
+        graph_recall: bool = True,
+        durable_title: bool = False,
+        provider_registry: Any = None,
+        secret_store: Any = None,
     ):
         self.loop = loop
         self.skill_engine = skill_engine
@@ -559,34 +571,51 @@ class AgentSession:
         # Same idea for tokens, so the interaction_log records a per-turn token count.
         self._last_recorded_tokens: int = 0
 
-        # Rolling calendar-day spend cap (P1-3).  Set by boot_agent from [limits] config /
+        # Rolling calendar-day spend cap (P1-3).  Passed via the max_daily_cost_usd
+        # constructor parameter — boot_agent supplies it from [limits] config /
         # HACHI_MAX_DAILY_COST_USD env.  None means unlimited (default — safe fail-open).
-        self._max_daily_cost_usd: float | None = None
+        self._max_daily_cost_usd: float | None = max_daily_cost_usd
+
+        # T-45: sub-agent LLM client (cheaper model for titling/delegation), passed via
+        # the sub_agent_client parameter — closed on shutdown alongside the main client.
+        self._sub_agent_client: Any = sub_agent_client
+
+        # T-45: headless browser controller, passed via the browser_controller
+        # parameter — closed on shutdown (no-op if never used).
+        self._browser_controller: Any = browser_controller
 
         # Resume support: prior-session turns replayed for TUI transcript rendering.
         # (role, content) pairs, oldest first; empty unless booted with resume.
         self._resumed_transcript: list[tuple[str, str]] = []
 
-        # P4-05: scheduler reference — set by boot_agent after ScheduleRunner starts.
-        self._scheduler: Any = None
+        # P4-05: scheduler reference, passed via the scheduler parameter — boot_agent
+        # supplies it after ScheduleRunner starts. Exposed for companion web UI.
+        self._scheduler: Any = scheduler
+
+        # T-45: background ScheduleRunner thread, passed via the schedule_runner
+        # parameter — stopped in shutdown().
+        self._schedule_runner: Any = schedule_runner
 
         # Slice 2.2: when True, _enqueue_title_job uses handler_name= instead of
-        # func= so the job survives a restart.  Set by boot_agent when
-        # [jobs] durable_handlers=true.
-        self._durable_title: bool = False
+        # func= so the job survives a restart.  Passed via the durable_title
+        # parameter — boot_agent sets it when [jobs] durable_handlers=true.
+        self._durable_title: bool = durable_title
 
         # M1: number of past-session episodes to inject per turn (0 = disabled).
-        # Set by boot_agent from memory settings (episodic_top_k).
-        self._episodic_top_k: int = 3
+        # Passed via the episodic_top_k parameter — boot_agent supplies it from
+        # memory settings (episodic_top_k).
+        self._episodic_top_k: int = episodic_top_k
 
         # Stage-C graph expansion: when True, each turn appends a concise graph-expanded
-        # memory section to the recall block.  Set by boot_agent from memory.graph_recall.
-        self._graph_recall: bool = True
+        # memory section to the recall block.  Passed via the graph_recall parameter —
+        # boot_agent supplies it from memory.graph_recall.
+        self._graph_recall: bool = graph_recall
 
-        # BB-11: stashed by boot_agent so reload_search_provider() can rebuild the
-        # ProviderRegistry with fresh credentials without a full restart.
-        self._provider_registry: Any = None
-        self._secret_store: Any = None
+        # BB-11: passed via the provider_registry/secret_store parameters so
+        # reload_search_provider() can rebuild the ProviderRegistry with fresh
+        # credentials without a full restart.
+        self._provider_registry: Any = provider_registry
+        self._secret_store: Any = secret_store
 
     @property
     def resumed_transcript(self) -> list[tuple[str, str]]:
@@ -877,6 +906,12 @@ class AgentSession:
         """
         if self._scheduler is None:
             return False
+        # NOTE (T-45): left as a defensive getattr, unlike the shutdown()/titler
+        # reads of this attribute. tests/test_schedule_run_now_gateway.py builds a
+        # session via AgentSession.__new__ (bypassing __init__) specifically to
+        # assert this method degrades to False when _schedule_runner was never set
+        # at all; that fixture is outside T-45's file scope, so fixing it (and this
+        # read) is left as a follow-up rather than done as a drive-by here.
         runner = getattr(self, "_schedule_runner", None)
         fire = getattr(runner, "_fire", None)
         if fire is None:
@@ -1325,7 +1360,10 @@ class AgentSession:
         """
         # Prefer the cheaper sub-agent client (a smaller model on Anthropic);
         # fall back to the main loop client when no sub-agent client is wired.
-        client = getattr(self, "_sub_agent_client", None) or getattr(self.loop, "llm_client", None)
+        # T-45: _sub_agent_client is now a real constructor-established attribute,
+        # so it is read directly; self.loop.llm_client stays defensive (self.loop
+        # is a foreign ExecutionLoop, out of this task's scope).
+        client = self._sub_agent_client or getattr(self.loop, "llm_client", None)
         # Issue 11 (contract C-TITLER-COST): pass cost_tracker so title-generation tokens are
         # counted in the session's cumulative spend.  The titler signature gains an optional
         # ``cost_tracker`` kwarg — another lane implements this; guarded with inspect so a
@@ -1824,7 +1862,9 @@ class AgentSession:
 
     def shutdown(self):
         """Gracefully close all persistent connections, MCP servers, and session store."""
-        runner = getattr(self, "_schedule_runner", None)
+        # T-45: _schedule_runner is a real constructor-established attribute (default
+        # None), so it is read directly rather than via a defensive getattr.
+        runner = self._schedule_runner
         if runner is not None:
             runner.stop()
 
@@ -1921,9 +1961,11 @@ class AgentSession:
 
         # Close LLM HTTP clients (OpenAICompatibleClient/ollama hold an httpx.Client;
         # AnthropicClient has no close() — guarded by getattr so both are safe).
+        # T-45: _sub_agent_client is a real constructor-established attribute, read
+        # directly; self.loop.llm_client stays defensive (self.loop is foreign here).
         for client in (
             getattr(self.loop, "llm_client", None),
-            getattr(self, "_sub_agent_client", None),
+            self._sub_agent_client,
         ):
             close = getattr(client, "close", None)
             if callable(close):
@@ -1938,7 +1980,8 @@ class AgentSession:
                     )
 
         # Shut down the browser worker thread + headless browser if one was started.
-        browser = getattr(self, "_browser_controller", None)
+        # T-45: _browser_controller is a real constructor-established attribute.
+        browser = self._browser_controller
         if browser is not None:
             try:
                 browser.close()
@@ -3623,6 +3666,55 @@ def boot_agent(
     if _has_live_mcp:
         loop._persistent_groups.add("mcp")
 
+    # T-45: start the background schedule runner BEFORE the session exists, so
+    # ScheduleRunner can be passed straight into the AgentSession constructor
+    # below instead of being stashed onto the finished object afterwards. The
+    # fire callback still calls session.chat() -- `session` is a name in this
+    # function's scope that Python resolves when the closure actually *runs*
+    # (late binding), and ScheduleRunner's first tick never fires sooner than
+    # tick_interval_seconds (30s) after start(), long after `session` is
+    # assigned a few lines down. Keep this block, and the H3 single-thread
+    # guard, ahead of "10. Create the Session" -- moving it back would
+    # silently reintroduce the ordering bug this task exists to remove.
+    def _fire_schedule(s: Schedule) -> None:
+        job_id = f"schedule:{s.schedule_id}:{uuid.uuid4().hex[:8]}"
+        emit_runtime_event(
+            "job.started",
+            {"job_id": job_id, "job_name": s.name, "kind": "schedule", "label": s.name},
+        )
+        try:
+            result_text = session.chat(s.task, surface="schedule")
+            # UC-RSCH-002: the resident runner must honor deliver_to/webhook_url too
+            # (previously only `hachi schedule run-due` delivered). deliver_result
+            # redacts outbound secrets before any webhook POST.
+            deliver_result(s, result_text)
+            emit_runtime_event(
+                "job.completed",
+                {"job_id": job_id, "job_name": s.name, "kind": "schedule", "label": s.name},
+            )
+        except Exception:
+            import logging as _logging
+
+            _logging.getLogger(__name__).exception("Schedule fire error for '%s'", s.name)
+            emit_runtime_event(
+                "job.failed",
+                {
+                    "job_id": job_id,
+                    "job_name": s.name,
+                    "kind": "schedule",
+                    "label": s.name,
+                    "status": "failed",
+                },
+            )
+
+    _schedule_runner = ScheduleRunner(scheduler, fire=_fire_schedule)
+    # H3: the shared Scheduler object still races if two independent runner
+    # threads tick it concurrently — only the first session in this process
+    # starts the runner; later sessions reuse it without a second thread.
+    if not getattr(_shared, "scheduler_runner_started", False):
+        _schedule_runner.start()
+        _shared.scheduler_runner_started = True
+
     # 10. Create the Session
     session = AgentSession(
         loop,
@@ -3635,12 +3727,22 @@ def boot_agent(
         event_emitter=emit_runtime_event,
         read_models=read_models,
         job_queue=job_queue,
+        # --- promoted from post-construction stashes (T-45) ---
+        # P1-3: `or None` preserves the falsy collapse the old `if max_daily_cost_usd:`
+        # guard gave a 0.0 cap (both mean "unlimited" — see _daily_cap_exceeded).
+        max_daily_cost_usd=max_daily_cost_usd or None,
+        sub_agent_client=sub_agent_client,  # closed on shutdown alongside the main client
+        browser_controller=browser_controller,  # closed on shutdown (no-op if never used)
+        schedule_runner=_schedule_runner,  # stopped in shutdown()
+        scheduler=scheduler,  # P4-05: exposed for companion web UI
+        episodic_top_k=_memory_settings.episodic_top_k,
+        graph_recall=_memory_settings.graph_recall,
+        durable_title=_jobs_cfg.durable_handlers,
+        provider_registry=_provider_registry,  # BB-11: live search-tool reload w/o restart
+        secret_store=secret_store,
     )
     session.set_vault(vault)
     session.set_session_store(session_store, model=model_name)
-    # P1-3: propagate the daily cap to the session so _daily_cap_exceeded() can enforce it.
-    if max_daily_cost_usd:
-        session._max_daily_cost_usd = max_daily_cost_usd
     if resume_session_id:
         try:
             seeded = session.resume_from_session(resume_session_id)
@@ -3658,18 +3760,6 @@ def boot_agent(
                 resume_session_id,
                 exc_info=True,
             )
-    session._sub_agent_client = sub_agent_client  # closed on shutdown alongside the main client
-    session._browser_controller = browser_controller  # closed on shutdown (no-op if never used)
-    # M1: episodic recall top-k from memory settings (0 = disabled).
-    session._episodic_top_k = _memory_settings.episodic_top_k
-    # Stage-C: graph recall enabled flag from memory settings (default True).
-    session._graph_recall = _memory_settings.graph_recall
-    # Slice 2.2: activate durable title job path when the flag is on.
-    if _jobs_cfg.durable_handlers:
-        session._durable_title = True
-    # BB-11: stash for live search-tool reload without restart.
-    session._provider_registry = _provider_registry
-    session._secret_store = secret_store
 
     # ------------------------------------------------------------------
     # JobRegistry activation
@@ -3787,50 +3877,6 @@ def boot_agent(
     )
     _resident_worker.start()
     session.set_resident_worker(_resident_worker)
-
-    # Start the background schedule runner now that session.chat() is available.
-    # The fire callback calls session.chat() so the agent executes the task and
-    # delivers the result via the session's normal event pipeline.
-    def _fire_schedule(s: Schedule) -> None:
-        job_id = f"schedule:{s.schedule_id}:{uuid.uuid4().hex[:8]}"
-        emit_runtime_event(
-            "job.started",
-            {"job_id": job_id, "job_name": s.name, "kind": "schedule", "label": s.name},
-        )
-        try:
-            result_text = session.chat(s.task, surface="schedule")
-            # UC-RSCH-002: the resident runner must honor deliver_to/webhook_url too
-            # (previously only `hachi schedule run-due` delivered). deliver_result
-            # redacts outbound secrets before any webhook POST.
-            deliver_result(s, result_text)
-            emit_runtime_event(
-                "job.completed",
-                {"job_id": job_id, "job_name": s.name, "kind": "schedule", "label": s.name},
-            )
-        except Exception:
-            import logging as _logging
-
-            _logging.getLogger(__name__).exception("Schedule fire error for '%s'", s.name)
-            emit_runtime_event(
-                "job.failed",
-                {
-                    "job_id": job_id,
-                    "job_name": s.name,
-                    "kind": "schedule",
-                    "label": s.name,
-                    "status": "failed",
-                },
-            )
-
-    _schedule_runner = ScheduleRunner(scheduler, fire=_fire_schedule)
-    # H3: the shared Scheduler object still races if two independent runner
-    # threads tick it concurrently — only the first session in this process
-    # starts the runner; later sessions reuse it without a second thread.
-    if not getattr(_shared, "scheduler_runner_started", False):
-        _schedule_runner.start()
-        _shared.scheduler_runner_started = True
-    session._schedule_runner = _schedule_runner  # stopped in shutdown()
-    session._scheduler = scheduler  # P4-05: exposed for companion web UI
 
     # ------------------------------------------------------------------
     # Slice 2.2 — A4: scheduler timeout sweep for WAITING runs.
