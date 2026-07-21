@@ -121,20 +121,23 @@ def test_openai_chat_no_allowlist_data_does_not_reject(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_openai_chat_rate_limit_is_keyed_per_caller(monkeypatch) -> None:
-    """The rate limiter must key on the caller's identity, not a shared global bucket.
+def test_openai_chat_rate_limit_key_reflects_auth_state(monkeypatch) -> None:
+    """The rate limiter must not use a shared, mode-blind hardcoded key.
 
-    Before the fix, ``openai_limiter.allow("openai")`` used a single hardcoded
-    key, so caller A exhausting the limit would also lock out caller B. We spy
-    on the limiter to capture the exact key it was called with and confirm it
-    is derived from the caller's bearer token (the same ``caller_hash`` H6 uses
-    for session ownership) instead of the constant literal ``"openai"``.
+    Before BB-58's fix, ``openai_limiter.allow("openai")`` used a single
+    hardcoded literal key regardless of caller. BB-58's original fix keyed on
+    the caller's bearer-token digest, described as "per-principal" — ADR-0006
+    (T-61) subsequently established that framing was never accurate: Hachi is
+    single-principal (exactly one bearer token per process), so that digest
+    was already the same value for every authenticated request, discriminating
+    only between auth states, not between callers. ``require_auth`` no longer
+    returns a digest at all (it returns ``bool``); this test pins the
+    surviving half of BB-58's fix — the key is still not the old hardcoded
+    literal ``"openai"``, and it still differs between authenticated and
+    no-auth requests.
     """
-    import hashlib
-
-    monkeypatch.setenv("HACHI_OPENAI_RATE_LIMIT", "1")
+    monkeypatch.setenv("HACHI_OPENAI_RATE_LIMIT", "100")
     token_a = "token-caller-aaa"
-    expected_hash = hashlib.sha256(token_a.encode()).hexdigest()
     cp = _control_plane()
 
     calls: list[str] = []
@@ -150,17 +153,28 @@ def test_openai_chat_rate_limit_is_keyed_per_caller(monkeypatch) -> None:
     monkeypatch.setattr(fastapi_app_module, "RateLimiter", _SpyRateLimiter)
     app = create_gateway_app(cp, auth_token=token_a)
     with TestClient(app) as client:
-        resp = client.post(
+        authed = client.post(
             "/v1/chat/completions",
             json={"messages": [{"role": "user", "content": "hi"}]},
             headers={"Authorization": f"Bearer {token_a}"},
         )
-    assert resp.status_code == 200
+    assert authed.status_code == 200
     assert calls, "rate limiter was never invoked"
-    # The recorded key must be the caller's own hash, not the pre-fix constant
-    # literal "openai" (the shared global-bucket key).
-    assert calls[0] == expected_hash
-    assert calls[0] != "openai"
+    assert calls[0] != "openai", "still using the pre-BB-58 hardcoded global-bucket key"
+    assert calls[0] == "authenticated"
+
+    # A no-auth-mode app (no token configured) must use a different key —
+    # the two modes must not share one bucket.
+    calls.clear()
+    no_auth_app = create_gateway_app(_control_plane())
+    with TestClient(no_auth_app) as no_auth_client:
+        anon = no_auth_client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert anon.status_code == 200
+    assert calls[0] == "anonymous"
+    assert calls[0] != "authenticated"
 
 
 def test_openai_models_list() -> None:
@@ -340,8 +354,9 @@ def test_openai_non_stream_unchanged() -> None:
 
 # ---------------------------------------------------------------------------
 # T-32 — the non-streaming facade must not share one "__default__" session
-# across callers, and must enforce ownership like every other session-scoped
-# route (BB-109).
+# across callers (BB-109). The per-session ownership check T-32 also added
+# here was removed by ADR-0006 (T-61) along with the rest of that layer —
+# see test_openai_facade_has_no_session_ownership_gate below.
 # ---------------------------------------------------------------------------
 
 
@@ -366,13 +381,18 @@ def test_openai_facade_does_not_share_one_default_session() -> None:
     assert len(set(seen)) == 2, f"both callers shared one session: {seen}"
 
 
-def test_openai_facade_rejects_foreign_session_owner() -> None:
-    """T-32: the facade must perform the ownership check the other 10 routes perform."""
-    import hashlib
+def test_openai_facade_has_no_session_ownership_gate() -> None:
+    """ADR-0006 (T-61): the facade has no per-session ownership check to perform.
 
+    T-32 originally added this test to prove the facade performed the same
+    ownership check the other session-scoped routes did, by re-stamping a
+    live session's owner to a foreign digest via ``set_session_owner`` and
+    expecting 403. That machinery no longer exists. Under the single-
+    principal model the bearer token IS the identity, so the same
+    authenticated caller reusing a `user`-keyed conversation must always
+    succeed, with nothing gating repeated access.
+    """
     _TOKEN_A = "token-a"
-    _HASH_A = hashlib.sha256(_TOKEN_A.encode()).hexdigest()
-    _HASH_B = hashlib.sha256(b"token-b").hexdigest()
 
     cp = GatewayControlPlane(on_chat=lambda _sid, prompt: f"echo:{prompt}")
     app = create_gateway_app(cp, auth_token=_TOKEN_A)
@@ -384,19 +404,8 @@ def test_openai_facade_rejects_foreign_session_owner() -> None:
         first = client.post("/v1/chat/completions", json=body, headers=headers)
         assert first.status_code == 200
 
-        # Re-point that session's owner at a different principal. The key mirrors
-        # the implementation's f"openai:{principal}:{conversation}" scheme; calling
-        # get_or_create_session with no owner kwarg on an already-known key is a
-        # pure lookup and does not re-stamp ownership.
-        session_id = cp.get_or_create_session(f"openai:{_HASH_A}:conversation-1")
-        cp.set_session_owner(session_id, _HASH_B)
-        # BB-108's trap: confirm the stamp actually landed on a LIVE session — a
-        # no-op stamp on a dead/unknown id would make the 403 below pass for the
-        # wrong reason (an ownerless session, which the policy always allows).
-        assert cp.get_session_owner(session_id) == _HASH_B
-
-        denied = client.post("/v1/chat/completions", json=body, headers=headers)
-        assert denied.status_code == 403
+        second = client.post("/v1/chat/completions", json=body, headers=headers)
+        assert second.status_code == 200
 
 
 # ---------------------------------------------------------------------------

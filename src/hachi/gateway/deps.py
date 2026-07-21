@@ -16,11 +16,10 @@ these providers instead of a closure.
 
 from __future__ import annotations
 
-import hashlib
 import secrets as _secrets
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Request
 
 from hachi.gateway.control_plane import GatewayControlPlane
 
@@ -48,7 +47,7 @@ def get_control_plane(request: Request) -> GatewayControlPlane:
     return request.app.state.control_plane  # type: ignore[no-any-return]
 
 
-def require_auth(request: Request) -> str | None:
+def require_auth(request: Request) -> bool:
     """Enforce bearer-token authentication on protected routes.
 
     Transcribed verbatim (behaviour, not implementation detail) from the
@@ -60,16 +59,15 @@ def require_auth(request: Request) -> str | None:
 
     Preserves all four documented modes:
 
-    1. Token configured, valid bearer credential supplied -> returns the
-       sha256 hex-digest of the caller's raw token (used for session-
-       ownership checks, C1, without keeping the raw token in memory).
+    1. Token configured, valid bearer credential supplied -> returns
+       ``True``.
     2. Token configured, credential missing or wrong -> raises
        :class:`AuthRequired` (-> HTTP 401 via the registered handler).
     3. ``HACHI_GATEWAY_NO_AUTH=1`` (``app.state.auth_enabled`` is False) ->
-       returns ``None``, no enforcement.
+       returns ``False``, no enforcement.
     4. No token configured at all (the ``bind_host=None`` unit-test /
        ``hachi gateway-openapi`` export path -- the CLI always generates a
-       token for a real bind) -> returns ``None``, no enforcement.
+       token for a real bind) -> returns ``False``, no enforcement.
 
     Loopback binding does NOT exempt this check (MR-2 / UC-AUTH-001 /
     ADV-014) -- the startup guards in ``create_gateway_app`` (E8/T8.2)
@@ -77,13 +75,23 @@ def require_auth(request: Request) -> str | None:
     a socket, so mode 4 only fires on the guard-skipping ``bind_host=None``
     path.
 
+    ADR-0006 (T-61): this used to return the sha256 hex-digest of the
+    caller's raw bearer token, so routes could compare per-session
+    "ownership" without keeping the raw token in memory. Hachi is
+    single-principal -- exactly one bearer token exists per process, so
+    every authenticated caller produced the *same* digest and every such
+    comparison compared a value to itself. That ownership layer (and its
+    only consumer of the digest) has been deleted; this dependency now only
+    answers "was this request authenticated," which is all any caller
+    legitimately needs from it.
+
     Returns:
-        sha256 hex-digest of the caller's bearer token when auth is enforced
-        and the credential is valid; ``None`` in no-auth mode or when running
-        as a test helper without a configured token.
+        ``True`` when auth is enforced and the credential is valid;
+        ``False`` in no-auth mode or when running as a test helper without a
+        configured token.
     """
     if not request.app.state.auth_enabled:
-        return None
+        return False
     auth_token = request.app.state.auth_token
     if not auth_token:
         # No token configured AND bind_host was None (unit-test / export path) ->
@@ -91,48 +99,18 @@ def require_auth(request: Request) -> str | None:
         # (CRIT-001) already raised ValueError before the server started, so
         # reaching here with bind_host set and no token is structurally
         # impossible in production.
-        return None
+        return False
     expected = f"Bearer {auth_token}"
     received = request.headers.get("Authorization", "")
     if not _secrets.compare_digest(received.strip(), expected):
         raise AuthRequired()
-    raw_token = received.strip()[len("Bearer ") :].strip()
-    # C1: return the sha256 digest so routes can compare ownership without
-    # storing or comparing the raw bearer value.
-    return hashlib.sha256(raw_token.encode()).hexdigest()
-
-
-def check_session_ownership(
-    control_plane: GatewayControlPlane, session_id: str, caller_hash: str | None
-) -> None:
-    """Enforce C1 session-ownership policy.
-
-    Transcribed from the ``_check_session_ownership`` closure that used to
-    live inside ``create_gateway_app``. If the session has an owner set, the
-    caller's token-hash must match. Legacy sessions (NULL owner) are
-    accessible by any authenticated caller for backward compatibility. In
-    no-auth mode (``caller_hash`` is ``None``) all sessions are accessible.
-
-    Args:
-        control_plane: The control plane to read the session's owner from.
-        session_id: The session being accessed.
-        caller_hash: sha256 hex-digest returned by :func:`require_auth`, or
-            ``None`` in no-auth / test-helper mode.
-
-    Raises:
-        HTTPException: 403 if the caller does not own the session.
-    """
-    if caller_hash is None:
-        # No-auth mode or unconfigured token: skip ownership check.
-        return
-    owner = control_plane.get_session_owner(session_id)
-    if owner is not None and not _secrets.compare_digest(owner, caller_hash):
-        raise HTTPException(
-            status_code=403,
-            detail="access denied: session is owned by another caller",
-        )
+    return True
 
 
 # Reusable annotated dependency types for router handler signatures (T-47 Sec 5).
-CallerHash = Annotated[str | None, Depends(require_auth)]
+# ADR-0006 (T-61): renamed from ``CallerHash`` -- it stopped carrying a caller
+# hash the moment the digest-returning C1 ownership layer was deleted; a type
+# still named "caller hash" once the hash was gone would itself have been the
+# kind of misleading artifact this decision exists to remove.
+Authenticated = Annotated[bool, Depends(require_auth)]
 ControlPlaneDep = Annotated[GatewayControlPlane, Depends(get_control_plane)]

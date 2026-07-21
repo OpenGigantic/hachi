@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import logging
-import secrets
 from typing import Any
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from hachi.gateway.control_plane import GatewayControlPlane
-from hachi.gateway.deps import CallerHash, ControlPlaneDep, check_session_ownership, require_auth
+from hachi.gateway.deps import ControlPlaneDep, require_auth
 from hachi.gateway.fastapi_app import _ERROR_RESPONSES
 
 _log = logging.getLogger(__name__)
@@ -23,41 +21,19 @@ router = APIRouter(
 )
 
 
-def _check_run_ownership(
-    cp: GatewayControlPlane, run_session_id: str, caller_hash: str | None
-) -> None:
-    """H6: apply the same owner filter that ``/sessions`` already enforces.
-
-    A durable run belongs to whichever session created it — reuse
-    ``check_session_ownership`` against ``run.session_id`` so a caller who
-    doesn't own the run's session gets the identical 403 policy (NULL owner /
-    no-auth mode = allowed, for backward compat with legacy/ownerless runs).
-    """
-    check_session_ownership(cp, run_session_id, caller_hash)
-
-
 @router.get("", summary="List recent durable runs")
-async def get_runs(
-    caller_hash: CallerHash, cp: ControlPlaneDep, limit: int = Query(default=100, ge=1, le=500)
-) -> Any:
-    """Return recent durable runs across all sessions the caller owns, newest first."""
+async def get_runs(limit: int = Query(default=100, ge=1, le=500)) -> Any:
+    """Return recent durable runs across all sessions, newest first."""
     from hachi.core.runtime.state import RunStateView
     from hachi.core.runtime.store import RunStateStore
 
     store = RunStateStore()
     runs = store.list_all(limit=limit)
-    if caller_hash is not None:
-        runs = [
-            r
-            for r in runs
-            if (owner := cp.get_session_owner(r.session_id)) is None
-            or secrets.compare_digest(owner, caller_hash)
-        ]
     return {"runs": [RunStateView.from_run_state(r).model_dump() for r in runs]}
 
 
 @router.get("/{run_id}", summary="Get a durable run by ID")
-async def get_run(run_id: str, caller_hash: CallerHash, cp: ControlPlaneDep) -> Any:
+async def get_run(run_id: str) -> Any:
     """Return a single RunState by run_id.  404 if not found."""
     from hachi.core.runtime.state import RunStateView
     from hachi.core.runtime.store import RunStateStore
@@ -66,14 +42,12 @@ async def get_run(run_id: str, caller_hash: CallerHash, cp: ControlPlaneDep) -> 
     run = store.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
-    _check_run_ownership(cp, run.session_id, caller_hash)
     return RunStateView.from_run_state(run).model_dump()
 
 
 @router.post("/{run_id}/wake", summary="Wake a WAITING run")
 async def post_run_wake(
     run_id: str,
-    caller_hash: CallerHash,
     cp: ControlPlaneDep,
     body: dict[str, Any] | None = None,
 ) -> Any:
@@ -97,7 +71,6 @@ async def post_run_wake(
     run = store.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
-    _check_run_ownership(cp, run.session_id, caller_hash)
     if run.status != RunStatus.WAITING:
         raise HTTPException(
             status_code=409,
@@ -142,7 +115,7 @@ async def post_run_wake(
 
 
 @router.delete("/{run_id}", summary="Cancel a durable run")
-async def delete_run(run_id: str, caller_hash: CallerHash, cp: ControlPlaneDep) -> Any:
+async def delete_run(run_id: str) -> Any:
     """Cancel a durable run (sets status to CANCELLED and disarms its wait).
 
     Idempotent: cancelling an already-terminal run returns 200 with the
@@ -157,7 +130,6 @@ async def delete_run(run_id: str, caller_hash: CallerHash, cp: ControlPlaneDep) 
     run = store.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found")
-    _check_run_ownership(cp, run.session_id, caller_hash)
 
     terminal = {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
     if run.status in terminal:

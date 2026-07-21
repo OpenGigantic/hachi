@@ -1,5 +1,17 @@
 # T-62 · Give `GET /sessions/{id}/messages` and `POST /sessions/cleanup-empty` the ownership check their siblings have
 
+> ## ⚠ SUPERSEDED by ADR-0006 (T-61), 2026-07-21
+>
+> [T-61](T-61-single-tenant-adr.md) resolved with **option (a) — delete the C1 ownership
+> machinery** (`docs/architecture/adr/0006-single-tenant-authz.md`). This task's fix — the
+> `_check_session_ownership` call this task added to `GET /sessions/{id}/messages` — was removed
+> again as part of that deletion, along with the check on every other session/run/interaction
+> route. `POST /sessions/cleanup-empty`'s explicit `require_auth` call (this task's other half)
+> was kept, since it is authentication, not ownership. The two-hour mechanical fix below is
+> preserved as a historical record per T-61 Sec 6 step 5 ("If you chose (a), T-62 is superseded;
+> say so in its file") — do not re-apply it. `tests/test_session_route_ownership.py` was rewritten
+> to assert the new single-principal contract rather than the deleted 403 path.
+
 |  |  |
 |---|---|
 | **Source finding** | CF-15 — [ARCHITECTURE-REVIEW.md](../ARCHITECTURE-REVIEW.md) |

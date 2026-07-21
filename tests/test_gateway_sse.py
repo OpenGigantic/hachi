@@ -163,17 +163,18 @@ def test_stream_disconnect_does_not_interrupt_other_viewers() -> None:
         #
         # T-47: calling the raw endpoint function bypasses FastAPI's dependency
         # injection (the whole reason this harness exists -- see the docstring
-        # above), so `caller_hash` / `cp` -- now explicit Depends-injected
-        # parameters instead of closure captures -- must be supplied by hand,
-        # matching exactly what FastAPI would have resolved for this no-token
-        # app: require_auth(...) -> None, and the same `cp` the test built.
+        # above), so `cp` -- now an explicit Depends-injected parameter instead
+        # of a closure capture -- must be supplied by hand. ADR-0006 (T-61)
+        # removed the per-session ownership check this handler used to run
+        # (and the `caller_hash` parameter that fed it), so there is nothing
+        # else to supply here beyond what FastAPI would have resolved for
+        # this no-token app.
         response = await route.endpoint(
             session_id=session_id,
             request=request,
             after=0,
             poll_interval=0.0,
             max_idle_cycles=600,
-            caller_hash=None,
             cp=cp,
         )
         chunks: list[str] = []
