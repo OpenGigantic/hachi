@@ -1,31 +1,25 @@
-"""Regression tests for T-62 / BB-108.
+"""Regression tests for T-62 / BB-108 — superseded by ADR-0006 (T-61).
 
-``GET /sessions/{session_id}/messages`` must apply the same per-session
-ownership check its sibling session routes already perform. Before the fix,
-the handler's signature was ``(session_id, limit)`` with no ``request:
-Request`` parameter, so it could not call ``_require_auth(request)`` and
-therefore could never obtain the caller digest that
-``_check_session_ownership`` needs -- the transcript was returned
-unconditionally to any bearer-authenticated caller.
+T-62 gave ``GET /sessions/{session_id}/messages`` the same per-session
+ownership check its sibling session routes performed, closing an
+inconsistency where two routes skipped the check nine others ran. ADR-0006
+(T-61) subsequently deleted the ownership layer entirely — the check T-62
+added is gone along with every other one, coherently. See
+``docs/architecture/adr/0006-single-tenant-authz.md``.
 
-Design note (mirrors ``tests/test_session_ownership.py``): a gateway instance
-enforces exactly one bearer token, so there is no way to *authenticate* as a
-second caller. A second principal is honestly simulated by stamping a
-*different* owner digest onto a live session directly through the control
-plane, then requesting that session with the one real token -- a faithful
-stand-in for the future two-token world CF-15 warns about.
+Per T-62's own file (Sec 1, "If T-61 has already landed with the delete
+option, this task is superseded — do not apply it; note that in the file and
+move on") and T-61 Sec 6 step 5 ("If you chose (a), T-62 is superseded; say
+so in its file and in your commit message"): **T-62 is superseded.**
 
-Trap this file deliberately guards against (docs/audit/2026-07-19/tasks/
-CORRECTIONS.md C23; T-62 spec Sec 7/Sec 12): ``set_session_owner`` is a
-**silent no-op** when the session is not present in
-``control_plane._connections`` (i.e. not "live"), and a ``None`` owner means
-*allow*. If the foreign-owner stamp silently failed to land, the route would
-return 200 for a reason that has nothing to do with the fix under test --
-the ownership map would simply be empty, same as after a restart. Every test
-below asserts the stamp landed (``get_session_owner() ==
-FOREIGN_OWNER_DIGEST``) before asserting on the HTTP response, so a broken
-setup fails loudly as a setup assertion instead of quietly certifying the
-permissive path.
+``test_session_messages_denies_a_foreign_owner`` is removed — it staged a
+foreign owner via ``set_session_owner``, a method that no longer exists, so
+there is nothing left for it to exercise (not merely a now-false assertion,
+a call that no longer resolves). ``test_session_messages_still_serves_the_owner``
+is unchanged: it never depended on the deleted ownership API, only on the
+normal single-principal request path, which ADR-0006 keeps working exactly
+as before. One test is added: the route's real remaining access control
+(bearer authentication) still holds without a valid token.
 """
 
 from __future__ import annotations
@@ -35,8 +29,7 @@ from fastapi.testclient import TestClient
 from hachi.gateway.control_plane import GatewayControlPlane
 from hachi.gateway.fastapi_app import create_gateway_app
 
-TOKEN = "t62-test-token"
-FOREIGN_OWNER_DIGEST = "0" * 64  # sha256 hex-digest never equals sha256(TOKEN)
+TOKEN = "t62-test-token"  # noqa: S105 - test fixture, not a real credential
 
 _CONNECT = {
     "client_id": "t",
@@ -51,15 +44,7 @@ def _bearer() -> dict[str, str]:
 
 
 def _build_app() -> tuple[GatewayControlPlane, TestClient]:
-    """A gateway app+control-plane pair with auth enforced like production.
-
-    Both ``auth_token`` and ``bind_host`` matter here: without ``auth_token``,
-    ``_require_auth`` returns ``None`` unconditionally (no-auth/unit-test
-    mode) and ``_check_session_ownership`` skips itself for the wrong reason
-    -- the test would pass even against the pre-fix handler had it taken a
-    ``request`` param at all. ``get_session_messages`` is wired so the
-    transcript path is deterministic (always a hit) once ownership allows it.
-    """
+    """A gateway app+control-plane pair with auth enforced like production."""
     control_plane = GatewayControlPlane(
         get_session_messages=lambda _sid, _limit: [
             {
@@ -82,33 +67,8 @@ def _create_session(client: TestClient) -> str:
     return session_id
 
 
-def test_session_messages_denies_a_foreign_owner() -> None:
-    """GET /sessions/{id}/messages must apply the ownership check its siblings do."""
-    control_plane, client = _build_app()
-    session_id = _create_session(client)
-
-    # Simulate the future two-principal world: this session belongs to someone else.
-    control_plane.set_session_owner(session_id, FOREIGN_OWNER_DIGEST)
-    # Guard against the documented silent no-op: if the stamp didn't land (e.g.
-    # because the session were no longer "live"), get_session_owner() would
-    # return None, which is the *allow* policy -- and the assertion below would
-    # pass trivially regardless of whether the route checks ownership at all.
-    assert control_plane.get_session_owner(session_id) == FOREIGN_OWNER_DIGEST, (
-        "test setup broken: the foreign-owner stamp did not land (set_session_owner "
-        "silently no-ops for a non-live session -- see CORRECTIONS.md C23). "
-        "This must fail here, not be papered over, or the 403 assertion below would "
-        "be certifying the permissive (ownerless) path instead of the ownership check."
-    )
-
-    resp = client.get(f"/sessions/{session_id}/messages", headers=_bearer())
-    assert resp.status_code == 403, (
-        f"expected 403, got {resp.status_code}. GET /sessions/{{id}}/messages returned "
-        "the transcript without checking session ownership."
-    )
-
-
 def test_session_messages_still_serves_the_owner() -> None:
-    """The fix must not break the normal single-principal path."""
+    """The single-principal path must keep working: create, then read back."""
     _control_plane, client = _build_app()
     session_id = _create_session(client)
 
@@ -117,3 +77,19 @@ def test_session_messages_still_serves_the_owner() -> None:
     body = resp.json()
     assert body["session_id"] == session_id
     assert body["messages"]
+
+
+def test_session_messages_requires_a_bearer_token() -> None:
+    """ADR-0006: the surviving access control on this route is authentication,
+    not ownership. A request with no (or a wrong) bearer token must still be
+    rejected, same as every other route on this router."""
+    _control_plane, client = _build_app()
+    session_id = _create_session(client)
+
+    no_auth = client.get(f"/sessions/{session_id}/messages")
+    assert no_auth.status_code == 401
+
+    wrong_token = client.get(
+        f"/sessions/{session_id}/messages", headers={"Authorization": "Bearer wrong-token"}
+    )
+    assert wrong_token.status_code == 401

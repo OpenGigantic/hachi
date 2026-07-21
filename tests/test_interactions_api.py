@@ -7,8 +7,8 @@ Harness pattern mirrors test_ingress_idempotency.py:
   - Seed rows via ``store.log_interaction`` (the real write path) so round-trips
     are genuine, not stubs.
 
-Ownership model in no-auth mode (all tests): ``_require_auth`` returns None, so
-``_check_session_ownership`` is a no-op and every row is visible to every caller.
+ADR-0006 (T-61): there is no per-caller ownership filter on this route — every
+authenticated caller sees every row, in no-auth mode (all tests here) or not.
 """
 
 from __future__ import annotations
@@ -143,7 +143,7 @@ class TestGetInteractionsWithSessionId:
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — GET /interactions without session_id (ownership filtering)
+# Test 2 — GET /interactions without session_id (no per-caller filter)
 # ---------------------------------------------------------------------------
 
 

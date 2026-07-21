@@ -1692,7 +1692,7 @@ export interface paths {
         };
         /**
          * List recent durable runs
-         * @description Return recent durable runs across all sessions the caller owns, newest first.
+         * @description Return recent durable runs across all sessions, newest first.
          */
         get: operations["get_runs_runs_get"];
         put?: never;
@@ -1906,10 +1906,9 @@ export interface paths {
          * Get Interactions
          * @description Return interaction_log rows newest-first, optionally scoped to one session.
          *
-         *     Ownership rules (mirrors ``list_sessions``):
-         *     - If ``session_id`` is supplied: ownership-check that session before querying.
-         *     - If not supplied: return rows across all sessions owned by the caller
-         *       (legacy NULL-owner sessions included for back-compat); no-auth returns all.
+         *     ADR-0006 (T-61): there is no per-caller ownership filter — every
+         *     authenticated caller sees every row, exactly as legacy (ownerless) rows
+         *     always did.
          *
          *     Args:
          *         session_id: Optional session filter.
@@ -1935,9 +1934,6 @@ export interface paths {
         /**
          * Put Interaction Rating
          * @description Set the thumbs-up / thumbs-down rating (and optional notes) for a turn.
-         *
-         *     Ownership check: looks up the row's ``session_id`` first, then verifies the
-         *     caller owns that session before allowing the write.
          *
          *     Returns 404 if ``interaction_id`` does not exist.
          */

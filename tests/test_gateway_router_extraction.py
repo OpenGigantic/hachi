@@ -24,7 +24,6 @@ refactor).
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -99,11 +98,17 @@ def test_auth_parity_across_all_four_modes(
     """``deps.require_auth`` must behave identically to the four documented
     auth modes (``fastapi_app.create_gateway_app`` docstring / T-47 Sec 3.4):
 
-      1. token configured, valid credential   -> caller digest
+      1. token configured, valid credential   -> True
       2. token configured, missing/bad        -> 401
-      3. ``HACHI_GATEWAY_NO_AUTH=1``           -> None, no enforcement
-      4. ``auth_token=None`` and no ``bind_host`` -> None, no enforcement
+      3. ``HACHI_GATEWAY_NO_AUTH=1``           -> False, no enforcement
+      4. ``auth_token=None`` and no ``bind_host`` -> False, no enforcement
          (the unit-test / OpenAPI-export path)
+
+    ADR-0006 (T-61): ``require_auth`` used to return the caller's sha256
+    token digest in mode 1 (consumed by the since-deleted per-session
+    ownership layer) and ``None`` in modes 3/4. It now returns a plain
+    ``bool`` -- nothing downstream needs a caller identity anymore, only
+    whether this request was actually authenticated.
 
     Exercises ``require_auth`` exactly as every real protected route does --
     through FastAPI's ``Depends`` mechanism against a real running app, with
@@ -116,8 +121,8 @@ def test_auth_parity_across_all_four_modes(
         """Attach a diagnostic route that echoes require_auth's return value."""
 
         @app.get("/__t47_auth_probe__")
-        def _probe(caller_hash: str | None = Depends(require_auth)) -> dict[str, str | None]:
-            return {"caller_hash": caller_hash}
+        def _probe(authenticated: bool = Depends(require_auth)) -> dict[str, bool]:
+            return {"authenticated": authenticated}
 
         return app
 
@@ -129,7 +134,7 @@ def test_auth_parity_across_all_four_modes(
 
     ok = client1.get("/__t47_auth_probe__", headers={"Authorization": f"Bearer {token}"})
     assert ok.status_code == 200
-    assert ok.json()["caller_hash"] == hashlib.sha256(token.encode()).hexdigest()
+    assert ok.json()["authenticated"] is True
 
     missing = client1.get("/__t47_auth_probe__")
     assert missing.status_code == 401
@@ -143,7 +148,7 @@ def test_auth_parity_across_all_four_modes(
     client3 = TestClient(app3)
     r3 = client3.get("/__t47_auth_probe__")
     assert r3.status_code == 200
-    assert r3.json()["caller_hash"] is None
+    assert r3.json()["authenticated"] is False
     monkeypatch.delenv("HACHI_GATEWAY_NO_AUTH", raising=False)
 
     # Mode 4: no token, no bind_host (unit-test / OpenAPI-export path).
@@ -151,7 +156,7 @@ def test_auth_parity_across_all_four_modes(
     client4 = TestClient(app4)
     r4 = client4.get("/__t47_auth_probe__")
     assert r4.status_code == 200
-    assert r4.json()["caller_hash"] is None
+    assert r4.json()["authenticated"] is False
 
 
 def test_routers_package_is_importable_and_exposes_all_routers() -> None:

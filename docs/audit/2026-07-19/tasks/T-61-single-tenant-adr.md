@@ -1,4 +1,13 @@
-# T-61 · Decide the authz model: delete the C1 ownership machinery or finish it
+# T-61 · Decide the authz model: delete the C1 ownership machinery or finish it — DECIDED: (a) Delete
+
+> ## ✅ DECISION RECORDED — (a) DELETE (2026-07-21)
+>
+> The product owner chose **option (a) — delete** on 2026-07-21. Full rationale, alternatives
+> considered, and reversibility analysis are recorded in
+> [docs/architecture/adr/0006-single-tenant-authz.md](../../../architecture/adr/0006-single-tenant-authz.md),
+> summarized in [docs/DECISIONS.md](../../../DECISIONS.md) (§"T-61 — Single-tenant authz: delete
+> the C1 ownership machinery"). [T-62](T-62-session-messages-ownership-check.md) is **superseded**
+> — its own file now says so.
 
 |  |  |
 |---|---|

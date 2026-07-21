@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
-from hachi.gateway.deps import CallerHash, ControlPlaneDep, require_auth
+from hachi.gateway.deps import Authenticated, ControlPlaneDep, require_auth
 from hachi.gateway.fastapi_app import (
     _SYSTEM_ERROR_RESPONSES,
     CapabilityToggleRequest,
@@ -62,7 +62,7 @@ async def put_capability_enabled(
     cap_id: str,
     payload: CapabilityToggleRequest,
     cp: ControlPlaneDep,
-    _auth: CallerHash,
+    _authenticated: Authenticated,
 ) -> Any:
     """Toggle a capability on/off and persist to global config."""
     return cp.set_capability_enabled(cap_id, payload.enabled)

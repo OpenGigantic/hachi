@@ -342,8 +342,6 @@ class GatewayControlPlane:
                 "surface": req.surface,
                 "capabilities": list(req.capabilities),
                 "connected_at": _now_iso(),
-                # C1: store owner hash at creation time; None means no-auth / legacy.
-                "owner_token_hash": None,
             }
 
         if self._on_connect is not None:
@@ -386,39 +384,6 @@ class GatewayControlPlane:
             "protocol_version": response.protocol_version,
             "server_capabilities": list(response.server_capabilities),
         }
-
-    def set_session_owner(self, session_id: str, owner_token_hash: str) -> None:
-        """Record the sha256(bearer_token) digest as the owner of this session.
-
-        C1 — called by the FastAPI layer immediately after create_session returns,
-        using the digest of the validated bearer token.  Stored in-memory for
-        fast O(1) ownership checks on every subsequent request.
-
-        Args:
-            session_id: The session created by this caller.
-            owner_token_hash: sha256 hex-digest of the caller's raw bearer token.
-        """
-        with self._connections_lock:
-            if session_id in self._connections:
-                self._connections[session_id]["owner_token_hash"] = owner_token_hash
-
-    def get_session_owner(self, session_id: str) -> str | None:
-        """Return the stored owner_token_hash for a session, or None if not set.
-
-        C1 — None means a legacy / no-auth session; callers MUST allow access
-        (backward-compat policy: NULL owner = allow).
-
-        Args:
-            session_id: Session to query.
-
-        Returns:
-            sha256 hex-digest string, or None for legacy / anonymous sessions.
-        """
-        with self._connections_lock:
-            record = self._connections.get(session_id)
-        if record is None:
-            return None
-        return record.get("owner_token_hash")
 
     def send_message(self, *, session_id: str, prompt: str) -> dict[str, Any]:
         if self._on_chat is None:
@@ -465,9 +430,7 @@ class GatewayControlPlane:
             "response": response.response,
         }
 
-    def get_or_create_session(
-        self, session_key: str = "__default__", *, owner_token_hash: str | None = None
-    ) -> str:
+    def get_or_create_session(self, session_key: str = "__default__") -> str:
         """Return the session_id for ``session_key``, creating it if necessary.
 
         Extracted from ``complete_chat`` so the streaming path can obtain the
@@ -477,12 +440,6 @@ class GatewayControlPlane:
         Args:
             session_key: The facade key (e.g. ``f"{channel}:{sender}"`` or the
                 OpenAI-compat chat id) mapped to a real session_id.
-            owner_token_hash: H6 — sha256 hex-digest of the caller's bearer
-                token, stamped as the owner the first time this session_key is
-                created, exactly like the normal ``POST /sessions`` route
-                does via ``set_session_owner``. ``None`` (no-auth mode / no
-                caller context) leaves the session ownerless, matching legacy
-                behaviour.
         """
         with self._connections_lock:
             session_id = self._api_sessions.get(session_key)
@@ -497,33 +454,18 @@ class GatewayControlPlane:
             session_id = created["session_id"]
             with self._connections_lock:
                 self._api_sessions[session_key] = session_id
-            # H6: stamp ownership immediately, mirroring the /sessions create route —
-            # facade sessions (OpenAI-compat, channel-inbound) must not be ownerless.
-            if owner_token_hash is not None:
-                self.set_session_owner(session_id, owner_token_hash)
         assert session_id is not None, "session_id must be set after get_or_create_session"
         return session_id
 
-    def complete_chat(
-        self,
-        prompt: str,
-        *,
-        session_key: str = "__default__",
-        owner_token_hash: str | None = None,
-    ) -> dict[str, Any]:
+    def complete_chat(self, prompt: str, *, session_key: str = "__default__") -> dict[str, Any]:
         """Run a prompt through an auto-managed session keyed by ``session_key``.
 
         Powers stateless-looking facades (OpenAI-compatible endpoint, channel
         webhooks) that don't manage sessions themselves: the first call for a key
         creates a session (booting an agent via on_connect), subsequent calls
         reuse it so the conversation keeps continuity.
-
-        Args:
-            owner_token_hash: H6 — forwarded to ``get_or_create_session`` so a
-                freshly-created facade session is stamped with the caller's
-                identity instead of staying ownerless.
         """
-        session_id = self.get_or_create_session(session_key, owner_token_hash=owner_token_hash)
+        session_id = self.get_or_create_session(session_key)
         return self.send_message(session_id=session_id, prompt=prompt)
 
     def close_session(self, session_id: str) -> dict[str, Any]:

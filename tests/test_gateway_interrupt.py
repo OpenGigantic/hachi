@@ -6,7 +6,8 @@ Covers:
 2. interrupt() on an unknown session returns {"interrupted": false} (safe, no 5xx).
 3. POST /sessions/{id}/interrupt route — live session with on_interrupt attached.
 4. POST /sessions/{id}/interrupt route — unknown session returns 200 {"interrupted": false}.
-5. Ownership enforcement — 403 when a different bearer token hits the route.
+5. Authentication — the route requires a valid bearer token when one is configured
+   (ADR-0006 / T-61: there is no per-session ownership check beyond that).
 6. GatewayControlPlane.interrupt() swallows handler exceptions and returns
    {"interrupted": false} (never leaks a 5xx).
 7. on_interrupt=None (runtime not attached) returns {"interrupted": false}.
@@ -14,7 +15,6 @@ Covers:
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -148,22 +148,20 @@ def test_interrupt_route_no_runtime_attached_returns_false() -> None:
     assert resp.json() == {"interrupted": False}
 
 
-def test_interrupt_route_ownership_enforced() -> None:
-    """POST /sessions/{id}/interrupt is rejected (403) when ownership hash differs.
+def test_interrupt_route_has_no_ownership_gate() -> None:
+    """ADR-0006 (T-61): there is no per-session ownership check on this route.
 
-    A gateway enforces a single bearer token, so to test ownership enforcement we:
-    1. Create the session with TOKEN_A (owner=HASH_A stamped).
-    2. Overwrite the owner to HASH_B via set_session_owner().
-    3. Calling with TOKEN_A now gets 403 because HASH_A != HASH_B.
+    Historically (pre-ADR-0006) this test stamped a session with a different
+    owner digest via ``set_session_owner`` and expected 403 -- that machinery
+    no longer exists. The single authenticated caller must be able to
+    interrupt a session it created, repeatedly, with nothing in the way.
     """
     _TOKEN_A = "token-a"
-    _HASH_B = hashlib.sha256(b"token-b").hexdigest()
 
     cp = GatewayControlPlane()
     app = create_gateway_app(cp, auth_token=_TOKEN_A)
 
     with TestClient(app) as client:
-        # Create session stamped with HASH_A
         sid = client.post(
             "/sessions",
             json={
@@ -175,14 +173,16 @@ def test_interrupt_route_ownership_enforced() -> None:
             headers={"Authorization": f"Bearer {_TOKEN_A}"},
         ).json()["session_id"]
 
-        # Overwrite owner to HASH_B — TOKEN_A callers now get 403
-        cp.set_session_owner(sid, _HASH_B)
-
-        denied = client.post(
+        first = client.post(
             f"/sessions/{sid}/interrupt",
             headers={"Authorization": f"Bearer {_TOKEN_A}"},
         )
-        assert denied.status_code == 403
+        second = client.post(
+            f"/sessions/{sid}/interrupt",
+            headers={"Authorization": f"Bearer {_TOKEN_A}"},
+        )
+        assert first.status_code == 200
+        assert second.status_code == 200
 
 
 def test_interrupt_route_requires_auth_when_token_configured() -> None:

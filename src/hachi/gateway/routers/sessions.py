@@ -1,7 +1,10 @@
 """``/sessions/*`` -- session lifecycle, messaging, and SSE event streaming (T-47).
 
 The highest-traffic router and the one with the most direct
-``require_auth(request)`` / ownership-check call sites (T-47 Sec 3.4).
+``require_auth(request)`` call sites (T-47 Sec 3.4). ADR-0006 (T-61) removed
+the per-session ownership layer that used to sit on top of those calls --
+Hachi is single-principal, so a valid bearer token is full authority over
+every session.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from hachi.gateway.control_plane import (
     GatewayProtocolError,
     GatewayUnavailableError,
 )
-from hachi.gateway.deps import CallerHash, ControlPlaneDep, check_session_ownership, require_auth
+from hachi.gateway.deps import Authenticated, ControlPlaneDep, require_auth
 from hachi.gateway.fastapi_app import (
     _ERROR_RESPONSES,
     AlwaysAllowRequest,
@@ -177,12 +180,10 @@ def _handle_slash_command(
 
 
 @router.post("", response_model=SessionCreateResponse)
-async def create_session(
-    payload: SessionCreateRequest, caller_hash: CallerHash, cp: ControlPlaneDep
-) -> Any:
+async def create_session(payload: SessionCreateRequest, cp: ControlPlaneDep) -> Any:
     # boot_agent runs MCP subprocess spawns — move off the event loop so
     # SSE keepalives and health checks stay responsive during boot.
-    result = await anyio.to_thread.run_sync(
+    return await anyio.to_thread.run_sync(
         lambda: cp.create_session(
             client_id=payload.client_id,
             surface=payload.surface,
@@ -190,44 +191,17 @@ async def create_session(
             protocol_version=payload.protocol_version,
         )
     )
-    # C1: stamp ownership immediately after creation so subsequent accesses
-    # are gated.  When auth is disabled caller_hash is None — skip stamping.
-    if caller_hash is not None:
-        cp.set_session_owner(result["session_id"], caller_hash)
-    return result
 
 
 @router.get("")
-async def list_sessions(
-    caller_hash: CallerHash, cp: ControlPlaneDep, limit: int = Query(default=10, ge=1, le=100)
-) -> Any:
-    # C1: filter sessions so a caller only sees sessions they own.
-    # Legacy sessions (NULL owner) are always returned for backward compat.
+async def list_sessions(cp: ControlPlaneDep, limit: int = Query(default=10, ge=1, le=100)) -> Any:
     # B5+B7a: offload the SQLite read (now 2 queries instead of 2N) off the
-    # event loop; owner filtering runs inline after (in-memory O(1) dict lookups).
-    all_sessions = await anyio.to_thread.run_sync(lambda: cp.recent_sessions(limit))
-    if caller_hash is None:
-        # No-auth mode: return everything.
-        return all_sessions
-
-    # Filter: include the session if the owner is NULL (legacy) or matches caller.
-    def _owned(s: dict[str, Any]) -> bool:
-        sid = s.get("session_id") or s.get("id") or ""
-        if not sid:
-            return True  # can't tell — include it
-        owner = cp.get_session_owner(sid)
-        import secrets as _secrets
-
-        return owner is None or _secrets.compare_digest(owner, caller_hash)
-
-    if isinstance(all_sessions, list):
-        return [s for s in all_sessions if _owned(s)]
-    return all_sessions
+    # event loop.
+    return await anyio.to_thread.run_sync(lambda: cp.recent_sessions(limit))
 
 
 @router.get("/{session_id}")
-async def get_session(session_id: str, caller_hash: CallerHash, cp: ControlPlaneDep) -> Any:
-    check_session_ownership(cp, session_id, caller_hash)
+async def get_session(session_id: str, cp: ControlPlaneDep) -> Any:
     return cp.session_state(session_id)
 
 
@@ -240,10 +214,8 @@ def post_message(
     session_id: str,
     payload: SessionMessageRequest,
     request: Request,
-    caller_hash: CallerHash,
     cp: ControlPlaneDep,
 ) -> Any:
-    check_session_ownership(cp, session_id, caller_hash)
     # Ingress idempotency (AUDIT P0-3 / Theme A): a duplicate POST — client retry,
     # reconnect, or double-click — carrying the same key replays the prior turn's
     # response instead of re-running the whole turn (no double spend, no duplicate
@@ -270,8 +242,7 @@ def post_message(
 
 
 @router.delete("/{session_id}", response_model=SessionCloseResponse)
-async def delete_session(session_id: str, caller_hash: CallerHash, cp: ControlPlaneDep) -> Any:
-    check_session_ownership(cp, session_id, caller_hash)
+async def delete_session(session_id: str, cp: ControlPlaneDep) -> Any:
     return cp.close_session(session_id)
 
 
@@ -280,7 +251,7 @@ async def delete_session(session_id: str, caller_hash: CallerHash, cp: ControlPl
 # a browser Stop button or SSE disconnect actually cancels the server-side turn
 # instead of only closing the coroutine while the worker thread keeps running.
 @router.post("/{session_id}/interrupt", response_model=SessionInterruptResponse)
-async def interrupt_session(session_id: str, caller_hash: CallerHash, cp: ControlPlaneDep) -> Any:
+async def interrupt_session(session_id: str, cp: ControlPlaneDep) -> Any:
     """Cancel the in-progress turn for a live session.
 
     Delivers a cancellation signal to the session's ``ExecutionLoop`` via
@@ -292,7 +263,6 @@ async def interrupt_session(session_id: str, caller_hash: CallerHash, cp: Contro
     session, ``{"interrupted": false}`` when the session is not live or no
     in-process runtime is attached (safe — never raises a 5xx).
     """
-    check_session_ownership(cp, session_id, caller_hash)
     return cp.interrupt(session_id)
 
 
@@ -300,7 +270,7 @@ async def interrupt_session(session_id: str, caller_hash: CallerHash, cp: Contro
 # Deletes session rows that have no messages (ghost sessions accumulated before
 # the lazy-row-creation fix landed).  Requires auth; returns {"removed": <int>}.
 @router.post("/cleanup-empty")
-async def cleanup_empty_sessions(_caller_hash: CallerHash) -> Any:
+async def cleanup_empty_sessions(_authenticated: Authenticated) -> Any:
     """Delete all empty sessions (no messages) from the SQLite store.
 
     Safe to call at any time.  Sessions that are currently booting (in-memory
@@ -309,11 +279,12 @@ async def cleanup_empty_sessions(_caller_hash: CallerHash) -> Any:
     Returns:
         ``{"removed": <count>}`` — the number of rows deleted.
     """
-    # T-62 (BB-108): no session_id here, so there is nothing to owner-check —
-    # this operation is intentionally global (deletes empty rows across all
-    # owners). `_caller_hash` still enforces require_auth explicitly, matching
-    # every other handler on this router, rather than relying solely on the
-    # router-level dependency whose return value FastAPI discards.
+    # T-62 (BB-108) added this explicit require_auth call because there is no
+    # session_id here to owner-check. ADR-0006 (T-61) later deleted ownership
+    # entirely, but the explicit auth dependency stays: this operation is
+    # destructive and global (deletes empty rows across every session), so it
+    # is worth requiring the credential explicitly rather than relying solely
+    # on the router-level dependency whose return value FastAPI discards.
     removed = 0
     try:
         from hachi.gateway.shared_services import ProcessSharedServices
@@ -343,10 +314,14 @@ async def cleanup_empty_sessions(_caller_hash: CallerHash) -> Any:
 # Returns the durable transcript for a past (or live) session.  Sourced directly
 # from the SQLite SessionStore so it works even when the session is no longer active.
 # HTTP 404 when the session_id is unknown or has no persisted messages.
+#
+# T-62 (BB-108) added a per-session ownership check here; ADR-0006 (T-61)
+# subsequently deleted ownership entirely (see that ADR) — T-62 is superseded.
+# Authentication (require_auth) is still enforced via the router-level
+# dependency; this handler no longer needs the caller's identity for anything.
 @router.get("/{session_id}/messages")
 async def get_session_messages(
     session_id: str,
-    caller_hash: CallerHash,
     cp: ControlPlaneDep,
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> Any:
@@ -369,9 +344,6 @@ async def get_session_messages(
 
     HTTP 404 when *session_id* is unknown or has no persisted messages.
     """
-    # T-62 (BB-108): this is a transcript endpoint — check ownership before
-    # touching the store, so a 403 never costs a SQLite round-trip.
-    check_session_ownership(cp, session_id, caller_hash)
     # B5: session_transcript hits SQLite — offload to thread so the event loop
     # stays free for SSE keepalives during a long message-history fetch.
     result = await anyio.to_thread.run_sync(
@@ -384,13 +356,11 @@ async def get_session_messages(
 
 # G1-T4 — POST /sessions/{session_id}/permissions/always-allow
 # The frontend posts to /sessions/current/permissions/always-allow — "current" is a
-# sentinel that the server resolves to the most-recently-booted session (or ignores
-# ownership when running no-auth).  When the literal session_id exists in the connection
-# map the ownership check applies; for the "current" sentinel we skip it (no session to
-# own) and delegate resolution to the handler.
+# sentinel that the server resolves to the most-recently-booted session; a real
+# session_id is passed straight through to add_always_allow unchanged.
 @router.post("/{session_id}/permissions/always-allow")
 async def post_always_allow(
-    session_id: str, payload: AlwaysAllowRequest, caller_hash: CallerHash, cp: ControlPlaneDep
+    session_id: str, payload: AlwaysAllowRequest, cp: ControlPlaneDep
 ) -> Any:
     """Persist a standing always-allow rule for the given request+action pair.
 
@@ -399,21 +369,16 @@ async def post_always_allow(
 
     Body: ``{"request": "<tool/path>", "action": "<operation>"}``
     """
-    # Only enforce ownership for real (non-sentinel) session ids.
-    if session_id != "current":
-        check_session_ownership(cp, session_id, caller_hash)
     return cp.add_always_allow(session_id, payload.request, payload.action)
 
 
 @router.get("/{session_id}/events", response_model=SessionEventsResponse)
 async def get_session_events(
     session_id: str,
-    caller_hash: CallerHash,
     cp: ControlPlaneDep,
     after: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> Any:
-    check_session_ownership(cp, session_id, caller_hash)
     # B5: thread the whole call — historical sessions hit SQLite via
     # _synthesize_history_events; live sessions use an in-memory slice (minor
     # thread-hop overhead, acceptable since live callers use SSE not this endpoint).
@@ -426,7 +391,6 @@ async def get_session_events(
 async def stream_session_events(
     session_id: str,
     request: Request,
-    caller_hash: CallerHash,
     cp: ControlPlaneDep,
     after: int = Query(default=0, ge=0),
     poll_interval: float = Query(default=1.0, ge=0.0, le=10.0),
@@ -444,8 +408,6 @@ async def stream_session_events(
     cursor to detect whether events were dropped by the ring buffer's trim
     while disconnected (T-30).
     """
-    # C1: ownership check before any streaming starts.
-    check_session_ownership(cp, session_id, caller_hash)
     # Validate up front so unknown-session / unattached-stream surface as proper
     # HTTP errors instead of mid-stream failures.
     cp.read_session_events(session_id=session_id, after=after, limit=1)
@@ -479,7 +441,7 @@ async def stream_session_events(
                 if await request.is_disconnected():
                     # T-29: a disconnect is CONNECTION-scoped; the turn is SESSION-scoped.
                     # Stop this stream only. Cancelling the turn is an explicit user action
-                    # via POST /sessions/{session_id}/interrupt (ownership-checked).
+                    # via POST /sessions/{session_id}/interrupt (bearer-authenticated).
                     break
                 try:
                     batch = cp.read_session_events(session_id=session_id, after=cursor, limit=100)

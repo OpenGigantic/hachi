@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse
 
 from hachi.core.rate_limit import RateLimiter
 from hachi.gateway import fastapi_app as _fastapi_app
-from hachi.gateway.deps import CallerHash, ControlPlaneDep, check_session_ownership, require_auth
+from hachi.gateway.deps import Authenticated, ControlPlaneDep, require_auth
 from hachi.gateway.fastapi_app import _ERROR_RESPONSES, OpenAIChatRequest, _last_user_text
 
 router = APIRouter(
@@ -50,21 +50,21 @@ OpenAiLimiterDep = Annotated[RateLimiter, Depends(_get_openai_limiter)]
 async def openai_chat_completions(
     payload: OpenAIChatRequest,
     request: Request,
-    caller_hash: CallerHash,
+    authenticated: Authenticated,
     cp: ControlPlaneDep,
     openai_limiter: OpenAiLimiterDep,
 ) -> Any:
-    # H6: resolve the caller's identity so a facade session created below is
-    # stamped with an owner, same as the normal POST /sessions route.
     prompt = _last_user_text(payload.messages)
     if not prompt:
         raise HTTPException(status_code=400, detail="no user message content")
-    # BB-58: key the rate limiter per-principal (the same caller_hash H6 uses
-    # for session ownership) instead of one shared global bucket — otherwise
-    # one caller exhausting the limit locks out every other caller too.
-    # ``caller_hash`` is None in no-auth mode; fall back to a fixed key there
-    # since there is no notion of distinct principals without auth.
-    rate_key = caller_hash or "anonymous"
+    # BB-58: key the rate limiter by auth state instead of one shared global
+    # bucket for every mode. ADR-0006 (T-61): this used to fold in the caller's
+    # token digest, described as "per-principal" -- but Hachi is
+    # single-principal (exactly one bearer token per process), so that digest
+    # was already the same value for every authenticated request; it was never
+    # actually discriminating between callers, only between auth states. Two
+    # fixed markers reproduce the same observable behaviour honestly.
+    rate_key = "authenticated" if authenticated else "anonymous"
     if not openai_limiter.allow(rate_key):
         raise HTTPException(status_code=429, detail="rate limit exceeded; slow down")
 
@@ -96,25 +96,17 @@ async def openai_chat_completions(
 
     if not payload.stream:
         # T-32: never share one server-side session across callers. Namespace
-        # by principal (the caller's own token hash, or "anon" in no-auth
-        # mode) so ids cannot collide across bearer tokens; use the client's
-        # OpenAI `user` field for continuity when supplied, otherwise mint a
-        # fresh per-request session — matching what the streaming path
+        # by auth state ("authenticated" or "anon") so a no-auth-mode caller
+        # can never land in the same session as an authenticated one; use the
+        # client's OpenAI `user` field for continuity when supplied, otherwise
+        # mint a fresh per-request session — matching what the streaming path
         # already does below.
-        principal = caller_hash or "anon"
+        principal = "authenticated" if authenticated else "anon"
         conversation = (payload.user or "").strip()
         session_key = f"openai:{principal}:{conversation or f'req-{uuid.uuid4().hex}'}"
 
         # Full agent turn is synchronous — run in a thread so the event loop stays free.
-        session_id = await anyio.to_thread.run_sync(
-            lambda: cp.get_or_create_session(session_key, owner_token_hash=caller_hash)
-        )
-        # The ownership check the other 10 session-scoped routes perform.
-        # Must run BEFORE the turn: complete_chat used to run the turn and
-        # only return the session id afterwards, which made a 403 here
-        # meaningless — the unauthorized turn would already have executed,
-        # already mutated memory, and already cost money.
-        check_session_ownership(cp, session_id, caller_hash)
+        session_id = await anyio.to_thread.run_sync(lambda: cp.get_or_create_session(session_key))
         try:
             result = await anyio.to_thread.run_sync(
                 lambda: cp.send_message(session_id=session_id, prompt=prompt)
@@ -160,13 +152,8 @@ async def openai_chat_completions(
         # Create/get the session before starting the turn so we can read its events.
         session_key = f"openai-{chat_id}"
         session_id: str = await anyio.to_thread.run_sync(
-            lambda: cp.get_or_create_session(session_key, owner_token_hash=caller_hash)
+            lambda: cp.get_or_create_session(session_key)
         )
-        # T-32: the same ownership check the non-streaming path performs. A
-        # no-op today (session_key is a fresh per-request UUID, so the
-        # session is always freshly owned by this caller) — kept so "the
-        # facade checks ownership" is true without exceptions.
-        check_session_ownership(cp, session_id, caller_hash)
 
         # Snapshot the event cursor so only events from THIS turn are forwarded.
         initial = cp.read_session_events(session_id=session_id, after=0, limit=10000)

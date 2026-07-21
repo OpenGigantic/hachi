@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from hachi.core.rate_limit import RateLimiter
 from hachi.core.untrusted_content import guard_untrusted
-from hachi.gateway.deps import CallerHash, ControlPlaneDep, require_auth
+from hachi.gateway.deps import ControlPlaneDep, require_auth
 from hachi.gateway.fastapi_app import _ERROR_RESPONSES, ChannelInboundRequest
 
 router = APIRouter(
@@ -43,14 +43,10 @@ async def channel_inbound(
     channel: str,
     payload: ChannelInboundRequest,
     request: Request,
-    caller_hash: CallerHash,
     cp: ControlPlaneDep,
     channel_limiter: ChannelLimiterDep,
     channel_allowlist: ChannelAllowlistDep,
 ) -> Any:
-    # H6: resolve the caller's identity (the webhook's bearer token, not the
-    # attacker-controlled sender_id) so the facade session for this
-    # channel:sender key is stamped with a real owner.
     if not payload.text.strip():
         raise HTTPException(status_code=400, detail="text is required")
     sender = payload.sender_id
@@ -75,9 +71,7 @@ async def channel_inbound(
     guarded_text, _flagged = guard_untrusted(payload.text, source=source_label)
     # Full agent turn is synchronous — run in a thread so the event loop stays free.
     result = await anyio.to_thread.run_sync(
-        lambda: cp.complete_chat(
-            guarded_text, session_key=session_key, owner_token_hash=caller_hash
-        )
+        lambda: cp.complete_chat(guarded_text, session_key=session_key)
     )
     return {
         "channel": channel,
