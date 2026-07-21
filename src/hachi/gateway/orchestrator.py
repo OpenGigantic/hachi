@@ -666,6 +666,9 @@ class AgentSession:
         """
         self._session_store = store
         self._session_id = store.start_session(model=model)
+        # T-50: propagate provenance so extracted facts carry evidence=session:<id>.
+        if self.memory is not None:
+            self.memory.set_session_id(self._session_id)
 
     def resume_from_session(self, source_session_id: str, max_messages: int = 40) -> int:
         """Replay a prior session's transcript into active memory (full context reload).
