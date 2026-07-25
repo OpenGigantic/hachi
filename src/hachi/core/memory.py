@@ -39,6 +39,7 @@ from hachi.core.llm import Message
 
 if TYPE_CHECKING:
     from hachi.core.conversation_memory import IterationState
+    from hachi.core.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -572,6 +573,15 @@ class MemoryManager:
         # graph carries `evidence=session:<id>` edges and event nodes route to
         # journal/<session-id>.og.  Set by AgentSession.set_session_store() (T-50).
         self._session_id: str = ""
+        # T-52: the durable SessionStore (or None — legacy/test path, unbound)
+        # compaction checkpoints are persisted to, and the row id of the most
+        # recently persisted checkpoint so the background summary job can update
+        # that same row in place — mirroring what _apply_summary_to_history
+        # already does to the in-memory Message.  Both are set together by
+        # set_session_store().  Without a store bound, compaction behaves exactly
+        # as it did before this task: the checkpoint lives only in _history.
+        self._session_store: SessionStore | None = None
+        self._checkpoint_row_id: int | None = None
 
     def set_vault(self, vault):
         """Bind the Long-Term Memory Vault to the manager for auto-flushing."""
@@ -584,6 +594,30 @@ class MemoryManager:
     def set_session_id(self, session_id: str) -> None:
         """Bind the owning session's id for memory-node provenance (T-50)."""
         self._session_id = session_id or ""
+
+    def set_session_store(self, store: SessionStore | None, session_id: str = "") -> None:
+        """Bind the durable SessionStore so compaction checkpoints persist (T-52).
+
+        Without this, a compaction checkpoint lives only in this process's
+        ``_history`` list — a resumed session silently loses the compacted middle
+        of the conversation with no error and no warning (BB-140). Once bound,
+        ``_sliding_window_compact`` logs the checkpoint row immediately (so a
+        crash before the background summary job finishes still leaves an honest
+        marker) and ``_apply_summary_to_history`` updates that same row in place
+        when the real summary lands.
+
+        Args:
+            store: The bound SessionStore, or None to unbind — compaction then
+                behaves exactly as it did before this task (checkpoint stays
+                in-memory only; the legacy/test path).
+            session_id: The owning session id to log checkpoint rows against.
+                Empty string (default) leaves any id already set via
+                :meth:`set_session_id` unchanged, so callers that already stamped
+                provenance separately don't have to repeat themselves.
+        """
+        self._session_store = store
+        if session_id:
+            self._session_id = session_id
 
     # ==========================================
     # Automatic Post-Turn Sync
@@ -1202,10 +1236,17 @@ class MemoryManager:
                 # HIGH-015: Enqueue the structured summary LLM call as a background job
                 # instead of blocking prepare_for_turn().  A lightweight placeholder
                 # checkpoint is inserted immediately so the history stays valid and the
-                # loop continues.  The background job will update the checkpoint text
-                # only when callers explicitly request it via get_pending_summaries(); in
-                # practice the placeholder is sufficient for continuity because the
-                # model has seen the full history and carries it in its own context.
+                # loop continues.  The background job (_run_and_clear_summary_job) later
+                # scans _history for the placeholder's sentinel text and overwrites it in
+                # place via _apply_summary_to_history() — that sentinel apply-back is the
+                # only mechanism that ever collects the real summary; no caller polls for
+                # one and callers never need to ask.  The placeholder is sufficient for
+                # continuity in a LIVE session, because the model has
+                # already seen the full history and carries it in its own context — but
+                # that assumption does NOT hold for a RESUMED session, which never saw the
+                # dropped messages in the first place.  That gap (BB-140) is why the
+                # checkpoint is now also persisted to SessionStore and converged there the
+                # same way, via _persist_checkpoint / _persist_checkpoint_update (T-52).
                 #
                 # Double-enqueue guard: skip if a compaction job is already in flight.
                 # The context window may grow by up to one additional window-size while
@@ -1246,16 +1287,23 @@ class MemoryManager:
                     )
                 summary = self._generate_structured_summary(dropped_messages)
 
-            checkpoint = Message(
-                role="user",
-                content=(
-                    f"[CONTEXT CHECKPOINT — REFERENCE ONLY, DO NOT RESPOND TO THIS]\n{summary}"
-                ),
+            checkpoint_content = (
+                f"[CONTEXT CHECKPOINT — REFERENCE ONLY, DO NOT RESPOND TO THIS]\n{summary}"
             )
+            checkpoint = Message(role="user", content=checkpoint_content)
 
             with self._history_lock:
                 self._history = anchor + [checkpoint] + recent
             self._skill_start_index = min(self._skill_start_index, len(self._history))
+
+            # T-52 (BB-140): persist the checkpoint so a resumed session recovers
+            # it even if the process exits before the background summary job (if
+            # any) lands.  Deliberately outside _history_lock — SQLite I/O must
+            # never run while holding it, same as the LLM call above.  Uses the
+            # plain str we already built rather than reading checkpoint.content
+            # back, since Message.content is typed str | list[dict] and we know
+            # this one is always str.
+            self._persist_checkpoint(checkpoint_content)
 
             # P2-1: Post-compaction token check.  If the retained window is still over
             # budget, halve keep_count and try again (bounded by _MAX_COMPACT_PASSES).
@@ -1278,6 +1326,33 @@ class MemoryManager:
                     _MAX_COMPACT_PASSES,
                     self.estimate_token_count(),
                 )
+
+    def _persist_checkpoint(self, content: str) -> None:
+        """Log a new compaction-checkpoint row and remember its id (T-52, BB-140).
+
+        Called by ``_sliding_window_compact`` right after splicing the checkpoint
+        into ``_history``, outside ``_history_lock``.  Best-effort: no session
+        store is bound on the legacy/test path, and a write failure here must not
+        break compaction, which has already succeeded in memory — the
+        resumed-session gap this guards against is strictly better than
+        compaction itself failing.
+
+        Args:
+            content: The checkpoint's current text — the async placeholder, or on
+                the no-queue synchronous path, the real summary already.
+        """
+        if self._session_store is None or not self._session_id:
+            self._checkpoint_row_id = None
+            return
+        try:
+            self._checkpoint_row_id = self._session_store.log_checkpoint(self._session_id, content)
+        except Exception:
+            logger.warning(
+                "Failed to persist compaction checkpoint to SessionStore; "
+                "a resumed session will not see it.",
+                exc_info=True,
+            )
+            self._checkpoint_row_id = None
 
     def _find_safe_sliding_boundary(self, candidate_cut: int) -> int:
         """Return the latest cut index <= candidate_cut where no tool_use/tool_result
@@ -1432,7 +1507,13 @@ class MemoryManager:
         replaces its ``.content`` in place with the real structured checkpoint text
         (same ``[CONTEXT CHECKPOINT — REFERENCE ONLY...]`` framing).  If the
         placeholder is absent (history was re-compacted since the job was enqueued),
-        logs at DEBUG and returns without side-effects.
+        logs at DEBUG and moves on without touching ``_history``.
+
+        T-52: separately, and unconditionally regardless of whether the in-memory
+        scan above found a live placeholder, converges the persisted checkpoint
+        row via ``_persist_checkpoint_update`` — see that method for why the
+        write happens even when the in-memory scan missed, and why it happens
+        outside ``_history_lock``.
 
         Args:
             summary: The real structured summary string from ``_generate_structured_summary``.
@@ -1446,13 +1527,49 @@ class MemoryManager:
                 ):
                     msg.content = new_content
                     logger.debug("Compaction summary applied back to live history checkpoint.")
-                    return
-        # Placeholder absent — a subsequent compaction replaced the history list.
-        # This is normal under high-throughput: skip gracefully.
-        logger.debug(
-            "Compaction summary job completed but placeholder checkpoint was no longer "
-            "present in history (re-compacted). Summary discarded."
-        )
+                    break
+            else:
+                # Placeholder absent — a subsequent compaction replaced the
+                # history list. This is normal under high-throughput: skip the
+                # in-memory mutation gracefully. The persisted row is still
+                # converged below.
+                logger.debug(
+                    "Compaction summary job completed but placeholder checkpoint was no "
+                    "longer present in history (re-compacted). In-memory apply-back skipped."
+                )
+
+        self._persist_checkpoint_update(new_content)
+
+    def _persist_checkpoint_update(self, new_content: str) -> None:
+        """Converge the persisted checkpoint row onto ``new_content`` (T-52, BB-140).
+
+        Best-effort and unconditional: runs whether or not the in-memory sentinel
+        scan in ``_apply_summary_to_history`` found a live placeholder, because a
+        later compaction may already have moved the in-memory window past this
+        checkpoint while the row is still the truthful durable record for that
+        point in the transcript — skipping the write just because the in-memory
+        scan missed would silently leave the placeholder text in ``sessions.db``
+        forever.  No-ops when no session store is bound or no checkpoint has been
+        persisted yet for the current window (both legacy/test paths).
+        Deliberately called outside ``_history_lock`` — SQLite I/O must never run
+        while holding it, same as the LLM call in ``_run_and_clear_summary_job``.
+
+        Args:
+            new_content: The real structured checkpoint text (same
+                ``[CONTEXT CHECKPOINT — REFERENCE ONLY...]`` framing as the
+                in-memory apply-back) to overwrite the persisted row with.
+        """
+        if self._session_store is None or self._checkpoint_row_id is None:
+            return
+        try:
+            self._session_store.update_message_content(self._checkpoint_row_id, new_content)
+        except Exception:
+            logger.warning(
+                "Failed to update persisted compaction checkpoint row %s; a resumed "
+                "session may see the placeholder instead of the real summary.",
+                self._checkpoint_row_id,
+                exc_info=True,
+            )
 
     def _flush_facts_to_vault(self, messages: list) -> None:
         """Extract permanent facts from dropped messages and save to vault.
