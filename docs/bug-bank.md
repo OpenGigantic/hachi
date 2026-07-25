@@ -4399,6 +4399,84 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `test_written_node_carries_evidence_session_edge` and
   `test_event_nodes_route_to_the_real_session_journal` (on-disk contract).
 
+### BB-139 — Blanket `*.png` / `*.html` ignores hid 52.6 MB, two extras were no-ops, and the sdist swept in 60+ MB of stale worktrees
+
+- **Symptom:** seven design-tool trees totalling 52,598,381 B sat at the repo root and
+  appeared in NO git output — not `git status`, not `git status -uall`, not `git clean`.
+  Separately, `pip install hachi-og[memory]` and `[local-models]` installed nothing (both
+  extras' pins duplicated `dependencies` character-for-character), and a freshly built
+  sdist swept `.claude/worktrees/` in wholesale — 60,643,104 B uncompressed (~80% of the
+  archive), an ~18x sdist:wheel ratio.
+- **Root cause:** `.gitignore` carried unanchored `*.png`/`*.jpg`/`*.jpeg`/`*.gif`/`*.html`
+  rules plus `node_modules/`. The DIRECTORIES were never ignored — every FILE inside
+  matched a global glob, so each tree looked empty to git; `!frontend/index.html` was the
+  fossil of that same rule eating a needed file once before. The sdist leak's root cause is
+  `hatchling`'s default sdist VCS-exclusion (verified against the installed package source,
+  `hatchling/builders/config.py::vcs_exclusion_files`) reading only the repo-ROOT
+  `.gitignore` via `locate_file(root, ".gitignore", boundary=".git")` — it never walks into
+  nested `.gitignore` files, so `.claude/worktrees/` (excluded from git only via the nested
+  `.claude/.gitignore:4`) stayed invisible to the build backend regardless of how long that
+  nested rule had existed.
+- **Fix:** named each of the seven design trees in `.gitignore` first, THEN narrowed the
+  asset globs to repo-root-anchored (`/*.png`, `/*.html`, …) — that order matters, the
+  reverse dumps 52 MB into `git status` at once; ignored `frontend/.tanstack/` (empty
+  today, genuinely unignored); removed the two no-op extras (`memory`, `local-models`) and
+  documented `observability` as a deliberate superset of `tracing`; added a minimal
+  `[tool.hatch.build.targets.sdist] exclude = ["/.claude/worktrees"]`, taking a fresh sdist
+  from 20,033,163 B / ~18x down to 3,940,545 B / ~3.55x (a normal ratio); fixed the root
+  `hachi` POSIX shim (CRLF -> LF, `.venv/bin` vs `.venv/Scripts` layout detection, pinned
+  via `.gitattributes`).
+- **Avoid:** never put an unanchored asset glob in `.gitignore` — it does not filter noise,
+  it decides what CAN be tracked, and fails silently (`git add` succeeds, `git status`
+  stays clean, the file never lands). Scope every asset rule to a directory. To find what a
+  repo is hiding, run `git check-ignore -v <a file inside the dir>`, not on the directory
+  itself. And never assume a nested `.gitignore` protects a packaging build: a build
+  backend's default VCS-awareness typically reads only the project-root ignore file — an
+  exclusion declared in a subdirectory's own `.gitignore` is invisible to it and needs its
+  own explicit build-target exclude.
+- **Locked by:** `tests/test_repo_hygiene.py` — `test_no_blanket_asset_globs_in_gitignore`,
+  `test_no_no_op_optional_dependencies`, `test_sdist_excludes_claude_worktrees`
+
+### BB-140 — Resumed sessions silently lost their compacted context
+
+- **Symptom:** A resumed long session had weaker context than the live session it
+  continued. The compacted middle of the conversation was simply absent — the raw messages
+  had been dropped from context and the checkpoint that replaced them was never stored. No
+  error, no warning; the agent answered confidently from an incomplete picture.
+- **Root cause:** `MemoryManager._sliding_window_compact` spliced a checkpoint `Message`
+  into `_history`, and the background `_run_and_clear_summary_job` →
+  `_apply_summary_to_history` mutated `msg.content` in the in-memory list only. Session
+  persistence wrote exactly two rows per turn — `log_message(..., "user", ...)` and
+  `"assistant"` (`gateway/orchestrator.py`) — so the checkpoint never reached `sessions.db`.
+  `resume_from_session` additionally filtered anything outside `{"user", "assistant"}`, so
+  persisting alone would not have been enough. A stale comment (`core/memory.py`) pointed
+  readers at a `get_pending_summaries()` method that has never existed anywhere in the repo.
+- **Fix:** `SessionStore` gains `CHECKPOINT_ROLE` (`"system"`), `log_checkpoint()` (returns
+  the row id) and `update_message_content()` — the one narrow, single-column exception to
+  the otherwise append-only `messages` table — plus a class-docstring sentence naming it the
+  single durable transcript. `MemoryManager` gains `set_session_store()`, persists the
+  checkpoint immediately via `_persist_checkpoint()` right after splicing it into `_history`
+  (so a crash before the background job finishes still leaves an honest marker), and
+  converges the persisted row via `_persist_checkpoint_update()` from
+  `_apply_summary_to_history` — unconditionally, even when the in-memory sentinel scan finds
+  nothing, because a later compaction may have already moved the window on.
+  `AgentSession.set_session_store` now also wires `memory.set_session_store(...)`;
+  `resume_from_session` widens its allow-set for `CHECKPOINT_ROLE` and re-seeds it as
+  `Message(role="user", ...)` — the same disguise the live path uses — while deliberately
+  keeping it out of `resumed_transcript` (the UI-rendered feed). The phantom
+  `get_pending_summaries()` comment is rewritten, not deleted, to describe the real sentinel
+  apply-back mechanism.
+- **Avoid:** if state lives only in a Python list, it does not survive a restart — say so
+  out loud in the code, and persist the marker *before* the background job that perfects it,
+  not instead of it. Never leave a comment naming a method that does not exist: it sends the
+  next reader hunting for a mechanism that was never built.
+- **Locked by:** `tests/test_compaction_checkpoint_persistence.py` —
+  `test_compaction_checkpoint_survives_a_session_round_trip`,
+  `test_persisted_checkpoint_is_not_logged_as_a_user_message`,
+  `test_background_summary_updates_the_persisted_checkpoint`,
+  `test_resume_from_session_seeds_checkpoint_into_history`,
+  `test_resume_from_session_excludes_checkpoint_from_resumed_transcript`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
