@@ -1,0 +1,6 @@
+# T-74: force LF line endings on the root Hachi CLI shim regardless of platform or a
+# committer's local core.autocrlf setting. A CRLF shebang ("#!/bin/bash\r") makes the
+# kernel look for an interpreter literally named "/bin/bash\r" -> "bad interpreter: No
+# such file or directory" on POSIX, before the script body ever runs. See
+# docs/audit/2026-07-19/tasks/T-74-repo-hygiene-sweep.md sec 3.7.
+/hachi text eol=lf

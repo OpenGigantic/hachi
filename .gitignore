@@ -52,12 +52,22 @@ htmlcov/
 # ==========================================
 # Hachi Runtime (user-generated, not source)
 # ==========================================
-*.png
-*.jpg
-*.jpeg
-*.gif
-*.html
-!frontend/index.html
+# T-74: narrowed from unanchored (repo-wide) globs, which is what hid 52.6 MB of
+# design trees from every git command with no signal — `git add` succeeded,
+# `git status` stayed clean, the files never landed. Anchored to the repo root only
+# (leading `/`) so a tracked fixture/docs/test image or HTML file in any
+# subdirectory stays trackable. No code path in this repo writes generated
+# png/jpg/jpeg/gif/html into the working tree — the seven named design trees
+# above are covered by their own by-name rules, and real runtime output goes to
+# platformdirs paths outside the repo, or `.hachi/` (already ignored, line 79).
+# This rule only catches a stray file dropped directly at the repo root.
+# `!frontend/index.html` is now dead — the anchored rule below never reaches
+# frontend/ — so it is removed rather than kept as an inert fossil.
+/*.png
+/*.jpg
+/*.jpeg
+/*.gif
+/*.html
 
 # ==========================================
 # Environment & Secrets
@@ -78,8 +88,20 @@ settings.toml
 # reads (./.hachi/gateway_api_token.txt). Never commit it.
 .hachi/
 
-# Claude Design handoff bundle (reference only)
+# ---------------------------------------------------------------------------
+# Design-tool working trees (Claude Design / DesignSync / Stitch exports).
+# Source material, NOT build output — see docs/DECISIONS.md before removing any.
+# Named explicitly (T-74) so the asset globs below can be narrowed to repo-root only
+# without silently un-hiding these trees again.
+# `design-system/` is the seventh design tree but is TRACKED (65 files); its
+# disposition is a flagged decision for the user, recorded in docs/DECISIONS.md.
+# ---------------------------------------------------------------------------
+.ds-sync/
+ds-bundle/
 .design-bundle/
+.design-sync/
+.stitch-review/
+/Hachi Web UI/
 .claude/skills/ui-ux-pro-max/
 .claude/skills/banner-design/
 .claude/skills/brand/
@@ -91,3 +113,7 @@ settings.toml
 
 node_modules/
 frontend/.vite/
+# T-74: frontend/.tanstack/ is currently empty (TanStack Router's cache dir) so it never
+# appears in `git status` yet -- but it is genuinely unignored today. The moment the router
+# writes a cache file there it would land in status with no code change to explain it.
+frontend/.tanstack/

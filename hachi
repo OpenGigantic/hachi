@@ -1,3 +1,13 @@
 #!/bin/bash
 # Hachi CLI wrapper - delegates to the installed script in .venv
-exec "$(dirname "$0")/.venv/Scripts/hachi" "$@"
+# T-74: detect the POSIX (.venv/bin/) vs Windows (.venv/Scripts/) venv layout instead of
+# hardcoding Windows. This file must stay LF-only -- a CRLF shebang ("#!/bin/bash\r") makes
+# the kernel look for an interpreter literally named "/bin/bash\r" and fails with
+# "bad interpreter: No such file or directory" before line 2 is ever reached. Pinned via
+# .gitattributes (hachi text eol=lf) so it cannot regress.
+D="$(dirname "$0")"
+if [ -x "$D/.venv/bin/hachi" ]; then
+    exec "$D/.venv/bin/hachi" "$@"
+else
+    exec "$D/.venv/Scripts/hachi" "$@"
+fi

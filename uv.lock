@@ -1184,12 +1184,6 @@ files = [
     { name = "pypdf" },
     { name = "python-docx" },
 ]
-local-models = [
-    { name = "httpx" },
-]
-memory = [
-    { name = "chromadb" },
-]
 observability = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
@@ -1215,12 +1209,10 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.105.2" },
     { name = "bandit", extras = ["toml"], marker = "extra == 'security'", specifier = ">=1.7.0" },
     { name = "chromadb", specifier = ">=1.5.9" },
-    { name = "chromadb", marker = "extra == 'memory'", specifier = ">=1.5.9" },
     { name = "cryptography", specifier = ">=48.0.1" },
     { name = "deptry", marker = "extra == 'dev'", specifier = ">=0.20.0" },
     { name = "fastapi", specifier = ">=0.136.3" },
     { name = "httpx", specifier = ">=0.28.0" },
-    { name = "httpx", marker = "extra == 'local-models'", specifier = ">=0.28.0" },
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.0" },
     { name = "keyring", specifier = ">=25.5.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11.0" },
@@ -1252,7 +1244,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.48.0" },
     { name = "vulture", marker = "extra == 'dev'", specifier = ">=2.11" },
 ]
-provides-extras = ["dev", "memory", "local-models", "search", "browser", "files", "tracing", "observability", "presentations", "unofficial", "security"]
+provides-extras = ["dev", "search", "browser", "files", "tracing", "observability", "presentations", "unofficial", "security"]
 
 [[package]]
 name = "hf-xet"
