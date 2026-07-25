@@ -27,6 +27,18 @@ from hachi.core.paths import get_hachi_paths
 
 logger = logging.getLogger(__name__)
 
+# T-52: the role a compaction-checkpoint row is persisted under. Deliberately
+# distinct from "user"/"assistant" — a persisted "user" row would be
+# indistinguishable from something a human actually typed, and would render as
+# one in GET /sessions/{id}/messages and `hachi session show`. The in-memory
+# Message MemoryManager splices into _history stays role="user" (that disguise
+# is an LLM-API concern — see MemoryManager._sliding_window_compact); this
+# constant is the separate, honest-about-provenance persisted role. `role` has
+# no CHECK constraint (see the messages table below), so nothing else stops a
+# typo — every write/update/resume-filter site must import and use this
+# constant rather than the literal string.
+CHECKPOINT_ROLE = "system"
+
 
 class SessionStore:
     """SQLite-backed session persistence for cross-session search and analytics.
@@ -34,6 +46,13 @@ class SessionStore:
     Designed for append-heavy workloads with minimal read contention.
     Uses WAL journal mode so background log_message calls never block
     the main agent loop's reads.
+
+    T-52: this store is the single durable transcript of a session.
+    ``MemoryManager._history`` is only the live working set sent to the LLM this
+    turn (including a compaction checkpoint — see :data:`CHECKPOINT_ROLE` — which
+    does not survive a restart unless it is also written here); ``.og`` memory is
+    extracted, structured facts. If a message is not written to this store, it is
+    gone once the process exits.
 
     Write batching (MED-001): ``log_message`` accumulates rows in memory and
     flushes to SQLite either when ``_BATCH_SIZE`` rows are pending or after
@@ -663,6 +682,102 @@ class SessionStore:
         """
         with self._lock:
             self._flush_locked()
+
+    # ==========================================
+    # T-52: compaction-checkpoint persistence
+    # ==========================================
+    #
+    # A checkpoint is the summary MemoryManager splices into the live _history in
+    # place of messages dropped by sliding-window compaction (see
+    # MemoryManager._sliding_window_compact). Without these two methods it existed
+    # only in that process's Python list — a resumed session silently lost the
+    # compacted middle of the conversation (BB-140). The messages table stays
+    # append-only for every other caller; update_message_content is the one
+    # narrow, single-column exception, added solely to converge a checkpoint row
+    # onto the real background summary once it lands.
+
+    def log_checkpoint(
+        self,
+        session_id: str,
+        content: str,
+        model: str | None = None,
+    ) -> int:
+        """Insert a compaction-checkpoint row and return its row id.
+
+        Persisted under :data:`CHECKPOINT_ROLE` — never ``"user"`` or
+        ``"assistant"`` — so a resumed session's transcript, ``GET
+        /sessions/{id}/messages``, and ``hachi session show`` can all tell it
+        apart from something a human actually typed. The returned id lets the
+        caller update this exact row in place via :meth:`update_message_content`
+        once the real background summary lands, mirroring the in-memory
+        sentinel apply-back in ``MemoryManager._apply_summary_to_history``.
+
+        Mirrors ``log_message``'s synchronous-INSERT / batched-COMMIT contract
+        (see its docstring) rather than delegating to it, so ``log_message``'s
+        widely-used two-argument-role contract is untouched by this task.
+
+        Args:
+            session_id: The active session ID.
+            content: The checkpoint text — the placeholder or, on the no-queue
+                synchronous path, the real summary already. Truncated to 50K
+                chars like ``log_message``, to bound DB growth.
+            model: LLM model id, for parity with ``log_message``'s assistant rows.
+
+        Returns:
+            The autoincrement row id of the inserted message.
+        """
+        now = datetime.datetime.now(datetime.UTC).isoformat()
+        content = content[:50_000] if content else ""
+
+        with self._lock:
+            cursor = self._conn.execute(
+                "INSERT INTO messages (session_id, role, content, tool_name, timestamp, model) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, CHECKPOINT_ROLE, content, None, now, model),
+            )
+            self._uncommitted += 1
+            self._schedule_flush()
+            if self._uncommitted >= self._BATCH_SIZE:
+                self._flush_locked()
+            row_id = cursor.lastrowid
+            if row_id is None:
+                # Unreachable in practice — a successful INSERT into an
+                # AUTOINCREMENT primary key always sets lastrowid — but the
+                # sqlite3 stubs type it as int | None, so guard explicitly and
+                # fail loudly rather than silently return a wrong id.
+                raise RuntimeError("log_checkpoint: INSERT did not return a row id")
+            return row_id
+
+    def update_message_content(self, message_id: int, content: str) -> None:
+        """Overwrite a single message row's content in place.
+
+        The narrowest possible exception to the messages table being append-only:
+        one column (``content``), one row (``message_id``), one caller
+        (``MemoryManager._apply_summary_to_history``, converging a checkpoint
+        logged by :meth:`log_checkpoint` onto the real background summary).  Not
+        a general message-mutation API — do not grow its surface.
+
+        Best-effort: silently no-ops if ``message_id`` no longer exists (e.g. the
+        session was deleted between the checkpoint being logged and the
+        background job completing).  Batches its COMMIT exactly like
+        ``log_message`` — call :meth:`flush_sync` for an immediate flush.
+
+        Args:
+            message_id: The row id returned by :meth:`log_checkpoint`.
+            content: The replacement content. Truncated to 50K chars like
+                ``log_message``, for the same reason.
+        """
+        content = content[:50_000] if content else ""
+
+        with self._lock:
+            self._conn.execute(
+                "UPDATE messages SET content = ? WHERE id = ?",
+                (content, message_id),
+            )
+            self._uncommitted += 1
+            self._schedule_flush()
+            if self._uncommitted >= self._BATCH_SIZE:
+                self._flush_locked()
 
     # ==========================================
     # Cross-Session Search

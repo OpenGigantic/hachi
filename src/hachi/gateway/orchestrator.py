@@ -86,7 +86,7 @@ from hachi.core.runtime_read_models import (
     ToolCallSnapshot,
 )
 from hachi.core.secret_store import create_default_secret_store
-from hachi.core.session_store import SessionStore
+from hachi.core.session_store import CHECKPOINT_ROLE, SessionStore
 from hachi.core.session_titler import generate_title
 from hachi.core.sub_agent import DEFAULT_SUB_AGENT_MODEL
 from hachi.core.tracing import configure_from_env, span
@@ -669,6 +669,9 @@ class AgentSession:
         # T-50: propagate provenance so extracted facts carry evidence=session:<id>.
         if self.memory is not None:
             self.memory.set_session_id(self._session_id)
+            # T-52: bind the same store so compaction checkpoints persist and can
+            # be updated in place when the background summary job completes.
+            self.memory.set_session_store(store, self._session_id)
 
     def resume_from_session(self, source_session_id: str, max_messages: int = 40) -> int:
         """Replay a prior session's transcript into active memory (full context reload).
@@ -677,6 +680,14 @@ class AgentSession:
         seeded into the MemoryManager so the next LLM call sees the earlier
         conversation, and cached as ``resumed_transcript`` for the UI to render.
         Tool rows are skipped — only the visible dialogue is restored.
+
+        T-52 (BB-140): a persisted compaction checkpoint (role=CHECKPOINT_ROLE) is
+        also seeded into memory, disguised as ``role="user"`` — the same disguise
+        the live compaction path uses (``MemoryManager._sliding_window_compact``)
+        — so the LLM sees it identically whether the session is live or resumed.
+        It is deliberately left OUT of ``resumed_transcript``: that list is what
+        the UI renders as chat turns, and a checkpoint must not surface there
+        (out of scope by design — see the T-52 spec).
 
         Args:
             source_session_id: The session whose transcript to load.
@@ -694,7 +705,12 @@ class AgentSession:
         for row in rows:
             role = str(row.get("role", ""))
             content = row.get("content") or ""
-            if role not in {"user", "assistant"} or not content:
+            if not content:
+                continue
+            if role == CHECKPOINT_ROLE:
+                seeded.append(Message(role="user", content=content))
+                continue
+            if role not in {"user", "assistant"}:
                 continue
             seeded.append(Message(role=role, content=content))
             transcript.append((role, content))
