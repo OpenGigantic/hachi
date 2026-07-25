@@ -3263,3 +3263,52 @@ the raise must propagate through the real store constructor, not only through
 version is corrected back to current on open — the one check that cannot pass "by
 accident" from `refresh()`'s own unconditional rebuild, which would otherwise mask a
 `MemoryIndex` that never wired the version check at all).
+
+## T-74 — Repo hygiene sweep: named design trees, narrowed globs, sdist worktree leak, root shim (2026-07-25/26) **[ADR]**
+
+**Decision — name before narrowing, always.** `.gitignore` carried unanchored globs that
+silently hid seven design-tool trees (52,598,381 B) with zero signal. Fixed by naming each
+tree by-name FIRST (`.ds-sync/`, `ds-bundle/`, `.design-bundle/`, `.design-sync/`,
+`.stitch-review/`, `/Hachi Web UI/`), THEN narrowing the globs to repo-root-anchored
+(`/*.png`, `/*.jpg`, `/*.jpeg`, `/*.gif`, `/*.html`) — reversing that order would dump
+52.6 MB into `git status` in one step. `frontend/.tanstack/` (TanStack Router's cache dir,
+empty and therefore invisible today) was also ignored by name.
+
+**Decision — delete the two no-op extras, don't restructure base.** `memory` and
+`local-models` duplicated `dependencies` character-for-character. Removed both rather than
+moving `chromadb`/`httpx` out of base — that would be a breaking install-UX change, and
+`httpx` is used far beyond local-model providers. `observability` is documented in-line as
+a deliberate strict superset of `tracing`. `unofficial = []` is untouched (a deliberate ToS
+gate, not a no-op).
+
+**Finding — the sdist leak is real, not already fixed, and is a hatchling defaulting gap.**
+A fresh `uv build` still swept `.claude/worktrees/` into the sdist (20,033,163 B sdist vs
+1,111,246 B wheel, ~18x; worktrees alone were 60,643,104 B uncompressed, ~80% of the
+archive). Root-caused against the installed `hatchling` source: its default sdist
+VCS-exclusion reads only the repo-ROOT `.gitignore` and never walks into nested
+`.gitignore` files, so the rule in `.claude/.gitignore` was invisible to it. Fixed with the
+minimal targeted `[tool.hatch.build.targets.sdist] exclude = ["/.claude/worktrees"]` — no
+broader allowlist written. Post-fix: 3,940,545 B sdist, ~3.55x, a normal ratio. Locked by
+`test_sdist_excludes_claude_worktrees`, which drives a real `uv build --sdist` rather than
+reimplementing hatchling's matcher; proven real by temporarily reverting the config and
+watching it fail with 5,328 leaked files before restoring it.
+
+**Decision — fix the root `hachi` shim rather than delete it.** `uv run hachi` and an
+activated venv already work without it, so deletion was legitimate, but the fix is small.
+Rewrote `hachi` to detect `.venv/bin/hachi` (POSIX) vs `.venv/Scripts/hachi` (Windows)
+instead of hardcoding Windows, confirmed pure-LF byte content, and added `.gitattributes`
+(`/hachi text eol=lf`) so line endings cannot regress. `hachi.bat` untouched. The tracked
+mode of `hachi` was `100644` (non-executable) since its first commit; flipped to `100755`
+via `git add --chmod=+x` at commit time so `./hachi` (direct invocation) works on a fresh
+POSIX clone — `bash hachi` never needed the bit and already worked.
+
+**Flagged for the user, not decided — `design-system/`'s disposition.** 65 tracked files,
+last touched 2026-06-27; its 7 shared components with `frontend/src/components/ui/` (last
+touched 2026-07-19) differ in every case, and the frontend carries 5 `.test.tsx` files the
+design-system copy has none of — `frontend/` is the implementation source of truth. But
+`design-system/` also holds `.prompt.md` authoring prompts, tokens, templates, and three
+components (`Badge`, `Card`, `RunCard`) with no frontend equivalent — deleting it destroys
+material that exists nowhere else. Per the task doc's explicit instruction, nothing under
+`design-system/` was deleted, moved, or `git add`ed; the newly-visible untracked files
+there (surfaced by the glob narrowing) were left untracked, pending a user decision (keep as
+brand canon, move out of the product repo, or delete only the 9 duplicated components).
