@@ -66,12 +66,10 @@ dev = [
     "deptry>=0.20.0",
     "vulture>=2.11",
 ]
-memory = [
-    "chromadb>=1.5.9",
-]
-local-models = [
-    "httpx>=0.28.0",
-]
+# T-74: `memory` (chromadb) and `local-models` (httpx) were removed — both pins
+# duplicated `dependencies` above character-for-character, so the extra installed
+# nothing (`pip install hachi-og[memory]` promised something base already provides).
+# See docs/DECISIONS.md.
 search = [
     "tavily-python>=0.3.0",
 ]
@@ -89,6 +87,9 @@ tracing = [
 ]
 # Full observability stack — OTLP exporter + Langfuse support.
 # Install: pip install 'hachi-og[observability]'
+# T-74: this is a strict superset of `tracing` above (same two pins + the OTLP
+# exporter) — intentional duplication, not drift; `tracing` stays for anyone who
+# only wants the API+SDK without the exporter.
 observability = [
     "opentelemetry-api>=1.27.0",
     "opentelemetry-sdk>=1.27.0",
@@ -154,6 +155,19 @@ addopts = "--dist=loadfile"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hachi"]
+
+# T-74: hatchling's default sdist VCS-exclusion only reads the repo-ROOT `.gitignore`
+# (hatchling/builders/config.py: `vcs_exclusion_files` -> `locate_file(root, ".gitignore",
+# boundary=".git")`, verified against the installed package source) -- it never walks into
+# nested .gitignore files. `.claude/worktrees/` is excluded from git ONLY via the nested
+# `.claude/.gitignore:4`, so hatchling never learns about it and a fresh `uv build` still
+# sweeps every stale agent worktree into the sdist. Measured before this exclude: sdist
+# 20,033,163 B vs wheel 1,111,246 B (~18x), of which .claude/worktrees was 60,643,104 B
+# uncompressed (~80% of the archive's file content). This excludes only the confirmed leak.
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.claude/worktrees",
+]
 
 # ---------------------------------------------------------------------------
 # import-linter — the architectural rail (Guardrails Phase 2).
