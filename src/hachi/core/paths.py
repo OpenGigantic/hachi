@@ -9,6 +9,26 @@ from platformdirs import PlatformDirs
 APP_NAME = "hachi"
 
 
+@dataclass(frozen=True, slots=True)
+class StoreSpec:
+    """One durable artefact Hachi owns.
+
+    ``HachiPaths.all_stores()`` is the single source of truth for every store
+    Hachi persists to disk (T-55 / BB-145): ``hachi backup``, ``hachi restore``
+    and ``hachi doctor`` all enumerate stores from here instead of hand-rolling
+    their own lists -- a list that lives in a second place is how a store gets
+    silently forgotten. Register a new store in ``all_stores()`` when you add
+    one; ``tests/test_backup_restore.py::test_every_hachi_path_is_registered_or_explicitly_exempt``
+    fails if a new ``HachiPaths`` path property is added without registering it.
+    """
+
+    name: str  # display name + relative path inside a backup dir, e.g. "sessions.db"
+    path: Path  # absolute filesystem path to the live store
+    kind: str  # "sqlite" | "dir" | "file"
+    derived: bool  # True => rebuildable from another store; skipped by backup, on purpose
+    note: str  # what it holds, or (if derived) what rebuilds it and from what
+
+
 @dataclass(slots=True)
 class HachiPaths:
     config_dir: Path
@@ -93,6 +113,16 @@ class HachiPaths:
         """SQLite database for the durable background job queue (T-53 / BB-131)."""
         return self.state_dir / "jobs.db"
 
+    @property
+    def runs_db(self) -> Path:
+        """SQLite database for durable run state (WAITING runs, resume cursors).
+
+        Deliberately stays on ``data_dir`` (not ``state_dir``, unlike its SQLite
+        siblings) -- T-53 explicitly deferred that move; see
+        ``core/runtime/store.py:_default_db_path`` and T-54 §9 (not an oversight).
+        """
+        return self.data_dir / "runs.db"
+
     def journal_shard_path(self, device_id: str | None = None) -> Path:
         """Per-device journal file path for conflict-free git sync.
 
@@ -113,6 +143,160 @@ class HachiPaths:
         _device = device_id or socket.gethostname()
         safe = re.sub(r"[^a-zA-Z0-9_-]", "-", _device)[:32]
         return self.memory_dir / f"journal-{safe}.og"
+
+    def all_stores(self) -> list[StoreSpec]:
+        """Every durable artefact Hachi owns. THE source of truth (T-55 / BB-145).
+
+        ``hachi backup``, ``hachi restore`` and ``hachi doctor`` all enumerate
+        stores from here rather than hardcoding their own lists. A store added
+        to Hachi MUST be registered here -- otherwise it is silently excluded
+        from backup/restore/doctor, which is the exact bug this method exists
+        to prevent. See
+        ``tests/test_backup_restore.py::test_every_hachi_path_is_registered_or_explicitly_exempt``.
+
+        Depends on nothing but this instance's own fields (BB-6: must work
+        before any session/service has booted).
+        """
+        return [
+            # --- Non-derived: captured by backup, written back by restore. ---
+            StoreSpec(
+                name="sessions.db",
+                path=self.sessions_db,
+                kind="sqlite",
+                derived=False,
+                note="conversation transcripts (online hot-backup via SessionStore.backup())",
+            ),
+            StoreSpec(
+                name="jobs.db",
+                path=self.jobs_db,
+                kind="sqlite",
+                derived=False,
+                note="durable background job queue (T-53)",
+            ),
+            StoreSpec(
+                name="runs.db",
+                path=self.runs_db,
+                kind="sqlite",
+                derived=False,
+                note="durable run state: WAITING runs and resume cursors",
+            ),
+            StoreSpec(
+                name="files.db",
+                path=self.files_db,
+                kind="sqlite",
+                derived=False,
+                note="file-attachment metadata",
+            ),
+            StoreSpec(
+                name="chroma_vault",
+                path=self.chroma_dir,
+                kind="dir",
+                derived=False,
+                note="semantic memory vault (ChromaDB backend)",
+            ),
+            StoreSpec(
+                name="memory",
+                path=self.memory_dir,
+                kind="dir",
+                derived=False,
+                note=(
+                    "the OG memory graph -- CANONICAL fact store under the fts5_only "
+                    "memory backend, where no Chroma vault exists"
+                ),
+            ),
+            StoreSpec(
+                name="blobs",
+                path=self.blobs_dir,
+                kind="dir",
+                derived=False,
+                note="raw file-attachment payloads",
+            ),
+            StoreSpec(
+                name="checkpoints",
+                path=self.checkpoints_dir,
+                kind="dir",
+                derived=False,
+                note="file-change undo history (rollback_changes)",
+            ),
+            StoreSpec(
+                name="skills",
+                path=self.skills_dir,
+                kind="dir",
+                derived=False,
+                note="the user's authored .og skills",
+            ),
+            StoreSpec(
+                name="brain.og",
+                path=self.brain_file,
+                kind="file",
+                derived=False,
+                note="the root skill graph",
+            ),
+            StoreSpec(
+                name="schedules.json",
+                path=self.schedules_file,
+                kind="file",
+                derived=False,
+                note="cron/interval/once schedules",
+            ),
+            StoreSpec(
+                name="skill_usage.json",
+                path=self.skill_usage_json,
+                kind="file",
+                derived=False,
+                note="usage stats driving skill ranking",
+            ),
+            StoreSpec(
+                name="onboarding_state.json",
+                path=self.onboarding_state_file,
+                kind="file",
+                derived=False,
+                note="setup completion state",
+            ),
+            StoreSpec(
+                name="secrets_metadata.json",
+                path=self.secrets_metadata_file,
+                kind="file",
+                derived=False,
+                note="secret names/labels (not values)",
+            ),
+            StoreSpec(
+                name="secrets.enc",
+                path=self.secrets_fallback_file,
+                kind="file",
+                derived=False,
+                note="encrypted secret store fallback",
+            ),
+            StoreSpec(
+                name="settings.toml",
+                path=self.global_config_toml,
+                kind="file",
+                derived=False,
+                note="non-secret configuration",
+            ),
+            StoreSpec(
+                name="device-permissions.og",
+                path=self.permissions_file,
+                kind="file",
+                derived=False,
+                note="permission tier + grants",
+            ),
+            # --- Derived: rebuildable, skipped by backup on purpose. ---
+            StoreSpec(
+                name="memory_index.db",
+                path=self.memory_index_db,
+                kind="sqlite",
+                derived=True,
+                note="FTS5 index rebuilt by MemoryIndex.refresh() from memory/",
+            ),
+            StoreSpec(
+                name="og_skill_embeddings",
+                path=self.state_dir / "og_skill_embeddings",
+                kind="dir",
+                derived=True,
+                note="embedding rank index rebuilt by SkillEngine from skills/",
+            ),
+        ]
 
 
 def get_hachi_paths() -> HachiPaths:
