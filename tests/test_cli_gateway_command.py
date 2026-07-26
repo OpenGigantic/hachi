@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typer.testing import CliRunner
 
 from hachi.cli.main import _apply_quick_setup_if_needed, app
+from hachi.core.paths import HachiPaths
 
 runner = CliRunner()
 
@@ -136,9 +137,7 @@ def test_gateway_command_passes_runtime_flag(monkeypatch) -> None:
         captured["port"] = port
         captured["attach_runtime"] = attach_runtime
 
-    monkeypatch.setattr(
-        "hachi.cli.main._run_gateway_http_server", _fake_run_gateway_http_server
-    )
+    monkeypatch.setattr("hachi.cli.main._run_gateway_http_server", _fake_run_gateway_http_server)
 
     result = runner.invoke(app, ["gateway", "--port", "8999", "--no-runtime"])
 
@@ -217,7 +216,6 @@ def test_run_repl_skips_gateway_bootstrap(monkeypatch) -> None:
     assert state["gateway_started"] is False
 
 
-
 def test_apply_quick_setup_runs_only_when_needed(monkeypatch) -> None:
     state: dict[str, int] = {
         "best_provider": 0,
@@ -294,12 +292,15 @@ def test_doctor_command_reports_environment(monkeypatch, tmp_path: Path) -> None
         directory.mkdir()
     settings_toml.write_text("[provider]\nkind='anthropic'\n", encoding="utf-8")
 
-    fake_paths = SimpleNamespace(
+    # A real HachiPaths (not a partial SimpleNamespace) so doctor's per-store
+    # probing (T-55) -- which calls paths.all_stores() -- has every property
+    # it needs; global_config_toml/skills_dir below resolve to the exact same
+    # values the old hand-built fake supplied.
+    fake_paths = HachiPaths(
         config_dir=config_dir,
         data_dir=data_dir,
+        cache_dir=tmp_path / "cache",
         state_dir=state_dir,
-        global_config_toml=settings_toml,
-        skills_dir=data_dir / "skills",
     )
     fake_config = SimpleNamespace(
         provider=SimpleNamespace(kind="anthropic", model="claude-haiku-4-5", api_key_env=None),
@@ -362,12 +363,15 @@ def test_doctor_json_is_parseable(monkeypatch, tmp_path: Path) -> None:
     settings_toml = config_dir / "settings.toml"
     settings_toml.write_text("[provider]\nkind='anthropic'\n", encoding="utf-8")
 
-    fake_paths = SimpleNamespace(
+    # A real HachiPaths (not a partial SimpleNamespace) so doctor's per-store
+    # probing (T-55) -- which calls paths.all_stores() -- has every property
+    # it needs; global_config_toml/skills_dir below resolve to the exact same
+    # values the old hand-built fake supplied.
+    fake_paths = HachiPaths(
         config_dir=config_dir,
         data_dir=data_dir,
+        cache_dir=tmp_path / "cache",
         state_dir=tmp_path / "state",
-        global_config_toml=settings_toml,
-        skills_dir=data_dir / "skills",
     )
     fake_config = SimpleNamespace(
         provider=SimpleNamespace(kind="anthropic", model="claude-haiku-4-5", api_key_env=None),

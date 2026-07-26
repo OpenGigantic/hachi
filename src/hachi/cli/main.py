@@ -4797,6 +4797,7 @@ def doctor(
     ),
 ):
     """Run environment diagnostics for onboarding and runtime health."""
+    import sqlite3
     import sys
 
     paths = get_hachi_paths()
@@ -4860,6 +4861,34 @@ def doctor(
         "tracing": os.environ.get("HACHI_TRACING", "off"),
     }
 
+    # Per-store presence/size/health, from the SAME registry `hachi backup`
+    # and `hachi restore` enumerate (T-55 / BB-145) — so a store `doctor`
+    # cannot see is a store backup cannot see either, by construction.
+    store_checks: dict[str, dict[str, object]] = {}
+    for spec in paths.all_stores():
+        present = spec.path.exists()
+        store_entry: dict[str, object] = {
+            "present": present,
+            "kind": spec.kind,
+            "derived": spec.derived,
+            "size_bytes": _store_size_bytes(spec.path) if present else 0,
+        }
+        if present and spec.kind == "sqlite":
+            # A successful open is enough for a fast diagnostic command; a full
+            # PRAGMA integrity_check can take a long time on a large database
+            # and doctor is expected to return quickly.
+            try:
+                probe_conn = sqlite3.connect(str(spec.path), timeout=2)
+                try:
+                    probe_conn.execute("SELECT 1")
+                finally:
+                    probe_conn.close()
+                store_entry["ok"] = True
+            except Exception as exc:
+                store_entry["ok"] = False
+                store_entry["error"] = str(exc)
+        store_checks[spec.name] = store_entry
+
     checks = {
         "python_version": sys.version.split()[0],
         "config_dir_exists": paths.config_dir.exists(),
@@ -4881,6 +4910,9 @@ def doctor(
         "onboarding_needs_setup": service.needs_setup(),
         "secret_backend": store.healthcheck(),
         "environment_detection": service.detect_environment(),
+        # Additive (T-55): existing keys above are unchanged so `doctor --json`
+        # stays backward-compatible for CI/automation consumers.
+        "stores": store_checks,
     }
     if json_output:
         # Plain print: Rich's console soft-wraps long JSON to terminal width.
@@ -5548,6 +5580,49 @@ def og_rollback_cmd(
     )
 
 
+def _store_size_bytes(path: Path) -> int:
+    """Best-effort on-disk size of a store: file size, or the sum of every
+    regular file inside a directory. Never raises -- an unreadable path just
+    reports 0 rather than failing the backup/restore/doctor command around it
+    (T-55 / BB-145).
+    """
+    try:
+        if path.is_dir():
+            return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _sqlite_online_backup(src: Path, dest: Path) -> None:
+    """Consistent copy of a (possibly WAL-mode) SQLite database, in either
+    direction (live -> backup file, or backup file -> live).
+
+    Uses sqlite3's online backup API instead of a raw file copy so a
+    concurrently-running gateway holding jobs.db/runs.db/files.db open in WAL
+    mode cannot produce a torn or stale copy, and so a restore never leaves a
+    freshly-copied main file mismatched against a stale -wal/-shm sidecar
+    (T-55 §12).
+    """
+    import sqlite3
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Start from a clean destination so no stale -wal/-shm sidecar left over
+    # from a previous file at this path can desync with the copied contents.
+    for suffix in ("", "-wal", "-shm"):
+        Path(str(dest) + suffix).unlink(missing_ok=True)
+
+    src_conn = sqlite3.connect(str(src))
+    try:
+        dest_conn = sqlite3.connect(str(dest))
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+
+
 @app.command("backup")
 def backup(
     dest: Path = typer.Option(  # noqa: B008
@@ -5560,11 +5635,18 @@ def backup(
         show_default=False,
     ),
 ) -> None:
-    """Create a timestamped backup of session history and the memory vault.
+    """Create a timestamped backup of every durable store Hachi owns.
 
-    Backs up (1) the sessions SQLite database via an online hot-backup, (2) the
-    ChromaDB memory-vault directory via a directory copy, and (3) the config-dir
-    files ``settings.toml`` and ``device-permissions.og`` (non-secret config only).
+    Enumerates ``HachiPaths.all_stores()`` — the single source of truth shared
+    with ``hachi restore`` and ``hachi doctor`` (T-55) — and captures every
+    non-derived store: the sessions database (online hot-backup), the ChromaDB
+    memory vault (directory copy), the OG memory graph (the CANONICAL fact
+    store under the ``fts5_only`` memory backend), the user's authored
+    ``.og`` skills, the job queue, run state, file attachments, checkpoints,
+    schedules and non-secret config. Derived stores (the memory FTS5 index,
+    the skill-embedding rank index) are skipped on purpose — they rebuild
+    from a captured store — and every skip is recorded, with its reason, in
+    ``manifest.json`` alongside the backup.
 
     Secrets (.env files) are intentionally excluded because they contain credentials
     that should be managed through your secret manager, not copied into backup dirs.
@@ -5573,7 +5655,7 @@ def backup(
         <dest>/hachi-backup-<YYYYMMDD-HHMMSS>/
     """
     import shutil
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     paths = get_hachi_paths()
 
@@ -5594,47 +5676,84 @@ def backup(
         raise typer.Exit(1) from exc
 
     manifest: list[str] = []
+    manifest_stores: list[dict[str, object]] = []
     errors: list[str] = []
 
-    # 1. Sessions database (online hot-backup — safe while gateway is running).
-    sessions_src = paths.sessions_db
-    sessions_dest = backup_dir / "sessions.db"
-    if sessions_src.exists():
+    # Every store Hachi owns comes from ONE registry (core/paths.py) — do not
+    # hand-maintain a second list here. See HachiPaths.all_stores().
+    for spec in paths.all_stores():
+        store_dest = backup_dir / spec.name
+        entry: dict[str, object] = {
+            "name": spec.name,
+            "source": str(spec.path),
+            "kind": spec.kind,
+        }
+
+        if spec.derived:
+            # Derived stores rebuild from a store captured above — skipping
+            # them is deliberate, not an omission. Say so, in the manifest too.
+            entry["status"] = "skipped"
+            entry["reason"] = f"derived (rebuildable): {spec.note}"
+            manifest.append(f"  {spec.name}  (skipped — derived: {spec.note})")
+            manifest_stores.append(entry)
+            continue
+
+        if not spec.path.exists():
+            entry["status"] = "skipped"
+            entry["reason"] = "not yet created"
+            manifest.append(f"  {spec.name}  (skipped — not yet created)")
+            manifest_stores.append(entry)
+            continue
+
         try:
-            store = SessionStore(db_path=sessions_src)
-            try:
-                store.backup(sessions_dest)
-            finally:
-                store.shutdown()
-            manifest.append(f"  sessions.db  ({sessions_src})")
+            if spec.name == "sessions.db":
+                # Online hot-backup — safe while the gateway is running (unlike
+                # a plain file copy of a live WAL database).
+                store = SessionStore(db_path=spec.path)
+                try:
+                    store.backup(store_dest)
+                finally:
+                    store.shutdown()
+            elif spec.kind == "sqlite":
+                _sqlite_online_backup(spec.path, store_dest)
+            elif spec.kind == "dir":
+                # Directory copy — stop-the-world snapshot.
+                shutil.copytree(str(spec.path), str(store_dest))
+            else:
+                store_dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(spec.path), str(store_dest))
+            entry["status"] = "captured"
+            entry["size_bytes"] = _store_size_bytes(store_dest)
+            manifest.append(f"  {spec.name}  ({spec.path})")
         except Exception as exc:
-            errors.append(f"sessions.db: {exc}")
-    else:
-        manifest.append("  sessions.db  (skipped — not yet created)")
+            entry["status"] = "error"
+            entry["reason"] = str(exc)
+            errors.append(f"{spec.name}: {exc}")
 
-    # 2. ChromaDB memory vault (directory copy — stop-the-world snapshot).
-    chroma_src = paths.chroma_dir
-    chroma_dest = backup_dir / "chroma_vault"
-    if chroma_src.exists():
-        try:
-            shutil.copytree(str(chroma_src), str(chroma_dest))
-            manifest.append(f"  chroma_vault/ ({chroma_src})")
-        except Exception as exc:
-            errors.append(f"chroma_vault: {exc}")
-    else:
-        manifest.append("  chroma_vault/ (skipped — not yet created)")
+        manifest_stores.append(entry)
 
-    # 3. Config files (non-secret): settings.toml + device-permissions.og
-    for config_file in (paths.global_config_toml, paths.permissions_file):
-        if config_file.exists():
-            try:
-                shutil.copy2(str(config_file), str(backup_dir / config_file.name))
-                manifest.append(f"  {config_file.name}  ({config_file})")
-            except Exception as exc:
-                errors.append(f"{config_file.name}: {exc}")
-
-    # Secrets are explicitly excluded — note it in the output.
+    # Secrets are explicitly excluded — note it in the output and the manifest.
     manifest.append("  .env files   (excluded — contain secrets; manage separately)")
+    manifest_stores.append(
+        {
+            "name": ".env",
+            "source": None,
+            "kind": "file",
+            "status": "excluded",
+            "reason": "contains credentials; manage via your secret manager, not backups",
+        }
+    )
+
+    (backup_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "created_at": datetime.now(UTC).isoformat(),
+                "stores": manifest_stores,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     if errors:
         console.print("[yellow]Backup completed with errors:[/yellow]")
@@ -5664,17 +5783,21 @@ def restore(
         help="Skip the confirmation prompt (required for non-interactive / CI use).",
     ),
 ) -> None:
-    """Restore session history and memory vault from a backup directory.
+    """Restore every durable store from a backup directory.
 
-    WARNING: This operation overwrites live data.  The current sessions database and
-    memory vault will be replaced with the contents of the backup.  Any data created
-    after the backup was taken will be lost.
+    Mirrors ``hachi backup`` exactly, via the same ``HachiPaths.all_stores()``
+    registry (T-55): every store present in the backup replaces its live
+    counterpart. Any data created after the backup was taken will be lost. A
+    store that was skipped or missing at backup time is left untouched —
+    restore only ever replaces a target whose source is present in the
+    backup, so a partial backup can never delete data it never captured.
 
     Requires ``--yes`` or interactive confirmation to proceed.
 
-    The gateway must not be running when restoring the memory vault (ChromaDB does
-    not support concurrent writers); the sessions database can be restored safely
-    (the hot-backup copy is consistent).
+    The gateway must not be running when restoring directory-based stores
+    (the ChromaDB vault, the OG memory graph) — they do not support
+    concurrent writers; SQLite stores are restored via
+    ``sqlite3.Connection.backup()`` and are safe.
     """
     import shutil
 
@@ -5695,49 +5818,60 @@ def restore(
             console.print("[yellow]Restore cancelled.[/yellow]")
             raise typer.Exit(0)
 
+    # Read the manifest (if this backup has one) purely to enrich the "gap"
+    # reporting below — the actual restore decision is driven by what is
+    # physically present under `src`, so a pre-T-55 backup without a
+    # manifest.json still restores everything it captured.
+    manifest_by_name: dict[str, dict[str, object]] = {}
+    manifest_path = src / "manifest.json"
+    if manifest_path.exists():
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_by_name = {
+                entry["name"]: entry for entry in payload.get("stores", []) if "name" in entry
+            }
+        except Exception:
+            manifest_by_name = {}
+
     restored: list[str] = []
     errors: list[str] = []
 
-    # 1. Sessions database.
-    sessions_src = src / "sessions.db"
-    sessions_dest = paths.sessions_db
-    if sessions_src.exists():
+    # Every store Hachi owns comes from ONE registry (core/paths.py) — do not
+    # hand-maintain a second list here. See HachiPaths.all_stores().
+    for spec in paths.all_stores():
+        if spec.derived:
+            # Derived stores were never in the backup — they rebuild live
+            # from a store restored below. Nothing to do.
+            continue
+
+        store_src = src / spec.name
+        if not store_src.exists():
+            manifest_entry = manifest_by_name.get(spec.name)
+            if manifest_entry and manifest_entry.get("status") == "error":
+                restored.append(
+                    f"  {spec.name}  (NOT in backup — backup failed: "
+                    f"{manifest_entry.get('reason', 'unknown error')})"
+                )
+            else:
+                restored.append(f"  {spec.name}  (not in backup — skipped)")
+            continue
+
         try:
-            sessions_dest.parent.mkdir(parents=True, exist_ok=True)
-            import shutil as _shutil
-
-            _shutil.copy2(str(sessions_src), str(sessions_dest))
-            restored.append(f"  sessions.db  → {sessions_dest}")
+            spec.path.parent.mkdir(parents=True, exist_ok=True)
+            if spec.kind == "sqlite":
+                _sqlite_online_backup(store_src, spec.path)
+            elif spec.kind == "dir":
+                # Only reached when store_src exists, so it is safe to
+                # replace the live directory wholesale — never delete a
+                # target whose source is absent (T-55 §12).
+                if spec.path.exists():
+                    shutil.rmtree(str(spec.path))
+                shutil.copytree(str(store_src), str(spec.path))
+            else:
+                shutil.copy2(str(store_src), str(spec.path))
+            restored.append(f"  {spec.name}  → {spec.path}")
         except Exception as exc:
-            errors.append(f"sessions.db: {exc}")
-    else:
-        restored.append("  sessions.db  (not in backup — skipped)")
-
-    # 2. ChromaDB memory vault.
-    chroma_src = src / "chroma_vault"
-    chroma_dest = paths.chroma_dir
-    if chroma_src.exists():
-        try:
-            if chroma_dest.exists():
-                shutil.rmtree(str(chroma_dest))
-            shutil.copytree(str(chroma_src), str(chroma_dest))
-            restored.append(f"  chroma_vault/ → {chroma_dest}")
-        except Exception as exc:
-            errors.append(f"chroma_vault: {exc}")
-    else:
-        restored.append("  chroma_vault/ (not in backup — skipped)")
-
-    # 3. Config files (non-secret).
-    for config_name in ("settings.toml", "device-permissions.og"):
-        config_src = src / config_name
-        config_dest = paths.config_dir / config_name
-        if config_src.exists():
-            try:
-                config_dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(str(config_src), str(config_dest))
-                restored.append(f"  {config_name}  → {config_dest}")
-            except Exception as exc:
-                errors.append(f"{config_name}: {exc}")
+            errors.append(f"{spec.name}: {exc}")
 
     if errors:
         console.print("[yellow]Restore completed with errors:[/yellow]")

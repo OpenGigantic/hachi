@@ -305,3 +305,216 @@ class TestRestoreCommand:
 
         assert result.exit_code != 0
         assert "not found" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# Part B tests (T-55 / BB-145) — `hachi backup` silently omitted most user
+# data (skills/, the .og memory graph, runs.db, files.db, blobs/,
+# checkpoints/, schedules.json, skill_usage.json, onboarding_state.json,
+# secrets_metadata.json, secrets.enc, jobs.db). These assert a REAL
+# backup -> wipe -> restore round trip returns every registered store intact,
+# not merely that a file with the right name shows up in the archive.
+# ---------------------------------------------------------------------------
+
+
+def _content_contains(path: Path, needle: str) -> bool:
+    """True if *path* exists and its raw bytes contain *needle*.
+
+    Works uniformly for plain-text files and small SQLite databases alike —
+    the sentinel row's bytes are stored verbatim in the leaf page for values
+    this short (well under SQLite's overflow-page threshold) — so one check
+    covers every store kind without a bespoke per-kind verifier.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return False
+    return needle.encode("utf-8") in data
+
+
+def _seed_every_store(paths: HachiPaths) -> dict[Path, str]:
+    """Write a unique sentinel into every store T-55 added backup/restore for.
+
+    ``sessions.db``, ``chroma_vault/``, ``settings.toml`` and
+    ``device-permissions.og`` already have dedicated coverage elsewhere in
+    this file; this covers the stores that were previously silently dropped.
+    Returns the absolute sentinel path mapped to a substring that must
+    survive a backup -> wipe -> restore cycle unchanged.
+    """
+    sentinels: dict[Path, str] = {}
+
+    def _write_text(path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # newline="" disables platform newline translation: on Windows,
+        # write_text()'s default text mode silently turns "\n" into "\r\n" at
+        # write time, which would make the sentinel bytes we track here
+        # diverge from the file on disk before backup/restore ever runs.
+        path.write_text(content, encoding="utf-8", newline="")
+        sentinels[path] = content
+
+    # The .og memory graph — CANONICAL fact store under memory.backend="fts5_only".
+    _write_text(
+        paths.memory_dir / "core_memory.og",
+        "::node[deploy-target]\n->[:role=fact]\n::dense\nfly.io\n",
+    )
+    _write_text(paths.skills_dir / "my-skill.og", "::index\n# authored-skill-sentinel\n")
+    _write_text(paths.brain_file, "::index\n# brain-graph-sentinel\n")
+    _write_text(paths.checkpoints_dir / "cp-1.json", '{"undo": "checkpoint-sentinel"}')
+    _write_text(paths.schedules_file, '[{"id": "daily-standup-sentinel"}]')
+    _write_text(paths.blobs_dir / "blob-1.bin", "blob-payload-sentinel")
+    _write_text(paths.skill_usage_json, '{"my-skill": "usage-sentinel"}')
+    _write_text(paths.onboarding_state_file, '{"completed": "onboarding-sentinel"}')
+    _write_text(paths.secrets_metadata_file, '[{"name": "secrets-metadata-sentinel"}]')
+    _write_text(paths.secrets_fallback_file, "secrets-enc-fallback-sentinel")
+
+    # Durable SQLite stores — real DB round trips, not text-file copies.
+    for db_path, table, value in (
+        (paths.runs_db, "runs", "run-sentinel-1"),
+        (paths.files_db, "files", "file-sentinel-1"),
+        (paths.jobs_db, "jobs", "job-sentinel-1"),
+    ):
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(f"CREATE TABLE {table} (id TEXT PRIMARY KEY)")
+            conn.execute(f"INSERT INTO {table} VALUES (?)", (value,))
+            conn.commit()
+        finally:
+            conn.close()
+        sentinels[db_path] = value
+
+    return sentinels
+
+
+def test_full_round_trip_preserves_every_registered_store(tmp_path: Path) -> None:
+    """backup -> wipe -> restore must return every non-derived store intact.
+
+    Regression (T-55 / BB-145): `hachi backup` copied only sessions.db,
+    chroma_vault/, settings.toml and device-permissions.og, and reported
+    success. Everything else — the user's .og skills, the .og memory graph
+    (CANONICAL under the fts5_only backend), runs.db, files.db, blobs/,
+    checkpoints/, schedules.json, skill_usage.json, onboarding_state.json,
+    secrets_metadata.json, secrets.enc and the job queue — was silently lost
+    on restore.
+    """
+    import shutil
+
+    fake_paths = _make_fake_paths(tmp_path)
+    _seed_sessions_db(fake_paths.sessions_db)
+    _seed_fake_vault(fake_paths.chroma_dir)
+    fake_paths.global_config_toml.write_text("[provider]\nkind = 'anthropic'\n", encoding="utf-8")
+    fake_paths.permissions_file.write_text("::index\n# permissions\n", encoding="utf-8")
+    sentinels = _seed_every_store(fake_paths)
+
+    runner = CliRunner()
+    backup_dest = tmp_path / "backups"
+    with patch("hachi.cli.main.get_hachi_paths", return_value=fake_paths):
+        result = runner.invoke(app, ["backup", "--dest", str(backup_dest)])
+    assert result.exit_code == 0, result.output
+    backup_dir = next(iter(backup_dest.iterdir()))
+
+    # Wipe every live root — simulate the disaster the command exists for.
+    for d in (fake_paths.data_dir, fake_paths.state_dir, fake_paths.config_dir):
+        shutil.rmtree(d, ignore_errors=True)
+        d.mkdir(parents=True, exist_ok=True)
+
+    with patch("hachi.cli.main.get_hachi_paths", return_value=fake_paths):
+        result = runner.invoke(app, ["restore", str(backup_dir), "--yes"])
+    assert result.exit_code == 0, result.output
+
+    missing = [
+        str(path) for path, needle in sentinels.items() if not _content_contains(path, needle)
+    ]
+    assert not missing, f"store not restored intact: {', '.join(missing)}"
+
+
+def test_backup_captures_the_og_memory_graph(tmp_path: Path) -> None:
+    """Under memory.backend=fts5_only the .og files ARE the memory. They must survive."""
+    fake_paths = _make_fake_paths(tmp_path)
+    (fake_paths.data_dir / "memory" / "projects").mkdir(parents=True, exist_ok=True)
+    memory_file = fake_paths.data_dir / "memory" / "core_memory.og"
+    memory_file.write_text(
+        "::node[deploy-target]\n->[:role=fact]\n::dense\nfly.io\n", encoding="utf-8"
+    )
+
+    backup_dest = tmp_path / "backups"
+    runner = CliRunner()
+    with patch("hachi.cli.main.get_hachi_paths", return_value=fake_paths):
+        result = runner.invoke(app, ["backup", "--dest", str(backup_dest)])
+    assert result.exit_code == 0, result.output
+
+    backup_dir = next(iter(backup_dest.iterdir()))
+    backed_up_memory = backup_dir / "memory" / "core_memory.og"
+    assert backed_up_memory.exists(), (
+        "the .og memory graph (CANONICAL fact store under fts5_only) was not backed up"
+    )
+    assert "fly.io" in backed_up_memory.read_text(encoding="utf-8")
+
+
+def test_every_hachi_path_is_registered_or_explicitly_exempt() -> None:
+    """A new HachiPaths property must be registered in all_stores() or exempted.
+
+    This is the test that stops T-55 recurring: it fails when someone adds a
+    store and forgets the registry. Matches by resolved Path *value* (not a
+    name-string mapping) so this test cannot itself drift from the registry.
+    """
+    _EXEMPT = {
+        "cache_dir",  # root directory, not an individual store
+        "config_dir",  # root directory, not an individual store
+        "data_dir",  # root directory, not an individual store
+        "state_dir",  # root directory, not an individual store
+        "user_roles_dir",  # subdirectory of skills_dir, already registered as "skills"
+    }
+    fake = HachiPaths(
+        config_dir=Path("/fake/config"),
+        data_dir=Path("/fake/data"),
+        cache_dir=Path("/fake/cache"),
+        state_dir=Path("/fake/state"),
+    )
+    properties = {
+        n for n, v in vars(HachiPaths).items() if isinstance(v, property) and not n.startswith("_")
+    }
+    registered_paths = {spec.path for spec in fake.all_stores()}
+    unregistered = sorted(
+        name for name in properties - _EXEMPT if getattr(fake, name) not in registered_paths
+    )
+    assert not unregistered, f"unregistered store paths: {unregistered}"
+
+
+def test_backup_manifest_lists_every_store_captured_or_skipped_with_reason(
+    tmp_path: Path,
+) -> None:
+    """manifest.json records, for every registered store, whether it was
+    captured or deliberately skipped (and why) — turning a silent omission
+    into an explicit, inspectable statement (T-55 §5 item 3)."""
+    import json
+
+    fake_paths = _make_fake_paths(tmp_path)
+    _seed_sessions_db(fake_paths.sessions_db)
+    _seed_fake_vault(fake_paths.chroma_dir)
+
+    backup_dest = tmp_path / "backups"
+    runner = CliRunner()
+    with patch("hachi.cli.main.get_hachi_paths", return_value=fake_paths):
+        result = runner.invoke(app, ["backup", "--dest", str(backup_dest)])
+    assert result.exit_code == 0, result.output
+
+    backup_dir = next(iter(backup_dest.iterdir()))
+    manifest_path = backup_dir / "manifest.json"
+    assert manifest_path.exists(), "backup did not write manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    store_names = {spec.name for spec in fake_paths.all_stores()}
+    manifest_names = {entry["name"] for entry in manifest["stores"]}
+    assert store_names <= manifest_names, (
+        f"manifest is missing stores: {store_names - manifest_names}"
+    )
+
+    derived_names = {spec.name for spec in fake_paths.all_stores() if spec.derived}
+    for entry in manifest["stores"]:
+        assert entry["status"] in ("captured", "skipped", "error", "excluded"), entry
+        if entry["status"] in ("skipped", "error"):
+            assert entry.get("reason"), f"{entry['name']} skipped/errored with no reason recorded"
+        if entry["name"] in derived_names:
+            assert entry["status"] == "skipped"
+            assert "derived" in entry["reason"].lower()
