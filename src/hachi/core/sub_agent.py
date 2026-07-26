@@ -40,6 +40,7 @@ from hachi.core.loop import (
     AgentException,
     ExecutionLoop,
     ToolRegistry,
+    TurnStatus,
 )
 from hachi.core.paths import get_hachi_paths
 from hachi.og_engine.parser import OGFile, parse_og_file
@@ -732,9 +733,18 @@ class SubAgentRuntime:
             # S2: ExecutionLoop.run() never raises AgentException when max_iterations
             # is exhausted (P1-04 made it a graceful [INCOMPLETE] string return, not
             # a raised exception) — so the `except AgentException` branch below is
-            # unreachable for this case. Detect the prefix directly so an
-            # incomplete/cut-off sub-agent is never reported as SUCCESS.
-            if result.startswith(INCOMPLETE_RESULT_PREFIX):
+            # unreachable for this case. T-59: branch on the structured TurnOutcome
+            # status field instead of substring-matching the reply. The `startswith`
+            # check is kept as a documented fallback for one release, in case
+            # `loop.last_outcome` is ever unavailable (e.g. a pre-T-59 loop stand-in),
+            # so an incomplete/cut-off sub-agent is never silently reported as SUCCESS.
+            _outcome = loop.last_outcome
+            is_incomplete = (
+                _outcome.status is TurnStatus.INCOMPLETE
+                if _outcome is not None
+                else result.startswith(INCOMPLETE_RESULT_PREFIX)
+            )
+            if is_incomplete:
                 logger.warning(
                     "Sub-agent '%s' hit iteration limit after %.1fs (%d iterations)",
                     self._role,

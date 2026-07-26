@@ -34,8 +34,11 @@ import queue
 import threading
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
+from hachi.core.errors import HachiError
 from hachi.core.llm import BaseLLMClient, LLMResponse, Message, ToolCall
 from hachi.core.obs.trace import (
     TraceContext,
@@ -90,8 +93,15 @@ def _compress_tool_output(text: str, max_chars: int = _TOOL_OUTPUT_MAX_CHARS) ->
     return text[:max_chars] + f"\n[truncated: {total} chars total, showing first {max_chars}]"
 
 
-class AgentException(Exception):
-    """Base exception for agent execution errors."""
+class AgentException(HachiError):
+    """Base exception for agent execution errors.
+
+    T-59: reparented under :class:`~hachi.core.errors.HachiError` so Hachi has
+    one exception root instead of two. No other behaviour change -- this
+    class's only production consumer (``core/sub_agent.py``'s
+    ``except AgentException``) is unreachable dead code today (see the S2
+    comment there); nothing in the repo raises ``AgentException``.
+    """
 
     pass
 
@@ -142,6 +152,86 @@ class _StreamTimedOut(Exception):
     def __init__(self, partial_text: str) -> None:
         self.partial_text = partial_text
         super().__init__(partial_text)
+
+
+class TurnStatus(StrEnum):
+    """Terminal status of a completed :meth:`ExecutionLoop.run` call.
+
+    T-59: ``run()`` used to encode these five outcomes (plus a sixth,
+    ``COMPLETED``, for a turn that genuinely finished) purely as string
+    prefixes on the returned text, across nine return sites. Downstream code
+    recovered the outcome with ``str.startswith()`` (e.g.
+    ``sub_agent.py``'s ``result.startswith(INCOMPLETE_RESULT_PREFIX)``).
+    ``TurnOutcome`` makes the outcome a value instead; see its docstring.
+    """
+
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    TIME_LIMIT = "time_limit"
+    BUDGET_LIMIT = "budget_limit"
+    SUSPENDED = "suspended"
+    INCOMPLETE = "incomplete"
+
+
+@dataclass(frozen=True)
+class TurnOutcome:
+    """Structured terminal outcome of a single :meth:`ExecutionLoop.run` call.
+
+    T-59: replaces the string-prefix encoding (``[CANCELLED]``,
+    ``[TIME LIMIT REACHED]``, ``[BUDGET LIMIT REACHED]``,
+    ``[WORKFLOW SUSPENDED]``, ``[INCOMPLETE]``) with a value object so callers
+    can branch on ``status`` instead of substring-matching the returned text.
+    ``render()`` reproduces the exact legacy strings byte-for-byte -- this is
+    a behaviour-preserving refactor, not a wire-format change: ``run()``
+    still returns ``str``, and now also exposes the outcome object via
+    ``ExecutionLoop.last_outcome``.
+
+    Frozen per the repo's ``TurnContext`` precedent (``core/turn_context.py``)
+    -- no mutation of shared per-turn state.
+
+    Only five of the six :class:`TurnStatus` values are ever built by
+    ``run()`` today (``COMPLETED`` is reserved for a possible future normal-
+    completion outcome; the two "genuinely finished" return sites in
+    ``run()`` are not among the nine converted here -- they never carried a
+    prefix to begin with).
+    """
+
+    status: TurnStatus
+    text: str = ""  # partial or final assistant text (CANCELLED / TIME_LIMIT)
+    reason: str = ""  # machine-readable cap/wait reason (BUDGET_LIMIT / SUSPENDED)
+    limit_seconds: float | None = None  # TIME_LIMIT: the configured max_wall_seconds
+    max_iterations: int | None = None  # INCOMPLETE: the configured iteration cap
+    suspend: "SuspendWorkflow | None" = None  # SUSPENDED: the originating exception
+
+    def render(self) -> str:
+        """Return the legacy prefixed string -- byte-identical to the pre-T-59 text.
+
+        This is the ONLY place these five prefix literals may appear in
+        ``loop.py``: the nine former ad hoc return sites now build a
+        ``TurnOutcome`` and return ``outcome.render()``.
+        """
+        if self.status is TurnStatus.CANCELLED:
+            return f"[CANCELLED] {self.text}" if self.text else "[CANCELLED]"
+        if self.status is TurnStatus.TIME_LIMIT:
+            partial_suffix = f" Partial: {self.text}" if self.text else ""
+            return (
+                f"[TIME LIMIT REACHED] Turn exceeded "
+                f"{self.limit_seconds:.0f}s wall-clock limit.{partial_suffix}"
+            )
+        if self.status is TurnStatus.BUDGET_LIMIT:
+            return f"[BUDGET LIMIT REACHED] {self.reason}"
+        if self.status is TurnStatus.SUSPENDED:
+            return f"[WORKFLOW SUSPENDED] {self.reason}"
+        if self.status is TurnStatus.INCOMPLETE:
+            return (
+                f"{INCOMPLETE_RESULT_PREFIX} The task reached the {self.max_iterations}-iteration "
+                "limit and could not be fully completed. Reply 'continue' to pick up where "
+                "it left off."
+            )
+        # COMPLETED -- not one of the nine string-prefixed sites; a turn that
+        # finished normally never carried a prefix, so its "render" is just
+        # the plain text (kept for API completeness, unused by run() today).
+        return self.text
 
 
 class ToolRegistry:
@@ -484,6 +574,13 @@ class ExecutionLoop:
         self._nudge_emitted: bool = False
         # Per-run wall-clock deadline (monotonic); set at the top of run(), cleared at end.
         self._wall_deadline: float | None = None
+        # T-59: structured outcome of the most recent run() call (mirrors _last_suspend,
+        # which run() also still sets). Unlike _last_suspend/_last_tool_calls, this is
+        # initialised here (not only inside run()) so `last_outcome` is a plain, direct
+        # attribute read -- no getattr-with-default, no check_getattr.py allowlist entry
+        # needed. None before the first run() and on a turn that finishes normally (the
+        # two "genuinely finished" exits are not among the nine converted sites).
+        self._last_outcome: TurnOutcome | None = None
 
     def _execute_single_tool(
         self,
@@ -885,6 +982,25 @@ class ExecutionLoop:
         # last_tool_calls property for the same shape, caught by a real test).
         return getattr(self, "_last_suspend", None)
 
+    @property
+    def last_outcome(self) -> "TurnOutcome | None":
+        """The structured :class:`TurnOutcome` of the most recent ``run()`` call.
+
+        T-59: complements ``last_suspend`` -- covers all five terminal
+        statuses run() can build (CANCELLED / TIME_LIMIT / BUDGET_LIMIT /
+        SUSPENDED / INCOMPLETE), not just suspension. Lets a caller ask "why
+        did this turn end" as a field read instead of substring-matching the
+        returned text (see ``TurnOutcome.render()`` for the legacy string).
+
+        ``None`` before the first ``run()`` call and on a turn that finishes
+        normally (the loop's two "genuinely finished" exits are not among the
+        nine sites T-59 converted -- they never carried a prefix). Unlike
+        ``last_suspend``/``last_tool_calls``, this attribute is initialised
+        directly in ``__init__``, so it is read here as a plain attribute
+        (no getattr-with-default).
+        """
+        return self._last_outcome
+
     def run(self, max_iterations: int = 15, turn_context: TurnContext | None = None) -> str:
         """
         Execute the autonomous loop until the model stops calling tools or hits the limit.
@@ -896,7 +1012,11 @@ class ExecutionLoop:
                          instead of mutating base_system_prompt. Prevents shared state issues.
 
         Returns:
-            The final textual response from the agent.
+            The final textual response from the agent. T-59: when the turn
+            ended on one of the five terminal conditions (cancelled, time
+            limit, budget limit, suspended, incomplete), the structured
+            :class:`TurnOutcome` behind that string is also available via
+            ``self.last_outcome`` after this call returns.
         """
         # Set the turn context for this execution (used by _build_system_prompt)
         prev_context = self._current_turn_context
@@ -935,6 +1055,9 @@ class ExecutionLoop:
         # Set when this run() ends by suspension, so the caller (AgentSession) can persist
         # a durable WAITING run + arm the wait registry (P0-1). None on a normal turn.
         self._last_suspend: SuspendWorkflow | None = None
+        # T-59: structured outcome of this run() call. Reset here (mirrors _last_suspend
+        # above) so a normal-completion turn never carries a stale outcome from a prior run().
+        self._last_outcome: TurnOutcome | None = None
 
         # Wall-clock deadline for this run() call (None when disabled).
         # Set before anything else so the streaming helper can read it.
@@ -976,7 +1099,9 @@ class ExecutionLoop:
                         {"partial_text": partial, "status": "user_cancel"},
                     )
                     self.memory.complete_task(user_input_for_turn, f"Cancelled: {partial[:80]}")
-                    return f"[CANCELLED] {partial}" if partial else "[CANCELLED]"
+                    outcome = TurnOutcome(TurnStatus.CANCELLED, text=partial)
+                    self._last_outcome = outcome
+                    return outcome.render()
 
                 # Wall-clock deadline check at iteration boundary (belt-and-suspenders;
                 # also checked inside the stream loop for faster response).
@@ -994,18 +1119,20 @@ class ExecutionLoop:
                         user_input_for_turn,
                         f"Partial (time limit): {partial[:80]}",
                     )
-                    partial_suffix = f" Partial: {partial}" if partial else ""
-                    return (
-                        f"[TIME LIMIT REACHED] Turn exceeded "
-                        f"{self.max_wall_seconds:.0f}s wall-clock limit.{partial_suffix}"
+                    outcome = TurnOutcome(
+                        TurnStatus.TIME_LIMIT, text=partial, limit_seconds=self.max_wall_seconds
                     )
+                    self._last_outcome = outcome
+                    return outcome.render()
 
                 # Stop before spending more if a per-session budget cap was hit.
                 budget_reason = self._budget_exceeded()
                 if budget_reason:
                     self.on_event(BUDGET_EXCEEDED, {"reason": budget_reason})
                     self.memory.complete_task(user_input_for_turn, f"Stopped: {budget_reason}")
-                    return f"[BUDGET LIMIT REACHED] {budget_reason}"
+                    outcome = TurnOutcome(TurnStatus.BUDGET_LIMIT, reason=budget_reason)
+                    self._last_outcome = outcome
+                    return outcome.render()
 
                 # Always-on token safety ceiling (independent of opt-in budgets).
                 ceiling_reason = self._safety_ceiling_exceeded()
@@ -1015,7 +1142,9 @@ class ExecutionLoop:
                         {"reason": ceiling_reason, "status": "safety_ceiling"},
                     )
                     self.memory.complete_task(user_input_for_turn, f"Stopped: {ceiling_reason}")
-                    return f"[BUDGET LIMIT REACHED] {ceiling_reason}"
+                    outcome = TurnOutcome(TurnStatus.BUDGET_LIMIT, reason=ceiling_reason)
+                    self._last_outcome = outcome
+                    return outcome.render()
 
                 # Apply compaction, clearing, and repair — all behind the memory seam.
                 iter_state = self.memory.prepare_for_turn()
@@ -1124,7 +1253,9 @@ class ExecutionLoop:
                     self.memory.complete_task(
                         user_input_for_turn, f"Cancelled (mid-stream): {partial[:80]}"
                     )
-                    return f"[CANCELLED] {partial}" if partial else "[CANCELLED]"
+                    outcome = TurnOutcome(TurnStatus.CANCELLED, text=partial)
+                    self._last_outcome = outcome
+                    return outcome.render()
                 except _StreamTimedOut as exc:
                     partial = "".join(self._partial_text) + exc.partial_text
                     self.on_event(
@@ -1139,11 +1270,11 @@ class ExecutionLoop:
                         user_input_for_turn,
                         f"Partial (time limit, mid-stream): {partial[:80]}",
                     )
-                    return (
-                        f"[TIME LIMIT REACHED] Turn exceeded {self.max_wall_seconds:.0f}s "
-                        f"wall-clock limit."
-                        f"{(' Partial: ' + partial) if partial else ''}"
+                    outcome = TurnOutcome(
+                        TurnStatus.TIME_LIMIT, text=partial, limit_seconds=self.max_wall_seconds
                     )
+                    self._last_outcome = outcome
+                    return outcome.render()
 
                 # Account for token usage / estimated cost and surface it live.
                 if self.cost_tracker is not None:
@@ -1174,7 +1305,9 @@ class ExecutionLoop:
                 if turn_budget_reason:
                     self.on_event(BUDGET_EXCEEDED, {"reason": turn_budget_reason})
                     self.memory.complete_task(user_input_for_turn, f"Stopped: {turn_budget_reason}")
-                    return f"[BUDGET LIMIT REACHED] {turn_budget_reason}"
+                    outcome = TurnOutcome(TurnStatus.BUDGET_LIMIT, reason=turn_budget_reason)
+                    self._last_outcome = outcome
+                    return outcome.render()
 
                 # Record the assistant's generation in history
                 assistant_content: list[dict[str, Any]] = []
@@ -1331,7 +1464,11 @@ class ExecutionLoop:
                     # can persist RunState(WAITING) + arm the registry (P0-1). Without this
                     # the wait_kind/wait_key were lost inside the return string.
                     self._last_suspend = suspend_exc
-                    return f"[WORKFLOW SUSPENDED] {suspend_exc.reason}"
+                    outcome = TurnOutcome(
+                        TurnStatus.SUSPENDED, reason=suspend_exc.reason, suspend=suspend_exc
+                    )
+                    self._last_outcome = outcome
+                    return outcome.render()
 
             self.on_event(
                 SESSION_ITERATION_LIMIT,
@@ -1341,11 +1478,9 @@ class ExecutionLoop:
                 user_input_for_turn,
                 f"Partial: iteration limit reached ({max_iterations})",
             )
-            return (
-                f"{INCOMPLETE_RESULT_PREFIX} The task reached the {max_iterations}-iteration "
-                "limit and could not be fully completed. Reply 'continue' to pick up where "
-                "it left off."
-            )
+            outcome = TurnOutcome(TurnStatus.INCOMPLETE, max_iterations=max_iterations)
+            self._last_outcome = outcome
+            return outcome.render()
 
         finally:
             # Restore previous context
