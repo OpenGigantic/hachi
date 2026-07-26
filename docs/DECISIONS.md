@@ -3312,3 +3312,41 @@ material that exists nowhere else. Per the task doc's explicit instruction, noth
 `design-system/` was deleted, moved, or `git add`ed; the newly-visible untracked files
 there (surfaced by the glob narrowing) were left untracked, pending a user decision (keep as
 brand canon, move out of the product repo, or delete only the 9 duplicated components).
+
+## T-49: Adopt the MemoryProvider seam (not delete it) (2026-07-26) **[ADR]**
+
+**Context:** CF-12 found `MemoryProvider`'s ABC contract methods (`upsert`/`search`/
+`delete`) had zero production callers — boot resolved a provider, called `initialize()`,
+then unwrapped straight back to a raw `MemoryVault` (or `None` for the two non-Chroma
+backends). The audit spec recommended deletion (option A, ~1 day) as the safer default,
+but flagged adoption (option B, ~4 days) as legitimate if a real second backend was
+wanted. Product decision: adopt.
+
+**What changed:** `core/memory_provider.py` gained `ProviderBackedVault`, a facade that
+funnels every read/write for `in_memory`/`fts5_only` through the provider's real
+`upsert()`/`search()`/`delete()`. `gateway/shared_services.py` and `gateway/orchestrator.py`
+build this facade instead of discarding the provider to `vault=None`. `core/user_profile.py`
+gained a parallel provider-backed code path (its Chroma path deliberately bypasses
+`upsert_user_fact`'s category normalisation via private vault internals that don't exist on
+the facade; the facade doesn't normalise categories, so no bypass is needed there).
+`attach_graph_index` was promoted to a no-op default hook on the `MemoryProvider` ABC (only
+`FTS5MemoryProvider` overrides it meaningfully) so the facade forwards it directly rather
+than via a defaulted `getattr` probe (BB-138).
+
+**What this task did NOT do:** the full option-B shape (MemoryManager holding a provider
+instead of a vault, `tools/memory_tools.py` calling `provider.upsert/search/delete`
+directly, `set_vault()` -> `set_provider()`) was out of scope — it requires editing
+`core/memory.py` and `tools/memory_tools.py` and is a materially larger, separate change.
+What landed makes `in_memory`/`fts5_only` genuinely work end-to-end today (workspace facts,
+user profile, agent profile, snapshots) through the real ABC contract; deep Chroma-only
+features (episodic memory, delegation search, the MemoryGuard quarantine trail, a hard
+capacity cap) are honestly unavailable on these backends rather than faked.
+
+**Why this is the right boundary:** the ABC's 3-method contract genuinely does not cover the
+~12-method vault surface `memory_tools.py`/`user_profile.py` use. Building full parity would
+mean re-implementing most of `MemoryVault` against the in-memory/FTS5 providers — a
+Chroma-shaped simulation with its own untested surface, not "adoption." Locking adoption to
+what the ABC actually contracts for, and being explicit about what stays absent, keeps
+`memory.backend`'s claims honest without inventing new unverified behaviour. `memory_provider.py`
+is now load-bearing, which [T-48](../audit/2026-07-19/tasks/T-48-memory-package-boundary.md)
+must preserve when it moves the module.

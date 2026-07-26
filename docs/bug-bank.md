@@ -4562,6 +4562,68 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `test_every_hachi_path_is_registered_or_explicitly_exempt`,
   `test_backup_manifest_lists_every_store_captured_or_skipped_with_reason`.
 
+### BB-146 — `memory.backend = "in_memory" / "fts5_only"` resolved a provider, then discarded it
+
+- **Symptom:** Setting `memory.backend = "in_memory"` (or `"fts5_only"`) produced an
+  agent whose memory tools all answered "Long-term memory is not available", with no
+  error — while boot logged a successfully resolved and initialized provider.
+- **Root cause:** `MemoryProvider`'s contract methods (`upsert`/`search`/`delete`) had
+  zero call sites in `src/`. Boot called `initialize()` then immediately unwrapped:
+  `vault = _provider.vault if isinstance(_provider, ChromaMemoryProvider) else None`
+  (duplicated in `gateway/orchestrator.py` and `gateway/shared_services.py`) and used
+  the raw `MemoryVault` for everything downstream. The two non-Chroma providers have
+  no `.vault`, so the unwrap yielded `None` and every vault-facing call site
+  short-circuited. The seam existed as a type, never as a call path.
+- **Fix (T-49, option B — adopt, not delete):** Added `ProviderBackedVault`
+  (`core/memory_provider.py`) — a facade whose `upsert_fact`/`semantic_search`/
+  `delete_fact` (and the user/agent-profile equivalents) delegate to the wrapped
+  provider's real `upsert()`/`search()`/`delete()`. Boot (`shared_services.py::_init`,
+  `orchestrator.py::boot_agent`) now builds this facade instead of `None` for
+  `in_memory`/`fts5_only`. Deep Chroma-only features (episodic memory, delegation
+  search, the quarantine trail) stay honestly absent (`[]`), not faked.
+- **Avoid:** an interface with no call sites is not a seam — it is a comment with a
+  type annotation. Before adding an abstraction "for future backends," write the call
+  site that would use it; if a `None`-fallback silently disables the feature the
+  config claims to offer, that fallback IS the bug.
+- **Locked by:** `tests/test_memory_provider.py` —
+  `test_provider_backed_vault_upsert_routes_through_provider_upsert`,
+  `test_provider_backed_vault_search_routes_through_provider_search`,
+  `test_provider_backed_vault_delete_routes_through_provider_delete`,
+  `test_provider_backed_vault_in_memory_write_then_read_round_trips`,
+  `test_provider_backed_vault_fts5_only_write_then_read_round_trips`,
+  `test_shared_services_in_memory_backend_no_longer_produces_a_none_vault`.
+
+### BB-147 — A banned compat shim and two `.env` bypasses survived because nothing checked
+
+- **Symptom:** `TOKOBOROS_*` env vars were still silently copied to `HACHI_*` on every
+  `import hachi.cli.main`, long after the hard rename and despite an explicit
+  repo-level ban. Separately, `HACHI_DISABLE_DOTENV_AUTOLOAD=1` did not stop core from
+  reading a CWD `.env`: `core/llm.py::_resolve_api_key` and `core/oauth.py::_resolve_env`
+  each read it directly, unconditionally — so a real repo-root `.env` (dev key) leaked
+  into any test that booted a client without providing its own key, hiding the bypass.
+- **Root cause:** Both rules were written in prose only. The tokoboros ban lived in
+  CLAUDE.md with no gate step, so a later commit reintroduced the shim and CI stayed
+  green. The dotenv gate was implemented as a local `if` inside
+  `cli/main._load_dotenv_into_environ` rather than as a shared predicate, so
+  `core/llm._resolve_api_key` and `core/oauth._resolve_env` — added later,
+  independently — each grew their own ungated `Path.cwd() / ".env"` read.
+- **Fix:** Deleted the shim (`cli/main.py`) and added `scripts/check_bans.py` as a
+  BLOCKING preflight/CI step matching `TOKOBOROS_[A-Z0-9_]+` in `src/`+`scripts/`.
+  Added `core.paths.dotenv_autoload_disabled()` as the single definition of the gate
+  and applied it at all three read sites (`cli/main.py`, `core/llm.py`, `core/oauth.py`).
+  Eight tests that were riding the ambient `.env` leak now declare their key explicitly
+  (opt into `HACHI_DISABLE_DOTENV_AUTOLOAD=0` where the `.env` fallback IS the subject,
+  or `setenv` the key directly where it was incidental plumbing — e.g. the cockpit-CRUD
+  and routing-DefaultClient tests) — CI-safe, since `.env` is gitignored.
+- **Avoid:** a ban that is not a gate step is advice, and it will be violated. When you
+  write "do not do X" in CLAUDE.md, add the check in the same commit. And when a rule
+  has a second reader, make the rule a shared predicate — never a local `if`. A test
+  that boots a real client without setting a key may be silently riding an ambient
+  `.env`; the fix is to make it declare the credential, not to keep the leak.
+- **Locked by:** `tests/test_governance_bans.py::test_no_tokoboros_env_shim_in_src`;
+  `tests/test_dotenv_hermeticity.py::test_llm_resolve_api_key_honours_disable_flag`,
+  `test_oauth_resolve_env_honours_disable_flag`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
