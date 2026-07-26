@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from hachi.core.conversation_memory import ConversationMemory, IterationState
 from hachi.core.llm import Message
+from hachi.core.memory.conversation import ConversationMemory, IterationState
 
 
 class InMemoryConversationMemory:

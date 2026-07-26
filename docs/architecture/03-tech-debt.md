@@ -33,7 +33,7 @@ severity.
 - **Where:** `jobs/queue.py:617-626` deliberately marks func-only PENDING jobs `failed`
   on restart ("func-only job cannot run after restart"). The durable `handler_name` +
   `JobRegistry` path (`queue.py:473-491`) is **never instantiated**, and every production
-  job is created with `func=` (live callable) — e.g. `core/memory.py:174`,
+  job is created with `func=` (live callable) — e.g. `core/memory/manager.py:174`,
   `tools/memory_tools.py:63`, `orchestrator.py:1014,1068`.
 - **Why debt:** the SQLite queue *advertises* restart survival but delivers none.
   Anything that assumes queued memory writes / titles survive a restart is wrong.

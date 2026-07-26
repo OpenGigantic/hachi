@@ -19,7 +19,7 @@ import os
 from unittest.mock import patch
 
 from hachi.core.llm import Message
-from hachi.core.memory import _MAX_ACTIVE_TOKENS, MemoryManager
+from hachi.core.memory.manager import _MAX_ACTIVE_TOKENS, MemoryManager
 
 # ---------------------------------------------------------------------------
 # Helpers

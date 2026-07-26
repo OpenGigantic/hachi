@@ -46,7 +46,7 @@ class TestModuleImportNoChromain:
     """chromadb must NOT appear in sys.modules merely from importing memory_vault."""
 
     def test_chromadb_not_in_sys_modules_after_import(self) -> None:
-        """Importing hachi.core.memory_vault should not trigger 'import chromadb'."""
+        """Importing hachi.core.memory.vault should not trigger 'import chromadb'."""
         # Remove memory_vault from sys.modules to get a fresh import, then check
         # whether 'chromadb' ends up in sys.modules.
         # We only validate the module-level top-of-file imports, not deferred ones.
@@ -58,7 +58,7 @@ class TestModuleImportNoChromain:
         if was_present_before:
             # chromadb already loaded (e.g. by another test) — skip the presence check
             # but still verify the module can be imported without error.
-            import hachi.core.memory_vault  # noqa: F401
+            import hachi.core.memory.vault  # noqa: F401
             return
 
         # Temporarily remove chromadb from sys.modules to simulate a fresh environment.
@@ -72,11 +72,11 @@ class TestModuleImportNoChromain:
 
         try:
             # Remove memory_vault from cache to force re-evaluation of top-level imports.
-            mv_saved = {k: v for k, v in sys.modules.items() if "memory_vault" in k}
+            mv_saved = {k: v for k, v in sys.modules.items() if "memory.vault" in k}
             for k in mv_saved:
                 del sys.modules[k]
 
-            import hachi.core.memory_vault  # noqa: F401
+            import hachi.core.memory.vault  # noqa: F401
 
             # chromadb must NOT have been imported at module level.
             assert "chromadb" not in sys.modules, (
@@ -103,7 +103,7 @@ class TestInitIsLazy:
         with (
             patch.dict(sys.modules, {"chromadb": mock_chroma, "chromadb.config": mock_chroma}),
         ):
-            from hachi.core import memory_vault as _mv
+            from hachi.core.memory import vault as _mv
             vault = _mv.MemoryVault(brain_dir=str(tmp_path))
 
         mock_client.get_or_create_collection.assert_not_called()
@@ -114,7 +114,7 @@ class TestInitIsLazy:
         mock_chroma, mock_client = _make_mock_chromadb()
 
         with patch.dict(sys.modules, {"chromadb": mock_chroma, "chromadb.config": mock_chroma}):
-            from hachi.core import memory_vault as _mv
+            from hachi.core.memory import vault as _mv
             _mv.MemoryVault(brain_dir=str(tmp_path)).close()
 
         mock_chroma.PersistentClient.assert_not_called()
@@ -123,7 +123,7 @@ class TestInitIsLazy:
         """_chroma_client attribute must be None right after __init__."""
         mock_chroma, _ = _make_mock_chromadb()
         with patch.dict(sys.modules, {"chromadb": mock_chroma, "chromadb.config": mock_chroma}):
-            from hachi.core import memory_vault as _mv
+            from hachi.core.memory import vault as _mv
             vault = _mv.MemoryVault(brain_dir=str(tmp_path))
 
         assert vault._chroma_client is None
@@ -133,7 +133,7 @@ class TestInitIsLazy:
         """Every slot in _collections must be None right after __init__."""
         mock_chroma, _ = _make_mock_chromadb()
         with patch.dict(sys.modules, {"chromadb": mock_chroma, "chromadb.config": mock_chroma}):
-            from hachi.core import memory_vault as _mv
+            from hachi.core.memory import vault as _mv
             vault = _mv.MemoryVault(brain_dir=str(tmp_path))
 
         assert all(v is None for v in vault._collections.values()), (
@@ -153,7 +153,7 @@ class TestFirstAccessCreatesCollection:
         """Accessing 'collection' for the first time calls get_or_create_collection."""
         mock_chroma, mock_client = _make_mock_chromadb()
         with patch.dict(sys.modules, {"chromadb": mock_chroma, "chromadb.config": mock_chroma}):
-            from hachi.core import memory_vault as _mv
+            from hachi.core.memory import vault as _mv
             vault = _mv.MemoryVault(brain_dir=str(tmp_path))
             # Trigger lazy init of 'collection' via _get_collection under the lock.
             with vault._vault_lock:
@@ -173,7 +173,7 @@ class TestMemoisation:
     def test_second_access_no_extra_db_call(self, tmp_path) -> None:
         mock_chroma, mock_client = _make_mock_chromadb()
         with patch.dict(sys.modules, {"chromadb": mock_chroma, "chromadb.config": mock_chroma}):
-            from hachi.core import memory_vault as _mv
+            from hachi.core.memory import vault as _mv
             vault = _mv.MemoryVault(brain_dir=str(tmp_path))
             with vault._vault_lock:
                 coll1 = vault._get_collection("collection")
@@ -196,7 +196,7 @@ class TestIsolatedLazyInit:
     def test_accessing_core_memory_does_not_create_user_profile(self, tmp_path) -> None:
         mock_chroma, mock_client = _make_mock_chromadb()
         with patch.dict(sys.modules, {"chromadb": mock_chroma, "chromadb.config": mock_chroma}):
-            from hachi.core import memory_vault as _mv
+            from hachi.core.memory import vault as _mv
             vault = _mv.MemoryVault(brain_dir=str(tmp_path))
             with vault._vault_lock:
                 vault._get_collection("collection")  # touch only core_memory
@@ -231,7 +231,7 @@ class TestRoundTrip:
         pytest = __import__("pytest")
         pytest.importorskip("chromadb", reason="chromadb not installed")
 
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         try:
@@ -251,7 +251,7 @@ class TestRoundTrip:
         pytest = __import__("pytest")
         pytest.importorskip("chromadb", reason="chromadb not installed")
 
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         try:
@@ -274,7 +274,7 @@ class TestClosedSemantics:
     def test_closed_false_on_fresh_vault(self, tmp_path) -> None:
         pytest = __import__("pytest")
         pytest.importorskip("chromadb", reason="chromadb not installed")
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         assert vault._closed is False
@@ -283,7 +283,7 @@ class TestClosedSemantics:
     def test_closed_true_after_close(self, tmp_path) -> None:
         pytest = __import__("pytest")
         pytest.importorskip("chromadb", reason="chromadb not installed")
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         vault.close()
@@ -292,7 +292,7 @@ class TestClosedSemantics:
     def test_post_close_upsert_raises_runtime_error(self, tmp_path) -> None:
         pytest = __import__("pytest")
         pytest.importorskip("chromadb", reason="chromadb not installed")
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         vault.close()
@@ -304,7 +304,7 @@ class TestClosedSemantics:
     def test_post_close_search_raises_runtime_error(self, tmp_path) -> None:
         pytest = __import__("pytest")
         pytest.importorskip("chromadb", reason="chromadb not installed")
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         vault.upsert_fact("pre-close fact")
@@ -317,7 +317,7 @@ class TestClosedSemantics:
     def test_close_is_idempotent(self, tmp_path) -> None:
         pytest = __import__("pytest")
         pytest.importorskip("chromadb", reason="chromadb not installed")
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         vault.close()
@@ -335,7 +335,7 @@ class TestCloseBeforeAnyAccess:
     def test_close_before_access_does_not_create_client(self, tmp_path) -> None:
         mock_chroma, mock_client = _make_mock_chromadb()
         with patch.dict(sys.modules, {"chromadb": mock_chroma, "chromadb.config": mock_chroma}):
-            from hachi.core import memory_vault as _mv
+            from hachi.core.memory import vault as _mv
             vault = _mv.MemoryVault(brain_dir=str(tmp_path))
             vault.close()
 

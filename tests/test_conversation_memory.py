@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import pytest
 
-from hachi.core.conversation_memory import ConversationMemory, IterationState
 from hachi.core.llm import LLMResponse, TokenUsage
 from hachi.core.loop import ExecutionLoop, ToolRegistry
 from hachi.core.memory import MemoryManager
+from hachi.core.memory.conversation import ConversationMemory, IterationState
 from hachi.core.testing import InMemoryConversationMemory
 
 # ---------------------------------------------------------------------------

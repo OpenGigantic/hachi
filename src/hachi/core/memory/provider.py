@@ -143,7 +143,7 @@ class ChromaMemoryProvider(MemoryProvider):
                 get_recent_facts.
         """
         if self._vault is None:
-            from hachi.core.memory_vault import MemoryVault
+            from hachi.core.memory.vault import MemoryVault
 
             _kwargs: dict[str, Any] = {"brain_dir": brain_dir}
             if recall_distance_max is not None:

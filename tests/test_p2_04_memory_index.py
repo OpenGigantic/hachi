@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from hachi.core.memory_index import MemoryIndex, _sanitize_fts5, rrf_merge
+from hachi.core.memory.index import MemoryIndex, _sanitize_fts5, rrf_merge
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -204,7 +204,7 @@ def test_flag_off_search_identical_to_chroma(tmp_path: Path) -> None:
             chroma = self._query_collection(None, query, top_k)
             if self._graph_index is None:
                 return chroma
-            from hachi.core.memory_index import rrf_merge
+            from hachi.core.memory.index import rrf_merge
             graph = self._graph_index.search(query, top_k=top_k)
             return rrf_merge(chroma, graph, top_k=top_k)
 

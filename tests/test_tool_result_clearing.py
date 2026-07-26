@@ -8,10 +8,10 @@ small results, or non-tool_result content.
 
 from __future__ import annotations
 
-import hachi.core.memory as memory_mod
+import hachi.core.memory.manager as memory_mod
 from hachi.core.llm import LLMResponse, Message
 from hachi.core.loop import ExecutionLoop, ToolRegistry
-from hachi.core.memory import _CLEARED_TOOL_RESULT, MemoryManager
+from hachi.core.memory.manager import _CLEARED_TOOL_RESULT, MemoryManager
 
 
 def _tool_result_msg(tool_use_id: str, content, is_error: bool = False) -> Message:

@@ -29,7 +29,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from hachi.core.memory_gardener import GardeningResult, MemoryGardener
+from hachi.core.memory.gardener import GardeningResult, MemoryGardener
 from hachi.core.paths import HachiPaths
 from hachi.core.settings import MemoryGardenerSettings, ResolvedConfig
 from hachi.gateway.control_plane import GatewayControlPlane
@@ -645,7 +645,7 @@ def test_gardening_result_load_failure_logs_at_warning_not_debug(
     bad_file = tmp_path / "pending_diffs.json"
     bad_file.write_text("{ not valid json", encoding="utf-8")
 
-    with caplog.at_level(logging.WARNING, logger="hachi.core.memory_gardener"):
+    with caplog.at_level(logging.WARNING, logger="hachi.core.memory.gardener"):
         result = GardeningResult.load(bad_file)
 
     assert result.pending_review == []

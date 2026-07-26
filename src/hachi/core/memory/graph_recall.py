@@ -25,7 +25,7 @@ import threading
 from functools import lru_cache
 from pathlib import Path
 
-from hachi.core.memory_graph import (
+from hachi.core.memory.graph import (
     GraphNode,
     compose_resume_pack,
     expand_graph,
@@ -81,7 +81,7 @@ def get_node_index(memory_dir: Path) -> dict[str, GraphNode]:
         memory_dir: Root of the OG memory graph (same dir MemoryWriter targets).
 
     Returns:
-        Name → :class:`~hachi.core.memory_graph.GraphNode` mapping; empty dict
+        Name → :class:`~hachi.core.memory.graph.GraphNode` mapping; empty dict
         when the directory is missing or no nodes have been written yet.
     """
     with _CACHE_LOCK:

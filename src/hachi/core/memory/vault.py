@@ -50,7 +50,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hachi.core.memory_guard import scan as guard_scan
+from hachi.core.memory.guard import scan as guard_scan
 from hachi.core.paths import get_hachi_paths
 
 if TYPE_CHECKING:
@@ -347,12 +347,12 @@ def _get_llm_client() -> Any:
 # _vault_factory (orchestrator.boot_agent's unconditional
 # `_job_registry.register("extract_fact", handle_extract_fact)`), so the
 # no-factory branch of build_job_context() must resolve a real vault here.
-# Before this function existed, `from hachi.core.memory_vault import
+# Before this function existed, `from hachi.core.memory.vault import
 # get_memory_vault` raised ImportError, which was silently swallowed by a bare
 # `except Exception: logger.debug(...)`, making auto-memory a permanent no-op
 # for every user.  See docs/bug-bank.md BB-40.
 #
-# NOTE — layering: this module (hachi.core.memory_vault) must NOT import
+# NOTE — layering: this module (hachi.core.memory.vault) must NOT import
 # hachi.gateway (the import-linter "engine must not import the gateway
 # service" contract forbids it and has no ignore entry for this module).
 # Preferring the process-shared vault (to avoid opening a second ChromaDB
@@ -1162,9 +1162,9 @@ class MemoryVault:
         deletion outcome that ``_tri_store_delete`` already computed.
         """
         try:
-            from hachi.core.memory_graph import load_memory_dir
-            from hachi.core.memory_index import compute_node_id
-            from hachi.core.memory_writer import MemoryWriter
+            from hachi.core.memory.graph import load_memory_dir
+            from hachi.core.memory.index import compute_node_id
+            from hachi.core.memory.writer import MemoryWriter
 
             matches = [
                 node for node in load_memory_dir(self._memory_dir).values() if node.dense == content
@@ -1296,7 +1296,7 @@ class MemoryVault:
             return _redact_results(chroma_results)
 
         try:
-            from hachi.core.memory_index import rrf_merge
+            from hachi.core.memory.index import rrf_merge
 
             graph_results = self._graph_index.search(query, top_k=top_k)
             merged = rrf_merge(chroma_results, graph_results, top_k=top_k)
@@ -1904,7 +1904,7 @@ class MemoryVault:
             The episode entry ID on success, or a ``'BLOCKED:<threat>'`` string
             if ``MemoryGuard`` rejects the content.
         """
-        from hachi.core.memory_guard import scan as guard_scan
+        from hachi.core.memory.guard import scan as guard_scan
 
         is_safe, threat_id = guard_scan(summary)
         if not is_safe:

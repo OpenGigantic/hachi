@@ -286,7 +286,7 @@ class MemoryGardenerSettings(BaseModel):
     When ``enabled=True`` the gateway boots a resident daemon thread (mirrors
     :class:`EvalReportSettings` / ``_start_eval_report_scheduler`` exactly) that
     wakes every ``interval_seconds`` (default: one day) and runs
-    :class:`~hachi.core.memory_gardener.MemoryGardener` over
+    :class:`~hachi.core.memory.gardener.MemoryGardener` over
     ``get_hachi_paths().memory_dir``, writing ``pending_diffs.json`` for the
     ``GET /memory/diffs`` route.
 
@@ -297,7 +297,7 @@ class MemoryGardenerSettings(BaseModel):
         enabled:               Master switch.  Defaults to ``False`` (opt-in).
         interval_seconds:      Seconds between gardening runs.  Default 86400 (1 day).
         similarity_threshold:  Jaccard threshold forwarded to
-                                :class:`~hachi.core.memory_gardener.MemoryGardener`
+                                :class:`~hachi.core.memory.gardener.MemoryGardener`
                                 for near-duplicate merge proposals.
     """
 

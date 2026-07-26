@@ -89,7 +89,7 @@ def test_schedule_runner_stop_joins_thread() -> None:
 
 def test_memory_vault_close_idempotent() -> None:
     """close() must not raise and must be callable multiple times."""
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.vault import MemoryVault
 
     vault = MagicMock(spec=MemoryVault)
     vault.close = MemoryVault.close.__get__(vault, type(vault))  # type: ignore[assignment]

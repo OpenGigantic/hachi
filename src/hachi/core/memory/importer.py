@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.vault import MemoryVault
     from hachi.core.session_store import SessionStore
 
 logger = logging.getLogger(__name__)

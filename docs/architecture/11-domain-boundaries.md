@@ -32,7 +32,7 @@
 | **Resilience** | `core/resilience.py` (new) | `ResilientClient`, `resilient_call`, `ProviderHealth` | provider contracts | gateway |
 | **Events** | `core/runtime_events.py`, `core/event_bus.py` (new) | `EventBus`, `RuntimeEvent`, event constants | jobs (async dispatch) | gateway, tools |
 | **Agent Runtime** | `core/runtime/*` (new) | `RunState`, `RunStateStore`, `WaitConditionRegistry`, `AgentRuntime` | events, jobs, session_store | gateway |
-| **Memory** | `core/memory*.py`, `core/memory_vault.py` | `MemoryProvider`, `MemoryManager` | providers (embeddings cap) | gateway |
+| **Memory** | `core/memory/` | `MemoryProvider`, `MemoryManager` | providers (embeddings cap) | gateway |
 | **Persistence** | `core/session_store.py`, `core/migrations.py` (new), `jobs/queue.py` | `SessionStore`, `RunStateStore`, `JobQueue`, `apply_migrations` | foundation | gateway, tools |
 | **Files** | `core/files/*` (new), `tools/file_*` | `FileStore`, `StorageProvider`, `ContentExtractor` | providers, memory (RAG) | gateway internals |
 | **Tools** | `tools/*` | `register_<domain>_tools(registry, deps)` | core contracts via `BootDeps` | gateway internals, vendor SDKs (except via provider) |

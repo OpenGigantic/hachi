@@ -109,8 +109,8 @@ def test_shared_services_non_chroma_backend_initializes_without_chroma_settings(
     non-Chroma path must not produce a *Chroma* vault or crash going through the
     settings-carrying branch — see ``test_provider_backed_vault_*`` in
     ``tests/test_memory_provider.py`` for the "actually stores a fact" proof."""
-    from hachi.core.memory_provider import ProviderBackedVault
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.provider import ProviderBackedVault
+    from hachi.core.memory.vault import MemoryVault
 
     config = {
         "memory": {

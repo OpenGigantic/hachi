@@ -20,7 +20,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from hachi.core.memory import MemoryManager
-from hachi.core.memory_writer import MemoryNode, MemoryWriter
+from hachi.core.memory.writer import MemoryNode, MemoryWriter
 from hachi.jobs import InMemoryJobQueue
 
 

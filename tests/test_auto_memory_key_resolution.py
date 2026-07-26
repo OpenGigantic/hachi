@@ -49,7 +49,7 @@ def _no_env_key(monkeypatch):
     returned unchanged by a later one that expects ``None``).
     """
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    import hachi.core.memory_vault as mv
+    import hachi.core.memory.vault as mv
 
     monkeypatch.setattr(mv, "_llm_client_instance", None, raising=False)
 
@@ -95,7 +95,7 @@ def test_memory_llm_client_resolves_key_from_project_dotenv(tmp_path, monkeypatc
     # the flag is unset.
     monkeypatch.setenv("HACHI_DISABLE_DOTENV_AUTOLOAD", "0")
 
-    from hachi.core.memory_vault import _get_llm_client
+    from hachi.core.memory.vault import _get_llm_client
 
     client = _get_llm_client()
     assert client is not None, (
@@ -112,7 +112,7 @@ def test_memory_llm_client_resolves_key_from_secret_store(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)  # empty scratch dir: no .env to leak the key in via the wrong path
     _patch_secret_store(monkeypatch, "sk-test-not-real")
 
-    from hachi.core.memory_vault import _get_llm_client
+    from hachi.core.memory.vault import _get_llm_client
 
     client = _get_llm_client()
     assert client is not None, (
@@ -129,7 +129,7 @@ def test_memory_llm_client_returns_none_when_no_key_resolvable_anywhere(tmp_path
     _patch_secret_store(monkeypatch, None)
     monkeypatch.chdir(tmp_path)  # empty scratch dir: no .env
 
-    import hachi.core.memory_vault as mv
+    import hachi.core.memory.vault as mv
 
     warnings: list[str] = []
     monkeypatch.setattr(

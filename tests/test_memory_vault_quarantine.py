@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from hachi.core.memory_vault import MemoryVault
+from hachi.core.memory.vault import MemoryVault
 
 
 def test_blocked_write_is_quarantined_with_metadata(tmp_path, monkeypatch) -> None:
     vault = MemoryVault(brain_dir=str(tmp_path))
 
     monkeypatch.setattr(
-        "hachi.core.memory_vault.guard_scan",
+        "hachi.core.memory.vault.guard_scan",
         lambda _content: (False, "instruction_override"),
     )
 

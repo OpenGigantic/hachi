@@ -133,7 +133,7 @@ ALLOWLIST: frozenset[str] = frozenset(
         # to it -- crashing mid-stream for something __init__ already tolerates
         # would be a robustness regression, not a fix.
         "src/hachi/core/resilience.py:model",
-        # === src/hachi/core/memory_vault.py ==========================================
+        # === src/hachi/core/memory/vault.py ===========================================
         # (c) MemoryVault is constructed via `MemoryVault.__new__(MemoryVault)` in
         # several tests to skip real ChromaDB I/O (tests/test_episodic_memory.py,
         # test_memory_decay.py, test_memory_fixes.py, test_perf_regression.py --
@@ -143,13 +143,13 @@ ALLOWLIST: frozenset[str] = frozenset(
         # explicitly: "vaults constructed without this attribute ... degrade
         # gracefully". Verified this is a *real*, exercised gap, not just a
         # hypothetical one -- do not convert these to direct reads.
-        "src/hachi/core/memory_vault.py:_collections",
-        "src/hachi/core/memory_vault.py:_decay_half_life_days",
+        "src/hachi/core/memory/vault.py:_collections",
+        "src/hachi/core/memory/vault.py:_decay_half_life_days",
         # _graph_index defaults to None (only set later via a setter) and the read
         # site is deliberately probing a *different* class's private field ("so we
         # do not need to add a new public API to MemoryIndex") -- getattr is doing
         # double duty (None-container guard + private-field probe); left as is.
-        "src/hachi/core/memory_vault.py:_db_path",
+        "src/hachi/core/memory/vault.py:_db_path",
         # === src/hachi/core/oauth.py =================================================
         # (c) self.server is a stdlib http.server.HTTPServer (foreign type); Hachi
         # attaches `oauth_state` onto it dynamically AFTER construction
@@ -174,14 +174,14 @@ ALLOWLIST: frozenset[str] = frozenset(
         # not on the base class or InMemoryJobQueue -- genuinely absent on the
         # in-memory implementation used by some jobs/tests.
         "src/hachi/jobs/queue.py:update_attempt",
-        # === src/hachi/core/memory.py =================================================
+        # === src/hachi/core/memory/manager.py ==========================================
         # (c) _pending_compaction / _pending_old_skill are compaction-deferral state:
         # __init__ does not set either (verified: no assignment anywhere in
         # __init__); both are only ever written inside _sliding_window_compact's
         # defer-compaction branch, so a MemoryManager that has never deferred a
         # compaction genuinely lacks them by design.
-        "src/hachi/core/memory.py:_pending_compaction",
-        "src/hachi/core/memory.py:_pending_old_skill",
+        "src/hachi/core/memory/manager.py:_pending_compaction",
+        "src/hachi/core/memory/manager.py:_pending_old_skill",
         # (b) NEW finding (not in the audit's original four): MemoryManager._session_id
         # is read at memory.py's sync_turn() but is never assigned ANYWHERE in the
         # repo (verified: no `self._session_id =` in memory.py, and no external
@@ -191,7 +191,7 @@ ALLOWLIST: frozenset[str] = frozenset(
         # finding (bug-bank BB-107), not fixing: the right shape (constructor param?
         # a set_session_id() setter wired by AgentSession?) is a design choice, the
         # same reason T-14's spec leaves reindex_skills alone.
-        "src/hachi/core/memory.py:_session_id",
+        "src/hachi/core/memory/manager.py:_session_id",
         # === src/hachi/cli/main.py ====================================================
         # (c) lazy-cache idiom: _og_engine_cache is populated on first use inside
         # _standalone_og_engine() (cli/main.py) and deliberately never pre-set in

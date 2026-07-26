@@ -25,7 +25,7 @@ def memory_search(
 
     Searches core_memory by default (what the agent has learned about the
     workspace); --profile searches the bounded user_profile (identity/prefs)."""
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.vault import MemoryVault
 
     vault = MemoryVault()
     if profile:
@@ -55,7 +55,7 @@ def memory_stats(
     as_json: bool = typer.Option(False, "--json", help="Emit counts as JSON."),
 ):
     """Show how many facts are stored in each memory collection."""
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.vault import MemoryVault
 
     vault = MemoryVault()
     stats = {
@@ -102,7 +102,7 @@ def memory_add(
         hachi memory add "User prefers dark mode." --to user
         hachi memory add "Always cite sources." --to agent --category directive
     """
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.vault import MemoryVault
 
     valid_collections = {"core", "user", "agent"}
     if to not in valid_collections:
@@ -153,7 +153,7 @@ def memory_forget(
 
     Run `hachi memory search <query>` to find the ID shown on each result.
     """
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.vault import MemoryVault
 
     valid_collections = {"core", "user", "agent"}
     if from_ not in valid_collections:
@@ -214,8 +214,8 @@ def memory_import(
     """
     from pathlib import Path
 
-    from hachi.core.memory_importer import ImportResult, ingest, parse_file
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.importer import ImportResult, ingest, parse_file
+    from hachi.core.memory.vault import MemoryVault
     from hachi.core.session_store import SessionStore
 
     path = Path(file)
@@ -306,8 +306,8 @@ def memory_migrate_files(
     After running, set ``memory.backend = "fts5_only"`` in your config to
     switch to the file-only path and stop using Chroma.
     """
-    from hachi.core.memory_exporter import chroma_to_files
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.exporter import chroma_to_files
+    from hachi.core.memory.vault import MemoryVault
     from hachi.core.paths import get_hachi_paths
 
     paths = get_hachi_paths()

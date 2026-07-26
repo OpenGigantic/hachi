@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any
 from hachi.core.llm import Message
 
 if TYPE_CHECKING:
-    from hachi.core.conversation_memory import IterationState
+    from hachi.core.memory.conversation import IterationState
     from hachi.core.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -237,7 +237,7 @@ def extract_facts(
 
     if memory_writer is not None:
         # ---- M1 typed path (mirrors _run_typed_extraction) ----
-        from hachi.core.memory_writer import MemoryNode, _slugify
+        from hachi.core.memory.writer import MemoryNode, _slugify
 
         _EXTRACT_TOOL: dict[str, Any] = {
             "name": "extract_memory_nodes",
@@ -1016,10 +1016,10 @@ class MemoryManager:
         turn-start already over budget.
 
         Returns:
-            An :class:`~hachi.core.conversation_memory.IterationState` snapshot
+            An :class:`~hachi.core.memory.conversation.IterationState` snapshot
             describing what housekeeping ran.
         """
-        from hachi.core.conversation_memory import IterationState
+        from hachi.core.memory.conversation import IterationState
 
         compacted = False
         old_skill = "unknown"
@@ -1458,7 +1458,7 @@ class MemoryManager:
         """
         if self._llm_client is not None:
             return self._llm_client
-        from hachi.core.memory_vault import _get_llm_client
+        from hachi.core.memory.vault import _get_llm_client
 
         return _get_llm_client()
 

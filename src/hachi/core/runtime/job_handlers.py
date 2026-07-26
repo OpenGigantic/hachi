@@ -75,7 +75,7 @@ def build_job_context(
             logger.debug("build_job_context: injected vault factory failed")
     else:
         try:
-            from hachi.core.memory_vault import get_memory_vault
+            from hachi.core.memory.vault import get_memory_vault
 
             ctx.vault = get_memory_vault()
         except Exception:
@@ -93,7 +93,7 @@ def build_job_context(
             logger.debug("build_job_context: injected LLM client factory failed")
     else:
         try:
-            from hachi.core.memory_vault import _get_llm_client
+            from hachi.core.memory.vault import _get_llm_client
 
             ctx.llm_client = _get_llm_client()
         except Exception:
@@ -111,7 +111,7 @@ def build_job_context(
                 logger.debug("build_job_context: injected MemoryWriter factory failed")
         else:
             try:
-                from hachi.core.memory_writer import MemoryWriter
+                from hachi.core.memory.writer import MemoryWriter
                 from hachi.core.paths import get_hachi_paths
 
                 paths = get_hachi_paths()

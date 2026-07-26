@@ -1099,7 +1099,7 @@ class _InProcessGatewayRuntime:
 
         from fastapi import HTTPException as _HTTPException
 
-        from hachi.core.memory_gardener import MemoryGardener
+        from hachi.core.memory.gardener import MemoryGardener
 
         gardener = MemoryGardener(get_hachi_paths().memory_dir)
         try:

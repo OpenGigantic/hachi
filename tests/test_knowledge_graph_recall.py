@@ -111,7 +111,7 @@ class TestRetrieveAndCompose:
         og_file = tmp_path / "core_memory.og"
         _write_og(og_file, [node_a, node_b])
 
-        from hachi.core.memory_graph import retrieve_and_compose
+        from hachi.core.memory.graph import retrieve_and_compose
 
         pack = retrieve_and_compose(
             query="auth redesign decision",
@@ -127,14 +127,14 @@ class TestRetrieveAndCompose:
         assert "Google OAuth" in pack, "dense content of edge-reached node must be included"
 
     def test_pack_is_empty_for_missing_dir(self, tmp_path: Path) -> None:
-        from hachi.core.memory_graph import retrieve_and_compose
+        from hachi.core.memory.graph import retrieve_and_compose
 
         missing = tmp_path / "no_such_dir"
         result = retrieve_and_compose("query", missing)
         assert result == ""
 
     def test_pack_is_empty_for_empty_dir(self, tmp_path: Path) -> None:
-        from hachi.core.memory_graph import retrieve_and_compose
+        from hachi.core.memory.graph import retrieve_and_compose
 
         result = retrieve_and_compose("query", tmp_path)
         assert result == ""
@@ -166,7 +166,7 @@ class TestSupersedesSupression:
         og_file = tmp_path / "core_memory.og"
         _write_og(og_file, [old_node, new_node])
 
-        from hachi.core.memory_graph import retrieve_and_compose
+        from hachi.core.memory.graph import retrieve_and_compose
 
         pack = retrieve_and_compose(
             query="auth design",
@@ -196,7 +196,7 @@ class TestBuildGraphRecallSection:
         og_file = tmp_path / "core_memory.og"
         _write_og(og_file, [node_a])
 
-        from hachi.core.graph_recall import build_graph_recall_section
+        from hachi.core.memory.graph_recall import build_graph_recall_section
 
         existing = "\n[Recalled Context]\nRelevant facts from long-term memory:\n- unrelated fact\n"
         section = build_graph_recall_section(
@@ -220,7 +220,7 @@ class TestBuildGraphRecallSection:
         og_file = tmp_path / "core_memory.og"
         _write_og(og_file, [node_a])
 
-        from hachi.core.graph_recall import build_graph_recall_section
+        from hachi.core.memory.graph_recall import build_graph_recall_section
 
         # Put the dense text exactly in existing_recall so it should be deduplicated
         existing = f"\n[Recalled Context]\nRelevant facts from long-term memory:\n  {dense_text}\n"
@@ -238,7 +238,7 @@ class TestBuildGraphRecallSection:
 
     def test_pure_helper_no_gateway_required(self, tmp_path: Path) -> None:
         """build_graph_recall_section is importable and runnable without gateway boot."""
-        from hachi.core.graph_recall import build_graph_recall_section
+        from hachi.core.memory.graph_recall import build_graph_recall_section
 
         # Just importing and calling with a missing dir must not raise
         result = build_graph_recall_section("anything", tmp_path / "no_dir")
@@ -254,13 +254,13 @@ class TestGracefulDegradation:
     """Graph section failures must never affect the existing recall_block."""
 
     def test_missing_memory_dir_returns_empty(self, tmp_path: Path) -> None:
-        from hachi.core.graph_recall import build_graph_recall_section
+        from hachi.core.memory.graph_recall import build_graph_recall_section
 
         result = build_graph_recall_section("query", tmp_path / "nonexistent")
         assert result == ""
 
     def test_empty_memory_dir_returns_empty(self, tmp_path: Path) -> None:
-        from hachi.core.graph_recall import build_graph_recall_section
+        from hachi.core.memory.graph_recall import build_graph_recall_section
 
         result = build_graph_recall_section("query", tmp_path)
         assert result == ""
@@ -269,7 +269,7 @@ class TestGracefulDegradation:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """If build_graph_recall_section raises internally, callers catch it as empty."""
-        from hachi.core import graph_recall as gr_module
+        from hachi.core.memory import graph_recall as gr_module
 
         def _boom(*a: object, **kw: object) -> dict:
             raise RuntimeError("simulated parse failure")
@@ -283,7 +283,7 @@ class TestGracefulDegradation:
         # Test that the orchestrator-level guard works: simulate the guard inline.
         result = ""
         try:
-            from hachi.core.graph_recall import build_graph_recall_section
+            from hachi.core.memory.graph_recall import build_graph_recall_section
 
             result = build_graph_recall_section("query", tmp_path)
         except Exception:
@@ -295,7 +295,7 @@ class TestGracefulDegradation:
         og_file = tmp_path / "empty.og"
         og_file.write_text("# No valid nodes here\n", encoding="utf-8")
 
-        from hachi.core.graph_recall import build_graph_recall_section
+        from hachi.core.memory.graph_recall import build_graph_recall_section
 
         result = build_graph_recall_section("anything", tmp_path)
         assert result == ""
@@ -322,7 +322,7 @@ class TestPerfCache:
         og_file = tmp_path / "core_memory.og"
         _write_og(og_file, [node_a])
 
-        from hachi.core import graph_recall as gr_module
+        from hachi.core.memory import graph_recall as gr_module
 
         parse_call_count = 0
         original_load = gr_module.load_memory_dir
@@ -363,7 +363,7 @@ class TestPerfCache:
         og_file = tmp_path / "core_memory.og"
         _write_og(og_file, [node_a])
 
-        from hachi.core import graph_recall as gr_module
+        from hachi.core.memory import graph_recall as gr_module
 
         parse_call_count = 0
         original_load = gr_module.load_memory_dir
@@ -459,7 +459,7 @@ class TestDedupGraphPack:
     """Unit-test the dedup helper in isolation."""
 
     def test_strips_verbatim_line(self) -> None:
-        from hachi.core.graph_recall import _dedup_graph_pack
+        from hachi.core.memory.graph_recall import _dedup_graph_pack
 
         existing = "  Some important fact\n- another line\n"
         pack = "  Some important fact\n  New graph line\n"
@@ -468,12 +468,12 @@ class TestDedupGraphPack:
         assert "New graph line" in result
 
     def test_empty_pack_returns_empty(self) -> None:
-        from hachi.core.graph_recall import _dedup_graph_pack
+        from hachi.core.memory.graph_recall import _dedup_graph_pack
 
         assert _dedup_graph_pack("", "anything") == ""
 
     def test_no_overlap_returns_full_pack(self) -> None:
-        from hachi.core.graph_recall import _dedup_graph_pack
+        from hachi.core.memory.graph_recall import _dedup_graph_pack
 
         pack = "Line A\nLine B\n"
         existing = "Line C\nLine D\n"
@@ -482,7 +482,7 @@ class TestDedupGraphPack:
         assert "Line B" in result
 
     def test_all_lines_overlap_returns_empty(self) -> None:
-        from hachi.core.graph_recall import _dedup_graph_pack
+        from hachi.core.memory.graph_recall import _dedup_graph_pack
 
         pack = "Same line\n"
         existing = "Same line\n"

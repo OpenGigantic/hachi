@@ -567,7 +567,7 @@ def test_liveness_t10_shared_session_store(_shared_reattached: Any) -> None:
 def test_liveness_t11_auto_memory_key_resolves_without_env_var(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import hachi.core.memory_vault as memory_vault_mod
+    import hachi.core.memory.vault as memory_vault_mod
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     # _get_llm_client memoises into a module global — reset it, or a prior
