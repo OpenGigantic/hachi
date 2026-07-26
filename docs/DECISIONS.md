@@ -3526,3 +3526,56 @@ codebase — is explicitly left undone. Four files changed, all nine string-asse
 files pass unmodified.
 
 **Locked by:** `tests/test_turn_outcome.py`; docs/bug-bank.md BB-152.
+
+## T-43 (round 1 of 2): Gateway ports are grouped by domain *and* by availability (2026-07-26) **[ADR]**
+
+**Context.** `GatewayControlPlane.__init__` took 77 parameters — 74 optional handler
+callables plus a readiness probe and two tunables — wired from a single 95-line call in
+`cli/main.py`. Every new endpoint cost four edits (runtime method, constructor parameter,
+delegate method, wiring line), and because all 74 defaulted to `None`, a half-wired control
+plane constructed successfully and failed at the first request. The 44 `_require_handler`
+guards exist only to compensate.
+
+**Decision: eighteen ports, not fourteen — because there are two axes, not one.**
+The task brief proposed fourteen domain protocols and asserted the wiring maps as
+"`sessions=runtime`, everything else `=support`". That is false. Classifying all 77 kwargs
+at the real builder shows 28 are `runtime`-gated (`runtime.X if runtime else None`, and
+`runtime` is `None` before a session boots) and 46 are `support` (unconditional). That split
+**cuts across domain lines**: Skills/kennel, Spend, Memory, Observability and
+Session/transport each contain handlers of both kinds. Collapsing a mixed group onto one
+object changes availability in one direction or the other, with no failing test nearby.
+
+So the decomposition is **domain × availability**: eighteen ports, six of them prefixed
+`Live*` (nullable, needs a session) and twelve always wired. The prefix puts the previously
+invisible axis into the type name — that axis had existed only as a ternary repeated 74 times
+in a builder function, which is why no one could tell from the signature which handlers a
+working gateway requires (BB-153).
+
+**Decision: ports are named for the provider, never the consumer.** 19 of the 74 members have
+a runtime method name that differs from the constructor kwarg (`on_connect` →
+`register_connection`, `add_skill` → `add_skill_from_kennel`). Renaming runtime methods to
+match would churn the test patch strings T-41 had just re-pointed, so the protocols match the
+runtime. `_InProcessGatewayRuntime` was verified to satisfy all 74 members with no changes.
+
+**Decision: round 1 is additive; it deletes nothing.** The brief scoped test impact at two
+files. It is 23 files and 99 call sites — every construction passing a handler kwarg breaks
+when those kwargs go away. So the work splits: round 1 introduces `ports.py`, adds the 18
+port parameters *alongside* all 74 originals, switches the production builder to ports, and
+adds a `control_plane(**handlers)` test helper. Round 2 converts the 99 sites and retires the
+old kwargs.
+
+Resolution happens in `__init__` alone —
+`self._on_chat = on_chat if on_chat is not None else (sessions.chat if sessions else None)` —
+so **not one delegate body changes and no stateful method changes at all.** Everything from
+`_require_handler` onward is byte-identical, which matters because about half of this class
+is real logic, not façade: `create_session`'s connection accounting and failed-connect slot
+release, the session and prompt limits, and the protocol-version check exist nowhere else.
+The source review's claim that the class "contains almost no behavior" is refuted, and a
+pass-through collapse planned on that premise would have deleted working code.
+
+**Deliberately not done here:** the 14→3 port merge the review suggested (it produces
+god-protocols and loses the mapping to the runtime's own method groups), making ports
+required (that forces every partial-construction test to supply stubs in the same diff), and
+deleting `_require_handler` (ports are still nullable, so it stays load-bearing).
+
+**Locked by:** `tests/test_control_plane_characterization.py`; docs/bug-bank.md BB-153.

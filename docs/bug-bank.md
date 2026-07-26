@@ -4829,6 +4829,48 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   including the empty-text `"[CANCELLED]"` with no trailing space and the `:.0f` seconds
   formatting) and `test_turn_outcome_is_addressable_without_string_parsing`.
 
+### BB-153 — A 77-callable constructor hid a second axis: which handlers need a live session
+
+- **Symptom:** `GatewayControlPlane.__init__` took **77** parameters — 74 optional handler
+  callables plus a readiness probe and two tunables — wired from one 95-line call in
+  `cli/main.py`. All 74 defaulted to `None`, so a control plane missing half its wiring
+  constructed fine and failed at the first request; 44 `_require_handler` call sites exist
+  purely to compensate for a requirement the type system was never allowed to express.
+- **Root cause:** Per-endpoint dependency inversion with no grouping. Every new endpoint added
+  a parameter, a delegate method, and a wiring line, so the constructor grew monotonically.
+- **The trap that matters — a flat parameter list can encode TWO axes, and only one is
+  visible.** The 74 params looked like a single flat bag, but they carried two orthogonal
+  facts: *which domain* an endpoint serves (guessable from the names) and *whether it needs a
+  live agent session* (**not guessable from anything in the signature**). The second axis
+  existed only as a per-parameter idiom at the single call site — `runtime.X if runtime else
+  None` for 28 of them versus `support.X` unconditionally for the other 46 — where `runtime`
+  is `None` before a session boots and `support` never is (BB-6). Grouping by the visible axis
+  alone would have flattened the invisible one: five of the fourteen domain groups a
+  domain-only decomposition produces are **internally mixed**, so collapsing each onto one
+  object would have made live-only endpoints (`get_spend`, `get_skills`,
+  `get_memory_gardener_diffs`) answer before a session existed, or made standalone ones
+  (`get_spend_daily`, `get_kennel`, `decide_memory_gardener_diff`) start failing pre-session.
+  Neither would fail a test near the diff.
+- **Avoid:** Before grouping a large flat parameter list, **read the call site and check
+  whether it encodes an axis the parameter names do not.** A conditional repeated across
+  dozens of arguments is not boilerplate — it is a load-bearing distinction with no home in
+  the type system. Give it one: here, ports whose name begins `Live` are nullable and need a
+  session; every other port is always wired. The rule is now legible from `ports.py` alone.
+- **Also:** port members must be named for the **provider's** methods, not the consumer's
+  parameters. 19 of the 74 differ (`on_connect`→`register_connection`,
+  `add_skill`→`add_skill_from_kennel`, `get_capabilities`→`capabilities`). Transcribing
+  protocols from the constructor signature yields protocols the provider cannot satisfy — and
+  `@runtime_checkable` only checks member *presence*, never signatures, so some of that
+  surfaces late or not at all.
+- **Method note:** the port map was generated from the builder programmatically and validated
+  (every handler assigned exactly once, every declared source matching the real one) rather
+  than hand-transcribed. That is what surfaced the five mixed groups; a by-hand reading of a
+  95-line call had already missed them once.
+- **Locked by:** `tests/test_control_plane_characterization.py` —
+  `test_runtime_satisfies_every_port`, `test_control_plane_helper_matches_legacy_kwargs_form`,
+  and the three behaviour pins `test_session_limit_is_enforced_at_the_control_plane` /
+  `test_prompt_length_limit_is_enforced` / `test_failed_connect_releases_the_session_slot`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
