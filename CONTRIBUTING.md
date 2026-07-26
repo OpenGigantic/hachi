@@ -104,6 +104,7 @@ refactor: migrate parser to OGFile container model
 3. Ensure all tests pass and linting is clean.
 4. Update documentation if you changed any public APIs.
 5. Open a pull request with a clear description of the changes.
+6. If a file you touched now has zero mypy errors, add it to `mypy-strict-gate.ini`.
 
 ### Code Style
 
