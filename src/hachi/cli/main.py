@@ -46,6 +46,7 @@ from hachi.core.onboarding import (
 )
 from hachi.core.paths import dotenv_autoload_disabled, get_hachi_paths
 from hachi.core.permissions import PermissionGate
+from hachi.core.runtime.protocols import set_active_session_runtime
 from hachi.core.secret_store import create_default_secret_store
 from hachi.core.session_store import SessionStore
 from hachi.gateway.control_plane import (
@@ -303,14 +304,6 @@ def _gateway_readiness_probe() -> tuple[bool, list[str], dict[str, str]]:
     return (len(blockers) == 0, blockers, checks)
 
 
-#: Module-level slot for the most-recently-created in-process gateway runtime.
-#: Set by :func:`_start_gateway_server` and the ``gateway`` command so that
-#: :func:`~hachi.core.runtime.resume._do_resume` can call
-#: :meth:`_InProcessGatewayRuntime.rehydrate_session` on cold-start resume
-#: without importing the CLI or threading a runtime reference through every layer.
-_ACTIVE_RUNTIME: "_InProcessGatewayRuntime | None" = None
-
-
 def _wait_until_interrupted() -> None:
     """Keep process alive until Ctrl+C without busy looping."""
     sleeper = threading.Event()
@@ -527,10 +520,10 @@ def _start_gateway_server(
     if runtime is not None and resume_session_id is not None:
         runtime._pending_resume_session_id = resume_session_id
     support = runtime or _InProcessGatewayRuntime()
-    # Publish the active runtime so resume.py can rehydrate cold-start sessions.
+    # Publish the active runtime so resume.py can rehydrate cold-start sessions
+    # (T-42: through the core-owned SessionRuntime seam, not a CLI-module global).
     if runtime is not None:
-        global _ACTIVE_RUNTIME  # noqa: PLW0603
-        _ACTIVE_RUNTIME = runtime
+        set_active_session_runtime(runtime)
 
     server = GatewayHTTPServer(
         _build_gateway_control_plane(runtime=runtime, support=support),
@@ -1585,9 +1578,9 @@ def serve(
     try:
         auth_token = _resolve_gateway_auth_token(host)
         runtime = _InProcessGatewayRuntime()
-        # Publish the active runtime so resume.py can rehydrate cold-start sessions.
-        global _ACTIVE_RUNTIME  # noqa: PLW0603
-        _ACTIVE_RUNTIME = runtime
+        # Publish the active runtime so resume.py can rehydrate cold-start sessions
+        # (T-42: through the core-owned SessionRuntime seam, not a CLI-module global).
+        set_active_session_runtime(runtime)
 
         server = GatewayHTTPServer(
             _build_gateway_control_plane(runtime=runtime, support=runtime),

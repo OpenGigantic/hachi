@@ -214,6 +214,25 @@ class _InProcessGatewayRuntime:
                 self._chat_locks[session_id] = threading.Lock()
         return agent
 
+    def get_live_session(self, session_id: str) -> AgentSession | None:
+        """Return the live in-memory session for *session_id*, or ``None``.
+
+        T-42: the adapter method for
+        :class:`~hachi.core.runtime.protocols.SessionRuntime` — the caller
+        (cold-start resume in ``core``) must never see ``_agents_lock``
+        directly; this method owns the locking itself.
+        """
+        with self._agents_lock:
+            return self._agents.get(session_id)
+
+    def rehydrate(self, session_id: str) -> AgentSession | None:
+        """Alias for :meth:`rehydrate_session` for the ``SessionRuntime`` protocol.
+
+        T-42: ``rehydrate_session`` is kept as-is (unaliased) because it has
+        other callers; this is purely the narrower name the protocol declares.
+        """
+        return self.rehydrate_session(session_id)
+
     def _reload_agents(self) -> None:
         """Reboot cached session agents so provider/credential changes apply live.
 

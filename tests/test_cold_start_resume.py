@@ -202,12 +202,12 @@ class TestColdStartResume:
         # Patch RunStateStore so resume_run uses our temp-dir store.
         monkeypatch.setattr("hachi.core.runtime.store.RunStateStore", lambda: run_store)
 
-        # Publish the runtime so _do_resume can find it.
-        # _do_resume reads via getattr(hachi.cli.main, "_ACTIVE_RUNTIME") at call time,
-        # so monkeypatching the module attribute is the correct approach.
-        import hachi.cli.main as main_mod
+        # Publish the runtime so _do_resume can find it (T-42: through the
+        # core-owned SessionRuntime seam; the autouse _isolate_active_gateway_runtime
+        # fixture in tests/conftest.py resets it after this test).
+        from hachi.core.runtime.protocols import set_active_session_runtime
 
-        monkeypatch.setattr(main_mod, "_ACTIVE_RUNTIME", runtime)
+        set_active_session_runtime(runtime)
 
         # The live-session map is EMPTY — simulates a cold start after restart.
         assert not runtime._agents, "precondition: no live sessions"
@@ -281,9 +281,10 @@ class TestLiveSessionPath:
 
         monkeypatch.setattr("hachi.gateway.in_process_runtime.boot_agent", _fake_boot_agent)
         monkeypatch.setattr("hachi.core.runtime.store.RunStateStore", lambda: run_store)
-        import hachi.cli.main as main_mod
+        # T-42: publish the runtime through the core-owned SessionRuntime seam.
+        from hachi.core.runtime.protocols import set_active_session_runtime
 
-        monkeypatch.setattr(main_mod, "_ACTIVE_RUNTIME", runtime)
+        set_active_session_runtime(runtime)
 
         reply = resume_run(run.run_id, {"decision": "approved"})
 
@@ -308,7 +309,7 @@ class TestNoRuntimeHonestFail:
     def test_raises_honest_resume_error_when_no_runtime(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Standalone CLI context: _ACTIVE_RUNTIME is None → honest fail."""
+        """Standalone CLI context: no runtime registered → honest fail."""
         session_store = _make_store(tmp_path)
         run_store = _make_run_store(tmp_path)
 
@@ -317,12 +318,12 @@ class TestNoRuntimeHonestFail:
 
         monkeypatch.setattr("hachi.core.runtime.store.RunStateStore", lambda: run_store)
 
-        # Ensure _ACTIVE_RUNTIME is None at the time _do_resume reads it.
-        import hachi.cli.main as main_mod
+        # Ensure no runtime is registered at the time _do_resume reads it (T-42).
+        from hachi.core.runtime.protocols import set_active_session_runtime
 
-        monkeypatch.setattr(main_mod, "_ACTIVE_RUNTIME", None)
+        set_active_session_runtime(None)
 
-        with pytest.raises(HonestResumeError, match="_ACTIVE_RUNTIME is None"):
+        with pytest.raises(HonestResumeError, match="no active in-process runtime"):
             resume_run(run.run_id, {"decision": "approved"})
 
         # The run must be rolled back to WAITING (not FAILED) on HonestResumeError.
@@ -360,9 +361,10 @@ class TestIdempotency:
 
         monkeypatch.setattr("hachi.gateway.in_process_runtime.boot_agent", lambda **kw: live_agent)
         monkeypatch.setattr("hachi.core.runtime.store.RunStateStore", lambda: run_store)
-        import hachi.cli.main as main_mod
+        # T-42: publish the runtime through the core-owned SessionRuntime seam.
+        from hachi.core.runtime.protocols import set_active_session_runtime
 
-        monkeypatch.setattr(main_mod, "_ACTIVE_RUNTIME", runtime)
+        set_active_session_runtime(runtime)
 
         # First wake — runs the turn.
         reply1 = resume_run(run.run_id, {"decision": "approved"})

@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from hachi.core.runtime.protocols import get_active_process_services
+from hachi.core.runtime.protocols import get_active_process_services, get_active_session_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,8 @@ def _do_resume(session_id: str, context: dict[str, Any], cursor: int) -> str:
 
     Hot path: the session is live in the active runtime → chat() directly.
     Cold path: the session is GONE (gateway restarted) → rehydrate from the
-    SQLite transcript via :meth:`~hachi.cli.main._InProcessGatewayRuntime.rehydrate_session`,
+    SQLite transcript via the registered
+    :class:`~hachi.core.runtime.protocols.SessionRuntime`'s ``rehydrate``,
     then inject the wait result and run a new turn.  The rehydration reuses
     the same ``boot_agent(resume_session_id=…)`` machinery as a normal session
     resume so the transcript replay is REAL, not faked.
@@ -120,21 +121,15 @@ def _do_resume(session_id: str, context: dict[str, Any], cursor: int) -> str:
     No-runtime path: no active runtime is attached (standalone CLI) →
     ``HonestResumeError`` so callers get a clear, honest failure.
     """
-    # Resolve the active in-process runtime (set by _start_gateway_server / gateway command).
-    # Read via the module object so monkeypatching and late writes are visible at call time.
-    try:
-        import hachi.cli.main as _main_mod
-
-        runtime = getattr(_main_mod, "_ACTIVE_RUNTIME", None)
-    except ImportError as exc:
-        raise HonestResumeError(
-            "resume_run: hachi.cli.main not available in current context. "
-            "Start the gateway server to enable suspend/resume."
-        ) from exc
+    # Resolve the active in-process runtime (set by _start_gateway_server / gateway
+    # command via set_active_session_runtime()). Read through the getter so late
+    # writes and monkeypatches are visible at call time (T-42: core reaches for
+    # the SessionRuntime protocol seam, not an import of the CLI).
+    runtime = get_active_session_runtime()
     if runtime is None:
         raise HonestResumeError(
             "resume_run: no active in-process runtime "
-            f"(_ACTIVE_RUNTIME is None) for session_id={session_id!r}. "
+            f"for session_id={session_id!r}. "
             "Cold-start resume requires a running gateway (--runtime flag). "
             "Trigger via POST /runs/{run_id}/wake after starting the gateway."
         )
@@ -144,8 +139,7 @@ def _do_resume(session_id: str, context: dict[str, Any], cursor: int) -> str:
     inject_text = f"[RESUME] Wait condition satisfied. Result: {wait_result}"
 
     # --- Hot path: session is already live ---
-    with runtime._agents_lock:
-        agent_session = runtime._agents.get(session_id)
+    agent_session = runtime.get_live_session(session_id)
 
     if agent_session is not None:
         logger.info("_do_resume: hot path — session %r is live, injecting turn", session_id)
@@ -157,7 +151,7 @@ def _do_resume(session_id: str, context: dict[str, Any], cursor: int) -> str:
         "_do_resume: cold path — session %r not in live map; rehydrating from transcript",
         session_id,
     )
-    rehydrated = runtime.rehydrate_session(session_id)
+    rehydrated = runtime.rehydrate(session_id)
     if rehydrated is None:
         raise HonestResumeError(
             f"resume_run: cold-start rehydration failed for session_id={session_id!r}. "
@@ -192,8 +186,9 @@ def _get_process_bus() -> Any:
     :func:`~hachi.core.runtime.protocols.get_active_process_services` seam
     instead of naming ``hachi.gateway`` directly — the gateway registers its
     provider once, at import time, in ``gateway/shared_services.py``. This is
-    a SEPARATE seam from the ``hachi.cli.main`` import a few lines up in
-    ``_do_resume`` — that one is untouched, it belongs to T-42.
+    a SEPARATE seam from the one ``_do_resume`` uses a few lines up
+    (:func:`~hachi.core.runtime.protocols.get_active_session_runtime`) — that
+    one used to import the CLI's entry-point module directly; T-42 closed it.
     """
     try:
         shared = get_active_process_services()
