@@ -4871,6 +4871,37 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   and the three behaviour pins `test_session_limit_is_enforced_at_the_control_plane` /
   `test_prompt_length_limit_is_enforced` / `test_failed_connect_releases_the_session_slot`.
 
+### BB-154 — Inventorying call sites by text search miscounts in BOTH directions
+
+- **Symptom:** Planning T-43's test migration, a text-search inventory of
+  `GatewayControlPlane(...)` call sites reported **99 sites across 23 files**. The real figure
+  was **94**, and the file *set* was wrong in both directions — two listed files needed zero
+  conversions, two genuine consumers were missing from the list entirely.
+- **Root cause — three distinct failure modes, and they do not cancel out:**
+  1. **Prose false positives.** Docstrings and comments containing the constructor name
+     (`` T-15: injected via ``GatewayControlPlane(list_pending_approvals=...)`` ``) match a
+     source regex exactly like real code does.
+  2. **Indirection false negatives.** A local wrapper — `def _cp(**kwargs): return
+     GatewayControlPlane(**kwargs)`, called by ~20 test functions — is one textual hit that
+     is really one *conversion site* with wide reach, and a fixture or wrapper that forwards
+     `**kwargs` exposes no literal kwarg names to match on at all.
+  3. **A wrong predicate.** The inventory classified a site as "must change" if it passed any
+     parameter from the constructor's full parameter list — but `readiness_probe` was never
+     one of the 74 handlers being retired. Files whose only argument was `readiness_probe`
+     were flagged as needing work they did not need.
+- **Avoid:** For any mechanical multi-file refactor, inventory call sites with `ast.parse` and
+  an `ast.Call` walk, not text search — the AST cannot match a docstring, and it makes
+  wrappers visible as ordinary calls. Then **state the classification predicate explicitly and
+  check it against the actual change**, because (3) is not a tooling failure: a perfect parser
+  fed the wrong question returns a confidently wrong answer.
+- **Wider point:** T-43's own port map WAS generated and self-validated programmatically, which
+  is what caught the five mixed domain groups a manual reading had already missed. The
+  call-site inventory was the one artefact in that task done by hand — and it was the one that
+  was wrong. Apply the same rigour to both halves of a refactor: the thing being changed and
+  the set of places that must change with it.
+- **Locked by:** nothing executable — this is a methodology entry. The corrected inventory is
+  reflected in `tests/conftest.py::control_plane`'s docstring and T-43's ADR.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

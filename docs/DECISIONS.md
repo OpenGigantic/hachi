@@ -3579,3 +3579,41 @@ required (that forces every partial-construction test to supply stubs in the sam
 deleting `_require_handler` (ports are still nullable, so it stays load-bearing).
 
 **Locked by:** `tests/test_control_plane_characterization.py`; docs/bug-bank.md BB-153.
+
+## T-43 (round 2 of 2): the 74 legacy handler kwargs are retired (2026-07-26) **[ADR]**
+
+**What landed.** Every legacy call site moved to the `control_plane(**handlers)` helper, and
+the 74 handler kwargs were deleted from `GatewayControlPlane.__init__`. The constructor is
+now **21 parameters** — `readiness_probe`, 18 ports, and 2 tunables — down from 77. Handler
+resolution simplified from the round-1 two-branch form to `self._on_chat = sessions.chat if
+sessions else None`.
+
+**The boundary held across both rounds.** Everything from `_require_handler` onward is
+byte-identical to the **pre-T-43** baseline. A 77→21 parameter collapse and 94 rewritten call
+sites changed no delegate body and no stateful method: `create_session`'s connection
+accounting and failed-connect slot release, the session and prompt limits, and the
+protocol-version check are provably untouched. That was the entire point of resolving in
+`__init__` rather than rewriting the ~38 delegates to reach through ports.
+
+**The compatibility knowledge lives in the tests, not the API.** `control_plane()` and its
+74-entry legacy→port table stay in `tests/conftest.py`. That is deliberate: the mapping from
+old kwarg names to ports is test convenience, and putting it there keeps it out of the
+production constructor while making the 94-site conversion mechanical enough that **no
+assertion changed** anywhere in the suite.
+
+**One test outlived its purpose.** `test_control_plane_helper_matches_legacy_kwargs_form`
+existed to prove the helper equivalent to the raw legacy-kwargs form. Retiring those kwargs
+makes that comparison impossible — not by weakening the test, but by removing the thing it
+compared against. It is renamed to `test_control_plane_helper_builds_a_working_control_plane`
+and its duplicate construction collapsed, keeping every assertion: a real chat round-trip, a
+real config read, and the unknown-kwarg guard. A test whose name promises something
+untestable is worse than no test, and a renamed test with intact assertions is not a weakened
+one — but the distinction is worth stating, because "the test's subject ceased to exist" is
+exactly the argument a genuinely weakened test would also make.
+
+**Ports stay nullable and `_require_handler` stays.** Making ports required is a separate
+change; while they are optional, that guard is what turns a missing handler into a clean
+`GatewayUnavailableError` rather than an `AttributeError`. `ports.py` is strict-mypy-clean but
+deliberately not added to `mypy-strict-gate.ini` — T-69 owns that ratchet.
+
+**Locked by:** `tests/test_control_plane_characterization.py`; docs/bug-bank.md BB-153, BB-154.
