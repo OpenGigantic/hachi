@@ -36,7 +36,7 @@ from hachi.core.cost import CostTracker, clamp_nonnegative_cost_delta, today_utc
 from hachi.core.credential_vault import CredentialVault
 from hachi.core.integrations import IntegrationRuntime
 from hachi.core.llm import Message, create_llm_client
-from hachi.core.loop import ExecutionLoop, ToolRegistry
+from hachi.core.loop import ExecutionLoop, ToolRegistry, TurnOutcome, TurnStatus
 from hachi.core.mcp_client import MCPManager, MCPServerConfig
 from hachi.core.memory import MemoryManager
 from hachi.core.memory.provider import ChromaMemoryProvider, ProviderBackedVault, resolve_provider
@@ -1679,7 +1679,10 @@ class AgentSession:
         daily_cap_reason = self._daily_cap_exceeded()
         if daily_cap_reason:
             self._emit_event(BUDGET_EXCEEDED, {"reason": daily_cap_reason})
-            return f"[BUDGET LIMIT REACHED] {daily_cap_reason}"
+            # T-59: render through the same TurnOutcome the loop itself uses, rather
+            # than hardcoding the "[BUDGET LIMIT REACHED] ..." literal a second time
+            # in this layer.
+            return TurnOutcome(TurnStatus.BUDGET_LIMIT, reason=daily_cap_reason).render()
 
         self._memory_snapshot = self._build_frozen_snapshot()
 
