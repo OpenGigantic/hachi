@@ -4624,6 +4624,43 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `tests/test_dotenv_hermeticity.py::test_llm_resolve_api_key_honours_disable_flag`,
   `test_oauth_resolve_env_honours_disable_flag`.
 
+### BB-148 — A package-boundary move breaks import shapes a dotted-path grep can't see
+
+- **Symptom:** Rewriting every `from hachi.core.memory_vault import X` site (T-48's
+  move of core/memory*.py into core/memory/) passed `rg "hachi\.core\.memory_"` clean,
+  but a full scoped test run still failed collection with
+  `ImportError: cannot import name 'memory_vault' from 'hachi.core'`, plus separate
+  ImportErrors for `_TOOL_RESULT_CLEAR_TOKENS`, `_MAX_ACTIVE_TOKENS`,
+  `_is_substantive_fact`, `_CLEARED_TOOL_RESULT` — none of which matched the grep.
+- **Root cause:** three shapes a dotted-path search misses: (1) `from hachi.core
+  import memory_vault as _mv` — the old name sits after `import `, not glued to
+  `core.` by a dot; (2) `from hachi.core import <private_name>` — reaching a
+  formerly-flat module's private constant through the package's bare name, which
+  only survives for the __init__.py's deliberately narrow re-export list; (3) a
+  bare-string `sys.modules`/`Path()` reference used for cache-eviction or
+  file-existence checks (`if "memory_vault" in k`, `Path(".../memory_vault.py")`)
+  — neither raises; they silently stop matching, so the check they guard
+  quietly no-ops forever (one was a real coverage loss: a `_TARGET_FILES` scanner
+  that `continue`s on `not full.exists()`).
+- **Fix:** grepped the submodule *basename* as a whole word (`\bmemory_vault\b`,
+  not `hachi\.core\.memory_vault`) across the whole tree, classified every hit as
+  prose / unrelated identifier / load-bearing, and fixed only the load-bearing
+  ones. Finished with a full-tree `pytest --collect-only` (not just the
+  grep-derived file list) as the real proof — 4601 tests, zero collection errors.
+- **Avoid:** after any package-boundary move, `rg "pkg\.old_flat_name"` alone is
+  not enough — also grep the bare basename as a whole word across the whole tree
+  and read every hit. Watch for `from pkg import old_name as x`,
+  `getattr`/`setattr`/`patch(pkg, "private_name")`, and any `sys.modules`/`Path`
+  string keyed on the old name. Finish with a full-tree
+  `pytest --collect-only -q` — cheap, and it catches every remaining import site
+  regardless of which pattern missed it. Separately: `core/foo.py` -> `core/foo/`
+  is a name collision, not a rename — create the package dir + `__init__.py`
+  first, and delete `src/hachi/core/__pycache__/` before AND after the move if
+  you hit a bizarre ImportError (a stale `foo.cpython-*.pyc` can shadow the new
+  package in a dirty tree).
+- **Locked by:** `tests/test_memory_package_boundary.py` + the full-tree
+  `pytest --collect-only` pass this fix required to go green.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
