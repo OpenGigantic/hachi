@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -297,6 +298,18 @@ class HachiPaths:
                 note="embedding rank index rebuilt by SkillEngine from skills/",
             ),
         ]
+
+
+def dotenv_autoload_disabled() -> bool:
+    """True when HACHI_DISABLE_DOTENV_AUTOLOAD=1 forbids reading .env files.
+
+    BB-2: .env belongs at the CLI edge. Core resolvers may read it lazily as a
+    local-dev convenience, but must fall silent when the harness (or an operator)
+    disables autoload — otherwise a hermetic process still picks up ambient creds.
+    Single shared definition of the rule (CF-17 / T-67): cli/main.py, core/llm.py
+    and core/oauth.py all call this instead of each re-reading the env var.
+    """
+    return os.environ.get("HACHI_DISABLE_DOTENV_AUTOLOAD", "").strip() == "1"
 
 
 def get_hachi_paths() -> HachiPaths:

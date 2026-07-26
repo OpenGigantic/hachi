@@ -138,8 +138,14 @@ def test_env_var_takes_precedence_over_dotenv(monkeypatch, tmp_path) -> None:
 def test_resolve_falls_back_to_project_dotenv(monkeypatch, tmp_path) -> None:
     from hachi.core import oauth
 
-    # Not in the process environment, but present in the project .env → still resolved.
+    # Not in the process environment, but present in the project .env → still resolved,
+    # provided autoload isn't disabled. tests/conftest.py sets
+    # HACHI_DISABLE_DOTENV_AUTOLOAD=1 for the whole suite (BB-2 hermeticity), so this
+    # test — which is specifically exercising the enabled-fallback path — must opt back
+    # in explicitly, exactly like tests/test_dotenv_hermeticity.py's
+    # test_autoload_active_when_flag_zero does.
     monkeypatch.delenv("HACHI_TEST_ONLY_KEY", raising=False)
+    monkeypatch.setenv("HACHI_DISABLE_DOTENV_AUTOLOAD", "0")
     (tmp_path / ".env").write_text(
         '# a comment\nHACHI_TEST_ONLY_KEY="dotenv-value"\n', encoding="utf-8"
     )

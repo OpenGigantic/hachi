@@ -590,6 +590,11 @@ def test_liveness_t11_auto_memory_key_resolves_without_env_var(
         "ANTHROPIC_API_KEY=sk-liveness-not-a-real-key\n", encoding="utf-8"
     )
     monkeypatch.chdir(tmp_path)  # _resolve_api_key reads Path.cwd() / ".env"
+    # CF-17/T-67 (BB-2): _resolve_api_key's .env fallback is now gated by
+    # HACHI_DISABLE_DOTENV_AUTOLOAD, which conftest.py sets to "1" suite-wide for
+    # hermeticity. This test's whole subject IS that .env fallback, so it must opt
+    # back in explicitly — matching production, where the flag is unset.
+    monkeypatch.setenv("HACHI_DISABLE_DOTENV_AUTOLOAD", "0")
 
     client = memory_vault_mod._get_llm_client()
 

@@ -1,24 +1,17 @@
-"""Tests for Task 6c credential commands, Task 6d TOKOBOROS shim, and Task 8c og commands.
+"""Tests for Task 6c credential commands and Task 8c og commands.
 
 Uses Typer's CliRunner; monkeypatches env/vault; uses a tmp skills dir for og tests.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
 
-from hachi.cli.main import (
-    _TOKOBOROS_RENAMES,
-    KNOWN_CREDENTIAL_KEYS,
-    _apply_tokoboros_shim,
-    app,
-)
+from hachi.cli.main import KNOWN_CREDENTIAL_KEYS, app
 
 runner = CliRunner()
 
@@ -167,9 +160,7 @@ class TestCredListKeys:
             assert key in result.output
 
     def test_list_keys_vault_status(self) -> None:
-        vault = _make_vault(
-            metadata=[{"name": "ANTHROPIC_API_KEY", "backend": "keyring"}]
-        )
+        vault = _make_vault(metadata=[{"name": "ANTHROPIC_API_KEY", "backend": "keyring"}])
         with _patch_vault(vault):
             result = runner.invoke(app, ["list-keys"])
         assert result.exit_code == 0
@@ -196,9 +187,7 @@ class TestCredListKeys:
 
     def test_list_keys_extra_vault_keys_appended(self) -> None:
         """Keys in vault but not in KNOWN_CREDENTIAL_KEYS must still appear."""
-        vault = _make_vault(
-            metadata=[{"name": "MY_CUSTOM_VENDOR_KEY", "backend": "keyring"}]
-        )
+        vault = _make_vault(metadata=[{"name": "MY_CUSTOM_VENDOR_KEY", "backend": "keyring"}])
         with _patch_vault(vault):
             result = runner.invoke(app, ["list-keys"])
         assert result.exit_code == 0
@@ -264,67 +253,6 @@ class TestKeysSubApp:
             result = runner.invoke(app, ["keys", "unset", "tavily_api_key"])
         assert result.exit_code == 0
         assert "Removed" in result.output
-
-
-# ---------------------------------------------------------------------------
-# Task 6d — TOKOBOROS_ → HACHI_ back-compat shim
-# ---------------------------------------------------------------------------
-
-
-class TestTokoborosShim:
-    def test_shim_copies_old_to_new(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """TOKOBOROS_* set and HACHI_* absent → HACHI_* is populated."""
-        monkeypatch.setenv("TOKOBOROS_STT_API_KEY", "stt-value")
-        monkeypatch.delenv("HACHI_STT_API_KEY", raising=False)
-
-        _apply_tokoboros_shim()
-
-        assert os.environ.get("HACHI_STT_API_KEY") == "stt-value"
-
-    def test_shim_does_not_overwrite_existing_hachi_key(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """When HACHI_* is already set, the shim must NOT overwrite it."""
-        monkeypatch.setenv("TOKOBOROS_TTS_API_KEY", "old-tts")
-        monkeypatch.setenv("HACHI_TTS_API_KEY", "existing-tts")
-
-        _apply_tokoboros_shim()
-
-        assert os.environ.get("HACHI_TTS_API_KEY") == "existing-tts"
-
-    def test_shim_emits_warning(self, monkeypatch: pytest.MonkeyPatch, caplog: Any) -> None:
-        """Migrating a key must log a deprecation warning."""
-        import logging
-
-        monkeypatch.setenv("TOKOBOROS_SMTP_USER", "user@example.com")
-        monkeypatch.delenv("HACHI_SMTP_USER", raising=False)
-
-        with caplog.at_level(logging.WARNING, logger="hachi.cli.main"):
-            _apply_tokoboros_shim()
-
-        assert any("TOKOBOROS_SMTP_USER" in msg for msg in caplog.messages)
-
-    def test_shim_no_op_when_old_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When the TOKOBOROS_* var is absent, the HACHI_* var must not be created."""
-        monkeypatch.delenv("TOKOBOROS_SMTP_HOST", raising=False)
-        monkeypatch.delenv("HACHI_SMTP_HOST", raising=False)
-
-        _apply_tokoboros_shim()
-
-        assert "HACHI_SMTP_HOST" not in os.environ
-
-    def test_shim_covers_all_renames(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Every key in _TOKOBOROS_RENAMES must be handled by the shim."""
-        for old, new in _TOKOBOROS_RENAMES.items():
-            monkeypatch.setenv(old, f"value-for-{old}")
-            monkeypatch.delenv(new, raising=False)
-
-        _apply_tokoboros_shim()
-
-        for old, new in _TOKOBOROS_RENAMES.items():
-            assert os.environ.get(new) == f"value-for-{old}", (
-                f"Shim did not copy {old!r} → {new!r}"
-            )
 
 
 # ---------------------------------------------------------------------------

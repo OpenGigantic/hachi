@@ -89,6 +89,11 @@ def test_memory_llm_client_resolves_key_from_project_dotenv(tmp_path, monkeypatc
     _patch_secret_store(monkeypatch, None)
     (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=sk-test-not-real\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)  # _resolve_api_key reads Path.cwd() / ".env"
+    # CF-17/T-67 (BB-2): the .env fallback is gated by HACHI_DISABLE_DOTENV_AUTOLOAD,
+    # which conftest.py sets to "1" suite-wide for hermeticity. This test's subject IS
+    # that fallback, so it must opt back in explicitly — matching production, where
+    # the flag is unset.
+    monkeypatch.setenv("HACHI_DISABLE_DOTENV_AUTOLOAD", "0")
 
     from hachi.core.memory_vault import _get_llm_client
 

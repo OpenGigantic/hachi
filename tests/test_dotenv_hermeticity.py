@@ -79,3 +79,52 @@ def test_conftest_default_flag_is_set() -> None:
         "HACHI_DISABLE_DOTENV_AUTOLOAD must be '1' in the test harness "
         "(set by tests/conftest.py). The suite is not hermetic."
     )
+
+
+# ---------------------------------------------------------------------------
+# CF-17 / T-67 / BB-2: the CLI edge is not the only reader of a CWD .env — two
+# core resolvers (core/llm.py, core/oauth.py) grew their own ungated
+# `Path.cwd() / ".env"` fallback, independently of cli/main.py's gate. Both must
+# honour HACHI_DISABLE_DOTENV_AUTOLOAD too, or a hermetic process still leaks
+# ambient creds through the back door.
+# ---------------------------------------------------------------------------
+
+
+def test_llm_resolve_api_key_honours_disable_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """BB-2: with autoload disabled, core must NOT read .env from the CWD."""
+    from hachi.core import llm
+
+    (tmp_path / ".env").write_text("HACHI_TEST_ONLY_KEY=from-dotenv\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HACHI_TEST_ONLY_KEY", raising=False)
+    monkeypatch.setenv("HACHI_DISABLE_DOTENV_AUTOLOAD", "1")
+
+    assert llm._resolve_api_key("HACHI_TEST_ONLY_KEY") is None
+
+
+def test_llm_resolve_api_key_still_reads_dotenv_when_enabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The capability is kept — only gated. Guards against over-deleting."""
+    from hachi.core import llm
+
+    (tmp_path / ".env").write_text("HACHI_TEST_ONLY_KEY=from-dotenv\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HACHI_TEST_ONLY_KEY", raising=False)
+    monkeypatch.setenv("HACHI_DISABLE_DOTENV_AUTOLOAD", "0")
+
+    assert llm._resolve_api_key("HACHI_TEST_ONLY_KEY") == "from-dotenv"
+
+
+def test_oauth_resolve_env_honours_disable_flag(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """The reader the audit missed. A fix that only touches llm.py leaves this open."""
+    from hachi.core import oauth
+
+    (tmp_path / ".env").write_text("GOOGLE_CLIENT_ID=from-dotenv\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    monkeypatch.setenv("HACHI_DISABLE_DOTENV_AUTOLOAD", "1")
+
+    assert oauth._resolve_env("GOOGLE_CLIENT_ID") is None

@@ -20,6 +20,7 @@ import anthropic
 import httpx
 from pydantic import BaseModel, Field
 
+from hachi.core.paths import dotenv_autoload_disabled
 from hachi.core.secret_store import SecretStore
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,10 @@ def _resolve_api_key(api_key_env: str | None, explicit_api_key: str | None = Non
         return from_env
 
     # Fallback for local dev: allow project-level .env without requiring shell export.
+    # BB-2: honour the same gate the CLI edge uses — a hermetic process (tests, or an
+    # operator who explicitly disabled autoload) must not pick up an ambient .env.
+    if dotenv_autoload_disabled():
+        return None
     dotenv_values = _read_dotenv(Path.cwd() / ".env")
     return dotenv_values.get(env_name)
 
