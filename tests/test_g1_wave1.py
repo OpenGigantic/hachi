@@ -375,8 +375,10 @@ def test_update_limits_runtime_writes_config(
         }
     }
     written: list[dict[str, Any]] = []
-    monkeypatch.setattr("hachi.cli.main.read_global_config_file", lambda: dict(initial_doc))
-    monkeypatch.setattr("hachi.cli.main.write_global_config_dict", written.append)
+    monkeypatch.setattr(
+        "hachi.gateway.in_process_runtime.read_global_config_file", lambda: dict(initial_doc)
+    )
+    monkeypatch.setattr("hachi.gateway.in_process_runtime.write_global_config_dict", written.append)
 
     runtime = _InProcessGatewayRuntime()
     runtime.update_limits({"per_task_cap_usd": 2.0, "daily_cap_usd": 10.0})

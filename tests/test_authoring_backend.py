@@ -8,6 +8,7 @@ Strategy
 - FastAPI routes are tested via ``TestClient`` following the same pattern as
   ``tests/test_gateway_web_endpoints.py``.
 """
+
 from __future__ import annotations
 
 import threading
@@ -66,9 +67,10 @@ def _make_runtime_with_temp_skill(tmp_path: Path, content: str = "node hello\n  
 
 
 def _patch_runtime_paths(rt: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Redirect get_hachi_paths inside cli.main to the runtime's fake paths."""
+    """Redirect get_hachi_paths inside hachi.gateway.in_process_runtime to the
+    runtime's fake paths (T-41: the class moved out of cli.main)."""
     monkeypatch.setattr(
-        "hachi.cli.main.get_hachi_paths",
+        "hachi.gateway.in_process_runtime.get_hachi_paths",
         lambda: rt._fake_paths,
     )
 
@@ -93,7 +95,7 @@ class TestAuthoringGenerate:
         fake_client.generate.return_value = MagicMock(content=proposed)
         monkeypatch.setattr("hachi.core.llm.create_llm_client", lambda *a, **kw: fake_client)
         monkeypatch.setattr(
-            "hachi.cli.main.load_effective_config",
+            "hachi.gateway.in_process_runtime.load_effective_config",
             lambda: MagicMock(
                 provider=MagicMock(
                     kind="anthropic",
@@ -105,7 +107,7 @@ class TestAuthoringGenerate:
             ),
         )
         monkeypatch.setattr(
-            "hachi.cli.main.create_default_secret_store", lambda: MagicMock()
+            "hachi.gateway.in_process_runtime.create_default_secret_store", lambda: MagicMock()
         )
 
         result = rt.authoring_generate("test-skill.og", "change greeting")
@@ -137,7 +139,7 @@ class TestAuthoringGenerate:
         # patch the function at its definition site.
         monkeypatch.setattr("hachi.core.llm.create_llm_client", _bad_client)
         monkeypatch.setattr(
-            "hachi.cli.main.load_effective_config",
+            "hachi.gateway.in_process_runtime.load_effective_config",
             lambda: MagicMock(
                 provider=MagicMock(
                     kind="anthropic",
@@ -149,7 +151,7 @@ class TestAuthoringGenerate:
             ),
         )
         monkeypatch.setattr(
-            "hachi.cli.main.create_default_secret_store", lambda: MagicMock()
+            "hachi.gateway.in_process_runtime.create_default_secret_store", lambda: MagicMock()
         )
 
         with pytest.raises(GatewayUnavailableError, match="LLM client unavailable"):

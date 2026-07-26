@@ -73,8 +73,10 @@ class TestGatewayModelsLiveDiscovery:
         fake_client = _make_fake_client(
             ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"]
         )
-        monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-        monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: object())
+        monkeypatch.setattr("hachi.gateway.in_process_runtime.load_effective_config", lambda: cfg)
+        monkeypatch.setattr(
+            "hachi.gateway.in_process_runtime.create_default_secret_store", lambda: object()
+        )
         monkeypatch.setattr("hachi.core.llm.create_llm_client", lambda *a, **k: fake_client)
 
         from hachi.cli.main import _InProcessGatewayRuntime
@@ -91,8 +93,10 @@ class TestGatewayModelsLiveDiscovery:
         fake_client = _make_fake_client(
             ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"]
         )
-        monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-        monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: object())
+        monkeypatch.setattr("hachi.gateway.in_process_runtime.load_effective_config", lambda: cfg)
+        monkeypatch.setattr(
+            "hachi.gateway.in_process_runtime.create_default_secret_store", lambda: object()
+        )
         monkeypatch.setattr("hachi.core.llm.create_llm_client", lambda *a, **k: fake_client)
 
         from hachi.cli.main import _InProcessGatewayRuntime
@@ -105,16 +109,16 @@ class TestGatewayModelsLiveDiscovery:
             f"claude-opus-4-8 missing from live-discovery result: {ids}"
         )
 
-    def test_recommended_flag_marks_configured_model(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_recommended_flag_marks_configured_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The currently configured model must be marked recommended=True."""
         cfg = _cfg(model="claude-opus-4-8")
         fake_client = _make_fake_client(
             ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"]
         )
-        monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-        monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: object())
+        monkeypatch.setattr("hachi.gateway.in_process_runtime.load_effective_config", lambda: cfg)
+        monkeypatch.setattr(
+            "hachi.gateway.in_process_runtime.create_default_secret_store", lambda: object()
+        )
         monkeypatch.setattr("hachi.core.llm.create_llm_client", lambda *a, **k: fake_client)
 
         from hachi.cli.main import _InProcessGatewayRuntime
@@ -139,8 +143,10 @@ class TestGatewayModelsStaticFallback:
         """Static fallback must include claude-opus-4-8 (no stale *-4-5-only list)."""
         cfg = _cfg(model="claude-sonnet-4-6")
         # create_llm_client raises to simulate offline/no-key scenario.
-        monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-        monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: object())
+        monkeypatch.setattr("hachi.gateway.in_process_runtime.load_effective_config", lambda: cfg)
+        monkeypatch.setattr(
+            "hachi.gateway.in_process_runtime.create_default_secret_store", lambda: object()
+        )
         monkeypatch.setattr(
             "hachi.core.llm.create_llm_client",
             lambda *a, **k: (_ for _ in ()).throw(ValueError("no API key")),
@@ -152,15 +158,15 @@ class TestGatewayModelsStaticFallback:
         result = support.list_models()
         ids = [m["id"] for m in result]
 
-        assert "claude-opus-4-8" in ids, (
-            f"claude-opus-4-8 missing from static fallback: {ids}"
-        )
+        assert "claude-opus-4-8" in ids, f"claude-opus-4-8 missing from static fallback: {ids}"
 
     def test_fallback_includes_configured_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Configured model must appear in fallback even when discovery fails."""
         cfg = _cfg(model="claude-opus-4-8")
-        monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-        monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: object())
+        monkeypatch.setattr("hachi.gateway.in_process_runtime.load_effective_config", lambda: cfg)
+        monkeypatch.setattr(
+            "hachi.gateway.in_process_runtime.create_default_secret_store", lambda: object()
+        )
         monkeypatch.setattr(
             "hachi.core.llm.create_llm_client",
             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline")),
@@ -180,8 +186,10 @@ class TestGatewayModelsStaticFallback:
         """When list_models() returns [] (offline but client creates ok), use static."""
         cfg = _cfg(model="claude-sonnet-4-6")
         fake_client = _make_fake_client([])  # empty discovery
-        monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-        monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: object())
+        monkeypatch.setattr("hachi.gateway.in_process_runtime.load_effective_config", lambda: cfg)
+        monkeypatch.setattr(
+            "hachi.gateway.in_process_runtime.create_default_secret_store", lambda: object()
+        )
         monkeypatch.setattr("hachi.core.llm.create_llm_client", lambda *a, **k: fake_client)
 
         from hachi.cli.main import _InProcessGatewayRuntime
@@ -209,12 +217,24 @@ class TestGatewayModelsHTTPRoute:
     def test_http_route_returns_200_with_model_list(self) -> None:
         """GET /models must return HTTP 200 with a non-empty list including opus-4-8."""
         models_payload = [
-            {"id": "claude-haiku-4-5", "label": "claude-haiku-4-5",
-             "provider": "anthropic", "recommended": False},
-            {"id": "claude-sonnet-4-6", "label": "claude-sonnet-4-6",
-             "provider": "anthropic", "recommended": False},
-            {"id": "claude-opus-4-8", "label": "claude-opus-4-8",
-             "provider": "anthropic", "recommended": True},
+            {
+                "id": "claude-haiku-4-5",
+                "label": "claude-haiku-4-5",
+                "provider": "anthropic",
+                "recommended": False,
+            },
+            {
+                "id": "claude-sonnet-4-6",
+                "label": "claude-sonnet-4-6",
+                "provider": "anthropic",
+                "recommended": False,
+            },
+            {
+                "id": "claude-opus-4-8",
+                "label": "claude-opus-4-8",
+                "provider": "anthropic",
+                "recommended": True,
+            },
         ]
 
         with _build_gateway(list_models_fn=lambda: models_payload) as client:
@@ -235,8 +255,10 @@ class TestGatewayModelsHTTPRoute:
         # Force Anthropic config with no usable API key so the static fallback is
         # exercised — same isolation pattern as TestGatewayModelsStaticFallback.
         cfg = _cfg(model="claude-sonnet-4-6")
-        monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: cfg)
-        monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: object())
+        monkeypatch.setattr("hachi.gateway.in_process_runtime.load_effective_config", lambda: cfg)
+        monkeypatch.setattr(
+            "hachi.gateway.in_process_runtime.create_default_secret_store", lambda: object()
+        )
         monkeypatch.setattr(
             "hachi.core.llm.create_llm_client",
             lambda *a, **k: (_ for _ in ()).throw(ValueError("no ANTHROPIC_API_KEY")),

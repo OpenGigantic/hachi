@@ -117,6 +117,7 @@ def live_runtime(
     that a keyword argument was forwarded to a mock.
     """
     from hachi.cli import main as cli_main
+    from hachi.gateway import in_process_runtime as runtime_mod
     from hachi.gateway.orchestrator import select_action_approver
 
     def _fake_boot_agent(*args: object, **kwargs: object) -> MagicMock:
@@ -131,7 +132,10 @@ def live_runtime(
         agent.chat.return_value = "ok"
         return agent
 
-    monkeypatch.setattr(cli_main, "boot_agent", _fake_boot_agent)
+    # T-41: _boot_session_agent's bare `boot_agent(...)` call now resolves in
+    # hachi.gateway.in_process_runtime's namespace, not cli.main's. _ACTIVE_RUNTIME
+    # stays a cli.main global (T-41 explicitly did not move it).
+    monkeypatch.setattr(runtime_mod, "boot_agent", _fake_boot_agent)
     runtime = cli_main._InProcessGatewayRuntime()
     monkeypatch.setattr(cli_main, "_ACTIVE_RUNTIME", runtime)
     yield runtime

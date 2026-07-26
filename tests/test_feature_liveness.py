@@ -283,7 +283,7 @@ def test_liveness_t04_kennel_lists_and_installs_bundled_packs(tmp_path: Path) ->
     paths.skills_dir.mkdir(parents=True, exist_ok=True)
 
     runtime = _InProcessGatewayRuntime()
-    with patch("hachi.cli.main.get_hachi_paths", return_value=paths):
+    with patch("hachi.gateway.in_process_runtime.get_hachi_paths", return_value=paths):
         kennel = runtime.get_kennel()
         ids = {item["id"] for item in kennel}
         assert len(kennel) >= 5, (

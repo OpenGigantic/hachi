@@ -86,7 +86,7 @@ def test_get_config_includes_limits_frontend_keys(monkeypatch: pytest.MonkeyPatc
 
     runtime = _InProcessGatewayRuntime()
     fake_cfg = _FakeResolvedConfig(per_task=1.5, daily=10.0)
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: fake_cfg)
+    monkeypatch.setattr("hachi.gateway.in_process_runtime.load_effective_config", lambda: fake_cfg)
 
     result = runtime.get_config()
     assert "limits" in result
@@ -100,7 +100,7 @@ def test_get_config_limits_null_when_unset(monkeypatch: pytest.MonkeyPatch) -> N
 
     runtime = _InProcessGatewayRuntime()
     fake_cfg = _FakeResolvedConfig(per_task=None, daily=None)
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: fake_cfg)
+    monkeypatch.setattr("hachi.gateway.in_process_runtime.load_effective_config", lambda: fake_cfg)
 
     result = runtime.get_config()
     assert result["limits"]["per_task_cap_usd"] is None
@@ -113,7 +113,7 @@ def test_get_config_endpoint_includes_limits_keys(monkeypatch: pytest.MonkeyPatc
 
     runtime = _InProcessGatewayRuntime()
     fake_cfg = _FakeResolvedConfig(per_task=2.0, daily=20.0)
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: fake_cfg)
+    monkeypatch.setattr("hachi.gateway.in_process_runtime.load_effective_config", lambda: fake_cfg)
 
     cp = GatewayControlPlane(get_config=runtime.get_config)
     with _app(cp) as client:
@@ -173,7 +173,10 @@ def test_get_config_masks_provider_secrets(monkeypatch: pytest.MonkeyPatch) -> N
     from hachi.cli.main import _InProcessGatewayRuntime
 
     runtime = _InProcessGatewayRuntime()
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: _real_config_with_secrets())
+    monkeypatch.setattr(
+        "hachi.gateway.in_process_runtime.load_effective_config",
+        lambda: _real_config_with_secrets(),
+    )
 
     result = runtime.get_config()
 
@@ -192,7 +195,10 @@ def test_get_config_endpoint_masks_secrets_via_http(monkeypatch: pytest.MonkeyPa
     from hachi.cli.main import _InProcessGatewayRuntime
 
     runtime = _InProcessGatewayRuntime()
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: _real_config_with_secrets())
+    monkeypatch.setattr(
+        "hachi.gateway.in_process_runtime.load_effective_config",
+        lambda: _real_config_with_secrets(),
+    )
 
     cp = GatewayControlPlane(get_config=runtime.get_config)
     with _app(cp) as client:
@@ -379,7 +385,7 @@ def test_capabilities_includes_configured_field(monkeypatch: pytest.MonkeyPatch)
     cap_state.secret_ref = None
     fake_cfg.capabilities = {"google": cap_state}
 
-    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: fake_cfg)
+    monkeypatch.setattr("hachi.gateway.in_process_runtime.load_effective_config", lambda: fake_cfg)
 
     # connector_status import may fail in test env — suppress gracefully.
     monkeypatch.setattr(

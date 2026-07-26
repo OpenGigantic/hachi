@@ -1149,7 +1149,7 @@ class GatewayControlPlane:
 
         Fetches directly from the SQLite ``messages`` table via the
         ``_get_session_messages`` callback (wired from
-        :meth:`~hachi.cli.main._InProcessGatewayRuntime.session_messages`).
+        :meth:`~hachi.gateway.in_process_runtime._InProcessGatewayRuntime.session_messages`).
 
         The caller (HTTP layer) converts ``None`` to HTTP 404.
 

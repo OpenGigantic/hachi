@@ -523,11 +523,13 @@ def test_post_memory_diff_decision_approve_route_end_to_end(tmp_path: Path) -> N
         state_dir=tmp_path / "state",
     )
 
-    import hachi.cli.main as cli_main
+    import hachi.gateway.in_process_runtime as runtime_mod
     from hachi.cli.main import _InProcessGatewayRuntime
 
-    original_get_paths = cli_main.get_hachi_paths
-    cli_main.get_hachi_paths = lambda: fake_paths
+    # T-41: _InProcessGatewayRuntime's methods resolve get_hachi_paths in
+    # hachi.gateway.in_process_runtime's namespace now, not cli.main's.
+    original_get_paths = runtime_mod.get_hachi_paths
+    runtime_mod.get_hachi_paths = lambda: fake_paths
     try:
         runtime = _InProcessGatewayRuntime()
         cp = GatewayControlPlane(decide_memory_gardener_diff=runtime.decide_memory_gardener_diff)
@@ -536,7 +538,7 @@ def test_post_memory_diff_decision_approve_route_end_to_end(tmp_path: Path) -> N
         with TestClient(app) as client:
             response = client.post(f"/memory/diffs/{proposal_id}", json={"action": "approve"})
     finally:
-        cli_main.get_hachi_paths = original_get_paths
+        runtime_mod.get_hachi_paths = original_get_paths
 
     assert response.status_code == 200
     data = response.json()
@@ -570,11 +572,13 @@ def test_post_memory_diff_decision_reject_route_drops_from_store(tmp_path: Path)
         state_dir=tmp_path / "state",
     )
 
-    import hachi.cli.main as cli_main
+    import hachi.gateway.in_process_runtime as runtime_mod
     from hachi.cli.main import _InProcessGatewayRuntime
 
-    original_get_paths = cli_main.get_hachi_paths
-    cli_main.get_hachi_paths = lambda: fake_paths
+    # T-41: _InProcessGatewayRuntime's methods resolve get_hachi_paths in
+    # hachi.gateway.in_process_runtime's namespace now, not cli.main's.
+    original_get_paths = runtime_mod.get_hachi_paths
+    runtime_mod.get_hachi_paths = lambda: fake_paths
     try:
         runtime = _InProcessGatewayRuntime()
         cp = GatewayControlPlane(decide_memory_gardener_diff=runtime.decide_memory_gardener_diff)
@@ -583,7 +587,7 @@ def test_post_memory_diff_decision_reject_route_drops_from_store(tmp_path: Path)
         with TestClient(app) as client:
             response = client.post(f"/memory/diffs/{proposal_id}", json={"action": "reject"})
     finally:
-        cli_main.get_hachi_paths = original_get_paths
+        runtime_mod.get_hachi_paths = original_get_paths
 
     assert response.status_code == 200
     data = response.json()
@@ -608,11 +612,13 @@ def test_post_memory_diff_decision_unknown_id_returns_404(tmp_path: Path) -> Non
         state_dir=tmp_path / "state",
     )
 
-    import hachi.cli.main as cli_main
+    import hachi.gateway.in_process_runtime as runtime_mod
     from hachi.cli.main import _InProcessGatewayRuntime
 
-    original_get_paths = cli_main.get_hachi_paths
-    cli_main.get_hachi_paths = lambda: fake_paths
+    # T-41: _InProcessGatewayRuntime's methods resolve get_hachi_paths in
+    # hachi.gateway.in_process_runtime's namespace now, not cli.main's.
+    original_get_paths = runtime_mod.get_hachi_paths
+    runtime_mod.get_hachi_paths = lambda: fake_paths
     try:
         runtime = _InProcessGatewayRuntime()
         cp = GatewayControlPlane(decide_memory_gardener_diff=runtime.decide_memory_gardener_diff)
@@ -621,7 +627,7 @@ def test_post_memory_diff_decision_unknown_id_returns_404(tmp_path: Path) -> Non
         with TestClient(app) as client:
             response = client.post("/memory/diffs/does-not-exist", json={"action": "approve"})
     finally:
-        cli_main.get_hachi_paths = original_get_paths
+        runtime_mod.get_hachi_paths = original_get_paths
 
     assert response.status_code == 404
 

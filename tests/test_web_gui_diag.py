@@ -41,7 +41,7 @@ class TestRecentSessionsNoAgent:
 
         paths = _make_paths(tmp_path)
         # Point the runtime at our temp sessions.db and seed one real session.
-        monkeypatch.setattr("hachi.cli.main.get_hachi_paths", lambda: paths)
+        monkeypatch.setattr("hachi.gateway.in_process_runtime.get_hachi_paths", lambda: paths)
 
         store = SessionStore(db_path=str(paths.sessions_db))
         session_id = store.start_session(model="test-model")
@@ -59,7 +59,7 @@ class TestRecentSessionsNoAgent:
 
     def test_empty_store_returns_empty_list(self, tmp_path: Path, monkeypatch) -> None:
         paths = _make_paths(tmp_path)
-        monkeypatch.setattr("hachi.cli.main.get_hachi_paths", lambda: paths)
+        monkeypatch.setattr("hachi.gateway.in_process_runtime.get_hachi_paths", lambda: paths)
 
         from hachi.cli.main import _InProcessGatewayRuntime
 

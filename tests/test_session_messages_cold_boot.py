@@ -53,7 +53,7 @@ class TestSessionMessagesColdBoot:
         mock_paths = MagicMock()
         mock_paths.sessions_db = tmp_path / "sessions.db"
 
-        with patch("hachi.cli.main.get_hachi_paths", return_value=mock_paths):
+        with patch("hachi.gateway.in_process_runtime.get_hachi_paths", return_value=mock_paths):
             result = runtime.session_messages(sid)
 
         assert len(result) == 2, (
@@ -73,7 +73,7 @@ class TestSessionMessagesColdBoot:
         mock_paths = MagicMock()
         mock_paths.sessions_db = tmp_path / "sessions.db"
 
-        with patch("hachi.cli.main.get_hachi_paths", return_value=mock_paths):
+        with patch("hachi.gateway.in_process_runtime.get_hachi_paths", return_value=mock_paths):
             result = runtime.session_messages("nonexistent-session-id")
 
         assert result == [], "unknown session must return [] not raise"
