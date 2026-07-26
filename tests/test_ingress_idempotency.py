@@ -10,10 +10,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.core.session_store import SessionStore
-from hachi.gateway.control_plane import GatewayControlPlane
 from hachi.gateway.fastapi_app import create_gateway_app
 
 _CONNECT = {
@@ -80,7 +80,7 @@ class _CountingChat:
 
 
 def _client_and_session(tmp_path: Path, chat: _CountingChat) -> tuple[TestClient, str]:
-    cp = GatewayControlPlane(on_chat=chat)
+    cp = control_plane(on_chat=chat)
     client = TestClient(create_gateway_app(cp))
     session_id = client.post("/sessions", json=_CONNECT).json()["session_id"]
     return client, session_id

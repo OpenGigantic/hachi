@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from conftest import control_plane as build_control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane
@@ -9,7 +10,7 @@ from hachi.gateway.fastapi_app import create_gateway_app
 
 
 def _control_plane() -> GatewayControlPlane:
-    return GatewayControlPlane(on_chat=lambda _sid, prompt: f"echo:{prompt}")
+    return build_control_plane(on_chat=lambda _sid, prompt: f"echo:{prompt}")
 
 
 def test_openai_chat_completions_returns_openai_shape() -> None:
@@ -61,7 +62,7 @@ def test_openai_chat_is_rate_limited(monkeypatch) -> None:
 
 def _control_plane_with_models(models: dict[str, list[str]]) -> GatewayControlPlane:
     """A control plane wired with a fixed list_all_models() allowlist."""
-    return GatewayControlPlane(
+    return build_control_plane(
         on_chat=lambda _sid, prompt: f"echo:{prompt}",
         list_all_models=lambda: models,
     )
@@ -267,7 +268,7 @@ def _streaming_control_plane(*, max_active_sessions: int = 100) -> GatewayContro
     def read_events(session_id: str, after: int, limit: int) -> list[GatewayEvent]:
         return [e for e in store if e.sequence > after][:limit]
 
-    return GatewayControlPlane(
+    return build_control_plane(
         on_chat=on_chat, read_events=read_events, max_active_sessions=max_active_sessions
     )
 
@@ -368,7 +369,7 @@ def test_openai_facade_does_not_share_one_default_session() -> None:
         seen.append(session_id)
         return f"echo:{prompt}"
 
-    cp = GatewayControlPlane(on_chat=_on_chat)
+    cp = build_control_plane(on_chat=_on_chat)
     app = create_gateway_app(cp)
     with TestClient(app) as client:
         for text in ("first caller", "second caller"):
@@ -394,7 +395,7 @@ def test_openai_facade_has_no_session_ownership_gate() -> None:
     """
     _TOKEN_A = "token-a"
 
-    cp = GatewayControlPlane(on_chat=lambda _sid, prompt: f"echo:{prompt}")
+    cp = build_control_plane(on_chat=lambda _sid, prompt: f"echo:{prompt}")
     app = create_gateway_app(cp, auth_token=_TOKEN_A)
 
     with TestClient(app) as client:
@@ -497,7 +498,7 @@ def test_openai_facade_user_keyed_session_persists_across_requests() -> None:
         seen.append(session_id)
         return f"echo:{prompt}"
 
-    cp = GatewayControlPlane(on_chat=_on_chat)
+    cp = build_control_plane(on_chat=_on_chat)
     app = create_gateway_app(cp)
     body = {"user": "conversation-1", "messages": [{"role": "user", "content": "hi"}]}
 

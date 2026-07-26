@@ -15,9 +15,9 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from conftest import control_plane
 from fastapi.testclient import TestClient
 
-from hachi.gateway.control_plane import GatewayControlPlane
 from hachi.gateway.fastapi_app import create_gateway_app
 
 # ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ def _make_fake_client(models: list[str]) -> Any:
 
 def _build_gateway(list_models_fn: Any) -> TestClient:
     """Create a TestClient backed by a GatewayControlPlane with a custom list_models."""
-    cp = GatewayControlPlane(list_models=list_models_fn)
+    cp = control_plane(list_models=list_models_fn)
     return TestClient(create_gateway_app(cp))
 
 

@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from conftest import control_plane
 from fastapi.testclient import TestClient
 
-from hachi.gateway.control_plane import (
-    GatewayControlPlane,
-    GatewayEvent,
-    GatewayProtocolError,
-)
+from hachi.gateway.control_plane import GatewayEvent, GatewayProtocolError
 from hachi.gateway.fastapi_app import create_gateway_app
 
 _CONNECT = {"client_id": "c", "surface": "tui", "protocol_version": "1.0", "capabilities": []}
@@ -19,7 +16,7 @@ def test_failed_boot_releases_session_slot() -> None:
     def boom(_session_id, _req):
         raise RuntimeError("boot failed")
 
-    cp = GatewayControlPlane(on_connect=boom, max_active_sessions=1)
+    cp = control_plane(on_connect=boom, max_active_sessions=1)
 
     with pytest.raises(RuntimeError):
         cp.create_session(**_CONNECT)
@@ -39,7 +36,7 @@ def test_sse_stream_closes_gracefully_when_session_vanishes_midstream() -> None:
             return [GatewayEvent(sequence=1, event_type="tool.call.started", payload={}, time="t")]
         raise GatewayProtocolError("Unknown session_id")  # session closed mid-stream
 
-    cp = GatewayControlPlane(read_events=read_events)
+    cp = control_plane(read_events=read_events)
     app = create_gateway_app(cp)
     with TestClient(app) as client:
         session_id = client.post("/sessions", json=_CONNECT).json()["session_id"]

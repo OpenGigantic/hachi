@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane
@@ -56,7 +57,7 @@ def test_interrupt_live_session_calls_handler_and_returns_true() -> None:
         calls.append(session_id)
         return {"interrupted": True}
 
-    cp = GatewayControlPlane(on_interrupt=_on_interrupt)
+    cp = control_plane(on_interrupt=_on_interrupt)
     sid = cp.create_session(client_id="c1", surface="tui")["session_id"]
 
     result = cp.interrupt(sid)
@@ -76,7 +77,7 @@ def test_interrupt_unknown_session_returns_false() -> None:
 
 def test_interrupt_no_runtime_attached_returns_false() -> None:
     """When on_interrupt is None (standalone gateway), interrupt() is safe."""
-    cp = GatewayControlPlane(on_interrupt=None)
+    cp = control_plane(on_interrupt=None)
     sid = cp.create_session(client_id="c2", surface="web")["session_id"]
 
     result = cp.interrupt(sid)
@@ -90,7 +91,7 @@ def test_interrupt_handler_exception_returns_false_not_500() -> None:
     def _bad_handler(_session_id: str) -> dict[str, Any]:
         raise RuntimeError("boom")
 
-    cp = GatewayControlPlane(on_interrupt=_bad_handler)
+    cp = control_plane(on_interrupt=_bad_handler)
     sid = cp.create_session(client_id="c3", surface="web")["session_id"]
 
     result = cp.interrupt(sid)
@@ -111,7 +112,7 @@ def test_interrupt_route_live_session_returns_interrupted_true() -> None:
         cancel_record.append(session_id)
         return {"interrupted": True}
 
-    cp = GatewayControlPlane(on_interrupt=_on_interrupt)
+    cp = control_plane(on_interrupt=_on_interrupt)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -137,7 +138,7 @@ def test_interrupt_route_unknown_session_returns_interrupted_false() -> None:
 
 def test_interrupt_route_no_runtime_attached_returns_false() -> None:
     """When on_interrupt is None, the route still returns 200 {"interrupted": false}."""
-    cp = GatewayControlPlane(on_interrupt=None)
+    cp = control_plane(on_interrupt=None)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -227,7 +228,7 @@ def test_interrupt_delivers_correct_session_id() -> None:
         received.append(session_id)
         return {"interrupted": True}
 
-    cp = GatewayControlPlane(on_interrupt=_capture)
+    cp = control_plane(on_interrupt=_capture)
     sid1 = cp.create_session(client_id="c1", surface="web")["session_id"]
     sid2 = cp.create_session(client_id="c2", surface="web")["session_id"]
 

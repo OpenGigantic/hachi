@@ -17,6 +17,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import (
@@ -262,7 +263,7 @@ def _make_cp_with_stubs(
     target_fn: Any = None,
 ) -> GatewayControlPlane:
     """Build a control plane wired with authoring stubs."""
-    return GatewayControlPlane(
+    return control_plane(
         get_authoring_targets=targets_fn
         or (
             lambda: [
@@ -320,7 +321,7 @@ class TestGenerateRoute:
 
     def test_generate_missing_handler_returns_503(self):
         """No handler wired → 503."""
-        cp = GatewayControlPlane(
+        cp = control_plane(
             get_authoring_targets=lambda: [],
             get_authoring_target=lambda n: {"name": n, "source": ""},
             authoring_apply=lambda n: {"ok": True, "reindexed_ms": 0},

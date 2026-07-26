@@ -295,13 +295,13 @@ def control_plane(**handlers: Any):  # type: ignore[no-untyped-def]
     A touched port's namespace always carries EVERY member that port
     declares, not just the ones this call supplied -- unsupplied members
     default to ``None``. ``GatewayControlPlane.__init__`` resolves each
-    handler as ``explicit_kwarg if ... else (port.method if port else
-    None)``: it reads ``port.method`` directly (no ``getattr`` default), so
-    a port object must never be missing an attribute it declares, only have
-    it set to ``None``. This keeps the helper's behaviour identical to the
-    legacy kwargs form for every OTHER handler sharing the same port.
+    handler as ``port.method if port else None``: it reads ``port.method``
+    directly (no ``getattr`` default), so a port object must never be
+    missing an attribute it declares -- only have it set to ``None`` -- or
+    the missing attribute raises ``AttributeError`` instead of a clean
+    ``_require_handler`` failure.
 
-    Round 2 will convert the 99 existing ``GatewayControlPlane(...)`` call
+    Round 2 converted the 94 existing ``GatewayControlPlane(...)`` call
     sites in this test suite to call this helper instead of passing handler
     kwargs directly.
     """

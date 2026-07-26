@@ -27,6 +27,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.core.memory.gardener import GardeningResult, MemoryGardener
@@ -375,7 +376,7 @@ def test_get_memory_diffs_route_returns_real_gardener_output_end_to_end(
         with runtime._agents_lock:
             runtime._agents["test-session"] = session
 
-        cp = GatewayControlPlane(get_memory_gardener_diffs=runtime.get_memory_gardener_diffs)
+        cp = control_plane(get_memory_gardener_diffs=runtime.get_memory_gardener_diffs)
         app = create_gateway_app(cp)
 
         with TestClient(app) as client:
@@ -532,7 +533,7 @@ def test_post_memory_diff_decision_approve_route_end_to_end(tmp_path: Path) -> N
     runtime_mod.get_hachi_paths = lambda: fake_paths
     try:
         runtime = _InProcessGatewayRuntime()
-        cp = GatewayControlPlane(decide_memory_gardener_diff=runtime.decide_memory_gardener_diff)
+        cp = control_plane(decide_memory_gardener_diff=runtime.decide_memory_gardener_diff)
         app = create_gateway_app(cp)
 
         with TestClient(app) as client:
@@ -581,7 +582,7 @@ def test_post_memory_diff_decision_reject_route_drops_from_store(tmp_path: Path)
     runtime_mod.get_hachi_paths = lambda: fake_paths
     try:
         runtime = _InProcessGatewayRuntime()
-        cp = GatewayControlPlane(decide_memory_gardener_diff=runtime.decide_memory_gardener_diff)
+        cp = control_plane(decide_memory_gardener_diff=runtime.decide_memory_gardener_diff)
         app = create_gateway_app(cp)
 
         with TestClient(app) as client:
@@ -621,7 +622,7 @@ def test_post_memory_diff_decision_unknown_id_returns_404(tmp_path: Path) -> Non
     runtime_mod.get_hachi_paths = lambda: fake_paths
     try:
         runtime = _InProcessGatewayRuntime()
-        cp = GatewayControlPlane(decide_memory_gardener_diff=runtime.decide_memory_gardener_diff)
+        cp = control_plane(decide_memory_gardener_diff=runtime.decide_memory_gardener_diff)
         app = create_gateway_app(cp)
 
         with TestClient(app) as client:

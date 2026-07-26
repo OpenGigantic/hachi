@@ -17,6 +17,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane
@@ -29,7 +30,7 @@ from hachi.gateway.fastapi_app import create_gateway_app
 
 def _cp(**kwargs: Any) -> GatewayControlPlane:
     """Construct a GatewayControlPlane with only the supplied handlers."""
-    return GatewayControlPlane(**kwargs)
+    return control_plane(**kwargs)
 
 
 def _app(**kwargs: Any) -> TestClient:
