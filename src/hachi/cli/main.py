@@ -50,7 +50,7 @@ from hachi.core.onboarding import (
     looks_like_env_var_name,
     persist_provider_api_key,
 )
-from hachi.core.paths import get_hachi_paths
+from hachi.core.paths import dotenv_autoload_disabled, get_hachi_paths
 from hachi.core.permissions import PermissionDecision, PermissionGate
 from hachi.core.secret_scanner import redact_secrets
 from hachi.core.secret_store import create_default_secret_store
@@ -123,7 +123,7 @@ def _load_dotenv_into_environ(dotenv_path: Path) -> None:
     import-time skipif guards on live-gateway tests (flaky, order-dependent) and
     leaked real secrets into the test process.
     """
-    if os.environ.get("HACHI_DISABLE_DOTENV_AUTOLOAD", "").strip() == "1":
+    if dotenv_autoload_disabled():
         return
     if not dotenv_path.exists():
         return
@@ -153,41 +153,7 @@ try:
 except Exception:
     pass  # path resolution must never abort the CLI
 
-# ---------------------------------------------------------------------------
-# Task 6d — TOKOBOROS_ → HACHI_ back-compat shim
-# ---------------------------------------------------------------------------
-
 _logger = logging.getLogger(__name__)
-
-_TOKOBOROS_RENAMES: dict[str, str] = {
-    "TOKOBOROS_STT_API_KEY": "HACHI_STT_API_KEY",
-    "TOKOBOROS_TTS_API_KEY": "HACHI_TTS_API_KEY",
-    "TOKOBOROS_SMTP_USER": "HACHI_SMTP_USER",
-    "TOKOBOROS_SMTP_PASSWORD": "HACHI_SMTP_PASSWORD",
-    "TOKOBOROS_SMTP_HOST": "HACHI_SMTP_HOST",
-    "TOKOBOROS_SMTP_PORT": "HACHI_SMTP_PORT",
-    "TOKOBOROS_SMTP_FROM": "HACHI_SMTP_FROM",
-}
-
-
-def _apply_tokoboros_shim() -> None:
-    """Copy deprecated TOKOBOROS_* env vars to their HACHI_* equivalents.
-
-    Only copies when the old var is present and the new var is NOT already set.
-    Logs a deprecation warning for each migrated key so operators know to
-    update their environment.
-    """
-    for old, new in _TOKOBOROS_RENAMES.items():
-        if old in os.environ and new not in os.environ:
-            os.environ[new] = os.environ[old]
-            _logger.warning(
-                "Deprecated env var %r — rename to %r in your .env or environment.",
-                old,
-                new,
-            )
-
-
-_apply_tokoboros_shim()
 
 console = Console()
 

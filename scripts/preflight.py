@@ -79,6 +79,11 @@ STEPS: list[Step] = [
         [["uv", "run", "python", "-m", "mypy", "--config-file", "mypy-strict-gate.ini"]],
     ),
     Step("skill-lint (.og)", [["uv", "run", "python", "scripts/lint_skills.py"]]),
+    # Guardrails (CF-17 / T-67): mechanical enforcement of the bans recorded in CLAUDE.md
+    # "Out of scope" (e.g. no TOKOBOROS_* compat shims) -- a ban with no check is advice,
+    # not a gate. Blocking from day one: its baseline is zero the moment the banned
+    # pattern is deleted, so there is nothing to ratchet. See scripts/check_bans.py.
+    Step("ban-lint (reintroduced shims)", [["uv", "run", "python", "scripts/check_bans.py"]]),
     # Architectural rail (Guardrails Phase 2) -- enforces the import layering so the domain
     # can't grow a new dependency on its delivery edges. Blocking & green; see
     # pyproject [tool.importlinter]. A new cross-layer import fails here.

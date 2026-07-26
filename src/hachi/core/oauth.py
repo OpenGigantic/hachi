@@ -21,6 +21,7 @@ from pathlib import Path
 
 import httpx
 
+from hachi.core.paths import dotenv_autoload_disabled
 from hachi.core.secret_store import SecretStore, create_default_secret_store
 
 
@@ -55,6 +56,10 @@ def _resolve_env(name: str) -> str | None:
     val = os.environ.get(name)
     if val:
         return val
+    # BB-2: honour the same gate the CLI edge uses — a hermetic process (tests, or an
+    # operator who explicitly disabled autoload) must not pick up an ambient .env.
+    if dotenv_autoload_disabled():
+        return None
     candidates = [Path.cwd() / ".env"]
     try:
         from hachi.core.paths import get_hachi_paths

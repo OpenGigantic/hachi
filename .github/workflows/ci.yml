@@ -87,10 +87,8 @@ jobs:
       # ---------------------------------------------------------------------------
       - name: SAST — bandit (medium+ severity)
         run: uv run bandit -r src -ll --exit-zero
-        # exit-zero: bandit findings are currently medium only (0 high) and are
-        # pre-existing in src/ (owned by other agents this session). We surface the
-        # report but do not block until the owning team has triaged each finding.
-        # Change to omit --exit-zero once src/ medium findings are resolved.
+        # Advisory: 22 medium findings, 0 high (verified 2026-07-26). Ratchet to
+        # blocking (drop --exit-zero) once the medium count hits zero.
 
   lint:
     runs-on: ubuntu-latest
@@ -109,25 +107,21 @@ jobs:
       - name: Sync dependencies
         run: uv sync --extra dev
 
-      # T1.3: ruff is now a hard gate on every push and PR.
-      # Pre-existing ruff state (2026-06-19): 1 error in src/hachi/core/browser.py
-      # (F401 unused import) and 3 in tests/ (I001, F401 x2).  These must be fixed
-      # before this gate will pass green on main.  They are trivial auto-fixable
-      # errors; the owning team should run `uv run ruff check --fix src tests`
-      # and commit the result.
+      # Hard gate on every push and PR. Baseline is clean; mirrored by scripts/preflight.py.
       - name: Lint (ruff)
         run: uv run ruff check src tests
 
       # T1.3: mypy on the full src tree is still non-blocking on main because there
       # are 483 pre-existing errors across 64 files (chromadb typing issues in
       # memory_vault.py, og_engine/engine.py annotation gaps, community_packs.py).
-      # These are NOT caused by this session's changes and are outside our ownership
-      # scope (owned by source agents).  Making this blocking today would turn main
-      # red immediately for unrelated debt.
+      # These are pre-existing debt, not introduced by any single change, and are
+      # tracked as a ratchet rather than fixed here — see T-69-mypy-burndown-ratchet.md
+      # and docs/bug-bank.md BB-143. Making this blocking today would turn main red
+      # immediately for unrelated debt.
       # Strategy: the scoped strict gate (mypy-strict-gate.ini) IS blocking on PRs
       # and covers 48 files that are already clean.  The full-tree check here is
       # advisory on both main and PRs — it records the error count trend over time.
-      # Full burn-down is tracked as a Phase 3 sustained effort.
+      # Full burn-down is tracked as a Phase 3 sustained effort (T-69).
       - name: Type check — full tree (advisory)
         run: uv run mypy src --ignore-missing-imports
         continue-on-error: true
@@ -141,12 +135,18 @@ jobs:
 
       # -----------------------------------------------------------------------
       # Guardrails Phase 2 — the Rails. Mirrors scripts/preflight.py.
-      # import-linter is a HARD gate: the architectural layering is green, so a new
-      # cross-layer import (e.g. the domain importing the gateway) fails CI here.
-      # deptry/vulture/complexity are advisory (continue-on-error) until their
-      # baselines reach zero — see pyproject [tool.importlinter]/[tool.deptry]/
-      # [tool.vulture]/[tool.ruff.lint.pylint].
+      # ban-lint is a HARD gate (CF-17 / T-67): mechanically enforces the bans recorded
+      # in CLAUDE.md "Out of scope" (e.g. no TOKOBOROS_* compat shims) instead of
+      # leaving them as prose only — baseline is zero the moment the banned pattern is
+      # deleted, so it blocks from day one. import-linter is a HARD gate: the
+      # architectural layering is green, so a new cross-layer import (e.g. the domain
+      # importing the gateway) fails CI here. deptry/vulture/complexity are advisory
+      # (continue-on-error) until their baselines reach zero — see pyproject
+      # [tool.importlinter]/[tool.deptry]/[tool.vulture]/[tool.ruff.lint.pylint].
       # -----------------------------------------------------------------------
+      - name: Guardrails — ban-lint (reintroduced compat shims, blocking)
+        run: uv run python scripts/check_bans.py
+
       - name: Architecture — import-linter (blocking)
         run: uv run lint-imports
 

@@ -353,8 +353,18 @@ class TestDefaultClient:
 
         assert isinstance(client, ResilientClient)
 
-    def test_default_client_unknown_model_synthesises_descriptor(self) -> None:
+    def test_default_client_unknown_model_synthesises_descriptor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Amendment A11: unknown models get a synthetic REASONING descriptor."""
+        # CF-17/T-67 (BB-2): no provider is registered for the synthesized descriptor
+        # (empty _FakeProviderRegistry), so _build_client falls through to the real
+        # create_llm_client -> AnthropicClient path, which now correctly refuses the
+        # now-gated .env fallback. Descriptor synthesis is this test's subject, not
+        # credential resolution, so provide the key directly — deterministic and
+        # CI-safe (.env is gitignored/absent there), same pattern as the cockpit-gaps
+        # fix.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-routing-router")
         registry = ModelRegistry()  # empty — no bundled defaults
         policy = RoutingPolicy(default_model="some-local-ollama")
         provider_reg = _FakeProviderRegistry([])

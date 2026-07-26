@@ -10,6 +10,11 @@ from hachi.core.llm import AnthropicClient, OpenAICompatibleClient, create_llm_c
 def test_create_llm_client_reads_api_key_from_dotenv(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.chdir(tmp_path)
+    # CF-17/T-67 (BB-2): _resolve_api_key's .env fallback is gated by
+    # HACHI_DISABLE_DOTENV_AUTOLOAD, which conftest.py sets to "1" suite-wide for
+    # hermeticity. This test's subject IS that fallback, so it must opt back in
+    # explicitly — matching production, where the flag is unset.
+    monkeypatch.setenv("HACHI_DISABLE_DOTENV_AUTOLOAD", "0")
 
     (tmp_path / ".env").write_text(
         "ANTHROPIC_API_KEY=test-dotenv-key\n",

@@ -115,6 +115,11 @@ class TestRegisterGoogleToolsWithCredentials:
         monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
         (tmp_path / ".env").write_text("GOOGLE_CLIENT_ID=dotenv-only-id\n", encoding="utf-8")
         monkeypatch.chdir(tmp_path)
+        # CF-17/T-67 (BB-2): oauth._resolve_env's .env fallback is gated by
+        # HACHI_DISABLE_DOTENV_AUTOLOAD, which conftest.py sets to "1" suite-wide for
+        # hermeticity. This test's subject IS that fallback, so it must opt back in
+        # explicitly — matching production, where the flag is unset.
+        monkeypatch.setenv("HACHI_DISABLE_DOTENV_AUTOLOAD", "0")
         fake_hub = _make_fake_hub(["google_send_email"])
         with patch("hachi.integrations.google.GoogleIntegrationHub", return_value=fake_hub):
             from hachi.tools import google_tools

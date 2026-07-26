@@ -35,9 +35,7 @@ def _start_server() -> tuple[Any, str, Any]:
     from hachi.cli.main import _resolve_gateway_auth_token, _start_gateway_server
 
     _resolve_gateway_auth_token("127.0.0.1")  # ensure token exists
-    server, base_url, runtime = _start_gateway_server(
-        host="127.0.0.1", port=0, attach_runtime=True
-    )
+    server, base_url, runtime = _start_gateway_server(host="127.0.0.1", port=0, attach_runtime=True)
     return server, base_url, runtime
 
 
@@ -72,8 +70,16 @@ def _create_session(client: Any) -> str:
 class TestMemoryCRUD:
     """Live round-trip: add a fact, confirm it appears, delete it, confirm it's gone."""
 
-    def test_add_and_delete_core_memory_fact(self) -> None:
+    def test_add_and_delete_core_memory_fact(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """POST /memory/facts → fact appears in GET /memory → DELETE removes it (core_memory)."""
+        # CF-17/T-67 (BB-2): a live session needs a real LLM client, which now correctly
+        # refuses the CWD .env fallback under the suite's hermetic
+        # HACHI_DISABLE_DOTENV_AUTOLOAD=1. The key itself is incidental to this test's
+        # subject (memory CRUD, not credential resolution), so provide it directly —
+        # same pattern used throughout the suite (e.g. test_readiness_probe.py) — rather
+        # than opting into the .env fallback, which would also not help in CI (.env is
+        # gitignored and absent there).
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-cockpit-gaps")
         server, base_url, runtime = _start_server()
         try:
             client = _make_client(base_url)
@@ -139,8 +145,12 @@ class TestMemoryCRUD:
                 runtime.shutdown()
             server.stop()
 
-    def test_add_core_memory_fact(self) -> None:
+    def test_add_core_memory_fact(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """POST /memory/facts with group=core_memory stores and returns id."""
+        # CF-17/T-67 (BB-2): see test_add_and_delete_core_memory_fact — a live session
+        # needs a real LLM client; provide the key directly rather than relying on the
+        # now-gated .env fallback (or a real .env, which is gitignored/absent in CI).
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-cockpit-gaps")
         server, base_url, runtime = _start_server()
         try:
             client = _make_client(base_url)
@@ -159,10 +169,14 @@ class TestMemoryCRUD:
                 runtime.shutdown()
             server.stop()
 
-    def test_add_fact_invalid_group(self) -> None:
+    def test_add_fact_invalid_group(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """POST /memory/facts with unknown group returns HTTP 422."""
         from hachi.client.gateway import GatewayError
 
+        # CF-17/T-67 (BB-2): see test_add_and_delete_core_memory_fact — a live session
+        # needs a real LLM client; provide the key directly rather than relying on the
+        # now-gated .env fallback (or a real .env, which is gitignored/absent in CI).
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-cockpit-gaps")
         server, base_url, runtime = _start_server()
         try:
             client = _make_client(base_url)
