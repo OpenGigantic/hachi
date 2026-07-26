@@ -389,3 +389,18 @@ class ProcessSharedServices:
             brain_dir=brain_dir,
             _fingerprint=fingerprint,
         )
+
+
+# T-68: publish a resolver so hachi.core.* (cost.py, runtime/resume.py,
+# runtime/job_handlers.py) can reach the live singleton through
+# hachi.core.runtime.protocols instead of importing hachi.gateway directly
+# (import-linter "the engine must not import the gateway service"). This is
+# a module-scope side effect — it fires whenever ANYTHING imports this
+# module (which boot_agent always does before a session can exist), so the
+# engine-side readers see the same "None until booted" behaviour as before
+# (BB-6). `.instance` (the classmethod, not a call) is registered so the
+# resolver always reflects the CURRENT singleton, not a snapshot frozen at
+# import time.
+from hachi.core.runtime.protocols import set_process_services_provider  # noqa: E402
+
+set_process_services_provider(ProcessSharedServices.instance)

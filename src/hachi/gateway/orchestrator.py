@@ -3512,9 +3512,15 @@ def boot_agent(
         ToolSpec(
             # Agent-accessible configuration + MCP management tools.
             # Registered AFTER MCP manager so list_mcp_servers sees all nodes.
+            # T-68: inject the gateway's fuller get_skills_dir (which also runs
+            # the first-run workspace bootstrap) — tools/config_tools.py itself
+            # must not import hachi.gateway, so its default collaborator is its
+            # own thinner get_skills_dir (mkdir-only, no bootstrap).
             name="config",
             after={"mcp_tools"},
-            register_fn=lambda d: register_config_tools(d.tool_registry, gate=d.gate),
+            register_fn=lambda d: register_config_tools(
+                d.tool_registry, gate=d.gate, skills_dir_provider=get_skills_dir
+            ),
         ),
         ToolSpec(
             # MUST be LAST — needs full parent registry.

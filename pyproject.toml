@@ -239,16 +239,14 @@ forbidden_modules = ["hachi.gateway"]
 # gateway.workspace) is the cli seam already frozen by the contract above; cli importing
 # the gateway is correct edge->service layering, not a new domain coupling.
 allow_indirect_imports = "true"
-ignore_imports = [
-    # SEAMS: these reach up into the gateway for shared-session/workspace services
-    # that have no engine-level home yet. All lazy except onboarding. Burn down by
-    # introducing a GatewayControlPlane protocol owned by core.
-    "hachi.core.onboarding -> hachi.gateway.workspace",
-    "hachi.core.cost -> hachi.gateway.shared_services",
-    "hachi.core.runtime.job_handlers -> hachi.gateway.shared_services",
-    "hachi.core.runtime.resume -> hachi.gateway.shared_services",
-    "hachi.tools.config_tools -> hachi.gateway.workspace",
-]
+# T-68: all five frozen seams that used to live here were burned down by inverting
+# the dependency behind engine-owned collaborators — hachi.core.skill_packs
+# .install_skill_pack (onboarding) and tools/config_tools.py's own thin
+# get_skills_dir() (config_tools), and the
+# hachi.core.runtime.protocols.get_active_process_services seam (cost, resume,
+# job_handlers), which the gateway populates once at import time in
+# gateway/shared_services.py. See docs/bug-bank.md BB-144. No ignore_imports entries
+# remain in this contract — keep it that way; the list only ever shrinks.
 
 # ---------------------------------------------------------------------------
 # deptry — the dependency rail (Guardrails Phase 2). Catches a dependency that is

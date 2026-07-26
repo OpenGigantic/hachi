@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from hachi.core.runtime.protocols import get_active_process_services
+
 logger = logging.getLogger(__name__)
 
 
@@ -184,12 +186,18 @@ def _try_emit(event_name: str, payload: dict[str, Any]) -> None:
 
 
 def _get_process_bus() -> Any:
-    """Return the process-level EventBus singleton, or None."""
-    try:
-        from hachi.gateway.shared_services import ProcessSharedServices
+    """Return the process-level EventBus singleton, or None.
 
-        shared = ProcessSharedServices.instance()
-        if shared is not None and hasattr(shared, "event_bus"):
+    T-68: reads through the ``core``-owned
+    :func:`~hachi.core.runtime.protocols.get_active_process_services` seam
+    instead of naming ``hachi.gateway`` directly — the gateway registers its
+    provider once, at import time, in ``gateway/shared_services.py``. This is
+    a SEPARATE seam from the ``hachi.cli.main`` import a few lines up in
+    ``_do_resume`` — that one is untouched, it belongs to T-42.
+    """
+    try:
+        shared = get_active_process_services()
+        if shared is not None:
             return shared.event_bus
     except Exception:
         pass

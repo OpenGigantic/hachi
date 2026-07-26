@@ -38,8 +38,11 @@ from __future__ import annotations
 import json
 import re
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from hachi.core.paths import ensure_directories, get_hachi_paths
 
 # ---------------------------------------------------------------------------
 # MCP security constants
@@ -210,6 +213,29 @@ def _invalidate_skill_engine_cache(skills_dir: Path | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Skills directory resolution (T-68)
+#
+# This module must not import hachi.gateway (import-linter "the engine must
+# not import the gateway service") — hachi.gateway.workspace.get_skills_dir
+# is the RICHER resolver (it also runs the first-run workspace bootstrap:
+# installs core skill packs, writes brain.og), and only the gateway is
+# allowed to name it. get_skills_dir() below is the thinner, engine-owned
+# default: it only ensures the directory exists, using core.paths — which
+# every real boot path (CLI, gateway) has already exercised more fully
+# before an MCP tool call can ever be reached. Production boot
+# (gateway/orchestrator.py) overrides this default via
+# register_config_tools's skills_dir_provider parameter.
+# ---------------------------------------------------------------------------
+
+
+def get_skills_dir() -> Path:
+    """Return the user skills directory, creating it (and its siblings) if needed."""
+    paths = get_hachi_paths()
+    ensure_directories(paths)
+    return paths.skills_dir
+
+
+# ---------------------------------------------------------------------------
 # MCP tool factories
 # ---------------------------------------------------------------------------
 
@@ -228,8 +254,18 @@ args: {args}
 """
 
 
-def _make_add_mcp_server(gate: Any = None) -> Any:
-    """Factory for the add_mcp_server tool."""
+def _make_add_mcp_server(
+    gate: Any = None, skills_dir_provider: Callable[[], Path] = get_skills_dir
+) -> Any:
+    """Factory for the add_mcp_server tool.
+
+    Args:
+        gate: Optional PermissionGate for tier checks.
+        skills_dir_provider: Zero-arg callable returning the skills
+            directory. T-68: defaults to this module's own
+            :func:`get_skills_dir` so this module never names
+            ``hachi.gateway`` — see :func:`register_config_tools`.
+    """
 
     def add_mcp_server(
         name: str,
@@ -287,9 +323,7 @@ def _make_add_mcp_server(gate: Any = None) -> Any:
 
         # Write the .og file
         try:
-            from hachi.gateway.workspace import get_skills_dir
-
-            skills_dir = get_skills_dir()
+            skills_dir = skills_dir_provider()
             dest = skills_dir / f"mcp-{name}.og"
 
             if dest.exists():
@@ -318,8 +352,18 @@ def _make_add_mcp_server(gate: Any = None) -> Any:
     return add_mcp_server
 
 
-def _make_remove_mcp_server(gate: Any = None) -> Any:
-    """Factory for the remove_mcp_server tool."""
+def _make_remove_mcp_server(
+    gate: Any = None, skills_dir_provider: Callable[[], Path] = get_skills_dir
+) -> Any:
+    """Factory for the remove_mcp_server tool.
+
+    Args:
+        gate: Optional PermissionGate for tier checks.
+        skills_dir_provider: Zero-arg callable returning the skills
+            directory. T-68: defaults to this module's own
+            :func:`get_skills_dir` so this module never names
+            ``hachi.gateway`` — see :func:`register_config_tools`.
+    """
 
     def remove_mcp_server(name: str) -> str:
         """Remove a user-registered MCP server.
@@ -344,9 +388,7 @@ def _make_remove_mcp_server(gate: Any = None) -> Any:
             return f"Validation error: {err}"
 
         try:
-            from hachi.gateway.workspace import get_skills_dir
-
-            skills_dir = get_skills_dir()
+            skills_dir = skills_dir_provider()
             target = skills_dir / f"mcp-{name}.og"
 
             if not target.exists():
@@ -368,8 +410,15 @@ def _make_remove_mcp_server(gate: Any = None) -> Any:
     return remove_mcp_server
 
 
-def _make_list_mcp_servers() -> Any:
-    """Factory for the list_mcp_servers tool."""
+def _make_list_mcp_servers(skills_dir_provider: Callable[[], Path] = get_skills_dir) -> Any:
+    """Factory for the list_mcp_servers tool.
+
+    Args:
+        skills_dir_provider: Zero-arg callable returning the skills
+            directory. T-68: defaults to this module's own
+            :func:`get_skills_dir` so this module never names
+            ``hachi.gateway`` — see :func:`register_config_tools`.
+    """
 
     def list_mcp_servers() -> str:
         """List all configured MCP servers (static declarations).
@@ -382,10 +431,8 @@ def _make_list_mcp_servers() -> Any:
             JSON string with a ``servers`` list.
         """
         try:
-            from hachi.gateway.workspace import get_skills_dir
-
             # MED-026: use the cached engine instead of rebuilding on every call.
-            skills_dir = get_skills_dir()
+            skills_dir = skills_dir_provider()
             engine = _get_cached_skill_engine(skills_dir)
             nodes = engine.get_nodes_by_role("mcp")
 
@@ -756,12 +803,23 @@ SET_AGENT_CONFIG_SCHEMA: dict[str, Any] = {
 def register_config_tools(
     registry: Any,
     gate: Any = None,
+    *,
+    skills_dir_provider: Callable[[], Path] = get_skills_dir,
 ) -> None:
     """Mount configuration and MCP-management tools onto the ToolRegistry.
 
     Args:
         registry: The agent's ToolRegistry.
         gate:     Optional PermissionGate for tier checks.
+        skills_dir_provider: Zero-arg callable returning the skills directory
+            for the MCP-management tools (add/remove/list). T-68: defaults to
+            this module's own :func:`get_skills_dir` (creates the directory
+            if missing; nothing else) so this module never imports
+            ``hachi.gateway`` (import-linter "the engine must not import the
+            gateway service"). Production boot (``gateway/orchestrator.py``)
+            injects the gateway's fuller
+            ``hachi.gateway.workspace.get_skills_dir``, which also runs the
+            first-run workspace bootstrap.
     """
     from hachi.core.config_loader import (
         load_effective_config,
@@ -769,9 +827,9 @@ def register_config_tools(
         write_global_config_dict,
     )
 
-    registry.register(ADD_MCP_SERVER_SCHEMA, _make_add_mcp_server(gate))
-    registry.register(REMOVE_MCP_SERVER_SCHEMA, _make_remove_mcp_server(gate))
-    registry.register(LIST_MCP_SERVERS_SCHEMA, _make_list_mcp_servers())
+    registry.register(ADD_MCP_SERVER_SCHEMA, _make_add_mcp_server(gate, skills_dir_provider))
+    registry.register(REMOVE_MCP_SERVER_SCHEMA, _make_remove_mcp_server(gate, skills_dir_provider))
+    registry.register(LIST_MCP_SERVERS_SCHEMA, _make_list_mcp_servers(skills_dir_provider))
     # get_agent_config is a READ tool — it stays on the merged view so the
     # agent sees what's actually effective this run (including env
     # overrides), matching GET /config elsewhere.

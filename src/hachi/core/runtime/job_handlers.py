@@ -14,6 +14,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from hachi.core.runtime.protocols import get_active_process_services
+
 logger = logging.getLogger(__name__)
 
 
@@ -430,18 +432,18 @@ def _try_index_attachment(file_id: str, name: str, raw_text: str, guarded_text: 
 def _emit_file_extracted(file_id: str, name: str, media_type: str, sidecar_id: str) -> None:
     """Publish ``file.extracted`` on the process-shared EventBus.
 
-    Layering: ``hachi.core.*`` must not import ``hachi.gateway`` at module scope
-    (import-linter "the engine must not import the gateway service"). The lazy,
-    inside-function import below is the sanctioned seam — it is listed in
-    pyproject's ignore_imports for this module. Do NOT hoist it.
+    T-68: reads through the ``core``-owned
+    :func:`~hachi.core.runtime.protocols.get_active_process_services` seam
+    instead of naming ``hachi.gateway`` directly — the gateway registers its
+    provider once, at import time, in ``gateway/shared_services.py``. Do NOT
+    reintroduce a direct ``hachi.gateway`` import here; that is exactly the
+    frozen seam this module used to carry in ``pyproject.toml``.
     """
     from hachi.core.runtime_events import FILE_EXTRACTED, RuntimeEvent, now_iso
 
     bus: Any = None
     try:
-        from hachi.gateway.shared_services import ProcessSharedServices
-
-        shared = ProcessSharedServices.instance()
+        shared = get_active_process_services()
         if shared is not None:
             bus = shared.event_bus
     except Exception:

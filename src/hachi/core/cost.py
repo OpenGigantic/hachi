@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from hachi.core.llm import TokenUsage
+from hachi.core.runtime.protocols import get_active_process_services
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +88,13 @@ _VOICE_LOCK = threading.Lock()
 def _get_shared_session_store() -> Any:
     """Return the process-wide ``SessionStore`` if one has been booted, else ``None``.
 
-    Mirrors ``hachi.core.runtime.resume._get_process_bus``'s pattern for reaching
-    the shared-services singleton from ``core`` without a hard import-time
-    dependency on the gateway: the import is lazy and any failure (including the
-    module simply not existing at this fingerprint) degrades to ``None``, which
-    callers treat as "no shared store yet — open a short-lived fallback".
+    T-68: reads through the ``core``-owned
+    :func:`~hachi.core.runtime.protocols.get_active_process_services` seam
+    instead of naming ``hachi.gateway`` directly — the gateway registers its
+    provider once, at import time, in ``gateway/shared_services.py``. Mirrors
+    ``hachi.core.runtime.resume._get_process_bus``'s use of the same seam.
+    ``None`` (engine used standalone, or no session has booted yet — BB-6) is
+    treated the same: "no shared store yet — open a short-lived fallback".
 
     BB-42: the previous code imported a ``_get_session_store`` symbol from
     ``hachi.gateway.orchestrator`` that has never existed there, so this lookup
@@ -110,9 +113,7 @@ def _get_shared_session_store() -> Any:
     not another silent, permanent recurrence.
     """
     try:
-        from hachi.gateway.shared_services import ProcessSharedServices
-
-        shared = ProcessSharedServices.instance()
+        shared = get_active_process_services()
         if shared is not None:
             return shared.session_store
     except Exception:
