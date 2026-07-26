@@ -74,7 +74,7 @@ def test_probe_ready_when_all_checks_pass(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: fake_cfg)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-123")
     # Reset worker slot so the worker check is "not started" (not a blocker).
-    monkeypatch.setattr("hachi.cli.main._GATEWAY_RESIDENT_WORKER", None)
+    monkeypatch.setattr("hachi.gateway.in_process_runtime._GATEWAY_RESIDENT_WORKER", None)
 
     from hachi.cli.main import _gateway_readiness_probe
 
@@ -99,7 +99,7 @@ def test_probe_not_ready_when_config_missing(
     monkeypatch.setattr("hachi.cli.main.get_hachi_paths", lambda: paths)
     monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: fake_cfg)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-123")
-    monkeypatch.setattr("hachi.cli.main._GATEWAY_RESIDENT_WORKER", None)
+    monkeypatch.setattr("hachi.gateway.in_process_runtime._GATEWAY_RESIDENT_WORKER", None)
 
     from hachi.cli.main import _gateway_readiness_probe
 
@@ -120,7 +120,7 @@ def test_probe_not_ready_when_permissions_missing(
     monkeypatch.setattr("hachi.cli.main.get_hachi_paths", lambda: paths)
     monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: fake_cfg)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-123")
-    monkeypatch.setattr("hachi.cli.main._GATEWAY_RESIDENT_WORKER", None)
+    monkeypatch.setattr("hachi.gateway.in_process_runtime._GATEWAY_RESIDENT_WORKER", None)
 
     from hachi.cli.main import _gateway_readiness_probe
 
@@ -146,7 +146,7 @@ def test_probe_not_ready_when_api_key_absent(
     fake_store = MagicMock()
     fake_store.get.return_value = None
     monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: fake_store)
-    monkeypatch.setattr("hachi.cli.main._GATEWAY_RESIDENT_WORKER", None)
+    monkeypatch.setattr("hachi.gateway.in_process_runtime._GATEWAY_RESIDENT_WORKER", None)
 
     from hachi.cli.main import _gateway_readiness_probe
 
@@ -165,7 +165,7 @@ def test_probe_ready_for_keyless_provider(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.setattr("hachi.cli.main.get_hachi_paths", lambda: paths)
     monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: fake_cfg)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setattr("hachi.cli.main._GATEWAY_RESIDENT_WORKER", None)
+    monkeypatch.setattr("hachi.gateway.in_process_runtime._GATEWAY_RESIDENT_WORKER", None)
 
     from hachi.cli.main import _gateway_readiness_probe
 
@@ -185,7 +185,7 @@ def test_probe_not_ready_when_store_dir_unwritable(
     monkeypatch.setattr("hachi.cli.main.get_hachi_paths", lambda: paths)
     monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: fake_cfg)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-123")
-    monkeypatch.setattr("hachi.cli.main._GATEWAY_RESIDENT_WORKER", None)
+    monkeypatch.setattr("hachi.gateway.in_process_runtime._GATEWAY_RESIDENT_WORKER", None)
 
     def _exploding_mkstemp(**kwargs: Any) -> None:  # type: ignore[return]
         raise OSError("disk full")
@@ -212,7 +212,7 @@ def test_probe_not_ready_when_worker_dead(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     dead_worker = MagicMock()
     dead_worker.is_running = False
-    monkeypatch.setattr("hachi.cli.main._GATEWAY_RESIDENT_WORKER", dead_worker)
+    monkeypatch.setattr("hachi.gateway.in_process_runtime._GATEWAY_RESIDENT_WORKER", dead_worker)
 
     from hachi.cli.main import _gateway_readiness_probe
 
@@ -233,7 +233,7 @@ def test_probe_checks_key_present_in_result(
     monkeypatch.setattr("hachi.cli.main.get_hachi_paths", lambda: paths)
     monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: fake_cfg)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-123")
-    monkeypatch.setattr("hachi.cli.main._GATEWAY_RESIDENT_WORKER", None)
+    monkeypatch.setattr("hachi.gateway.in_process_runtime._GATEWAY_RESIDENT_WORKER", None)
 
     from hachi.cli.main import _gateway_readiness_probe
 

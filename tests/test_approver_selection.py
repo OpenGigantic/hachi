@@ -20,6 +20,7 @@ def test_gateway_boot_path_requests_registry_approver(monkeypatch: pytest.Monkey
     caller ever selected it, so every gateway session silently got PolicyApprover.
     """
     from hachi.cli import main as cli_main
+    from hachi.gateway import in_process_runtime as runtime_mod
 
     captured: dict[str, object] = {}
 
@@ -27,7 +28,10 @@ def test_gateway_boot_path_requests_registry_approver(monkeypatch: pytest.Monkey
         captured.update(kwargs)
         return MagicMock()
 
-    monkeypatch.setattr(cli_main, "boot_agent", _spy)
+    # T-41: _boot_session_agent's bare `boot_agent(...)` call now resolves in
+    # hachi.gateway.in_process_runtime's namespace, not cli.main's — patch the
+    # name the runtime module actually reads.
+    monkeypatch.setattr(runtime_mod, "boot_agent", _spy)
 
     runtime = cli_main._InProcessGatewayRuntime()
     runtime._boot_session_agent("sess-1")

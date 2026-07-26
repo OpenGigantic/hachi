@@ -29,8 +29,12 @@ def _fake_memory_doc() -> dict:
 def test_update_memory_rejects_non_boolean_values(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
 
-    monkeypatch.setattr("hachi.cli.main.read_global_config_file", _fake_memory_doc)
-    monkeypatch.setattr("hachi.cli.main.write_global_config_dict", lambda _payload: None)
+    monkeypatch.setattr(
+        "hachi.gateway.in_process_runtime.read_global_config_file", _fake_memory_doc
+    )
+    monkeypatch.setattr(
+        "hachi.gateway.in_process_runtime.write_global_config_dict", lambda _payload: None
+    )
 
     with pytest.raises(GatewayProtocolError, match="must be a boolean"):
         runtime.update_memory({"memory": {"enable_session_history": "false"}})
@@ -39,8 +43,12 @@ def test_update_memory_rejects_non_boolean_values(monkeypatch) -> None:
 def test_update_memory_accepts_boolean_values(monkeypatch) -> None:
     runtime = _InProcessGatewayRuntime()
 
-    monkeypatch.setattr("hachi.cli.main.read_global_config_file", _fake_memory_doc)
-    monkeypatch.setattr("hachi.cli.main.write_global_config_dict", lambda _payload: None)
+    monkeypatch.setattr(
+        "hachi.gateway.in_process_runtime.read_global_config_file", _fake_memory_doc
+    )
+    monkeypatch.setattr(
+        "hachi.gateway.in_process_runtime.write_global_config_dict", lambda _payload: None
+    )
 
     result = runtime.update_memory(
         {"memory": {"enable_session_history": False, "enable_semantic_memory": False}}
@@ -83,7 +91,7 @@ def _fake_boot_agent(
 
 
 def test_runtime_events_are_scoped_per_session(monkeypatch) -> None:
-    monkeypatch.setattr("hachi.cli.main.boot_agent", _fake_boot_agent)
+    monkeypatch.setattr("hachi.gateway.in_process_runtime.boot_agent", _fake_boot_agent)
 
     runtime = _InProcessGatewayRuntime()
     runtime.register_connection("session-a", None)  # type: ignore[arg-type]
@@ -100,7 +108,7 @@ def test_runtime_events_are_scoped_per_session(monkeypatch) -> None:
 
 
 def test_runtime_events_remain_isolated_under_parallel_sessions(monkeypatch) -> None:
-    monkeypatch.setattr("hachi.cli.main.boot_agent", _fake_boot_agent)
+    monkeypatch.setattr("hachi.gateway.in_process_runtime.boot_agent", _fake_boot_agent)
 
     runtime = _InProcessGatewayRuntime()
     runtime.register_connection("session-a", None)  # type: ignore[arg-type]
@@ -133,7 +141,7 @@ def test_runtime_events_remain_isolated_under_parallel_sessions(monkeypatch) -> 
 
 
 def test_runtime_event_buffer_caps_at_2000_and_handles_sparse_cursors(monkeypatch) -> None:
-    monkeypatch.setattr("hachi.cli.main.boot_agent", _fake_boot_agent)
+    monkeypatch.setattr("hachi.gateway.in_process_runtime.boot_agent", _fake_boot_agent)
 
     runtime = _InProcessGatewayRuntime()
     runtime.register_connection("session-a", None)  # type: ignore[arg-type]

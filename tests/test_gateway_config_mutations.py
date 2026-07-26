@@ -81,24 +81,30 @@ class _FakeConfig:
 
 
 def _patch_read(monkeypatch, doc: dict) -> None:
-    """Patch hachi.cli.main.read_global_config_file to return a frozen `doc`
-    snapshot.
+    """Patch hachi.gateway.in_process_runtime.read_global_config_file to return a
+    frozen `doc` snapshot (T-41: the class moved out of cli.main).
 
     Mirrors this file's pre-existing pattern of a STATIC config across
     repeated calls within one test (the old fixtures used `lambda: cfg`,
     always returning the same object) — paired with the no-op/capture write
     helpers below, which likewise never fed a write back into a later read.
     """
-    monkeypatch.setattr("hachi.cli.main.read_global_config_file", lambda: dict(doc))
+    monkeypatch.setattr(
+        "hachi.gateway.in_process_runtime.read_global_config_file", lambda: dict(doc)
+    )
 
 
 def _patch_write_noop(monkeypatch) -> None:
-    monkeypatch.setattr("hachi.cli.main.write_global_config_dict", lambda _payload: None)
+    monkeypatch.setattr(
+        "hachi.gateway.in_process_runtime.write_global_config_dict", lambda _payload: None
+    )
 
 
 def _patch_write_capture(monkeypatch) -> list[dict]:
     captured: list[dict] = []
-    monkeypatch.setattr("hachi.cli.main.write_global_config_dict", captured.append)
+    monkeypatch.setattr(
+        "hachi.gateway.in_process_runtime.write_global_config_dict", captured.append
+    )
     return captured
 
 
@@ -142,7 +148,9 @@ def test_update_provider_persists_raw_api_key_securely(monkeypatch) -> None:
 
     _patch_read(monkeypatch, cfg.model_dump())
     _patch_write_noop(monkeypatch)
-    monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: store)
+    monkeypatch.setattr(
+        "hachi.gateway.in_process_runtime.create_default_secret_store", lambda: store
+    )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")  # register for auto-cleanup
 
     result = runtime.update_provider(
@@ -165,7 +173,9 @@ def test_update_provider_treats_raw_key_in_api_key_ref_as_secret(monkeypatch) ->
 
     _patch_read(monkeypatch, cfg.model_dump())
     _patch_write_noop(monkeypatch)
-    monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: store)
+    monkeypatch.setattr(
+        "hachi.gateway.in_process_runtime.create_default_secret_store", lambda: store
+    )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
 
     result = runtime.update_provider(
@@ -183,7 +193,9 @@ def test_update_provider_preserves_env_name_api_key_ref(monkeypatch) -> None:
 
     _patch_read(monkeypatch, cfg.model_dump())
     _patch_write_noop(monkeypatch)
-    monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: store)
+    monkeypatch.setattr(
+        "hachi.gateway.in_process_runtime.create_default_secret_store", lambda: store
+    )
 
     result = runtime.update_provider(
         {"provider": {"kind": "anthropic", "api_key_ref": "ANTHROPIC_API_KEY"}}

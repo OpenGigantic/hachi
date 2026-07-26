@@ -197,7 +197,7 @@ class TestColdStartResume:
             booted_agents.append(agent)
             return agent  # type: ignore[return-value]
 
-        monkeypatch.setattr("hachi.cli.main.boot_agent", _fake_boot_agent)
+        monkeypatch.setattr("hachi.gateway.in_process_runtime.boot_agent", _fake_boot_agent)
 
         # Patch RunStateStore so resume_run uses our temp-dir store.
         monkeypatch.setattr("hachi.core.runtime.store.RunStateStore", lambda: run_store)
@@ -279,7 +279,7 @@ class TestLiveSessionPath:
             boot_call_count += 1
             return _ScriptedAgent(session_store, kwargs.get("resume_session_id"))  # type: ignore[return-value]
 
-        monkeypatch.setattr("hachi.cli.main.boot_agent", _fake_boot_agent)
+        monkeypatch.setattr("hachi.gateway.in_process_runtime.boot_agent", _fake_boot_agent)
         monkeypatch.setattr("hachi.core.runtime.store.RunStateStore", lambda: run_store)
         import hachi.cli.main as main_mod
 
@@ -358,7 +358,7 @@ class TestIdempotency:
         runtime._agents[prior_sid] = live_agent
         runtime._chat_locks[prior_sid] = threading.Lock()
 
-        monkeypatch.setattr("hachi.cli.main.boot_agent", lambda **kw: live_agent)
+        monkeypatch.setattr("hachi.gateway.in_process_runtime.boot_agent", lambda **kw: live_agent)
         monkeypatch.setattr("hachi.core.runtime.store.RunStateStore", lambda: run_store)
         import hachi.cli.main as main_mod
 

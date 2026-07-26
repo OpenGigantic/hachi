@@ -192,18 +192,19 @@ ALLOWLIST: frozenset[str] = frozenset(
         # a set_session_id() setter wired by AgentSession?) is a design choice, the
         # same reason T-14's spec leaves reindex_skills alone.
         "src/hachi/core/memory/manager.py:_session_id",
-        # === src/hachi/cli/main.py ====================================================
+        # === src/hachi/gateway/in_process_runtime.py ==================================
         # (c) lazy-cache idiom: _og_engine_cache is populated on first use inside
-        # _standalone_og_engine() (cli/main.py) and deliberately never pre-set in
-        # __init__ -- the getattr default IS the "not cached yet" sentinel.
-        "src/hachi/cli/main.py:_og_engine_cache",
+        # _standalone_og_engine() (gateway/in_process_runtime.py) and deliberately
+        # never pre-set in __init__ -- the getattr default IS the "not cached yet"
+        # sentinel.
+        "src/hachi/gateway/in_process_runtime.py:_og_engine_cache",
         # (b) T-14 itself (this task) / CORRECTIONS.md N7: AgentSession.reindex_skills
         # does not exist anywhere in the repo, so authoring saves never re-index and
         # `reindexed_ms` is always ~0. T-14's own spec (Sec 5.5, Sec 9) explicitly
         # forbids fixing this here -- deciding what re-indexing should do is a design
         # question T-04 Sec 9 leaves open. Filed as a finding (bug-bank BB-107);
         # remove this entry once someone implements AgentSession.reindex_skills.
-        "src/hachi/cli/main.py:reindex_skills",
+        "src/hachi/gateway/in_process_runtime.py:reindex_skills",
         # === src/hachi/gateway/orchestrator.py (OFF LIMITS this pass -- owned by a
         # concurrent sibling agent; see T-14 report for the full un-owned-file list) ==
         # (c) CF-6: boot_agent stashes these onto the session AFTER construction, so

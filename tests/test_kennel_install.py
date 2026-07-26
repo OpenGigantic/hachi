@@ -67,13 +67,13 @@ def _make_fake_paths(tmp_path: Path) -> HachiPaths:
 def runtime_and_paths(tmp_path: Path):
     """A fresh runtime (no booted agents) paired with tmp_path-backed paths.
 
-    Patches ``hachi.cli.main.get_hachi_paths`` -- the established pattern in
-    tests/test_backup_restore.py -- so the module-level name the runtime
-    methods resolve at call time is redirected to the fake paths.
+    Patches ``hachi.gateway.in_process_runtime.get_hachi_paths`` (T-41: the
+    class moved out of cli.main) so the module-level name the runtime methods
+    resolve at call time is redirected to the fake paths.
     """
     paths = _make_fake_paths(tmp_path)
     runtime = _InProcessGatewayRuntime()
-    with patch("hachi.cli.main.get_hachi_paths", return_value=paths):
+    with patch("hachi.gateway.in_process_runtime.get_hachi_paths", return_value=paths):
         yield runtime, paths
 
 

@@ -49,7 +49,10 @@ class TestUpdatePermissionsRegeneratesOg:
         with (
             patch("hachi.core.paths.get_hachi_paths", return_value=fake_paths),
             patch("hachi.gateway.workspace.get_skills_dir", return_value=tmp_path / "skills"),
-            patch("hachi.cli.main.get_permissions_file", return_value=permissions_og),
+            patch(
+                "hachi.gateway.in_process_runtime.get_permissions_file",
+                return_value=permissions_og,
+            ),
         ):
             rt.update_permissions({"tier": "unrestricted"})
 
@@ -73,7 +76,10 @@ class TestUpdatePermissionsRegeneratesOg:
         with (
             patch("hachi.core.paths.get_hachi_paths", return_value=fake_paths),
             patch("hachi.gateway.workspace.get_skills_dir", return_value=tmp_path / "skills"),
-            patch("hachi.cli.main.get_permissions_file", return_value=permissions_og),
+            patch(
+                "hachi.gateway.in_process_runtime.get_permissions_file",
+                return_value=permissions_og,
+            ),
         ):
             rt.update_permissions({"tier": "guided"})
 
@@ -90,7 +96,10 @@ class TestUpdatePermissionsRegeneratesOg:
         with (
             patch("hachi.core.paths.get_hachi_paths", return_value=fake_paths),
             patch("hachi.gateway.workspace.get_skills_dir", return_value=tmp_path / "skills"),
-            patch("hachi.cli.main.get_permissions_file", return_value=permissions_og),
+            patch(
+                "hachi.gateway.in_process_runtime.get_permissions_file",
+                return_value=permissions_og,
+            ),
         ):
             rt.update_permissions({"ask_before": {"delete_files": True}})
 
