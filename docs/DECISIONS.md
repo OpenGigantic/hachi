@@ -3427,3 +3427,42 @@ pre-existing, already-justified entries (`_og_engine_cache`, `reindex_skills`) t
 module move breaks every config that names a file by path.
 
 **Locked by:** `tests/test_in_process_runtime_extraction.py`; docs/bug-bank.md BB-149, BB-150.
+
+## T-42: The `core -> cli` seam is closed, and the import-linter exemption list is now empty (2026-07-26) **[ADR]**
+
+**Decision:** `core/runtime/resume.py` no longer imports `hachi.cli`. Cold-start resume now
+depends on a `SessionRuntime` protocol owned by `core`, registered from the gateway edge.
+The standing `ignore_imports` entry for `hachi.core.runtime.resume -> hachi.cli.main` is
+**deleted**, so the "engine must not import the UI/entry edges" contract now holds with no
+holes cut in it. This was the last genuine layering inversion in the repo.
+
+**The protocol stays the size of the dependency.** Exactly two methods — `get_live_session`
+and `rehydrate` — because the entire seam was two private attributes and one method call.
+`get_live_session` takes `_agents_lock` internally so no caller ever sees it. `rehydrate`
+wraps the existing `rehydrate_session`, which is retained for its other callers. Widening
+this protocol would just recreate the handler bag that T-43 exists to undo.
+
+**Registration, not import.** `set_active_session_runtime` / `get_active_session_runtime`
+live in `core/runtime/protocols.py` beside T-68's `ProcessServices` seam — the same shape:
+`core` declares the contract, the edge injects an implementation downward, and `core` never
+names `hachi.gateway` or `hachi.cli`. `_ACTIVE_RUNTIME` in `cli/main.py` is deleted outright
+rather than kept alongside; a parallel slot is how this seam grows back.
+
+**Two readers outside the task's file list had to move with it.**
+`cli/commands/channel.py` and `cli/commands/schedule.py` read the same global via
+`getattr(_main_mod, "_ACTIVE_RUNTIME", None)` to obtain the *full* runtime for
+`boot_registered_session`. Deleting the slot would have degraded both to `None` silently —
+no exception, no nearby test failure — regressing governed channel/schedule boot to the
+ungoverned path. Both now read the registered runtime, typed loosely at those two call
+sites because they legitimately need the concrete class rather than the narrow protocol
+(BB-151).
+
+**The linter is the completion proof.** `import-linter` 2.12 defaults
+`unmatched_ignore_imports_alerting` to `ERROR`, so an exemption that no longer matches a
+real import *raises*. Removing the import while leaving the exemption produced
+`No matches for ignored import hachi.core.runtime.resume -> hachi.cli.main`; deleting the
+exemption then went green at 3 contracts kept / 0 broken. That is a stronger signal than a
+passing test, and it is why the exemption comment being wrong (it claimed the seam needed
+the Typer app; it never did) went undetected for so long.
+
+**Locked by:** `tests/test_core_cli_seam.py`; docs/bug-bank.md BB-151.
