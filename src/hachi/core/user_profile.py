@@ -46,6 +46,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from hachi.core.memory_provider import ProviderBackedVault
 from hachi.core.paths import get_hachi_paths
 
 if TYPE_CHECKING:
@@ -223,6 +224,32 @@ class CorrectionLog:
 # ---------------------------------------------------------------------------
 
 
+def _rows_to_entries(rows: dict[str, Any]) -> list[dict[str, Any]]:
+    """Turn a Chroma-shaped ``{ids, documents, metadatas}`` dict into
+    ``UserProfileStore``'s ``{id, content, category, timestamp}`` entry shape.
+
+    Shared by the real-``MemoryVault`` read path (``ucoll.get(...)``) and the
+    ``ProviderBackedVault`` read path (T-49, ``.user_collection.get()``) so both
+    produce identical output from a structurally-identical input.
+    """
+    ids = rows.get("ids") or []
+    docs = rows.get("documents") or []
+    metas = rows.get("metadatas") or []
+    result: list[dict[str, Any]] = []
+    for i, entry_id in enumerate(ids):
+        doc = docs[i] if i < len(docs) else ""
+        meta = metas[i] if i < len(metas) else {}
+        result.append(
+            {
+                "id": entry_id,
+                "content": doc,
+                "category": meta.get("category", "knowledge"),
+                "timestamp": meta.get("timestamp", ""),
+            }
+        )
+    return result
+
+
 class UserProfileStore:
     """Structured facade over the MemoryVault user_profile collection.
 
@@ -232,8 +259,15 @@ class UserProfileStore:
     fact written through this class.  Existing facts written with the old vault
     categories are remapped on read via ``_resolve_read_category``.
 
+    T-49: ``vault`` may also be a :class:`~hachi.core.memory_provider.ProviderBackedVault`
+    (``memory.backend = "in_memory"`` / ``"fts5_only"``), which has no Chroma
+    internals to reach into. ``_vault_get_all`` / ``_vault_set`` / ``_find_user_fact``
+    each branch on ``isinstance(self._vault, ProviderBackedVault)`` and use its
+    public API instead — the private-reach path below is otherwise completely
+    unchanged for the default Chroma backend.
+
     Args:
-        vault: A ``MemoryVault`` instance (must be open).
+        vault: A ``MemoryVault`` instance (must be open), or a ``ProviderBackedVault``.
         correction_log: A ``CorrectionLog`` instance.  Constructed automatically
             from the default sessions.db path when omitted.
 
@@ -243,10 +277,10 @@ class UserProfileStore:
 
     def __init__(
         self,
-        vault: MemoryVault,
+        vault: MemoryVault | ProviderBackedVault,
         correction_log: CorrectionLog | None = None,
     ) -> None:
-        self._vault: MemoryVault = vault
+        self._vault: MemoryVault | ProviderBackedVault = vault
         self._log: CorrectionLog = correction_log if correction_log is not None else CorrectionLog()
 
     # ------------------------------------------------------------------
@@ -418,6 +452,13 @@ class UserProfileStore:
 
     def _vault_get_all(self) -> list[dict[str, Any]]:
         """Read all user_collection entries from the vault as structured dicts."""
+        provider_vault = self._vault
+        if isinstance(provider_vault, ProviderBackedVault):
+            # T-49: provider-backed vault (in_memory / fts5_only) — no Chroma
+            # internals to reach into; its public user_collection view already
+            # returns the same {ids, documents, metadatas} shape.
+            return _rows_to_entries(provider_vault.user_collection.get())
+
         try:
             with self._vault._vault_lock:
                 self._vault._assert_open()
@@ -429,22 +470,7 @@ class UserProfileStore:
             logger.warning("UserProfileStore._vault_get_all failed: %s", exc)
             return []
 
-        ids = rows.get("ids") or []
-        docs = rows.get("documents") or []
-        metas = rows.get("metadatas") or []
-        result: list[dict[str, Any]] = []
-        for i, entry_id in enumerate(ids):
-            doc = docs[i] if i < len(docs) else ""
-            meta = metas[i] if i < len(metas) else {}
-            result.append(
-                {
-                    "id": entry_id,
-                    "content": doc,
-                    "category": meta.get("category", "knowledge"),
-                    "timestamp": meta.get("timestamp", ""),
-                }
-            )
-        return result
+        return _rows_to_entries(rows)
 
     def _vault_set(self, *, category: str, content: str) -> str:
         """Write a fact into the vault with the P1-7 category stamped in metadata.
@@ -456,6 +482,17 @@ class UserProfileStore:
         The capacity check mirrors ``upsert_user_fact`` exactly: we allow upserts of
         content that already exists (content-addressable IDs → idempotent).
         """
+        provider_vault = self._vault
+        if isinstance(provider_vault, ProviderBackedVault):
+            # T-49: the provider-backed facade's upsert_user_fact does not
+            # normalise category the way MemoryVault's legacy-category guard
+            # does (core/memory_provider.py), so there is nothing to bypass —
+            # call the public method directly. No 25-entry cap is enforced on
+            # this lightweight backend (a documented parity gap, not a silent
+            # lie: it simply never returns LIMIT_REACHED for these backends).
+            fact_id: str = provider_vault.upsert_user_fact(content, category)
+            return fact_id
+
         from hachi.core.memory_vault import MemoryVault
 
         existing_id = MemoryVault._generate_id(content)
@@ -485,6 +522,17 @@ class UserProfileStore:
 
         Returns a dict {id, content, category, timestamp} or None if not found.
         """
+        if isinstance(self._vault, ProviderBackedVault):
+            # T-49: provider-backed vault — ids are provider-issued (uuid / og
+            # node slug), not MemoryVault's content-hash scheme, so there is no
+            # targeted by-id fetch; scan the listing for an id or content match.
+            # (No self._vault call site here — narrowing self._vault is not
+            # needed since _vault_get_all() is a method on self, not on it.)
+            for entry in self._vault_get_all():
+                if entry["id"] == value_or_id or entry["content"] == value_or_id:
+                    return entry
+            return None
+
         from hachi.core.memory_vault import MemoryVault
 
         # Try SHA-256 ID lookup first (fast, exact).
