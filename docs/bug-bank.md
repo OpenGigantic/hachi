@@ -4499,6 +4499,69 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `pytest-xdist`. Use `uv run python -m mypy` / `uv run python -m pytest`, not bare `python`.
 - **Locked by:** `tests/test_p1_14_mypy_gate.py::test_strict_gate_covers_at_least_the_ratchet_floor`
 
+### BB-144 — A deferred import does NOT escape import-linter
+
+- **Symptom:** an engine->gateway import inside a function body, wrapped in try/except, was
+  believed to "escape" the layering gate — leading to the conclusion that the gate had a
+  hole and that moving an import into a function was a way to satisfy it.
+- **Root cause:** grimp (import-linter's graph builder) reads the AST. A function-local or
+  try-wrapped import is an edge in the graph exactly like a module-level one. The five
+  `core`/`tools` -> `hachi.gateway` imports (onboarding, cost, resume, job_handlers,
+  config_tools) were not escaping anything — they were explicitly whitelisted in
+  `pyproject.toml`'s `[tool.importlinter]` `ignore_imports`.
+- **Fix:** none needed in the linter. All five engine->gateway edges were declared debt;
+  burned down by inverting each dependency — `core.onboarding` and `tools.config_tools`
+  via engine-owned collaborators (`hachi.core.skill_packs.install_skill_pack`,
+  `config_tools.get_skills_dir`), and `core.cost` / `core.runtime.resume` /
+  `core.runtime.job_handlers` via a shared `Protocol` (`hachi.core.runtime.protocols.ProcessServices`)
+  that the gateway satisfies structurally and registers a resolver for once, at import
+  time, in `gateway/shared_services.py`.
+- **Avoid:** never "fix" a layering violation by deferring the import — it changes nothing
+  the linter sees and nothing about the runtime coupling. To prove an edge is really gone,
+  assert in a FRESH subprocess that the module is absent from `sys.modules`. And remember
+  the contracts are self-cleaning: an `ignore_imports` entry that matches nothing FAILS the
+  run with `No matches for ignored import <edge>`, so deleting the entry is the completion
+  signal for each seam.
+- **Locked by:** `uv run lint-imports` (blocking in `scripts/preflight.py` and CI);
+  `tests/test_engine_gateway_decoupling.py`
+
+### BB-145 — `hachi backup` silently omitted most user data, including the entire .og memory graph
+
+- **Symptom:** `hachi backup` printed a green "Backup created" panel and copied only
+  four things: `sessions.db`, `chroma_vault/`, `settings.toml` and
+  `device-permissions.og`. A user who backed up, wiped and restored lost their authored
+  `.og` skills, `brain.og`, `runs.db`, `files.db`, `blobs/`, `checkpoints/`,
+  `schedules.json`, `skill_usage.json`, `onboarding_state.json`, `secrets_metadata.json`,
+  `secrets.enc` and the entire job queue. **Under `memory.backend = "fts5_only"` — where
+  `data_dir/memory/**/*.og` is the CANONICAL fact store and no Chroma vault exists — the
+  restore produced an agent that remembered nothing.** `hachi doctor` was equally blind:
+  four directory-existence checks and no database probe.
+- **Root cause:** `backup()`/`restore()` (`cli/main.py`) hardcoded a four-item list
+  written before most stores existed, and nothing connected it to `core/paths.py` where
+  stores are declared. `HachiPaths` exposed eighteen path properties and no way to
+  enumerate them, so every consumer had to hand-maintain its own list — and this one was
+  never updated.
+- **Fix:** Added `HachiPaths.all_stores()` (`core/paths.py`) returning `StoreSpec` records
+  (name, path, kind, derived, note) as the single source of truth. `backup`, `restore`
+  and `doctor` (`cli/main.py`) all enumerate from it — no second hand-written list.
+  Backup emits a `manifest.json` recording what was captured and what was deliberately
+  skipped and why; restore reads it (falling back to plain on-disk presence for pre-fix
+  backups) to report gaps, and never deletes a live store whose backup counterpart is
+  absent. `sessions.db` keeps its online hot-backup; every other SQLite store (`jobs.db`,
+  `runs.db`, `files.db`) is copied via `sqlite3.Connection.backup()` in both directions,
+  clearing stale `-wal`/`-shm` sidecars first so a copy can never desync from its base
+  file. `doctor --json` gained an additive `stores` map (presence, size, and — for
+  SQLite — a successful-open probe) without removing any existing key.
+- **Avoid:** a backup command must never hardcode what to copy. Enumerate from the same
+  declaration the stores are created from, and add a test that fails when a new store is
+  declared without being registered — otherwise "backup" degrades into "backup of
+  whatever existed the day it was written", silently, with a success message.
+- **Locked by:** `tests/test_backup_restore.py` —
+  `test_full_round_trip_preserves_every_registered_store` (the round-trip lock),
+  `test_backup_captures_the_og_memory_graph`,
+  `test_every_hachi_path_is_registered_or_explicitly_exempt`,
+  `test_backup_manifest_lists_every_store_captured_or_skipped_with_reason`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
