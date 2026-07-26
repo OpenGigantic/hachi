@@ -33,6 +33,8 @@ they construct ``MemoryVault`` directly with ``tmp_path`` and never go through
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
+from typing import Any
 
 # Test hermeticity: hachi.cli.main merges <cwd>/.env and the config-dir .env into
 # os.environ at IMPORT time. During a full pytest run that pulls the developer's
@@ -168,3 +170,160 @@ def _flush_shared_services_at_session_end() -> None:  # type: ignore[return]
         ProcessSharedServices.shutdown_all()
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# T-43 round 1 -- GatewayControlPlane test helper.
+#
+# Maps every legacy handler kwarg name (pre-T-43's flat 74-callable
+# constructor) to the (port param name, port method name) that now carries
+# it (see src/hachi/gateway/ports.py). 19 entries have a method name that
+# differs from the kwarg name -- e.g. 'on_connect' -> ('sessions',
+# 'register_connection') -- mirroring the `# ctor kwarg was '...'` markers
+# in ports.py itself.
+# ---------------------------------------------------------------------------
+_LEGACY_HANDLER_PORTS: dict[str, tuple[str, str]] = {
+    "on_connect": ("sessions", "register_connection"),
+    "on_disconnect": ("sessions", "close_connection"),
+    "on_chat": ("sessions", "chat"),
+    "read_events": ("sessions", "read_events"),
+    "read_events_base": ("sessions", "read_events_base"),
+    "get_session_state": ("sessions", "session_state"),
+    "get_recent_sessions": ("sessions", "recent_sessions"),
+    "get_session_messages": ("sessions", "session_messages"),
+    "delete_session": ("sessions", "delete_session_record"),
+    "get_runtime_events": ("sessions", "runtime_events"),
+    "on_interrupt": ("sessions", "interrupt_session"),
+    "get_mcp_inventory": ("observability", "mcp_inventory"),
+    "get_active_jobs": ("observability", "active_jobs"),
+    "get_failed_jobs": ("observability", "failed_jobs"),
+    "get_permission_audit": ("observability", "permission_audit"),
+    "get_subagent_reports": ("observability", "subagent_reports"),
+    "list_schedules": ("scheduling", "list_schedules"),
+    "cancel_schedule": ("scheduling", "cancel_schedule"),
+    "toggle_schedule": ("scheduling", "toggle_schedule"),
+    "run_schedule_now": ("scheduling", "run_schedule_now"),
+    "get_skills": ("skills", "get_skills"),
+    "get_og_graph": ("skills", "get_og_graph"),
+    "get_memory": ("memory", "get_memory"),
+    "get_memory_recall": ("memory", "get_memory_recall"),
+    "add_memory_fact": ("memory", "add_memory_fact"),
+    "delete_memory_fact": ("memory", "delete_memory_fact"),
+    "get_memory_gardener_diffs": ("memory", "get_memory_gardener_diffs"),
+    "get_spend": ("spend", "get_spend"),
+    "list_pending_approvals": ("approvals", "pending_approvals"),
+    "resolve_approval": ("approvals", "resolve_approval"),
+    "get_capabilities": ("capabilities", "capabilities"),
+    "set_capability_enabled": ("capabilities", "set_capability_enabled"),
+    "get_config": ("config", "get_config"),
+    "update_provider": ("config", "update_provider"),
+    "validate_provider": ("config", "validate_provider"),
+    "update_permissions": ("config", "update_permissions"),
+    "update_memory": ("config", "update_memory"),
+    "list_models": ("config", "list_models"),
+    "get_setup_state": ("config", "setup_state"),
+    "apply_setup": ("config", "apply_setup"),
+    "update_limits": ("config", "update_limits"),
+    "get_authoring_targets": ("authoring", "get_authoring_targets"),
+    "get_authoring_target": ("authoring", "get_authoring_target"),
+    "authoring_generate": ("authoring", "authoring_generate"),
+    "authoring_apply": ("authoring", "authoring_apply"),
+    "authoring_revert": ("authoring", "authoring_revert"),
+    "authoring_save_source": ("authoring", "authoring_save_source"),
+    "get_kennel": ("kennel", "get_kennel"),
+    "add_skill": ("kennel", "add_skill_from_kennel"),
+    "decide_memory_gardener_diff": ("memory_review", "decide_memory_gardener_diff"),
+    "get_spend_daily": ("daily_spend", "get_spend_daily"),
+    "add_allowed_folder": ("allowlists", "add_allowed_folder"),
+    "add_allowed_command": ("allowlists", "add_allowed_command"),
+    "remove_allowed_folder": ("allowlists", "remove_allowed_folder"),
+    "remove_allowed_command": ("allowlists", "remove_allowed_command"),
+    "add_always_allow": ("allowlists", "add_always_allow"),
+    "register_mcp_server": ("mcp_admin", "register_mcp_server"),
+    "set_mcp_enabled": ("mcp_admin", "set_mcp_enabled"),
+    "delete_mcp_server": ("mcp_admin", "delete_mcp_server"),
+    "list_providers": ("providers", "list_providers"),
+    "add_or_update_provider": ("providers", "add_or_update_provider"),
+    "remove_provider": ("providers", "remove_provider"),
+    "get_routing": ("providers", "get_routing"),
+    "set_routing": ("providers", "set_routing"),
+    "validate_routing": ("providers", "validate_routing"),
+    "rollback_routing": ("providers", "rollback_routing"),
+    "get_routing_audit": ("providers", "get_routing_audit"),
+    "test_provider_connection": ("providers", "test_provider_connection"),
+    "list_all_models": ("providers", "list_all_models"),
+    "probe_provider": ("providers", "probe_provider"),
+    "store_secret": ("secrets", "store_secret"),
+    "list_secret_names": ("secrets", "list_secret_names"),
+    "delete_secret": ("secrets", "delete_secret"),
+    "reload_search_tools": ("search", "reload_search_tools"),
+}
+
+# Constructor params that are NOT handlers grouped into a port -- forwarded
+# to GatewayControlPlane(...) unchanged.
+_CONTROL_PLANE_PASSTHROUGH_KWARGS = frozenset(
+    {"readiness_probe", "max_active_sessions", "max_prompt_chars"}
+)
+
+# Reverse index: port param name -> every method name that port declares
+# (see hachi.gateway.ports). Built from _LEGACY_HANDLER_PORTS so it can never
+# drift out of sync with the table above.
+_PORT_MEMBERS: dict[str, tuple[str, ...]] = {}
+for _kwarg_name, (_port_param_name, _method_name) in _LEGACY_HANDLER_PORTS.items():
+    _PORT_MEMBERS.setdefault(_port_param_name, []).append(_method_name)  # type: ignore[arg-type]
+_PORT_MEMBERS = {name: tuple(members) for name, members in _PORT_MEMBERS.items()}
+
+
+def control_plane(**handlers: Any):  # type: ignore[no-untyped-def]
+    """Build a ``GatewayControlPlane`` from legacy handler kwargs, via ports.
+
+    Test-only helper (T-43 round 1). Accepts exactly the keyword names the
+    pre-T-43 flat constructor did (``on_connect``, ``get_config``,
+    ``max_active_sessions``, ...), groups the handler ones into T-43's 18
+    port objects, and constructs the control plane through the new
+    ``sessions=``/``config=``/etc. port parameters -- never the individual
+    handler kwargs directly.
+
+    Each port is a ``types.SimpleNamespace``: the ports in
+    ``hachi.gateway.ports`` are structural ``typing.Protocol`` classes, so
+    any object exposing the right attributes satisfies one -- no stub
+    classes needed. A port is omitted entirely (stays ``None`` on the
+    control plane) when none of its member kwargs were supplied, matching
+    the old "handler unwired -> None -> ``_require_handler`` raises"
+    behaviour.
+
+    A touched port's namespace always carries EVERY member that port
+    declares, not just the ones this call supplied -- unsupplied members
+    default to ``None``. ``GatewayControlPlane.__init__`` resolves each
+    handler as ``explicit_kwarg if ... else (port.method if port else
+    None)``: it reads ``port.method`` directly (no ``getattr`` default), so
+    a port object must never be missing an attribute it declares, only have
+    it set to ``None``. This keeps the helper's behaviour identical to the
+    legacy kwargs form for every OTHER handler sharing the same port.
+
+    Round 2 will convert the 99 existing ``GatewayControlPlane(...)`` call
+    sites in this test suite to call this helper instead of passing handler
+    kwargs directly.
+    """
+    from hachi.gateway.control_plane import GatewayControlPlane
+
+    unknown = set(handlers) - set(_LEGACY_HANDLER_PORTS) - _CONTROL_PLANE_PASSTHROUGH_KWARGS
+    if unknown:
+        raise TypeError(f"control_plane() got unknown handler kwarg(s): {sorted(unknown)}")
+
+    port_overrides: dict[str, dict[str, Any]] = {}
+    for kwarg_name, value in handlers.items():
+        if kwarg_name in _CONTROL_PLANE_PASSTHROUGH_KWARGS:
+            continue
+        port_param_name, method_name = _LEGACY_HANDLER_PORTS[kwarg_name]
+        port_overrides.setdefault(port_param_name, {})[method_name] = value
+
+    ports = {
+        port_param_name: SimpleNamespace(
+            **{member: overrides.get(member) for member in _PORT_MEMBERS[port_param_name]}
+        )
+        for port_param_name, overrides in port_overrides.items()
+    }
+    passthrough = {k: v for k, v in handlers.items() if k in _CONTROL_PLANE_PASSTHROUGH_KWARGS}
+
+    return GatewayControlPlane(**ports, **passthrough)
