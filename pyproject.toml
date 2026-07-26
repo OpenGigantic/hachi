@@ -217,12 +217,6 @@ source_modules = [
     "hachi.integrations",
 ]
 forbidden_modules = ["hachi.cli", "hachi.tui"]
-ignore_imports = [
-    # SEAM: cold-start resume needs the CLI's Typer app to rebuild a session's
-    # command context. Lazy import inside resume(); should move behind a control-plane
-    # protocol so core no longer names the CLI. Tracked as an honest seam in memory.
-    "hachi.core.runtime.resume -> hachi.cli.main",
-]
 
 [[tool.importlinter.contracts]]
 name = "the engine must not import the gateway service (freeze known seams)"

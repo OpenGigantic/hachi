@@ -116,32 +116,39 @@ def _restore_os_environ():  # type: ignore[no-untyped-def]
 
 @pytest.fixture(autouse=True)
 def _isolate_active_gateway_runtime():  # type: ignore[no-untyped-def]
-    """Snapshot ``hachi.cli.main._ACTIVE_RUNTIME`` before each test and restore
-    it after (T-20 / BB-119 follow-up).
+    """Snapshot the registered ``SessionRuntime`` before each test and restore
+    it after (T-20 / BB-119 follow-up; retargeted by T-42).
 
-    ``_ACTIVE_RUNTIME`` is a process-wide module global assigned by PRODUCTION
-    code (``cli/main.py``, when a real ``_InProcessGatewayRuntime`` boots via
-    ``_start_gateway_server``) — not only by tests via ``monkeypatch``. Same
-    shape of bug as ``_restore_os_environ`` above: ``monkeypatch`` only reverts
-    its OWN ``setattr`` calls, so a test that boots a REAL runtime (rather than
-    monkeypatching the attribute) leaks it into every later test in the same
-    worker that reads it — which ``cli/commands/schedule.py``'s and
+    The active runtime is a process-wide slot (``hachi.core.runtime.protocols``
+    ``set_active_session_runtime`` / ``get_active_session_runtime``) assigned
+    by PRODUCTION code (``cli/main.py``'s two boot sites, when a real
+    ``_InProcessGatewayRuntime`` boots via ``_start_gateway_server`` or the
+    ``gateway`` command) — not only by tests. Same shape of bug as
+    ``_restore_os_environ`` above: ``monkeypatch`` only reverts its OWN
+    ``setattr`` calls, so a test that boots a REAL runtime (rather than
+    monkeypatching) leaks it into every later test in the same worker that
+    reads it — which ``cli/commands/schedule.py``'s and
     ``cli/commands/channel.py``'s governed-boot helpers both do. A plain
     unconditional restore (not a diff of recorded changes) fixes the leak
-    regardless of *how* the global was mutated, and is a no-op for the tests
+    regardless of *how* the slot was mutated, and is a no-op for the tests
     that already isolate it correctly via ``monkeypatch`` (this fixture's
     teardown runs after monkeypatch's own undo, restoring the same value it
     already put back).
+
+    Before T-42 this snapshotted/restored ``hachi.cli.main._ACTIVE_RUNTIME``
+    directly; that module global no longer exists (core must not import the
+    CLI — see ``tests/test_core_cli_seam.py``), so this fixture now reads and
+    writes through the same core-owned getter/setter production code uses.
     """
     try:
-        import hachi.cli.main as cli_main
+        from hachi.core.runtime import protocols as _session_runtime_protocols
     except ImportError:
         # Package not yet importable (e.g. missing dependency in partial CI env).
         yield
         return
-    before = getattr(cli_main, "_ACTIVE_RUNTIME", None)
+    before = _session_runtime_protocols.get_active_session_runtime()
     yield
-    cli_main._ACTIVE_RUNTIME = before
+    _session_runtime_protocols.set_active_session_runtime(before)
 
 
 @pytest.fixture(autouse=True, scope="session")

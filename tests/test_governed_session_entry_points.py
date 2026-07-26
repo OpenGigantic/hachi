@@ -117,6 +117,7 @@ def live_runtime(
     that a keyword argument was forwarded to a mock.
     """
     from hachi.cli import main as cli_main
+    from hachi.core.runtime.protocols import set_active_session_runtime
     from hachi.gateway import in_process_runtime as runtime_mod
     from hachi.gateway.orchestrator import select_action_approver
 
@@ -133,12 +134,15 @@ def live_runtime(
         return agent
 
     # T-41: _boot_session_agent's bare `boot_agent(...)` call now resolves in
-    # hachi.gateway.in_process_runtime's namespace, not cli.main's. _ACTIVE_RUNTIME
-    # stays a cli.main global (T-41 explicitly did not move it).
+    # hachi.gateway.in_process_runtime's namespace, not cli.main's. T-42 moved
+    # the active-runtime registration off cli.main entirely, onto the
+    # core-owned protocols.set_active_session_runtime seam (channel.py and
+    # schedule.py's governed-boot helpers read it back the same way).
     monkeypatch.setattr(runtime_mod, "boot_agent", _fake_boot_agent)
     runtime = cli_main._InProcessGatewayRuntime()
-    monkeypatch.setattr(cli_main, "_ACTIVE_RUNTIME", runtime)
+    set_active_session_runtime(runtime)
     yield runtime
+    set_active_session_runtime(None)
 
 
 @pytest.fixture()
@@ -203,10 +207,10 @@ def test_channel_runner_falls_back_loudly_when_no_gateway_is_active(
     """A standalone `hachi channel telegram` process (no gateway runtime in
     this process) must still work, but must say exactly what it lost
     (compare BB-71: a router fallback swallowed at DEBUG)."""
-    from hachi.cli import main as cli_main
     from hachi.cli.commands import channel as channel_cmd
+    from hachi.core.runtime.protocols import set_active_session_runtime
 
-    monkeypatch.setattr(cli_main, "_ACTIVE_RUNTIME", None)
+    set_active_session_runtime(None)
     fake_agent = MagicMock()
     fake_agent.chat.return_value = "hi back"
     monkeypatch.setattr("hachi.gateway.orchestrator.boot_agent", MagicMock(return_value=fake_agent))
@@ -283,10 +287,10 @@ def test_schedule_falls_back_loudly_when_no_gateway_is_active(
     """`hachi schedule run-due` under cron (no gateway live in that process)
     is the COMMON case, not an edge case — it must still fire schedules, but
     must say what it lost, at WARNING not DEBUG (compare BB-71)."""
-    from hachi.cli import main as cli_main
     from hachi.cli.commands import schedule as schedule_cmd
+    from hachi.core.runtime.protocols import set_active_session_runtime
 
-    monkeypatch.setattr(cli_main, "_ACTIVE_RUNTIME", None)
+    set_active_session_runtime(None)
     fake_agent = MagicMock()
     fake_agent.chat.return_value = "done"
     monkeypatch.setattr(schedule_cmd, "boot_agent", MagicMock(return_value=fake_agent))
@@ -304,18 +308,20 @@ def test_schedule_falls_back_loudly_when_no_gateway_is_active(
 
 
 # ---------------------------------------------------------------------------
-# Test-isolation guard for the _ACTIVE_RUNTIME dependency this task introduced
-# into schedule.py / channel.py (BB-119 follow-up).
+# Test-isolation guard for the active-session-runtime dependency this task
+# introduced into schedule.py / channel.py (BB-119 follow-up; retargeted by
+# T-42 from a cli.main global onto the core-owned protocols seam).
 #
-# _ACTIVE_RUNTIME is assigned by PRODUCTION code (cli/main.py, when a real
-# _InProcessGatewayRuntime boots) as a plain module-global reassignment, not
-# only by tests via monkeypatch. monkeypatch only reverts its OWN setattr
-# calls, so a test that boots a real runtime (rather than monkeypatching the
-# attribute) leaks it into every later test in the same worker that reads it
-# -- which is exactly what made tests/test_schedule_run_now.py order-dependent
-# in the full suite. tests/conftest.py's `_isolate_active_gateway_runtime`
-# autouse fixture fixes this; the two tests below pin that guarantee directly,
-# independent of full-suite ordering luck.
+# The active runtime is assigned by PRODUCTION code (cli/main.py's two boot
+# sites, via `hachi.core.runtime.protocols.set_active_session_runtime`) as a
+# plain function call, not only by tests via monkeypatch. monkeypatch only
+# reverts its OWN setattr calls, so a test that boots a real runtime (rather
+# than monkeypatching an attribute) leaks it into every later test in the
+# same worker that reads it -- which is exactly what made
+# tests/test_schedule_run_now.py order-dependent in the full suite.
+# tests/conftest.py's `_isolate_active_gateway_runtime` autouse fixture fixes
+# this; the two tests below pin that guarantee directly, independent of
+# full-suite ordering luck.
 #
 # These two tests MUST run in this declaration order for the guard to mean
 # anything (test A pollutes; test B checks the pollution is gone). This file
@@ -326,32 +332,36 @@ def test_schedule_falls_back_loudly_when_no_gateway_is_active(
 
 
 def test_direct_mutation_of_active_runtime_does_not_leak_to_later_tests() -> None:
-    """Simulate exactly what production code does at cli/main.py's two
-    `_ACTIVE_RUNTIME = runtime` assignment sites: a DIRECT module-attribute
-    mutation, deliberately NOT via monkeypatch (monkeypatch cannot revert a
-    mutation it did not make).
+    """Simulate exactly what production code does at cli/main.py's two writer
+    call sites: a DIRECT call to `set_active_session_runtime`, deliberately
+    NOT reverted within this test (production code doesn't revert it either;
+    only the autouse isolation fixture in tests/conftest.py does).
     """
-    from hachi.cli import main as cli_main
-
-    assert cli_main._ACTIVE_RUNTIME is None, (
-        "test-isolation precondition failed -- _ACTIVE_RUNTIME was already "
-        "polluted before this test ran, so the guard below would not be "
-        "testing what it claims to"
+    from hachi.core.runtime.protocols import (
+        get_active_session_runtime,
+        set_active_session_runtime,
     )
-    cli_main._ACTIVE_RUNTIME = object()  # direct mutation -- NOT monkeypatch.setattr
+
+    assert get_active_session_runtime() is None, (
+        "test-isolation precondition failed -- the active session runtime was "
+        "already polluted before this test ran, so the guard below would not "
+        "be testing what it claims to"
+    )
+    set_active_session_runtime(object())  # type: ignore[arg-type]  # direct call -- not reverted here
 
 
 def test_active_runtime_is_clean_after_the_previous_test() -> None:
     """Runs immediately after the direct-mutation test above. Passes only if
     the `_isolate_active_gateway_runtime` autouse fixture in tests/conftest.py
-    restored `_ACTIVE_RUNTIME` to its pre-test value (None) between the two
-    tests -- proving the leak that broke test_schedule_run_now.py cannot
-    recur regardless of which test boots (or simulates booting) a runtime.
+    restored the active session runtime to its pre-test value (None) between
+    the two tests -- proving the leak that broke test_schedule_run_now.py
+    cannot recur regardless of which test boots (or simulates booting) a
+    runtime.
     """
-    from hachi.cli import main as cli_main
+    from hachi.core.runtime.protocols import get_active_session_runtime
 
-    assert cli_main._ACTIVE_RUNTIME is None, (
-        "_ACTIVE_RUNTIME leaked across a test boundary -- the "
+    assert get_active_session_runtime() is None, (
+        "the active session runtime leaked across a test boundary -- the "
         "_isolate_active_gateway_runtime autouse fixture in tests/conftest.py "
         "did not restore it (or was removed)"
     )

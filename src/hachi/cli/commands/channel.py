@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.console import Console
@@ -39,9 +39,14 @@ def _governed_channel_boot(client_id: str) -> Callable[[], AgentSession]:
     """
 
     def _boot() -> AgentSession:
-        import hachi.cli.main as _main_mod
+        from hachi.core.runtime.protocols import get_active_session_runtime
 
-        runtime = getattr(_main_mod, "_ACTIVE_RUNTIME", None)
+        # T-42: the registered runtime is the full _InProcessGatewayRuntime
+        # instance, not the narrow two-method SessionRuntime protocol core
+        # uses — this is a CLI-edge module reading the same registered
+        # singleton for a different (also legal) purpose, so it is typed
+        # loosely here rather than widening the protocol.
+        runtime: Any = get_active_session_runtime()
         if runtime is not None:
             return runtime.boot_registered_session(client_id=client_id, surface="channel")
 
