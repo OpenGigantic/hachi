@@ -554,98 +554,42 @@ def _build_gateway_control_plane(
     except ValueError:
         max_prompt_chars = 100000
 
+    # T-43 round 1: pass the two runtimes as 18 domain ports (gateway/ports.py)
+    # instead of 74 individual bound-method kwargs. `_InProcessGatewayRuntime`
+    # satisfies every port structurally, so no adapter is needed.
+    #
+    # The runtime/support split is preserved exactly, at the PORT level:
+    # Live*Port ports (sessions/observability/scheduling/skills/memory/spend)
+    # need a booted agent, so they are wired from `runtime` -- None
+    # pre-session, matching the old per-handler `runtime.X if runtime else
+    # None` idiom (T-15, G1 Web UI endpoints, memory CRUD, T-08 A2/A3
+    # get_memory_gardener_diffs, P1-4 interrupt). Every other port is wired
+    # from `support` -- always constructed, never None -- matching the old
+    # unconditional `support.X` per handler (approvals inbox, capabilities,
+    # config/setup, authoring, kennel, MemoryGardener decisions, daily spend,
+    # G1 allowlists, MCP admin, multi-provider admin, secrets (BB-9), Tavily
+    # reload (BB-11)). See BB-6 for why `runtime` may be None but `support`
+    # never is.
     return GatewayControlPlane(
         readiness_probe=_gateway_readiness_probe,
-        on_connect=runtime.register_connection if runtime else None,
-        on_disconnect=runtime.close_connection if runtime else None,
-        on_chat=runtime.chat if runtime else None,
-        read_events=runtime.read_events if runtime else None,
-        read_events_base=runtime.read_events_base if runtime else None,
-        get_session_state=runtime.session_state if runtime else None,
-        get_recent_sessions=runtime.recent_sessions if runtime else None,
-        get_session_messages=runtime.session_messages if runtime else None,
-        delete_session=runtime.delete_session_record if runtime else None,
-        get_runtime_events=runtime.runtime_events if runtime else None,
-        get_mcp_inventory=runtime.mcp_inventory if runtime else None,
-        get_active_jobs=runtime.active_jobs if runtime else None,
-        get_failed_jobs=runtime.failed_jobs if runtime else None,
-        get_permission_audit=runtime.permission_audit if runtime else None,
-        # T-15: the approval registry is a process singleton, not gated on a
-        # live AgentSession — wire unconditionally via `support` (always
-        # constructed, unlike `runtime` which is None pre-session), mirroring
-        # get_capabilities=support.capabilities below.
-        list_pending_approvals=support.pending_approvals,
-        resolve_approval=support.resolve_approval,
-        get_subagent_reports=runtime.subagent_reports if runtime else None,
-        get_capabilities=support.capabilities,
-        get_config=support.get_config,
-        update_provider=support.update_provider,
-        validate_provider=support.validate_provider,
-        update_permissions=support.update_permissions,
-        update_memory=support.update_memory,
-        list_models=support.list_models,
-        get_setup_state=support.setup_state,
-        apply_setup=support.apply_setup,
-        list_schedules=runtime.list_schedules if runtime else None,
-        cancel_schedule=runtime.cancel_schedule if runtime else None,
-        toggle_schedule=runtime.toggle_schedule if runtime else None,
-        run_schedule_now=runtime.run_schedule_now if runtime else None,
-        # Web UI endpoints (#1–#6):
-        get_skills=runtime.get_skills if runtime else None,
-        get_memory=runtime.get_memory if runtime else None,
-        get_memory_recall=runtime.get_memory_recall if runtime else None,
-        get_og_graph=runtime.get_og_graph if runtime else None,
-        get_authoring_targets=support.get_authoring_targets,
-        get_authoring_target=support.get_authoring_target,
-        authoring_generate=support.authoring_generate,
-        authoring_apply=support.authoring_apply,
-        authoring_revert=support.authoring_revert,
-        authoring_save_source=support.authoring_save_source,
-        get_spend=runtime.get_spend if runtime else None,
-        get_spend_daily=support.get_spend_daily,
-        set_capability_enabled=support.set_capability_enabled,
-        # Memory CRUD:
-        add_memory_fact=runtime.add_memory_fact if runtime else None,
-        delete_memory_fact=runtime.delete_memory_fact if runtime else None,
-        # T-08 A2/A3 — MemoryGardener review surface. get_memory_gardener_diffs needs
-        # a live agent (mirrors get_memory/get_skills); decide_memory_gardener_diff
-        # operates directly on the filesystem so it is always available via `support`
-        # (mirrors get_kennel/register_mcp_server — see BB-6 for the runtime-vs-support
-        # distinction this file already relies on).
-        get_memory_gardener_diffs=runtime.get_memory_gardener_diffs if runtime else None,
-        decide_memory_gardener_diff=support.decide_memory_gardener_diff,
-        # G1 — new handlers:
-        update_limits=support.update_limits,
-        add_allowed_folder=support.add_allowed_folder,
-        add_allowed_command=support.add_allowed_command,
-        remove_allowed_folder=support.remove_allowed_folder,
-        remove_allowed_command=support.remove_allowed_command,
-        add_always_allow=support.add_always_allow,
-        register_mcp_server=support.register_mcp_server,
-        set_mcp_enabled=support.set_mcp_enabled,
-        delete_mcp_server=support.delete_mcp_server,
-        get_kennel=support.get_kennel,
-        add_skill=support.add_skill_from_kennel,
-        # Multi-provider admin:
-        list_providers=support.list_providers,
-        add_or_update_provider=support.add_or_update_provider,
-        remove_provider=support.remove_provider,
-        get_routing=support.get_routing,
-        set_routing=support.set_routing,
-        validate_routing=support.validate_routing,
-        rollback_routing=support.rollback_routing,
-        get_routing_audit=support.get_routing_audit,
-        test_provider_connection=support.test_provider_connection,
-        list_all_models=support.list_all_models,
-        probe_provider=support.probe_provider,
-        # P1-4 — server-side turn interrupt
-        on_interrupt=runtime.interrupt_session if runtime else None,
-        # Credential manager (BB-9)
-        store_secret=support.store_secret,
-        list_secret_names=support.list_secret_names,
-        delete_secret=support.delete_secret,
-        # Tavily live reload (BB-11)
-        reload_search_tools=support.reload_search_tools,
+        sessions=runtime,
+        observability=runtime,
+        scheduling=runtime,
+        skills=runtime,
+        memory=runtime,
+        spend=runtime,
+        approvals=support,
+        capabilities=support,
+        config=support,
+        authoring=support,
+        kennel=support,
+        memory_review=support,
+        daily_spend=support,
+        allowlists=support,
+        mcp_admin=support,
+        providers=support,
+        secrets=support,
+        search=support,
         max_active_sessions=max_active_sessions,
         max_prompt_chars=max_prompt_chars,
     )

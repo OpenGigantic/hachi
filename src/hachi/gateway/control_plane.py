@@ -7,9 +7,37 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import uvicorn
+
+if TYPE_CHECKING:
+    # T-43 round 1 -- domain ports (see gateway/ports.py). Imported only for
+    # type-checking: control_plane.py already uses `from __future__ import
+    # annotations`, so these names are never evaluated at runtime, and this
+    # import never executes -- avoiding a circular import with ports.py,
+    # which type-checks against ConnectRequest/GatewayEvent from this module
+    # the same way.
+    from hachi.gateway.ports import (
+        AllowlistPort,
+        ApprovalsPort,
+        AuthoringPort,
+        CapabilityPort,
+        ConfigPort,
+        DailySpendPort,
+        KennelPort,
+        LiveMemoryPort,
+        LiveObservabilityPort,
+        LiveSchedulingPort,
+        LiveSessionPort,
+        LiveSkillsPort,
+        LiveSpendPort,
+        MCPAdminPort,
+        MemoryReviewPort,
+        ProviderRoutingPort,
+        SearchPort,
+        SecretsPort,
+    )
 
 PROTOCOL_VERSION = "1.0"
 
@@ -178,87 +206,396 @@ class GatewayControlPlane:
         delete_secret: Callable[[str], dict[str, Any]] | None = None,
         # Tavily live reload
         reload_search_tools: Callable[[], dict[str, Any]] | None = None,
+        # T-43 round 1 -- domain ports (gateway/ports.py). ADDITIVE ONLY: every
+        # handler kwarg above still works unchanged. A port is a fallback
+        # source for the handlers it groups -- if an individual callable is
+        # ALSO supplied above, the individual callable wins for that one
+        # handler (see the resolution lines in the body below). Round 2 will
+        # retire the individual kwargs once every call site has moved to
+        # ports; until then both forms are fully live at once.
+        #
+        # Live*Port params (sessions/observability/scheduling/skills/memory/
+        # spend) mirror the `runtime … if runtime else None` kwargs above --
+        # pass a port only when a live runtime exists. Every other port
+        # mirrors the unconditional `support.…` kwargs -- always available.
+        sessions: LiveSessionPort | None = None,
+        observability: LiveObservabilityPort | None = None,
+        scheduling: LiveSchedulingPort | None = None,
+        skills: LiveSkillsPort | None = None,
+        memory: LiveMemoryPort | None = None,
+        spend: LiveSpendPort | None = None,
+        approvals: ApprovalsPort | None = None,
+        capabilities: CapabilityPort | None = None,
+        config: ConfigPort | None = None,
+        authoring: AuthoringPort | None = None,
+        kennel: KennelPort | None = None,
+        memory_review: MemoryReviewPort | None = None,
+        daily_spend: DailySpendPort | None = None,
+        allowlists: AllowlistPort | None = None,
+        mcp_admin: MCPAdminPort | None = None,
+        providers: ProviderRoutingPort | None = None,
+        secrets: SecretsPort | None = None,
+        search: SearchPort | None = None,
         max_active_sessions: int = 100,
         max_prompt_chars: int = 100_000,
     ) -> None:
         self._readiness_probe = readiness_probe or (lambda: (True, []))
-        self._on_connect = on_connect
-        self._on_disconnect = on_disconnect
-        self._on_chat = on_chat
-        self._read_events = read_events
-        self._read_events_base = read_events_base
-        self._get_session_state = get_session_state
-        self._get_recent_sessions = get_recent_sessions
-        self._get_session_messages = get_session_messages
-        self._delete_session = delete_session
-        self._get_runtime_events = get_runtime_events
-        self._get_mcp_inventory = get_mcp_inventory
-        self._get_active_jobs = get_active_jobs
-        self._get_failed_jobs = get_failed_jobs
-        self._get_permission_audit = get_permission_audit
-        self._list_pending_approvals = list_pending_approvals
-        self._resolve_approval = resolve_approval
-        self._get_subagent_reports = get_subagent_reports
-        self._get_capabilities = get_capabilities
-        self._get_config = get_config
-        self._update_provider = update_provider
-        self._validate_provider = validate_provider
-        self._update_permissions = update_permissions
-        self._update_memory = update_memory
-        self._list_models = list_models
-        self._get_setup_state = get_setup_state
-        self._apply_setup = apply_setup
-        self._list_schedules = list_schedules
-        self._cancel_schedule = cancel_schedule
-        self._toggle_schedule = toggle_schedule
-        self._run_schedule_now = run_schedule_now
-        self._get_skills = get_skills
-        self._get_memory = get_memory
-        self._get_memory_recall = get_memory_recall
-        self._get_og_graph = get_og_graph
-        self._get_authoring_targets = get_authoring_targets
-        self._get_authoring_target = get_authoring_target
-        self._authoring_generate = authoring_generate
-        self._authoring_apply = authoring_apply
-        self._authoring_revert = authoring_revert
-        self._authoring_save_source = authoring_save_source
-        self._get_spend = get_spend
-        self._get_spend_daily = get_spend_daily
-        self._set_capability_enabled = set_capability_enabled
-        self._add_memory_fact = add_memory_fact
-        self._delete_memory_fact = delete_memory_fact
+        # T-43 round 1 -- each handler resolves to the explicit callable if one
+        # was supplied, else falls back to the matching port method (None if
+        # no port either). Nothing below this point changes: every delegate
+        # method still reads self._on_connect / self._get_config / etc.
+        # exactly as before -- only how those attributes get populated changed.
+        self._on_connect = (
+            on_connect
+            if on_connect is not None
+            else (sessions.register_connection if sessions else None)
+        )
+        self._on_disconnect = (
+            on_disconnect
+            if on_disconnect is not None
+            else (sessions.close_connection if sessions else None)
+        )
+        self._on_chat = on_chat if on_chat is not None else (sessions.chat if sessions else None)
+        self._read_events = (
+            read_events if read_events is not None else (sessions.read_events if sessions else None)
+        )
+        self._read_events_base = (
+            read_events_base
+            if read_events_base is not None
+            else (sessions.read_events_base if sessions else None)
+        )
+        self._get_session_state = (
+            get_session_state
+            if get_session_state is not None
+            else (sessions.session_state if sessions else None)
+        )
+        self._get_recent_sessions = (
+            get_recent_sessions
+            if get_recent_sessions is not None
+            else (sessions.recent_sessions if sessions else None)
+        )
+        self._get_session_messages = (
+            get_session_messages
+            if get_session_messages is not None
+            else (sessions.session_messages if sessions else None)
+        )
+        self._delete_session = (
+            delete_session
+            if delete_session is not None
+            else (sessions.delete_session_record if sessions else None)
+        )
+        self._get_runtime_events = (
+            get_runtime_events
+            if get_runtime_events is not None
+            else (sessions.runtime_events if sessions else None)
+        )
+        self._get_mcp_inventory = (
+            get_mcp_inventory
+            if get_mcp_inventory is not None
+            else (observability.mcp_inventory if observability else None)
+        )
+        self._get_active_jobs = (
+            get_active_jobs
+            if get_active_jobs is not None
+            else (observability.active_jobs if observability else None)
+        )
+        self._get_failed_jobs = (
+            get_failed_jobs
+            if get_failed_jobs is not None
+            else (observability.failed_jobs if observability else None)
+        )
+        self._get_permission_audit = (
+            get_permission_audit
+            if get_permission_audit is not None
+            else (observability.permission_audit if observability else None)
+        )
+        self._list_pending_approvals = (
+            list_pending_approvals
+            if list_pending_approvals is not None
+            else (approvals.pending_approvals if approvals else None)
+        )
+        self._resolve_approval = (
+            resolve_approval
+            if resolve_approval is not None
+            else (approvals.resolve_approval if approvals else None)
+        )
+        self._get_subagent_reports = (
+            get_subagent_reports
+            if get_subagent_reports is not None
+            else (observability.subagent_reports if observability else None)
+        )
+        self._get_capabilities = (
+            get_capabilities
+            if get_capabilities is not None
+            else (capabilities.capabilities if capabilities else None)
+        )
+        self._get_config = (
+            get_config if get_config is not None else (config.get_config if config else None)
+        )
+        self._update_provider = (
+            update_provider
+            if update_provider is not None
+            else (config.update_provider if config else None)
+        )
+        self._validate_provider = (
+            validate_provider
+            if validate_provider is not None
+            else (config.validate_provider if config else None)
+        )
+        self._update_permissions = (
+            update_permissions
+            if update_permissions is not None
+            else (config.update_permissions if config else None)
+        )
+        self._update_memory = (
+            update_memory
+            if update_memory is not None
+            else (config.update_memory if config else None)
+        )
+        self._list_models = (
+            list_models if list_models is not None else (config.list_models if config else None)
+        )
+        self._get_setup_state = (
+            get_setup_state
+            if get_setup_state is not None
+            else (config.setup_state if config else None)
+        )
+        self._apply_setup = (
+            apply_setup if apply_setup is not None else (config.apply_setup if config else None)
+        )
+        self._list_schedules = (
+            list_schedules
+            if list_schedules is not None
+            else (scheduling.list_schedules if scheduling else None)
+        )
+        self._cancel_schedule = (
+            cancel_schedule
+            if cancel_schedule is not None
+            else (scheduling.cancel_schedule if scheduling else None)
+        )
+        self._toggle_schedule = (
+            toggle_schedule
+            if toggle_schedule is not None
+            else (scheduling.toggle_schedule if scheduling else None)
+        )
+        self._run_schedule_now = (
+            run_schedule_now
+            if run_schedule_now is not None
+            else (scheduling.run_schedule_now if scheduling else None)
+        )
+        self._get_skills = (
+            get_skills if get_skills is not None else (skills.get_skills if skills else None)
+        )
+        self._get_memory = (
+            get_memory if get_memory is not None else (memory.get_memory if memory else None)
+        )
+        self._get_memory_recall = (
+            get_memory_recall
+            if get_memory_recall is not None
+            else (memory.get_memory_recall if memory else None)
+        )
+        self._get_og_graph = (
+            get_og_graph if get_og_graph is not None else (skills.get_og_graph if skills else None)
+        )
+        self._get_authoring_targets = (
+            get_authoring_targets
+            if get_authoring_targets is not None
+            else (authoring.get_authoring_targets if authoring else None)
+        )
+        self._get_authoring_target = (
+            get_authoring_target
+            if get_authoring_target is not None
+            else (authoring.get_authoring_target if authoring else None)
+        )
+        self._authoring_generate = (
+            authoring_generate
+            if authoring_generate is not None
+            else (authoring.authoring_generate if authoring else None)
+        )
+        self._authoring_apply = (
+            authoring_apply
+            if authoring_apply is not None
+            else (authoring.authoring_apply if authoring else None)
+        )
+        self._authoring_revert = (
+            authoring_revert
+            if authoring_revert is not None
+            else (authoring.authoring_revert if authoring else None)
+        )
+        self._authoring_save_source = (
+            authoring_save_source
+            if authoring_save_source is not None
+            else (authoring.authoring_save_source if authoring else None)
+        )
+        self._get_spend = (
+            get_spend if get_spend is not None else (spend.get_spend if spend else None)
+        )
+        self._get_spend_daily = (
+            get_spend_daily
+            if get_spend_daily is not None
+            else (daily_spend.get_spend_daily if daily_spend else None)
+        )
+        self._set_capability_enabled = (
+            set_capability_enabled
+            if set_capability_enabled is not None
+            else (capabilities.set_capability_enabled if capabilities else None)
+        )
+        self._add_memory_fact = (
+            add_memory_fact
+            if add_memory_fact is not None
+            else (memory.add_memory_fact if memory else None)
+        )
+        self._delete_memory_fact = (
+            delete_memory_fact
+            if delete_memory_fact is not None
+            else (memory.delete_memory_fact if memory else None)
+        )
         # T-08 A2/A3 — MemoryGardener review surface
-        self._get_memory_gardener_diffs = get_memory_gardener_diffs
-        self._decide_memory_gardener_diff = decide_memory_gardener_diff
+        self._get_memory_gardener_diffs = (
+            get_memory_gardener_diffs
+            if get_memory_gardener_diffs is not None
+            else (memory.get_memory_gardener_diffs if memory else None)
+        )
+        self._decide_memory_gardener_diff = (
+            decide_memory_gardener_diff
+            if decide_memory_gardener_diff is not None
+            else (memory_review.decide_memory_gardener_diff if memory_review else None)
+        )
         # G1 — new handlers
-        self._update_limits = update_limits
-        self._add_allowed_folder = add_allowed_folder
-        self._add_allowed_command = add_allowed_command
-        self._remove_allowed_folder = remove_allowed_folder
-        self._remove_allowed_command = remove_allowed_command
-        self._add_always_allow = add_always_allow
-        self._register_mcp_server = register_mcp_server
-        self._set_mcp_enabled = set_mcp_enabled
-        self._delete_mcp_server = delete_mcp_server
-        self._get_kennel = get_kennel
-        self._add_skill = add_skill
+        self._update_limits = (
+            update_limits
+            if update_limits is not None
+            else (config.update_limits if config else None)
+        )
+        self._add_allowed_folder = (
+            add_allowed_folder
+            if add_allowed_folder is not None
+            else (allowlists.add_allowed_folder if allowlists else None)
+        )
+        self._add_allowed_command = (
+            add_allowed_command
+            if add_allowed_command is not None
+            else (allowlists.add_allowed_command if allowlists else None)
+        )
+        self._remove_allowed_folder = (
+            remove_allowed_folder
+            if remove_allowed_folder is not None
+            else (allowlists.remove_allowed_folder if allowlists else None)
+        )
+        self._remove_allowed_command = (
+            remove_allowed_command
+            if remove_allowed_command is not None
+            else (allowlists.remove_allowed_command if allowlists else None)
+        )
+        self._add_always_allow = (
+            add_always_allow
+            if add_always_allow is not None
+            else (allowlists.add_always_allow if allowlists else None)
+        )
+        self._register_mcp_server = (
+            register_mcp_server
+            if register_mcp_server is not None
+            else (mcp_admin.register_mcp_server if mcp_admin else None)
+        )
+        self._set_mcp_enabled = (
+            set_mcp_enabled
+            if set_mcp_enabled is not None
+            else (mcp_admin.set_mcp_enabled if mcp_admin else None)
+        )
+        self._delete_mcp_server = (
+            delete_mcp_server
+            if delete_mcp_server is not None
+            else (mcp_admin.delete_mcp_server if mcp_admin else None)
+        )
+        self._get_kennel = (
+            get_kennel if get_kennel is not None else (kennel.get_kennel if kennel else None)
+        )
+        self._add_skill = (
+            add_skill
+            if add_skill is not None
+            else (kennel.add_skill_from_kennel if kennel else None)
+        )
         # Multi-provider admin handlers
-        self._list_providers = list_providers
-        self._add_or_update_provider = add_or_update_provider
-        self._remove_provider = remove_provider
-        self._get_routing = get_routing
-        self._set_routing = set_routing
-        self._validate_routing_handler = validate_routing
-        self._rollback_routing_handler = rollback_routing
-        self._get_routing_audit_handler = get_routing_audit
-        self._test_provider_connection = test_provider_connection
-        self._list_all_models = list_all_models
-        self._probe_provider = probe_provider
-        self._on_interrupt = on_interrupt
-        self._store_secret = store_secret
-        self._list_secret_names = list_secret_names
-        self._delete_secret = delete_secret
-        self._reload_search_tools = reload_search_tools
+        self._list_providers = (
+            list_providers
+            if list_providers is not None
+            else (providers.list_providers if providers else None)
+        )
+        self._add_or_update_provider = (
+            add_or_update_provider
+            if add_or_update_provider is not None
+            else (providers.add_or_update_provider if providers else None)
+        )
+        self._remove_provider = (
+            remove_provider
+            if remove_provider is not None
+            else (providers.remove_provider if providers else None)
+        )
+        self._get_routing = (
+            get_routing
+            if get_routing is not None
+            else (providers.get_routing if providers else None)
+        )
+        self._set_routing = (
+            set_routing
+            if set_routing is not None
+            else (providers.set_routing if providers else None)
+        )
+        self._validate_routing_handler = (
+            validate_routing
+            if validate_routing is not None
+            else (providers.validate_routing if providers else None)
+        )
+        self._rollback_routing_handler = (
+            rollback_routing
+            if rollback_routing is not None
+            else (providers.rollback_routing if providers else None)
+        )
+        self._get_routing_audit_handler = (
+            get_routing_audit
+            if get_routing_audit is not None
+            else (providers.get_routing_audit if providers else None)
+        )
+        self._test_provider_connection = (
+            test_provider_connection
+            if test_provider_connection is not None
+            else (providers.test_provider_connection if providers else None)
+        )
+        self._list_all_models = (
+            list_all_models
+            if list_all_models is not None
+            else (providers.list_all_models if providers else None)
+        )
+        self._probe_provider = (
+            probe_provider
+            if probe_provider is not None
+            else (providers.probe_provider if providers else None)
+        )
+        self._on_interrupt = (
+            on_interrupt
+            if on_interrupt is not None
+            else (sessions.interrupt_session if sessions else None)
+        )
+        self._store_secret = (
+            store_secret
+            if store_secret is not None
+            else (secrets.store_secret if secrets else None)
+        )
+        self._list_secret_names = (
+            list_secret_names
+            if list_secret_names is not None
+            else (secrets.list_secret_names if secrets else None)
+        )
+        self._delete_secret = (
+            delete_secret
+            if delete_secret is not None
+            else (secrets.delete_secret if secrets else None)
+        )
+        self._reload_search_tools = (
+            reload_search_tools
+            if reload_search_tools is not None
+            else (search.reload_search_tools if search else None)
+        )
         self._connections: dict[str, dict[str, Any]] = {}
         self._api_sessions: dict[str, str] = {}  # session_key -> session_id (facade sessions)
         self._connections_lock = threading.Lock()
