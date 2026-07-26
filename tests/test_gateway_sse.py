@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 
+from conftest import control_plane
 from fastapi import Request
 from fastapi.testclient import TestClient
 
-from hachi.gateway.control_plane import GatewayControlPlane, GatewayEvent
+from hachi.gateway.control_plane import GatewayEvent
 from hachi.gateway.fastapi_app import create_gateway_app
 
 _EVENTS = [
@@ -23,7 +24,7 @@ def _read_events(_session_id: str, after: int, limit: int) -> list[GatewayEvent]
 
 
 def _client_with_session() -> tuple[TestClient, str]:
-    cp = GatewayControlPlane(read_events=_read_events)
+    cp = control_plane(read_events=_read_events)
     app = create_gateway_app(cp)
     client = TestClient(app)
     resp = client.post(
@@ -72,7 +73,7 @@ def test_stream_resumes_after_cursor() -> None:
 
 
 def test_stream_unknown_session_is_rejected() -> None:
-    cp = GatewayControlPlane(read_events=_read_events)
+    cp = control_plane(read_events=_read_events)
     app = create_gateway_app(cp)
     with TestClient(app) as client:
         response = client.get("/sessions/does-not-exist/stream", params={"max_idle_cycles": 1})
@@ -119,7 +120,7 @@ def test_stream_disconnect_does_not_interrupt_other_viewers() -> None:
         interrupted.append(session_id)
         return {"interrupted": True}
 
-    cp = GatewayControlPlane(read_events=_read_events, on_interrupt=_on_interrupt)
+    cp = control_plane(read_events=_read_events, on_interrupt=_on_interrupt)
     app = create_gateway_app(cp)
     client = TestClient(app)
     session_id = client.post(
@@ -206,7 +207,7 @@ def test_session_events_response_carries_base_sequence() -> None:
     this proves the value survives the hop from the runtime accessor into the
     actual JSON response body — not just that an internal counter clamped.
     """
-    cp = GatewayControlPlane(read_events=_read_events, read_events_base=lambda _session_id: 5)
+    cp = control_plane(read_events=_read_events, read_events_base=lambda _session_id: 5)
     app = create_gateway_app(cp)
     with TestClient(app) as client:
         session_id = client.post(

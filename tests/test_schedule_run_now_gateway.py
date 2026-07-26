@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane
@@ -147,7 +148,7 @@ def test_run_schedule_now_end_to_end_with_real_scheduler(tmp_path) -> None:
 
 def test_post_schedule_run_now_calls_control_plane_handler() -> None:
     stub = MagicMock(return_value={"ok": True, "schedule_id": "sched-1"})
-    cp = GatewayControlPlane(run_schedule_now=stub)
+    cp = control_plane(run_schedule_now=stub)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:

@@ -8,10 +8,10 @@ inspect the text that reaches it.
 
 from __future__ import annotations
 
+from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.core.untrusted_content import _BEGIN, _END
-from hachi.gateway.control_plane import GatewayControlPlane
 from hachi.gateway.fastapi_app import create_gateway_app
 
 # ---------------------------------------------------------------------------
@@ -27,7 +27,7 @@ def _app_with_spy() -> tuple[TestClient, list[str]]:
         received.append(prompt)
         return "ok"
 
-    cp = GatewayControlPlane(on_chat=_chat)
+    cp = control_plane(on_chat=_chat)
     app = create_gateway_app(cp)
     return TestClient(app), received
 

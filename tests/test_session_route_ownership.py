@@ -24,6 +24,7 @@ as before. One test is added: the route's real remaining access control
 
 from __future__ import annotations
 
+from conftest import control_plane as build_control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane
@@ -45,7 +46,7 @@ def _bearer() -> dict[str, str]:
 
 def _build_app() -> tuple[GatewayControlPlane, TestClient]:
     """A gateway app+control-plane pair with auth enforced like production."""
-    control_plane = GatewayControlPlane(
+    control_plane = build_control_plane(
         get_session_messages=lambda _sid, _limit: [
             {
                 "id": 1,

@@ -138,9 +138,9 @@ def test_control_plane_synthesized_completed_event_carries_model(tmp_path) -> No
     store.log_message(sid, "assistant", "a", model="gpt-4o-mini")
     store.flush_sync()
 
-    from hachi.gateway.control_plane import GatewayControlPlane
+    from conftest import control_plane
 
-    cp = GatewayControlPlane(get_session_messages=store.get_session_messages)
+    cp = control_plane(get_session_messages=store.get_session_messages)
     events = cp._synthesize_history_events(sid, after=0, limit=100)
     completed = [e for e in events if e["event_type"] == "session.chat.completed"]
     assert completed, "No session.chat.completed event synthesised"

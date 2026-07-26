@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane, GatewayEvent
@@ -61,7 +62,7 @@ def test_sessions_and_messages_endpoints_accept_valid_payload() -> None:
 
 
 def test_chat_endpoint_returns_response_when_runtime_attached() -> None:
-    cp = GatewayControlPlane(on_chat=lambda _session_id, prompt: f"echo:{prompt}")
+    cp = control_plane(on_chat=lambda _session_id, prompt: f"echo:{prompt}")
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -96,7 +97,7 @@ def test_events_endpoint_returns_batched_stream() -> None:
         ),
     ]
 
-    cp = GatewayControlPlane(read_events=lambda _session_id, _after, _limit: events)
+    cp = control_plane(read_events=lambda _session_id, _after, _limit: events)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -120,7 +121,7 @@ def test_events_endpoint_returns_batched_stream() -> None:
 
 
 def test_session_state_endpoint_returns_snapshot() -> None:
-    cp = GatewayControlPlane(
+    cp = control_plane(
         get_session_state=lambda session_id: {"session_id": session_id, "boot_ready": True}
     )
     app = create_gateway_app(cp)
@@ -157,7 +158,7 @@ def test_config_endpoint_round_trip_over_http() -> None:
         }
         return state
 
-    cp = GatewayControlPlane(get_config=_get_config, update_provider=_update_provider)
+    cp = control_plane(get_config=_get_config, update_provider=_update_provider)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -193,9 +194,7 @@ def test_config_mutation_routes_require_bearer_token_when_configured() -> None:
         state["permissions"] = {"tier": permissions.get("tier", "guided")}
         return state
 
-    cp = GatewayControlPlane(
-        update_provider=_update_provider, update_permissions=_update_permissions
-    )
+    cp = control_plane(update_provider=_update_provider, update_permissions=_update_permissions)
     app = create_gateway_app(cp, auth_token="secret-token")
 
     with TestClient(app) as client:
@@ -319,7 +318,7 @@ def test_session_creation_respects_max_active_sessions() -> None:
 
 
 def test_chat_rejects_oversized_prompt() -> None:
-    cp = GatewayControlPlane(on_chat=lambda _session_id, prompt: prompt, max_prompt_chars=8)
+    cp = control_plane(on_chat=lambda _session_id, prompt: prompt, max_prompt_chars=8)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -409,7 +408,7 @@ def test_invalid_session_payloads_fail_closed() -> None:
 
 
 def test_invalid_message_and_event_payloads_fail_closed() -> None:
-    cp = GatewayControlPlane(on_chat=lambda _session_id, prompt: prompt)
+    cp = control_plane(on_chat=lambda _session_id, prompt: prompt)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -445,7 +444,7 @@ def test_invalid_message_and_event_payloads_fail_closed() -> None:
 
 
 def test_out_of_order_and_duplicate_operations_are_rejected() -> None:
-    cp = GatewayControlPlane(on_chat=lambda _session_id, prompt: f"echo:{prompt}")
+    cp = control_plane(on_chat=lambda _session_id, prompt: f"echo:{prompt}")
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -484,7 +483,7 @@ def test_out_of_order_and_duplicate_operations_are_rejected() -> None:
 
 
 def test_session_churn_respects_limits_and_recovers_capacity() -> None:
-    cp = GatewayControlPlane(max_active_sessions=2, max_prompt_chars=8, on_chat=lambda _id, p: p)
+    cp = control_plane(max_active_sessions=2, max_prompt_chars=8, on_chat=lambda _id, p: p)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:

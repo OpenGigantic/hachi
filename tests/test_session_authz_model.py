@@ -57,6 +57,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from conftest import control_plane as build_control_plane
 from fastapi.testclient import TestClient
 
 from hachi.core.session_store import SessionStore
@@ -107,7 +108,7 @@ def _gateway_source_files() -> list[Path]:
 
 
 def _build_app() -> tuple[GatewayControlPlane, TestClient]:
-    control_plane = GatewayControlPlane(
+    control_plane = build_control_plane(
         on_chat=lambda _sid, p: f"echo:{p}",
         get_session_state=lambda sid: {"session_id": sid, "ok": True},
         get_recent_sessions=lambda _limit: [],

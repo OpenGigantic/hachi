@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane
@@ -115,7 +116,7 @@ def test_get_config_endpoint_includes_limits_keys(monkeypatch: pytest.MonkeyPatc
     fake_cfg = _FakeResolvedConfig(per_task=2.0, daily=20.0)
     monkeypatch.setattr("hachi.gateway.in_process_runtime.load_effective_config", lambda: fake_cfg)
 
-    cp = GatewayControlPlane(get_config=runtime.get_config)
+    cp = control_plane(get_config=runtime.get_config)
     with _app(cp) as client:
         resp = client.get("/config")
     assert resp.status_code == 200
@@ -200,7 +201,7 @@ def test_get_config_endpoint_masks_secrets_via_http(monkeypatch: pytest.MonkeyPa
         lambda: _real_config_with_secrets(),
     )
 
-    cp = GatewayControlPlane(get_config=runtime.get_config)
+    cp = control_plane(get_config=runtime.get_config)
     with _app(cp) as client:
         resp = client.get("/config")
     assert resp.status_code == 200
@@ -222,7 +223,7 @@ def test_authoring_save_source_returns_ok() -> None:
     def _stub(name: str, content: str) -> dict:
         return {"ok": True, "name": name}
 
-    cp = GatewayControlPlane(authoring_save_source=_stub)
+    cp = control_plane(authoring_save_source=_stub)
     with _app(cp) as client:
         resp = client.post(
             "/authoring/targets/brain-core.og/source",
@@ -240,7 +241,7 @@ def test_authoring_save_source_empty_content_returns_422() -> None:
     def _stub(name: str, content: str) -> dict:  # pragma: no cover
         return {"ok": True, "name": name}
 
-    cp = GatewayControlPlane(authoring_save_source=_stub)
+    cp = control_plane(authoring_save_source=_stub)
     with _app(cp) as client:
         resp = client.post(
             "/authoring/targets/brain-core.og/source",
@@ -251,7 +252,7 @@ def test_authoring_save_source_empty_content_returns_422() -> None:
 
 def test_authoring_save_source_missing_content_field_returns_422() -> None:
     """POST body missing the ``content`` field must be rejected with 422."""
-    cp = GatewayControlPlane(authoring_save_source=lambda n, c: {"ok": True, "name": n})
+    cp = control_plane(authoring_save_source=lambda n, c: {"ok": True, "name": n})
     with _app(cp) as client:
         resp = client.post("/authoring/targets/brain-core.og/source", json={})
     assert resp.status_code == 422
@@ -325,7 +326,7 @@ def test_og_graph_returns_expected_node_shape() -> None:
             }
         ]
     }
-    cp = GatewayControlPlane(get_og_graph=lambda: stub)
+    cp = control_plane(get_og_graph=lambda: stub)
     with _app(cp) as client:
         resp = client.get("/og/graph")
     assert resp.status_code == 200
@@ -357,7 +358,7 @@ def test_spend_returns_correct_shape() -> None:
         "tidies": [{"ts": "12:00", "before": 10000, "after": 4000}],
         "models": [{"name": "claude-sonnet-4-6", "tokens": 15000, "cost": 0.1, "color": ""}],
     }
-    cp = GatewayControlPlane(get_spend=lambda session_id: stub)
+    cp = control_plane(get_spend=lambda session_id: stub)
     with _app(cp) as client:
         resp = client.get("/spend")
     assert resp.status_code == 200
@@ -428,7 +429,7 @@ def test_capabilities_configured_field_via_http(monkeypatch: pytest.MonkeyPatch)
             }
         ]
 
-    cp = GatewayControlPlane(get_capabilities=_stub)
+    cp = control_plane(get_capabilities=_stub)
     with _app(cp) as client:
         resp = client.get("/capabilities")
     assert resp.status_code == 200
@@ -451,7 +452,7 @@ def test_memory_fact_add_core_memory_group() -> None:
     def _stub(group: str, text: str) -> dict:
         return {"id": f"fact-{group}-abc123"}
 
-    cp = GatewayControlPlane(add_memory_fact=_stub)
+    cp = control_plane(add_memory_fact=_stub)
     with _app(cp) as client:
         resp = client.post("/memory/facts", json={"group": "core_memory", "text": "Test fact"})
     assert resp.status_code == 200
@@ -466,7 +467,7 @@ def test_memory_fact_add_user_profile_group() -> None:
     def _stub(group: str, text: str) -> dict:
         return {"id": f"fact-{group}-xyz999"}
 
-    cp = GatewayControlPlane(add_memory_fact=_stub)
+    cp = control_plane(add_memory_fact=_stub)
     with _app(cp) as client:
         resp = client.post(
             "/memory/facts", json={"group": "user_profile", "text": "Likes dark mode"}
@@ -481,7 +482,7 @@ def test_memory_fact_add_agent_profile_group() -> None:
     def _stub(group: str, text: str) -> dict:
         return {"id": "fact-agent-001"}
 
-    cp = GatewayControlPlane(add_memory_fact=_stub)
+    cp = control_plane(add_memory_fact=_stub)
     with _app(cp) as client:
         resp = client.post(
             "/memory/facts", json={"group": "agent_profile", "text": "I am a helpful agent"}
@@ -563,7 +564,7 @@ def _make_cp_with_chat() -> GatewayControlPlane:
     def _events(session_id: str, after: int, limit: int):
         return events_store
 
-    return GatewayControlPlane(
+    return control_plane(
         on_connect=_connect,
         on_chat=_chat,
         read_events=_events,
@@ -674,7 +675,7 @@ def _make_cp_with_memory() -> tuple[GatewayControlPlane, list[tuple[str, str]], 
         added_facts.append(text)
         return {"id": "new-fact-id"}
 
-    cp = GatewayControlPlane(
+    cp = control_plane(
         on_connect=_connect,
         on_chat=_chat,
         read_events=_events,
@@ -785,7 +786,7 @@ def test_normal_message_not_affected_by_slash_handler() -> None:
     def _events(session_id: str, after: int, limit: int):
         return []
 
-    cp = GatewayControlPlane(on_connect=_connect, on_chat=_chat, read_events=_events)
+    cp = control_plane(on_connect=_connect, on_chat=_chat, read_events=_events)
 
     with _app(cp) as client:
         create_resp = client.post(
@@ -821,7 +822,7 @@ def test_slash_not_sent_to_llm() -> None:
     def _events(session_id: str, after: int, limit: int):
         return []
 
-    cp = GatewayControlPlane(on_connect=_connect, on_chat=_chat, read_events=_events)
+    cp = control_plane(on_connect=_connect, on_chat=_chat, read_events=_events)
 
     with _app(cp) as client:
         create_resp = client.post(

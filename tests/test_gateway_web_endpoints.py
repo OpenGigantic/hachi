@@ -4,8 +4,10 @@ Each test builds a ``GatewayControlPlane`` with a stub callable,
 wraps it in ``create_gateway_app``, and uses ``TestClient`` to verify
 route wiring and response shapes.  No live agent is needed.
 """
+
 from __future__ import annotations
 
+from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane
@@ -26,7 +28,7 @@ def test_skills_returns_list_from_stub() -> None:
             "last_used": "2026-06-16T09:00:00+00:00",
         }
     ]
-    cp = GatewayControlPlane(get_skills=lambda: stub)
+    cp = control_plane(get_skills=lambda: stub)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -66,7 +68,7 @@ def test_memory_returns_groups_blocked_proposed() -> None:
         "blocked": [],
         "proposed": None,
     }
-    cp = GatewayControlPlane(get_memory=lambda: stub)
+    cp = control_plane(get_memory=lambda: stub)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -96,7 +98,7 @@ def test_memory_returns_503_when_not_attached() -> None:
 
 def test_memory_recall_returns_hits_from_stub() -> None:
     stub_hits = [{"fact": "Project uses FastAPI", "score": "0.91", "src": "workspace_state"}]
-    cp = GatewayControlPlane(get_memory_recall=lambda q, k: stub_hits)
+    cp = control_plane(get_memory_recall=lambda q, k: stub_hits)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -109,7 +111,7 @@ def test_memory_recall_returns_hits_from_stub() -> None:
 
 
 def test_memory_recall_missing_query_param_returns_422() -> None:
-    cp = GatewayControlPlane(get_memory_recall=lambda q, k: [])
+    cp = control_plane(get_memory_recall=lambda q, k: [])
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -145,7 +147,7 @@ def test_og_graph_returns_nodes_from_stub() -> None:
             }
         ]
     }
-    cp = GatewayControlPlane(get_og_graph=lambda: stub)
+    cp = control_plane(get_og_graph=lambda: stub)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -176,7 +178,7 @@ def test_authoring_targets_returns_list_from_stub() -> None:
     stub_targets = [
         {"name": "brain-core.og", "path": "brain-core.og", "kind": "brain", "dirty": False}
     ]
-    cp = GatewayControlPlane(get_authoring_targets=lambda: stub_targets)
+    cp = control_plane(get_authoring_targets=lambda: stub_targets)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -190,7 +192,7 @@ def test_authoring_targets_returns_list_from_stub() -> None:
 
 def test_authoring_target_returns_source_from_stub() -> None:
     stub = {"name": "brain-core.og", "source": "::brain brain-core\n->[:role=brain]\n"}
-    cp = GatewayControlPlane(get_authoring_target=lambda name: stub)
+    cp = control_plane(get_authoring_target=lambda name: stub)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -202,7 +204,7 @@ def test_authoring_target_returns_source_from_stub() -> None:
 
 
 def test_authoring_apply_returns_ok_stub() -> None:
-    cp = GatewayControlPlane(
+    cp = control_plane(
         get_authoring_targets=lambda: [
             {"name": "brain-core.og", "path": "brain-core.og", "kind": "brain", "dirty": False}
         ],
@@ -217,7 +219,7 @@ def test_authoring_apply_returns_ok_stub() -> None:
 
 
 def test_authoring_revert_returns_ok_stub() -> None:
-    cp = GatewayControlPlane(
+    cp = control_plane(
         get_authoring_targets=lambda: [
             {"name": "brain-core.og", "path": "brain-core.og", "kind": "brain", "dirty": False}
         ],
@@ -251,7 +253,7 @@ def test_spend_returns_turns_tidies_models_from_stub() -> None:
         "tidies": [{"ts": "14:32", "before": 22000, "after": 8000}],
         "models": [{"name": "claude-sonnet-4-5", "tokens": 48210, "cost": 0.41, "color": ""}],
     }
-    cp = GatewayControlPlane(get_spend=lambda session_id: stub)
+    cp = control_plane(get_spend=lambda session_id: stub)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -273,7 +275,7 @@ def test_spend_accepts_session_id_query_param() -> None:
         received.append(session_id)
         return {"turns": [], "tidies": [], "models": []}
 
-    cp = GatewayControlPlane(get_spend=_stub)
+    cp = control_plane(get_spend=_stub)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
@@ -301,13 +303,11 @@ def test_capability_toggle_returns_updated_state() -> None:
     def _stub(cap_id: str, enabled: bool) -> dict:
         return {"id": cap_id, "enabled": enabled, "configured": True}
 
-    cp = GatewayControlPlane(set_capability_enabled=_stub)
+    cp = control_plane(set_capability_enabled=_stub)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
-        response = client.put(
-            "/capabilities/gmail/enabled", json={"enabled": True}
-        )
+        response = client.put("/capabilities/gmail/enabled", json={"enabled": True})
     assert response.status_code == 200
     data = response.json()
     assert data["id"] == "gmail"
@@ -319,19 +319,17 @@ def test_capability_toggle_disable() -> None:
     def _stub(cap_id: str, enabled: bool) -> dict:
         return {"id": cap_id, "enabled": enabled, "configured": False}
 
-    cp = GatewayControlPlane(set_capability_enabled=_stub)
+    cp = control_plane(set_capability_enabled=_stub)
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:
-        response = client.put(
-            "/capabilities/slack/enabled", json={"enabled": False}
-        )
+        response = client.put("/capabilities/slack/enabled", json={"enabled": False})
     assert response.status_code == 200
     assert response.json()["enabled"] is False
 
 
 def test_capability_toggle_missing_body_returns_422() -> None:
-    cp = GatewayControlPlane(set_capability_enabled=lambda cap_id, enabled: {})
+    cp = control_plane(set_capability_enabled=lambda cap_id, enabled: {})
     app = create_gateway_app(cp)
 
     with TestClient(app) as client:

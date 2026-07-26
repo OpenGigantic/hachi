@@ -128,8 +128,7 @@ class TestMcpInventoryTomlOnly:
     def test_mcp_inventory_shows_toml_only_server(self, tmp_path: Path) -> None:
         """mcp_inventory() includes TOML-persisted servers even when no agent is live."""
         import tomlkit
-
-        from hachi.gateway.control_plane import GatewayControlPlane
+        from conftest import control_plane
 
         # Write a minimal settings.toml with one MCP server entry.
         toml_path = tmp_path / "settings.toml"
@@ -148,7 +147,7 @@ class TestMcpInventoryTomlOnly:
         fake_paths = MagicMock()
         fake_paths.global_config_toml = toml_path
 
-        cp = GatewayControlPlane(
+        cp = control_plane(
             get_mcp_inventory=lambda: {"server_count": 0, "total_tool_count": 0, "servers": []}
         )
 

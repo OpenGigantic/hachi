@@ -35,6 +35,7 @@ session routes.
 
 from __future__ import annotations
 
+from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane
@@ -64,7 +65,7 @@ class TestOwnerAllowed:
     second principal to deny, so this is the entire access-control surface."""
 
     def test_owner_can_get_session(self) -> None:
-        cp = GatewayControlPlane(get_session_state=lambda sid: {"session_id": sid, "ok": True})
+        cp = control_plane(get_session_state=lambda sid: {"session_id": sid, "ok": True})
         app = create_gateway_app(cp, auth_token=_TOKEN_A)
         client = TestClient(app)
         resp = client.post("/sessions", json=_CONNECT, headers=_auth(_TOKEN_A))
@@ -74,7 +75,7 @@ class TestOwnerAllowed:
         assert r.status_code == 200
 
     def test_owner_can_post_message(self) -> None:
-        cp = GatewayControlPlane(on_chat=lambda _sid, p: f"echo:{p}")
+        cp = control_plane(on_chat=lambda _sid, p: f"echo:{p}")
         app = create_gateway_app(cp, auth_token=_TOKEN_A)
         client = TestClient(app)
         resp = client.post("/sessions", json=_CONNECT, headers=_auth(_TOKEN_A))
@@ -101,7 +102,7 @@ class TestOwnerAllowed:
         """Folded in from the deleted TestCrossCallerDenied.test_events_forbidden --
         that test simulated a foreign owner to assert 403; there is no
         ownership gate left to deny, so the same route now just works."""
-        cp = GatewayControlPlane(read_events=lambda _sid, _after, _limit: [])
+        cp = control_plane(read_events=lambda _sid, _after, _limit: [])
         app = create_gateway_app(cp, auth_token=_TOKEN_A)
         client = TestClient(app)
         resp = client.post("/sessions", json=_CONNECT, headers=_auth(_TOKEN_A))
@@ -112,7 +113,7 @@ class TestOwnerAllowed:
 
     def test_owner_can_stream(self) -> None:
         """Folded in from the deleted TestCrossCallerDenied.test_stream_forbidden."""
-        cp = GatewayControlPlane(read_events=lambda _sid, _after, _limit: [])
+        cp = control_plane(read_events=lambda _sid, _after, _limit: [])
         app = create_gateway_app(cp, auth_token=_TOKEN_A)
         client = TestClient(app)
         resp = client.post("/sessions", json=_CONNECT, headers=_auth(_TOKEN_A))
@@ -142,7 +143,7 @@ def test_list_sessions_returns_every_session() -> None:
     def _recent(limit: int) -> list[dict]:
         return session_records[:limit]
 
-    cp = GatewayControlPlane(get_recent_sessions=_recent)
+    cp = control_plane(get_recent_sessions=_recent)
     app = create_gateway_app(cp, auth_token=_TOKEN_A)
     client = TestClient(app)
 
@@ -174,7 +175,7 @@ class TestSingleTokenDeployment:
 
     def test_same_token_can_access_own_session(self) -> None:
         _TOKEN = "shared-single-token"
-        cp = GatewayControlPlane(on_chat=lambda _sid, p: f"pong:{p}")
+        cp = control_plane(on_chat=lambda _sid, p: f"pong:{p}")
         app = create_gateway_app(cp, auth_token=_TOKEN)
         client = TestClient(app)
 

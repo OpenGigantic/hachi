@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane
@@ -91,7 +92,7 @@ class TestAuthRequired:
         assert resp.status_code == 401
 
     def test_config_endpoint_returns_200_with_token(self) -> None:
-        cp = GatewayControlPlane(get_config=lambda: {"provider": {"kind": "anthropic"}})
+        cp = control_plane(get_config=lambda: {"provider": {"kind": "anthropic"}})
         app = create_gateway_app(cp, auth_token=_TOKEN)
         client = TestClient(app)
         resp = client.get("/config", headers={"Authorization": f"Bearer {_TOKEN}"})
@@ -356,7 +357,7 @@ class TestApprovalsEndpoints:
         fake_registry.list_pending.return_value = pending if pending is not None else []
         fake_registry.resolve.return_value = resolve_returns
 
-        cp = GatewayControlPlane(
+        cp = control_plane(
             list_pending_approvals=fake_registry.list_pending,
             resolve_approval=lambda request_id, action, rationale="": fake_registry.resolve(
                 request_id, SimpleNamespace(action=action, rationale=rationale)
@@ -398,7 +399,7 @@ class TestApprovalsEndpoints:
         def _list_pending() -> list[dict]:
             return [{"request_id": "req-1", "tool": "write_file", "target": "/tmp/x"}]
 
-        cp = GatewayControlPlane(list_pending_approvals=_list_pending)
+        cp = control_plane(list_pending_approvals=_list_pending)
         app = create_gateway_app(cp, auth_token=_TOKEN)
         client = TestClient(app)
 
@@ -419,7 +420,7 @@ class TestApprovalsEndpoints:
             calls.append((request_id, action, rationale))
             return True
 
-        cp = GatewayControlPlane(resolve_approval=_resolve)
+        cp = control_plane(resolve_approval=_resolve)
         app = create_gateway_app(cp, auth_token=_TOKEN)
         client = TestClient(app)
 
@@ -445,7 +446,7 @@ class TestApprovalsEndpoints:
             calls.append((request_id, action, rationale))
             return True
 
-        cp = GatewayControlPlane(resolve_approval=_resolve)
+        cp = control_plane(resolve_approval=_resolve)
         app = create_gateway_app(cp, auth_token=_TOKEN)
         client = TestClient(app)
 
@@ -459,7 +460,7 @@ class TestApprovalsEndpoints:
         assert calls == [("req-100", "deny", "")]
 
     def test_post_approval_allow_once_action_works(self) -> None:
-        cp = GatewayControlPlane(resolve_approval=lambda request_id, action, rationale="": True)
+        cp = control_plane(resolve_approval=lambda request_id, action, rationale="": True)
         app = create_gateway_app(cp, auth_token=_TOKEN)
         client = TestClient(app)
 
@@ -471,7 +472,7 @@ class TestApprovalsEndpoints:
         assert resp.status_code == 200
 
     def test_post_approval_returns_404_when_resolve_returns_false(self) -> None:
-        cp = GatewayControlPlane(resolve_approval=lambda request_id, action, rationale="": False)
+        cp = control_plane(resolve_approval=lambda request_id, action, rationale="": False)
         app = create_gateway_app(cp, auth_token=_TOKEN)
         client = TestClient(app)
 
@@ -544,7 +545,7 @@ class TestApprovalsEndpoints:
                 }
             ]
 
-        cp = GatewayControlPlane(list_pending_approvals=_list_pending)
+        cp = control_plane(list_pending_approvals=_list_pending)
         app = create_gateway_app(cp, auth_token=_TOKEN)
         client = TestClient(app)
 

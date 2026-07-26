@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from conftest import control_plane
 
 from hachi.gateway.control_plane import (
     GatewayControlPlane,
@@ -32,7 +33,7 @@ class TestSessionStateFallback:
 
     def _make_cp_with_sqlite_hit(self) -> GatewayControlPlane:
         """Return a GatewayControlPlane whose get_session_messages returns a non-empty list."""
-        return GatewayControlPlane(
+        return control_plane(
             # No get_session_state handler wired — the live path is never reached.
             get_session_messages=lambda _sid, _limit: [
                 {"role": "user", "content": "hello", "time": "2026-06-22T00:00:00Z"}
@@ -41,7 +42,7 @@ class TestSessionStateFallback:
 
     def _make_cp_no_sqlite(self) -> GatewayControlPlane:
         """Return a GatewayControlPlane with no SQLite messages (unknown session)."""
-        return GatewayControlPlane(
+        return control_plane(
             get_session_messages=lambda _sid, _limit: [],
         )
 
@@ -69,7 +70,7 @@ class TestSessionStateFallback:
     def test_live_session_uses_handler(self) -> None:
         """session_state calls the handler for an in-memory (live) session."""
         state_returned = {"session_id": "live-001", "boot_ready": True}
-        cp = GatewayControlPlane(
+        cp = control_plane(
             get_session_state=lambda _sid: state_returned,
         )
         # Create a live session.
@@ -98,7 +99,7 @@ class TestSendMessageTypedError:
     def test_expired_session_raises_session_expired_error(self) -> None:
         """send_message raises SessionExpiredError (not bare GatewayProtocolError) when the
         session_id is in SQLite but not in active memory."""
-        cp = GatewayControlPlane(
+        cp = control_plane(
             on_chat=lambda _sid, _prompt: "reply",
             get_session_messages=lambda _sid, _limit: [
                 {"role": "user", "content": "hi", "time": "2026-06-22T00:00:00Z"}
@@ -112,7 +113,7 @@ class TestSendMessageTypedError:
 
     def test_unknown_session_raises_protocol_error_with_code(self) -> None:
         """send_message raises GatewayProtocolError with code='unknown_session' for garbage ids."""
-        cp = GatewayControlPlane(
+        cp = control_plane(
             on_chat=lambda _sid, _prompt: "reply",
             get_session_messages=lambda _sid, _limit: [],  # empty = not in SQLite
         )
@@ -200,11 +201,7 @@ class TestConfigureMcpServersToml:
         gate = self._make_fake_gate(allow=True)
         emit = MagicMock()
 
-        config = {
-            "mcp_servers": {
-                "shared_server": {"transport": "stdio", "command": "some-cmd"}
-            }
-        }
+        config = {"mcp_servers": {"shared_server": {"transport": "stdio", "command": "some-cmd"}}}
 
         _configure_mcp_servers(skill_engine, mcp_manager, gate, emit, config=config)
 
@@ -275,9 +272,7 @@ class TestRegisterSearchFallbackWarning:
         warning_text = " ".join(caplog.messages)
         assert "browse_web" in warning_text or "UNAVAILABLE" in warning_text.upper()
 
-    def test_logs_warning_when_no_search_provider(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_logs_warning_when_no_search_provider(self, caplog: pytest.LogCaptureFixture) -> None:
         """When registry.get_search() returns None, a warning mentioning 'browse_web' is logged."""
         from hachi.gateway.orchestrator import _register_search_if_available
 
@@ -288,9 +283,7 @@ class TestRegisterSearchFallbackWarning:
         warning_text = " ".join(caplog.messages)
         assert "browse_web" in warning_text or "UNAVAILABLE" in warning_text.upper()
 
-    def test_no_warning_when_provider_registered(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_no_warning_when_provider_registered(self, caplog: pytest.LogCaptureFixture) -> None:
         """When a SearchProvider IS registered, no 'UNAVAILABLE' warning is emitted before
         the cache/limiter setup phase begins."""
         from hachi.gateway.orchestrator import _register_search_if_available
