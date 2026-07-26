@@ -145,6 +145,32 @@ def test_quick_setup_persists_openrouter(tmp_path: Path) -> None:
     assert load_effective_config(paths=paths).provider.kind == "openrouter"
 
 
+# ---- capability pack install (T-68) ----
+
+
+def test_apply_setup_enabling_capability_installs_its_skill_pack(tmp_path: Path) -> None:
+    """Enabling an integration during setup must still install its optional skill pack.
+
+    Regression coverage for T-68: apply_setup() used to install the pack via
+    hachi.gateway.workspace.install_optional_skill_pack (an import-linter
+    exemption — core/onboarding.py is the engine, that call reached into the
+    gateway service). It now calls hachi.core.skill_packs.install_skill_pack
+    directly with this service's own paths; this proves the behaviour survived
+    the inversion, not just that the import is gone.
+    """
+    paths = _paths(tmp_path)
+    service = OnboardingService(paths=paths)
+
+    plan_payload = service.build_tier_plan("power", {"integrations": {"slack": {"enabled": True}}})
+    service.apply_setup(plan_payload)
+
+    installed = paths.skills_dir / "slack"
+    assert installed.is_dir(), (
+        f"enabling the 'slack' capability did not install its skill pack into {paths.skills_dir}"
+    )
+    assert any(installed.iterdir()), "the installed 'slack' pack directory is empty"
+
+
 # ---- install scripts ----
 
 

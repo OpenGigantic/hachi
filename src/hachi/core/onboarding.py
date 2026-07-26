@@ -15,7 +15,7 @@ from hachi.core.paths import (
     ensure_directories,
     get_hachi_paths,
 )
-from hachi.gateway.workspace import install_optional_skill_pack
+from hachi.core.skill_packs import install_skill_pack
 
 SetupTier = Literal["lightning", "recommended", "enhanced", "power"]
 SetupStep = Literal["welcome", "provider", "safety", "memory", "integrations", "advanced", "finish"]
@@ -521,7 +521,17 @@ class OnboardingService:
                     cap_state.enabled = cap_answer
 
                 if cap_state.enabled:
-                    install_optional_skill_pack(cap_id)
+                    # T-68: call the core-owned installer directly with this
+                    # service's own paths, instead of
+                    # hachi.gateway.workspace.install_optional_skill_pack
+                    # (import-linter "the engine must not import the gateway
+                    # service"). That wrapper only added
+                    # ensure_workspace()'s fuller first-run bootstrap on top
+                    # of this same call — every real boot path (CLI,
+                    # gateway) already runs that bootstrap before onboarding
+                    # can be reached, and __init__ above already ensured
+                    # self.paths.skills_dir exists.
+                    install_skill_pack(cap_id, self.paths.skills_dir)
 
         # BB-124: deliberately KEEP the merged write here — the onboarding
         # wizard *constructs* the initial config from defaults + the user's

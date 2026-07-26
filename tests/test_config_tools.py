@@ -61,22 +61,14 @@ def _fake_gate(tier: str = "guided") -> MagicMock:
     return gate
 
 
-def _skills_dir_patch(tmp_path: Path) -> patch:
-    return patch(
-        "hachi.gateway.workspace.get_skills_dir",
-        return_value=tmp_path,
-    )
-
-
 # ---------------------------------------------------------------------------
 # 1. add_mcp_server — happy path
 # ---------------------------------------------------------------------------
 
 
 def test_add_mcp_server_happy_path(tmp_path: Path) -> None:
-    fn = _make_add_mcp_server(gate=_fake_gate())
-    with _skills_dir_patch(tmp_path):
-        result = fn("github", "npx", "-y @modelcontextprotocol/server-github")
+    fn = _make_add_mcp_server(gate=_fake_gate(), skills_dir_provider=lambda: tmp_path)
+    result = fn("github", "npx", "-y @modelcontextprotocol/server-github")
     assert "registered" in result.lower()
     assert (tmp_path / "mcp-github.og").exists()
     content = (tmp_path / "mcp-github.og").read_text(encoding="utf-8")
@@ -90,9 +82,8 @@ def test_add_mcp_server_happy_path(tmp_path: Path) -> None:
 
 
 def test_add_mcp_server_blocked_command(tmp_path: Path) -> None:
-    fn = _make_add_mcp_server(gate=_fake_gate())
-    with _skills_dir_patch(tmp_path):
-        result = fn("bad", "bash", "-c 'rm -rf /'")
+    fn = _make_add_mcp_server(gate=_fake_gate(), skills_dir_provider=lambda: tmp_path)
+    result = fn("bad", "bash", "-c 'rm -rf /'")
     assert "not allowed" in result.lower()
     assert not (tmp_path / "mcp-bad.og").exists()
 
@@ -103,9 +94,8 @@ def test_add_mcp_server_blocked_command(tmp_path: Path) -> None:
 
 
 def test_add_mcp_server_invalid_name(tmp_path: Path) -> None:
-    fn = _make_add_mcp_server(gate=_fake_gate())
-    with _skills_dir_patch(tmp_path):
-        result = fn("bad name!", "npx", "-y pkg")
+    fn = _make_add_mcp_server(gate=_fake_gate(), skills_dir_provider=lambda: tmp_path)
+    result = fn("bad name!", "npx", "-y pkg")
     assert "slug" in result.lower() or "not slug" in result.lower()
     assert not (tmp_path / "mcp-bad name!.og").exists()
 
@@ -116,9 +106,8 @@ def test_add_mcp_server_invalid_name(tmp_path: Path) -> None:
 
 
 def test_add_mcp_server_shell_meta_in_args(tmp_path: Path) -> None:
-    fn = _make_add_mcp_server(gate=_fake_gate())
-    with _skills_dir_patch(tmp_path):
-        result = fn("tricky", "node", "server.js; rm -rf /")
+    fn = _make_add_mcp_server(gate=_fake_gate(), skills_dir_provider=lambda: tmp_path)
+    result = fn("tricky", "node", "server.js; rm -rf /")
     assert "metacharacter" in result.lower() or "shell" in result.lower()
     assert not (tmp_path / "mcp-tricky.og").exists()
 
@@ -129,9 +118,8 @@ def test_add_mcp_server_shell_meta_in_args(tmp_path: Path) -> None:
 
 
 def test_add_mcp_server_secret_env_rejected(tmp_path: Path) -> None:
-    fn = _make_add_mcp_server(gate=_fake_gate())
-    with _skills_dir_patch(tmp_path):
-        result = fn("gh", "npx", "-y @mcp/server", env_vars={"GITHUB_TOKEN": "ghp_xxx"})
+    fn = _make_add_mcp_server(gate=_fake_gate(), skills_dir_provider=lambda: tmp_path)
+    result = fn("gh", "npx", "-y @mcp/server", env_vars={"GITHUB_TOKEN": "ghp_xxx"})
     assert "secret" in result.lower() or "credential" in result.lower()
     assert not (tmp_path / "mcp-gh.og").exists()
 
@@ -143,9 +131,8 @@ def test_add_mcp_server_secret_env_rejected(tmp_path: Path) -> None:
 
 def test_add_mcp_server_no_overwrite(tmp_path: Path) -> None:
     (tmp_path / "mcp-github.og").write_text("::node[github]\n", encoding="utf-8")
-    fn = _make_add_mcp_server(gate=_fake_gate())
-    with _skills_dir_patch(tmp_path):
-        result = fn("github", "npx", "-y @mcp/server-github")
+    fn = _make_add_mcp_server(gate=_fake_gate(), skills_dir_provider=lambda: tmp_path)
+    result = fn("github", "npx", "-y @mcp/server-github")
     assert "already exists" in result.lower() or "exists" in result.lower()
 
 
@@ -155,9 +142,9 @@ def test_add_mcp_server_no_overwrite(tmp_path: Path) -> None:
 
 
 def test_add_mcp_server_sandbox_blocked(tmp_path: Path) -> None:
+    # Tier gate returns before skills_dir is ever resolved — no provider needed.
     fn = _make_add_mcp_server(gate=_fake_gate("sandbox"))
-    with _skills_dir_patch(tmp_path):
-        result = fn("github", "npx", "-y @mcp/server-github")
+    result = fn("github", "npx", "-y @mcp/server-github")
     assert "sandbox" in result.lower()
     assert not (tmp_path / "mcp-github.og").exists()
 
@@ -168,9 +155,8 @@ def test_add_mcp_server_sandbox_blocked(tmp_path: Path) -> None:
 
 
 def test_add_mcp_server_env_vars_written(tmp_path: Path) -> None:
-    fn = _make_add_mcp_server(gate=_fake_gate())
-    with _skills_dir_patch(tmp_path):
-        fn("notion", "npx", "-y @notion/mcp", env_vars={"WORKSPACE_ID": "abc123"})
+    fn = _make_add_mcp_server(gate=_fake_gate(), skills_dir_provider=lambda: tmp_path)
+    fn("notion", "npx", "-y @notion/mcp", env_vars={"WORKSPACE_ID": "abc123"})
     content = (tmp_path / "mcp-notion.og").read_text(encoding="utf-8")
     assert "env_WORKSPACE_ID: abc123" in content
 
@@ -183,9 +169,8 @@ def test_add_mcp_server_env_vars_written(tmp_path: Path) -> None:
 def test_remove_mcp_server_removes_file(tmp_path: Path) -> None:
     og = tmp_path / "mcp-github.og"
     og.write_text("::node[github]\n", encoding="utf-8")
-    fn = _make_remove_mcp_server(gate=_fake_gate())
-    with _skills_dir_patch(tmp_path):
-        result = fn("github")
+    fn = _make_remove_mcp_server(gate=_fake_gate(), skills_dir_provider=lambda: tmp_path)
+    result = fn("github")
     assert "removed" in result.lower()
     assert not og.exists()
 
@@ -196,9 +181,8 @@ def test_remove_mcp_server_removes_file(tmp_path: Path) -> None:
 
 
 def test_remove_mcp_server_not_found(tmp_path: Path) -> None:
-    fn = _make_remove_mcp_server(gate=_fake_gate())
-    with _skills_dir_patch(tmp_path):
-        result = fn("missing")
+    fn = _make_remove_mcp_server(gate=_fake_gate(), skills_dir_provider=lambda: tmp_path)
+    result = fn("missing")
     assert "not found" in result.lower()
 
 
@@ -210,9 +194,9 @@ def test_remove_mcp_server_not_found(tmp_path: Path) -> None:
 def test_remove_mcp_server_sandbox_blocked(tmp_path: Path) -> None:
     og = tmp_path / "mcp-github.og"
     og.write_text("::node[github]\n", encoding="utf-8")
+    # Tier gate returns before skills_dir is ever resolved — no provider needed.
     fn = _make_remove_mcp_server(gate=_fake_gate("sandbox"))
-    with _skills_dir_patch(tmp_path):
-        result = fn("github")
+    result = fn("github")
     assert "sandbox" in result.lower()
     assert og.exists()  # not deleted
 
@@ -223,7 +207,7 @@ def test_remove_mcp_server_sandbox_blocked(tmp_path: Path) -> None:
 
 
 def test_list_mcp_servers_returns_json(tmp_path: Path) -> None:
-    fn = _make_list_mcp_servers()
+    fn = _make_list_mcp_servers(skills_dir_provider=lambda: tmp_path)
     og_content = """\
 ::node[myserver]
 ->[:role=mcp]
@@ -240,10 +224,7 @@ env_API_URL: https://api.example.com
     og_file = tmp_path / "mcp-myserver.og"
     og_file.write_text(og_content, encoding="utf-8")
 
-    with (
-        patch("hachi.gateway.workspace.get_skills_dir", return_value=tmp_path),
-        patch("hachi.og_engine.engine.SkillEngine") as MockEngine,
-    ):
+    with patch("hachi.og_engine.engine.SkillEngine") as MockEngine:
         mock_engine = MagicMock()
         MockEngine.return_value = mock_engine
         node = MagicMock()
