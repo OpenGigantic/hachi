@@ -3385,3 +3385,45 @@ by-path config and every generated artifact that named the old flat modules, or 
 breaks on stale paths.
 
 **Locked by:** `tests/test_memory_package_boundary.py`; docs/bug-bank.md BB-148.
+
+## T-41: The in-process gateway backend now lives in the gateway, not the CLI (2026-07-26) **[ADR]**
+
+**Decision:** `_InProcessGatewayRuntime` — the entire in-process gateway backend — moved
+verbatim out of `src/hachi/cli/main.py` into `src/hachi/gateway/in_process_runtime.py`.
+2,558 lines and 86 methods, relocated byte-for-byte. `cli/main.py` drops 5,858 -> 3,276
+lines and is a CLI again. This is the keystone Wave-2 task: it unblocks T-42 (retire the
+`core -> cli` seam) and T-43 (collapse the control-plane interfaces).
+
+**Zero behaviour change, and that was the acceptance bar.** The moved span diffs
+byte-identical against the pre-move original except one line, where `ruff` stripped
+now-redundant quotes from `rehydrate_session`'s return annotation under
+`from __future__ import annotations`. `cli/main.py` gained exactly five lines: the class
+import, the `in_process_runtime as _runtime_mod` import, the rewritten worker read, and a
+ruff-collapsed import. No renamed method, no changed signature, no "while I'm here" fix.
+The class kept its leading underscore deliberately — renaming is a separable change that
+would churn every test patch string a second time.
+
+**The runtime keeps its module-level worker slot, read through the module object.**
+`_GATEWAY_RESIDENT_WORKER` moved with the class; `cli/main.py`'s `_gateway_readiness_probe`
+reads it as `_runtime_mod._GATEWAY_RESIDENT_WORKER`. A `from ... import
+_GATEWAY_RESIDENT_WORKER` would snapshot `None` at import time and report the worker dead
+forever — the single easiest way to break this task, so it has a dedicated regression test.
+
+**`_pack_display_name` moved too, outside the task's stated file list.** The helper sat
+just after the class, had exactly one consumer (`get_kennel`), and importing it back from
+`cli.main` would have reintroduced the precise `gateway -> cli` inversion this task removes.
+Accepted as additive and byte-identical (BB-149).
+
+**Deliberately NOT done here:** `_ACTIVE_RUNTIME`, `_start_gateway_server`,
+`_build_gateway_control_plane` and `_gateway_readiness_probe` stay in `cli/main.py`; the
+`hachi.core.runtime.resume -> hachi.cli.main` import-linter exemption stays untouched
+(T-42 owns it, and it is trivial once this has landed); the class was not split into the
+13 domain groups its methods partition into (T-43). `config` / `models` / `permissions`
+are Typer commands shadowed by locals inside the class and stay put.
+
+**By-path config had to follow the file:** `scripts/check_getattr.py`'s allowlist keyed two
+pre-existing, already-justified entries (`_og_engine_cache`, `reindex_skills`) to
+`src/hachi/cli/main.py`; they were repathed, not re-suppressed. Same lesson as T-48 — a
+module move breaks every config that names a file by path.
+
+**Locked by:** `tests/test_in_process_runtime_extraction.py`; docs/bug-bank.md BB-149, BB-150.

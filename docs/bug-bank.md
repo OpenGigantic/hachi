@@ -4661,6 +4661,82 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** `tests/test_memory_package_boundary.py` + the full-tree
   `pytest --collect-only` pass this fix required to go green.
 
+### BB-149 — A class-move's stale patch target isn't always a string, and a moved class can drag a same-file helper with it
+
+- **Symptom:** After extracting `_InProcessGatewayRuntime` from `cli/main.py` to
+  `gateway/in_process_runtime.py` (T-41), two problems surfaced that the census
+  `grep -rhoE '"hachi\.cli\.main\.[a-zA-Z_]+"' tests/` does not catch: (1)
+  `tests/test_memory_gardener_wiring.py` rebound the target with
+  `cli_main.get_hachi_paths = lambda: fake_paths` plus a manual restore in a
+  `finally:` — a bare attribute assignment, not `monkeypatch.setattr`/`patch()` —
+  so 2 tests silently started reading the developer's real `~/.hachi` config
+  after the move; (2) `ruff check` on the new module raised
+  `F821 Undefined name '_pack_display_name'` — a private helper sitting
+  immediately *after* the class in the old file, used by exactly one method
+  (`get_kennel`), was outside the literal class span, and importing it back from
+  `cli.main` would have reintroduced the exact gateway->cli inversion the move
+  exists to remove.
+- **Root cause:** (1) `mock.patch`/`monkeypatch.setattr` are not the only way a
+  test rebinds a module attribute — a direct `module.name = value` with manual
+  save/restore is equivalent and equally invisible to a string-literal grep.
+  (2) A class's line span is not its full dependency surface: an adjacent,
+  non-exported, single-consumer helper can be *logically* part of the class
+  without being *textually* inside it.
+- **Fix:** swept the tree for `alias\.[a-zA-Z_]+\s*=\s*(lambda|MagicMock)` against
+  every alias `hachi.cli.main` is imported under (`cli_main`, `main_mod`) and
+  re-pointed the hits; ran `ruff check` on the new module as an active F821 sweep
+  (not just an unused-import check) and moved `_pack_display_name` alongside the
+  class once the sweep proved it had no other consumer.
+- **Avoid:** after moving a class between modules, grep the old target as BOTH a
+  quoted patch string AND a bare `alias.name = value` assignment, for every alias
+  the old home is imported under. Then run `ruff check` on the new module — `F821`
+  names any function that sat next to the class rather than inside it. Verify each
+  re-pointed patch by temporarily breaking the real implementation and confirming
+  the test goes red: a green suite after a module move proves nothing, because a
+  stale patch target is a silent no-op that lets the real function run against a
+  tmp path that happens to work.
+- **Locked by:** `tests/test_in_process_runtime_extraction.py::test_runtime_is_importable_from_gateway_without_cli`
+  (proves the class needs nothing left behind in `cli.main`);
+  `tests/test_memory_gardener_wiring.py::test_post_memory_diff_decision_approve_route_end_to_end`
+  and `::test_post_memory_diff_decision_reject_route_drops_from_store` (re-pointed;
+  verified red when reverted).
+
+### BB-150 — Deleting `sys.modules` entries to force a re-import poisons every later test holding the old reference
+
+- **Symptom:** `tests/test_in_process_runtime_extraction.py::test_runtime_is_importable_from_gateway_without_cli`
+  passed alone, but made `tests/test_schedule_show.py` (6),
+  `tests/test_schedule_run_now.py` (4) and `tests/test_schedule_pause_resume.py`
+  (4) fail with CLI commands exiting 1 — only when run after it in the same
+  session. Every one of those 14 passed in isolation. The full-suite gate was the
+  only thing that caught it; scoped runs were green.
+- **Root cause:** the test deleted every `hachi.cli*` entry from `sys.modules`
+  (deliberately scoped to that prefix so it would never repeat BB-3's chromadb
+  mistake) and re-imported the gateway module, which pulls `hachi.cli.main` back
+  in as a *new* module object. Any test that already did
+  `from hachi.cli.main import app` at import time keeps its name bound to the
+  *orphaned* object while everything imported afterward gets the new one; the two
+  diverge (Typer command registration, module-level singletons) and
+  CliRunner-driven commands built on the stale object start failing. Scoping away
+  from chromadb was necessary but not sufficient — `hachi.cli` is exactly what the
+  CLI test files depend on, so deleting it is never safe in a shared interpreter,
+  whatever the prefix.
+- **Fix:** proved the property in a disposable subprocess instead —
+  `subprocess.run([sys.executable, "-c", script], cwd=<repo root>, capture_output=True,
+  timeout=60)` asserting `returncode == 0`, never `shell=True`. This interpreter's
+  `sys.modules` is never mutated.
+- **Avoid:** never delete `sys.modules` entries to answer "does importing X require
+  Y?" inside the pytest process — the mutation outlives the test and corrupts
+  whichever later test already bound a name to the deleted module, as an
+  order-dependent failure far from its cause. Use a subprocess: hermetic, and a
+  strictly *stronger* assertion, because it proves the import genuinely never pulls
+  the dependency in rather than inspecting a dict the test just edited by hand.
+  Note this trap shipped in T-41's own spec sketch (§7) — a spec proposing a
+  `sys.modules` deletion is a defect in the spec.
+- **Locked by:** `tests/test_in_process_runtime_extraction.py::test_runtime_is_importable_from_gateway_without_cli`
+  (subprocess-based) — confirmed red when the new module was made to import
+  `hachi.cli.main`, and confirmed order-independent against the three schedule test
+  files with `-p no:randomly`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
