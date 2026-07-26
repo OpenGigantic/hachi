@@ -4777,6 +4777,58 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `tests/test_governed_session_entry_points.py` (channel/schedule governed-boot and
   isolation-guard tests, retargeted at the new seam).
 
+### BB-152 — Terminal outcomes encoded as string prefixes: the loop's exit reason was unaddressable, and one sentinel was asserted both ways
+
+- **Symptom:** Nothing could ask "why did this turn end?" as a value. `core/sub_agent.py`
+  recovered "was this cut off?" with `result.startswith(INCOMPLETE_RESULT_PREFIX)`. The
+  structured wait condition behind `[WORKFLOW SUSPENDED]` had already been "lost inside the
+  return string" once and needed a side channel (`self._last_suspend`) bolted on to recover
+  it — the design failing in-repo and being patched around. The prefixes are also literal
+  text in the assistant's reply, so the eval corpus carries a case asserting they *don't*
+  leak into clean output: a test defending against our own sentinel design.
+- **Root cause:** `ExecutionLoop.run() -> str` smuggled five terminal outcomes (cancelled,
+  time limit, budget limit, suspended, incomplete) back inside the assistant text, across
+  **nine** return sites in `core/loop.py`, with a sixth emitter in another layer
+  (`gateway/orchestrator.py`'s daily-cap check) hardcoding the `[BUDGET LIMIT REACHED]`
+  literal a second time. A separate loop-local `AgentException` sat outside the
+  `core/errors.py` `HachiError` taxonomy, giving the repo two exception roots.
+- **Fix:** A frozen `TurnOutcome(status, text, reason, limit_seconds, max_iterations,
+  suspend)` + `TurnStatus` enum. The nine sites build one, store it on `self._last_outcome`,
+  and return `outcome.render()` — now the only place a prefix literal exists. `sub_agent`
+  branches on the status field; `orchestrator` renders through the same object.
+  `AgentException` reparented under `HachiError`. Rendered text is byte-identical, so the
+  change is behaviour-preserving by construction.
+- **Avoid — three traps, in order of how much time they cost:**
+  1. **Never encode control-flow state in a human-readable return string.** It cannot carry
+     structure, it leaks internal sentinels to users, and it turns every downstream branch
+     into a substring match no type checker can verify. If a function must return both
+     display text and an outcome, return an object.
+  2. **"Preserve both, they differ" — check whether they differ in OUTPUT or only in
+     construction.** The task brief forbade collapsing two pairs of near-duplicate sites
+     because they supposedly produced different text. They did not: sites 1/5 were the same
+     expression character-for-character, and sites 2/6 were differently-shaped f-string
+     concatenations (`f"...exceeded " f"{s:.0f}s wall-clock limit.{suffix}"` vs
+     `f"...exceeded {s:.0f}s " f"wall-clock limit." f"{...}"`) that evaluate to identical
+     strings. Five render shapes, not nine. What *did* differ was the surrounding
+     `on_event` / `memory.complete_task` calls — which are not part of the return value.
+     **Diff the rendered output, not the source expression, before duplicating a branch.**
+  3. **A sentinel can be asserted in both directions at once.** `core/eval/corpus.py`
+     asserts `output_contains("[INCOMPLETE]")` in the `max_iterations_cap` case *and*
+     `output_not_contains("[INCOMPLETE]")` in `no_internal_markers_in_clean_output`. A
+     rename that satisfies every negative assertion still fails the positive one, and
+     `hachi eval run` is a blocking preflight step whose failure reads like a model
+     regression rather than a refactor. Grep a sentinel for **both** polarities before
+     touching it.
+- **Also:** a new `last_*` property does not have to grow the `scripts/check_getattr.py`
+  allowlist. `_last_suspend` / `_last_tool_calls` use `getattr(self, ..., None)` because
+  they are deliberately absent before the first `run()` (BB-107). `_last_outcome` has no
+  such contract, so initialising it in `__init__` and reading it plainly keeps the
+  suppression list from growing. Copy a pattern's *reason*, not its shape.
+- **Locked by:** `tests/test_turn_outcome.py` —
+  `test_turn_outcome_render_is_byte_identical_to_legacy_prefixes` (all five shapes,
+  including the empty-text `"[CANCELLED]"` with no trailing space and the `:.0f` seconds
+  formatting) and `test_turn_outcome_is_addressable_without_string_parsing`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

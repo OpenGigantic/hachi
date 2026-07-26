@@ -3466,3 +3466,63 @@ passing test, and it is why the exemption comment being wrong (it claimed the se
 the Typer app; it never did) went undetected for so long.
 
 **Locked by:** `tests/test_core_cli_seam.py`; docs/bug-bank.md BB-151.
+
+## T-59: A turn's outcome is a value, not a substring (2026-07-26) **[ADR]**
+
+**Context.** `ExecutionLoop.run()` returned `str`, so every terminal condition — user
+cancellation, wall-clock timeout, budget exhaustion, workflow suspension, iteration-limit
+cutoff — had to be smuggled back inside the assistant's text as a prefix. Nine return
+sites, five prefixes, plus a sixth emitter in `gateway/orchestrator.py` hardcoding
+`[BUDGET LIMIT REACHED]` independently. Meanwhile `core/errors.py` held a real eight-class
+`HachiError` taxonomy that the loop used for nothing, and `loop.py` defined its own
+`AgentException(Exception)` outside it — two roots.
+
+**Decision: a `TurnOutcome` value object, not `HachiError` subclasses.** Terminal
+conditions are *normal control flow*, not errors — a budget cap firing is the system
+working. Raising would make `run()` throw on success-adjacent paths and force every caller
+into a try/except, including the ones that legitimately want the partial text. It would
+also mean smuggling the load-bearing partial text (what the user actually sees after a
+cancel) through exception attributes, which is the same defect wearing a different hat.
+`AgentException` is reparented under `HachiError` regardless, so the two-root problem goes
+away even though the loop no longer needs the class.
+
+**Decision: keep the wire format, render it from one place.** `TurnOutcome.render()`
+reproduces the existing strings byte-for-byte and `run()` still returns `str`; the
+structured value is exposed alongside via `ExecutionLoop.last_outcome`. This makes the
+change behaviour-preserving, which is the only way to land a nine-site rewrite of the
+hottest path in the product without churning the eval baseline. Deleting the user-visible
+prefixes is a separate, deliberate decision with its own review — not a side effect of a
+refactor.
+
+**The "nine variants" were five.** The task brief forbade collapsing two pairs of
+near-duplicate sites on the grounds that they produced different text. Verified against
+source: they do not. Sites 1/5 (`[CANCELLED]`) are the same expression character-for-
+character, and sites 2/6 (`[TIME LIMIT REACHED]`) are differently-shaped f-string
+concatenations that evaluate to identical strings. The real difference is in the
+`on_event` / `memory.complete_task` calls *surrounding* each return — `"Cancelled:"` vs
+`"Cancelled (mid-stream):"` — which are not part of the return value and are left
+untouched. So `render()` has five branches, and the prohibition applies to the
+neighbouring calls, not the rendering. Diff the output, not the expression (BB-152).
+
+**The eval corpus constrains the sentinel in both directions.** `[INCOMPLETE]` is asserted
+present in the `max_iterations_cap` case and absent in `no_internal_markers_in_clean_output`.
+A rename satisfying every `output_not_contains` still fails the `output_contains`, and
+`hachi eval run` blocks preflight — where the failure would read as a model regression
+rather than a refactor. Baseline was captured before dispatch and re-checked after:
+14 passed / 0 failed, unchanged.
+
+**`_last_outcome` is initialised in `__init__`, not via `getattr`.** The sibling
+`_last_suspend` / `_last_tool_calls` use `getattr(self, ..., None)` because they carry a
+deliberate "absent before the first `run()`" contract that a real test asserts (BB-107).
+`_last_outcome` has no such contract, so a plain attribute read is correct and the
+`scripts/check_getattr.py` allowlist does not grow. Copy a pattern's reason, not its shape.
+
+**Scope held.** The `startswith` check in `sub_agent.py` is retained as a documented
+one-release fallback rather than deleted; `INCOMPLETE_RESULT_PREFIX` and `_last_suspend`
+both stay (the latter is read by `gateway/orchestrator.py`); `SuspendWorkflow` is *not*
+reparented under `HachiError` because it signals a clean suspend, not an error; and the
+wider `errors.py` migration — `ToolError`/`MCPError` opportunities exist throughout the
+codebase — is explicitly left undone. Four files changed, all nine string-asserting test
+files pass unmodified.
+
+**Locked by:** `tests/test_turn_outcome.py`; docs/bug-bank.md BB-152.
