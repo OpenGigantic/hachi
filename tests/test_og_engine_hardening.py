@@ -240,7 +240,7 @@ Completely harmless full text.
 
         # Patch the guard scan so it flags all content, regardless of actual content.
         with patch(
-            "hachi.core.memory_guard.scan",
+            "hachi.core.memory.guard.scan",
             return_value=(False, "instruction_override"),
         ):
             engine2 = SkillEngine()

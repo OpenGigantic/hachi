@@ -309,7 +309,7 @@ class TestSchemaVersion:
         self, tmp_path: Path
     ) -> None:
         """memory_index.db is a derived cache: a mismatch rebuilds, it does not raise."""
-        from hachi.core.memory_index import MemoryIndex
+        from hachi.core.memory.index import MemoryIndex
         from hachi.core.migrations import set_schema_version
 
         memory_dir = tmp_path / "memory"

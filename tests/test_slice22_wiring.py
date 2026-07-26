@@ -409,7 +409,7 @@ class TestHandlerCorrections:
         # (true of this very repo's dev checkout), the unisolated call would
         # build a LIVE AnthropicClient and make a real network call -- exactly
         # what "degrades gracefully ... unavailable in CI" exists to rule out.
-        import hachi.core.memory_vault as mv
+        import hachi.core.memory.vault as mv
         import hachi.core.secret_store as secret_store_module
 
         monkeypatch.setattr(mv, "_llm_client_instance", None, raising=False)

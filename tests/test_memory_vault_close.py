@@ -39,7 +39,7 @@ class TestMemoryVaultCloseRace:
     def test_closed_flag_false_before_close(self, tmp_path) -> None:
         """_closed must be False on a freshly constructed vault."""
         _require_chroma()
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         assert vault._closed is False
@@ -48,7 +48,7 @@ class TestMemoryVaultCloseRace:
     def test_closed_flag_true_after_close(self, tmp_path) -> None:
         """_closed must be True immediately after close()."""
         _require_chroma()
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         vault.close()
@@ -57,7 +57,7 @@ class TestMemoryVaultCloseRace:
     def test_close_is_idempotent(self, tmp_path) -> None:
         """Calling close() twice must not raise."""
         _require_chroma()
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         vault.close()
@@ -71,7 +71,7 @@ class TestMemoryVaultCloseRace:
         ``AttributeError: 'NoneType' object has no attribute 'upsert'``.
         """
         _require_chroma()
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         vault.close()
@@ -82,7 +82,7 @@ class TestMemoryVaultCloseRace:
     def test_semantic_search_after_close_raises_runtime_error(self, tmp_path) -> None:
         """semantic_search() after close() raises RuntimeError, not AttributeError."""
         _require_chroma()
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         # Prime with a fact before closing.
@@ -95,7 +95,7 @@ class TestMemoryVaultCloseRace:
     def test_upsert_user_fact_after_close_raises_runtime_error(self, tmp_path) -> None:
         """upsert_user_fact() after close() raises RuntimeError, not AttributeError."""
         _require_chroma()
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         vault.close()
@@ -106,7 +106,7 @@ class TestMemoryVaultCloseRace:
     def test_search_user_profile_after_close_raises_runtime_error(self, tmp_path) -> None:
         """search_user_profile() after close() raises RuntimeError."""
         _require_chroma()
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         vault.close()
@@ -117,7 +117,7 @@ class TestMemoryVaultCloseRace:
     def test_delete_fact_after_close_raises_runtime_error(self, tmp_path) -> None:
         """delete_fact() after close() raises RuntimeError (caught internally → False)."""
         _require_chroma()
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         fact_id = vault.upsert_fact("deletable fact")
@@ -134,7 +134,7 @@ class TestMemoryVaultCloseRace:
     def test_get_user_snapshot_after_close_raises_runtime_error(self, tmp_path) -> None:
         """get_user_snapshot() after close() raises RuntimeError."""
         _require_chroma()
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         vault.close()
@@ -150,7 +150,7 @@ class TestMemoryVaultCloseRace:
         AttributeError (the old crash from nulled collection refs).
         """
         _require_chroma()
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         vault = MemoryVault(brain_dir=str(tmp_path))
         vault.close()

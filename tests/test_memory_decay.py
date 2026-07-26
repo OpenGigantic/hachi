@@ -103,7 +103,7 @@ def _make_vault(
     Matches the pattern from tests/test_memory_fixes.py and tests/test_episodic_memory.py,
     extended to also set _decay_half_life_days (M2).
     """
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.vault import MemoryVault
 
     vault = MemoryVault.__new__(MemoryVault)
     vault._vault_lock = threading.RLock()
@@ -150,7 +150,7 @@ class TestDecayScore:
     """Unit tests for the module-level _decay_score pure function."""
 
     def _fn(self, distance: float, ts: str, *, now: datetime.datetime, half_life: float) -> float:
-        from hachi.core.memory_vault import _decay_score
+        from hachi.core.memory.vault import _decay_score
         return _decay_score(distance, ts, now=now, half_life_days=half_life)
 
     @property
@@ -327,7 +327,7 @@ class TestDecayOverfetch:
 
     def test_returned_items_are_decay_best(self) -> None:
         """The 2 returned items are the ones with the lowest decay scores."""
-        from hachi.core.memory_vault import _decay_score
+        from hachi.core.memory.vault import _decay_score
 
         vault = _make_vault(recall_distance_max=0.85, decay_half_life_days=30.0)
         coll: _FakeCollection = vault._collections["collection"]

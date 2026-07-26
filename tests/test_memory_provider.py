@@ -11,7 +11,7 @@ Covers:
 
 from __future__ import annotations
 
-from hachi.core.memory_provider import (
+from hachi.core.memory.provider import (
     ChromaMemoryProvider,
     InMemoryProvider,
     MemoryProvider,
@@ -222,7 +222,7 @@ class _SpyProvider(InMemoryProvider):
 
 def test_provider_backed_vault_upsert_routes_through_provider_upsert() -> None:
     """T-49 / BB-146: vault.upsert_fact() must call provider.upsert(), not bypass it."""
-    from hachi.core.memory_provider import ProviderBackedVault
+    from hachi.core.memory.provider import ProviderBackedVault
 
     spy = _SpyProvider()
     spy.initialize(brain_dir="/tmp/unused")
@@ -237,7 +237,7 @@ def test_provider_backed_vault_upsert_routes_through_provider_upsert() -> None:
 
 def test_provider_backed_vault_search_routes_through_provider_search() -> None:
     """T-49 / BB-146: vault.semantic_search() must call provider.search(), not bypass it."""
-    from hachi.core.memory_provider import ProviderBackedVault
+    from hachi.core.memory.provider import ProviderBackedVault
 
     spy = _SpyProvider()
     spy.initialize(brain_dir="/tmp/unused")
@@ -253,7 +253,7 @@ def test_provider_backed_vault_search_routes_through_provider_search() -> None:
 
 def test_provider_backed_vault_delete_routes_through_provider_delete() -> None:
     """T-49 / BB-146: vault.delete_fact() must call provider.delete(), not bypass it."""
-    from hachi.core.memory_provider import ProviderBackedVault
+    from hachi.core.memory.provider import ProviderBackedVault
 
     spy = _SpyProvider()
     spy.initialize(brain_dir="/tmp/unused")
@@ -270,7 +270,7 @@ def test_provider_backed_vault_in_memory_write_then_read_round_trips() -> None:
     backend=in_memory. This is exactly the scenario BB-146 describes: before the
     fix, boot discarded the provider and this search would have found nothing
     (vault was None, so the tool layer never even reached semantic_search)."""
-    from hachi.core.memory_provider import ProviderBackedVault
+    from hachi.core.memory.provider import ProviderBackedVault
 
     provider = InMemoryProvider()
     provider.initialize(brain_dir="/tmp/unused")
@@ -290,9 +290,9 @@ def test_provider_backed_vault_fts5_only_write_then_read_round_trips(tmp_path) -
     MemoryWriter/MemoryIndex wiring (no Chroma) -- mirrors the attachment
     gateway/orchestrator.py performs at boot (attach_graph_index /
     attach_memory_writer)."""
-    from hachi.core.memory_index import MemoryIndex
-    from hachi.core.memory_provider import FTS5MemoryProvider, ProviderBackedVault
-    from hachi.core.memory_writer import MemoryWriter
+    from hachi.core.memory.index import MemoryIndex
+    from hachi.core.memory.provider import FTS5MemoryProvider, ProviderBackedVault
+    from hachi.core.memory.writer import MemoryWriter
 
     memory_dir = tmp_path / "memory"
     memory_dir.mkdir()
@@ -320,7 +320,7 @@ def test_shared_services_in_memory_backend_no_longer_produces_a_none_vault(tmp_p
     `shared.vault` was None for backend=in_memory. It must now be a working,
     provider-backed vault that stores and retrieves through the real boot path
     (not a test-local reimplementation of it)."""
-    from hachi.core.memory_provider import ProviderBackedVault
+    from hachi.core.memory.provider import ProviderBackedVault
     from hachi.gateway.shared_services import ProcessSharedServices
 
     ProcessSharedServices.clear()

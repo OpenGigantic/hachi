@@ -166,7 +166,7 @@ def _poll_for_transcript(space_id: str, headers: dict) -> str:
         )
 
     # --- Phase 4: persist to Memory Vault ---
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.vault import MemoryVault
 
     vault = MemoryVault()
     vault.upsert_fact(f"Transcript for meeting {space_id}:\n{transcript_text}", "workspace_state")

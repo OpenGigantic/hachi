@@ -136,7 +136,7 @@ directly. This boundary is the foundation every provider-agnostic initiative bui
 
 - `ProcessSharedServices._INSTANCES` dict, mutated under `_LOCK` (`shared_services.py:46,119`).
 - `core/approvals.py:244` `_registry` singleton (double-checked lock).
-- `core/memory_vault.py:174` module-level `_llm_client_instance`.
+- `core/memory/vault.py:174` module-level `_llm_client_instance`.
 - `tools/notification_tools.py:27` `_SHARED_DIGEST_BUFFER`.
 
 All are lock-guarded and carry test-reset hooks, but they couple session lifecycle to
@@ -149,8 +149,8 @@ are immutable lookup tables (themes, presets, role labels), not mutable state.
 |---|---|---|
 | Turn execution / ReAct | `core/loop.py`, `core/turn_context.py` | provider-agnostic |
 | Provider/model selection | `core/llm.py`, `core/settings.py` | single client per session |
-| Memory (3-layer) | `core/memory*.py`, `core/memory_vault.py` | provider seam present |
-| Persistence | `core/session_store.py`, `jobs/queue.py`, `core/memory_index.py` | SQLite, direct calls |
+| Memory (3-layer) | `core/memory/` | provider seam present |
+| Persistence | `core/session_store.py`, `jobs/queue.py`, `core/memory/index.py` | SQLite, direct calls |
 | Background work | `jobs/queue.py`, `jobs/scheduler.py` | scheduler durable; queue not |
 | Events / read models | `core/runtime_events.py`, `core/runtime_read_models.py` | one-way log |
 | Permissions / approvals | `core/permissions.py`, `core/approvals.py` | gate + approver strategy |

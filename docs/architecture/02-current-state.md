@@ -16,7 +16,7 @@ centerpiece that sets up Gate B.
   opt-in unofficial ChatGPT-web client (`core/llm.py`).
 - Three-layer memory: in-context active history with deferred compaction, a SQLite
   session transcript, and a ChromaDB semantic vault with FTS5 fusion
-  (`core/memory.py`, `core/session_store.py`, `core/memory_vault.py`).
+  (`core/memory/manager.py`, `core/session_store.py`, `core/memory/vault.py`).
 - `.og` ObjectGraph skill system with 3-pass token-efficient traversal (`og_engine/`).
 - 16 tool domains: OS/file, browser (Playwright), vision, voice, Google/Notion/Slack,
   scheduling, notifications, messaging, presentations, sandbox, config, delegation,
@@ -37,7 +37,7 @@ centerpiece that sets up Gate B.
 | Abstraction | Type | Location | Quality |
 |---|---|---|---|
 | `BaseLLMClient` | ABC + factory | `core/llm.py:106,644` | **Strong.** Loop is genuinely provider-agnostic; SDK confined to one file. |
-| `MemoryProvider` | ABC + `resolve_provider()` factory | `core/memory_provider.py:31,259` | **Strong** for the upsert/search/delete surface; Chroma/InMemory/FTS5 backends swap via `memory.backend` config. |
+| `MemoryProvider` | ABC + `resolve_provider()` factory | `core/memory/provider.py:31,259` | **Strong** for the upsert/search/delete surface; Chroma/InMemory/FTS5 backends swap via `memory.backend` config. |
 | `SecretStore` | Protocol + composite | `core/secret_store.py:25,246` | **Strong.** Keyring / encrypted-file / composite, factory-selected. |
 | `JobQueue` | ABC | `jobs/queue.py:119` | **Medium.** InMemory + SQLite backends; durable path exists but is **unwired** (report 03). |
 | `ToolRegistry` | registry | `core/loop.py:107` | **Medium.** Clean `register()`, but name-keyed; capability/group lives in a separate hand-maintained table. |

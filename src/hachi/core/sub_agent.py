@@ -45,7 +45,7 @@ from hachi.core.paths import get_hachi_paths
 from hachi.og_engine.parser import OGFile, parse_og_file
 
 if TYPE_CHECKING:
-    from hachi.core.conversation_memory import IterationState
+    from hachi.core.memory.conversation import IterationState
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +217,7 @@ class SubAgentMemory:
 
     def prepare_for_turn(self) -> IterationState:
         """Sub-agents perform no housekeeping — return a zero-state snapshot."""
-        from hachi.core.conversation_memory import IterationState
+        from hachi.core.memory.conversation import IterationState
 
         return IterationState(
             compacted=False, old_skill="", tool_results_cleared=0, history_repaired=0

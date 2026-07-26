@@ -46,11 +46,11 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hachi.core.memory_provider import ProviderBackedVault
+from hachi.core.memory.provider import ProviderBackedVault
 from hachi.core.paths import get_hachi_paths
 
 if TYPE_CHECKING:
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.vault import MemoryVault
 
 logger = logging.getLogger(__name__)
 
@@ -259,7 +259,7 @@ class UserProfileStore:
     fact written through this class.  Existing facts written with the old vault
     categories are remapped on read via ``_resolve_read_category``.
 
-    T-49: ``vault`` may also be a :class:`~hachi.core.memory_provider.ProviderBackedVault`
+    T-49: ``vault`` may also be a :class:`~hachi.core.memory.provider.ProviderBackedVault`
     (``memory.backend = "in_memory"`` / ``"fts5_only"``), which has no Chroma
     internals to reach into. ``_vault_get_all`` / ``_vault_set`` / ``_find_user_fact``
     each branch on ``isinstance(self._vault, ProviderBackedVault)`` and use its
@@ -493,7 +493,7 @@ class UserProfileStore:
             fact_id: str = provider_vault.upsert_user_fact(content, category)
             return fact_id
 
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         existing_id = MemoryVault._generate_id(content)
         try:
@@ -509,7 +509,7 @@ class UserProfileStore:
             logger.warning("UserProfileStore._vault_set: capacity check failed: %s", exc)
             return f"ERROR:{exc}"
 
-        from hachi.core.memory_vault import USER_PROFILE_MAX_ENTRIES
+        from hachi.core.memory.vault import USER_PROFILE_MAX_ENTRIES
 
         if not is_update and count >= USER_PROFILE_MAX_ENTRIES:
             return "LIMIT_REACHED"
@@ -533,7 +533,7 @@ class UserProfileStore:
                     return entry
             return None
 
-        from hachi.core.memory_vault import MemoryVault
+        from hachi.core.memory.vault import MemoryVault
 
         # Try SHA-256 ID lookup first (fast, exact).
         if len(value_or_id) == 64:

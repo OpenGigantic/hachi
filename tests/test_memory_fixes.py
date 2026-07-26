@@ -80,7 +80,7 @@ def _make_vault(
     core_memory_max_entries: int = 1000,
 ) -> object:
     """Return a MemoryVault with ChromaDB fully stubbed out."""
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.vault import MemoryVault
 
     vault = MemoryVault.__new__(MemoryVault)
 
@@ -268,7 +268,7 @@ class TestGetRecentFacts:
             "metadata": {"category": "ws", "timestamp": "2026-01-01T00:00:00"},
         }
 
-        with caplog.at_level(logging.WARNING, logger="hachi.core.memory_vault"):
+        with caplog.at_level(logging.WARNING, logger="hachi.core.memory.vault"):
             result = vault.get_recent_facts(collection="nonexistent_collection", limit=5)
 
         assert "nonexistent_collection" in caplog.text
@@ -392,7 +392,7 @@ class TestWriteQualityGate:
     """FIX 4: _is_substantive_fact filters trivial strings before vault writes."""
 
     def test_is_substantive_fact_rejects_short_strings(self) -> None:
-        from hachi.core.memory import _is_substantive_fact
+        from hachi.core.memory.manager import _is_substantive_fact
 
         assert not _is_substantive_fact("")
         assert not _is_substantive_fact("ok")
@@ -400,13 +400,13 @@ class TestWriteQualityGate:
         assert not _is_substantive_fact("   ok   ")
 
     def test_is_substantive_fact_rejects_trivial_patterns(self) -> None:
-        from hachi.core.memory import _is_substantive_fact
+        from hachi.core.memory.manager import _is_substantive_fact
 
         for trivial in ("ok", "okay", "sure", "got it", "thanks", "done"):
             assert not _is_substantive_fact(trivial), f"Expected {trivial!r} to be rejected"
 
     def test_is_substantive_fact_accepts_real_facts(self) -> None:
-        from hachi.core.memory import _is_substantive_fact
+        from hachi.core.memory.manager import _is_substantive_fact
 
         assert _is_substantive_fact("User prefers TypeScript over JavaScript")
         assert _is_substantive_fact("Project root is /home/user/myapp")

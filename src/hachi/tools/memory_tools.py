@@ -21,7 +21,7 @@ import json
 import logging
 
 from hachi.core.loop import ToolRegistry
-from hachi.core.memory_vault import MemoryVault
+from hachi.core.memory.vault import MemoryVault
 
 logger = logging.getLogger(__name__)
 

@@ -9,7 +9,7 @@ from hachi.core.loop import (
     _TOOL_OUTPUT_MAX_CHARS,
     _compress_tool_output,
 )
-from hachi.core.memory import _TOOL_RESULT_CLEAR_TOKENS
+from hachi.core.memory.manager import _TOOL_RESULT_CLEAR_TOKENS
 
 
 class TestToolOutputCompression:
@@ -68,7 +68,7 @@ class TestPreGenTrimThreshold:
         assert _PRE_GEN_TRIM_THRESHOLD > _TOOL_RESULT_CLEAR_TOKENS
 
     def test_threshold_is_below_max_active_tokens(self) -> None:
-        from hachi.core.memory import _MAX_ACTIVE_TOKENS
+        from hachi.core.memory.manager import _MAX_ACTIVE_TOKENS
 
         assert _PRE_GEN_TRIM_THRESHOLD < _MAX_ACTIVE_TOKENS
 

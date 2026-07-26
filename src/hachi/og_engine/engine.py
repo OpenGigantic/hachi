@@ -567,7 +567,7 @@ class SkillEngine:
         Security hardening (ADV-011, ADV-025):
         - Node-count cap: files exceeding ``_node_cap`` are rejected to prevent OOM.
         - Guard scan: ``::full`` and ``::dense`` content of each node is screened
-          by :func:`hachi.core.memory_guard.scan` before indexing. Flagged nodes
+          by :func:`hachi.core.memory.guard.scan` before indexing. Flagged nodes
           are quarantined (marked ``_quarantined=True``) and not served to the LLM.
         - Parse failures (UC-SKILL-003): recorded in ``_failed_files`` so doctor/lint
           can surface them rather than silently dropping the skill.
@@ -576,7 +576,7 @@ class SkillEngine:
             filepath: Absolute path to the .og file.
         """
         # Deferred import keeps startup fast and avoids circular deps.
-        from hachi.core.memory_guard import scan as _guard_scan
+        from hachi.core.memory.guard import scan as _guard_scan
 
         def _record_failure(path: Path, reason: str) -> None:
             """Add to both the new typed list and the legacy dict list."""

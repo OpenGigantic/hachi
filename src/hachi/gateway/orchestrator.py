@@ -39,8 +39,8 @@ from hachi.core.llm import Message, create_llm_client
 from hachi.core.loop import ExecutionLoop, ToolRegistry
 from hachi.core.mcp_client import MCPManager, MCPServerConfig
 from hachi.core.memory import MemoryManager
-from hachi.core.memory_provider import ChromaMemoryProvider, ProviderBackedVault, resolve_provider
-from hachi.core.memory_vault import MemoryVault
+from hachi.core.memory.provider import ChromaMemoryProvider, ProviderBackedVault, resolve_provider
+from hachi.core.memory.vault import MemoryVault
 from hachi.core.obs.trace import TraceContext
 from hachi.core.obs.trace import bind as _bind_trace_ctx
 from hachi.core.paths import get_hachi_paths
@@ -801,7 +801,7 @@ class AgentSession:
         """
         from dataclasses import asdict
 
-        from hachi.core.memory_gardener import GardeningResult, MemoryGardener
+        from hachi.core.memory.gardener import GardeningResult, MemoryGardener
 
         diffs_path = get_hachi_paths().memory_dir / MemoryGardener._PENDING_DIFFS_FILE
         result = GardeningResult.load(diffs_path)
@@ -1728,7 +1728,7 @@ class AgentSession:
         #     broad try/except so a graph failure never breaks a turn.
         if self._graph_recall:
             try:
-                from hachi.core.graph_recall import build_graph_recall_section
+                from hachi.core.memory.graph_recall import build_graph_recall_section
                 from hachi.core.paths import get_hachi_paths
 
                 _graph_section = build_graph_recall_section(
@@ -2439,7 +2439,7 @@ def _start_memory_gardener(
     import threading as _threading
     import time as _time
 
-    from hachi.core.memory_gardener import MemoryGardener
+    from hachi.core.memory.gardener import MemoryGardener
 
     sleep_seconds = min(settings.interval_seconds, 3600)
 
@@ -3284,7 +3284,7 @@ def boot_agent(
             )
 
     # P4-06: M4 — fts5_only backend forces graph=True (files are canonical; no Chroma needed)
-    from hachi.core.memory_provider import FTS5MemoryProvider
+    from hachi.core.memory.provider import FTS5MemoryProvider
 
     _is_fts5_only = isinstance(_provider, FTS5MemoryProvider)
     _use_graph = _memory_settings.graph or _is_fts5_only
@@ -3302,7 +3302,7 @@ def boot_agent(
                 _provider.attach_graph_index(_graph_index)
         else:
             try:
-                from hachi.core.memory_index import MemoryIndex
+                from hachi.core.memory.index import MemoryIndex
 
                 _paths = get_hachi_paths()
                 _graph_index = MemoryIndex(
@@ -3331,7 +3331,7 @@ def boot_agent(
                 _provider.attach_memory_writer(_shared.memory_writer)
         else:
             try:
-                from hachi.core.memory_writer import MemoryWriter
+                from hachi.core.memory.writer import MemoryWriter
 
                 _paths = get_hachi_paths()
                 _memory_writer = MemoryWriter(

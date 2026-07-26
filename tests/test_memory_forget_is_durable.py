@@ -26,8 +26,8 @@ from pathlib import Path
 
 import pytest
 
-from hachi.core.graph_recall import build_graph_recall_section, get_node_index
-from hachi.core.memory_writer import MemoryNode, MemoryWriter
+from hachi.core.memory.graph_recall import build_graph_recall_section, get_node_index
+from hachi.core.memory.writer import MemoryNode, MemoryWriter
 
 _SECRET = "the user previously worked at Initech"
 
@@ -57,7 +57,7 @@ def _clear_graph_recall_cache() -> None:
     itself has no ``cache_clear`` — the ``@lru_cache`` lives on the inner
     ``_cached_load`` it delegates to.
     """
-    from hachi.core import graph_recall as gr_module
+    from hachi.core.memory import graph_recall as gr_module
 
     gr_module._cached_load.cache_clear()
 
@@ -107,7 +107,7 @@ def test_tombstone_suppresses_node_even_when_unseeded(tmp_path: Path) -> None:
 
 def test_fts5_delete_uses_the_real_node_id(tmp_path: Path) -> None:
     """The FTS5 delete must target the composite node_id MemoryIndex actually stores."""
-    from hachi.core.memory_index import MemoryIndex
+    from hachi.core.memory.index import MemoryIndex
 
     _write_fact(tmp_path)
     index = MemoryIndex(memory_dir=tmp_path, db_path=tmp_path / "memory_index.db")
@@ -166,7 +166,7 @@ def test_tombstone_is_append_only_original_node_survives_on_disk(tmp_path: Path)
     # But suppression is global at the load boundary: the node no longer
     # appears in the loaded index (memory_graph.load_memory_dir), regardless
     # of whether anything seeded or traversed to the tombstone.
-    from hachi.core.memory_graph import load_memory_dir
+    from hachi.core.memory.graph import load_memory_dir
 
     assert "former-employer" not in load_memory_dir(tmp_path)
 
@@ -205,8 +205,8 @@ def test_delete_tombstones_og_node_even_without_graph_index(
     fact still present (T-51 spec §5 item 3).
     """
     _require_chroma()
-    from hachi.core.memory_graph import load_memory_dir
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.graph import load_memory_dir
+    from hachi.core.memory.vault import MemoryVault
 
     memory_dir = tmp_path / "memory"
     vault = MemoryVault(brain_dir=str(tmp_path), memory_dir=memory_dir)

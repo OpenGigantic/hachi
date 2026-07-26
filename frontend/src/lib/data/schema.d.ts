@@ -2214,7 +2214,7 @@ export interface components {
          * MemoryGardenerProposalModel
          * @description One MemoryGardener ``pending_review`` proposal (T-08 A2).
          *
-         *     Field set mirrors ``hachi.core.memory_gardener.GardeningProposal`` exactly —
+         *     Field set mirrors ``hachi.core.memory.gardener.GardeningProposal`` exactly —
          *     the dataclass that ``AgentSession.snapshot_gardener_diffs()`` serialises via
          *     ``dataclasses.asdict``.
          */

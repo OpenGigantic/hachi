@@ -89,7 +89,7 @@ def _write_file(directory: Path, name: str, content: str, mtime_offset: float = 
 
 
 def test_gardening_result_save_load(tmp_path: Path) -> None:
-    from hachi.core.memory_gardener import GardeningProposal, GardeningResult, ProposalKind
+    from hachi.core.memory.gardener import GardeningProposal, GardeningResult, ProposalKind
 
     result = GardeningResult(
         run_ts="2026-06-13T00:00:00Z",
@@ -130,7 +130,7 @@ def test_gardening_result_save_load(tmp_path: Path) -> None:
 
 
 def test_find_dedup_same_name(tmp_path: Path) -> None:
-    from hachi.core.memory_gardener import MemoryGardener
+    from hachi.core.memory.gardener import MemoryGardener
 
     _write_file(tmp_path, "projects/a.og", _NODE_A, mtime_offset=-100)
     _write_file(tmp_path, "projects/b.og", _NODE_B)
@@ -150,7 +150,7 @@ def test_find_dedup_same_name(tmp_path: Path) -> None:
 
 
 def test_auto_apply_writes_changelog(tmp_path: Path) -> None:
-    from hachi.core.memory_gardener import MemoryGardener
+    from hachi.core.memory.gardener import MemoryGardener
 
     older = _write_file(tmp_path, "projects/a.og", _NODE_A, mtime_offset=-100)
     _write_file(tmp_path, "projects/b.og", _NODE_B)
@@ -169,7 +169,7 @@ def test_auto_apply_writes_changelog(tmp_path: Path) -> None:
 
 
 def test_find_similar_content(tmp_path: Path) -> None:
-    from hachi.core.memory_gardener import MemoryGardener
+    from hachi.core.memory.gardener import MemoryGardener
 
     _write_file(tmp_path, "projects/a.og", _NODE_A)
     _write_file(tmp_path, "projects/similar.og", _NODE_SIMILAR)
@@ -187,7 +187,7 @@ def test_find_similar_content(tmp_path: Path) -> None:
 
 
 def test_find_expired(tmp_path: Path) -> None:
-    from hachi.core.memory_gardener import MemoryGardener
+    from hachi.core.memory.gardener import MemoryGardener
 
     _write_file(tmp_path, "projects/expired.og", _NODE_EXPIRED)
     gardener = MemoryGardener(tmp_path)
@@ -205,7 +205,7 @@ def test_find_expired(tmp_path: Path) -> None:
 
 
 def test_run_returns_result(tmp_path: Path) -> None:
-    from hachi.core.memory_gardener import GardeningResult, MemoryGardener
+    from hachi.core.memory.gardener import GardeningResult, MemoryGardener
 
     _write_file(tmp_path, "projects/a.og", _NODE_A, mtime_offset=-100)
     _write_file(tmp_path, "projects/b.og", _NODE_B)
@@ -224,7 +224,7 @@ def test_run_returns_result(tmp_path: Path) -> None:
 
 
 def test_run_writes_pending_diffs_json(tmp_path: Path) -> None:
-    from hachi.core.memory_gardener import MemoryGardener
+    from hachi.core.memory.gardener import MemoryGardener
 
     _write_file(tmp_path, "projects/expired.og", _NODE_EXPIRED)
     gardener = MemoryGardener(tmp_path)
@@ -244,19 +244,19 @@ def test_run_writes_pending_diffs_json(tmp_path: Path) -> None:
 
 
 def test_jaccard_identical() -> None:
-    from hachi.core.memory_gardener import _jaccard
+    from hachi.core.memory.gardener import _jaccard
 
     assert _jaccard("billing migrate schema", "billing migrate schema") == 1.0
 
 
 def test_jaccard_disjoint() -> None:
-    from hachi.core.memory_gardener import _jaccard
+    from hachi.core.memory.gardener import _jaccard
 
     assert _jaccard("billing migrate schema", "weather forecast rain") == 0.0
 
 
 def test_jaccard_partial() -> None:
-    from hachi.core.memory_gardener import _jaccard
+    from hachi.core.memory.gardener import _jaccard
 
     sim = _jaccard("billing migrate schema", "billing migrate payments")
     assert 0.3 < sim < 0.9

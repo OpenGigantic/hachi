@@ -26,7 +26,7 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-import hachi.core.memory as memory_module
+import hachi.core.memory.manager as memory_module
 from hachi.core.llm import Message
 from hachi.core.memory import MemoryManager
 

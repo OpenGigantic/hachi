@@ -126,7 +126,7 @@ def _make_stubbed_vault(
     manually sets all required attributes to match the real __init__.
     This is the same pattern used in test_memory_fixes.py.
     """
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.vault import MemoryVault
 
     vault = MemoryVault.__new__(MemoryVault)
     vault._vault_lock = threading.RLock()
@@ -470,7 +470,7 @@ class TestVaultLazyInit:
         with patch.dict(
             sys.modules, {"chromadb": mock_chroma, "chromadb.config": mock_settings_mod}
         ):
-            from hachi.core import memory_vault as _mv
+            from hachi.core.memory import vault as _mv
 
             vault = _mv.MemoryVault(brain_dir=str(tmp_path))
 
@@ -495,7 +495,7 @@ class TestVaultLazyInit:
         with patch.dict(
             sys.modules, {"chromadb": mock_chroma, "chromadb.config": mock_settings_mod}
         ):
-            from hachi.core import memory_vault as _mv
+            from hachi.core.memory import vault as _mv
 
             vault = _mv.MemoryVault(brain_dir=str(tmp_path))
 
@@ -518,7 +518,7 @@ class TestVaultLazyInit:
         with patch.dict(
             sys.modules, {"chromadb": mock_chroma, "chromadb.config": mock_settings_mod}
         ):
-            from hachi.core import memory_vault as _mv
+            from hachi.core.memory import vault as _mv
 
             _mv.MemoryVault(brain_dir=str(tmp_path)).close()
 

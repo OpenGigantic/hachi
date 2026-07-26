@@ -8,9 +8,9 @@ works, and the retrieval-quality controls. Audited and hardened under Issue 10
 
 | Layer | Store | Lifetime | Code |
 |---|---|---|---|
-| **Active context** | in-process message history | current session, compacted | `core/memory.py` (`MemoryManager`) |
+| **Active context** | in-process message history | current session, compacted | `core/memory/manager.py` (`MemoryManager`) |
 | **SessionStore** | SQLite transcript (`sessions.db`) | durable, per session | `core/session_store.py` |
-| **MemoryVault** | ChromaDB vectors | durable, long-lived facts | `core/memory_vault.py` |
+| **MemoryVault** | ChromaDB vectors | durable, long-lived facts | `core/memory/vault.py` |
 
 The MemoryVault is split into four collections:
 

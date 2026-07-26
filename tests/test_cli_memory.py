@@ -53,7 +53,7 @@ class _FakeVault:
 
 
 def _patch(monkeypatch) -> None:
-    monkeypatch.setattr("hachi.core.memory_vault.MemoryVault", _FakeVault)
+    monkeypatch.setattr("hachi.core.memory.vault.MemoryVault", _FakeVault)
 
 
 def test_memory_search_core_json(monkeypatch) -> None:
@@ -87,7 +87,7 @@ def test_memory_search_no_results(monkeypatch) -> None:
         def semantic_search(self, query: str, top_k: int = 5) -> list[dict]:
             return []
 
-    monkeypatch.setattr("hachi.core.memory_vault.MemoryVault", _EmptyVault)
+    monkeypatch.setattr("hachi.core.memory.vault.MemoryVault", _EmptyVault)
     result = runner.invoke(app, ["memory", "search", "nothing"])
     assert result.exit_code == 0
     assert "No core memory facts matched" in result.output

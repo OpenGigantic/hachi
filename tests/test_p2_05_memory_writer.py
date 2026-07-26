@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hachi.core.memory_writer import (
+from hachi.core.memory.writer import (
     MemoryNode,
     MemoryWriter,
     _read_node_ids,

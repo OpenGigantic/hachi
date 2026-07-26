@@ -166,7 +166,7 @@ class MemoryIndex:
         # requires_auth), so `supersedes` is detected via the lightweight
         # memory_graph parser instead, which mirrors memory_graph.py's own
         # `load_memory_dir` global-suppression rule.
-        from hachi.core.memory_graph import parse_memory_file
+        from hachi.core.memory.graph import parse_memory_file
 
         superseded: set[str] = set()
         for og_file in og_files:

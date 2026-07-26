@@ -198,8 +198,8 @@ class TestDeleteSpansAllBackends:
         The fixture now indexes a REAL .og node through a REAL MemoryIndex
         so the ids line up exactly the way refresh() actually assigns them.
         """
-        from hachi.core.memory_index import MemoryIndex
-        from hachi.core.memory_writer import MemoryNode, MemoryWriter
+        from hachi.core.memory.index import MemoryIndex
+        from hachi.core.memory.writer import MemoryNode, MemoryWriter
 
         content = "the project uses FastAPI"
         memory_dir = tmp_path / "memory"
@@ -217,7 +217,7 @@ class TestDeleteSpansAllBackends:
         # Build a real-ish MemoryVault using the FakeVault wrapper for Chroma.
         # We test the vault's delete_fact directly since it owns the FTS5 logic.
         try:
-            from hachi.core.memory_vault import MemoryVault
+            from hachi.core.memory.vault import MemoryVault
 
             vault = MemoryVault(brain_dir=str(tmp_path), memory_dir=memory_dir)
             vault._graph_index = graph_index
@@ -251,7 +251,7 @@ class TestDeleteSpansAllBackends:
     def test_delete_is_idempotent_for_absent_id(self, tmp_path: Path) -> None:
         """Deleting an ID that does not exist must not raise and must report success."""
         try:
-            from hachi.core.memory_vault import MemoryVault
+            from hachi.core.memory.vault import MemoryVault
 
             vault = MemoryVault(brain_dir=str(tmp_path))
         except ImportError:
@@ -292,7 +292,7 @@ class TestAccountIsolation:
     def test_different_accounts_use_different_db_paths(self, tmp_path: Path) -> None:
         """Two MemoryVault instances with different account_ids store data separately."""
         try:
-            from hachi.core.memory_vault import MemoryVault
+            from hachi.core.memory.vault import MemoryVault
         except ImportError:
             pytest.skip("chromadb not installed")
 
@@ -306,7 +306,7 @@ class TestAccountIsolation:
     def test_fact_saved_under_account_a_not_visible_under_account_b(self, tmp_path: Path) -> None:
         """A fact stored in account A's vault must not appear when searching account B."""
         try:
-            from hachi.core.memory_vault import MemoryVault
+            from hachi.core.memory.vault import MemoryVault
         except ImportError:
             pytest.skip("chromadb not installed")
 
@@ -325,7 +325,7 @@ class TestAccountIsolation:
     def test_default_account_uses_legacy_path(self, tmp_path: Path) -> None:
         """account_id='default' must resolve to the legacy chroma_vault path (no sub-folder)."""
         try:
-            from hachi.core.memory_vault import MemoryVault
+            from hachi.core.memory.vault import MemoryVault
         except ImportError:
             pytest.skip("chromadb not installed")
 
@@ -338,7 +338,7 @@ class TestAccountIsolation:
     def test_no_account_id_falls_back_to_default_path(self, tmp_path: Path) -> None:
         """Omitting account_id should behave identically to account_id='default'."""
         try:
-            from hachi.core.memory_vault import MemoryVault
+            from hachi.core.memory.vault import MemoryVault
         except ImportError:
             pytest.skip("chromadb not installed")
 
@@ -351,7 +351,7 @@ class TestAccountIsolation:
     def test_env_var_account_overrides_default(self, tmp_path: Path, monkeypatch) -> None:
         """HACHI_ACCOUNT env var is used when no account_id argument is passed."""
         try:
-            from hachi.core.memory_vault import MemoryVault
+            from hachi.core.memory.vault import MemoryVault
         except ImportError:
             pytest.skip("chromadb not installed")
 
@@ -370,7 +370,7 @@ class TestAccountIsolation:
     def test_collection_names_differ_across_accounts(self, tmp_path: Path) -> None:
         """ChromaDB collection names must be namespaced per account (not 'default')."""
         try:
-            from hachi.core.memory_vault import MemoryVault
+            from hachi.core.memory.vault import MemoryVault
         except ImportError:
             pytest.skip("chromadb not installed")
 
@@ -392,8 +392,8 @@ class TestNoFalseEncryptionClaims:
 
     _TARGET_FILES = [
         Path("src/hachi/tools/memory_tools.py"),
-        Path("src/hachi/core/memory.py"),
-        Path("src/hachi/core/memory_vault.py"),
+        Path("src/hachi/core/memory/manager.py"),
+        Path("src/hachi/core/memory/vault.py"),
     ]
 
     def _repo_root(self) -> Path:

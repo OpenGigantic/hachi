@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from hachi.core.memory_importer import (
+from hachi.core.memory.importer import (
     Conversation,
     Turn,
     _parse_chatgpt,

@@ -159,7 +159,7 @@ def test_sub_agent_report_needs_in_string() -> None:
 
 
 def test_memory_writer_provenance_edge(tmp_path: Path) -> None:
-    from hachi.core.memory_writer import MemoryNode, MemoryWriter
+    from hachi.core.memory.writer import MemoryNode, MemoryWriter
 
     writer = MemoryWriter(memory_dir=tmp_path)
     node = MemoryNode(name="billing-fact", role="fact", dense="billing schema v2")
@@ -177,7 +177,7 @@ def test_memory_writer_provenance_edge(tmp_path: Path) -> None:
 
 
 def test_memory_writer_write_fact(tmp_path: Path) -> None:
-    from hachi.core.memory_writer import MemoryWriter
+    from hachi.core.memory.writer import MemoryWriter
 
     writer = MemoryWriter(memory_dir=tmp_path)
     fact_id = writer.write_fact("billing migration uses pgloader", category="decision")

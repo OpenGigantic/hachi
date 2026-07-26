@@ -125,7 +125,7 @@ hardcoded-model surface in `boot_agent`.
 
 `core/routing/router.py` (new); `core/loop.py:305` (optional `router=` param, default-compatible);
 `gateway/orchestrator.py:1663` (construct + inject); `core/sub_agent.py:617` (route, don't
-hardwire); `tools/vision_tools.py:222` (auto-route); `core/memory.py` (cheap title/compaction
+hardwire); `tools/vision_tools.py:222` (auto-route); `core/memory/manager.py` (cheap title/compaction
 route, optional). All additive; the loop's public behavior is unchanged when no router/policy is
 configured.
 

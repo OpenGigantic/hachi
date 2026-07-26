@@ -241,7 +241,7 @@ def test_resolve_llm_client_falls_back_to_vault_singleton():
     """Without an injected client, _resolve_llm_client() falls back to _get_llm_client()."""
     mm = MemoryManager()  # no llm_client
     sentinel = object()
-    with patch("hachi.core.memory_vault._get_llm_client", return_value=sentinel):
+    with patch("hachi.core.memory.vault._get_llm_client", return_value=sentinel):
         resolved = mm._resolve_llm_client()
     assert resolved is sentinel, "_resolve_llm_client() did not fall back to vault singleton"
 
@@ -258,7 +258,7 @@ def test_background_ops_use_injected_client_not_vault_singleton():
         sentinel_client.generate.side_effect = AssertionError(
             "_get_llm_client() was called — shared client NOT used"
         )
-        with patch("hachi.core.memory_vault._get_llm_client", return_value=sentinel_client):
+        with patch("hachi.core.memory.vault._get_llm_client", return_value=sentinel_client):
             msgs = _make_messages(12)
             for m in msgs:
                 mm._history.append(m)

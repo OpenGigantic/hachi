@@ -83,7 +83,7 @@ def _make_vault_with_episodic(
     core_memory_max_entries: int = 1000,
 ) -> Any:
     """Return a MemoryVault with ChromaDB fully stubbed, including episodic_collection."""
-    from hachi.core.memory_vault import MemoryVault
+    from hachi.core.memory.vault import MemoryVault
 
     vault = MemoryVault.__new__(MemoryVault)
 

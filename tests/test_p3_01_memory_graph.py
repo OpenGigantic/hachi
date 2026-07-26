@@ -23,7 +23,7 @@ from pathlib import Path
 
 
 def test_memory_node_edges_field() -> None:
-    from hachi.core.memory_writer import MemoryNode
+    from hachi.core.memory.writer import MemoryNode
 
     node = MemoryNode(
         name="my-task",
@@ -42,7 +42,7 @@ def test_memory_node_edges_field() -> None:
 
 
 def test_node_block_writes_edges() -> None:
-    from hachi.core.memory_writer import MemoryNode, _node_block
+    from hachi.core.memory.writer import MemoryNode, _node_block
 
     node = MemoryNode(
         name="billing-task",
@@ -82,7 +82,7 @@ Billing DB migration is 1/3 complete; pgloader chosen over DMS.
 
 
 def test_parse_memory_file(tmp_path: Path) -> None:
-    from hachi.core.memory_graph import parse_memory_file
+    from hachi.core.memory.graph import parse_memory_file
 
     og = tmp_path / "projects" / "billing.og"
     og.parent.mkdir()
@@ -105,7 +105,7 @@ def test_parse_memory_file(tmp_path: Path) -> None:
 
 
 def test_expand_graph_joins_project_tasks() -> None:
-    from hachi.core.memory_graph import GraphNode, expand_graph
+    from hachi.core.memory.graph import GraphNode, expand_graph
 
     project = GraphNode(name="billing-db", role="fact", dense="Billing DB migration.")
     task = GraphNode(
@@ -129,7 +129,7 @@ def test_expand_graph_joins_project_tasks() -> None:
 
 
 def test_expand_graph_filters_superseded() -> None:
-    from hachi.core.memory_graph import GraphNode, expand_graph
+    from hachi.core.memory.graph import GraphNode, expand_graph
 
     old_decision = GraphNode(name="old-db-decision", role="fact", dense="Use DMS.")
     new_decision = GraphNode(
@@ -152,7 +152,7 @@ def test_expand_graph_filters_superseded() -> None:
 
 
 def test_expand_graph_respects_max_nodes() -> None:
-    from hachi.core.memory_graph import GraphNode, expand_graph
+    from hachi.core.memory.graph import GraphNode, expand_graph
 
     index = {
         f"node-{i}": GraphNode(name=f"node-{i}", role="fact", dense=f"Fact {i}.")
@@ -169,7 +169,7 @@ def test_expand_graph_respects_max_nodes() -> None:
 
 
 def test_compose_resume_pack_non_empty() -> None:
-    from hachi.core.memory_graph import GraphNode, compose_resume_pack
+    from hachi.core.memory.graph import GraphNode, compose_resume_pack
 
     nodes = [
         GraphNode(name="billing-db", role="fact", dense="Billing DB migration is 1/3 complete."),
@@ -187,7 +187,7 @@ def test_compose_resume_pack_non_empty() -> None:
 
 
 def test_compose_resume_pack_budget() -> None:
-    from hachi.core.memory_graph import GraphNode, compose_resume_pack
+    from hachi.core.memory.graph import GraphNode, compose_resume_pack
 
     nodes = [
         GraphNode(name=f"n{i}", role="fact", dense="A" * 200)
@@ -204,7 +204,7 @@ def test_compose_resume_pack_budget() -> None:
 
 
 def test_retrieve_and_compose_end_to_end(tmp_path: Path) -> None:
-    from hachi.core.memory_graph import retrieve_and_compose
+    from hachi.core.memory.graph import retrieve_and_compose
 
     mem_dir = tmp_path / "memory"
     proj_dir = mem_dir / "projects"
@@ -217,7 +217,7 @@ def test_retrieve_and_compose_end_to_end(tmp_path: Path) -> None:
 
 
 def test_retrieve_and_compose_empty_dir(tmp_path: Path) -> None:
-    from hachi.core.memory_graph import retrieve_and_compose
+    from hachi.core.memory.graph import retrieve_and_compose
 
     result = retrieve_and_compose("anything", tmp_path / "nonexistent")
     assert result == ""

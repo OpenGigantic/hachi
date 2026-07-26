@@ -298,7 +298,7 @@ class ProcessSharedServices:
     ) -> ProcessSharedServices:
         """One-time creation of all shared services."""
         from hachi.core.mcp_client import MCPManager
-        from hachi.core.memory_provider import (
+        from hachi.core.memory.provider import (
             ChromaMemoryProvider,
             ProviderBackedVault,
             resolve_provider,
@@ -365,8 +365,8 @@ class ProcessSharedServices:
         memory_writer: Any = None
         if _memory_settings.graph or _memory_settings.backend == "fts5_only":
             try:
-                from hachi.core.memory_index import MemoryIndex
-                from hachi.core.memory_writer import MemoryWriter
+                from hachi.core.memory.index import MemoryIndex
+                from hachi.core.memory.writer import MemoryWriter
 
                 graph_index = MemoryIndex(
                     memory_dir=paths.memory_dir,
