@@ -93,15 +93,25 @@ def test_shared_vault_default_settings_when_unconfigured(tmp_path: Path) -> None
 # ---------------------------------------------------------------------------
 
 
-def test_shared_services_non_chroma_backend_initializes_without_vault(
+def test_shared_services_non_chroma_backend_initializes_without_chroma_settings(
     tmp_path: Path,
 ) -> None:
     """`in_memory` / `fts5_only` have no recall/decay machinery (T-06 §9 — out of
     scope to add it) and must keep initializing via the plain
-    ``initialize(brain_dir=...)`` signature, with ``vault`` staying ``None``. This
-    guards against the isinstance-narrowing fix accidentally routing non-Chroma
-    providers through the settings-carrying branch (which would raise, since their
-    ABC signature has no matching keyword args)."""
+    ``initialize(brain_dir=...)`` signature — never the settings-carrying branch
+    (which would raise, since their ABC signature has no matching keyword args).
+
+    T-49 / BB-146 update: this test used to assert ``shared.vault is None`` for
+    ``in_memory`` — that null vault *was* the bug T-49 fixed (boot discarded the
+    resolved provider instead of adopting it). ``shared.vault`` is now a
+    ``ProviderBackedVault`` that routes reads/writes through the provider's
+    upsert/search/delete contract. What this test still guards, unchanged: the
+    non-Chroma path must not produce a *Chroma* vault or crash going through the
+    settings-carrying branch — see ``test_provider_backed_vault_*`` in
+    ``tests/test_memory_provider.py`` for the "actually stores a fact" proof."""
+    from hachi.core.memory_provider import ProviderBackedVault
+    from hachi.core.memory_vault import MemoryVault
+
     config = {
         "memory": {
             "backend": "in_memory",
@@ -111,7 +121,14 @@ def test_shared_services_non_chroma_backend_initializes_without_vault(
         }
     }
     shared = ProcessSharedServices.get_or_create(config, str(tmp_path), force_reinit=True)
-    assert shared.vault is None, "in_memory backend must not produce a Chroma vault"
+    assert shared.vault is not None, (
+        "T-49: in_memory backend must produce a working provider-backed vault"
+    )
+    assert isinstance(shared.vault, ProviderBackedVault)
+    assert not isinstance(shared.vault, MemoryVault), (
+        "in_memory backend must not produce a real Chroma vault "
+        "(no recall/decay machinery — T-06 §9, still out of scope)"
+    )
 
 
 # ---------------------------------------------------------------------------

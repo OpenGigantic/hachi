@@ -39,7 +39,7 @@ from hachi.core.llm import Message, create_llm_client
 from hachi.core.loop import ExecutionLoop, ToolRegistry
 from hachi.core.mcp_client import MCPManager, MCPServerConfig
 from hachi.core.memory import MemoryManager
-from hachi.core.memory_provider import ChromaMemoryProvider, resolve_provider
+from hachi.core.memory_provider import ChromaMemoryProvider, ProviderBackedVault, resolve_provider
 from hachi.core.memory_vault import MemoryVault
 from hachi.core.obs.trace import TraceContext
 from hachi.core.obs.trace import bind as _bind_trace_ctx
@@ -3203,8 +3203,11 @@ def boot_agent(
 
     # Initialize and register the Long-Term Memory Vault (backend-selectable).
     # backend="chroma" (default) — ChromaDB persistent vault, full semantic tools.
-    # backend="in_memory" — lightweight in-process store, no ChromaDB required;
-    #   semantic memory tools degrade gracefully (return an informational message).
+    # backend="in_memory" / "fts5_only" — lightweight, no ChromaDB required. T-49:
+    #   these route through ProviderBackedVault, which adopts the MemoryProvider
+    #   seam (upsert/search/delete) so core/user/agent-profile facts are genuinely
+    #   stored and retrieved — episodic memory, delegation search, and the
+    #   MemoryGuard quarantine trail stay honestly unavailable (BB-146).
     from hachi.core.settings import MemorySettings
 
     _raw_memory = config.get("memory", {})
@@ -3213,8 +3216,15 @@ def boot_agent(
     # P4-02: reuse shared vault when already initialised (avoids opening a new Chroma
     # PersistentClient per session — up to 100 clients per process before this fix).
     if _shared.vault is not None:
-        vault: MemoryVault | None = _shared.vault
-        _provider = ChromaMemoryProvider(vault=vault)
+        vault: MemoryVault | ProviderBackedVault | None = _shared.vault
+        if isinstance(vault, ProviderBackedVault):
+            # T-49: the shared vault is already provider-backed (in_memory /
+            # fts5_only) — reuse its wrapped provider directly instead of
+            # wrapping it in a ChromaMemoryProvider, which would misreport
+            # _is_fts5_only below and break the FTS5 graph/writer attachment.
+            _provider = vault.provider
+        else:
+            _provider = ChromaMemoryProvider(vault=vault)
     else:
         _provider = resolve_provider(_memory_settings)
         # T-06 / BB-99: the settings that actually control retrieval behaviour
@@ -3233,9 +3243,13 @@ def boot_agent(
                 core_memory_max_entries=_memory_settings.core_memory_max_entries,
                 decay_half_life_days=_memory_settings.decay_half_life_days,
             )
+            vault = _provider.vault
         else:
             _provider.initialize(brain_dir=str(get_hachi_paths().data_dir))
-        vault = _provider.vault if isinstance(_provider, ChromaMemoryProvider) else None
+            # T-49: adopt the seam — route reads/writes through the provider's
+            # upsert/search/delete contract instead of discarding it to
+            # vault=None (BB-146).
+            vault = ProviderBackedVault(_provider)
     memory.set_vault(vault)
 
     # T-06 / BB-99: make a settings/vault mismatch loud instead of silent. If this
@@ -3243,7 +3257,10 @@ def boot_agent(
     # vault was built from a different value — the exact failure mode that made
     # M2 decay inert for every user. Read the properties directly (never a
     # defaulted getattr — T-14) so a missing property raises instead of passing.
-    if vault is not None:
+    # T-49: scoped to Chroma — in_memory/fts5_only have no recall/decay machinery
+    # (shared_services.py's comment on the sibling branch above), so there is
+    # nothing for this vault-vs-settings comparison to verify for them.
+    if vault is not None and isinstance(_provider, ChromaMemoryProvider):
         if vault.decay_half_life_days != _memory_settings.decay_half_life_days:
             logger.warning(
                 "[memory] decay_half_life_days=%s was configured but the live vault "

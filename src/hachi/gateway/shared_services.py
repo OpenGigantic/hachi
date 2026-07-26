@@ -105,7 +105,8 @@ class ProcessSharedServices:
 
     skill_engine: Any  # SkillEngine
     mcp_manager: Any  # MCPManager
-    vault: Any  # MemoryVault | None
+    # T-49: MemoryVault (chroma) | ProviderBackedVault (in_memory / fts5_only) | None.
+    vault: Any  # MemoryVault | ProviderBackedVault | None
     graph_index: Any  # MemoryIndex | None
     memory_writer: Any  # MemoryWriter | None
     brain_dir: str
@@ -297,7 +298,11 @@ class ProcessSharedServices:
     ) -> ProcessSharedServices:
         """One-time creation of all shared services."""
         from hachi.core.mcp_client import MCPManager
-        from hachi.core.memory_provider import ChromaMemoryProvider, resolve_provider
+        from hachi.core.memory_provider import (
+            ChromaMemoryProvider,
+            ProviderBackedVault,
+            resolve_provider,
+        )
         from hachi.core.paths import get_hachi_paths
         from hachi.core.settings import MemorySettings
         from hachi.og_engine.engine import SkillEngine
@@ -346,6 +351,14 @@ class ProcessSharedServices:
             # in_memory / fts5_only have no recall-distance or decay machinery —
             # their initialize() ABC signature is (self, brain_dir: str) -> None.
             _provider.initialize(brain_dir=brain_dir)
+            # T-49: adopt the seam — route reads/writes through the provider's
+            # upsert/search/delete contract instead of discarding it to
+            # vault=None (BB-146). Mirrors the Chroma branch above: this vault
+            # is the process-shared singleton too, so it is marked is_shared
+            # for the same reason — an individual AgentSession must never
+            # close it on its own shutdown.
+            vault = ProviderBackedVault(_provider)
+            vault.is_shared = True
 
         # --- MemoryIndex / MemoryWriter (when memory.graph=true) ---
         graph_index: Any = None
