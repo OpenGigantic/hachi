@@ -38,7 +38,10 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   (editable-install lock) before collecting anything.
 - **Root cause:** the generated `.exe` console-script shim contends with the
   editable-install lock on Windows.
-- **Avoid:** on Windows, fall back to `python -m pytest` / `python -m mypy`, or
+- **Avoid:** on Windows, fall back to `uv run python -m pytest` / `uv run python -m mypy`
+  (NOT bare `python -m …` — on this dev machine bare `python` resolves to a global
+  Python-Install-Manager shim under `AppData/Local/Python/` that lacks `hachi`/`pytest-xdist`
+  and silently runs the wrong environment; see BB-143), or
   `PYTHONPATH=src uv run --with pytest --no-project pytest -q`. `scripts/preflight.py`
   invokes tools through `uv run`, which usually sidesteps the shim.
 - **Locked by:** mechanical — documented fallback; no test (environment-specific).
@@ -4476,6 +4479,25 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `test_background_summary_updates_the_persisted_checkpoint`,
   `test_resume_from_session_seeds_checkpoint_into_history`,
   `test_resume_from_session_excludes_checkpoint_from_resumed_transcript`.
+
+### BB-143 — A ratchet nobody turns is not a ratchet
+
+- **Symptom:** `[tool.mypy] strict = true` was declared repo-wide while hundreds of errors
+  sat under it, and the blocking scoped gate (`mypy-strict-gate.ini`) covered 40 of 264
+  source files under `core/`, `og_engine/`, `gateway/` (~15%). 89 files in that scope were
+  already strict-clean and had simply never been added — coverage was frozen while the
+  tree grew (132 -> 160 engine-layer files between the audit snapshot and this fix).
+- **Root cause:** the gate's ratchet rule ("add a file once its error count reaches zero")
+  lived only in the ini header, with no step in the PR flow that made anyone act on it.
+- **Fix:** harvested the 89 already-clean files into the gate (40 -> 129 files, zero code
+  changes), verified via the scoped gate itself (never a whole-tree mypy run, to avoid the
+  stall that hit a prior attempt), and added a ratchet-floor test plus a CONTRIBUTING.md
+  checklist line so the crank gets turned by default going forward.
+- **Avoid:** a gate whose coverage is a hand-maintained list needs a mechanical floor test,
+  or it silently stops growing. On this machine, also avoid: bare `python` on PATH is a
+  global Python-Install-Manager shim, NOT the project `.venv` — it lacks `hachi` and
+  `pytest-xdist`. Use `uv run python -m mypy` / `uv run python -m pytest`, not bare `python`.
+- **Locked by:** `tests/test_p1_14_mypy_gate.py::test_strict_gate_covers_at_least_the_ratchet_floor`
 
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,

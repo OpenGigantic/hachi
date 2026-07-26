@@ -59,3 +59,28 @@ def test_gate_config_covers_core_and_og_engine_and_gateway() -> None:
     assert "core/" in content
     assert "og_engine/" in content
     assert "gateway/" in content
+
+
+# T-69: the ratchet floor. This number may only ever go UP. If a change makes it go
+# down, that is the bug this test exists to catch — do not lower it to go green.
+STRICT_GATE_FLOOR = 129
+
+
+def test_strict_gate_covers_at_least_the_ratchet_floor() -> None:
+    """mypy-strict-gate.ini is a ratchet: coverage only increases.
+
+    Regression: the gate's own header says 'add a file once its error count reaches
+    zero', but 65+ already-clean files had never been added — coverage sat at 40/236
+    while the tree grew (T-69).
+    """
+    listed = [
+        line.strip().rstrip(",")
+        for line in _GATE_CONFIG.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("src/hachi/")
+    ]
+    assert len(listed) >= STRICT_GATE_FLOOR, (
+        f"gate covers {len(listed)} files, floor is {STRICT_GATE_FLOOR} — "
+        "the ratchet may only turn one way"
+    )
+    missing = [p for p in listed if not (_REPO_ROOT / p).is_file()]
+    assert not missing, f"gate lists files that do not exist: {missing}"
