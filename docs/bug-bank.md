@@ -4737,6 +4737,46 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `hachi.cli.main`, and confirmed order-independent against the three schedule test
   files with `-p no:randomly`.
 
+### BB-151 — An import-linter exemption justified by a dependency that never existed, and the `getattr` readers deleting it would have silently broken
+
+- **Symptom:** `pyproject.toml` exempted `hachi.core.runtime.resume -> hachi.cli.main`
+  — the only `core -> cli` import in the repo — justified in its comment as *"cold-start
+  resume needs the CLI's Typer app to rebuild a session's command context."* No Typer app
+  is involved anywhere in that path. The real dependency was the `_ACTIVE_RUNTIME` module
+  global plus two private attributes (`_agents`, `_agents_lock`) on the runtime it held.
+  The `_ACTIVE_RUNTIME` slot's own docstring claimed it existed so resume could work
+  *"without importing the CLI"* — while being the exact mechanism by which the CLI got
+  imported. Both comments were wrong in the same direction, and a reader trusting either
+  concludes the seam is load-bearing forever.
+- **Root cause:** the exemption comment was written from intent rather than from the code,
+  and was never re-checked as the code moved — T-41 relocated the very class the seam
+  reaches for out of `cli/main.py`, and the comment still did not change.
+- **Second, sharper trap:** T-42's own spec listed the two *writers* of `_ACTIVE_RUNTIME`
+  and told the implementer to delete the slot. A whole-repo grep (not the task's file
+  list) found two more *readers* — `cli/commands/channel.py` and
+  `cli/commands/schedule.py`, whose governed-boot helpers did
+  `getattr(_main_mod, "_ACTIVE_RUNTIME", None)` to get the full runtime for
+  `boot_registered_session`. Deleting the global would have made both return `None`
+  forever **with no exception and no failing test anywhere near the diff**, silently
+  regressing governed channel/schedule boot to the pre-T-20 ungoverned path.
+- **Fix:** a two-method `SessionRuntime` protocol (`get_live_session`, `rehydrate`) in
+  `core/runtime/protocols.py`, injected from the edge via
+  `set_active_session_runtime`/`get_active_session_runtime`; exemption deleted; both
+  unlisted readers repointed at the getter.
+- **Avoid:** an `ignore_imports` comment must name the *symbol* being reached for, not the
+  module's reputation — and must be re-verified whenever the target moves. Exploit
+  import-linter's default `unmatched_ignore_imports_alerting = ERROR`: remove the import
+  and leave the exemption, and the linter *fails* with `No matches for ignored import …`.
+  That failure is a free, unambiguous proof the import is gone; a contract-violation
+  failure instead means you missed one. Separately, and more generally: **before deleting
+  a module-level global, grep the WHOLE repo for it, never just the files a task brief
+  names.** `getattr(module, "name", default)` degrades silently to the default once
+  `name` is gone, so a reader outside your stated scope regresses without a single test
+  failing near your change.
+- **Locked by:** `tests/test_core_cli_seam.py::test_core_does_not_import_the_cli`;
+  `tests/test_governed_session_entry_points.py` (channel/schedule governed-boot and
+  isolation-guard tests, retargeted at the new seam).
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
