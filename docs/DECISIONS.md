@@ -3350,3 +3350,38 @@ what the ABC actually contracts for, and being explicit about what stays absent,
 `memory.backend`'s claims honest without inventing new unverified behaviour. `memory_provider.py`
 is now load-bearing, which [T-48](../audit/2026-07-19/tasks/T-48-memory-package-boundary.md)
 must preserve when it moves the module.
+
+## T-48: Memory modules moved into a core/memory/ package (2026-07-26) **[ADR]**
+
+**Decision:** the twelve flat `core/memory*.py` modules are now a `core/memory/` package
+(`manager.py`, `vault.py`, `provider.py`, `writer.py`, `index.py`, `graph.py`,
+`graph_recall.py`, `gardener.py`, `guard.py`, `importer.py`, `exporter.py`,
+`conversation.py`). Pure churn — a 251/251-line 1:1 move, no behaviour change. The four
+behavioural memory tasks (T-49..T-52) landed FIRST by design, precisely so this 197-import
+rename could not invalidate their line anchors or make a semantic change indistinguishable
+from a move in the diff.
+
+**Narrow public surface (Decision 1):** `core/memory/__init__.py` re-exports exactly
+`MemoryManager`, `extract_facts`, `build_episode_summary`. Everything else (private
+constants like `_MAX_ACTIVE_TOKENS`, the writer/index/vault classes) is reached via its
+explicit submodule (`hachi.core.memory.manager`, `.vault`, ...), not the bare package —
+five test files that reached private names off the old flat module were redirected to
+`.manager`.
+
+**Import-linter unchanged:** the contracts name `hachi.core` as a whole and
+`hachi.core.memory` is still inside it; `og_engine`'s import of `hachi.core.memory.guard`
+stays legal under the "og_engine is pure" contract (which forbids gateway/cli/tui/tools,
+not core). Re-verified 3 kept / 0 broken.
+
+**memory_provider.py kept, not deleted:** T-49 adopted the MemoryProvider seam (it now
+holds the load-bearing `ProviderBackedVault`), so it moved to `memory/provider.py` rather
+than being deleted — the task doc's "T-49 may delete it" note predates that decision.
+
+**Config repathed:** `mypy-strict-gate.ini` (9 entries from T-69's harvest),
+`scripts/check_getattr.py`'s allowlist (6 keys), and `openapi/hachi-openapi.json` +
+`frontend/src/lib/data/schema.d.ts` (BB-4 — one Pydantic model description echoed the moved
+module path) were all regenerated/repathed. Lesson: a package move must repath every
+by-path config and every generated artifact that named the old flat modules, or the gate
+breaks on stale paths.
+
+**Locked by:** `tests/test_memory_package_boundary.py`; docs/bug-bank.md BB-148.
