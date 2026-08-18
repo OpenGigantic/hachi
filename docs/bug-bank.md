@@ -4902,6 +4902,38 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** nothing executable — this is a methodology entry. The corrected inventory is
   reflected in `tests/conftest.py::control_plane`'s docstring and T-43's ADR.
 
+### BB-155 — A verification harness fails in both directions, and both look like results
+
+- **Symptom (fail-open):** T-77's full gate was launched as
+  `preflight.py > "$LOG" 2>&1; echo "PREFLIGHT_EXIT=$?" >> "$LOG"`. The task notification
+  reported **"completed (exit code 0)"**. Preflight had never run: the scratchpad directory the
+  log path pointed into had been removed mid-session, so the redirect failed before the command
+  started. `echo` still exited 0. Grepping the (nonexistent) log for a failure verdict returned
+  nothing — which reads exactly like "no failures".
+- **Symptom (fail-closed):** an AST-based checker comparing `git show HEAD:file` against the
+  worktree reported **21 prompt literals silently lost**, including strings in functions the
+  diff never touched. Every one of them contained `—`, `…` or `≤`, and one output line carried a
+  literal `U+FFFD`. Nothing was lost.
+- **Root cause:**
+  1. Redirection is evaluated by the shell *before* the command runs, so a bad log path turns
+     "run the gate and record it" into "run nothing"; and the exit status you capture is the
+     last command's, which is the `echo` you added to capture it.
+  2. `subprocess.run(..., text=True)` decodes with the **locale** codepage on Windows (cp1252),
+     not UTF-8. This repo's prose uses em dashes heavily, so every multi-byte character
+     mojibakes and every string containing one compares unequal to its worktree twin.
+- **Avoid:** `mkdir -p` the log directory and prove it writable (`: > "$LOG"`) in the same
+  command that runs the gate; then **read the log's own verdict line**
+  (`[OK] preflight passed clean` / `Summary: N passed, M failed`), never the exit code, and
+  treat *no verdict line at all* as a failure rather than as silence. Pass
+  `encoding="utf-8"` explicitly to every `subprocess.run` that reads repo content on Windows.
+- **Wider point:** both failures were in the checking apparatus, not the code under test, and
+  neither announced itself as a tooling fault — one produced a clean bill of health, the other a
+  21-item catastrophe. Before believing a verification result that is surprisingly good *or*
+  surprisingly bad, check the instrument. The tell for the second was that the "damage" fell
+  precisely along a character-class boundary rather than along the diff. See also BB-1 (Windows
+  tooling), BB-154 (a correct parser fed the wrong question), and T-41's note that a gate's exit
+  code is not its verdict.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

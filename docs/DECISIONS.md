@@ -3617,3 +3617,75 @@ change; while they are optional, that guard is what turns a missing handler into
 deliberately not added to `mypy-strict-gate.ini` — T-69 owns that ratchet.
 
 **Locked by:** `tests/test_control_plane_characterization.py`; docs/bug-bank.md BB-153, BB-154.
+
+---
+
+## T-77 — Prompt text gets an owner: 17 stray literals become 18 named, versioned templates (2026-08-18) **[ADR]**
+
+**Found.** `core/prompt_composer.py`'s own docstring asserted an invariant the codebase
+violated: *"no other module should concatenate system-prompt strings directly."* Eight auxiliary
+one-shot LLM call sites did exactly that, carrying 17 inline prompt literals no test had ever
+looked at. `core/memory/manager.py` held nine of them, across four extraction/summarisation
+prompts that read as near-duplicates and are not — **each applies a different gate to the
+model's response.** `_is_substantive_fact` (`manager.py:144`) runs on the flat extraction path's
+three buckets (`:392`, `:400`, `:408`) and in `_flush_facts_to_vault` (`:1555`), but **not** on
+the typed/tool path (`extract_facts` `:184`, branch at `:239`), which validates response *shape*
+only — a three-character fact goes straight to `write_nodes`. `_generate_structured_summary`
+(`:1592`) applies **no** validation at all: it returns `response.content.strip()` verbatim into
+live conversation history, despite a prompt demanding five specific `##` sections.
+
+**Decided.** `prompt_composer` gains a second, separately-testable responsibility beside its
+existing assembly functions: a named, versioned template registry — `PROMPT_REGISTRY_VERSION`
+(`:169`), a frozen `PromptTemplate` (`:175`), and `register_prompt`/`get_prompt`/`all_prompts`
+(`:196`–`:211`). `get_prompt` raises `KeyError` on an unknown name and `render` raises on a
+missing placeholder; neither has a silent default, because a silently-empty prompt is the worst
+failure this module could have. All 17 Tier A literals moved in **verbatim**. `build_stable_base`
+and `compose` are byte-identical and their 18 tests pass unchanged — that is the proof the change
+stayed in its lane.
+
+**Text moved; logic did not.** Every parse step, fence-strip, gate call, truncation and dedup
+stayed in the same function in the same order. The flush path still concatenates its snippet at
+the call site; `transcript[:8000]` still truncates where it did; the fence-strip asymmetry
+between the flat and flush paths is preserved. The four memory prompts are four registry
+entries — unmerged and unreworded — and `_is_substantive_fact` is still called at exactly four
+sites and still absent from the typed path.
+
+**Two decisions the task's own spec got wrong, resolved here.**
+
+*Byte-equality has to be asserted on the rendered prompt, not on `.text`.* Five of the 17
+literals are f-strings, which have no single original byte value — only a shape — and two of
+those also contain literal JSON-example braces (`{"user_facts": [...]}`,
+`{"delete_ids": [...]}`) that `str.format` would choke on. Those two escape their literal braces
+as `{{`/`}}` in `.text` and render around them. Pinning `.text` would therefore be impossible
+for some entries and meaningless for others; pinning the **rendered output** is uniform, and it
+is what the model actually receives.
+
+*Session titling's user prompt is not "already a module constant".* It is the one conditionally
+assembled prompt in the set — `f"User: {user_message[:600]}"`, an `if`-guarded agent line, then
+a fixed `"\n\nTitle:"` suffix — which makes it the most structurally awkward of the 17, not the
+easiest. It splits into `session.title.user` + `session.title.user.agent_line` (18 entries for
+17 literals) so no model-facing text is left inline, while the truncation slices and the
+conditional stay at the call site (`session_titler.py:99`–`:104`) as logic.
+
+**Why this, now.** The argument is entirely about timing. Today a prompt is a string literal
+that moves freely because nothing depends on its exact bytes. Once prompt-injection hardening
+starts depending on exact wording — delimiter conventions, untrusted-content fencing,
+instruction-hierarchy markers — moving these stops being a refactor and becomes a security
+review. This closes the gap while it is still cheap.
+
+**The gate cannot see prompts, and that is the load-bearing fact.** `ScriptedLLMClient.generate`
+(`core/eval/replay.py:97`) accepts `**kwargs` and discards them, so `system_prompt` and
+`messages` are never read; `corpus.py` tests loop mechanics, not model decision quality. A grep
+of `tests/` confirmed **no test asserted on any of these 17 literals** before this change. The
+eval step is green whether these prompts are correct, reworded, or empty — so
+`tests/test_prompt_registry.py` is not a supplementary check, it is the *only* one.
+
+**Two gaps deliberately left open.** Adding `_is_substantive_fact` to the typed path, or any
+validation to `_generate_structured_summary`, changes what gets written to memory and needs its
+own regression test and review. Recorded, not fixed. `core/sub_agent.py`'s `PromptBuilder`
+likewise remains a deliberate second composer: it reads parsed `OGFile` tags rather than
+pre-rendered strings, and merging the two is its own design task.
+
+**Locked by:** `tests/test_prompt_registry.py` (19 tests — 1 snapshot digest lock, 17
+move-is-lossless byte pins, 1 completeness lock); `tests/test_prompt_composer.py` +
+`tests/test_prompt_cache_ordering.py` (18 pre-existing tests, unchanged).
