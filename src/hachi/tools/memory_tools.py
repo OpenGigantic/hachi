@@ -116,6 +116,7 @@ def register_memory_tools(
 
                     from hachi.core.llm import AnthropicClient
                     from hachi.core.llm import Message as LLMMessage
+                    from hachi.core.prompt_composer import get_prompt
 
                     # BB-95: explicit, bounded timeout for this background
                     # consolidation call -- matches memory_vault.py's identical
@@ -123,25 +124,13 @@ def register_memory_tools(
                     # AnthropicClient's general 60s default since this runs on
                     # the durable job-queue worker, not the user-facing turn.
                     client = AnthropicClient(timeout=30.0)
-                    prompt = (
-                        "You are a memory consolidation engine.\n"
-                        f"New Compound Fact to save: '{content}'\n\n"
-                        "Existing Facts in Database:\n"
-                        f"{snippet}\n\n"
-                        "Analyze if the New Fact completely supersedes, contradicts, or overlaps "
-                        "with any Existing Facts. "
-                        "CRITICAL: Break the New Fact into STRICTLY ATOMIC components. "
-                        "For example: 'Mike is my boss and his email is X' -> "
-                        "['User\\'s boss is Mike', 'Mike\\'s email is X'].\n"
-                        "If an atomic component supersedes an old fact "
-                        "(e.g. Boss was X, now Boss is Y), add the old fact's ID to 'delete_ids'.\n"
-                        'Output pure JSON only: {"delete_ids": ["id1", "id2"], '
-                        '"save_contents": ["atomic fact 1", "atomic fact 2"]}'
+                    prompt = get_prompt("memory.consolidate.user").render(
+                        content=content, snippet=snippet
                     )
 
                     response = client.generate(
                         messages=[LLMMessage(role="user", content=prompt)],
-                        system_prompt="You are a data merger. Output pure JSON only.",
+                        system_prompt=get_prompt("memory.consolidate.system").text,
                     )
 
                     data = _parse_llm_json(response.content)

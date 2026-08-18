@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 import httpx
 
 from hachi.core.net_guard import validate_outbound_url
+from hachi.core.prompt_composer import get_prompt
 from hachi.core.tool_results import ToolResultBlocks
 from hachi.tools.os_tools import _normalize_user_path
 
@@ -356,7 +357,7 @@ def _make_view_image(
             return loaded  # error message
         raw, media_type, label = loaded
 
-        focus = prompt.strip() or "Describe what you see and use it to answer the user's request."
+        focus = prompt.strip() or get_prompt("vision.analyze.default_focus").text
 
         # ------------------------------------------------------------------
         # 3-way routing gate (doc 20 §3)
@@ -402,13 +403,9 @@ def _make_view_image(
 
                 # Build a minimal one-turn conversation for the vision model.
                 vision_messages = [Message(role="user", content=image_blocks)]
-                _vision_sys = (
-                    "You are a vision analysis assistant. "
-                    "Describe the image and answer the user's question concisely."
-                )
                 vision_resp = vision_client.generate(
                     vision_messages,
-                    system_prompt=_vision_sys,
+                    system_prompt=get_prompt("vision.analyze.system").text,
                 )
                 analysis = (vision_resp.content or "").strip() or "(no analysis returned)"
                 return f"[Vision analysis of '{label}' via {vision_provider}] {analysis}"
