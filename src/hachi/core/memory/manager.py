@@ -36,6 +36,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from hachi.core.llm import Message
+from hachi.core.prompt_composer import get_prompt
 
 if TYPE_CHECKING:
     from hachi.core.memory.conversation import IterationState
@@ -241,11 +242,7 @@ def extract_facts(
 
         _EXTRACT_TOOL: dict[str, Any] = {
             "name": "extract_memory_nodes",
-            "description": (
-                "Extract durable memory nodes from a conversation exchange. "
-                "Only extract facts that should persist across sessions. "
-                "Omit transient commands, status, and single-use instructions."
-            ),
+            "description": get_prompt("memory.extract.tool_schema.description").text,
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -315,13 +312,13 @@ def extract_facts(
         }
 
         response = llm_client.generate(
-            messages=[_LLMMessage(role="user", content=f"Extract memory from:\n\n{snippet}")],
-            system_prompt=(
-                "You are a precision memory extraction engine. "
-                "Extract ONLY durable facts worth keeping across sessions. "
-                "Use the extract_memory_nodes tool. "
-                "Return an empty nodes list if nothing is worth extracting."
-            ),
+            messages=[
+                _LLMMessage(
+                    role="user",
+                    content=get_prompt("memory.extract.typed.user").render(snippet=snippet),
+                )
+            ],
+            system_prompt=get_prompt("memory.extract.typed.system").text,
             tools=[_EXTRACT_TOOL],
         )
         _record_extraction_spend(llm_client, response)
@@ -374,27 +371,11 @@ def extract_facts(
 
     else:
         # ---- Flat JSON bucket path (mirrors _run_fact_extraction) ----
-        prompt = (
-            "Extract ONLY permanent facts from this exchange into three buckets.\n\n"
-            "user_facts: Things about the USER's identity — name, role, timezone, "
-            "preferences, habits, relationships, communication style.\n"
-            "workspace_facts: Technical/environment facts — architecture decisions, "
-            "project structure, API endpoints, tool configurations.\n"
-            "agent_facts: BEHAVIORAL CORRECTIONS. Did the user tell YOU (the agent) to change your "
-            "behavior? (e.g., 'stop apologizing', 'make it shorter', 'don't use emojis'). "
-            "Extract these as clear rules (e.g. 'I do not use emojis').\n\n"
-            "Rules:\n"
-            "- Each fact must be a single atomic sentence.\n"
-            "- Do NOT extract tasks, commands, or transient status.\n"
-            "- If nothing is worth extracting, return empty arrays.\n\n"
-            'Return ONLY valid JSON: {"user_facts": [...], "workspace_facts": [...], '
-            '"agent_facts": [...]}\n\n'
-            f"Exchange:\n{snippet}"
-        )
+        prompt = get_prompt("memory.extract.flat.user").render(snippet=snippet)
 
         response = llm_client.generate(
             messages=[_LLMMessage(role="user", content=prompt)],
-            system_prompt="You are a fact extraction engine. Output pure JSON only.",
+            system_prompt=get_prompt("memory.extract.flat.system").text,
         )
         _record_extraction_spend(llm_client, response)
 
@@ -1592,20 +1573,11 @@ class MemoryManager:
         client = self._resolve_llm_client()
         if client is None:
             return
-        prompt = (
-            "Extract any permanent, atomic facts from this conversation snippet into a "
-            "JSON list. "
-            "If the user states a preference, a relationship, an architecture decision, "
-            "or an environment detail, extract it. "
-            "Do NOT extract tasks, commands, or transient status "
-            "(e.g. 'I am coding', 'fix this bug'). "
-            'Return ONLY a valid JSON array of strings, e.g. ["User\'s boss is Premraj", '
-            '"User prefers Python"]. If none, return [].'
-        )
+        prompt = get_prompt("memory.flush.user").text
 
         response = client.generate(
             messages=[LLMMessage(role="user", content=f"{prompt}\n\nSnippet:\n{snippet}")],
-            system_prompt="You are an elite data extraction agent. Output pure JSON only.",
+            system_prompt=get_prompt("memory.flush.system").text,
         )
 
         text = response.content.strip()
@@ -1662,18 +1634,7 @@ class MemoryManager:
         # Cap total transcript to avoid burning tokens
         transcript = transcript[:8000]
 
-        template = (
-            "Summarize this dropped conversation segment into a structured checkpoint.\n"
-            "Output ONLY these sections (skip any that have no content):\n\n"
-            "## Active Task\n[The user's most recent request — quote verbatim if possible]\n\n"
-            "## Completed Actions\n[Numbered list: what was done, which tool was used, "
-            "the outcome]\n\n"
-            "## Active State\n[Working directory, modified files, branch, test status if "
-            "mentioned]\n\n"
-            "## Key Decisions\n[Technical decisions made and WHY]\n\n"
-            "## Blocked\n[Any unresolved errors — include exact error messages]\n\n"
-            f"Conversation transcript:\n{transcript}"
-        )
+        template = get_prompt("memory.summarize.user").render(transcript=transcript)
 
         try:
             from hachi.core.llm import Message as LLMMessage
@@ -1683,11 +1644,7 @@ class MemoryManager:
                 return "[Context compacted. Relevant facts were flushed to Long-Term Memory.]"
             response = client.generate(
                 messages=[LLMMessage(role="user", content=template)],
-                system_prompt=(
-                    "You are a context summarization agent. "
-                    "Output ONLY the structured summary. Do NOT answer questions. "
-                    "Do NOT add commentary. Be concise — each section max 3 lines."
-                ),
+                system_prompt=get_prompt("memory.summarize.system").text,
             )
             return response.content.strip()
         except Exception:

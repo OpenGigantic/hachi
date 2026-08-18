@@ -25,14 +25,6 @@ MAX_TITLE_CHARS = 72
 
 UNTITLED = "Untitled session"
 
-_TITLE_SYSTEM_PROMPT = (
-    "You write a short, specific title for a conversation between a user and an AI "
-    "agent, based on its opening exchange. Respond with ONLY the title: no quotes, "
-    "no trailing punctuation, no preamble or explanation. Use Title Case, keep it "
-    "to 8 words or fewer, and capture the user's actual intent (e.g. "
-    "'Fix Failing Login Tests', 'Plan Q3 Marketing Budget')."
-)
-
 
 def _truncate(text: str) -> str:
     """Trim *text* to ``MAX_TITLE_CHARS``, adding an ellipsis when shortened."""
@@ -101,17 +93,20 @@ def generate_title(
     # Imported lazily so this module stays import-light for callers that only
     # need fallback_title (e.g. the SessionStore migration path).
     from hachi.core.llm import Message
+    from hachi.core.prompt_composer import get_prompt
 
-    prompt = f"User: {user_message[:600]}"
     assistant_message = (assistant_message or "").strip()
-    if assistant_message:
-        prompt += f"\nAgent: {assistant_message[:300]}"
-    prompt += "\n\nTitle:"
+    agent_line = (
+        get_prompt("session.title.user.agent_line").render(agent_message=assistant_message[:300])
+        if assistant_message
+        else ""
+    )
+    prompt = get_prompt("session.title.user").render(user=user_message[:600], agent=agent_line)
 
     try:
         response = llm_client.generate(
             messages=[Message(role="user", content=prompt)],
-            system_prompt=_TITLE_SYSTEM_PROMPT,
+            system_prompt=get_prompt("session.title.system").text,
         )
         # Record token usage via the cost tracker when one is provided so that
         # title-generation cost is counted in session/daily spend totals.

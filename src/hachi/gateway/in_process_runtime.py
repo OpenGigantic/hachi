@@ -1142,6 +1142,7 @@ class _InProcessGatewayRuntime:
         import difflib
 
         from hachi.core.llm import Message, create_llm_client
+        from hachi.core.prompt_composer import get_prompt
         from hachi.gateway.control_plane import GatewayUnavailableError
 
         file_path = self._resolve_authoring_target_path(name)
@@ -1165,18 +1166,9 @@ class _InProcessGatewayRuntime:
                 "Check your API key configuration."
             ) from exc
 
-        system = (
-            "You are a precise code editor for Hachi .og skill files. "
-            "The user will give you the current file content and a description of the change "
-            "they want. Respond with ONLY the complete revised file content — no markdown fences, "
-            "no explanations, no diff markers. Output the full file verbatim with only the "
-            "requested modifications applied."
-        )
-        user_msg = (
-            f"File: {name}\n\n"
-            f"Current content:\n{original}\n\n"
-            f"Requested change: {prompt}\n\n"
-            "Output the complete revised file content only."
+        system = get_prompt("authoring.patch.system").text
+        user_msg = get_prompt("authoring.patch.user").render(
+            name=name, original=original, prompt=prompt
         )
 
         try:
