@@ -39,32 +39,7 @@ interface GatewayPermissionAudit {
 }
 
 // ============================================================
-// 2. Stable numeric-id mapping (gateway uses string request_id)
-//    Module-level: survives across re-renders, stays stable per session.
-// ============================================================
-
-/** gateway request_id string → stable UI numeric id */
-const _idByRequestId = new Map<string, number>();
-let _idCounter = 1000; // start above fixture ids (1, 2, …)
-
-function stableNumericId(requestId: string): number {
-  const existing = _idByRequestId.get(requestId);
-  if (existing !== undefined) return existing;
-  const n = ++_idCounter;
-  _idByRequestId.set(requestId, n);
-  return n;
-}
-
-/** Inverse lookup: UI numeric id → gateway request_id (for POST URL) */
-function requestIdForUiId(uiId: number): string | undefined {
-  for (const [rid, nid] of _idByRequestId) {
-    if (nid === uiId) return rid;
-  }
-  return undefined;
-}
-
-// ============================================================
-// 3. Risk heuristic: derive "low" | "medium" | "high" from operation/tool
+// 2. Risk heuristic: derive "low" | "medium" | "high" from operation/tool
 // ============================================================
 
 function deriveRisk(operation: string, tool: string): Approval["risk"] {
@@ -79,7 +54,7 @@ function deriveRisk(operation: string, tool: string): Approval["risk"] {
 }
 
 // ============================================================
-// 4. Icon picker: derive an icon name from the operation/tool string
+// 3. Icon picker: derive an icon name from the operation/tool string
 // ============================================================
 
 function deriveIcon(operation: string, tool: string): string {
@@ -96,7 +71,7 @@ function deriveIcon(operation: string, tool: string): string {
 }
 
 // ============================================================
-// 5. Adapters: gateway shape → UI types (pure, total)
+// 4. Adapters: gateway shape → UI types (pure, total)
 // ============================================================
 
 function adaptApproval(raw: GatewayPendingApproval): Approval {
@@ -111,7 +86,7 @@ function adaptApproval(raw: GatewayPendingApproval): Approval {
   // sent", which the ApprovalCard uses to hide the countdown bar entirely rather
   // than show a misleading 0/0 display.
   return {
-    id: stableNumericId(raw.request_id),
+    id: raw.request_id,
     icon: deriveIcon(operation, tool),
     request: `${tool || operation}`,
     why: raw.reason ?? "Hachi needs this to continue",
@@ -155,7 +130,7 @@ function adaptAuditEntry(raw: GatewayPermissionAudit): AuditEntry {
 }
 
 // ============================================================
-// 6. Loader: fetch both endpoints → hydrate → never throw
+// 5. Loader: fetch both endpoints → hydrate → never throw
 // ============================================================
 
 // Tracks whether this domain has ever received real data from the gateway.
@@ -193,7 +168,7 @@ export async function loadApprovals(): Promise<void> {
 registerLoader("approvals", loadApprovals);
 
 // ============================================================
-// 7. Mutation wrappers
+// 6. Mutation wrappers
 //    Each POSTs to the gateway FIRST and mutates the store only once the
 //    gateway confirms the decision (postDecision's outcome is "ok"). This
 //    used to be optimistic-first — see BB-106: an optimistic mutation ahead
@@ -206,23 +181,28 @@ registerLoader("approvals", loadApprovals);
 /**
  * Outcome of a single decision POST.
  *  - "ok"         — 2xx from the gateway (or USE_MOCKS, which never calls it).
- *  - "unknown-id" — the numeric UI id has no known request_id (id-map miss).
- *                   NOT silent: the caller must surface this, not proceed as
- *                   if the gateway had been told.
+ *  - "unknown-id" — the request_id is not in the pending list the store
+ *                   currently holds (never seen via GET /approvals, or
+ *                   already resolved). NOT silent: the caller must surface
+ *                   this, not proceed as if the gateway had been told.
  *  - "failed"     — apiSend threw (network error OR a decoded 4xx/5xx
  *                   ApiError — a non-2xx status is NOT a success).
  */
 type DecisionOutcome = "ok" | "unknown-id" | "failed";
 
 async function postDecision(
-  uiId: number,
+  requestId: string,
   action: "approve" | "deny" | "allow_once",
   rationale?: string
 ): Promise<DecisionOutcome> {
   let outcome: DecisionOutcome = "ok";
   if (!USE_MOCKS) {
-    const requestId = requestIdForUiId(uiId);
-    if (requestId) {
+    // The store's approvals list is hydrated exclusively from adaptApproval
+    // (loadApprovals()), so this is exactly "is this the id the /approvals
+    // registry actually gave us" — an id we've never seen from the gateway
+    // has no business being posted as if it were real (see T-18 / BB-106).
+    const known = useStore.getState().approvals.some((a) => a.id === requestId);
+    if (known) {
       try {
         await apiSend<GatewayApprovalActionResponse>(
           "POST",
@@ -238,8 +218,8 @@ async function postDecision(
         outcome = "failed";
       }
     } else {
-      // Unknown request_id (id-map miss). Report it honestly instead of
-      // returning as if the gateway had been told (see BB-106).
+      // Unknown request_id. Report it honestly instead of returning as if
+      // the gateway had been told (see BB-106).
       outcome = "unknown-id";
     }
   }
@@ -260,7 +240,7 @@ const DECISION_FAILED_MESSAGE =
  * on success, so a failed or unmapped decision never removes the card while
  * pretending it worked (see BB-106).
  */
-export async function approve(id: number): Promise<void> {
+export async function approve(id: string): Promise<void> {
   const outcome = await postDecision(id, "allow_once");
   if (outcome === "ok") {
     useStore.getState().allowApproval(id);
@@ -273,7 +253,7 @@ export async function approve(id: number): Promise<void> {
  * Always allow this operation (maps to "approve" on the gateway).
  * Non-optimistic — see approve().
  */
-export async function allowAlways(id: number): Promise<void> {
+export async function allowAlways(id: string): Promise<void> {
   const outcome = await postDecision(id, "approve");
   if (outcome === "ok") {
     useStore.getState().alwaysApproval(id);
@@ -286,7 +266,7 @@ export async function allowAlways(id: number): Promise<void> {
  * Decline the request (maps to "deny" on the gateway).
  * Non-optimistic — see approve().
  */
-export async function decline(id: number, reason?: string): Promise<void> {
+export async function decline(id: string, reason?: string): Promise<void> {
   const outcome = await postDecision(id, "deny", reason);
   if (outcome === "ok") {
     useStore.getState().declineApproval(id, reason);
@@ -325,32 +305,57 @@ export async function declineAll(): Promise<void> {
 }
 
 /**
- * Resolve a pending approval by its gateway request_id (allow once).
- * Returns false when the id is unknown (never seen by the /approvals
- * loader) instead of silently minting a numeric id for it — an id we've
- * never actually seen from the gateway has no business being posted as if
- * it were real (see T-18 / BB-106).
+ * Resolve a pending approval by its gateway request_id (allow once). Thin
+ * wrapper directly over postDecision, matching approve()'s old delegated
+ * behaviour exactly:
+ *  - "ok"         — mutate the store, return true.
+ *  - "failed"     — a genuine POST rejection. Toasts DECISION_FAILED_MESSAGE
+ *                   ("blocked"), return false. This toast is NOT optional:
+ *                   the only caller (chat.ts's allowLeashLive) clears the
+ *                   in-context leash optimistically and discards this
+ *                   function's return value inside a try/catch, so this is
+ *                   the ONLY surface a failed decision reaches from that
+ *                   call site. Dropping it silently reintroduces the exact
+ *                   failure mode T-18 removed (see BB-106).
+ *  - "unknown-id" — the id was never in the pending list the store holds.
+ *                   Deliberately NOT toasted, unlike "failed" — the user
+ *                   never saw this id as pending in the first place, so
+ *                   there's nothing to report as having failed. Do not
+ *                   "fix" this asymmetry; it matches the pre-existing
+ *                   map-miss wrapper's behaviour intentionally.
  */
 export async function approveByRequestId(requestId: string): Promise<boolean> {
-  const uiId = _idByRequestId.get(requestId);
-  if (uiId === undefined) return false;
-  await approve(uiId);
-  return true;
+  const outcome = await postDecision(requestId, "allow_once");
+  if (outcome === "ok") {
+    useStore.getState().allowApproval(requestId);
+    return true;
+  }
+  if (outcome === "failed") {
+    useStore.getState().showToast(DECISION_FAILED_MESSAGE, "blocked");
+  }
+  return false;
 }
 
 /**
  * Decline a pending approval by its gateway request_id. Returns false if
- * unknown — see approveByRequestId().
+ * unknown or the POST failed — see approveByRequestId() for the full
+ * ok/failed/unknown-id breakdown, including why "failed" toasts and
+ * "unknown-id" deliberately does not.
  */
 export async function declineByRequestId(requestId: string, reason?: string): Promise<boolean> {
-  const uiId = _idByRequestId.get(requestId);
-  if (uiId === undefined) return false;
-  await decline(uiId, reason);
-  return true;
+  const outcome = await postDecision(requestId, "deny", reason);
+  if (outcome === "ok") {
+    useStore.getState().declineApproval(requestId, reason);
+    return true;
+  }
+  if (outcome === "failed") {
+    useStore.getState().showToast(DECISION_FAILED_MESSAGE, "blocked");
+  }
+  return false;
 }
 
 // ============================================================
-// 8. Real-time Leash sync
+// 7. Real-time Leash sync
 //    chat.ts calls loadApprovals() on the SSE `permission.requested` and
 //    `permission.decided` events so the Leash screen mirrors the authoritative
 //    /approvals registry (real request_ids → cards remain approvable). No

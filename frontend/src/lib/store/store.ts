@@ -233,9 +233,9 @@ interface Actions {
   toggleSetupChannel: () => void;
   setSetupKey: (v: string) => void;
   // approvals
-  allowApproval: (id: number, scope?: string) => void;
-  alwaysApproval: (id: number) => void;
-  declineApproval: (id: number, reason?: string) => void;
+  allowApproval: (id: string, scope?: string) => void;
+  alwaysApproval: (id: string) => void;
+  declineApproval: (id: string, reason?: string) => void;
   declineAll: () => void;
   // auto-tick (called by interval)
   tickApprovals: () => void;
@@ -507,7 +507,7 @@ export const useStore = create<State & Actions>()(
       };
 
       const resolveApproval = (
-        id: number,
+        id: string,
         decision: string,
         color: string
       ) => {

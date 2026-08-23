@@ -48,7 +48,7 @@ vi.mock("../../notifications", () => ({
 }));
 
 import { useStore } from "../../store/store";
-import { loadApprovals, approve, declineAll } from "./approvals";
+import { loadApprovals, approve, declineAll, approveByRequestId, declineByRequestId } from "./approvals";
 import { allowLeashLive, handleSseMessage } from "./chat";
 
 interface RawPending {
@@ -82,8 +82,8 @@ beforeEach(() => {
 
 describe("in-context approval resolution (CF-4b / T-17)", () => {
   it("resolves the approval the user clicked, not approvals[0]", async () => {
-    // Two approvals pending; the numeric-id map is populated the way
-    // production populates it — via the real loader/adapter path.
+    // Two approvals pending; the store is populated the way production
+    // populates it — via the real loader/adapter path.
     mockPending([
       {
         request_id: "req-A",
@@ -205,7 +205,7 @@ describe("approval decisions must not fail silently (CF-4c / T-18)", () => {
     await loadApprovals();
     apiSend.mockResolvedValue({ resolved: true });
 
-    await approve(999999); // never registered by stableNumericId
+    await approve("req-does-not-exist"); // never returned by loadApprovals — not in the pending list the store holds
 
     expect(apiSend).not.toHaveBeenCalled();
     expect(useStore.getState().approvals).toHaveLength(1);
@@ -231,5 +231,107 @@ describe("approval decisions must not fail silently (CF-4c / T-18)", () => {
     const remainingIds = useStore.getState().approvals.map((a) => a.id);
     expect(remainingIds).toEqual([failId]);
     expect(remainingIds).not.toContain(okId);
+  });
+});
+
+// ============================================================
+// T-66 (CF-16): Approval.id IS the gateway's request_id — there is no
+// second, locally-minted id space to translate through. Characterization
+// test (not a bug-fix regression test — this is a refactor): the gateway's
+// request_id must survive unchanged from GET /approvals -> the store ->
+// the POST /approvals/{id} URL.
+// ============================================================
+describe("the gateway's request_id is the id — no translation space (T-66)", () => {
+  it("the id the store holds is the literal request_id, and the decision POST targets exactly that string", async () => {
+    mockPending([
+      {
+        request_id: "req-t66-identity",
+        operation: "send_email",
+        tool: "send_email",
+        target: "priya@studio.co",
+        reason: "reply",
+      },
+    ]);
+    await loadApprovals();
+    apiSend.mockResolvedValue({ resolved: true });
+
+    const id = useStore.getState().approvals[0].id;
+    // No id-space translation: the store holds the gateway's own request_id
+    // string, not a locally-minted numeric stand-in for it.
+    expect(id).toBe("req-t66-identity");
+
+    await approve(id);
+
+    expect(apiSend).toHaveBeenCalledWith(
+      "POST",
+      "/approvals/req-t66-identity",
+      expect.anything()
+    );
+  });
+});
+
+// ============================================================
+// Regression (found during T-66): the approveByRequestId/declineByRequestId
+// rewrite over postDecision silently dropped the T-18 failure toast for a
+// genuinely rejected POST. chat.ts's allowLeashLive()/denyLeashLive() clear
+// the in-context leash optimistically and discard this function's boolean
+// return inside a try/catch, so the toast fired here is the ONLY surface a
+// failed decision reaches from that call site — dropping it reintroduces
+// the exact silent-failure mode T-18 removed (BB-106), just at the leash's
+// entry point instead of the Leash screen's.
+// ============================================================
+describe("approveByRequestId / declineByRequestId toast on a genuine POST failure (BB-106 regression)", () => {
+  it("approveByRequestId toasts blocked and leaves the approval in place when the POST fails", async () => {
+    mockPending([
+      {
+        request_id: "req-700",
+        operation: "shell_exec",
+        tool: "shell_exec",
+        target: "rm -rf tmp",
+        reason: "cleanup",
+      },
+    ]);
+    await loadApprovals();
+    apiSend.mockRejectedValue(new Error("500 Internal Server Error"));
+
+    const id = useStore.getState().approvals[0].id;
+    const result = await approveByRequestId(id);
+
+    expect(result).toBe(false);
+    expect(useStore.getState().approvals).toHaveLength(1);
+    expect(useStore.getState().toasts.some((t) => t.tone === "blocked")).toBe(true);
+  });
+
+  it("declineByRequestId toasts blocked and leaves the approval in place when the POST fails", async () => {
+    mockPending([
+      {
+        request_id: "req-701",
+        operation: "write_file",
+        tool: "write_file",
+        target: "/tmp/y",
+        reason: "save",
+      },
+    ]);
+    await loadApprovals();
+    apiSend.mockRejectedValue(new Error("500 Internal Server Error"));
+
+    const id = useStore.getState().approvals[0].id;
+    const result = await declineByRequestId(id);
+
+    expect(result).toBe(false);
+    expect(useStore.getState().approvals).toHaveLength(1);
+    expect(useStore.getState().toasts.some((t) => t.tone === "blocked")).toBe(true);
+  });
+
+  it("approveByRequestId does NOT toast for a genuinely unknown id — only a real POST failure toasts", async () => {
+    // No pending approvals loaded at all — "req-ghost" was never seen via
+    // GET /approvals. This is the id-unknown case, deliberately silent
+    // (matching the old map-miss wrapper's behaviour): the user never saw
+    // this id as pending, so there is nothing to report failing.
+    const result = await approveByRequestId("req-ghost");
+
+    expect(result).toBe(false);
+    expect(apiSend).not.toHaveBeenCalled();
+    expect(useStore.getState().toasts).toHaveLength(0);
   });
 });

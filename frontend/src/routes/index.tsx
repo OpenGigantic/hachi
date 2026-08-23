@@ -36,7 +36,7 @@ function riskMeta(r: RiskKey | string): RiskMeta {
 
 interface ApprovalCardProps {
   approval: {
-    id: number;
+    id: string;
     icon: string;
     request: string;
     why: string;

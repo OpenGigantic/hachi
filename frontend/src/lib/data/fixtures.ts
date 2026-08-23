@@ -47,7 +47,7 @@ export function initApprovals(): Approval[] {
   const now = Date.now();
   return [
     {
-      id: 1,
+      id: "req-mock-1",
       icon: "mail",
       request: "Hachi wants to send an email to Priya",
       why: "reply to her question about the Q3 deck",
@@ -61,7 +61,7 @@ export function initApprovals(): Approval[] {
       totalMs: 95000,
     },
     {
-      id: 2,
+      id: "req-mock-2",
       icon: "trash",
       request: "Hachi wants to delete 142 files",
       why: "clear ~/Downloads/old as you asked last week",
@@ -78,10 +78,10 @@ export function initApprovals(): Approval[] {
 }
 
 export const history: HistoryItem[] = [
-  { id: 90, icon: "circle-check", request: "Ran npm install", decision: "allowed once", when: "12 min ago", color: "var(--hachi-success)" },
-  { id: 91, icon: "circle-check", request: "Read your project folder", decision: "always allowed", when: "1 hr ago", color: "var(--hachi-success)" },
-  { id: 92, icon: "clock", request: "Post to #deploys", decision: "timed out — Hachi stayed put", when: "2 hrs ago", color: "var(--hachi-muted)" },
-  { id: 93, icon: "x", request: "Push to main", decision: "declined", when: "yesterday", color: "var(--hachi-danger)" },
+  { id: "h-90", icon: "circle-check", request: "Ran npm install", decision: "allowed once", when: "12 min ago", color: "var(--hachi-success)" },
+  { id: "h-91", icon: "circle-check", request: "Read your project folder", decision: "always allowed", when: "1 hr ago", color: "var(--hachi-success)" },
+  { id: "h-92", icon: "clock", request: "Post to #deploys", decision: "timed out — Hachi stayed put", when: "2 hrs ago", color: "var(--hachi-muted)" },
+  { id: "h-93", icon: "x", request: "Push to main", decision: "declined", when: "yesterday", color: "var(--hachi-danger)" },
 ];
 
 export const runs: Run[] = [

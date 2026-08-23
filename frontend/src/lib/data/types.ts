@@ -19,7 +19,7 @@ export type ScreenKey =
 
 // ----- approvals -----
 export interface Approval {
-  id: number;
+  id: string;
   icon: string;
   request: string;
   why: string;
@@ -40,7 +40,7 @@ export type ApprovalDecision =
   | "timed out — Hachi stayed put";
 
 export interface HistoryItem {
-  id: number;
+  id: string;
   icon: string;
   request: string;
   decision: ApprovalDecision | string;
