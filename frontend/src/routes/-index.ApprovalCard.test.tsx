@@ -14,7 +14,7 @@ describe('Home ApprovalCard — action row layout', () => {
   afterEach(cleanup)
 
   const approval = {
-    id: 1,
+    id: "1",
     icon: 'mail',
     request: 'Hachi wants to send an email to alice@example.com about the Q3 report',
     why: 'drafted from your last approved template',
