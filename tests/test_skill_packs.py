@@ -352,7 +352,7 @@ def test_cli_pack_install_local(tmp_path: Path) -> None:
     skills_dir.mkdir()
 
     with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
-        result = runner.invoke(app, ["skill", "pack", "install", str(src)])
+        result = runner.invoke(app, ["skill", "pack", "install", str(src), "--yes"])
     assert result.exit_code == 0, result.output
     assert "Installed" in result.output
     assert "mypkg" in result.output
@@ -372,9 +372,9 @@ def test_cli_pack_install_json(tmp_path: Path) -> None:
     skills_dir.mkdir()
 
     with patch("hachi.gateway.workspace.get_skills_dir", return_value=skills_dir):
-        result = runner.invoke(app, ["skill", "pack", "install", str(src), "--json"])
+        result = runner.invoke(app, ["skill", "pack", "install", str(src), "--json", "--yes"])
     assert result.exit_code == 0, result.output
-    data = json.loads(result.output)
+    data = json.loads(result.stdout)
     assert data["name"] == "jsonpkg"
     assert data["file_count"] == 1
 

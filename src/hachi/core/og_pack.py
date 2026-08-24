@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import tomlkit
+
 from hachi.core.archive_safety import safe_extract
 
 # ---------------------------------------------------------------------------
@@ -271,16 +273,26 @@ def _pack_install_path(skills_dir: Path, pack_id: str) -> Path:
 
 
 def _write_installed_meta(pack_dir: Path, manifest: OgPackManifest, source: str) -> None:
-    """Persist install metadata alongside the pack's .og files."""
-    lines = [
-        f'id = "{manifest.id}"',
-        f'semver = "{manifest.semver}"',
-        f'source = "{source}"',
-        f'description = "{manifest.description}"',
-        f'author = "{manifest.author}"',
-        f"scopes = [{', '.join(repr(s.id) for s in manifest.scopes)}]",
-    ]
-    (pack_dir / _INSTALLED_META_FILE).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    """Persist install metadata alongside the pack's .og files.
+
+    Uses ``tomlkit`` rather than hand-built f-strings so *source* -- a
+    filesystem path, backslash-separated on Windows -- can't corrupt the
+    TOML basic string it's embedded in (backslash is a TOML escape-sequence
+    introducer). A raw Windows path previously produced invalid TOML that
+    ``_read_installed_meta``'s bare ``except Exception: return {}`` silently
+    swallowed, making a successfully installed, checksum-verified pack
+    invisible to :func:`list_ogpacks` / ``hachi pack list`` (found while
+    verifying T-56's "visible to ``hachi ogpack list``" acceptance
+    criterion; pre-existing, not specific to the community-pack path).
+    """
+    doc = tomlkit.document()
+    doc["id"] = manifest.id
+    doc["semver"] = manifest.semver
+    doc["source"] = source
+    doc["description"] = manifest.description
+    doc["author"] = manifest.author
+    doc["scopes"] = [scope.id for scope in manifest.scopes]
+    (pack_dir / _INSTALLED_META_FILE).write_text(tomlkit.dumps(doc), encoding="utf-8")
 
 
 def _read_installed_meta(pack_dir: Path) -> dict[str, str]:
@@ -299,6 +311,32 @@ def _read_installed_meta(pack_dir: Path) -> dict[str, str]:
         return tomllib.loads(meta_path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def write_pack_toml(pack_dir: Path, manifest: OgPackManifest) -> Path:
+    """Serialise *manifest* to ``pack_dir/pack.toml`` and return that path.
+
+    The write-side counterpart to :func:`parse_pack_toml`. Escaping is
+    delegated to ``tomlkit`` rather than hand-built f-strings so that
+    untrusted manifest content cannot break out of a TOML string and inject
+    extra keys -- e.g. a community pack's ``pack.json`` fields, synthesised
+    into a manifest by
+    :func:`hachi.core.community_packs.synthesise_pack_manifest`. A naive
+    ``f'id = "{value}"'`` writer would let a crafted ``pack.json`` fabricate
+    a ``scopes`` line the pack never legitimately declared (T-56 / CF-14).
+    """
+    doc = tomlkit.document()
+    doc["id"] = manifest.id
+    doc["semver"] = manifest.semver
+    doc["description"] = manifest.description
+    doc["author"] = manifest.author
+    doc["scopes"] = [scope.id for scope in manifest.scopes]
+    if manifest.sha256s:
+        doc["sha256s"] = dict(manifest.sha256s)
+
+    target = pack_dir / _PACK_META_FILE
+    target.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    return target
 
 
 # ---------------------------------------------------------------------------

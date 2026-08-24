@@ -20,6 +20,44 @@ def _get_skills_dir() -> Path:
     return Path(get_hachi_paths().skills_dir)
 
 
+def confirm_pack_consent_or_exit(
+    console: Console, sheet: str, *, yes: bool, prompt: str = "Proceed?"
+) -> None:
+    """Print a pack consent *sheet* on *console* and require an explicit yes.
+
+    Exits (code 0) on decline, before anything is installed. Shared by every
+    CLI pack installer -- ``ogpack_install``/``ogpack_update`` below, and
+    ``hachi skill pack install`` (``cli/commands/skill.py``) -- so there is
+    exactly one "render sheet, confirm or exit" implementation. A security
+    control that only guards one of N paths to a shared resource is
+    decoration (T-56 / CF-14); the same is true of the confirmation gate
+    itself -- two independent copies is how one of them silently drifts.
+
+    Args:
+        console: Where to print the sheet/prompt/cancel message. Pass a
+                 stderr-bound ``Console(stderr=True)`` to keep a caller's
+                 stdout (e.g. JSON output) pure; the prompt itself then also
+                 goes to stderr (``typer.confirm(..., err=console.stderr)``).
+        prompt:  The confirmation question -- callers differ ("Proceed?" vs
+                 "Proceed with update?").
+    """
+    # markup=False: *sheet* embeds scope ids in literal brackets, e.g.
+    # "[gmail.read]" (see og_pack.render_consent_sheet). Rich's default
+    # console.print() parses "[...]" as a markup tag; an unrecognised tag is
+    # silently dropped rather than echoed, so without this the id -- the
+    # precise permission being granted -- never reaches the user, leaving
+    # only the prose description. render_consent_sheet/render_scope_diff
+    # build plain text with no intentional styling, so disabling markup for
+    # this call is always correct, not a tradeoff.
+    console.print(sheet, markup=False)
+    if yes:
+        return
+    confirmed = typer.confirm(prompt, default=False, err=console.stderr)
+    if not confirmed:
+        console.print("[yellow]Cancelled.[/yellow]")
+        raise typer.Exit(0)
+
+
 @ogpack_app.command("install")
 def ogpack_install(
     source: str = typer.Argument(..., help="Path to a .ogpack archive or unpacked directory."),
@@ -74,13 +112,7 @@ def ogpack_install(
     is_update = old_manifest is not None
 
     sheet = render_consent_sheet(manifest_preview, update=is_update)
-    console.print(sheet)
-
-    if not yes:
-        confirmed = typer.confirm("Proceed?", default=False)
-        if not confirmed:
-            console.print("[yellow]Cancelled.[/yellow]")
-            raise typer.Exit(0)
+    confirm_pack_consent_or_exit(console, sheet, yes=yes)
 
     try:
         if source_path.is_dir():
@@ -211,15 +243,12 @@ def ogpack_update(
 
     diff = render_scope_diff(old_manifest, manifest_preview)
     if diff:
-        console.print(diff)
+        # markup=False: see confirm_pack_consent_or_exit -- diff also embeds
+        # scope ids in literal brackets ("+  [gmail.read]  ..."), which Rich
+        # would otherwise silently drop as an unrecognised markup tag.
+        console.print(diff, markup=False)
     sheet = render_consent_sheet(manifest_preview, update=True)
-    console.print(sheet)
-
-    if not yes:
-        confirmed = typer.confirm("Proceed with update?", default=False)
-        if not confirmed:
-            console.print("[yellow]Cancelled.[/yellow]")
-            raise typer.Exit(0)
+    confirm_pack_consent_or_exit(console, sheet, yes=yes, prompt="Proceed with update?")
 
     try:
         if source_path.is_dir():
