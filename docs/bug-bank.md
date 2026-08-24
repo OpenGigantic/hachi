@@ -4934,6 +4934,39 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   tooling), BB-154 (a correct parser fed the wrong question), and T-41's note that a gate's exit
   code is not its verdict.
 
+### BB-156 — Flattening a delegation drops the delegate's side effects, and the whole suite stays green
+
+- **Symptom:** during T-66, `approveByRequestId()` was rewritten from a wrapper that delegated
+  to `approve()` into a "thin wrapper" calling `postDecision()` directly and returning
+  `outcome === "ok"`. Typecheck passed (both shapes return `Promise<boolean>`), all 253 frontend
+  tests passed, and the diff read as a pure simplification. A failed decision from the
+  in-context leash had nonetheless become completely invisible.
+- **Root cause:** `approve()` does more than return — on a non-`"ok"` outcome it calls
+  `showToast(DECISION_FAILED_MESSAGE, "blocked")`. The rewrite reimplemented the return value
+  and nothing else. `chat.ts`'s `allowLeashLive()` clears the leash optimistically
+  (`hydrate({ inContext: null })`) and then discards the boolean inside a `try/catch`, so that
+  toast was the **only** surface a failed POST reached from that call site. Dropping it meant:
+  leash disappears, no toast, no error, agent still blocked until the 180 s server-side timeout
+  auto-denies — the exact silent-failure mode T-18 removed (BB-106), reintroduced at a call site
+  T-18 never touched.
+- **Why no test caught it:** the existing tests covered the *approvals screen* path (which still
+  toasted, via `approve()`) and the *unknown-id* path (unchanged). Nothing covered the leash
+  path's `"failed"` branch. A green suite was evidence about the paths under test, not about the
+  path that changed.
+- **Avoid:** when replacing `await f(x)` with an inlined equivalent, enumerate `f`'s side
+  effects — store mutations, toasts, logging, cache invalidation — and account for each one
+  explicitly. Never infer equivalence from a matching return type or from a green suite. Where
+  the old and new paths differ *deliberately* (here `"failed"` toasts but `"unknown-id"`
+  deliberately does not, matching the old map-miss branch), write the asymmetry into the doc
+  comment so the next reader does not "fix" it.
+- **Wider point:** this was found by reading the old and new control flow side by side and
+  asking "what did the function I removed *do*, besides return?" — not by any automated check.
+  A refactor that deletes a call site deletes everything that call site caused. See also BB-106
+  (the original silent-decision failure) and BB-155 (the checking apparatus is itself fallible).
+- **Locked by:** `frontend/src/lib/data/domains/approvals.test.ts` — 3 tests: failure toasts for
+  both `approveByRequestId` and `declineByRequestId`, plus one pinning that `"unknown-id"` stays
+  silent.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
