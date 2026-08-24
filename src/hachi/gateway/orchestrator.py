@@ -74,7 +74,6 @@ from hachi.core.runtime_read_models import (
     JobFailureSnapshot,
     JobSnapshot,
     MCPInventorySnapshot,
-    MCPServerSnapshot,
     MemoryRecallSnapshot,
     PermissionAuditSnapshot,
     RuntimeEventSnapshot,
@@ -91,6 +90,7 @@ from hachi.core.session_titler import generate_title
 from hachi.core.sub_agent import DEFAULT_SUB_AGENT_MODEL
 from hachi.core.tracing import configure_from_env, span
 from hachi.core.turn_context import TurnContext
+from hachi.gateway.session_read_models import SessionReadModels
 from hachi.gateway.tool_registration import BootDeps, ToolRegistrar, ToolSpec
 from hachi.gateway.workspace import (
     get_skills_dir,
@@ -617,6 +617,25 @@ class AgentSession:
         self._provider_registry: Any = provider_registry
         self._secret_store: Any = secret_store
 
+        # T-46: the 20 UI read models (snapshot_*/query_*) live behind this facade,
+        # not on AgentSession itself — see hachi.gateway.session_read_models.
+        # vault/session_store/session_id are passed as GETTERS, not values: they
+        # are still None here and only get assigned later, via set_vault()/
+        # set_session_store() — a captured value would freeze at None forever
+        # (see that module's docstring for the full "fresh-store trap" rationale).
+        self._read_model_facade = SessionReadModels(
+            store=self._read_models,
+            skill_engine=self.skill_engine,
+            mcp_manager=self.mcp_manager,
+            memory=self.memory,
+            loop=self.loop,
+            model_name=self.model_name,
+            vault_getter=lambda: self.vault,
+            session_store_getter=lambda: self._session_store,
+            session_id_getter=lambda: self._session_id,
+            scheduler=self._scheduler,
+        )
+
     @property
     def resumed_transcript(self) -> list[tuple[str, str]]:
         """User/assistant turns carried over from a resumed session (oldest first)."""
@@ -724,18 +743,7 @@ class AgentSession:
 
     def snapshot_session_state(self) -> SessionStateSnapshot:
         """Immutable summary of current session state for UI inspection."""
-        tracker = getattr(self.loop, "cost_tracker", None)
-        cost = tracker.snapshot() if tracker is not None else None
-        return SessionStateSnapshot(
-            session_id=self._session_id or "",
-            active_skill=self.memory.active_skill,
-            last_user_query=getattr(self.memory, "_last_user_query", ""),
-            model_name=self.model_name,
-            boot_ready=self._read_models.boot_ready(),
-            pending_job_count=len(self._read_models.active_jobs()),
-            total_tokens=cost.total_tokens if cost else 0,
-            estimated_cost_usd=round(cost.estimated_cost_usd, 6) if cost else 0.0,
-        )
+        return self._read_model_facade.session_state()
 
     def snapshot_usage(self) -> dict[str, Any]:
         """Detailed token/cost breakdown for the Ops dashboard.
@@ -743,20 +751,11 @@ class AgentSession:
         Exposes the full CostSnapshot (input/output/cache-read/cache-creation/total
         tokens, call_count, estimated_cost_usd). Empty dict before the first LLM call.
         """
-        tracker = getattr(self.loop, "cost_tracker", None)
-        return tracker.snapshot().to_dict() if tracker is not None else {}
+        return self._read_model_facade.usage()
 
     def snapshot_task_ledger(self, limit: int = 50) -> tuple[TaskLedgerItemSnapshot, ...]:
         """Immutable task ledger records for timeline views."""
-        records = self.memory.task_ledger[-limit:]
-        return tuple(
-            TaskLedgerItemSnapshot(
-                skill_name=record.skill_name,
-                user_query=record.user_query,
-                summary=record.summary,
-            )
-            for record in records
-        )
+        return self._read_model_facade.task_ledger(limit=limit)
 
     def snapshot_skills(self, limit: int = 100) -> tuple[SkillSnapshot, ...]:
         """Immutable inventory of loaded .og skills with usage stats.
@@ -765,48 +764,15 @@ class AgentSession:
         often each has been used, and when. Sorted by use_count desc (most-used
         first) by the engine.
         """
-        rows = self.skill_engine.get_skill_inventory()[:limit]
-        return tuple(
-            SkillSnapshot(
-                name=str(row.get("name", "")),
-                role=str(row.get("role", "")),
-                keyword_count=int(row.get("keyword_count", 0) or 0),
-                use_count=int(row.get("use_count", 0) or 0),
-                last_used=row.get("last_used"),
-            )
-            for row in rows
-        )
+        return self._read_model_facade.skills(limit=limit)
 
     def snapshot_gardener_diffs(self) -> list[dict]:
         """Return pending memory-diff proposals from the last gardener run (T-08 A2).
 
-        Reads the pending_diffs.json file written by MemoryGardener.run(). Returns
-        an empty list if the file is missing or unreadable.
-
-        BB-5 / T-08: previously read ``getattr(self.memory, "memory_dir", None)`` —
-        ``MemoryManager`` has no such attribute, so the getattr default always fired
-        and this returned ``[]`` before ever touching the file. The real memory
-        directory is ``get_hachi_paths().memory_dir``, the same path
-        MemoryIndex/MemoryWriter already use (shared_services.py) and the same path
-        :func:`~hachi.gateway.orchestrator._start_memory_gardener` (A1) writes to.
-
-        T-08: this method's original (dead, unreachable) code also referenced
-        ``GardeningResult._PENDING_DIFFS_FILE`` — that constant is declared on
-        ``MemoryGardener``, not ``GardeningResult``, so it would have raised
-        ``AttributeError`` the moment the getattr-masking bug above was fixed
-        without also fixing this. Caught by
-        tests/test_memory_gardener_wiring.py — a second, previously-unreachable
-        defect the T-08 spec's own §3.3 audit did not catch either, because
-        nothing ever got far enough to execute this line before A1/A2 existed.
+        See :meth:`hachi.gateway.session_read_models.SessionReadModels.gardener_diffs`
+        for the full history (BB-5 / T-08) behind this method's implementation.
         """
-        from dataclasses import asdict
-
-        from hachi.core.memory.gardener import GardeningResult, MemoryGardener
-
-        diffs_path = get_hachi_paths().memory_dir / MemoryGardener._PENDING_DIFFS_FILE
-        result = GardeningResult.load(diffs_path)
-
-        return [asdict(p) for p in result.pending_review]
+        return self._read_model_facade.gardener_diffs()
 
     def snapshot_og_explorer(self) -> dict:
         """Return data for the OG Explorer TUI screen.
@@ -814,14 +780,7 @@ class AgentSession:
         Includes the full skill inventory with usage stats plus pass-depth
         counters so the explorer can show token-efficiency metrics.
         """
-        inventory = self.skill_engine.get_skill_inventory()
-        counters = self.skill_engine.get_usage_counters()
-        node_count = len(self.skill_engine.get_all_nodes())
-        return {
-            "skills": inventory,
-            "counters": counters,
-            "node_count": node_count,
-        }
+        return self._read_model_facade.og_explorer()
 
     def list_provider_models(self) -> list[str]:
         """Return model ids — registry-backed when available, else live discovery.
@@ -853,17 +812,13 @@ class AgentSession:
 
     def query_recent_sessions(self, limit: int = 10) -> tuple[dict[str, Any], ...]:
         """Recent persisted sessions from SessionStore."""
-        if not self._session_store:
-            return tuple()
-        return tuple(self._session_store.get_recent_sessions(limit=limit))
+        return self._read_model_facade.recent_sessions(limit=limit)
 
     def query_session_messages(
         self, session_id: str, limit: int = 500
     ) -> tuple[dict[str, Any], ...]:
         """Chronological transcript for a persisted session (resume/history replay)."""
-        if not self._session_store:
-            return tuple()
-        return tuple(self._session_store.get_session_messages(session_id, limit=limit))
+        return self._read_model_facade.session_messages(session_id, limit=limit)
 
     def delete_session(self, session_id: str) -> bool:
         """Permanently delete a persisted session + its messages. True if it existed."""
@@ -873,28 +828,15 @@ class AgentSession:
 
     def query_memory_recall(self, query: str, top_k: int = 8) -> tuple[MemoryRecallSnapshot, ...]:
         """Immutable memory recall search snapshots."""
-        if not self.vault:
-            return tuple()
-        rows = self.vault.semantic_search(query, top_k=top_k)
-        return tuple(
-            MemoryRecallSnapshot(
-                fact_id=row.get("id", ""),
-                content=row.get("raw_content") or row.get("content", ""),
-                category=row.get("category", "workspace_state"),
-                timestamp=row.get("timestamp", ""),
-            )
-            for row in rows
-        )
+        return self._read_model_facade.memory_recall(query, top_k=top_k)
 
     def snapshot_permission_audit(self, limit: int = 50) -> tuple[PermissionAuditSnapshot, ...]:
         """Recent permission request/decision audit entries."""
-        return self._read_models.permission_audit(limit=limit)
+        return self._read_model_facade.permission_audit(limit=limit)
 
     def snapshot_schedules(self) -> list[dict[str, Any]]:
         """Current schedules serialized for the companion web UI."""
-        if self._scheduler is None:
-            return []
-        return [s.to_dict() for s in self._scheduler.list_schedules()]
+        return self._read_model_facade.schedules()
 
     def cancel_schedule(self, schedule_id: str) -> bool:
         """Cancel a schedule by id. Returns True if cancelled."""
@@ -967,23 +909,7 @@ class AgentSession:
 
     def snapshot_mcp_inventory(self) -> MCPInventorySnapshot:
         """Current MCP server and tool inventory."""
-        inventory_rows = self.mcp_manager.get_inventory()
-        servers = tuple(
-            MCPServerSnapshot(
-                name=row.get("name", "unknown"),
-                status=row.get("status", "unknown"),
-                tool_count=int(row.get("tool_count", 0)),
-                tools=tuple(row.get("tools", [])),
-                transport=row.get("transport", "stdio"),
-                err=row.get("err"),
-            )
-            for row in inventory_rows
-        )
-        return MCPInventorySnapshot(
-            server_count=len(servers),
-            total_tool_count=sum(server.tool_count for server in servers),
-            servers=servers,
-        )
+        return self._read_model_facade.mcp_inventory()
 
     def add_mcp_server_live(
         self,
@@ -1082,54 +1008,31 @@ class AgentSession:
 
     def snapshot_active_jobs(self) -> tuple[JobSnapshot, ...]:
         """Active background jobs (delegations and long-running runtime operations)."""
-        return self._read_models.active_jobs()
+        return self._read_model_facade.active_jobs()
 
     def snapshot_failed_jobs(self, limit: int = 20) -> tuple[JobFailureSnapshot, ...]:
         """Recently failed jobs for operator diagnostics."""
-        return self._read_models.failed_jobs(limit=limit)
+        return self._read_model_facade.failed_jobs(limit=limit)
 
     def query_subagent_reports(
         self, query: str = "recent delegation", top_k: int = 10
     ) -> tuple[SubAgentReportSnapshot, ...]:
         """Sub-agent execution reports from memory vault plus recent runtime events."""
-        runtime_reports = list(self._read_models.subagent_reports(limit=top_k))
-        if not self.vault:
-            return tuple(runtime_reports)
-
-        try:
-            vault_rows = self.vault.search_delegations(query=query, top_k=top_k)
-        except RuntimeError:
-            # Vault closed (e.g. a process-teardown race) — degrade to runtime-only
-            # reports instead of surfacing a 500. The shared-vault lifecycle fix makes
-            # this rare, but the endpoint must never crash on a closed vault.
-            logger.warning("query_subagent_reports: vault closed; returning runtime reports only")
-            return tuple(runtime_reports)
-        for row in vault_rows:
-            runtime_reports.append(
-                SubAgentReportSnapshot(
-                    role=row.get("role", "unknown"),
-                    status=row.get("status", "unknown"),
-                    duration_seconds=float(row.get("duration") or 0.0),
-                    iterations=int(row.get("iterations") or 0),
-                    summary=row.get("content", ""),
-                )
-            )
-
-        return tuple(runtime_reports[-top_k:])
+        return self._read_model_facade.subagent_reports(query, top_k=top_k)
 
     def snapshot_tool_calls(self, limit: int = 50) -> tuple[ToolCallSnapshot, ...]:
         """Recent tool-call timeline (start→completion pairs with durations)."""
-        return self._read_models.tool_calls(limit=limit)
+        return self._read_model_facade.tool_calls(limit=limit)
 
     def snapshot_runtime_events(self, limit: int = 100) -> tuple[RuntimeEventSnapshot, ...]:
         """Recent normalized runtime events for operator diagnostics."""
-        return self._read_models.runtime_events(limit=limit)
+        return self._read_model_facade.runtime_events(limit=limit)
 
     def snapshot_events_since(
         self, after: int, limit: int = 100
     ) -> tuple[RuntimeEventSnapshot, ...]:
         """Sequenced events past ``after`` — the single source for gateway polling."""
-        return self._read_models.read_events_since(after, limit=limit)
+        return self._read_model_facade.events_since(after, limit=limit)
 
     def snapshot_events_base(self) -> int:
         """Oldest sequence still retained — lets a gateway caller detect a trim gap (T-30)."""
@@ -1145,64 +1048,7 @@ class AgentSession:
             Dict with keys ``groups`` (list of fact groups), ``blocked`` (list of quarantined
             items), and ``proposed`` (always None — no moderation pipeline yet).
         """
-        if self.vault is None:
-            return {"groups": [], "blocked": [], "proposed": None}
-
-        groups: list[dict] = []
-
-        collection_defs = [
-            (self.vault.user_collection, "user_profile", "About you"),
-            (self.vault.agent_profile, "agent_profile", "About Hachi"),
-            (self.vault.collection, "core_memory", "Workspace"),
-        ]
-
-        for coll, group_id, title in collection_defs:
-            facts: list[dict] = []
-            try:
-                rows = coll.get()
-                ids = rows.get("ids", [])
-                docs = rows.get("documents", [])
-                metas = rows.get("metadatas", []) or []
-                for i, fact_id in enumerate(ids):
-                    doc = docs[i] if i < len(docs) else ""
-                    meta = (metas[i] if i < len(metas) else None) or {}
-                    facts.append(
-                        {
-                            "id": fact_id,
-                            "text": doc,
-                            "source": meta.get("category", ""),
-                        }
-                    )
-            except Exception:
-                # HIGH-012: one bad collection must not kill the whole response,
-                # but log so ChromaDB/persistence failures are visible.
-                logger.warning(
-                    "snapshot_memory_facts: failed to enumerate collection %r",
-                    group_id,
-                    exc_info=True,
-                )
-            groups.append({"id": group_id, "title": title, "facts": facts})
-
-        blocked: list[dict] = []
-        try:
-            quarantine_rows = self.vault.get_quarantine_entries()
-            for row in quarantine_rows:
-                blocked.append(
-                    {
-                        "id": row.get("id", ""),
-                        "text": row.get("content", ""),
-                        # Reason sourced from threat metadata fields; tolerate absence.
-                        "reason": row.get("threat_id") or row.get("status") or "quarantined",
-                    }
-                )
-        except Exception:
-            # HIGH-012: quarantine enumeration errors must not kill the response.
-            logger.warning(
-                "snapshot_memory_facts: failed to enumerate quarantine entries", exc_info=True
-            )
-
-        # proposed: no moderation pipeline yet — always null.
-        return {"groups": groups, "blocked": blocked, "proposed": None}
+        return self._read_model_facade.memory_facts()
 
     def snapshot_og_graph(self) -> dict:
         """Return ObjectGraph node graph for the OG Explorer web screen.
@@ -1213,7 +1059,7 @@ class AgentSession:
             Dict with key ``nodes`` containing a list of node dicts and ``count``
             with the number of nodes.
         """
-        return og_graph_from_engine(self.skill_engine)
+        return self._read_model_facade.og_graph()
 
     # ==========================================
     # Session Memory Snapshot

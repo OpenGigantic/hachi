@@ -223,8 +223,6 @@ ALLOWLIST: frozenset[str] = frozenset(
         "src/hachi/gateway/orchestrator.py:llm_client",
         "src/hachi/gateway/orchestrator.py:last_tool_calls",
         "src/hachi/gateway/orchestrator.py:last_suspend",
-        # (c) same ConversationMemory-Protocol reasoning as core/loop.py above.
-        "src/hachi/gateway/orchestrator.py:_last_user_query",
         # (b) T-08 (memory-gardener): MemoryManager.memory_dir is declared nowhere;
         # the gardener reader returns [] before touching the file. Owned by T-08 --
         # remove this entry once it lands and the attribute genuinely exists.
@@ -235,6 +233,19 @@ ALLOWLIST: frozenset[str] = frozenset(
         # core/session_store.py's SessionStore itself. Filing as a finding
         # (bug-bank BB-107), not fixing: unowned file this pass regardless.
         "src/hachi/gateway/orchestrator.py:_current_started_at",
+        # === src/hachi/gateway/session_read_models.py (T-46 facade extraction) =====
+        # (a) Two genuine, unfixed category-(a) violations, relocated verbatim by
+        # T-46 -- not the same as being resolved. cost_tracker matches the
+        # orchestrator.py:cost_tracker entry above (ExecutionLoop.cost_tracker
+        # "VERIFIED to always exist"; still a live entry there via 3 unrelated call
+        # sites). T-46 moved AgentSession.snapshot_session_state's and
+        # .snapshot_usage's bodies here VERBATIM (now SessionReadModels.session_state
+        # / .usage); its own spec (Sec 9) explicitly forbids "fixing" a
+        # getattr/except guard while relocating it -- a relocation, not a getattr
+        # burndown. Remove alongside orchestrator.py:cost_tracker once someone
+        # converts these call sites to direct reads.
+        "src/hachi/gateway/session_read_models.py:cost_tracker",
+        "src/hachi/gateway/session_read_models.py:_last_user_query",
     }
 )
 
