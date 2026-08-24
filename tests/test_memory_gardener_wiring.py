@@ -324,14 +324,17 @@ def test_snapshot_gardener_diffs_no_longer_masked_by_getattr(tmp_path: Path) -> 
     # getattr default path were hit, silently return []). Either way this proves the
     # fix no longer routes through self.memory at all.
 
-    import hachi.gateway.orchestrator as orch_module
+    import hachi.gateway.session_read_models as read_models_mod
 
-    original_get_paths = orch_module.get_hachi_paths
-    orch_module.get_hachi_paths = lambda: fake_paths
+    # T-46: AgentSession.snapshot_gardener_diffs's body now resolves get_hachi_paths
+    # in hachi.gateway.session_read_models's namespace (the SessionReadModels facade
+    # it was moved into), not gateway.orchestrator's.
+    original_get_paths = read_models_mod.get_hachi_paths
+    read_models_mod.get_hachi_paths = lambda: fake_paths
     try:
         diffs = session.snapshot_gardener_diffs()
     finally:
-        orch_module.get_hachi_paths = original_get_paths
+        read_models_mod.get_hachi_paths = original_get_paths
 
     assert len(diffs) == 1, f"expected 1 pending proposal, got {diffs}"
     assert diffs[0]["kind"] == "merge_similar"
@@ -365,11 +368,14 @@ def test_get_memory_diffs_route_returns_real_gardener_output_end_to_end(
         state_dir=tmp_path / "state",
     )
 
-    import hachi.gateway.orchestrator as orch_module
+    import hachi.gateway.session_read_models as read_models_mod
     from hachi.cli.main import _InProcessGatewayRuntime
 
-    original_get_paths = orch_module.get_hachi_paths
-    orch_module.get_hachi_paths = lambda: fake_paths
+    # T-46: AgentSession.snapshot_gardener_diffs's body now resolves get_hachi_paths
+    # in hachi.gateway.session_read_models's namespace (the SessionReadModels facade
+    # it was moved into), not gateway.orchestrator's.
+    original_get_paths = read_models_mod.get_hachi_paths
+    read_models_mod.get_hachi_paths = lambda: fake_paths
     try:
         runtime = _InProcessGatewayRuntime()
         session = _make_agent_session()
@@ -382,7 +388,7 @@ def test_get_memory_diffs_route_returns_real_gardener_output_end_to_end(
         with TestClient(app) as client:
             response = client.get("/memory/diffs")
     finally:
-        orch_module.get_hachi_paths = original_get_paths
+        read_models_mod.get_hachi_paths = original_get_paths
 
     assert response.status_code == 200
     data = response.json()
