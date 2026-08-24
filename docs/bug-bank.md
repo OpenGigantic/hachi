@@ -4967,6 +4967,44 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   both `approveByRequestId` and `declineByRequestId`, plus one pinning that `"unknown-id"` stays
   silent.
 
+### BB-157 — A read fallback without a matching write fallback forks the state it was added to share
+
+- **Symptom:** a user connects Google in the web UI; the agent picks the token up and works.
+  Roughly an hour later — the first silent refresh — the web UI's copy freezes forever. The
+  vault ends up holding two tokens for one grant, with two different `expires_at` values, and
+  nothing reconciles them. Nothing appears broken while it happens: the agent keeps working, on
+  its own copy, which is exactly why it stayed invisible.
+- **Root cause:** two OAuth stacks with two vault-key prefixes — `core/oauth.py`'s `_key()` →
+  `oauth.<p>` (the agent), `integrations/oauth_flow.py`'s `_token_key()` → `oauth2.<p>` (the web
+  UI). BB-10 made the *read* cross the gap: `get_token` fell back to `oauth2.<p>`. But
+  `save_token` had exactly one `self._store.set` and it always targeted `_key(provider)`, with no
+  fallback. So `_refresh_google_token`'s write-back landed on `oauth.<p>` even when the token had
+  just been read from `oauth2.<p>`. From the next read onward `oauth.<p>` wins the lookup and the
+  other copy is never read again — and never refreshed either, because
+  `oauth_flow._refresh_token` has **zero callers**.
+- **Second face — `hachi google-auth --revoke`:** the CLI clears credentials with
+  `oauth.save_token("google", {})` (`cli/main.py:1948`). For a web-UI-authenticated user that
+  wrote `"{}"` to `oauth.<p>` and left the real token live at `oauth2.<p>` — the empty payload
+  *shadowed* the grant (a truthy `"{}"` string stops the BB-10 fallback from firing) instead of
+  clearing it. A credential the user explicitly asked to remove stayed on disk. The same one-key
+  fix corrects this for free, with no change to `cli/main.py`.
+- **Fix:** `OAuthManager._resolve_key(provider)` resolves the vault key once — prefers
+  `oauth.<p>`, falls back to `oauth2.<p>` only when that is the only one present, and returns
+  `oauth.<p>` when neither exists so a fresh authorisation lands on the agent prefix. `get_token`
+  and `save_token` (including its `metadata["name"]`) both route through it. A write now lands on
+  the key the read came from: one grant, one key.
+- **What is verified, and what is not:** verified — after a refresh the key that held the token
+  holds the new access token, and no second key is created. NOT claimed — that the two stacks are
+  unified (that is T-57 half B, still open), nor that anything user-visible broke during the fork.
+- **Avoid:** a read fallback without a matching write fallback forks the state it was added to
+  share. If you add a compatibility read for a second storage key, fix the write in the same
+  commit — otherwise the divergence appears on the first *mutation*, hours later, in a code path
+  nobody is watching. Generally: when a getter and a setter disagree about where a thing lives,
+  the getter's tolerance hides the setter's bug.
+- **Locked by:** `tests/test_oauth.py::test_refresh_writes_back_to_the_key_it_read_from` and
+  `::test_clearing_a_token_updates_the_key_that_actually_holds_it`. BB-10's sibling test
+  `test_get_token_finds_web_ui_oauth2_prefix` still passes, unmodified.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

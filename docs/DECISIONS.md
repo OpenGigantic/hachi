@@ -3756,3 +3756,70 @@ still open.
 **Locked by:** `frontend/src/lib/data/domains/approvals.test.ts` (10 tests — 6 pre-existing
 T-17/T-18 tests unchanged, 1 characterization test pinning that the gateway's `request_id`
 reaches the `POST /approvals/{id}` URL unchanged, 3 BB-156 regression tests).
+
+---
+
+## T-57 (half A of 2) — an OAuth refresh writes back to the key it read from (2026-08-24) **[ADR]**
+
+**Decision.** `OAuthManager` resolves a provider's vault key once, through
+`_resolve_key(provider)`, and both `get_token` and `save_token` use it. **Only half A of T-57
+landed.** Half B — collapsing the two OAuth stacks onto one namespace and one set of primitives
+— is deliberately deferred; the task spec itself recommends this split and says half A "can land
+alone".
+
+**Why split it.** The two halves have different risk profiles. Half A is ~50 lines in one file,
+is a genuine bug fix under Rule 2, and stops credential state forking today. Half B is a week of
+cross-module surgery on the agent's credential hot path. Shipping A first means the fork stops
+even if B slips past a release.
+
+**The spec was accurate this time — offset, not wrong.** T-57 was anchored to `main @ bd24afe`;
+our own `e8b8de6` (T-67) later added 5 lines near the top of `core/oauth.py`. Every one of its
+fifteen anchors was exactly **+5**, and every one still resolved to the right symbol. That makes
+T-57 the first spec this wave whose claims all survived re-derivation — worth recording, because
+the previous two (T-77, T-66) each had load-bearing claims that our own earlier commits had
+falsified. Re-derive anyway: checking costs an hour, not checking costs a wrong diff.
+
+**The defect (BB-157).** `get_token` read `oauth.<p>` and fell back to `oauth2.<p>` (BB-10).
+`save_token` had exactly one `self._store.set` and always targeted `_key(provider)`. So the
+refresh write-back landed on the *other* key from the one the token was read from — and since
+`oauth_flow._refresh_token` has zero callers, nothing would ever refresh the abandoned copy.
+
+**Consequences that were checked rather than assumed:**
+
+- **`save_token` now reads before it writes.** Both production construction sites
+  (`cli/main.py:1945`, `integrations/google/client.py:40`) use `create_default_secret_store()`,
+  i.e. `CompositeSecretStore`, whose `get` swallows every exception and returns `None` — so the
+  new read introduces no new failure path on the credential-save path. It costs 1–2 extra vault
+  reads per save; on the degraded encrypted-file backend (keyring unavailable *and*
+  `HACHI_SECRET_PASSPHRASE` set) each miss is a PBKDF2 derivation. Bounded, off the hot path, and
+  accepted in exchange for the spec's simpler `-> str` resolver — deliberately not optimised into
+  a value-returning resolver.
+- **`metadata["name"]` follows the resolved key** — required, or vault listings name a key the
+  value does not live under. Side effect: when the agent refreshes a web-UI-owned grant, that
+  key's metadata labels change from `oauth_flow`'s `{provider, type: "oauth2"}` to core's
+  `{provider, scope}`. No consumer reads `labels.type` (`credential_vault.list_token_metadata`
+  reads name+backend; `in_process_runtime.list_secret_names` filters the `cred:` prefix; the CLI
+  dumps raw JSON), so this is cosmetic — but it is a real difference, recorded here rather than
+  discovered later.
+- **A fresh `hachi google-auth` now overwrites the web-UI key** when that is where the grant
+  lives, instead of minting a second copy. Checked for refresh-token loss: the authorize URL
+  sends `access_type=offline&prompt=consent`, so Google always returns a refresh token and the
+  replace loses nothing.
+- **`--revoke` becomes correct** (see BB-157). Not special-cased, and `cli/main.py` was not
+  touched — it falls out of the one-key invariant.
+
+**Deliberately not done** — spec §9 forbids each of these, and each is the obvious adjacent move:
+no unifying the two prefixes; no touching `oauth_flow.py`, including the dead `_refresh_token`
+and `oauth_disconnect`'s single-key delete; no extending the BB-11 capability bridge in
+`gateway/orchestrator.py`. Fixing `oauth_disconnect` to delete both keys would be dead defensive
+code the moment half B lands.
+
+**Open, not fixed here.** `OAuthTokenStore.is_connected` tests *presence*, not validity, so the
+web UI's connector pill reads "connected" whenever the key exists. After a CLI `--revoke` the key
+now holds `{}` — so the pill is still wrong, in a new way. This is a pre-existing wart the spec
+documents at §3.6; the fix makes it reachable by one more path without creating it, and it lives
+in `oauth_flow.py`, which half A may not touch. No bug-bank entry: the bug is open, and bug-bank
+entries lock fixed bugs.
+
+**Locked by:** `tests/test_oauth.py` — 14 tests: 12 pre-existing and unchanged, 1 regression test
+for the write-back key, 1 characterization test for the clear path.
