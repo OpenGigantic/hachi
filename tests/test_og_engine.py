@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest import mock
 
 from hachi.og_engine.engine import SkillEngine, estimate_tokens
 from hachi.og_engine.parser import parse_og_file
@@ -166,3 +167,67 @@ def test_skill_inventory_joins_metadata_and_usage(tmp_path: Path) -> None:
     assert by_name["deploy_to_prod"]["role"]
     # Sorted most-used first.
     assert inventory[0]["name"] == "deploy_to_prod"
+
+
+# ---------------------------------------------------------------------------
+# T-73: SkillEngine must be constructible without a Hachi home directory.
+# ---------------------------------------------------------------------------
+
+
+def test_engine_constructs_without_a_hachi_home(tmp_path: Path) -> None:
+    """The .og library must be embeddable — no Hachi home required to construct.
+
+    Regression: SkillEngine.__init__ called get_hachi_paths() and read the usage
+    JSON from disk, so `SkillEngine()` failed outright in any process that had
+    never run Hachi — even to parse a single .og file.
+    """
+    import hachi.og_engine.engine as engine_mod
+
+    with mock.patch.object(
+        engine_mod, "get_hachi_paths", side_effect=RuntimeError("no Hachi home")
+    ):
+        engine = engine_mod.SkillEngine(usage_path=tmp_path / "usage.json")
+
+    assert engine.node_count == 0
+
+
+def test_injected_usage_path_is_used_verbatim(tmp_path: Path) -> None:
+    """An injected usage path is the file that actually gets written."""
+    from hachi.og_engine.engine import SkillEngine
+
+    usage = tmp_path / "nested" / "usage.json"
+    engine = SkillEngine(usage_path=usage)
+    engine.record_use("some-skill")
+    engine.flush_usage()
+
+    assert usage.is_file(), "record_use/flush_usage did not write the injected path"
+    assert "some-skill" in json.loads(usage.read_text(encoding="utf-8"))
+
+
+def test_with_role_view_shares_the_usage_tracker(tmp_path: Path) -> None:
+    """with_role() bypasses __init__ via __new__ + __dict__.update.
+
+    Views must share one tracker (one file, one lock) — not get a second one.
+
+    NOTE: two corrections vs. the T-73 spec sketch:
+    1. The sketch asserted `view.get_usage_counters().get("shared-skill")`, but
+       get_usage_counters() is the unrelated M7 pass-depth counter (pass1_search /
+       pass2_peek / pass3_resolve) — it never has skill-name keys, so that assertion
+       can never pass regardless of with_role()'s sharing behaviour.
+    2. The sketch constructed `SkillEngine()` with no usage_path override, which
+       reads/writes the real developer machine's persistent usage.json (via
+       get_hachi_paths()) — non-hermetic: a prior run leaves "shared-skill" with
+       use_count >= 1, so a bare `== 1` assertion is flaky across repeats. Injecting
+       usage_path (the seam this task adds) makes it hermetic, and still exercises
+       with_role() sharing whatever tracker state __init__ set up.
+    """
+    from hachi.og_engine.engine import SkillEngine
+
+    engine = SkillEngine(usage_path=tmp_path / "usage.json")
+    view = engine.with_role("orchestrator")
+    engine.record_use("shared-skill")
+
+    # Same tracker state object (by reference), not a second one with an equal value.
+    assert view._usage is engine._usage
+    assert view._usage_lock is engine._usage_lock
+    assert view._usage.get("shared-skill", {}).get("use_count") == 1
