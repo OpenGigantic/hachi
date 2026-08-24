@@ -11,6 +11,11 @@ from rich.console import Console
 from rich.panel import Panel
 
 console = Console()
+# Used only to keep --json output pure JSON on stdout: the consent sheet /
+# prompt still need to be shown to a human even in --json mode, so they go to
+# stderr instead of being silently dropped (which would mean confirming
+# something you can't see) or mixed into the stdout a script parses.
+_err_console = Console(stderr=True)
 
 skill_app = typer.Typer(help="Manage and import agent skills (.og / SKILL.md).")
 
@@ -84,9 +89,16 @@ def pack_install(
             "single .og URL, or local directory path."
         ),
     ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip consent confirmation prompt."),
     as_json: bool = typer.Option(False, "--json", help="Output result as JSON."),
 ) -> None:
     """Install a community skill pack from GitHub or a URL.
+
+    Fetches the pack, synthesises a manifest (community packs declare no
+    integration scopes -- see docs/reference/objectgraph-spec.md), and shows
+    the same consent sheet ``hachi ogpack install`` shows before copying a
+    single file into skills_dir. Declining leaves skills_dir untouched
+    (T-56 / CF-14).
 
     Examples::
 
@@ -94,27 +106,63 @@ def pack_install(
         hachi skill pack install alice/devops-skills@v2
         hachi skill pack install https://github.com/alice/skills/archive/main.tar.gz
         hachi skill pack install /path/to/local/skills-dir
+        hachi skill pack install alice/devops-skills --yes   # non-interactive
     """
-    from hachi.core.community_packs import install_pack
+    import tempfile
+
+    from hachi.cli.commands.pack import confirm_pack_consent_or_exit
+    from hachi.core.community_packs import fetch_pack_to_dir, synthesise_pack_manifest
+    from hachi.core.og_pack import (
+        get_installed_manifest,
+        install_ogpack_from_dir,
+        render_consent_sheet,
+        write_pack_toml,
+    )
     from hachi.gateway.workspace import get_skills_dir
 
     skills_dir = get_skills_dir()
-    try:
-        info = install_pack(spec, skills_dir)
-    except (ValueError, FileNotFoundError, OSError) as exc:
-        console.print(f"[red]Install failed:[/red] {exc}")
-        raise typer.Exit(1) from exc
+
+    with tempfile.TemporaryDirectory() as tmp:
+        fetch_dir = Path(tmp) / "fetched"
+        try:
+            fetch_pack_to_dir(spec, fetch_dir)
+            manifest_preview = synthesise_pack_manifest(fetch_dir, source=spec)
+            write_pack_toml(fetch_dir, manifest_preview)
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            console.print(f"[red]Install failed:[/red] {exc}")
+            raise typer.Exit(1) from exc
+
+        old_manifest = get_installed_manifest(manifest_preview.id, skills_dir)
+        is_update = old_manifest is not None
+
+        sheet = render_consent_sheet(manifest_preview, update=is_update)
+        printer = _err_console if as_json else console
+        confirm_pack_consent_or_exit(printer, sheet, yes=yes)
+
+        try:
+            manifest, files = install_ogpack_from_dir(
+                fetch_dir,
+                skills_dir,
+                source=spec,
+                confirm=True,
+                old_manifest=old_manifest,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            console.print(f"[red]Install failed:[/red] {exc}")
+            raise typer.Exit(1) from exc
+
+    installed_path = skills_dir / "packs" / manifest.id
 
     if as_json:
         print(
             __import__("json").dumps(
                 {
-                    "name": info.name,
-                    "source": info.source,
-                    "installed_path": str(info.installed_path),
-                    "file_count": info.file_count,
-                    "version": info.version,
-                    "description": info.description,
+                    "name": manifest.id,
+                    "source": spec,
+                    "installed_path": str(installed_path),
+                    "file_count": len(files),
+                    "version": manifest.semver,
+                    "description": manifest.description,
                 },
                 indent=2,
             )
@@ -122,12 +170,12 @@ def pack_install(
         return
 
     console.print(
-        f"[green]Installed[/green] pack [bold cyan]{info.name}[/bold cyan] "
-        f"({info.file_count} skill(s)" + (f", v{info.version}" if info.version else "") + ")"
+        f"[green]Installed[/green] pack [bold cyan]{manifest.id}[/bold cyan] "
+        f"({len(files)} skill(s)" + (f", v{manifest.semver}" if manifest.semver else "") + ")"
     )
-    if info.description:
-        console.print(f"  {info.description}")
-    console.print(f"  Skills loaded from: [dim]{info.installed_path}[/dim]")
+    if manifest.description:
+        console.print(f"  {manifest.description}")
+    console.print(f"  Skills loaded from: [dim]{installed_path}[/dim]")
     console.print("Run [bold]hachi skill list[/bold] to see new skills.")
 
 

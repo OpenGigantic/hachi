@@ -29,6 +29,20 @@ Installed layout
 -----------------
 Each pack lives under ``<skills_dir>/packs/<name>/``.  The SkillEngine's
 ``load_directory`` recurse=True picks them up automatically.
+
+Consent (T-56 / CF-14)
+-----------------------
+This module used to write straight into ``skills_dir`` with no manifest, no
+scope declaration and no confirmation prompt -- a real gap, because
+``core/og_pack.py``'s ``.ogpack`` installer writes into that exact same
+``<skills_dir>/packs/`` tree (and ``SkillEngine`` loads both with the same
+recursive glob) *with* a consent sheet and sha256 verification. The CLI
+(``hachi skill pack install``) now uses this module only to *fetch*
+(:func:`fetch_pack_to_dir`) and *synthesise a manifest*
+(:func:`synthesise_pack_manifest`); the actual install goes through
+``og_pack.install_ogpack_from_dir`` so the same consent sheet and integrity
+check gate every pack, community or not. :func:`install_pack` is kept as a
+deprecated thin wrapper for existing callers -- see its docstring.
 """
 
 from __future__ import annotations
@@ -46,6 +60,7 @@ from typing import Any
 
 from hachi.core.archive_safety import ArchiveSecurityError
 from hachi.core.net_guard import validate_outbound_url
+from hachi.core.og_pack import OgPackManifest, _file_sha256
 
 # ---------------------------------------------------------------------------
 # Public data types
@@ -358,13 +373,129 @@ def _read_pack_meta(pack_dir: Path) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def fetch_pack_to_dir(spec: str, dest: Path, *, fetcher: Any = None) -> Path:
+    """Fetch *spec* into *dest* and return the directory holding the .og files.
+
+    Performs no installation: nothing is written under ``skills_dir``, no
+    pack name is resolved from ``pack.json``, and nothing is renamed. This is
+    a re-slice of :func:`install_pack`'s fetch/extract logic (T-56 / CF-14)
+    -- the URL resolution, format dispatch, and extractors below are reused
+    verbatim, not reimplemented. Transport safety (net_guard SSRF check,
+    no-redirect fetch, archive path-traversal/bomb caps) is unchanged.
+
+    Args:
+        spec: A ``user/repo`` shorthand, full archive URL, raw ``.og`` URL,
+              or local directory path.
+        dest: Directory to fetch/extract/copy the pack into. Created
+              (including parents) if missing.
+        fetcher: Optional injectable downloader ``(url: str) -> bytes`` for
+                 offline testing. Defaults to :func:`_default_fetcher`.
+
+    Returns:
+        *dest*, unchanged -- returned for convenient chaining.
+
+    Raises:
+        ValueError: URL blocked by security policy or unsupported format.
+    """
+    _fetch = fetcher or _default_fetcher
+
+    # --- Local directory ---
+    local = Path(spec)
+    if local.exists() and local.is_dir():
+        dest.mkdir(parents=True, exist_ok=True)
+        _install_local_dir(local, dest)
+        return dest
+
+    # --- Remote URL ---
+    # Resolve GitHub shorthand to archive URL
+    archive_url = spec
+    if _GITHUB_SHORTHAND.match(spec):
+        user, repo, ref = _parse_shorthand(spec)
+        archive_url = _github_archive_url(user, repo, ref)
+
+    _validate_url(archive_url)
+    raw = _fetch(archive_url)
+
+    dest.mkdir(parents=True, exist_ok=True)
+
+    # Detect format and extract
+    if archive_url.endswith(".og"):
+        og_name = archive_url.rsplit("/", 1)[-1]
+        target = dest / og_name
+        target.write_bytes(raw)
+    elif archive_url.endswith(".zip"):
+        _extract_zip(raw, dest)
+    else:
+        # Treat everything else as tar.gz (GitHub default)
+        _extract_tar(raw, dest)
+
+    return dest
+
+
+def synthesise_pack_manifest(pack_dir: Path, *, source: str) -> OgPackManifest:
+    """Build an :class:`~hachi.core.og_pack.OgPackManifest` for a fetched community pack.
+
+    Reads ``pack.json`` when present for the pack id (its ``name`` field),
+    semver (``version``), description and author. Declares **no** scopes --
+    a community pack's ``pack.json`` has no scope vocabulary to consent to
+    (see ``docs/reference/objectgraph-spec.md``); inventing one so the
+    consent sheet "looks fuller" would itself be the fabricated-security-claim
+    failure mode T-56 / CF-14 exists to close ("No integration scopes
+    declared" is the honest sheet). ``sha256s`` is computed over every
+    ``.og`` file actually present in *pack_dir* with the same
+    :func:`~hachi.core.og_pack._file_sha256` the ogpack installer uses, so
+    :func:`~hachi.core.og_pack.verify_pack_checksums` attests the exact bytes
+    the user is about to approve -- even though ``pack.json`` never supplies
+    a hash.
+
+    Args:
+        pack_dir: Directory holding the fetched ``.og`` files (and an
+                  optional ``pack.json``), e.g. as returned by
+                  :func:`fetch_pack_to_dir`.
+        source:   The original spec/URL the pack was fetched from -- used
+                  only as an id fallback when ``pack.json`` is absent or has
+                  no ``name`` field.
+
+    Returns:
+        An :class:`~hachi.core.og_pack.OgPackManifest` with zero scopes.
+    """
+    meta = _read_pack_meta(pack_dir)
+    pack_id = str(meta.get("name") or _derive_pack_name(source))
+    semver = str(meta.get("version") or "0.0.0")
+
+    sha256s = {
+        og_file.relative_to(pack_dir).as_posix(): _file_sha256(og_file)
+        for og_file in sorted(pack_dir.rglob("*.og"))
+    }
+
+    return OgPackManifest(
+        id=pack_id,
+        semver=semver,
+        scopes=(),
+        sha256s=sha256s,
+        description=str(meta.get("description", "")),
+        author=str(meta.get("author", "")),
+    )
+
+
 def install_pack(
     spec: str,
     skills_dir: Path,
     *,
     fetcher: Any = None,
 ) -> PackInfo:
-    """Install a community skill pack.
+    """Install a community skill pack directly into ``skills_dir``.
+
+    .. deprecated::
+        This bypasses the consent sheet and integrity verification that
+        :func:`~hachi.core.og_pack.install_ogpack_from_dir` enforces (T-56 /
+        CF-14). ``hachi skill pack install`` no longer calls this function --
+        it fetches via :func:`fetch_pack_to_dir`, synthesises a manifest with
+        :func:`synthesise_pack_manifest`, and installs through ``og_pack`` so
+        the same consent sheet and sha256 verification apply as any other
+        pack. This function is kept for one release as a thin wrapper around
+        the same fetch logic, for existing callers/tests; do not add new
+        call sites.
 
     Args:
         spec: A ``user/repo`` shorthand, full archive URL, raw ``.og`` URL,
@@ -380,7 +511,6 @@ def install_pack(
         ValueError: URL blocked by security policy or unsupported format.
         FileNotFoundError: Local path does not exist.
     """
-    _fetch = fetcher or _default_fetcher
     pack_name = _derive_pack_name(spec)
     packs_root = skills_dir / "packs"
     dest = packs_root / pack_name
@@ -388,8 +518,8 @@ def install_pack(
     # --- Local directory ---
     local = Path(spec)
     if local.exists() and local.is_dir():
-        dest.mkdir(parents=True, exist_ok=True)
-        written = _install_local_dir(local, dest)
+        fetch_pack_to_dir(spec, dest, fetcher=fetcher)
+        written = sorted(dest.rglob("*.og"))
         meta = _read_pack_meta(dest)
         effective_name = str(meta.get("name", pack_name))
         if effective_name != pack_name:
@@ -407,29 +537,14 @@ def install_pack(
         )
 
     # --- Remote URL ---
-    # Resolve GitHub shorthand to archive URL
-    archive_url = spec
+    # Resolve GitHub shorthand to archive URL (also renames the guessed pack_name)
     if _GITHUB_SHORTHAND.match(spec):
-        user, repo, ref = _parse_shorthand(spec)
-        archive_url = _github_archive_url(user, repo, ref)
+        _, repo, _ref = _parse_shorthand(spec)
         pack_name = repo
+        dest = packs_root / pack_name
 
-    _validate_url(archive_url)
-    raw = _fetch(archive_url)
-
-    dest.mkdir(parents=True, exist_ok=True)
-
-    # Detect format and extract
-    if archive_url.endswith(".og"):
-        og_name = archive_url.rsplit("/", 1)[-1]
-        target = dest / og_name
-        target.write_bytes(raw)
-        written = [target]
-    elif archive_url.endswith(".zip"):
-        written = _extract_zip(raw, dest)
-    else:
-        # Treat everything else as tar.gz (GitHub default)
-        written = _extract_tar(raw, dest)
+    fetch_pack_to_dir(spec, dest, fetcher=fetcher)
+    written = sorted(dest.rglob("*.og"))
 
     meta = _read_pack_meta(dest)
     effective_name = str(meta.get("name", pack_name))
