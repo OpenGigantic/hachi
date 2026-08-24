@@ -214,6 +214,73 @@ def test_get_token_finds_web_ui_oauth2_prefix(monkeypatch) -> None:
     assert result["access_token"] == "ya29.web-ui-token"
 
 
+def test_refresh_writes_back_to_the_key_it_read_from(monkeypatch) -> None:
+    """A refresh must update the key the token was loaded from.
+
+    Regression: get_token() fell back to the web-UI prefix "oauth2.<p>" (BB-10)
+    but save_token() always wrote "oauth.<p>". After the first silent refresh of a
+    web-UI-authenticated token the two vault keys held two different tokens with
+    two different expiries, and nothing ever reconciled them (BB-157).
+    """
+    import json
+    import time
+
+    store = _MemorySecretStore()
+    stale = {
+        "access_token": "ya29.web-ui-token",
+        "refresh_token": "1//refresh",
+        "scope": "openid email",
+        "expires_at": time.time() - 3600,  # well past the 60s skew buffer
+    }
+    store.set("oauth2.google", json.dumps(stale))
+
+    monkeypatch.setattr("hachi.core.oauth._google_client_id", lambda: "cid")
+    monkeypatch.setattr("hachi.core.oauth._google_client_secret", lambda: None)
+    monkeypatch.setattr(
+        OAuthManager,
+        "_exchange_token",
+        staticmethod(lambda payload: {"access_token": "ya29.refreshed", "expires_in": 3600}),
+    )
+
+    manager = OAuthManager(secret_store=store)
+    token = manager.get_google_credentials(["openid", "email"])
+    assert token == "ya29.refreshed"
+
+    refreshed = json.loads(store.get("oauth2.google") or "{}")
+    assert refreshed.get("access_token") == "ya29.refreshed", (
+        "token under 'oauth2.google' is stale: the refresh wrote to a different key, "
+        "forking credential state between the agent and the web UI."
+    )
+    # And it must not have created a second, divergent copy.
+    assert store.get("oauth.google") is None, (
+        "refresh created a second copy under 'oauth.google'; one grant must live "
+        "under exactly one vault key."
+    )
+
+
+def test_clearing_a_token_updates_the_key_that_actually_holds_it() -> None:
+    """Characterizes `--revoke` (cli/main.py's `oauth.save_token("google", {})`).
+
+    Before the _resolve_key fix, save_token() always wrote "oauth.<p>" regardless of
+    where the live grant lived, so revoking a web-UI-authenticated token wrote "{}" to
+    "oauth.google" while the real token stayed live at "oauth2.google" — the empty
+    payload *shadowed* the grant instead of clearing it (a truthy "{}" string blocks
+    the BB-10 fallback in get_token). After the fix, save_token() resolves the same
+    key get_token() would read, so the clear lands on the key that actually holds the
+    grant and no second key is created.
+    """
+    import json
+
+    store = _MemorySecretStore()
+    store.set("oauth2.google", json.dumps({"access_token": "ya29.web-ui-token"}))
+
+    manager = OAuthManager(secret_store=store)
+    manager.save_token("google", {})
+
+    assert store.get("oauth2.google") == "{}"
+    assert store.get("oauth.google") is None
+
+
 def test_noninteractive_error_mentions_correct_cli_command(monkeypatch) -> None:
     """When HACHI_OAUTH_NONINTERACTIVE=1 and no saved token exists, the error
     message must direct the user to `hachi google-auth`, not `hachi auth google`
