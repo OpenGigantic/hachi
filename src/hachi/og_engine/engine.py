@@ -18,21 +18,20 @@ we provide surgical, O(1) keyword-based retrieval.
 """
 
 import bisect
-import json
 import logging
 import math
 import os
 import re
 import tempfile
 import threading
-import time
-from datetime import UTC, datetime, timedelta
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from hachi.core import og_history
-from hachi.core.atomic_io import atomic_write_json, quarantine_corrupt_file
 from hachi.core.paths import get_hachi_paths
+from hachi.og_engine.embedding import EmbeddingRanker
 from hachi.og_engine.parser import (
     OGChangelogEntry,
     OGFile,
@@ -42,6 +41,7 @@ from hachi.og_engine.parser import (
 )
 from hachi.og_engine.serializer import index_entry_for_node, serialize_og_file
 from hachi.og_engine.skill_md import skill_md_to_og
+from hachi.og_engine.usage import UsageTracker
 
 logger = logging.getLogger(__name__)
 
@@ -337,7 +337,13 @@ class SkillEngine:
     main orchestrator reading ``brain.og``) must pass their role explicitly.
     """
 
-    def __init__(self, agent_role: str = "*", node_cap: int = 5000) -> None:
+    def __init__(
+        self,
+        agent_role: str = "*",
+        node_cap: int = 5000,
+        *,
+        usage_path: Path | None = None,
+    ) -> None:
         """Initialise the engine.
 
         Args:
@@ -362,6 +368,14 @@ class SkillEngine:
                 Files that exceed this cap are rejected loudly (recorded in
                 ``failed_files``) to prevent OOM from malicious or corrupt
                 skill files.  Default: 5000.
+            usage_path: Where to persist the skill-usage JSON database. When
+                omitted (the default), resolved lazily from
+                ``get_hachi_paths().skill_usage_json`` exactly as before —
+                every existing call site is unaffected. Pass an explicit path
+                (e.g. in a process with no Hachi home directory, or to isolate
+                a test) and ``get_hachi_paths()`` is never called. T-73:
+                this is the one seam that used to make the engine unconstructable
+                without a resolvable Hachi home, even just to parse a file.
         """
         self._agent_role = agent_role
         # Nodes are keyed by qualified ID: "<file-stem>:<node-name>".
@@ -383,16 +397,14 @@ class SkillEngine:
         self._sorted_tokens: list[str] = []
         self._sorted_tokens_dirty: bool = False  # True when _token_index has new keys
 
-        # Phase 4: Persistent usage tracking (platformdirs state_dir)
-        _paths = get_hachi_paths()
-        self._usage_path = _paths.skill_usage_json
-        self._usage: dict[str, dict[str, Any]] = self._load_usage()
-        # Usage-write debounce: skip the disk write when a flush already happened
-        # within _usage_flush_interval seconds.  The first call after boot (or after
-        # the interval expires) always flushes so tests and one-shot runs see the file.
-        self._usage_last_flush: float = 0.0  # monotonic time of last successful _save_usage
-        self._usage_flush_interval: float = 30.0  # seconds between successive writes
-        self._usage_lock: threading.Lock = threading.Lock()
+        # Phase 4: Persistent usage tracking (platformdirs state_dir).
+        # T-73: only resolve a Hachi home when the caller didn't inject a path —
+        # this is what makes the engine constructible with no Hachi installation.
+        # UsageTracker owns the JSON file, the lock, and the debounce; with_role()
+        # views share this same instance (see the back-compat properties below).
+        if usage_path is None:
+            usage_path = get_hachi_paths().skill_usage_json
+        self._usage_tracker = UsageTracker(usage_path)
 
         # UC-SKILL-003: Files that failed to parse are collected here so doctor/lint
         # can surface them as "N files failed to parse" instead of silently dropping them.
@@ -409,9 +421,69 @@ class SkillEngine:
         self._pass2_count: int = 0  # peek() invocations
         self._pass3_count: int = 0  # resolve_node() invocations
 
-        # P3-04: optional embedding-rank collection (ChromaDB cosine similarity).
-        # None unless enable_embedding_rank() is called or HACHI_EMBEDDING_RANK=1.
-        self._emb_collection: Any = None  # chromadb.Collection | None
+        # P3-04: optional embedding-rank collaborator (ChromaDB cosine similarity).
+        # T-73: extracted to EmbeddingRanker; collection stays None unless
+        # enable_embedding_rank() is called or HACHI_EMBEDDING_RANK=1. with_role()
+        # views share this same instance (see _emb_collection property below).
+        self._embedding_ranker = EmbeddingRanker()
+
+    @property
+    def _emb_collection(self) -> Any:
+        """Back-compat accessor for the embedding-rank collection.
+
+        T-73: the collection now lives on the extracted ``EmbeddingRanker``
+        (``self._embedding_ranker``). Kept as a property — rather than dropped —
+        because it is poked directly (both read and write) by existing tests and
+        because ``with_role()`` shares ``_embedding_ranker`` by reference, so the
+        property continues to read/write the one shared collaborator.
+        """
+        return self._embedding_ranker.collection
+
+    @_emb_collection.setter
+    def _emb_collection(self, value: Any) -> None:
+        self._embedding_ranker.collection = value
+
+    # T-73: back-compat accessors for the fields UsageTracker now owns. Kept as
+    # properties (not dropped) because they are poked directly — both read and
+    # write — by existing tests, and because with_role() shares _usage_tracker
+    # by reference, so each property continues to read/write the one shared
+    # collaborator rather than a per-view snapshot.
+
+    @property
+    def _usage_path(self) -> Path:
+        return self._usage_tracker.usage_path
+
+    @_usage_path.setter
+    def _usage_path(self, value: Path) -> None:
+        self._usage_tracker.usage_path = value
+
+    @property
+    def _usage(self) -> dict[str, dict[str, Any]]:
+        return self._usage_tracker.entries
+
+    @_usage.setter
+    def _usage(self, value: dict[str, dict[str, Any]]) -> None:
+        self._usage_tracker.entries = value
+
+    @property
+    def _usage_lock(self) -> threading.Lock:
+        return self._usage_tracker.lock
+
+    @property
+    def _usage_last_flush(self) -> float:
+        return self._usage_tracker.last_flush
+
+    @_usage_last_flush.setter
+    def _usage_last_flush(self, value: float) -> None:
+        self._usage_tracker.last_flush = value
+
+    @property
+    def _usage_flush_interval(self) -> float:
+        return self._usage_tracker.flush_interval
+
+    @_usage_flush_interval.setter
+    def _usage_flush_interval(self, value: float) -> None:
+        self._usage_tracker.flush_interval = value
 
     def _is_visible(self, node: OGNode) -> bool:
         """Return True when this node is accessible to the engine's agent role.
@@ -856,7 +928,9 @@ class SkillEngine:
     # P3-04: Embedding-rank (hybrid BM25 + cosine)
     # ==========================================
 
-    def enable_embedding_rank(self, collection_name: str = "og_skill_index") -> None:
+    def enable_embedding_rank(
+        self, collection_name: str = "og_skill_index", *, db_path: Path | None = None
+    ) -> None:
         """Build (or refresh) a ChromaDB cosine-similarity collection over all loaded nodes.
 
         Off by default — call explicitly or set ``HACHI_EMBEDDING_RANK=1``.
@@ -864,63 +938,38 @@ class SkillEngine:
         new packages are required.
 
         Each node's document is ``"<name> <keywords> <dense_summary>"``.
+
+        T-73: delegates to :class:`~hachi.og_engine.embedding.EmbeddingRanker`,
+        which owns the ChromaDB client/collection; this method's job is only to
+        supply the engine-specific bits (which nodes are indexable, and where the
+        database lives by default).
+
+        Args:
+            collection_name: Name of the Chroma collection to build/refresh.
+            db_path: Where the Chroma persistent client stores its database. When
+                omitted (the default), resolved from
+                ``get_hachi_paths().state_dir / "og_skill_embeddings"`` exactly as
+                before. T-73: pass an explicit path to avoid resolving a Hachi home.
         """
-        try:
-            import chromadb  # type: ignore[import-untyped]
-            from chromadb.config import Settings  # type: ignore[import-untyped]
-        except ImportError:
-            logger.warning("P3-04: chromadb not installed; embedding rank unavailable")
-            return
+        if db_path is None:
+            db_path = get_hachi_paths().state_dir / "og_skill_embeddings"
 
-        from hachi.core.paths import get_hachi_paths
+        def _documents() -> Iterable[tuple[str, str]]:
+            for qid, node in self._nodes.items():
+                if not self._is_skill_node(node):
+                    continue
+                yield qid, f"{node.name} {' '.join(node.keywords)} {node.dense or ''}"
 
-        db_path = str(get_hachi_paths().state_dir / "og_skill_embeddings")
-        client = chromadb.PersistentClient(
-            path=db_path, settings=Settings(anonymized_telemetry=False)
+        self._embedding_ranker.enable(
+            _documents(), db_path=db_path, collection_name=collection_name
         )
-        col = client.get_or_create_collection(
-            name=collection_name,
-            metadata={"hnsw:space": "cosine"},
-        )
-
-        # Upsert all visible skill nodes.
-        ids, docs = [], []
-        for qid, node in self._nodes.items():
-            if not self._is_skill_node(node):
-                continue
-            doc = f"{node.name} {' '.join(node.keywords)} {node.dense or ''}"
-            ids.append(qid)
-            docs.append(doc)
-
-        if ids:
-            col.upsert(ids=ids, documents=docs)
-        self._emb_collection = col
-        logger.debug("P3-04: embedding index built (%d nodes)", len(ids))
 
     def _embedding_search(self, query: str, top_k: int = 10) -> dict[str, float]:
         """Query the Chroma cosine collection; return {qid: score} in [0, 1].
 
         Returns an empty dict if embedding rank is not enabled or query fails.
         """
-        if self._emb_collection is None:
-            return {}
-        try:
-            results = self._emb_collection.query(
-                query_texts=[query],
-                n_results=min(top_k, max(1, len(self._nodes))),
-                include=["distances"],
-            )
-            ids = results.get("ids", [[]])[0]
-            dists = results.get("distances", [[]])[0]
-            # Chroma cosine distance ∈ [0, 2]; convert to similarity ∈ [0, 1].
-            return {
-                qid: max(0.0, 1.0 - (dist / 2.0))
-                for qid, dist in zip(ids, dists, strict=False)
-                if dist is not None and qid in self._nodes
-            }
-        except Exception:
-            logger.debug("P3-04: embedding search failed", exc_info=True)
-            return {}
+        return self._embedding_ranker.search(query, known_ids=self._nodes, top_k=top_k)
 
     def list_all_skills(self) -> list[dict[str, str]]:
         """
@@ -1702,26 +1751,29 @@ class SkillEngine:
     # ==========================================
 
     def _load_usage(self) -> dict[str, dict[str, Any]]:
-        """Load the usage database from disk. Returns empty dict on error."""
-        try:
-            if self._usage_path.exists():
-                return json.loads(self._usage_path.read_text(encoding="utf-8"))
-        except Exception:
-            # BB-51: quarantine the unparseable file BEFORE returning the empty
-            # default, so the next _save_usage() can't silently clobber it.
-            logger.warning("Failed to load skill usage DB, starting fresh")
-            quarantine_corrupt_file(self._usage_path)
-        return {}
+        """Load the usage database from disk. Returns empty dict on error.
+
+        T-73: delegates to :meth:`UsageTracker.load`. Kept on ``SkillEngine`` —
+        rather than dropped — because it is called directly by existing tests.
+        """
+        return self._usage_tracker.load()
 
     def _save_usage(self) -> None:
-        """Persist the usage database to disk and reset the debounce timer."""
-        with self._usage_lock:
-            snapshot = dict(self._usage)
-            self._usage_last_flush = time.monotonic()
-        try:
-            atomic_write_json(self._usage_path, snapshot)
-        except Exception:
-            logger.warning("Failed to persist skill usage DB")
+        """Persist the usage database to disk and reset the debounce timer.
+
+        T-73: delegates to :meth:`UsageTracker.save`. Kept on ``SkillEngine`` —
+        rather than dropped — because it is called directly by existing tests.
+        """
+        self._usage_tracker.save()
+
+    def _visible_qid_names(self) -> list[tuple[str, str]]:
+        """``(qualified_id, display_name)`` for every node visible to this role.
+
+        Shared by :meth:`get_stale_skills` and :meth:`get_usage_report` — both
+        need the same node-visibility join before handing off to the
+        ``UsageTracker``, which has no reference to this engine's node index.
+        """
+        return [(qid, node.name) for qid, node in self._nodes.items() if self._is_visible(node)]
 
     def record_use(self, name: str) -> None:
         """Record a skill load event. Called by the execution loop on load_skill.
@@ -1736,29 +1788,14 @@ class SkillEngine:
         Args:
             name: The exact skill node name that was loaded.
         """
-        now = datetime.now(UTC).isoformat()
-        with self._usage_lock:
-            entry = self._usage.setdefault(
-                name,
-                {
-                    "use_count": 0,
-                    "first_used": now,
-                    "last_used": now,
-                },
-            )
-            entry["use_count"] += 1
-            entry["last_used"] = now
-            elapsed = time.monotonic() - self._usage_last_flush
-            should_flush = elapsed >= self._usage_flush_interval
-        if should_flush:
-            self._save_usage()
+        self._usage_tracker.record(name)
 
     def flush_usage(self) -> None:
         """Force an immediate flush of pending usage writes to disk.
 
         Call at process shutdown (or in tests) to ensure no writes are lost.
         """
-        self._save_usage()
+        self._usage_tracker.flush()
 
     def get_stale_skills(self, stale_days: int = 30) -> list[dict[str, Any]]:
         """Return skills that haven't been used within the given threshold.
@@ -1773,43 +1810,7 @@ class SkillEngine:
         Returns:
             List of dicts with name, last_used, use_count, and days_inactive.
         """
-        cutoff = datetime.now(UTC) - timedelta(days=stale_days)
-        stale = []
-
-        for qid, node in self._nodes.items():
-            if not self._is_visible(node):
-                continue
-            # Usage tracking keyed by bare name for backward compat with persisted JSON
-            entry = self._usage.get(node.name) or self._usage.get(qid)
-            if not entry:
-                stale.append(
-                    {
-                        "name": node.name,
-                        "last_used": None,
-                        "use_count": 0,
-                        "days_inactive": None,
-                        "status": "never_used",
-                    }
-                )
-                continue
-
-            try:
-                last = datetime.fromisoformat(entry["last_used"])
-                if last < cutoff:
-                    days = (datetime.now(UTC) - last).days
-                    stale.append(
-                        {
-                            "name": node.name,
-                            "last_used": entry["last_used"],
-                            "use_count": entry["use_count"],
-                            "days_inactive": days,
-                            "status": "stale",
-                        }
-                    )
-            except (ValueError, KeyError):
-                continue
-
-        return stale
+        return self._usage_tracker.stale(stale_days, self._visible_qid_names())
 
     def get_usage_report(self) -> dict[str, Any]:
         """Generate a full usage analytics report for all loaded skills.
@@ -1818,32 +1819,19 @@ class SkillEngine:
             A dict with total_skills, tracked_skills, top_skills (sorted by use_count),
             stale_skills, and never_used counts.
         """
-        tracked = []
-        for name, entry in self._usage.items():
+
+        def _resolve_visible_name(name: str) -> str | None:
             qid = self._resolve_name(name)
             node = self._nodes.get(qid) if qid else None
             if node is not None and self._is_visible(node):
-                tracked.append(
-                    {
-                        "name": node.name,  # always bare name for display
-                        "use_count": entry.get("use_count", 0),
-                        "first_used": entry.get("first_used"),
-                        "last_used": entry.get("last_used"),
-                    }
-                )
+                return node.name  # always bare name for display
+            return None
 
-        tracked.sort(key=lambda x: x["use_count"], reverse=True)
-
-        stale = self.get_stale_skills()
-        never_used = [s for s in stale if s["status"] == "never_used"]
-
-        return {
-            "total_skills": self.node_count,
-            "tracked_skills": len(tracked),
-            "never_used_count": len(never_used),
-            "stale_count": len([s for s in stale if s["status"] == "stale"]),
-            "top_skills": tracked[:10],
-        }
+        return self._usage_tracker.report(
+            total_skills=self.node_count,
+            resolve_visible_name=_resolve_visible_name,
+            known=self._visible_qid_names(),
+        )
 
     def get_skill_inventory(self) -> list[dict[str, Any]]:
         """Return a per-node inventory of every loaded skill with usage stats.
