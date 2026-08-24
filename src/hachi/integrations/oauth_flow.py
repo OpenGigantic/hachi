@@ -527,49 +527,6 @@ def _exchange_code(
     return data
 
 
-def _refresh_token(connector: ConnectorDef, token_data: dict[str, Any]) -> dict[str, Any]:
-    """Attempt to refresh an expired access token using the refresh token.
-
-    Returns an updated token dict (merged with old data to preserve refresh_token).
-    Raises RuntimeError on failure.
-    """
-    refresh = token_data.get("refresh_token")
-    if not refresh:
-        raise RuntimeError(f"No refresh token stored for {connector.name}")
-
-    payload: dict[str, str] = {
-        "grant_type": "refresh_token",
-        "refresh_token": refresh,
-        "client_id": connector.client_id() or "",
-    }
-    secret = connector.client_secret()
-    if secret:
-        payload["client_secret"] = secret
-
-    headers = {"Accept": "application/json"}
-    try:
-        resp = httpx.post(connector.token_url, data=payload, headers=headers)
-    except httpx.RequestError as exc:
-        raise RuntimeError(f"Network error refreshing {connector.name} token") from exc
-
-    if not resp.is_success:
-        _log.warning(
-            "Token refresh failed for connector=%s status=%d", connector.id, resp.status_code
-        )
-        raise RuntimeError(f"Token refresh failed for {connector.name} (HTTP {resp.status_code})")
-
-    try:
-        new_data: dict[str, Any] = resp.json()
-    except Exception as exc:
-        raise RuntimeError(f"Non-JSON response from {connector.name} token refresh") from exc
-
-    # Merge: some providers omit the refresh_token in the refresh response.
-    merged = {**token_data, **new_data}
-    if "expires_in" in new_data:
-        merged["expires_at"] = time.time() + int(new_data["expires_in"])
-    return merged
-
-
 def _revoke_token(connector: ConnectorDef, token_data: dict[str, Any]) -> None:
     """Attempt to revoke the access token at the provider.  Best-effort — errors are logged."""
     if not connector.revoke_url:

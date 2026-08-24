@@ -132,35 +132,122 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
         pass
 
 
+def _safe_expires_at(token_data: dict) -> float:
+    """Best-effort ``expires_at`` extraction for migration precedence.
+
+    A missing or unparseable value counts as ``0`` — it never wins a
+    freshness comparison against a real timestamp (see
+    :func:`_migrate_legacy_oauth_key`).
+    """
+    raw = token_data.get("expires_at")
+    try:
+        return float(raw) if raw is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _migrate_legacy_oauth_key(store: SecretStore, provider: str) -> None:
+    """One-time migration: sweep a legacy "oauth.<provider>" token onto the
+    canonical "oauth2.<provider>" key (T-57 half B).
+
+    Two OAuth stacks used to write two different key prefixes for the same
+    grant: this module's own "oauth.<p>" (pre-T-57) and the web UI's
+    "oauth2.<p>" (:class:`hachi.integrations.oauth_flow.OAuthTokenStore`).
+    Half A (BB-157) stopped a refresh from forking them further by always
+    writing back to whichever key a read resolved to; this finishes the job
+    by collapsing storage onto the single "oauth2.*" namespace
+    ``OAuthTokenStore`` already uses. :meth:`OAuthManager.get_token` and
+    :meth:`OAuthManager.save_token` both call this before every read and
+    write.
+
+    Idempotent and cheap to call on every access:
+
+    - No legacy key → no-op; any canonical copy is already the sole one.
+    - Legacy key present, canonical absent → the legacy value is copied to
+      the canonical key.
+    - Both present → precedence is decided on the data, not the key name.
+      Whichever token has the greater ``expires_at`` wins (a missing or
+      unparseable ``expires_at`` counts as 0); ties go to legacy. Neither
+      key name is reliably "the live one": a grant that forked before half A
+      landed keeps the legacy key live (half A's resolver always preferred
+      it once populated, so every refresh since kept it current while the
+      canonical copy stayed frozen at whatever it held the moment of the
+      fork) — but the web UI's reconnect flow (``oauth_callback`` ->
+      ``OAuthTokenStore.save()``) writes a brand-new token straight to the
+      canonical key without consulting any resolver, so canonical can just
+      as easily be the fresher one. Preferring the legacy key unconditionally
+      would silently destroy a token the user just consented to.
+    - The winning value is (re-)written to the canonical key and read back
+      before the legacy key is deleted — credential data is never deleted
+      without a verified copy existing elsewhere. If the legacy value
+      doesn't parse as a token dict, or the copy does not verifiably land,
+      the legacy key is left untouched rather than risk losing the only copy
+      of the grant.
+
+    Args:
+        store: The raw :class:`SecretStore` ``OAuthManager`` was constructed
+            with — the same store ``OAuthTokenStore`` reads and writes.
+        provider: Provider/connector slug, e.g. ``"google"``.
+    """
+    legacy_key = f"oauth.{provider}"
+    legacy_raw = store.get(legacy_key)
+    if not legacy_raw:
+        return  # nothing to migrate
+
+    try:
+        legacy_data = json.loads(legacy_raw)
+    except Exception:
+        return  # corrupt legacy value — nothing safe to copy, leave it alone
+    if not isinstance(legacy_data, dict):
+        return
+
+    # Deferred import: hachi.integrations.oauth_flow builds module-level
+    # singletons at import time (its own default-constructed OAuthTokenStore),
+    # which — via create_default_secret_store() — creates the Hachi
+    # config/data/cache/state/skills directories. Importing it lazily here
+    # (rather than at this module's top level) keeps merely `import
+    # hachi.core.oauth` free of that filesystem side effect; constructing an
+    # OAuthTokenStore with an explicit secret_store (as below) never calls
+    # create_default_secret_store(), so there is no repeated cost to doing
+    # this on every call.
+    from hachi.integrations.oauth_flow import OAuthTokenStore
+
+    token_store = OAuthTokenStore(secret_store=store)
+    canonical_data = token_store.load(provider)
+    if canonical_data is not None and _safe_expires_at(canonical_data) > _safe_expires_at(
+        legacy_data
+    ):
+        winner = canonical_data
+    else:
+        winner = legacy_data
+
+    token_store.save(provider, winner)
+    if token_store.load(provider) != winner:
+        # The copy did not verifiably land — do not delete the only known-good copy.
+        return
+    store.delete(legacy_key)
+
+
 class OAuthManager:
-    """Manages OAuth tokens and the browser-based authentication flow."""
+    """Manages OAuth tokens and the browser-based authentication flow.
+
+    T-57 half B: storage delegates to the web UI's OAuthTokenStore — the
+    single canonical "oauth2.<provider>" namespace (option b1 of the spec).
+    :meth:`get_token`/:meth:`save_token` route every read/write through it —
+    see their bodies for why the ``OAuthTokenStore`` import and construction
+    happen there (on demand) rather than here in ``__init__``: importing
+    ``hachi.integrations.oauth_flow`` at this module's top level would put
+    that module's own import-time filesystem side effects (its
+    default-constructed module-level ``OAuthTokenStore()`` singleton creates
+    the Hachi config/data/cache/state/skills directories) on every import of
+    ``hachi.core.oauth``, which is on the hot import path for far more of the
+    codebase than ``oauth_flow`` is. See :func:`_migrate_legacy_oauth_key`
+    for the one-time sweep of any surviving legacy "oauth.<provider>" key
+    from before this consolidation.
+    """
 
     def __init__(self, secret_store: SecretStore | None = None):
         self._store = secret_store or create_default_secret_store()
-
-    @staticmethod
-    def _key(provider: str) -> str:
-        return f"oauth.{provider}"
-
-    def _resolve_key(self, provider: str) -> str:
-        """Return the vault key holding this provider's token.
-
-        Prefers the agent prefix ("oauth." via :meth:`_key`); falls back to
-        the web-UI prefix ("oauth2.<p>") when only that one exists, and
-        returns the agent prefix when neither exists, so a fresh
-        authorisation lands there. :meth:`get_token` and :meth:`save_token`
-        both route through this so a refresh writes back to the key it read
-        from — one grant, one key (BB-157).
-        """
-        agent_key = self._key(provider)
-        if self._store.get(agent_key):
-            return agent_key
-        # BB-10: web UI stores tokens under "oauth2.<provider>"; fall back
-        # so web-authenticated sessions are visible to the agent.
-        web_ui_key = f"oauth2.{provider}"
-        if self._store.get(web_ui_key):
-            return web_ui_key
-        return agent_key
 
     @staticmethod
     def _require_google_client_id() -> str:
@@ -226,35 +313,37 @@ class OAuthManager:
     def get_token(self, provider: str) -> dict | None:
         """Load a saved token from secure storage.
 
-        Reads whichever vault key :meth:`_resolve_key` resolves to for this
-        provider — the agent's "oauth." prefix, or (BB-10) the web UI's
-        "oauth2." prefix when only that one holds a token.
+        Storage is delegated to :class:`OAuthTokenStore` — the web UI's
+        canonical "oauth2.<provider>" namespace (T-57 half B: one grant, one
+        key, one storage implementation). Before reading, sweeps any
+        surviving legacy "oauth.<provider>" key — written by this module
+        before this consolidation — onto the canonical key, so a provider
+        authorised before half B is not silently invisible.
         """
-        raw = self._store.get(self._resolve_key(provider))
-        if raw:
-            try:
-                return json.loads(raw)
-            except Exception:
-                return None
-        return None
+        _migrate_legacy_oauth_key(self._store, provider)
+        # Deferred import — see the OAuthManager class docstring. A store
+        # constructed with an explicit secret_store (as here) never calls
+        # create_default_secret_store(), so building it on every call is free.
+        from hachi.integrations.oauth_flow import OAuthTokenStore
 
-    def save_token(self, provider: str, token_data: dict):
-        """Save a token to secure storage with metadata.
+        return OAuthTokenStore(secret_store=self._store).load(provider)
 
-        Writes to the same key :meth:`get_token` would read for *provider*
-        (via :meth:`_resolve_key`) — BB-157: a refresh must update the key
-        the token was loaded from, not fork a second copy under the other
-        prefix.
+    def save_token(self, provider: str, token_data: dict) -> None:
+        """Save a token to secure storage.
+
+        Storage is delegated to :class:`OAuthTokenStore`, which writes the
+        single "oauth2.<provider>" key every OAuth token now lives under
+        (T-57 half B). Also sweeps a surviving legacy key first: a write from
+        a fresh :class:`OAuthManager` that never called :meth:`get_token`
+        first (e.g. ``hachi google-auth --revoke``) must still clear the copy
+        that actually holds the grant, not leave it live under the old
+        prefix while writing an unrelated value to the new one.
         """
-        key = self._resolve_key(provider)
-        metadata = {
-            "name": key,
-            "labels": {
-                "provider": provider,
-                "scope": str(token_data.get("scope", "")),
-            },
-        }
-        self._store.set(key, json.dumps(token_data), metadata=metadata)
+        _migrate_legacy_oauth_key(self._store, provider)
+        # Deferred import — see the OAuthManager class docstring.
+        from hachi.integrations.oauth_flow import OAuthTokenStore
+
+        OAuthTokenStore(secret_store=self._store).save(provider, token_data)
 
     def get_google_credentials(self, scopes: list[str]) -> str:
         """

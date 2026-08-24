@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import io
+import json
 from types import SimpleNamespace
 
 import pytest
 
-from hachi.core.oauth import OAuthCallbackHandler, OAuthManager
+from hachi.core.oauth import OAuthCallbackHandler, OAuthManager, _migrate_legacy_oauth_key
 
 
 class _MemorySecretStore:
@@ -308,3 +309,198 @@ def test_noninteractive_error_mentions_correct_cli_command(monkeypatch) -> None:
         f"Error message must NOT reference the non-existent 'hachi auth google' command, "
         f"but got: {msg!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# T-57 half B: storage now delegates to OAuthTokenStore (integrations/oauth_flow.py)
+# — the single "oauth2.<provider>" namespace. A one-time migration sweeps any
+# surviving legacy "oauth.<provider>" key (written by this module before T-57)
+# onto the canonical key: copy first, verify the copy landed, only then delete —
+# credential data is never deleted without a verified copy existing elsewhere.
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_legacy_oauth_key_copies_and_deletes_legacy_only_token() -> None:
+    """A provider authorised only via the old agent prefix ("oauth.<p>", before
+    T-57 half B) must be swept onto the canonical "oauth2.<p>" key — copy first,
+    verify, then delete — so it is not silently lost once nothing reads the
+    legacy prefix any more.
+    """
+    store = _MemorySecretStore()
+    store.set("oauth.google", json.dumps({"access_token": "ya29.agent-only"}))
+
+    _migrate_legacy_oauth_key(store, "google")
+
+    migrated = json.loads(store.get("oauth2.google") or "{}")
+    assert migrated.get("access_token") == "ya29.agent-only"
+    assert store.get("oauth.google") is None
+
+
+def test_migrate_legacy_oauth_key_noop_when_no_legacy_key() -> None:
+    """Nothing to migrate when only the canonical key (or neither) exists — the
+    canonical copy is left untouched and no legacy key is fabricated."""
+    store = _MemorySecretStore()
+    store.set("oauth2.google", json.dumps({"access_token": "ya29.web-ui"}))
+
+    _migrate_legacy_oauth_key(store, "google")
+
+    assert json.loads(store.get("oauth2.google") or "{}")["access_token"] == "ya29.web-ui"
+    assert store.get("oauth.google") is None
+
+    empty_store = _MemorySecretStore()
+    _migrate_legacy_oauth_key(empty_store, "google")
+    assert empty_store.get("oauth2.google") is None
+    assert empty_store.get("oauth.google") is None
+
+
+def test_migrate_legacy_oauth_key_legacy_wins_when_newer() -> None:
+    """If both keys hold tokens and the legacy "oauth.<p>" copy has the later
+    `expires_at` (a grant that forked before half A landed: half A's
+    `_resolve_key` always preferred the legacy key once populated, so every
+    refresh since kept it current while "oauth2.<p>" stayed frozen at
+    whatever it held the moment of the fork), the migration must keep the
+    fresher legacy value — overwriting the stale canonical copy — then
+    delete the legacy key.
+    """
+    store = _MemorySecretStore()
+    store.set(
+        "oauth2.google",
+        json.dumps({"access_token": "ya29.stale-web-ui", "expires_at": 1000.0}),
+    )
+    store.set(
+        "oauth.google",
+        json.dumps({"access_token": "ya29.live-agent-copy", "expires_at": 5000.0}),
+    )
+
+    _migrate_legacy_oauth_key(store, "google")
+
+    migrated = json.loads(store.get("oauth2.google") or "{}")
+    assert migrated.get("access_token") == "ya29.live-agent-copy", (
+        "migration must keep the fresher (later-expiring) legacy copy, not the stale web-UI one"
+    )
+    assert store.get("oauth.google") is None
+
+
+def test_migrate_legacy_oauth_key_canonical_wins_when_newer() -> None:
+    """If both keys hold tokens but the canonical "oauth2.<p>" copy has the
+    later `expires_at`, it must survive untouched.
+
+    Regression: a stale legacy "oauth.<p>" key can outlive a *fresh*
+    reconnect. `oauth_callback` (integrations/oauth_flow.py) writes a
+    brand-new token straight to "oauth2.<p>" via `OAuthTokenStore.save()`
+    without consulting any resolver — e.g. the user reconnects Google in the
+    web UI after the agent's copy had already forked under BB-157. Preferring
+    the legacy key unconditionally (as if the key name alone decided
+    freshness) would silently overwrite the token the user just consented to
+    with the stale one, then delete the only other copy — destroying it
+    unrecoverably. Precedence must be decided on the data (`expires_at`), not
+    the key name.
+    """
+    store = _MemorySecretStore()
+    store.set(
+        "oauth2.google",
+        json.dumps({"access_token": "ya29.fresh-reconnect", "expires_at": 9999.0}),
+    )
+    store.set(
+        "oauth.google",
+        json.dumps({"access_token": "ya29.stale-agent-copy", "expires_at": 1000.0}),
+    )
+
+    _migrate_legacy_oauth_key(store, "google")
+
+    migrated = json.loads(store.get("oauth2.google") or "{}")
+    assert migrated.get("access_token") == "ya29.fresh-reconnect", (
+        "the fresher canonical token was overwritten by a stale legacy copy — a token the "
+        "user just consented to was destroyed"
+    )
+    # The stale legacy key is still cleaned up even though it lost.
+    assert store.get("oauth.google") is None
+
+
+def test_migrate_legacy_oauth_key_ties_go_to_legacy() -> None:
+    """When neither token carries a usable `expires_at` (both missing, so both
+    count as 0 — a tie), the legacy copy wins. This preserves half A's own
+    resolver preference for the common case where neither side has enough
+    information to prove freshness.
+    """
+    store = _MemorySecretStore()
+    store.set("oauth2.google", json.dumps({"access_token": "ya29.stale-web-ui"}))
+    store.set("oauth.google", json.dumps({"access_token": "ya29.live-agent-copy"}))
+
+    _migrate_legacy_oauth_key(store, "google")
+
+    migrated = json.loads(store.get("oauth2.google") or "{}")
+    assert migrated.get("access_token") == "ya29.live-agent-copy"
+    assert store.get("oauth.google") is None
+
+
+def test_migrate_legacy_oauth_key_leaves_corrupt_legacy_value_alone() -> None:
+    """A legacy value that does not parse as a token dict must not be deleted —
+    there is nothing verified to have copied it to, so destroying the only
+    copy would be a silent credential loss."""
+    store = _MemorySecretStore()
+    store.set("oauth.google", "not-valid-json{{{")
+
+    _migrate_legacy_oauth_key(store, "google")
+
+    assert store.get("oauth.google") == "not-valid-json{{{"
+    assert store.get("oauth2.google") is None
+
+
+def test_migrate_legacy_oauth_key_does_not_delete_when_copy_unverified() -> None:
+    """Credential data: never delete without a verified copy. If a write to the
+    canonical key silently doesn't land, the legacy key must survive so the
+    token is not lost — simulated with a store whose set() is a no-op."""
+
+    class _WriteDroppingStore(_MemorySecretStore):
+        def set(self, name: str, value: str, metadata=None) -> None:
+            pass  # simulate a write that silently does not persist
+
+    store = _WriteDroppingStore()
+    # Seed directly (set() is broken by design above) so the legacy value is
+    # actually present for the migration to read.
+    store._items["oauth.google"] = json.dumps({"access_token": "ya29.only-copy"})
+
+    _migrate_legacy_oauth_key(store, "google")
+
+    assert store.get("oauth.google") is not None, (
+        "legacy key was deleted even though the copy to 'oauth2.google' never "
+        "verifiably landed — this would have destroyed the only copy of the grant."
+    )
+
+
+def test_get_token_migrates_a_legacy_only_token_transparently() -> None:
+    """OAuthManager.get_token must find — and migrate — a token that only
+    exists under the pre-T-57 legacy "oauth.<p>" prefix: not just return it,
+    but move it onto the canonical key so every subsequent read/write is
+    unambiguous.
+    """
+    store = _MemorySecretStore()
+    store.set("oauth.google", json.dumps({"access_token": "ya29.legacy-only"}))
+
+    manager = OAuthManager(secret_store=store)
+    result = manager.get_token("google")
+
+    assert result is not None
+    assert result["access_token"] == "ya29.legacy-only"
+    assert json.loads(store.get("oauth2.google") or "{}")["access_token"] == "ya29.legacy-only"
+    assert store.get("oauth.google") is None
+
+
+def test_revoke_without_a_prior_read_still_clears_a_legacy_only_token() -> None:
+    """`hachi google-auth --revoke` clears credentials via save_token() directly
+    (cli/main.py), without ever calling get_token() first. A token that has
+    only ever lived under the legacy "oauth.<p>" prefix must still be the one
+    --revoke clears — save_token() must migrate a surviving legacy key before
+    writing, not rely on get_token() having already done it.
+    """
+    store = _MemorySecretStore()
+    store.set("oauth.google", json.dumps({"access_token": "ya29.legacy-only"}))
+
+    manager = OAuthManager(secret_store=store)
+    manager.save_token("google", {})
+
+    assert store.get("oauth.google") is None, (
+        "the legacy copy of the grant survived a --revoke that never called get_token() first"
+    )
+    assert store.get("oauth2.google") == "{}"
