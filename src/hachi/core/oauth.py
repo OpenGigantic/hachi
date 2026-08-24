@@ -142,6 +142,26 @@ class OAuthManager:
     def _key(provider: str) -> str:
         return f"oauth.{provider}"
 
+    def _resolve_key(self, provider: str) -> str:
+        """Return the vault key holding this provider's token.
+
+        Prefers the agent prefix ("oauth." via :meth:`_key`); falls back to
+        the web-UI prefix ("oauth2.<p>") when only that one exists, and
+        returns the agent prefix when neither exists, so a fresh
+        authorisation lands there. :meth:`get_token` and :meth:`save_token`
+        both route through this so a refresh writes back to the key it read
+        from — one grant, one key (BB-157).
+        """
+        agent_key = self._key(provider)
+        if self._store.get(agent_key):
+            return agent_key
+        # BB-10: web UI stores tokens under "oauth2.<provider>"; fall back
+        # so web-authenticated sessions are visible to the agent.
+        web_ui_key = f"oauth2.{provider}"
+        if self._store.get(web_ui_key):
+            return web_ui_key
+        return agent_key
+
     @staticmethod
     def _require_google_client_id() -> str:
         client_id = _google_client_id()
@@ -206,17 +226,11 @@ class OAuthManager:
     def get_token(self, provider: str) -> dict | None:
         """Load a saved token from secure storage.
 
-        The agent stores tokens under the "oauth." prefix (via :meth:`_key`).
-        The web UI (``integrations/oauth_flow.py``) stores them under the
-        "oauth2." prefix.  Fall back to the web-UI prefix so that a session
-        authenticated through the web UI is immediately visible to the agent
-        without requiring a separate ``hachi google-auth`` run.
+        Reads whichever vault key :meth:`_resolve_key` resolves to for this
+        provider — the agent's "oauth." prefix, or (BB-10) the web UI's
+        "oauth2." prefix when only that one holds a token.
         """
-        raw = self._store.get(self._key(provider))
-        if not raw:
-            # BB-10: web UI stores tokens under "oauth2.<provider>"; fall back
-            # so web-authenticated sessions are visible to the agent.
-            raw = self._store.get(f"oauth2.{provider}")
+        raw = self._store.get(self._resolve_key(provider))
         if raw:
             try:
                 return json.loads(raw)
@@ -225,15 +239,22 @@ class OAuthManager:
         return None
 
     def save_token(self, provider: str, token_data: dict):
-        """Save a token to secure storage with metadata."""
+        """Save a token to secure storage with metadata.
+
+        Writes to the same key :meth:`get_token` would read for *provider*
+        (via :meth:`_resolve_key`) — BB-157: a refresh must update the key
+        the token was loaded from, not fork a second copy under the other
+        prefix.
+        """
+        key = self._resolve_key(provider)
         metadata = {
-            "name": self._key(provider),
+            "name": key,
             "labels": {
                 "provider": provider,
                 "scope": str(token_data.get("scope", "")),
             },
         }
-        self._store.set(self._key(provider), json.dumps(token_data), metadata=metadata)
+        self._store.set(key, json.dumps(token_data), metadata=metadata)
 
     def get_google_credentials(self, scopes: list[str]) -> str:
         """
