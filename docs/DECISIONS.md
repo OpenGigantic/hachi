@@ -3689,3 +3689,70 @@ pre-rendered strings, and merging the two is its own design task.
 **Locked by:** `tests/test_prompt_registry.py` (19 tests — 1 snapshot digest lock, 17
 move-is-lossless byte pins, 1 completeness lock); `tests/test_prompt_composer.py` +
 `tests/test_prompt_cache_ordering.py` (18 pre-existing tests, unchanged).
+
+---
+
+## T-66 — `Approval.id` is the gateway's `request_id`, and the guard outlives the map (2026-08-24) **[ADR]**
+
+**Decision.** The frontend's `Approval.id` changes from a locally-minted `number` to the
+gateway's own `request_id` string, and the module-level `Map<string, number>` bridging the two
+id spaces is deleted. `HistoryItem.id` follows it to `string` — approval ids flow into history
+rows via `resolveApproval`/`tickApprovals`, and it is a pure React list key (`key={h.id}`).
+No `string | number` unions: a union propagates into every consumer and defeats the point.
+
+**The spec was partly stale, again because of our own earlier work.** T-66 was anchored to
+`main @ bd24afe`; Wave 1's `d82a48f` (T-17 + T-18) then landed in the same files. Three of the
+spec's load-bearing claims were false by the time we ran it:
+
+- §3.3's centrepiece — "the miss path is `if (requestId) { …POST… }` with **no `else`**" — was
+  already fixed. T-18 added the `else`, set an `"unknown-id"` outcome, and surfaced a toast.
+- §2's "Defect 2 — silent failure" was already closed, along with the optimistic-first store
+  mutation.
+- `approvals.test.ts`, listed as new, already existed with two T-18 tests in it.
+
+Residual scope was Defect 1 only — the id model. This is the second consecutive task (see
+T-77) whose file list had drifted under our own commits: re-derive anchors from the current
+tree before dispatch and treat the pack's line numbers as hints, not facts.
+
+**What the map actually was.** `approveByRequestId(requestId)` did a string → number → string
+round-trip: `map.get(requestId)` → `uiId` → `approve(uiId)` → `requestIdForUiId(uiId)` (a linear
+scan) → the same string it started with. The map existed solely to satisfy `id: number`.
+
+**Why deleting it was safe.** The map's only population point was `adaptApproval`, called only
+from `loadApprovals()` — the same population point as the store's `approvals` array. The map
+was therefore a private mirror of the pending list. That is what let the `"unknown-id"` guard
+survive: its oracle moved from `_idByRequestId.get(id)` to
+`useStore.getState().approvals.some(a => a.id === id)`, which is behaviourally equivalent
+rather than weaker, with no hydration-timing gap (the leash path is fed by the same
+`loadApprovals()` call on the SSE event).
+
+**Why the guard was kept at all.** T-66's framing — deleting the map removes the failure mode
+rather than defending it — could be read as "the guard is now unnecessary". It is not.
+Refusing to POST an id the gateway never showed us is load-bearing T-18/BB-106 behaviour,
+independent of how many id spaces exist. `DecisionOutcome` keeps all three members, and T-18's
+test kept its assertions byte-identical; only its id literal changed.
+
+**Deliberately not done.** `approveByRequestId`/`declineByRequestId` stay separate exports even
+though their signatures now coincide with `approve`/`decline`: the contracts differ
+(`Promise<boolean>` for the chat leash vs `Promise<void>` + toast for the approvals screen).
+Collapsing them is a second refactor. `chat.ts` needed no change.
+
+**No bug-bank entry for the task itself** — it is a refactor; nothing returned a wrong answer
+beforehand, and the spec explicitly warns against attributing the reported auto-decline symptom
+to this code (CORRECTIONS.md traces that to BB-77). One entry was filed for a regression
+introduced *during* the work and caught in review rather than by the suite: **BB-156**.
+
+**Open, not fixed here (P1).** `routes/index.tsx` imports nothing from
+`lib/data/domains/approvals` and wires the Home screen's "What needs you" Allow/Decline
+directly to the raw store actions, so those clicks mutate local UI state and never POST to the
+gateway — the card vanishes from every list while the agent stays blocked until the 180 s
+timeout auto-denies. `approvals.tsx` (the Leash screen) does it correctly. This is the BB-106
+class at a second call site T-18 never covered, latent only because `GET /approvals` returns
+empty until T-01 lands. Not fixed inside T-66: the fix requires deciding error-surfacing
+behaviour — T-18's design space — and the spec's §9 forbids a diff in which a type migration
+and an error-handling redesign are indistinguishable. No bug-bank entry, because the bug is
+still open.
+
+**Locked by:** `frontend/src/lib/data/domains/approvals.test.ts` (10 tests — 6 pre-existing
+T-17/T-18 tests unchanged, 1 characterization test pinning that the gateway's `request_id`
+reaches the `POST /approvals/{id}` URL unchanged, 3 BB-156 regression tests).
