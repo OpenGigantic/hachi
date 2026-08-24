@@ -1,4 +1,40 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+const apiGet = vi.fn();
+const apiSend = vi.fn();
+
+// Canonical mock block (see approvals.test.ts / store.test.ts). chat.ts
+// statically imports useStore, ../client and ../sse at module scope (plus
+// ./approvals, ./spend and ../../notifications, which themselves import
+// ../client) — the "live-session reset" describe block below imports chat.ts's
+// live functions, which pulls in the whole graph. All three need mocking or
+// the import performs real network/storage calls.
+vi.mock('../client', () => ({
+  USE_MOCKS: false,
+  apiGet: (...args: unknown[]) => apiGet(...args),
+  apiSend: (...args: unknown[]) => apiSend(...args),
+  registerReconnectCallback: vi.fn(),
+  isNetworkError: () => false,
+  API_BASE: '/api',
+  authHeaders: () => ({}),
+  ApiError: class ApiError extends Error {
+    status: number;
+    constructor(message: string, status = 500) {
+      super(message);
+      this.name = 'ApiError';
+      this.status = status;
+    }
+  },
+}))
+
+vi.mock('../sse', () => ({
+  streamSSE: vi.fn(),
+}))
+
+vi.mock('../../notifications', () => ({
+  ensureNotificationPermission: vi.fn(),
+  notifyApprovalPending: vi.fn(),
+}))
 
 import { buildTurnKey, extractInjectedAttachments, reconstructMessagesFromEvents } from './chat'
 
@@ -99,5 +135,51 @@ describe('buildTurnKey', () => {
 
   it('produces the same key for the same nonce and id (retry behaviour preserved)', () => {
     expect(buildTurnKey('aaaa', 102)).toBe(buildTurnKey('aaaa', 102))
+  })
+})
+
+// ============================================================
+// T-65 (CF-16): chat.ts kept 17 module-level mutables as a runtime kernel
+// (the live session id, SSE cursor, streaming delta buffers, rAF flush
+// handles and per-turn cost baselines). The ~10-line reset sequence was
+// duplicated by hand across four functions (loadConversationHistory's
+// "no sessions left" guard, switchSessionLive, deleteSessionLive,
+// newSessionLive) instead of living in one place.
+// ============================================================
+describe('live-session reset (T-65 / CF-16)', () => {
+  beforeEach(() => {
+    apiGet.mockReset()
+    apiSend.mockReset()
+    // Permissive defaults: every gateway call the reset paths touch
+    // (GET /sessions/{id}/events, GET /sessions, DELETE /sessions/{id})
+    // resolves cleanly so the reset block under test actually runs instead
+    // of short-circuiting through a catch — see the spec's note on
+    // deleteSessionLive's apiSend("DELETE", ...) needing to resolve.
+    apiGet.mockResolvedValue([])
+    apiSend.mockResolvedValue({})
+  })
+
+  it('every session-reset path leaves identical kernel state', async () => {
+    // Regression: the ~10-line reset sequence (abortSse, resetDeltaBuffer,
+    // _liveSessionId, persistSessionId, _cursor, _hachiMsgId, _textLineActive,
+    // _lastKnownCumCost, _costCumAtTurnStart, _spentAtTurnStart) was copied
+    // by hand into FOUR functions. A fifth caller — or an edit applied to
+    // three of the four — would silently leave a stale cursor and replay a
+    // previous session's events into a new one.
+    const chat = await import('./chat')
+
+    await chat.switchSessionLive('session-a')
+    chat.newSessionLive()
+    const afterNew = chat.getKernelSnapshot()
+
+    await chat.switchSessionLive('session-b')
+    await chat.deleteSessionLive('session-b')
+    const afterDelete = chat.getKernelSnapshot()
+
+    expect(afterDelete).toEqual(afterNew)
+    expect(afterNew.liveSessionId).toBeNull()
+    expect(afterNew.cursor).toBe(0)
+    expect(afterNew.hachiMsgId).toBeNull()
+    expect(afterNew.textLineActive).toBe(false)
   })
 })
