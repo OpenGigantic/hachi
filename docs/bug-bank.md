@@ -5005,6 +5005,186 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   `::test_clearing_a_token_updates_the_key_that_actually_holds_it`. BB-10's sibling test
   `test_get_token_finds_web_ui_oauth2_prefix` still passes, unmodified.
 
+### BB-158 — Moving code between files silently breaks location-keyed test and tooling assumptions
+
+- **Symptom:** T-46 relocated 20 read-model methods (including `snapshot_gardener_diffs` and two
+  defaulted-`getattr` call sites) from `AgentSession` (`gateway/orchestrator.py`) into a new facade
+  (`gateway/session_read_models.py`), preserving every line of logic verbatim. Two independent,
+  unrelated checks broke anyway.
+  1. `tests/test_memory_gardener_wiring.py` monkeypatched `hachi.gateway.orchestrator.get_hachi_paths`
+     to redirect a file read to a tmp directory. Once the read lived in a module that imports
+     `get_hachi_paths` into its own namespace, the patch stopped taking effect — the moved code
+     silently read the real machine's data directory and returned `[]`.
+  2. `scripts/check_getattr.py`'s ALLOWLIST is keyed `"<path>:<attr>"` *deliberately* rather than by
+     line number, so it survives unrelated edits. Relocation is exactly the case that key format does
+     not survive: two already-allowlisted sites became "unallowlisted" purely by moving files, failing
+     `tests/test_check_getattr.py` — a **blocking** preflight step, not an advisory one.
+- **Root cause:** both mechanisms anchor to *which module the code lives in*, not to its text or
+  behaviour. A verbatim code-motion refactor is invisible to behavioural tests — return values are
+  byte-identical — and is precisely what location-keyed mechanisms are blind to.
+- **Fix:** for (1) the **test** was fixed, not the production code. This repo already had the precedent
+  three functions further down the same file: T-41 moved code out of `cli/main.py`, and those tests
+  were updated to patch `hachi.gateway.in_process_runtime`'s binding. Both gardener tests now patch
+  `hachi.gateway.session_read_models.get_hachi_paths`, same manual assign/restore style, assertions
+  byte-identical, only the module object changed. An earlier draft instead had production code import
+  `get_hachi_paths` **through** `orchestrator.py` (itself only a re-export of `core.paths`) via a
+  deferred import, so the stale patch target would keep resolving — rejected. For (2), two
+  `session_read_models.py` entries were added to the allowlist, and `orchestrator.py:_last_user_query`
+  — whose last call site had just moved out — was deleted in the same change.
+- **Avoid:** when you *relocate* code rather than rewrite it, grep the repo for the OLD module's dotted
+  path combined with each moved symbol before calling the move "verbatim". Then fix it in both
+  directions. Point the test or lint reference at the **new** location — never make new code reach
+  backward through the old module to keep a stale patch target alive, which is a booby trap for the
+  next reader who deletes the "pointless" indirection. And withdraw the grant at the **old** location:
+  when a move takes the last flagged call site out of a file, the leftover allowlist entry is a silent
+  pre-authorisation for that attribute to reappear there unnoticed. Same "the list only ever shrinks"
+  discipline this repo already applies to the import-linter contracts.
+- **Locked by:** `tests/test_memory_gardener_wiring.py::test_snapshot_gardener_diffs_no_longer_masked_by_getattr`
+  and `::test_get_memory_diffs_route_returns_real_gardener_output_end_to_end`;
+  `tests/test_check_getattr.py::test_src_tree_has_no_unallowlisted_violations` (35 allowlist entries:
+  2 added, 1 removed as stale).
+
+### BB-159 — Community pack installs bypassed the entire consent and integrity gate
+
+- **Symptom:** `hachi skill pack install user/repo` fetched an archive from the internet and copied
+  `.og` files into `<skills_dir>/packs/<name>/` with **no consent sheet, no confirmation prompt, no
+  declared scopes and no content hashes** — while `hachi ogpack install`, writing to the *same*
+  directory, required all four.
+- **Root cause:** two independently-grown installers. `core/og_pack.py` (`pack.toml`) implemented
+  scopes, `render_consent_sheet`, `typer.confirm(default=False)` and `verify_pack_checksums`;
+  `core/community_packs.py` (`pack.json`) implemented none of them. Both resolved `skills_dir` the same
+  way, both wrote to `skills_dir/"packs"`, and `SkillEngine.load_directory` globs `**/*.og` — so
+  consented and unconsented skills loaded identically.
+- **Fix:** `community_packs` demoted to a fetcher (`fetch_pack_to_dir`, writes nothing under
+  `skills_dir`) plus a manifest synthesiser (`synthesise_pack_manifest`) that declares zero scopes and
+  computes `sha256`s over the files actually fetched. `pack_install` now runs fetch → synthesise →
+  `write_pack_toml` → render sheet → confirm-or-exit → `install_ogpack_from_dir`. The confirm-or-exit
+  logic became one shared `confirm_pack_consent_or_exit` in `cli/commands/pack.py`, which
+  `ogpack_install`, `ogpack_update` and the community path all call — previously two inline copies.
+- **Avoid:** when two code paths write to the same destination, they must share the same gate. A
+  security control guarding one of N paths to a shared resource is decoration. Assert on the **outcome
+  on disk** after declining, not on whether a prompt function was called.
+- **Locked by:** `tests/test_community_pack_consent.py` — `test_community_pack_install_refuses_without_consent`
+  plus 7 more in the same file.
+
+### BB-160 — `.installed.toml` hand-built with f-strings: a Windows path corrupts it and the pack silently vanishes from `pack list`
+
+- **Symptom:** a pack installs successfully — files on disk, `verify_pack_checksums` passes — but
+  `hachi pack list` / `list_ogpacks` does not show it. Reproduces on Windows for any locally-sourced
+  pack, community or `.ogpack`, independent of the T-56 work that found it.
+- **Root cause:** `og_pack._write_installed_meta` built `.installed.toml` with `f'source = "{source}"'`
+  instead of a TOML serialiser. `source` is a filesystem path; on Windows it is backslash-separated,
+  and TOML basic strings treat `\` as an escape introducer, so a real Windows path routinely produces
+  invalid TOML. `_read_installed_meta`'s bare `except Exception: return {}` then swallows the
+  `TOMLDecodeError`, turning "corrupt on write" into "this record never existed".
+- **Fix:** `_write_installed_meta` now builds the document with `tomlkit` — already a declared
+  dependency used by four other modules, and the same pattern as `config_loader.py`.
+- **Avoid:** never hand-build TOML or JSON by interpolating platform-derived strings, paths above all;
+  use the format's real serialiser. And a bare `except Exception: return {}` around a parse deserves a
+  second look — it converts a write-side bug into a silently missing record, which is far harder to
+  find than a crash.
+- **Locked by:** `tests/test_community_pack_consent.py::test_community_pack_install_is_visible_to_ogpack_list`.
+
+### BB-161 — The consent sheet silently dropped the scope id it was asking the user to approve
+
+- **Symptom:** `hachi pack install` / `hachi pack update` rendered a consent sheet showing a scope's
+  prose description ("Read Gmail messages and labels") but never its id. The terminal printed
+  `+    Read Gmail messages and labels` where `+  [gmail.read]  Read Gmail messages and labels` had
+  been written.
+- **Root cause:** `render_consent_sheet` / `render_scope_diff` correctly embed scope ids in literal
+  brackets. `console.print(sheet)` is a Rich `Console.print`, which parses `[...]` as a markup tag by
+  default and **silently drops** an unrecognised one — there is no `gmail.read` style — rather than
+  echoing it or erroring.
+- **Fix:** `markup=False` at the two print call sites in `cli/commands/pack.py`. Both build plain text
+  with no intentional Rich styling (verified: the renderers emit no style tags at all), so disabling
+  markup there is unconditionally correct. `og_pack.py`'s renderers were not touched — they were
+  already right.
+- **Note on scope:** pre-existing, and not introduced by T-56. It moved into scope because T-56 made
+  that same print the gate for community packs, which previously had no sheet at all — the bug did not
+  change, its blast radius did. A consent screen that drops the identifier while keeping only the prose
+  is a consent-integrity defect, not a display nit: the id is the precise thing being granted.
+- **Avoid:** any programmatically built string passed to `Console.print()` needs `markup=False` (or
+  `rich.markup.escape()`) unless it was deliberately authored with Rich tags. A silently dropped tag
+  looks like working code in every test that asserts on the **returned** string — test what the user
+  actually sees rendered.
+- **Locked by:** `tests/test_community_pack_consent.py` — `test_pack_install_consent_sheet_shows_scope_id_not_just_description`,
+  `test_pack_update_scope_diff_shows_scope_id_not_just_description`.
+
+### BB-162 — A migration that picks its winner by key name instead of by data destroys the fresher credential
+
+- **Symptom:** caught in review, before it shipped. T-57 half B's one-time sweep of the legacy
+  `oauth.<p>` vault key onto the canonical `oauth2.<p>` key made the legacy copy authoritative
+  **whenever both keys existed**, then deleted it after copying. In the reachable case where the user
+  reconnects Google in the web UI while both keys exist, that copies a stale token over the one the
+  user just consented to and deletes the evidence — unrecoverable.
+- **Root cause:** the precedence rule reasoned from half A's resolver, which preferred `oauth.<p>`, and
+  concluded the legacy copy is always the live one. True for a grant that forked *before* half A. False
+  the moment `oauth_callback` runs: it calls `OAuthTokenStore.save()` **directly**, consulting no
+  resolver, so canonical can just as easily be the fresher copy. The spec's own rule ("migrate only if
+  canonical does not exist") avoided the destruction but had the mirror-image failure — it would hand
+  the agent a stale token whenever the legacy copy was the live one.
+- **Fix:** decide on the data, not the key name. `_safe_expires_at` (missing or unparseable → `0`),
+  canonical wins only when strictly greater, ties go to legacy. The winner is written to the canonical
+  key and **read back and compared** before the legacy key is deleted — credential data is never
+  deleted without a verified copy elsewhere.
+- **Avoid:** when a migration must choose between two copies of the same record, choose by a property
+  *of the records* — a timestamp, a version — not by which name they are stored under. A name-based
+  rule encodes an assumption about history that the next code path to write that key will violate. And
+  a migration over credentials is one-way: verify the copy landed before deleting the original.
+- **Locked by:** `tests/test_oauth.py` — `test_migrate_legacy_oauth_key_canonical_wins_when_newer`,
+  `test_migrate_legacy_oauth_key_legacy_wins_when_newer`, `test_migrate_legacy_oauth_key_ties_go_to_legacy`.
+
+### BB-163 — `chat.ts`'s live-session reset was hand-duplicated in four functions
+
+- **Symptom:** no confirmed user-visible failure — this is the mechanism, caught before it fired. A
+  fifth "start a fresh session" path, or an edit applied to three of the four existing ones, would
+  leave a stale `_cursor` and replay the previous session's SSE events into the new session
+  (cross-session transcript bleed), with none of the responsible state visible in the store or in
+  devtools.
+- **Root cause:** `frontend/src/lib/data/domains/chat.ts` kept 17 module-level mutables as a runtime
+  kernel, and the ~10-line reset sequence was copied verbatim into four functions
+  (`loadConversationHistory`'s "no sessions left" guard, `switchSessionLive`, `deleteSessionLive`,
+  `newSessionLive`). Three copies were byte-identical; the fourth differed only in setting a target
+  session id instead of null.
+- **Fix:** extracted `sessionRef` / `streamBuffers` / `costMeter` — three store-free state objects with
+  their own `reset()` — into `frontend/src/lib/data/domains/chat/`, plus one `resetLiveSession(nextSessionId)`
+  that all four sites call. Each site keeps its own `hydrate(...)` call: the kernel never touches store
+  state. `getKernelSnapshot()` makes the kernel inspectable for the first time. All 16 pre-existing
+  exports keep their names and signatures; `store.ts` was not touched.
+- **Avoid:** duplicated reset logic is a latent state bug with a scheduled arrival date. Once more than
+  two call sites reset the same set of variables, that set is an object and the reset is its method —
+  do it before the third copy, not after the fourth.
+- **Locked by:** `frontend/src/lib/data/domains/chat.test.ts` — "every session-reset path leaves
+  identical kernel state".
+
+### BB-164 — A constructor that resolves environment state makes a "pure" library un-embeddable, and import-linter cannot see it
+
+- **Symptom:** `SkillEngine()` raised in any process without a Hachi installation. The constructor
+  called `get_hachi_paths()` before any `.og` file had been named. Tests could not isolate usage state
+  without monkeypatching platform paths, and `get_stale_skills` / `get_usage_report` were untestable
+  without a real home directory.
+- **Root cause:** persistent usage tracking was added straight onto the class that owns parsing and
+  retrieval, and its file path was resolved in `__init__` rather than injected. The class passed
+  import-linter — `og_engine → core` is the one permitted direction — so the coupling was invisible to
+  the architectural rail. It was a *constructor* dependency on environment state, not an import-layer
+  violation.
+- **Fix:** a defaulted keyword-only `usage_path: Path | None = None`, so all 20 `src/` and 62 `tests/`
+  construction sites were untouched, and `get_hachi_paths()` is called only when it is `None`. Usage
+  tracking and embedding rank were extracted to `og_engine/usage.py` and `og_engine/embedding.py`, with
+  `SkillEngine`'s methods kept as thin delegations. `UsageTracker` still loads the file eagerly at
+  construction — deliberately, to preserve pre-T-73 behaviour; what changed is where the path comes
+  from, not when the read happens.
+- **Avoid:** a constructor must not resolve environment state. Inject the path with a default so no
+  call site changes, and let composition roots decide. import-linter cannot see this class of coupling:
+  if a "pure" library cannot be constructed with its path resolver patched to raise, it is not pure.
+  Related trap: `SkillEngine.with_role()` builds views via `__new__` + `__dict__.update`, so extracted
+  collaborators are shared by reference — back-compat attribute access (`engine._usage`,
+  `engine._usage_path`, `engine._emb_collection`, all poked directly by pre-existing tests) must be a
+  **property** reading through the shared collaborator, not a plain attribute snapshotted at
+  `with_role()` time, or a view stops seeing state recorded on the engine after it was created.
+- **Locked by:** `tests/test_og_engine.py` — `test_engine_constructs_without_a_hachi_home`,
+  `test_injected_usage_path_is_used_verbatim`, `test_with_role_view_shares_the_usage_tracker`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

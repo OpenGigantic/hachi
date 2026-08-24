@@ -3823,3 +3823,185 @@ entries lock fixed bugs.
 
 **Locked by:** `tests/test_oauth.py` — 14 tests: 12 pre-existing and unchanged, 1 regression test
 for the write-back key, 1 characterization test for the clear path.
+
+---
+
+## Wave 1 of the parallel push — five tasks in one tree (2026-08-24) **[ADR]**
+
+**Decision.** T-46, T-56, T-57 half B, T-65 and T-73 were implemented concurrently by five agents in a
+single working tree, each holding an exclusive allow-list of files. This is the first multi-agent batch
+since Batch A, and the constraint that shaped it is physical rather than procedural: **four of the
+eleven remaining tasks (T-44, T-46, T-58, T-75) all rewrite `gateway/orchestrator.py`**, and T-70
+relocates ~300 test files. Those cannot be parallelised at all, which is why finishing the remaining
+pack takes waves rather than one fan-out. T-46 held the sole `orchestrator.py` lock for this wave.
+
+**What the wave cost, and what it bought.** Running five at once removed the orchestrator's own
+pre-dispatch spec derivation — the practice that caught the stale T-77 and T-66 specs and the T-66
+regression. It was replaced with a weaker substitute: each agent was told to re-derive its own anchors
+and stop if a spec claim proved false. That worked better than expected — **every one of the five specs
+had at least one false claim**, and two contained test sketches that cannot pass by construction — but
+it is a downgrade, and the compensating control moved entirely to post-hoc verification. Every
+finding below was confirmed against the source before acceptance; three of the five needed a
+round-trip. Two central instructions were changed for the batch: no agent could assign a bug-bank
+number (five agents would all have taken BB-158), and each was told other agents were live in the tree
+and to never act on `git status` output for files it did not create.
+
+**Three bugs were found by agents verifying acceptance criteria, none predicted by any spec** — see
+BB-160 (a Windows path corrupts `.installed.toml`, so an installed pack silently vanishes from
+`pack list`), BB-162 (a migration tiebreak that destroys a freshly-consented credential) and BB-158
+(a monkeypatch that stops working when the code it patches moves). That ratio is the argument for
+acceptance criteria that name an observable outcome rather than a code shape.
+
+---
+
+## T-46 — `AgentSession`'s 20 read models move behind a facade (2026-08-24) **[ADR]**
+
+**Decision.** The 20 `snapshot_*`/`query_*` bodies move verbatim to a new `SessionReadModels`
+(`gateway/session_read_models.py`); `AgentSession` keeps 20 one-line forwarders. `orchestrator.py` is
++42/−196. `core/runtime_read_models.py` has zero diff, as the spec required.
+
+**The judgement call that mattered.** The spec's illustrative facade captures `skill_engine`,
+`memory`, `vault`, `session_store` and `loop` as flat constructor values. Three of those do not exist
+at construction time: `self.vault = None` at `orchestrator.py:539`, with `set_vault()` and
+`set_session_store()` assigning later — real sessions always call them *after* `__init__`. A literal
+constructor capture would have frozen `vault`, `_session_store` and `_session_id` at `None` for the
+life of the session, silently emptying `memory_facts`, `memory_recall`, `recent_sessions`,
+`session_messages` and half of `subagent_reports` in every real boot — a dead feature reporting
+success. Those three are passed as getter callables resolved per call, documented at length so nobody
+"simplifies" them back.
+
+**Spec claims that were false.** §3.5 calls `snapshot_gardener_diffs` dead with zero callers; T-08
+(`f618d25`) had already wired it end-to-end through `GET /memory/diffs`. §7's sketch asserts
+`isinstance(result, (tuple, list, dict))` for all 20, but `snapshot_session_state` and
+`snapshot_mcp_inventory` return frozen dataclasses — copied literally it would report a false "type
+changed" regression against unchanged code. A 21st method, `snapshot_events_base`, landed after the
+spec's anchor; it was deliberately left on `AgentSession` to match the enumerated list rather than
+widen scope unilaterally. **Open fast-follow:** move it, and retire the 20 forwarders.
+
+**What went back.** Two location-keyed breakages, both now BB-158 — including a first attempt that had
+production code import `get_hachi_paths` through `orchestrator.py` so a stale patch target would keep
+resolving. The repo's own T-41 precedent, three functions below in the same test file, settles it: fix
+the reference, not the code.
+
+---
+
+## T-56 — every pack install path goes through one consent gate (2026-08-24) **[ADR]**
+
+**Decision (P1).** `hachi skill pack install user/repo` was fetching an archive from the internet and
+writing `.og` files into the same `skills_dir/packs/` that `hachi ogpack install` guards with scopes, a
+consent sheet, a default-No prompt and checksums. `community_packs` is now a fetcher plus a manifest
+synthesiser that declares zero scopes and computes real hashes; the install path renders the sheet and
+requires confirmation. One `confirm_pack_consent_or_exit` in `cli/commands/pack.py` now serves
+`ogpack_install`, `ogpack_update` and the community path — previously two inline copies. See BB-159.
+
+**Two adjacent bugs were fixed rather than filed.** BB-160 (`.installed.toml` hand-built with
+f-strings; a Windows path corrupts it and the pack disappears from `pack list`) was found by verifying
+an acceptance criterion, not by looking for it. BB-161 (Rich swallowing `[gmail.read]` from the consent
+sheet) was pre-existing and initially classified as cosmetic; it was escalated because this task made
+that same print the gate for community packs, which previously had no sheet at all. The bug did not
+change — its blast radius did, and a consent screen that drops the identifier while keeping only the
+prose is a consent-integrity defect.
+
+**Deliberate:** the sheet still prints under `--json --yes`, routed to stderr, so the consent record is
+always emitted on a channel that cannot corrupt machine-readable stdout. Two pre-existing tests in
+`test_skill_packs.py` gained `--yes`, and one moved from `result.output` to `result.stdout` — neither
+weakens anything: their subject was always "install succeeds and reports the pack name", never
+"consent is not required", and the new behaviour is locked positively by
+`test_community_pack_install_refuses_without_consent`. click 8.4.1 has no `mix_stderr` parameter, so
+the two streams are genuinely separate.
+
+**Honest residue:** `grep "typer.confirm" src/hachi/cli/commands/` shows one install-consent call site
+plus three unrelated confirmations (`ogpack_remove`, `mcp.py`, `session.py`). The install gate is
+unified; the grep is not literally singular.
+
+---
+
+## T-57 half B — one OAuth namespace, and one primitive that could not move (2026-08-24) **[ADR]**
+
+**Decision.** `core/oauth.py` delegates storage to `integrations/oauth_flow.py`'s `OAuthTokenStore`;
+`_key`/`_resolve_key` are deleted and every token lives under `oauth2.<p>`. A one-time
+`_migrate_legacy_oauth_key` sweeps any surviving `oauth.<p>`. The dead `_refresh_token` (zero callers)
+is deleted. `hachi.core → hachi.integrations` is permitted by all three import-linter contracts, and
+`oauth_flow` does not import `core.oauth`, so there is no cycle.
+
+**Step 9 was not implementable and the spec is wrong about it.** The spec calls for `_exchange_token`
+to be deleted in favour of `oauth_flow._exchange_code`. `_exchange_code` takes no `code_verifier` — no
+PKCE — and hardcodes `redirect_uri()`, the gateway's fixed callback. The loopback flow uses PKCE and an
+ephemeral `http://127.0.0.1:<port>/callback`, so routing it through `_exchange_code` would send a
+`redirect_uri` in the token exchange that does not match the authorize step and break every
+`hachi google-auth` with `redirect_uri_mismatch`. `_exchange_token` keeps its `invalid_client` /
+`redirect_uri_mismatch` / `invalid_grant` hints, and the loopback flow, `OAuthCallbackHandler` and
+`_build_pkce` are untouched. **Open:** the exchange/refresh consolidation, which needs PKCE and a
+caller-supplied redirect URI in the connector stack first.
+
+**Two corrections made in review** — the migration tiebreak (BB-162) and a module-level
+`from hachi.integrations.oauth_flow import …` that put five `mkdir` calls on `core.oauth`'s import
+path, via that module's default-constructed singleton. Not a credential prompt and not a `.env` read,
+so BB-2 was not literally broken, but `core.oauth` is imported far more widely than `oauth_flow`, and
+"core resolves lazily at call time" is the rule that exists to prevent exactly this. Now a
+function-level import at three sites; `OAuthTokenStore(secret_store=…)` with an explicit store never
+calls the default factory, so per-call construction is free.
+
+**Also open, found while reading:** `core/oauth.py` resolves only the legacy bare
+`GOOGLE_CLIENT_ID`/`_SECRET`, while `ConnectorDef.client_id()` prefers the canonical
+`HACHI_OAUTH_GOOGLE_CLIENT_ID`. A user who configures the documented canonical names sees the web UI
+report Google as **configured** while `hachi google-auth` and every Google tool call fail with
+"Missing GOOGLE_CLIENT_ID". Reproduced, not fixed — outside T-57's scope. No bug-bank entry: the bug is
+open, and those entries lock fixed bugs.
+
+---
+
+## T-65 — `chat.ts`'s runtime kernel becomes three objects (2026-08-24) **[ADR]**
+
+**Decision.** 17 module-level mutables become `sessionRef`, `streamBuffers` and `costMeter` under
+`frontend/src/lib/data/domains/chat/`, and the reset sequence copied into four functions becomes one
+`resetLiveSession(nextSessionId)`. Each call site keeps its own `hydrate(...)`: the kernel never
+touches store state. `store.ts` and the auto-generated `schema.d.ts` have zero diff. All 16
+pre-existing exports keep their names and signatures. See BB-163.
+
+**Verified rather than assumed**, because this refactor is exactly the shape BB-156 warns about: all
+ten statements the four reset blocks performed were traced into the new kernel, and the inlining of
+`resetRunLineBuffer` into `resetBuffers` is behaviour-preserving because at HEAD `resetDeltaBuffer`
+already called it as its sole caller. The diff contains zero lines mentioning `allowLeashLive` or
+`denyLeashLive`, so the leash failure toast T-66 depends on is untouched.
+
+**Spec claims that were false.** §5 and §12 both assert `switchSessionLive` "deliberately does not call
+`hydrate({ messages: [] })`" — checked against the spec's own anchor commit, it always did; the real
+difference between the four sites is how they patch the `sessions` array. §3.5 claims `chat.test.ts`
+already has established mocking to reuse; it had none.
+
+**Deliberate:** `sessionRef.eventsUnavailable` is not cleared on reset. The code's own comment says the
+Set is intentionally page-lifetime-scoped, session ids are server-minted UUIDs, and none of the four
+original reset blocks ever touched it — clearing it would be a behaviour change smuggled into a move.
+
+---
+
+## T-73 — the `.og` engine becomes constructible without a Hachi home (2026-08-24) **[ADR]**
+
+**Decision.** `SkillEngine.__init__` gains keyword-only `usage_path`/`db_path` seams and calls
+`get_hachi_paths()` only when they are `None`, so all 20 `src/` and 62 `tests/` construction sites are
+untouched. Usage tracking and embedding rank move to `og_engine/usage.py` and `og_engine/embedding.py`
+as collaborators, with `SkillEngine` keeping thin delegations — including for the private names
+(`_load_usage`, `_save_usage`, `_embedding_search`) that existing tests poke directly. See BB-164.
+
+**Why the rail could not see this.** `og_engine → core` is the one permitted direction, so
+import-linter passed throughout. The coupling was a constructor dependency on *environment state*, not
+an import-layer violation — a class of defect no layering contract detects.
+
+**The `with_role()` trap.** Views are built with `__new__` + `__dict__.update`, so collaborators are
+shared by reference. Every back-compat attribute is therefore a property reading through the shared
+collaborator rather than a snapshotted value; otherwise a view stops seeing state recorded on the
+engine after the view was created.
+
+**Stopped deliberately before `SkillAuthor`**, which the spec sanctions verbatim at line 281:
+"Stopping after (3) resolves the finding entirely." The reasons are real — `upsert_skill` must call
+back into `SkillEngine.load_file()` to hot-load, and moving `validate_dense` creates a circular import
+through `estimate_tokens`/`DENSE_TOKEN_BUDGET`, which `peek()` also uses. **Open fast-follow.**
+
+**Spec defects found:** §3.3 lists `get_usage_counters`/`reset_usage_counters` as `UsageTracker`
+methods, but their bodies operate on the unrelated M7 pass-depth counters — moving them would have
+coupled the tracker to `search`/`peek`/`resolve_node` internals. §7's sketch inherits that conflation
+and **cannot pass by construction**: `get_usage_counters()` returns a fixed
+`{pass1_search, pass2_peek, pass3_resolve}` dict that can never contain a `"shared-skill"` key. It is
+also non-hermetic — it reads the developer machine's real usage JSON, and failed `assert 2 == 1` from a
+previous run's residue.
