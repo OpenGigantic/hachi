@@ -294,31 +294,42 @@ class TestMCPBootTimeout:
     """MCP boot must fail gracefully when the server hangs past boot_timeout_seconds."""
 
     def test_hanging_start_fails_within_timeout(self) -> None:
-        """A server that hangs in start() must return False and not block."""
+        """A server that hangs in start() must return False and not block.
+
+        T-71: proven via an Event handoff instead of a `time.monotonic()`
+        measurement. `start()`'s boot_timeout is enforced by a real
+        `Thread.join(timeout=...)` (see mcp_client.py) — an OS-level blocking
+        wait with no injectable clock to swap in — so instead of comparing
+        elapsed wall-clock time to a threshold, this asserts directly that
+        `start()` returned WITHOUT the hang ever being released, i.e. its own
+        boot_timeout_seconds fired rather than it waiting for _start_inner to
+        finish.
+        """
         from hachi.core.mcp_client import MCPServerConnection
 
         conn = MCPServerConnection("slow-server", "python", boot_timeout_seconds=0.3)
 
-        # Patch _start_inner to hang forever.
+        # Patch _start_inner to hang until the test releases it (or a 60s safety cap).
         hang_event = threading.Event()
+        hang_released = threading.Event()
 
         def _hang_forever() -> bool:
-            hang_event.wait(timeout=60)  # blocks until test teardown
+            hang_event.wait(timeout=60)  # blocks until test teardown (or the safety cap)
+            hang_released.set()
             return True
 
         conn._start_inner = _hang_forever  # type: ignore[method-assign]
 
-        started = time.monotonic()
         result = conn.start()
-        elapsed = time.monotonic() - started
 
-        # Signal the hang to unblock (cleanup).
-        hang_event.set()
-
-        assert result is False, "A hanging boot must return False (UC-DEV-001)"
-        assert elapsed < 1.0, (
-            f"start() must return within boot_timeout + overhead, got {elapsed:.2f}s"
+        # start() must have returned WITHOUT the hang ever resolving.
+        assert not hang_released.is_set(), (
+            "start() waited for the hanging _start_inner to finish instead of timing out"
         )
+        assert result is False, "A hanging boot must return False (UC-DEV-001)"
+
+        # Signal the hang to unblock (cleanup) so the background thread doesn't leak.
+        hang_event.set()
 
     def test_start_succeeds_when_inner_returns_quickly(self) -> None:
         """start() passes through the True result from a fast _start_inner."""

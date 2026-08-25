@@ -83,44 +83,41 @@ def _fill_to_trigger(mm: MemoryManager, extra: int = 1) -> None:
 
 
 def test_prepare_for_turn_does_not_block_on_llm(tmp_path):
-    """prepare_for_turn() must return in <100 ms even when the LLM call sleeps 2 s.
+    """_sliding_window_compact() and prepare_for_turn() must never call the slow LLM
+    synchronously, even when compaction triggers a background summary job.
 
-    Sliding-window compaction is triggered inside add_message() when history exceeds
-    max_active_messages, so we fill the history via add_message() to trigger it, then
-    measure the time of a subsequent prepare_for_turn() to confirm it's still fast.
-    We also directly time _sliding_window_compact() to confirm the hot path.
+    T-71: converted from a `time.monotonic()` proxy (`elapsed < 0.1`) to the direct,
+    structural assertion — the slow client's call_count stays 0 — that this test
+    already carried alongside the timing check. A machine too slow to satisfy a
+    tight elapsed bound cannot make this pass spuriously; only actually skipping
+    the synchronous LLM call can.
     """
     slow_client = _SlowLLMClient(sleep_seconds=2.0)
     queue = InMemoryJobQueue()
     mm = MemoryManager(max_active_messages=8, job_queue=queue, llm_client=slow_client)
 
-    # Fill history directly (bypassing the sliding window check) so we can time
+    # Fill history directly (bypassing the sliding window check) so we can drive
     # _sliding_window_compact() itself — the actual gated function.
     msgs = _make_messages(12)
     for m in msgs:
         mm._history.append(m)
 
-    # Time _sliding_window_compact() directly — this is the function that was blocking
-    start = time.monotonic()
     mm._sliding_window_compact()
-    elapsed = time.monotonic() - start
 
-    # Must return fast (well under 100 ms when LLM is mocked to sleep 2 s)
-    assert elapsed < 0.1, f"_sliding_window_compact blocked for {elapsed:.3f}s — LLM on hot path?"
-
-    # The slow LLM must NOT have been called yet
-    assert slow_client.call_count == 0, "LLM was called synchronously inside _sliding_window_compact"  # noqa: E501
+    # The slow LLM must NOT have been called synchronously — this IS the property
+    # under test (this replaces a redundant `elapsed < 0.1` timing proxy; T-71).
+    assert slow_client.call_count == 0, (
+        "LLM was called synchronously inside _sliding_window_compact"
+    )  # noqa: E501
 
     # A job must be enqueued
     pending = queue.get_pending(limit=10)
     summary_jobs = [j for j in pending if j.name == "generate_structured_summary"]
     assert summary_jobs, "No generate_structured_summary job was enqueued"
 
-    # prepare_for_turn() must also be fast
-    start2 = time.monotonic()
+    # prepare_for_turn() must also not call the LLM synchronously.
     mm.prepare_for_turn()
-    elapsed2 = time.monotonic() - start2
-    assert elapsed2 < 0.1, f"prepare_for_turn blocked for {elapsed2:.3f}s"
+    assert slow_client.call_count == 0, "LLM was called synchronously inside prepare_for_turn"
 
 
 # ---------------------------------------------------------------------------
@@ -219,9 +216,7 @@ def test_compaction_flag_clears_on_job_failure():
             worker.execute_one()
 
     # The flag must be cleared regardless of job failure
-    assert mm._compaction_in_flight is False, (
-        "_compaction_in_flight not cleared after job failure"
-    )
+    assert mm._compaction_in_flight is False, "_compaction_in_flight not cleared after job failure"
 
 
 # ---------------------------------------------------------------------------
