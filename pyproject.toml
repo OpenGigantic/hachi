@@ -150,7 +150,12 @@ testpaths = ["tests"]
 pythonpath = ["src", "."]
 norecursedirs = ["tokoboros", "*.egg", ".git", ".venv", "node_modules", "build", "dist"]
 # --dist=loadfile keeps all tests from the same file on the same worker, preventing
-# module-level singleton / patch.dict conflicts. Pass -n <N> or -n auto on the CLI.
+# module-level singleton / patch.dict conflicts. NOTE (T-71): the gate runs `-n auto`
+# (see scripts/preflight.py) -- ten former wall-clock / cross-thread-timestamp tests
+# were converted to injected clocks / threading.Event / threading.Barrier so parallel
+# workers no longer starve them (tests/test_test_suite_hygiene.py locks this down).
+# `test_loop_backstop_cancel.py` still asserts a real production deadline (5x margin)
+# and is the one deliberate holdout. Pass -n <N> to override on the CLI if needed.
 addopts = "--dist=loadfile"
 
 [tool.hatch.build.targets.wheel]

@@ -17,10 +17,15 @@ Design notes for this repo specifically:
   PostToolUse auto-format hook instead — see .claude/hooks/auto_format.py.
 - `mypy` runs the **scoped strict gate** (mypy-strict-gate.ini), not the full tree:
   the full tree has known pre-existing debt and is advisory-only in CI.
-- pytest runs the **full** suite (the contract, CLAUDE.md Rule 2) **sequentially**, exactly
-  like CI — deliberately NOT `-n auto`. Parallel workers starve the wall-clock timing tests
-  (e.g. `test_two_sessions_run_concurrently`, the notifier non-blocking test) and make the gate
-  flaky; the plan's rule is "run tests sequentially to kill time-based flakiness."
+- pytest runs the **full** suite (the contract, CLAUDE.md Rule 2) with `-n auto`
+  (T-71): ten wall-clock-duration / cross-thread-timestamp tests were converted to
+  injected clocks / threading.Event / threading.Barrier handoffs so parallel workers
+  no longer starve them (tests/test_test_suite_hygiene.py locks this down — no new
+  `elapsed <` / `wall_time <` assertion may land outside its documented allowlist).
+  `test_loop_backstop_cancel.py` still asserts a real production deadline (5x margin)
+  and is the one deliberate holdout; it survived three consecutive full-suite `-n auto`
+  runs before this flip. NOT `-p no:xdist`: that disables the plugin and makes
+  `--dist=loadfile` in `addopts` an unrecognized argument (see pyproject.toml).
 """
 
 from __future__ import annotations
@@ -156,7 +161,14 @@ STEPS: list[Step] = [
         needs_frontend=True,
     ),
     # Slow steps — skipped by --quick.
-    Step("pytest (full suite)", [["uv", "run", "pytest", "-q"]], in_quick=False),
+    # -n auto (T-71): flipped after three consecutive full-suite parallel runs came
+    # back green (4640 passed / 21 skipped, 0 failed, each run). test_loop_backstop_cancel.py
+    # still asserts a real production deadline (5x margin) and is the one deliberate
+    # holdout -- see its KNOWN_WALL_CLOCK entry in tests/test_test_suite_hygiene.py.
+    # NOT -p no:xdist: that disables the plugin and makes --dist=loadfile in addopts
+    # an unrecognized argument. If this step starts flaking, re-pin `-n 0` and re-open
+    # T-71 rather than adding retries/flaky-markers.
+    Step("pytest (full suite)", [["uv", "run", "pytest", "-q", "-n", "auto"]], in_quick=False),
     Step(
         "frontend build",
         [["npm", "run", "--prefix", "frontend", "build"]],

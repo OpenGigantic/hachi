@@ -2,9 +2,15 @@
 
 Two assertions:
 1. Same-session: concurrent chat() calls are serialized — the second starts only
-   after the first finishes (no interleaving of entry/exit timestamps).
+   after the first finishes (no interleaving of entry/exit order).
 2. Different-sessions: chat() calls on separate sessions CAN overlap — their
    execution interleaves, proving no global lock was introduced.
+
+T-71: all three timing-sensitive tests in this file were converted from
+`time.monotonic()` deltas / raw cross-thread timestamps to explicit
+threading.Barrier / threading.Event coordination, asserting on recorded order or
+on deterministic timeout/deadlock outcomes instead of wall-clock comparisons —
+see each test's docstring for the specific mechanism.
 """
 
 from __future__ import annotations
@@ -27,23 +33,29 @@ SLEEP = 0.05  # seconds each fake chat() "works" — short but enough to interle
 
 @dataclass
 class _CallRecord:
-    """Thread-safe log of (entry_time, exit_time) pairs per session."""
+    """Thread-safe ordered log of enter/exit markers for one session.
 
-    entries: list[float] = field(default_factory=list)
-    exits: list[float] = field(default_factory=list)
+    T-71: order (append order under a lock), not wall-clock duration, is what
+    proves serialization — whichever marker lands in the list first really did
+    happen first, regardless of how fast or slow the host machine is. Previously
+    this recorded raw `time.monotonic()` timestamps and callers compared them;
+    that comparison starved under `-n auto` scheduling jitter even though the
+    underlying property (lock exclusivity) does not depend on wall-clock speed.
+    """
+
+    sequence: list[str] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def record(self, session_id: str) -> None:  # noqa: ARG002 — kept for readability
-        t_enter = time.monotonic()
-        time.sleep(SLEEP)
-        t_exit = time.monotonic()
+    def record(self, session_id: str) -> None:
         with self.lock:
-            self.entries.append(t_enter)
-            self.exits.append(t_exit)
+            self.sequence.append(f"{session_id}:enter")
+        time.sleep(SLEEP)
+        with self.lock:
+            self.sequence.append(f"{session_id}:exit")
 
 
 def _make_fake_agent(recorder: _CallRecord, session_id: str) -> MagicMock:
-    """Return a mock AgentSession whose .chat() records entry/exit timing."""
+    """Return a mock AgentSession whose .chat() records entry/exit order."""
     agent = MagicMock()
     agent.chat.side_effect = lambda _prompt: recorder.record(session_id) or "ok"
     agent.shutdown.return_value = None
@@ -67,9 +79,12 @@ class TestSameSessionSerialized:
     def test_two_concurrent_chats_do_not_overlap(self) -> None:
         """Two threads calling chat() on the same session must be serialized.
 
-        If serialized, the earlier call's exit_time < later call's entry_time.
-        If they overlapped, both entry_times would be within SLEEP of each other
-        and at least one exit_time would precede the other's entry_time.
+        T-71: proven via the ORDER of markers `_CallRecord` appends (enter/exit
+        strings under a lock), not via `time.monotonic()` timestamps. If the
+        calls are genuinely serialized, the recorded sequence must strictly
+        alternate enter, exit, enter, exit — two "enter" markers can never
+        appear back to back. This holds regardless of host speed (unlike a
+        wall-clock comparison, which starves under `-n auto`).
         """
         runtime = _InProcessGatewayRuntime()
         recorder = _CallRecord()
@@ -89,18 +104,13 @@ class TestSameSessionSerialized:
         t1.join(timeout=5)
         t2.join(timeout=5)
 
-        assert len(recorder.entries) == 2, "Expected exactly two recorded calls"
-        assert len(recorder.exits) == 2
-
-        # Sort by entry time to compare first vs second.
-        pairs = sorted(zip(recorder.entries, recorder.exits, strict=True))
-        first_exit = pairs[0][1]
-        second_entry = pairs[1][0]
-
-        assert first_exit <= second_entry, (
-            f"Calls overlapped: first exited at {first_exit:.4f} but second entered "
-            f"at {second_entry:.4f} (overlap = {first_exit - second_entry:.4f}s)"
-        )
+        assert not t1.is_alive() and not t2.is_alive(), "a chat() call did not finish in time"
+        assert recorder.sequence == [
+            f"{session_id}:enter",
+            f"{session_id}:exit",
+            f"{session_id}:enter",
+            f"{session_id}:exit",
+        ], f"calls overlapped — recorded order was {recorder.sequence}"
 
 
 # ---------------------------------------------------------------------------
@@ -112,69 +122,97 @@ class TestDifferentSessionsConcurrent:
     def test_two_sessions_run_concurrently(self) -> None:
         """Two threads chatting on DIFFERENT sessions must be able to run in parallel.
 
-        We measure wall-clock time: if sessions were serialized by a global lock,
-        total time ≈ 2 * SLEEP.  Concurrent execution takes ≈ SLEEP.
-        We allow up to 1.7 * SLEEP as the pass threshold (generous for slow CI).
+        T-71: proven with a `threading.Barrier(2)` instead of a wall-clock
+        measurement (previously `wall_time < 1.7 * SLEEP`, which starves under
+        `-n auto` — this was the one of the ten that reproducibly failed under
+        parallel workers, see T-71 report). Each fake chat() only returns once
+        BOTH sessions have reached the barrier. If a global lock served sessions
+        one at a time, the second call could never reach the barrier until the
+        first released it — which it can't, because it is waiting on the very
+        same barrier — so the barrier deterministically times out
+        (BrokenBarrierError) instead of passing slowly. No elapsed-time
+        comparison is involved.
         """
         runtime = _InProcessGatewayRuntime()
-        recorder_a = _CallRecord()
-        recorder_b = _CallRecord()
+        barrier = threading.Barrier(2, timeout=5)
 
-        _register(runtime, "session-A", _make_fake_agent(recorder_a, "session-A"))
-        _register(runtime, "session-B", _make_fake_agent(recorder_b, "session-B"))
+        def _make_agent() -> MagicMock:
+            agent = MagicMock()
 
-        barrier = threading.Barrier(2)
-        results: dict[str, float] = {}
+            def _side(_prompt: str) -> str:
+                barrier.wait()
+                return "ok"
 
-        def _chat_a() -> None:
-            barrier.wait()
-            t0 = time.monotonic()
-            runtime.chat("session-A", "hello")
-            results["a"] = time.monotonic() - t0
+            agent.chat.side_effect = _side
+            agent.shutdown.return_value = None
+            return agent
 
-        def _chat_b() -> None:
-            barrier.wait()
-            t0 = time.monotonic()
-            runtime.chat("session-B", "hello")
-            results["b"] = time.monotonic() - t0
+        _register(runtime, "session-A", _make_agent())
+        _register(runtime, "session-B", _make_agent())
 
-        t1 = threading.Thread(target=_chat_a)
-        t2 = threading.Thread(target=_chat_b)
-        t_start = time.monotonic()
+        errors: list[BaseException] = []
+        errors_lock = threading.Lock()
+
+        def _run(session_id: str) -> None:
+            try:
+                runtime.chat(session_id, "hello")
+            except BaseException as exc:  # noqa: BLE001 — must surface on the main thread
+                with errors_lock:
+                    errors.append(exc)
+
+        t1 = threading.Thread(target=_run, args=("session-A",))
+        t2 = threading.Thread(target=_run, args=("session-B",))
         t1.start()
         t2.start()
-        t1.join(timeout=5)
-        t2.join(timeout=5)
-        wall_time = time.monotonic() - t_start
+        t1.join(timeout=8)
+        t2.join(timeout=8)
 
-        # Verify both calls completed.
-        assert len(recorder_a.entries) == 1
-        assert len(recorder_b.entries) == 1
-
-        # Wall-clock must be well under 2 * SLEEP — i.e., they ran concurrently.
-        assert wall_time < 1.7 * SLEEP, (
-            f"Sessions appear to have been serialized: wall_time={wall_time:.4f}s, "
-            f"expected < {1.7 * SLEEP:.4f}s (2 * SLEEP = {2 * SLEEP:.4f}s)"
+        assert not t1.is_alive() and not t2.is_alive(), "a chat() call did not finish in time"
+        assert not errors, (
+            f"sessions did not run concurrently — barrier never satisfied: {errors!r}"
         )
 
     def test_interleaving_of_entry_exit_timestamps(self) -> None:
-        """Verify overlap via raw timestamps: session-B enters before session-A exits."""
+        """Verify overlap via an explicit handshake, not raw timestamps: session-Y
+        must be able to enter its critical section while session-X's is still open.
+
+        T-71: session-X's fake chat() is held open by the test until session-Y has
+        confirmed entry. If a global lock serialized the two sessions, session-Y's
+        chat() would never signal entry while X is held open (X will not release
+        until it sees Y enter) — so the wait for `y_entered` deterministically
+        times out. No timestamp comparison is involved.
+
+        X's own hold timeout (30s) is deliberately much larger than the outer
+        check's timeout (5s) below: if they were comparable, a broken (globally
+        locked) run could pass by accident whenever X's own safety-release beat
+        the outer check's timeout in the race between two independent clocks —
+        exactly the kind of scheduling-dependent flake this task exists to
+        remove. Making the hold an order of magnitude longer than the check
+        means the check always loses that race when the bug is real.
+        """
         runtime = _InProcessGatewayRuntime()
-        # Shared recorder to capture cross-session ordering.
-        global_entries: list[tuple[str, float]] = []
-        global_exits: list[tuple[str, float]] = []
-        lock = threading.Lock()
+        sequence: list[str] = []
+        seq_lock = threading.Lock()
+        x_entered = threading.Event()
+        y_entered = threading.Event()
+        x_may_exit = threading.Event()
 
         def _make_agent(sid: str) -> MagicMock:
             agent = MagicMock()
 
-            def _side(prompt: str) -> str:  # noqa: ARG001
-                t_in = time.monotonic()
-                time.sleep(SLEEP)
-                t_out = time.monotonic()
-                with lock:
-                    global_entries.append((sid, t_in))
-                    global_exits.append((sid, t_out))
+            def _side(_prompt: str) -> str:
+                with seq_lock:
+                    sequence.append(f"{sid}:enter")
+                if sid == "session-X":
+                    x_entered.set()
+                    # Held open until Y has entered (or a 30s safety cap; see the
+                    # docstring for why this must stay much larger than the
+                    # outer check's timeout below).
+                    x_may_exit.wait(timeout=30)
+                else:
+                    y_entered.set()
+                with seq_lock:
+                    sequence.append(f"{sid}:exit")
                 return "ok"
 
             agent.chat.side_effect = _side
@@ -184,32 +222,38 @@ class TestDifferentSessionsConcurrent:
         _register(runtime, "session-X", _make_agent("session-X"))
         _register(runtime, "session-Y", _make_agent("session-Y"))
 
-        barrier = threading.Barrier(2)
-
         def _go(sid: str) -> None:
-            barrier.wait()
             runtime.chat(sid, "hi")
 
-        threads = [threading.Thread(target=_go, args=(s,)) for s in ("session-X", "session-Y")]
-        for th in threads:
-            th.start()
-        for th in threads:
-            th.join(timeout=5)
+        # Daemon so a failed assertion below (which skips the join calls) can
+        # never leave a live non-daemon thread blocking interpreter shutdown.
+        tx = threading.Thread(target=_go, args=("session-X",), daemon=True)
+        ty = threading.Thread(target=_go, args=("session-Y",), daemon=True)
+        tx.start()
 
-        assert len(global_entries) == 2, "Both sessions must have been called"
+        try:
+            assert x_entered.wait(timeout=5), "session-X never entered"
+            ty.start()
 
-        by_entry = sorted(global_entries, key=lambda x: x[1])
-        by_exit = {sid: t for sid, t in global_exits}
+            # For concurrent execution, session-Y must be able to enter while
+            # session-X is still active (X has not been released yet).
+            assert y_entered.wait(timeout=5), (
+                f"session-Y did not enter while session-X was still active — "
+                f"sessions did not overlap: {sequence}"
+            )
+        finally:
+            # Always release X (pass or fail) so its thread doesn't sit parked
+            # for the rest of the 30s hold once this test has already decided
+            # its outcome.
+            x_may_exit.set()
 
-        first_sid = by_entry[0][0]
-        second_sid = by_entry[1][0]
-        second_entry_t = by_entry[1][1]
-        first_exit_t = by_exit[first_sid]
+        tx.join(timeout=5)
+        ty.join(timeout=5)
+        assert not tx.is_alive() and not ty.is_alive(), "a chat() call did not finish in time"
 
-        # For concurrent execution, the second session enters BEFORE the first exits.
-        assert second_entry_t < first_exit_t, (
-            f"Sessions did NOT overlap: {second_sid} entered at {second_entry_t:.4f} "
-            f"but {first_sid} didn't exit until {first_exit_t:.4f}"
+        assert sequence[0] == "session-X:enter"
+        assert sequence[1] == "session-Y:enter", (
+            f"session-Y did not enter before session-X exited: {sequence}"
         )
 
 

@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
 from pathlib import Path
 from unittest import mock
@@ -389,26 +390,39 @@ def test_run_shell_script_denied_at_guided_tier(tmp_path: Path) -> None:
 
 
 def test_notifier_windows_dispatch_is_non_blocking() -> None:
-    """Windows toast must return quickly (daemon thread), not block ~8s."""
-    calls: list[float] = []
+    """Windows toast must return before the runner finishes (dispatched to a daemon
+    thread), never block on it synchronously.
+
+    T-71: proven via an Event handoff instead of a `time.monotonic()` measurement —
+    a machine too slow to satisfy a tight `elapsed < 0.05` bound cannot make this
+    pass spuriously; only a genuinely non-blocking dispatch can, because `send()`
+    is asserted to return strictly before the (deliberately still-blocked) runner
+    is ever allowed to finish.
+    """
+    release_event = threading.Event()
+    runner_done_event = threading.Event()
 
     def _slow_runner(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:  # type: ignore[override]
-        # Simulate the ~4.5s PowerShell balloon wait.
-        start = time.monotonic()
-        time.sleep(0.1)  # Use a shorter sleep to keep tests fast.
-        calls.append(time.monotonic() - start)
+        # Stands in for the ~4.5s PowerShell balloon wait: held open until the
+        # test explicitly releases it (bounded so a regression can't wedge the run).
+        release_event.wait(timeout=5)
+        runner_done_event.set()
         return subprocess.CompletedProcess(cmd, 0)
 
     notifier = DesktopNotifier(runner=_slow_runner)
 
     with mock.patch("hachi.core.notifier._platform", return_value="windows"):
-        t0 = time.monotonic()
         result = notifier.send("Test", "Body")
-        elapsed = time.monotonic() - t0
 
-    # The call must return well before the simulated subprocess finishes.
-    assert elapsed < 0.05, f"send() blocked for {elapsed:.3f}s — expected near-zero (non-blocking)"
+    # send() must have returned WITHOUT the runner having finished: it is still
+    # blocked on release_event, which we have deliberately not set yet.
+    assert not runner_done_event.is_set(), (
+        "send() blocked until the runner finished — expected non-blocking dispatch"
+    )
     assert "queued" in result.lower()
+
+    release_event.set()  # let the background thread finish so it doesn't leak
+    assert runner_done_event.wait(timeout=2), "runner never ran in the background"
 
 
 def test_notifier_windows_user_content_via_env_vars_not_interpolated() -> None:
@@ -449,18 +463,40 @@ def test_notifier_windows_user_content_via_env_vars_not_interpolated() -> None:
     assert not kwargs.get("shell", False)
 
 
-def test_notifier_prewarm_does_not_block(tmp_path: Path) -> None:
-    """DesktopNotifier constructor must return immediately even on Windows (prewarm is async)."""
-    runner = _RecordingRunner()
+def test_notifier_prewarm_does_not_block() -> None:
+    """DesktopNotifier constructor must return immediately even on Windows (prewarm
+    is async).
 
-    with mock.patch("sys.platform", "win32"):
-        t0 = time.monotonic()
-        # prewarm=True is the default; patch platform so the branch is taken.
-        notifier = DesktopNotifier(runner=runner, prewarm=True)
-        elapsed = time.monotonic() - t0
+    T-71: proven via an Event handoff instead of a `time.monotonic()` measurement.
+    Must construct with runner=None (the default) so the real prewarm branch is
+    taken: `_prewarm()` in notifier.py is gated on `runner is None` (as well as
+    `prewarm` and the platform check), so a test that injects a runner here would
+    skip `_prewarm()` entirely and never exercise the async-dispatch behaviour its
+    docstring claims to verify — the original `runner=runner` version of this test
+    had exactly that gap (see T-71 report).
+    """
+    release_event = threading.Event()
+    prewarm_done_event = threading.Event()
 
-    assert elapsed < 0.1, f"Constructor blocked {elapsed:.3f}s — prewarm must be async"
-    # Runner may or may not have fired yet (it's in a daemon thread); that's fine.
+    def _blocking_runner(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:  # type: ignore[override]
+        release_event.wait(timeout=5)  # bounded so a regression can't wedge the run
+        prewarm_done_event.set()
+        return subprocess.CompletedProcess(cmd, 0)
+
+    with (
+        mock.patch("hachi.core.notifier._default_runner", _blocking_runner),
+        mock.patch("sys.platform", "win32"),
+    ):
+        # prewarm=True is the default; runner=None so the real prewarm branch fires.
+        notifier = DesktopNotifier(prewarm=True)
+
+    # The constructor must have returned WITHOUT the prewarm runner having finished.
+    assert not prewarm_done_event.is_set(), (
+        "constructor blocked until prewarm finished — prewarm must be async"
+    )
+
+    release_event.set()  # let the background thread finish so it doesn't leak
+    assert prewarm_done_event.wait(timeout=2), "prewarm runner never ran in the background"
     _ = notifier  # silence unused warning
 
 

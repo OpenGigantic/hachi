@@ -10,6 +10,8 @@ This is an intended contract change, not a weakened test.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 pytest.importorskip("opentelemetry")
@@ -99,17 +101,25 @@ def test_sink_ignores_unmapped_events():
 
 
 def test_sink_does_not_block():
-    """The sink handle() call must return quickly (does not sleep or block)."""
-    import time
+    """The sink handle() call must return promptly — never sleep or block on I/O.
 
+    T-71: handle() (Phase 2: pure attribute stamping) has no slow collaborator to
+    hand off to, so instead of a tight `elapsed < 1.0` wall-clock bound (which
+    starves under `-n auto`) this runs handle() on a background thread and
+    asserts it completes within a generous deadman-switch join: a regression
+    that makes handle() hang or genuinely block (e.g. an accidental network or
+    file call) still fails this test; ordinary scheduler jitter under parallel
+    workers does not.
+    """
     _configure()
     sink = ObservabilitySink()
     event = _make_event("tool.call.started", {"name": "x"})
-    start = time.monotonic()
-    sink.handle(event)
-    elapsed = time.monotonic() - start
-    # Should return in well under 1 second (conservative bound; normally <1ms).
-    assert elapsed < 1.0
+
+    t = threading.Thread(target=sink.handle, args=(event,), daemon=True)
+    t.start()
+    t.join(timeout=5.0)
+
+    assert not t.is_alive(), "sink.handle() did not return within a generous bound — blocking?"
 
 
 def test_sink_does_not_raise_on_exception(monkeypatch):

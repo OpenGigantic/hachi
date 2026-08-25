@@ -32,7 +32,18 @@ jobs:
         run: uv sync --extra dev
 
       - name: Run tests
-        run: uv run pytest -q
+        # T-71: flipped to -n auto after three consecutive full-suite parallel runs
+        # came back green (4640 passed / 21 skipped, 0 failed, each run). Ten
+        # wall-clock-duration / cross-thread-timestamp tests were converted to
+        # injected clocks / threading.Event / threading.Barrier handoffs so parallel
+        # workers no longer starve them (tests/test_test_suite_hygiene.py locks this
+        # down). test_loop_backstop_cancel.py still asserts a real production
+        # deadline (5x margin) and is the one deliberate holdout -- see its
+        # KNOWN_WALL_CLOCK entry. If this step starts flaking on a specific
+        # platform, re-pin `-n 0` here AND in scripts/preflight.py AND
+        # pyproject.toml's addopts comment together, and re-open T-71 rather than
+        # adding retries/flaky-markers.
+        run: uv run pytest -q -n auto
 
   security:
     runs-on: ubuntu-latest

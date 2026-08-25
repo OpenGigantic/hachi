@@ -12,6 +12,7 @@ Tests:
 
 from __future__ import annotations
 
+import threading
 import time
 from unittest.mock import MagicMock
 
@@ -144,27 +145,35 @@ def test_execute_single_tool_error_preserves_traceback_in_log(caplog) -> None:
 
 
 def test_parallel_execution_is_faster_than_sequential() -> None:
-    """Submit 3 tools each sleeping 0.1s — concurrent = ~0.1s, sequential = ~0.3s."""
+    """3 tools must all be in flight simultaneously.
 
+    T-71: proven with a `threading.Barrier(3)` instead of a wall-clock measurement
+    (previously `elapsed < DELAY * len(tcs) * 0.8`, which starves under `-n auto`
+    — this test reproducibly failed under parallel workers, see T-71 report).
+    `Barrier(3)` only releases once all three calls have reached it; if execution
+    were serialized (e.g. a single-worker pool), the first call would block
+    waiting for the other two to also reach the barrier, which can never happen
+    because they have not started yet — a deterministic BrokenBarrierError on
+    timeout, not a slow pass. No elapsed-time comparison is involved.
+    """
     loop = _make_loop()
-    DELAY = 0.10  # seconds per tool
+    n = 3
+    barrier = threading.Barrier(n, timeout=5)
 
     def _slow_tool(tc):
-        time.sleep(DELAY)
+        barrier.wait()
         return "done"
 
     loop.registry.execute.side_effect = _slow_tool
 
-    tcs = [_make_tool_call(f"tool_{i}", f"id_{i}") for i in range(3)]
-    start = time.monotonic()
+    tcs = [_make_tool_call(f"tool_{i}", f"id_{i}") for i in range(n)]
     futures = {tc.id: loop._tool_pool.submit(loop._execute_single_tool, tc) for tc in tcs}
-    results = [futures[tc.id].result() for tc in tcs]
-    elapsed = time.monotonic() - start
+    results = [futures[tc.id].result(timeout=10) for tc in tcs]
 
-    assert all(r[0] == "done" for r in results), "All results should succeed"
-    assert elapsed < DELAY * len(tcs) * 0.8, (
-        f"Expected <{DELAY * len(tcs) * 0.8:.2f}s (concurrent), got {elapsed:.2f}s"
+    assert all(r[1] is False for r in results), (
+        f"a tool execution errored (barrier likely timed out — not concurrent): {results}"
     )
+    assert all(r[0] == "done" for r in results), "All results should succeed"
 
 
 # ---------------------------------------------------------------------------
