@@ -4,12 +4,15 @@
 //        GET /sessions/{id}/stream (SSE), GET /sessions?limit=10
 //
 // Circular-import strategy:
-//   store.ts ⇄ chat.ts — BOTH directions are static imports today:
-//     store.ts:10-17 imports the *Live functions from this module;
-//     this module imports useStore from ../../store/store (below).
-//   There is a second cycle via approvals.ts: store.ts → chat.ts →
-//   approvals.ts → store.ts (chat.ts imports ./approvals; approvals.ts
-//   imports useStore from ../../store/store).
+//   store.ts ⇄ chat.ts — BOTH directions are static imports today, one hop
+//   longer since T-63 split store.ts into typed slices under store/slices/:
+//     store.ts imports store/slices/chat.ts (plus slices/liveRun.ts and
+//     slices/sessions.ts, for the same reason), which import the *Live
+//     functions from this module; this module imports useStore from
+//     ../../store/store (below) — closing the loop back to store.ts directly.
+//   There is a second cycle via approvals.ts: store.ts → slices/chat.ts →
+//   chat.ts → approvals.ts → store.ts (chat.ts imports ./approvals;
+//   approvals.ts imports useStore from ../../store/store).
 //   Both cycles resolve only because every cross-module reference happens
 //   inside a function body, never at module top level. Keep it that way: a
 //   top-level use of an imported binding on either side becomes a TDZ
