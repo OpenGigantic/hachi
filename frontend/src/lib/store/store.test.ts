@@ -272,3 +272,21 @@ describe("seedMockFixtures — no-op guard when mocks are disabled (T-22 / BB-12
     expect(state.sessions).toEqual([]);
   });
 });
+
+// ---- T-63: hydrate is declared Partial<State> but the implementation widened the
+// cast to Partial<State & Actions>, so a stray key colliding with an action name
+// could overwrite that action's *function* with arbitrary patch data. ----
+
+describe("hydrate contract (T-63)", () => {
+  it("hydrate cannot overwrite an action", () => {
+    const before = useStore.getState().declineAll;
+
+    // @ts-expect-error — this is exactly the call the runtime must reject: `hydrate`
+    // is typed (patch: Partial<State>) => void, and "declineAll" is not a State key.
+    useStore.getState().hydrate({ declineAll: "clobbered" });
+
+    const after = useStore.getState().declineAll;
+    expect(typeof after).toBe("function");
+    expect(after).toBe(before);
+  });
+});

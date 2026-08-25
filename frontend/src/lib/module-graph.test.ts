@@ -19,7 +19,12 @@
 import { describe, expect, it } from "vitest";
 
 const MODULE_SOURCE = import.meta.glob<string>(
-  ["./store/store.ts", "./data/domains/chat.ts", "./data/domains/approvals.ts"],
+  [
+    "./store/store.ts",
+    "./store/slices/chat.ts",
+    "./data/domains/chat.ts",
+    "./data/domains/approvals.ts",
+  ],
   { eager: true, query: "?raw", import: "default" },
 );
 
@@ -46,7 +51,15 @@ describe("module graph", () => {
     //   AssertionError: expected [ 'zustand', …(5) ] to not include
     //   '../data/domains/chat'
     // proving the comment wrong before it was corrected.
-    expect(staticImportsOf("store/store.ts")).toContain("../data/domains/chat");
+    //
+    // T-63 split store.ts into typed slices under store/slices/*, so store.ts
+    // itself no longer imports "../data/domains/chat" directly — the edge
+    // moved one hop further, into store/slices/chat.ts (one of three slices
+    // that import the chat domain for live-mode delegation; slices/liveRun.ts
+    // and slices/sessions.ts also do, for the same reason). Pin the real
+    // chain: store.ts -> slices/chat.ts -> data/domains/chat.ts -> store.ts.
+    expect(staticImportsOf("store/store.ts")).toContain("./slices/chat");
+    expect(staticImportsOf("store/slices/chat.ts")).toContain("../../data/domains/chat");
     expect(staticImportsOf("data/domains/chat.ts")).toContain("../../store/store");
   });
 
