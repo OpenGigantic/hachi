@@ -4005,3 +4005,169 @@ and **cannot pass by construction**: `get_usage_counters()` returns a fixed
 `{pass1_search, pass2_peek, pass3_resolve}` dict that can never contain a `"shared-skill"` key. It is
 also non-hermetic — it reads the developer machine's real usage JSON, and failed `assert 2 == 1` from a
 previous run's residue.
+
+---
+
+## Wave 2 of the parallel push — three tasks, and a limit that killed two of them (2026-08-25) **[ADR]**
+
+**Decision.** T-44, T-63 and T-71 ran concurrently in one tree on exclusive file allow-lists.
+The wave was shaped by the same physical constraint as wave 1: four of the remaining tasks all
+rewrite `gateway/orchestrator.py`, so T-44 took the sole lock and T-58/T-75 wait. T-70 remains
+exclusive and last.
+
+**What actually happened.** A usage limit terminated T-63 and T-71 mid-flight. Neither left
+damage, which is worth recording because it was not luck: the standing rule that **subagents own
+no git** meant the worst case was an unfinished working tree, never a bad commit or a lost branch.
+T-71 died inside a break-and-revert cycle — the single most dangerous moment for a killed agent,
+because a deliberately-broken production file could have been left behind and committed. Its
+revert had landed; I verified `mcp_client.py` at zero diff before doing anything else. **Check
+that first when an agent dies, not last.**
+
+T-63 turned out to be ~95% complete despite its last transcript line suggesting otherwise: an
+agent's final message is not a progress indicator. The tree is the progress indicator.
+
+**Three orchestrator errors worth recording, since the point of these entries is that the next
+person makes different mistakes.** (1) My file-collision analysis was incomplete — two
+AST-structural tests anchored to `boot_agent`'s body were not in T-44's allow-list and would have
+broken silently; the implementer found them only by distrusting my list. (2) I sent T-71 a
+break-check value (`timeout=5.0`) that could not go red, because a *lower* bound catches
+"fires too early", not "too late" — the agent ran it, caught that it stayed green, and used `0.1`.
+(3) My first round-trip on that test asked for a lower bound, which was the wrong fix on its own:
+the real hole was a 1.0 s floor that the test's own configured value coincided with. Both were
+caught by verification, which is the argument for verifying rather than for being right first.
+
+---
+
+## T-44 — `boot_agent` becomes 15 staged builders (2026-08-25) **[ADR]**
+
+**Decision.** `boot_agent`'s 1,245-line body splits into 15 named stages under a new
+`src/hachi/gateway/boot/` package, each taking explicit typed inputs and returning a frozen
+`@dataclass(frozen=True, slots=True)`. `orchestrator.py` is +256/−802 (net −566); the function's
+own body is 705 lines. Import direction is one-way and enforced by construction: `boot/*` never
+imports `orchestrator` at runtime (all three `CapabilityRegistry` imports sit under
+`if TYPE_CHECKING:`), and the orchestrator-local helpers a stage needs are passed as callables
+rather than imported — which sidesteps circular-import risk entirely.
+
+**The decomposition had to be derived, not read.** The step numbering lies (BB-165): step "5.5"
+executes eleventh. The real edge is that prompt assembly is *downstream* of tool registration,
+which the new signature now encodes. A second edge the numbering has no slot for at all:
+`reconcile_permissions_with_config` reads both step 0's gate and step 1's config and rebuilds
+step 0's output.
+
+**Why the body is 705 lines and not the spec's ~80.** Two regions could not become stages, and
+both were found by grepping the whole suite for `ast.parse`/`inspect.getsource` rather than
+trusting the file list I supplied. The event-plumbing closures must stay lexically inside
+`boot_agent` because they read a mutable `_event_bus` cell at call time — a naive extraction
+passes every other test while silently breaking event routing the next time the bus rebinds. The
+post-session tail must stay because a schedule-fire closure resolves `session` by late binding on
+a name assigned later in the same function, and two AST-structural tests require
+`_start_eval_report_scheduler` / `_start_memory_gardener` to be called directly from
+`boot_agent`'s body. **A partial decomposition that is provably behaviour-identical beats a
+complete one that is not.**
+
+**Two deliberate reorderings, and how the riskier one was cleared.** `build_memory` now runs
+before `build_tool_infrastructure` (originally the infra block sat physically between memory init
+and the vault binding). The only mechanism that could make that observable is mutation of the
+shared `ProcessSharedServices`: memory only *reads* `vault`/`graph_index`/`memory_writer`, infra
+only *writes* `session_store`. Disjoint sets, and the writer is not the reader — so the swap is
+unobservable. Verified independently rather than accepted.
+
+**Spec claims that were false.** §3.3's "the tool count and group names go into the prompt"
+implies both are tool-registration-downstream; only the group names are, since the numeric count
+is fixed two stages earlier. Its §7 sketch calls a nonexistent
+`session._tool_registry.list_tools()`. And T-26 §9 forbade extracting a `_build_routing()` helper
+because "it will collide with CF-6 work" — CF-6 *is* T-44, so the deferral named its own
+successor; that extraction landed here, with `test_routing_boot_failure.py`'s AST anchor moved and
+**zero assertions changed**.
+
+**Open, not fixed:** `BOOT_PROGRESS` reports `"Building system prompt"` at step 7 of 11, four
+steps before the prompt is built — the same defect as the comments, in user-facing text. Out of
+scope for a behaviour-preserving refactor, where "same events in the same sequence" was the
+constraint. No bug-bank entry: those lock fixed bugs.
+
+---
+
+## T-63 — the 1,847-line store becomes 22 typed slices (2026-08-25) **[ADR]**
+
+**Decision.** `frontend/src/lib/store/store.ts` drops to **271 lines** as a composition root over
+22 slice files, one per concern, plus a shared type module. Both `as Partial<State & Actions>`
+casts are gone (BB-167). `useStore`'s public shape is unchanged and **zero component files were
+edited**. Four render smoke tests for the largest untested screens — `integrations` (2,187 lines),
+`work` (1,472), `memory` (1,392), `og` (1,283) — landed *before* the first field moved, which was
+the ordering the task insisted on and the reason a mechanical split did not become a week of
+bisecting blank pages.
+
+**The checksum that actually proves it.** The task asks that the slices' fields sum to 75. A count
+is a weak check — it passes if one field is dropped and another duplicated. The set of field names
+in `interface State` at HEAD was diffed against the union of the slice interfaces: **86 names on
+each side, zero dropped, zero added.** A silently dropped field becomes `undefined` at runtime and
+typechecks fine wherever it is read as optional, so set equality is the assertion worth making.
+
+**A spec claim that was already fixed.** §3.3 and §9 both say the store statically imports 33
+fixture symbols, "how the demo data reaches the production bundle". T-22/BB-123 fixed that before
+this task existed — fixtures are dynamic-import-only, gate-enforced. It mattered: a slice that
+re-introduced a static fixture import would pass typecheck and vitest and fail the bundle-purity
+step. It did not.
+
+**The cycle moved rather than closing.** `store.ts` no longer imports the chat domain directly;
+three slices do, so the static cycle is now `store.ts → slices/chat.ts → data/domains/chat.ts →
+store.ts` — one hop longer, still real. `module-graph.test.ts` was re-anchored to the full chain
+and the chat.ts header comment corrected in the same change (BB-168). The production build was the
+gate that mattered here — `tsc --noEmit` cannot see an initialisation-order cycle and Rollup can —
+and it passes.
+
+**One correction carried in.** A comment claiming live mode delegates "via dynamic import to avoid
+a static circular dependency" was moved verbatim from `store.ts:1177`, where it had *already* been
+false. Moving it verbatim was correct (Rule 3); leaving it false in a brand-new file was not, since
+a reader of new code has no reason to distrust it.
+
+**Deviation from the spec, recorded rather than hidden:** the task asks for one commit per slice.
+Subagents own no git in this pack, so that was not achievable literally. The discipline it exists
+to protect — split one slice at a time, typecheck and test after each — was followed; the
+bisectability was not preserved.
+
+---
+
+## T-71 — the suite runs `-n auto`, and no production clock seam was needed (2026-08-25) **[ADR]**
+
+**Decision.** Ten wall-clock/cross-thread-timestamp tests convert to `threading.Event` handoffs,
+`threading.Barrier` coordination and deadman-switch joins; preflight, CI and `pyproject.toml`'s
+comment all move to `-n auto` (~520 s → ~120 s, ≈4×). `tests/test_test_suite_hygiene.py` fails the
+build if a new `elapsed <` / `wall_time <` assertion appears outside a documented allowlist. See
+BB-166.
+
+**The finding that generalises.** The task's premise was that three of these tests need an
+injected clock in `src/`. **None did, and the production footprint is zero lines.**
+`Thread.join(timeout=…)` and `Condition.wait_for(timeout=…)` are OS-level blocking waits with no
+swappable clock, so they convert by proving the *outcome* — "returned without the hang ever being
+released" — which is both clock-free and strictly stronger than the bound it replaced. The rule:
+inject a clock only when the code under test polls `time.monotonic()` itself.
+
+**Two bounds were loosened, and they are not the same case.** `test_obs_sink.py` went
+`elapsed < 1.0` → `join(5.0)`: accepted, because `handle()` is pure attribute stamping with no
+configured deadline, so both numbers are equally arbitrary hang-detectors and the tighter one
+protected nothing. `test_mcp_client_timeout.py` went `elapsed < 2.0` → `join(10.0)`: sent back,
+because that bound was pinning *the deadline fires at its configured value*, and a hardcoded 5 s
+would have passed. It now carries a **lower** bound — parallel-safe by construction, since
+starvation only makes things slower — plus a structural spy on
+`Transport.receive(request_id, timeout_seconds)`.
+
+**The spy exists because of a 1.0 s floor.** `MCPServerConnection` clamps with
+`max(1.0, float(request_timeout_seconds))`, and the timing test configures exactly `1.0` — so on
+its own it cannot distinguish "the configured value reached the transport" from "config is ignored
+and the floor is always used". The spy configures `2.5`, off the floor. Its break-check proved
+both halves: the spy went red (`recorded timeout_seconds=[1.0]`), *and* the sibling test stayed
+green under the same break — the blind spot, demonstrated.
+
+**One test is a deliberate, permanent holdout.** `test_loop_backstop_cancel.py`'s two assertions
+exercise `ExecutionLoop`'s real deadline and cancel-during-stall behaviour with a 5× margin;
+converting needs a clock seam in `core/loop.py`. It sits on `KNOWN_WALL_CLOCK` with a written
+reason. **A documented allowlist entry, not an empty set, is the acceptance bar** — the spec's own
+enumeration of "eight" sites was itself incomplete by two, which is how this entry was found.
+
+**Open, not fixed:** that `max(1.0, …)` floor is applied identically at four constructors but
+carries **no** comment, docstring, linked bug or spec reference anywhere — out of step with this
+file's own convention of tagging constants (`UC-DEV-001`, `MED-004`, `LOW-014`, `BB-9`). It was
+introduced unremarked in the commit that created the file and copy-pasted into three transports by
+an unrelated split. A user configuring `request_timeout_seconds=0.5` silently gets `1.0`. Whether
+that is protection or a bug needs a decision, not a guess.
