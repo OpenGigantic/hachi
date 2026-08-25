@@ -9,6 +9,23 @@ typo in that block was indistinguishable from a genuine ``[routing]`` config pro
 
 See docs/audit/2026-07-19/tasks/T-26-routing-boot-failure-visible.md.
 
+T-44 relocation note (read before touching this file)
+-------------------------------------------------------
+T-26 section 9 forbade extracting a ``_build_routing()`` helper, in these words:
+"Extracting a helper is exactly the drift this section exists to prevent: it is a
+different task, with a different review burden, and it will collide with CF-6
+work." CF-6 is T-44 (decompose ``boot_agent`` into staged builders) — the deferral
+named its own successor. T-44 landed that exact extraction:
+``hachi.gateway.boot.providers.build_routing`` now holds the try/except this file
+locks down, called from ``boot_agent`` rather than inlined in it. The routing-boot
+block moved VERBATIM (T-44's own constraint) — same guarded span, same imports
+hoisted above the ``try``, same log levels, same event. Only the enclosing function
+changed, from ``boot_agent`` to ``build_routing``, so every assertion below now
+anchors on THAT function instead. This is the BB-158 pattern ("point the test at
+the new location, not backward through the old module") applied to a structural
+(AST) test rather than a monkeypatch target — nothing here asserts anything
+different than it did before the move.
+
 Harness note (read before touching this file)
 -----------------------------------------------
 T-26 section 7 asks for a ``caplog``-based test that boots a session with a broken
@@ -19,14 +36,13 @@ device-permission loading, real ``.og`` skill-engine indexing via the process-wi
 redirected off the developer's real ``~/.hachi`` to be safe to run in CI. No test in
 this repo calls the real ``boot_agent()`` today (the only two hits for ``"boot_agent("``
 in ``tests/`` — ``test_cold_start_resume.py`` and ``test_gateway_runtime_validation.py``
-— both replace it with a fake via ``monkeypatch``), and T-26 section 9 explicitly
-forbids extracting a ``_build_routing()`` helper to make the block independently
-callable ("Extracting a helper is exactly the drift this section exists to prevent").
+— both replace it with a fake via ``monkeypatch``), and (pre-T-44) extracting a helper
+to make the block independently callable was explicitly out of scope.
 
 So this file takes the spec's own pre-authorised fallback ("if a full boot is
 impractical, assert the two properties that do not require it"): an honest,
 *structural* (AST-based, not raw-grep) assertion against the REAL source of
-``boot_agent``, in the same spirit as
+``build_routing``, in the same spirit as
 ``tests/test_emit_runtime_event_single_definition.py``'s
 ``test_boot_agent_defines_each_event_closure_once``. Every assertion below reads the
 live ``except`` handler via ``ast`` (not a hand-copied mirror), so it cannot drift
@@ -39,7 +55,7 @@ from __future__ import annotations
 import ast
 import inspect
 
-import hachi.gateway.orchestrator as orch
+import hachi.gateway.boot.providers as boot_providers
 
 _ROUTING_IMPORT_MODULES: frozenset[str] = frozenset(
     {
@@ -54,15 +70,19 @@ _ROUTING_IMPORT_MODULES: frozenset[str] = frozenset(
 
 
 def _boot_agent_node() -> ast.FunctionDef:
-    tree = ast.parse(inspect.getsource(orch))
+    """Despite the name (kept so the diff against every call site below is minimal),
+    this now returns ``build_routing`` in ``hachi.gateway.boot.providers`` — the
+    function the routing-boot try/except lives in after T-44. See the module
+    docstring's "T-44 relocation note"."""
+    tree = ast.parse(inspect.getsource(boot_providers))
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "boot_agent":
+        if isinstance(node, ast.FunctionDef) and node.name == "build_routing":
             return node
-    raise AssertionError("boot_agent not found in hachi.gateway.orchestrator")
+    raise AssertionError("build_routing not found in hachi.gateway.boot.providers")
 
 
 def _routing_boot_try() -> ast.Try:
-    """The one ``try`` in ``boot_agent`` whose body constructs a ``ModelRouter(...)``.
+    """The one ``try`` in ``build_routing`` whose body constructs a ``ModelRouter(...)``.
 
     Anchored on the ``ModelRouter(`` call rather than a line number, per the spec's
     own warning that anchors drift — this stays correct even if unrelated code moves.

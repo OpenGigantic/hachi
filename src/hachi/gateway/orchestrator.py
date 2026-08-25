@@ -31,27 +31,21 @@ from hachi.core.approvals import (
     RegistryApprover,
     get_approval_registry,
 )
-from hachi.core.checkpoints import CheckpointManager
-from hachi.core.cost import CostTracker, clamp_nonnegative_cost_delta, today_utc_str
-from hachi.core.credential_vault import CredentialVault
+from hachi.core.cost import clamp_nonnegative_cost_delta, today_utc_str
 from hachi.core.integrations import IntegrationRuntime
-from hachi.core.llm import Message, create_llm_client
+from hachi.core.llm import Message
 from hachi.core.loop import ExecutionLoop, ToolRegistry, TurnOutcome, TurnStatus
 from hachi.core.mcp_client import MCPManager, MCPServerConfig
 from hachi.core.memory import MemoryManager
-from hachi.core.memory.provider import ChromaMemoryProvider, ProviderBackedVault, resolve_provider
 from hachi.core.memory.vault import MemoryVault
 from hachi.core.obs.trace import TraceContext
 from hachi.core.obs.trace import bind as _bind_trace_ctx
 from hachi.core.paths import get_hachi_paths
 from hachi.core.permissions import (
-    InteractivePermissionGate,
     PermissionDecision,
     PermissionGate,
     PermissionRequest,
 )
-from hachi.core.prompt_composer import build_stable_base
-from hachi.core.rest_adapter import UniversalRestAdapter
 from hachi.core.runtime_events import (
     BOOT_COMPLETE,
     BOOT_PROGRESS,
@@ -84,16 +78,12 @@ from hachi.core.runtime_read_models import (
     TaskLedgerItemSnapshot,
     ToolCallSnapshot,
 )
-from hachi.core.secret_store import create_default_secret_store
 from hachi.core.session_store import CHECKPOINT_ROLE, SessionStore
 from hachi.core.session_titler import generate_title
-from hachi.core.sub_agent import DEFAULT_SUB_AGENT_MODEL
 from hachi.core.tracing import configure_from_env, span
 from hachi.core.turn_context import TurnContext
 from hachi.gateway.session_read_models import SessionReadModels
-from hachi.gateway.tool_registration import BootDeps, ToolRegistrar, ToolSpec
 from hachi.gateway.workspace import (
-    get_skills_dir,
     get_workspace_dir,
     install_optional_skill_pack,
     load_brain,
@@ -116,23 +106,7 @@ from hachi.jobs.scheduler import (
     deliver_result,
 )
 from hachi.og_engine.engine import SkillEngine
-from hachi.tools.browser_tools import register_browser_tools
-from hachi.tools.config_tools import register_config_tools
-from hachi.tools.delegation_tools import register_delegation_tools
-from hachi.tools.file_tools import register_file_tools
-from hachi.tools.google_tools import register_google_tools
-from hachi.tools.memory_tools import register_memory_tools, register_session_tools
-from hachi.tools.messaging_tools import register_messaging_tools
-from hachi.tools.notification_tools import register_notification_tools
-from hachi.tools.og_tools import USE_TOOLS_SCHEMA, _make_use_tools, register_og_tools
-from hachi.tools.os_tools import register_os_tools
-from hachi.tools.presentation_tools import register_presentation_tools
-from hachi.tools.sandbox_tools import register_sandbox_tools
-from hachi.tools.schedule_tools import register_schedule_tools
 from hachi.tools.search_tools import register_search_tools
-from hachi.tools.vision_tools import register_vision_tools
-from hachi.tools.voice_tools import register_voice_tools
-from hachi.tools.workflow_tools import register_workflow_tools
 
 logger = logging.getLogger(__name__)
 
@@ -2497,7 +2471,7 @@ def _get_or_create_shared_scheduler(shared: Any, schedules_file: "Path") -> Sche
     """
     if getattr(shared, "scheduler", None) is None:
         shared.scheduler = Scheduler(ScheduleStore(schedules_file))
-    return shared.scheduler  # type: ignore[no-any-return]
+    return shared.scheduler
 
 
 def _apply_observability_settings(
@@ -2668,25 +2642,35 @@ def boot_agent(
         },
     )
 
-    # 0. Load Device Permissions (BEFORE anything else)
+    # Deferred imports of the boot stage functions (T-44): deferred to function-body
+    # scope, not module scope, so this module's own top-level imports never form a
+    # cycle with hachi.gateway.boot.* -- those modules import several small
+    # orchestrator-local helpers back (see boot/__init__.py's docstring for the
+    # full explanation of why the import direction is safe this way and not the
+    # other).
+    from hachi.gateway.boot.assembly import build_brain_loop, build_prompt
+    from hachi.gateway.boot.config import build_config_and_brain
+    from hachi.gateway.boot.environment import (
+        build_capabilities,
+        build_integrations,
+        build_mcp,
+        build_skill_engine,
+        collect_prompt_ingredients,
+    )
+    from hachi.gateway.boot.memory import build_memory
+    from hachi.gateway.boot.permissions import build_permissions, reconcile_permissions_with_config
+    from hachi.gateway.boot.providers import build_llm_provider, build_routing
+    from hachi.gateway.boot.tool_infra import build_limits, build_tool_infrastructure
+    from hachi.gateway.boot.tools import register_tools
+
+    # --- Permissions (boot.permissions.build_permissions) ---
     permissions_file = get_workspace_dir() / "device-permissions.og"
-    gate = PermissionGate(permissions_file)
-    runtime_gate: Any = gate
-
-    if on_permission_request:
-        runtime_gate = InteractivePermissionGate(
-            base_gate=gate,
-            approval_handler=on_permission_request,
-            event_emitter=emit_runtime_event,
-        )
-
-    # Build the session-scoped ActionApprover for destructive tool actions.
-    # Selection priority is documented on select_action_approver() itself.
-    action_approver: ActionApprover = select_action_approver(
+    perms = build_permissions(
+        permissions_file=permissions_file,
         on_permission_request=on_permission_request,
         approval_surface=approval_surface,
-        tier=gate.tier,
         emit=emit_runtime_event,
+        select_approver=select_action_approver,
     )
 
     emit_runtime_event(
@@ -2699,71 +2683,37 @@ def boot_agent(
         },
     )
 
-    # 1. Load Local Configuration and Brain
-    config = load_config()
-    brain_prompt = load_brain()
-
-    # Bug 7 boot-reconcile: if settings.toml tier drifts from device-permissions.og tier
-    # (e.g. update_permissions() wrote the .og but a crash prevented the in-process gate
-    # from being rebuilt), rebuild the gate + approver to match config before any tool
-    # registration reads permissions.
-    _config_tier = config.get("permissions", {}).get("tier", "")
-    if _config_tier and _config_tier != gate.tier:
-        try:
-            gate = PermissionGate(permissions_file)
-            if on_permission_request:
-                runtime_gate = InteractivePermissionGate(
-                    base_gate=gate,
-                    approval_handler=on_permission_request,
-                    event_emitter=emit_runtime_event,
-                )
-            else:
-                runtime_gate = gate
-            action_approver = select_action_approver(
-                on_permission_request=on_permission_request,
-                approval_surface=approval_surface,
-                tier=gate.tier,
-                emit=emit_runtime_event,
-            )
-            logger.info(
-                "boot_agent: rebuilt gate to tier=%r (was %r per .og)",
-                gate.tier,
-                _config_tier,
-            )
-        except Exception:
-            logger.warning("boot_agent: gate reconcile failed", exc_info=True)
-
-    provider_config = config.get("provider", {})
-    model_name = provider_config.get("model") or config.get("agent", {}).get(
-        "model", "claude-haiku-4-5"
+    # --- Config + brain (boot.config.build_config_and_brain) ---
+    cfg = build_config_and_brain(
+        load_config=load_config,
+        load_brain=load_brain,
+        apply_observability_settings=_apply_observability_settings,
     )
-    max_tokens = config.get("agent", {}).get("max_tokens", 8192)
+
+    # --- Permissions/config reconcile (boot.permissions.reconcile_permissions_with_config) ---
+    # A real edge the old numbering hid: this rebuild reads BOTH step-0's gate and
+    # step-1's config -- see T-44 report's dependency-graph table.
+    perms = reconcile_permissions_with_config(
+        perms,
+        config=cfg.config,
+        permissions_file=permissions_file,
+        on_permission_request=on_permission_request,
+        approval_surface=approval_surface,
+        emit=emit_runtime_event,
+        select_approver=select_action_approver,
+    )
 
     # ------------------------------------------------------------------
     # Slice 2.2 — EventBus funnel: when [events] bus_funnel=true, an EventBus
     # is instantiated below and three sync subscribers are registered
     # (read-models, surface, observability). emit_runtime_event / relay_event
     # (defined once above) branch on the _event_bus cell at call time, so no
-    # rebind happens here — see the NOTE above their definition.
+    # rebind happens here — see the NOTE above their definition. Stays inline
+    # in boot_agent (not a boot.* stage) -- see the package docstring: the
+    # closures above must be lexically nested here, and this activation block
+    # is the same conceptual unit as those closures, one hazard, one place.
     # ------------------------------------------------------------------
-    from hachi.core.settings import (
-        EvalReportSettings,
-        EventsSettings,
-        JobsSettings,
-        MemoryGardenerSettings,
-        RetentionSettings,
-    )
-
-    _events_cfg = EventsSettings.model_validate(config.get("events", {}))
-    _jobs_cfg = JobsSettings.model_validate(config.get("jobs", {}))
-
-    # Phase 0 / BB-73: wire [observability] config into tracing + metrics.
-    from hachi.core.settings import ObservabilitySettings as _ObsSettings
-
-    _obs_cfg = _ObsSettings.model_validate(config.get("observability", {}))
-    _apply_observability_settings(_obs_cfg, _events_cfg)
-
-    if _events_cfg.bus_funnel:
+    if cfg.events_cfg.bus_funnel:
         from hachi.core.event_bus import EventBus
 
         _event_bus = EventBus(job_queue=job_queue)
@@ -2787,10 +2737,12 @@ def boot_agent(
     # End EventBus funnel wiring
     # ------------------------------------------------------------------
 
-    capability_registry = _build_capability_registry(config)
-    enabled_capabilities = [item.id for item in capability_registry.iter_enabled()]
-    for capability_id in enabled_capabilities:
-        install_optional_skill_pack(capability_id)
+    # --- Capabilities (boot.environment.build_capabilities) ---
+    caps = build_capabilities(
+        cfg.config,
+        build_registry=_build_capability_registry,
+        install_pack=install_optional_skill_pack,
+    )
 
     emit_runtime_event(
         BOOT_PROGRESS,
@@ -2802,26 +2754,12 @@ def boot_agent(
         },
     )
 
-    # 2. Initialize the Skill Engine (the .og brain).
+    # --- Skill engine (boot.environment.build_skill_engine) ---
     # P4-02: reuse the process-level singleton (shared across sessions) if available,
     # to avoid re-indexing all .og files on every session boot.
-    from hachi.gateway.shared_services import ProcessSharedServices
-
-    _shared = ProcessSharedServices.get_or_create(config, str(get_hachi_paths().data_dir))
-    # Slice 2.2: publish the EventBus on the shared singleton so resume.py and
-    # the observability sink (slice 2.3) can find it via ProcessSharedServices.instance().
-    if _event_bus is not None:
-        _shared.event_bus = _event_bus
-
-    if _shared.skill_engine is not None:
-        skill_engine = _shared.skill_engine
-    else:
-        # Fallback: create a fresh engine (should not happen after the first boot).
-        skill_engine = SkillEngine(agent_role="orchestrator")
-        skills_dir = get_skills_dir()
-        skill_engine.load_directory(skills_dir)
-
-    skill_count = skill_engine.node_count
+    skills = build_skill_engine(
+        cfg.config, data_dir=str(get_hachi_paths().data_dir), event_bus=_event_bus
+    )
 
     emit_runtime_event(
         BOOT_PROGRESS,
@@ -2833,16 +2771,8 @@ def boot_agent(
         },
     )
 
-    # 3. Initialize the Integration Runtime (direct SMTP/HTTP connections)
-    integrations = IntegrationRuntime()
-    integration_count = 0
-
-    for node in skill_engine.get_nodes_by_role("env"):
-        integrations.load_env_node(node)
-
-    for node in skill_engine.get_nodes_by_role("integration"):
-        if integrations.setup_integration(node):
-            integration_count += 1
+    # --- Direct integrations (boot.environment.build_integrations) ---
+    integ = build_integrations(skills.skill_engine)
 
     emit_runtime_event(
         BOOT_PROGRESS,
@@ -2854,11 +2784,15 @@ def boot_agent(
         },
     )
 
-    # 4. Initialize MCP Manager (dynamically configured from permissions)
+    # --- MCP (boot.environment.build_mcp) ---
     # Issue 4: pass the raw config dict so TOML [mcp_servers] entries are also started.
-    mcp_manager = MCPManager()
-    _configure_mcp_servers(skill_engine, mcp_manager, gate, emit_runtime_event, config=config)
-    mcp_tool_count = mcp_manager.total_tool_count
+    mcp = build_mcp(
+        skills.skill_engine,
+        gate=perms.gate,
+        emit=emit_runtime_event,
+        config=cfg.config,
+        configure=_configure_mcp_servers,
+    )
 
     emit_runtime_event(
         BOOT_PROGRESS,
@@ -2880,11 +2814,17 @@ def boot_agent(
         },
     )
 
-    # 5. Collect stable-base ingredients (prompt assembled after tool registration below)
-    total_tools = integration_count + mcp_tool_count
-    _permission_block = runtime_gate.get_system_prompt_injection()
-    capability_snapshot = capability_registry.status_snapshot()
-    _capability_block = str(capability_snapshot) if capability_snapshot else ""
+    # --- Prompt ingredients (boot.environment.collect_prompt_ingredients) ---
+    # Despite firing right after the "prompt" progress marker above, NONE of this
+    # is the real prompt assembly -- that is boot.assembly.build_prompt, far below,
+    # AFTER tool registration. See T-44 report: even the progress-event LABEL is
+    # misleading here, not just the old numbered comments.
+    ingredients = collect_prompt_ingredients(
+        integration_count=integ.integration_count,
+        mcp_tool_count=mcp.mcp_tool_count,
+        runtime_gate=perms.runtime_gate,
+        capability_registry=caps.registry,
+    )
 
     emit_runtime_event(
         BOOT_PROGRESS,
@@ -2896,113 +2836,16 @@ def boot_agent(
         },
     )
 
-    # 6. Initialize the LLM Provider
-    secret_store = create_default_secret_store()
-    client = create_llm_client(provider_config, secret_store=secret_store, max_tokens=max_tokens)
+    # --- LLM provider (boot.providers.build_llm_provider) ---
+    providers = build_llm_provider(cfg.provider_config, max_tokens=cfg.max_tokens)
 
-    # Sub-agents reuse the SAME resolved provider credentials as the main agent so
-    # delegation never fails with "ANTHROPIC_API_KEY must be provided". For Anthropic
-    # we drop to a cheaper model to keep delegation cost-aware; other providers keep
-    # the user's configured model.
-    sub_agent_provider = dict(provider_config)
-    if str(provider_config.get("kind", "anthropic")).lower() == "anthropic":
-        sub_agent_provider["model"] = DEFAULT_SUB_AGENT_MODEL
-    sub_agent_client = create_llm_client(
-        sub_agent_provider, secret_store=secret_store, max_tokens=4096
+    # --- Routing (boot.providers.build_routing) ---
+    routing = build_routing(
+        cfg.config,
+        secret_store=providers.secret_store,
+        shared=skills.shared,
+        emit_runtime_event=emit_runtime_event,
     )
-
-    # 6b. Build routing infrastructure (behind [routing] flag; absent = back-compat).
-    # ProviderRegistry → ModelRegistry → RoutingPolicy → ModelRouter.
-    # When [routing] is absent, the policy synthesises a single-model-for-all-caps
-    # mapping and default_client() returns the existing `client` unchanged.
-    # BB-104: these six imports live OUTSIDE the try below (deliberately, still
-    # function-local) so an ImportError from a broken install / renamed module /
-    # typo raises loudly at boot instead of being swallowed as "your [routing]
-    # config is bad". Only the construction calls are guarded.
-    from hachi.core.providers.registry import ProviderRegistry
-    from hachi.core.resilience import RetryPolicy
-    from hachi.core.routing.policy import RoutingPolicy
-    from hachi.core.routing.registry import ModelRegistry
-    from hachi.core.routing.router import ModelRouter
-    from hachi.core.settings import ResolvedConfig
-
-    _model_router = None
-    _provider_registry = None
-    try:
-        _resolved_cfg = ResolvedConfig.model_validate(config)
-        _provider_registry = ProviderRegistry.from_config(_resolved_cfg, secret_store)
-        _model_registry = ModelRegistry.build(_resolved_cfg, _provider_registry)
-        _routing_policy = RoutingPolicy.from_config(_resolved_cfg)
-        # Apply auto-policy if requested (amendment A1).
-        if _routing_policy.auto:
-            _routing_policy = _routing_policy.derive_auto_policy(_model_registry)
-        _retry_policy = RetryPolicy.from_config(_resolved_cfg)
-        _model_router = ModelRouter(
-            registry=_model_registry,
-            policy=_routing_policy,
-            providers=_provider_registry,
-            resilience=_retry_policy,
-        )
-
-        # Phase 3: ensure RoutingConfigStore exists on the shared singleton and holds
-        # the boot snapshot so sessions can adopt future hot-reload updates at turn
-        # boundaries without a restart.
-        if getattr(_shared, "routing_store", None) is None:
-            from hachi.core.routing.snapshot import RoutingSnapshot
-            from hachi.gateway.routing_store import RoutingConfigStore
-
-            _rcs = RoutingConfigStore()
-            _boot_snap = RoutingSnapshot(
-                registry=_model_registry,
-                policy=_routing_policy,
-                resilience=_retry_policy,
-                version=0,
-                source="boot",
-            )
-            _rcs.init(_boot_snap)
-            _shared.routing_store = _rcs
-
-        logger.info(
-            "Routing boot: %d models registered; default=%s; auto=%s",
-            len(_model_registry.all()),
-            _routing_policy.default_model,
-            _routing_policy.auto,
-        )
-        # Cost-governance guard (BB-30): surface the silent "every chat turn routed to
-        # the priciest model" trap loudly at boot instead of letting it hide in the
-        # routing table. Never changes routing — an explicit choice is respected.
-        for _cost_warning in _routing_policy.costly_capability_warnings(_model_registry):
-            logger.warning(_cost_warning)
-            emit_runtime_event("cost.routing_warning", {"message": _cost_warning})
-    except Exception as exc:
-        # BB-104: this used to log at debug (quieter than the INFO success path
-        # above), so a broken [routing] config produced zero visible signal — the
-        # session silently fell back to the single default model. Promoted to
-        # WARNING with the exception type named, plus a runtime event, so the
-        # failure is as loud as the fallback it causes is significant.
-        logger.warning(
-            "Routing boot: failed to initialise routing layer (%s: %s); "
-            "falling back to the direct client — [routing] configuration is NOT active",
-            type(exc).__name__,
-            exc,
-            exc_info=True,
-        )
-        emit_runtime_event(
-            "routing.boot_failed",
-            {"error": f"{type(exc).__name__}: {exc}"},
-        )
-        _model_router = None
-
-    # Shared per-session token/cost tracker — used by the main loop AND threaded
-    # into delegated sub-agents so their spend is included in the session total.
-    # Pass the model registry so registry-backed pricing is used (registry seeds from
-    # cost.py values, so no drift).
-    _registry_for_cost = (
-        _model_router._registry  # type: ignore[union-attr]
-        if _model_router is not None
-        else None
-    )
-    cost_tracker = CostTracker(registry=_registry_for_cost)
 
     emit_runtime_event(
         BOOT_PROGRESS,
@@ -3014,11 +2857,29 @@ def boot_agent(
         },
     )
 
-    # 7. Initialize the Memory Manager (Moved up so Vault can bind to it)
+    # --- Memory + vault (boot.memory.build_memory) ---
     # G3-T6: pass the shared LLM client so background memory ops (fact extraction,
     # sliding-window summary) reuse the already-open HTTP/TLS connection pool
     # instead of constructing a new AnthropicClient on every background job.
-    memory = MemoryManager(max_active_messages=30, job_queue=job_queue, llm_client=client)
+    #
+    # Runs BEFORE tool-infra below -- the one deliberate reordering in this task.
+    # In the pre-T-44 file, tool_registry/checkpoint_manager/scheduler/session_store
+    # construction sat PHYSICALLY between "Initialize the Memory Manager" and the
+    # vault-binding code that finishes it, under a "Build infrastructure objects"
+    # comment -- despite the vault code needing nothing from that block. Verified
+    # by reading every name each span touches: memory/vault code never reads
+    # tool_registry/checkpoint_manager/scheduler/session_store, and tool-infra code
+    # never reads memory/vault/graph_index. Reordering the OUTER pair (not
+    # reordering anything WITHIN either) so both are contiguous stages is therefore
+    # behaviour-neutral -- no runtime event fires in this span either way, so it is
+    # invisible even to tests/test_boot_agent_stages.py's own event-order pin.
+    mem = build_memory(
+        cfg.config,
+        job_queue=job_queue,
+        llm_client=providers.client,
+        shared=skills.shared,
+        memory_dir=str(get_hachi_paths().data_dir),
+    )
 
     emit_runtime_event(
         BOOT_PROGRESS,
@@ -3030,470 +2891,57 @@ def boot_agent(
         },
     )
 
-    # 8. Build infrastructure objects needed for tool registration.
+    # --- Tool infrastructure (boot.tool_infra.build_tool_infrastructure) ---
     # These are created before the TOOL_SPECS table so BootDeps can reference
     # fully-constructed objects rather than lazy placeholders.
-    tool_registry = ToolRegistry()
-    # File-change checkpoints give the user an undo for agent edits (rollback_changes tool).
-    checkpoint_manager = CheckpointManager(get_hachi_paths().checkpoints_dir)
-    # Proactive scheduling (cron/interval/once) — persisted across restarts.
-    # H3: shared across sessions in this process (see _get_or_create_shared_scheduler).
-    scheduler = _get_or_create_shared_scheduler(_shared, get_hachi_paths().schedules_file)
-    # Initialize Session Store (Phase 3: cross-session persistence)
-    session_store = SessionStore()
-    # T-10 / BB-42 recurrence: publish on the process singleton so the gateway's
-    # ingress-idempotency hot path (fastapi_app._resolve_session_store) and
-    # core/cost.py's daily-spend ledger reuse THIS store instead of opening (and
-    # leaking) a fresh sqlite3/WAL connection per call. Overwrites whatever a
-    # prior session in this process attached — see the is-still-shared guard in
-    # AgentSession.shutdown() below, which stops a session's own shutdown from
-    # closing this out from under sibling sessions / the gateway.
-    _shared.session_store = session_store
-
-    # Initialize and register the Long-Term Memory Vault (backend-selectable).
-    # backend="chroma" (default) — ChromaDB persistent vault, full semantic tools.
-    # backend="in_memory" / "fts5_only" — lightweight, no ChromaDB required. T-49:
-    #   these route through ProviderBackedVault, which adopts the MemoryProvider
-    #   seam (upsert/search/delete) so core/user/agent-profile facts are genuinely
-    #   stored and retrieved — episodic memory, delegation search, and the
-    #   MemoryGuard quarantine trail stay honestly unavailable (BB-146).
-    from hachi.core.settings import MemorySettings
-
-    _raw_memory = config.get("memory", {})
-    _memory_settings = MemorySettings.model_validate(_raw_memory)
-
-    # P4-02: reuse shared vault when already initialised (avoids opening a new Chroma
-    # PersistentClient per session — up to 100 clients per process before this fix).
-    if _shared.vault is not None:
-        vault: MemoryVault | ProviderBackedVault | None = _shared.vault
-        if isinstance(vault, ProviderBackedVault):
-            # T-49: the shared vault is already provider-backed (in_memory /
-            # fts5_only) — reuse its wrapped provider directly instead of
-            # wrapping it in a ChromaMemoryProvider, which would misreport
-            # _is_fts5_only below and break the FTS5 graph/writer attachment.
-            _provider = vault.provider
-        else:
-            _provider = ChromaMemoryProvider(vault=vault)
-    else:
-        _provider = resolve_provider(_memory_settings)
-        # T-06 / BB-99: the settings that actually control retrieval behaviour
-        # (recall_distance_max, core_memory_max_entries, decay_half_life_days)
-        # are applied by ProcessSharedServices._init (shared_services.py) — that
-        # is the vault every session reuses via the `_shared.vault is not None`
-        # branch above. This `else` only runs when no shared vault exists yet
-        # (e.g. BB-6, before the first session has booted in this process); it
-        # mirrors _init's settings-passing so a vault built directly here is not
-        # silently under-configured. Non-Chroma backends keep the plain
-        # initialize() signature — they have no recall/decay machinery.
-        if isinstance(_provider, ChromaMemoryProvider):
-            _provider.initialize(
-                brain_dir=str(get_hachi_paths().data_dir),
-                recall_distance_max=_memory_settings.recall_distance_max,
-                core_memory_max_entries=_memory_settings.core_memory_max_entries,
-                decay_half_life_days=_memory_settings.decay_half_life_days,
-            )
-            vault = _provider.vault
-        else:
-            _provider.initialize(brain_dir=str(get_hachi_paths().data_dir))
-            # T-49: adopt the seam — route reads/writes through the provider's
-            # upsert/search/delete contract instead of discarding it to
-            # vault=None (BB-146).
-            vault = ProviderBackedVault(_provider)
-    memory.set_vault(vault)
-
-    # T-06 / BB-99: make a settings/vault mismatch loud instead of silent. If this
-    # ever fires it means a [memory] retrieval control was configured but the live
-    # vault was built from a different value — the exact failure mode that made
-    # M2 decay inert for every user. Read the properties directly (never a
-    # defaulted getattr — T-14) so a missing property raises instead of passing.
-    # T-49: scoped to Chroma — in_memory/fts5_only have no recall/decay machinery
-    # (shared_services.py's comment on the sibling branch above), so there is
-    # nothing for this vault-vs-settings comparison to verify for them.
-    if vault is not None and isinstance(_provider, ChromaMemoryProvider):
-        if vault.decay_half_life_days != _memory_settings.decay_half_life_days:
-            logger.warning(
-                "[memory] decay_half_life_days=%s was configured but the live vault "
-                "reports %s — memory settings are not reaching the vault",
-                _memory_settings.decay_half_life_days,
-                vault.decay_half_life_days,
-            )
-        if vault.recall_distance_max != _memory_settings.recall_distance_max:
-            logger.warning(
-                "[memory] recall_distance_max=%s was configured but the live vault "
-                "reports %s — memory settings are not reaching the vault",
-                _memory_settings.recall_distance_max,
-                vault.recall_distance_max,
-            )
-        if vault.core_memory_max_entries != _memory_settings.core_memory_max_entries:
-            logger.warning(
-                "[memory] core_memory_max_entries=%s was configured but the live "
-                "vault reports %s — memory settings are not reaching the vault",
-                _memory_settings.core_memory_max_entries,
-                vault.core_memory_max_entries,
-            )
-
-    # P4-06: M4 — fts5_only backend forces graph=True (files are canonical; no Chroma needed)
-    from hachi.core.memory.provider import FTS5MemoryProvider
-
-    _is_fts5_only = isinstance(_provider, FTS5MemoryProvider)
-    _use_graph = _memory_settings.graph or _is_fts5_only
-
-    # P2-04: M0 — attach FTS5 graph index when memory.graph=true (or fts5_only backend)
-    # P4-02: reuse the shared graph_index when the process singleton already has one.
-    _graph_index = None
-    if _use_graph and (vault is not None or _is_fts5_only):
-        if _shared.graph_index is not None:
-            _graph_index = _shared.graph_index
-            # Attach to vault if not already attached (idempotent guard).
-            if vault is not None and getattr(vault, "_graph_index", None) is None:
-                vault.attach_graph_index(_graph_index)
-            if _is_fts5_only:
-                _provider.attach_graph_index(_graph_index)
-        else:
-            try:
-                from hachi.core.memory.index import MemoryIndex
-
-                _paths = get_hachi_paths()
-                _graph_index = MemoryIndex(
-                    memory_dir=_paths.memory_dir,
-                    db_path=_paths.memory_index_db,
-                )
-                _graph_index.refresh()
-                if vault is not None:
-                    vault.attach_graph_index(_graph_index)
-                if _is_fts5_only:
-                    _provider.attach_graph_index(_graph_index)
-                logger.info(
-                    "MemoryIndex: %d nodes indexed from %s",
-                    _graph_index.node_count,
-                    _paths.memory_dir,
-                )
-            except Exception:
-                logger.debug("P2-04: MemoryIndex init failed; graph recall disabled", exc_info=True)
-
-    # P2-05: M1 — MemoryWriter for typed-node write path (always on when graph flag set)
-    # P4-02: reuse the shared memory_writer when available.
-    if _use_graph:
-        if _shared.memory_writer is not None:
-            memory.set_memory_writer(_shared.memory_writer)
-            if _is_fts5_only:
-                _provider.attach_memory_writer(_shared.memory_writer)
-        else:
-            try:
-                from hachi.core.memory.writer import MemoryWriter
-
-                _paths = get_hachi_paths()
-                _memory_writer = MemoryWriter(
-                    memory_dir=_paths.memory_dir,
-                    graph_index=_graph_index,
-                )
-                memory.set_memory_writer(_memory_writer)
-                if _is_fts5_only:
-                    _provider.attach_memory_writer(_memory_writer)
-                logger.info("MemoryWriter: M1 write path active (memory_dir=%s)", _paths.memory_dir)
-            except Exception:
-                logger.debug(
-                    "P2-05: MemoryWriter init failed; falling back to Chroma-only", exc_info=True
-                )
-
-    # Universal REST adapter for .og-defined APIs; built here so the rest_apis spec
-    # can close over it without a circular BootDeps reference.
-    credential_vault = CredentialVault(secret_store=secret_store)
-    rest_adapter = UniversalRestAdapter(tool_registry, credential_vault)
-
-    # 8b. Declarative tool registration — ordering constraints are explicit in the
-    # table below, not buried in prose comments.
-    # P4-01: per-session write-target lease manager (prevents concurrent delegation conflicts).
-    from hachi.core.lease_manager import LeaseManager
-
-    _lease_manager = LeaseManager()
+    infra = build_tool_infrastructure(
+        shared=skills.shared,
+        secret_store=providers.secret_store,
+        checkpoints_dir=get_hachi_paths().checkpoints_dir,
+        schedules_file=get_hachi_paths().schedules_file,
+        get_or_create_shared_scheduler=_get_or_create_shared_scheduler,
+    )
 
     # Per-session safety caps (0 = unlimited): stop a runaway loop from draining the
-    # user's API budget. Read from the optional [limits] config section, else env vars.
-    # Computed here (before _make_deps/registration) so S2 can thread the SAME caps
-    # down to register_delegation_tools -> every sub-agent's own ExecutionLoop —
-    # a delegated sub-agent must never be able to silently outspend what the user
-    # configured for the parent session.
-    limits_cfg = config.get("limits", {}) if isinstance(config.get("limits"), dict) else {}
-    max_daily_cost_usd = _coerce_float(
-        limits_cfg.get("max_daily_cost_usd"), os.environ.get("HACHI_MAX_DAILY_COST_USD")
-    )
-    max_session_cost_usd = _coerce_float(
-        limits_cfg.get("max_session_cost_usd"), os.environ.get("HACHI_MAX_SESSION_COST_USD")
-    )
-    max_session_tokens = _coerce_int(
-        limits_cfg.get("max_session_tokens"), os.environ.get("HACHI_MAX_SESSION_TOKENS")
-    )
-    max_turn_cost_usd = _coerce_float(
-        limits_cfg.get("max_turn_cost_usd"), os.environ.get("HACHI_MAX_TURN_COST_USD")
-    )
-    max_turn_tokens = _coerce_int(
-        limits_cfg.get("max_turn_tokens"), os.environ.get("HACHI_MAX_TURN_TOKENS")
-    )
+    # user's API budget. Read from the optional [limits] config section, else env
+    # vars. Computed once (boot.tool_infra.build_limits) and threaded into BOTH
+    # register_tools (S2: register_delegation_tools -> every sub-agent's own
+    # ExecutionLoop must never silently outspend the parent's configured caps) and
+    # build_brain_loop below.
+    limits = build_limits(cfg.config, coerce_float=_coerce_float, coerce_int=_coerce_int)
 
-    def _make_deps() -> BootDeps:
-        return BootDeps(
-            gate=runtime_gate,
-            skill_engine=skill_engine,
-            checkpoint_manager=checkpoint_manager,
-            vault=vault,
-            job_queue=job_queue,
-            session_store=session_store,
-            integrations=integrations,
-            mcp_manager=mcp_manager,
-            scheduler=scheduler,
-            relay_event=relay_event,
-            sub_agent_llm=sub_agent_client,
-            cost_tracker=cost_tracker,
-            provider_kind=str(provider_config.get("kind", "anthropic")),
-            secret_store=secret_store,
-            tool_registry=tool_registry,
-            lease_manager=_lease_manager,
-            router=_model_router,
-            provider_registry=_provider_registry,
-            session_llm=client,
-        )
-
-    TOOL_SPECS: list[ToolSpec] = [
-        ToolSpec(
-            name="os",
-            register_fn=lambda d: register_os_tools(
-                d.tool_registry, d.gate, checkpoints=d.checkpoint_manager
-            ),
-        ),
-        ToolSpec(
-            name="og",
-            register_fn=lambda d: register_og_tools(d.tool_registry, d.skill_engine),
-        ),
-        ToolSpec(
-            # Lazy tool-loading meta-tool (core): lets the model unlock optional groups.
-            name="use_tools",
-            register_fn=lambda d: d.tool_registry.register(
-                USE_TOOLS_SCHEMA, _make_use_tools(d.tool_registry), group="core"
-            ),
-        ),
-        ToolSpec(name="workflow", register_fn=lambda d: register_workflow_tools(d.tool_registry)),
-        ToolSpec(
-            name="sandbox",
-            register_fn=lambda d: register_sandbox_tools(d.tool_registry, d.gate),
-        ),
-        ToolSpec(
-            # Headless browser automation (optional: needs `hachi-og[browser]` + a browser
-            # binary). The controller is lazy — no browser launches until the agent first calls
-            # browse_web. Return value is captured from registration_results["browser"].
-            name="browser",
-            register_fn=lambda d: register_browser_tools(d.tool_registry, d.gate),
-        ),
-        ToolSpec(
-            # Outbound messaging (Slack/Discord/WhatsApp). Credentials resolve lazily at call
-            # time, so these register cleanly even with no token set (return a "not configured"
-            # hint until then).
-            name="messaging",
-            register_fn=lambda d: register_messaging_tools(d.tool_registry),
-        ),
-        ToolSpec(
-            # Desktop push notifications + SMTP email digests. Zero config for desktop;
-            # email requires HACHI_SMTP_* env vars (degrades gracefully if unset).
-            name="notifications",
-            register_fn=lambda d: register_notification_tools(d.tool_registry),
-        ),
-        ToolSpec(
-            # Vision input — view local images.  Capability-routed (doc 20 §3):
-            # session model with VISION → inline; else router.select(VISION) → routed;
-            # else graceful text fallback.
-            name="vision",
-            register_fn=lambda d: register_vision_tools(
-                d.tool_registry,
-                d.gate,
-                provider_kind=d.provider_kind,
-                session_client=d.session_llm,
-                router=d.router,
-            ),
-        ),
-        ToolSpec(
-            # Voice input — transcribe/synthesize audio.  Provider resolved via
-            # ProviderRegistry.get_speech() (doc 19 §3); falls back to SpeechToText.from_env()
-            # when registry is unavailable (back-compat).
-            name="voice",
-            register_fn=lambda d: register_voice_tools(
-                d.tool_registry, d.gate, provider_registry=d.provider_registry
-            ),
-        ),
-        ToolSpec(
-            # Web search + URL extraction (Initiative A — Search Platform, doc 17).
-            # Registered only when a SearchProvider is available in the ProviderRegistry.
-            # Degrades gracefully to a no-op when no provider / key is configured.
-            name="search",
-            register_fn=lambda d: _register_search_if_available(d),
-        ),
-        ToolSpec(
-            # File / attachment platform (Initiative E, Slice 2.4).
-            # attach_file, list_attachments, read_attachment, search_attachments.
-            # Permission-gated like os_tools; extraction runs as durable job handler.
-            name="files",
-            register_fn=lambda d: register_file_tools(d.tool_registry, d.gate),
-        ),
-        ToolSpec(
-            # Google Workspace (Gmail, Calendar, Drive, Docs, Sheets, Contacts, Meet, Tasks).
-            # Only mounted when GOOGLE_CLIENT_ID is set; degrades to a friendly stub otherwise.
-            # The session-scoped action_approver gates destructive leaf tools (send_email,
-            # trash_file, etc.) through the appropriate human-approval path.
-            name="google",
-            register_fn=lambda d: register_google_tools(d.tool_registry, approver=action_approver),
-        ),
-        ToolSpec(
-            # Presentation generation — build .pptx from natural language.
-            name="presentation",
-            register_fn=lambda d: register_presentation_tools(d.tool_registry, d.gate),
-        ),
-        ToolSpec(
-            name="schedule",
-            register_fn=lambda d: register_schedule_tools(d.tool_registry, d.scheduler),
-        ),
-        ToolSpec(
-            # Register Universal REST APIs parsed from .og files.
-            name="rest_apis",
-            register_fn=lambda d: [
-                rest_adapter.register_node_apis(node) for node in d.skill_engine.get_all_nodes()
-            ],
-        ),
-        ToolSpec(
-            name="memory",
-            register_fn=lambda d: register_memory_tools(
-                d.tool_registry, d.vault, job_queue=d.job_queue
-            ),
-        ),
-        ToolSpec(
-            name="session",
-            register_fn=lambda d: register_session_tools(d.tool_registry, d.session_store),
-        ),
-        ToolSpec(
-            name="integration_tools",
-            register_fn=lambda d: d.integrations.register_tools(d.tool_registry),
-        ),
-        ToolSpec(
-            name="mcp_tools",
-            register_fn=lambda d: d.mcp_manager.register_tools(d.tool_registry),
-        ),
-        ToolSpec(
-            # Agent-accessible configuration + MCP management tools.
-            # Registered AFTER MCP manager so list_mcp_servers sees all nodes.
-            # T-68: inject the gateway's fuller get_skills_dir (which also runs
-            # the first-run workspace bootstrap) — tools/config_tools.py itself
-            # must not import hachi.gateway, so its default collaborator is its
-            # own thinner get_skills_dir (mkdir-only, no bootstrap).
-            name="config",
-            after={"mcp_tools"},
-            register_fn=lambda d: register_config_tools(
-                d.tool_registry, gate=d.gate, skills_dir_provider=get_skills_dir
-            ),
-        ),
-        ToolSpec(
-            # MUST be LAST — needs full parent registry.
-            # Pass skill_engine so sub-agent OG tools are rebound to a role-scoped
-            # engine view, preventing sub-agents from reading scope=orchestrator nodes.
-            name="delegation",
-            last=True,
-            register_fn=lambda d: register_delegation_tools(
-                d.tool_registry,
-                d.gate,
-                d.relay_event,
-                d.vault,
-                job_queue=d.job_queue,
-                sub_agent_llm=d.sub_agent_llm,
-                cost_tracker=d.cost_tracker,
-                skill_engine=d.skill_engine,
-                lease_manager=d.lease_manager,
-                # S2: sub-agents inherit the parent session's configured budget caps
-                # by default so a delegated task can never silently outspend them.
-                max_cost_usd=max_session_cost_usd,
-                max_tokens=max_session_tokens,
-                max_cost_per_turn=max_turn_cost_usd,
-                max_tokens_per_turn=max_turn_tokens,
-            ),
-        ),
-    ]
-
-    deps = _make_deps()
-    registrar = ToolRegistrar()
-    registration_results = registrar.install(TOOL_SPECS, deps)
-    browser_controller = registration_results.get("browser")
-
-    # Register native capability tools lazily, with setup stubs for incomplete states.
-    native_registration_count = 0
-    for descriptor in capability_registry.iter_enabled():
-        if descriptor.kind != "native_integration":
-            continue
-        if not descriptor.mounts_tools:
-            # BB-103: tools are mounted elsewhere (google -> TOOL_SPECS, which carries
-            # the session approver). The descriptor still drives status_snapshot() and
-            # install_optional_skill_pack() above — only the mount step is skipped, for
-            # both the success and the not-available/not-configured stub branch, so a
-            # configured-but-not-connected Google does not also get this loop's generic
-            # stub competing with google_tools.py's own purpose-written one.
-            continue
-        if not descriptor.available or not descriptor.configured:
-            _register_capability_setup_stub(tool_registry, descriptor)
-            continue
-
-        try:
-            instance = capability_registry.instantiate(descriptor.id)
-        except Exception as exc:
-            _register_capability_setup_stub(tool_registry, descriptor)
-            emit_runtime_event(
-                MCP_SERVER_FAILED,
-                {
-                    "server": descriptor.id,
-                    "reason": f"capability init failed: {exc}",
-                },
-            )
-            continue
-
-        if isinstance(instance, tuple):
-            for sub_instance in instance:
-                if hasattr(sub_instance, "register_tools"):
-                    sub_instance.register_tools(tool_registry)
-                    native_registration_count += 1
-        elif hasattr(instance, "register_tools"):
-            instance.register_tools(tool_registry)
-            native_registration_count += 1
-
-    # Classify tools into lazy-loading groups now that every tool is registered.
-    # T-39/BB-112: non-core tools now declare group="..." at their own register(...)
-    # call (mirroring the pre-existing per-skill REST tool / use_tools pattern), so
-    # classify() has nothing left to assign via name lookup — group_by_name={} is
-    # kept (not dropped from the signature) so a future dynamic table has somewhere
-    # to plug in without a call-site change.
-    tool_registry.classify(
-        core_names=set(_CORE_TOOL_NAMES),
-        group_by_name={},
-        # Google integration tools all share the "google_" prefix → lazy "google" group.
-        prefix_groups={"google_": "google"},
-        default="integrations",
+    # --- Declarative tool registration (boot.tools.register_tools) ---
+    # Ordering constraints among the individual tool groups are explicit in that
+    # module's TOOL_SPECS table, not buried in prose comments here.
+    tools = register_tools(
+        perms=perms,
+        skills=skills,
+        integrations=integ,
+        mcp=mcp,
+        memory=mem,
+        infra=infra,
+        providers=providers,
+        routing=routing,
+        limits=limits,
+        capabilities=caps,
+        provider_kind=str(cfg.provider_config.get("kind", "anthropic")),
+        job_queue=job_queue,
+        relay_event=relay_event,
+        emit=emit_runtime_event,
+        register_search_if_available=_register_search_if_available,
+        register_capability_setup_stub=_register_capability_setup_stub,
+        core_tool_names=_CORE_TOOL_NAMES,
     )
 
-    # BB-32: MCP tools land in "integrations" (never activated) because classify()
-    # doesn't know MCP server names at call time.  Reclassify them into "mcp" so
-    # activating that group exposes them to the LLM.
-    _mcp_prefixes = {f"{name}_": "mcp" for name in mcp_manager._servers}
-    _has_live_mcp = bool(_mcp_prefixes)
-    if _has_live_mcp:
-        tool_registry.reclassify_by_prefix(_mcp_prefixes)
-
-    # Tell the model which optional domain groups it can unlock on demand. Skill
-    # groups are omitted here — load_skill auto-activates those — so this lists only
-    # the static domain groups (e.g. schedule, sandbox, browser, workflow).
-    skill_group_names = {node.name for node in skill_engine.get_all_nodes()}
-    domain_groups = sorted(tool_registry.available_groups() - {"core"} - skill_group_names)
-
-    # 5.5 Assemble the stable base system prompt via PromptComposer (single call site).
-    system_prompt = build_stable_base(
-        brain_text=brain_prompt,
-        skill_count=skill_count,
-        integration_count=total_tools,
-        permission_block=_permission_block,
-        capability_block=_capability_block,
-        tool_groups=list(domain_groups) if domain_groups else None,
+    # --- System prompt (boot.assembly.build_prompt) ---
+    # T-44 section 3.3: this is the stage the misleading "5.5" numbering hid --
+    # physically the 12th block in the pre-T-44 file, not the 6th. It depends on
+    # `tools` (tool_groups), so it MUST run after register_tools, not before.
+    prompt = build_prompt(
+        brain_prompt=cfg.brain_prompt,
+        skill_count=skills.skill_count,
+        ingredients=ingredients,
+        tools=tools,
     )
 
     emit_runtime_event(
@@ -3506,56 +2954,40 @@ def boot_agent(
         },
     )
 
-    # 9. Instantiate the Brain Loop (cost_tracker created earlier, shared with sub-agents)
-    # (max_daily_cost_usd / max_session_cost_usd / max_session_tokens / max_turn_cost_usd /
-    # max_turn_tokens were computed earlier, before _make_deps, so S2 could thread them
-    # into register_delegation_tools as well.)
-    # When the router is available, default_client() returns the configured model's
-    # resilient client; the loop's llm_client is unchanged (back-compat).
-    _loop_client = client
-    if _model_router is not None:
-        try:
-            _loop_client = _model_router.default_client()
-            # Issue 11/9: routing succeeded — report the routed default model as the
-            # session model so the "last used model" badge and /spend reflect what
-            # actually runs (previously these reported provider.model = the primary).
-            model_name = _routing_policy.default_model or model_name
-        except Exception as _route_exc:
-            # The routed default model's provider is not usable (missing API key,
-            # unknown/misspelled model id, etc.). Fall back to the primary client but
-            # do NOT misreport the model — keep model_name as the primary provider's
-            # model and warn loudly so the user learns their selection didn't take effect.
-            logger.warning(
-                "Routing: requested default model %r is not usable (%s) — falling back "
-                "to %r. Configure that provider's API key or fix the model id in "
-                "[routing]/[providers].",
-                getattr(_routing_policy, "default_model", "?"),
-                _route_exc,
-                model_name,
-            )
-            _loop_client = client
-
-    loop = ExecutionLoop(
-        llm_client=_loop_client,
-        registry=tool_registry,
-        memory=memory,
-        base_system_prompt=system_prompt,
-        on_event=relay_event,
-        skill_engine=skill_engine,
-        cost_tracker=cost_tracker,
-        max_cost_usd=max_session_cost_usd,
-        max_tokens=max_session_tokens,
-        max_cost_per_turn=max_turn_cost_usd,
-        max_tokens_per_turn=max_turn_tokens,
-        router=_model_router,
-        routing_store=getattr(_shared, "routing_store", None),
+    # --- Brain loop (boot.assembly.build_brain_loop) ---
+    # (max_daily_cost_usd / limits were computed earlier, before register_tools, so
+    # S2 could thread them into register_delegation_tools as well.)
+    brain = build_brain_loop(
+        client=providers.client,
+        routing=routing,
+        tools=tools,
+        memory=mem,
+        prompt=prompt,
+        relay_event=relay_event,
+        skill_engine=skills.skill_engine,
+        limits=limits,
+        routing_store=getattr(skills.shared, "routing_store", None),
+        model_name=cfg.model_name,
     )
 
-    # BB-32: if live MCP servers were present at boot, persist "mcp" as an
-    # always-on group so MCP tools are visible to the LLM every turn without
-    # requiring a use_tools call.
-    if _has_live_mcp:
-        loop._persistent_groups.add("mcp")
+    # ------------------------------------------------------------------
+    # Everything below stays inline in boot_agent rather than becoming a
+    # further boot.* stage -- see the T-44 report for the full reasoning:
+    #   * the schedule-runner fire callback below closes over `session`, a name
+    #     that does not exist until AgentSession is constructed a few lines
+    #     down (late binding) -- it must stay lexically inside the same
+    #     function as that assignment.
+    #   * tests/test_eval_report_config.py and
+    #     tests/test_memory_gardener_wiring.py structurally assert (via AST)
+    #     that boot_agent's own body directly calls
+    #     _start_eval_report_scheduler(...) / _start_memory_gardener(...)
+    #     beside a logger.info(...) in the same `if` block; extracting either
+    #     into a helper breaks that assertion, and the first of those two
+    #     files is outside this task's owned file list.
+    #   * AgentSession construction itself is out of scope for T-44 (T-45
+    #     already froze its constructor signature; T-46 already owns its read
+    #     models).
+    # ------------------------------------------------------------------
 
     # T-45: start the background schedule runner BEFORE the session exists, so
     # ScheduleRunner can be passed straight into the AgentSession constructor
@@ -3598,42 +3030,43 @@ def boot_agent(
                 },
             )
 
-    _schedule_runner = ScheduleRunner(scheduler, fire=_fire_schedule)
+    _schedule_runner = ScheduleRunner(infra.scheduler, fire=_fire_schedule)
     # H3: the shared Scheduler object still races if two independent runner
     # threads tick it concurrently — only the first session in this process
     # starts the runner; later sessions reuse it without a second thread.
-    if not getattr(_shared, "scheduler_runner_started", False):
+    if not getattr(skills.shared, "scheduler_runner_started", False):
         _schedule_runner.start()
-        _shared.scheduler_runner_started = True
+        skills.shared.scheduler_runner_started = True
 
-    # 10. Create the Session
+    # Create the Session (was "10." — see the T-44 report for why this and
+    # everything below it stays inline rather than becoming a boot.* stage).
     session = AgentSession(
-        loop,
-        skill_engine,
-        memory,
-        integrations,
-        mcp_manager,
-        runtime_gate,
-        model_name=model_name,
+        brain.loop,
+        skills.skill_engine,
+        mem.memory,
+        integ.integrations,
+        mcp.mcp_manager,
+        perms.runtime_gate,
+        model_name=brain.model_name,
         event_emitter=emit_runtime_event,
         read_models=read_models,
         job_queue=job_queue,
         # --- promoted from post-construction stashes (T-45) ---
         # P1-3: `or None` preserves the falsy collapse the old `if max_daily_cost_usd:`
         # guard gave a 0.0 cap (both mean "unlimited" — see _daily_cap_exceeded).
-        max_daily_cost_usd=max_daily_cost_usd or None,
-        sub_agent_client=sub_agent_client,  # closed on shutdown alongside the main client
-        browser_controller=browser_controller,  # closed on shutdown (no-op if never used)
+        max_daily_cost_usd=limits.max_daily_cost_usd or None,
+        sub_agent_client=providers.sub_agent_client,  # closed on shutdown alongside the main client
+        browser_controller=tools.browser_controller,  # closed on shutdown (no-op if never used)
         schedule_runner=_schedule_runner,  # stopped in shutdown()
-        scheduler=scheduler,  # P4-05: exposed for companion web UI
-        episodic_top_k=_memory_settings.episodic_top_k,
-        graph_recall=_memory_settings.graph_recall,
-        durable_title=_jobs_cfg.durable_handlers,
-        provider_registry=_provider_registry,  # BB-11: live search-tool reload w/o restart
-        secret_store=secret_store,
+        scheduler=infra.scheduler,  # P4-05: exposed for companion web UI
+        episodic_top_k=mem.memory_settings.episodic_top_k,
+        graph_recall=mem.memory_settings.graph_recall,
+        durable_title=cfg.jobs_cfg.durable_handlers,
+        provider_registry=routing.provider_registry,  # BB-11: live search-tool reload w/o restart
+        secret_store=providers.secret_store,
     )
-    session.set_vault(vault)
-    session.set_session_store(session_store, model=model_name)
+    session.set_vault(mem.vault)
+    session.set_session_store(infra.session_store, model=brain.model_name)
     if resume_session_id:
         try:
             seeded = session.resume_from_session(resume_session_id)
@@ -3672,6 +3105,7 @@ def boot_agent(
         handle_generate_title,
         handle_resume_run,
     )
+    from hachi.core.settings import EvalReportSettings, MemoryGardenerSettings, RetentionSettings
 
     _job_registry: JobRegistry = JobRegistry()
     _job_registry.register("extract_fact", handle_extract_fact)
@@ -3679,13 +3113,13 @@ def boot_agent(
     _job_registry.register("resume_run", handle_resume_run)
     _job_registry.register("auto_extract", handle_auto_extract)
 
-    if _jobs_cfg.durable_handlers:
+    if cfg.jobs_cfg.durable_handlers:
         from hachi.core.runtime.waits import get_wait_registry
 
         # Expose the WaitConditionRegistry on the process singleton so the
         # scheduler sweep and /runs/{id}/wake endpoint share one registry.
         _wait_registry = get_wait_registry()
-        _shared.wait_registry = _wait_registry
+        skills.shared.wait_registry = _wait_registry
 
         # A6 (§6): restart recovery — re-arm WAITING runs; transition crash-RUNNING runs.
         _boot_recover_runs(job_queue, _job_registry, _wait_registry, emit_runtime_event)
@@ -3714,11 +3148,11 @@ def boot_agent(
         from hachi.core.runtime.job_handlers import handle_auto_extract as _handle_auto_extract
         from hachi.core.runtime_events import FILE_UPLOADED as _FILE_UPLOADED_EVT
 
-        if _jobs_cfg.durable_handlers:
+        if cfg.jobs_cfg.durable_handlers:
             # Async: JobRegistry routes handler_name="auto_extract" to the callable.
             _event_bus.subscribe(
                 _FILE_UPLOADED_EVT,
-                _handle_auto_extract,  # type: ignore[arg-type]
+                _handle_auto_extract,
                 mode="async",
                 name="auto_extract",
             )
@@ -3751,14 +3185,14 @@ def boot_agent(
     # title generation) execute without blocking the turn path.
     # BB-72: also pass session_store + checkpoint_manager so the idle sweep can
     # prune idempotency keys, interaction_log, daily_spend, and checkpoint files.
-    _retention_cfg = RetentionSettings.model_validate(config.get("retention") or {})
+    _retention_cfg = RetentionSettings.model_validate(cfg.config.get("retention") or {})
     _job_worker_for_session = JobWorker(
         job_queue, on_job_event=emit_runtime_event, registry=_job_registry
     )
     _resident_worker = ResidentWorkerThread(
         _job_worker_for_session,
-        session_store=session_store,
-        checkpoint_manager=checkpoint_manager,
+        session_store=infra.session_store,
+        checkpoint_manager=infra.checkpoint_manager,
         sweep_interval_seconds=_retention_cfg.sweep_interval_seconds,
         jobs_retention_hours=_retention_cfg.jobs_retention_hours,
         interaction_log_retention_days=_retention_cfg.interaction_log_retention_days,
@@ -3778,7 +3212,7 @@ def boot_agent(
     # schedule list.  Implementation: a resident helper thread that wakes every
     # SWEEP_INTERVAL seconds and sweeps timed-out runs.
     # ------------------------------------------------------------------
-    if _jobs_cfg.durable_handlers:
+    if cfg.jobs_cfg.durable_handlers:
         _start_timeout_sweep(job_queue, _job_registry, emit_runtime_event)
 
     # ------------------------------------------------------------------
@@ -3786,14 +3220,14 @@ def boot_agent(
     # Mirrors _start_timeout_sweep: daemon thread, sleep loop, never raises.
     # Gated by [eval_reports] enabled = true in settings.toml.
     # ------------------------------------------------------------------
-    _eval_cfg = EvalReportSettings.model_validate(config.get("eval_reports", {}))
+    _eval_cfg = EvalReportSettings.model_validate(cfg.config.get("eval_reports", {}))
     if _eval_cfg.enabled:
         # BB-101 (T-07 debt): distinguish "I enabled it and it started" from "I
         # enabled it and the config never arrived" at the boot_agent call site —
         # the daemon's own thread-start log only fires once it is already running.
         logger.info("[eval_reports] enabled — weekly failure-report daemon starting")
         _start_eval_report_scheduler(
-            session_store, get_hachi_paths(), _eval_cfg, emit_runtime_event
+            infra.session_store, get_hachi_paths(), _eval_cfg, emit_runtime_event
         )
 
     # ------------------------------------------------------------------
@@ -3801,7 +3235,7 @@ def boot_agent(
     # Mirrors the [eval_reports] block above: daemon thread, sleep loop, never
     # raises. Gated by [memory_gardener] enabled = true in settings.toml.
     # ------------------------------------------------------------------
-    _gardener_cfg = MemoryGardenerSettings.model_validate(config.get("memory_gardener", {}))
+    _gardener_cfg = MemoryGardenerSettings.model_validate(cfg.config.get("memory_gardener", {}))
     if _gardener_cfg.enabled:
         # Mirrors BB-101's fix for [eval_reports]: log at the boot_agent call site
         # too, so "enabled and started" is distinguishable from "enabled but the
@@ -3812,12 +3246,12 @@ def boot_agent(
     emit_runtime_event(
         BOOT_COMPLETE,
         {
-            "skills": skill_count,
-            "integrations": integration_count,
-            "native_integrations": native_registration_count,
-            "capabilities": capability_snapshot,
-            "mcp_servers": mcp_manager.server_count,
-            "mcp_tools": mcp_tool_count,
+            "skills": skills.skill_count,
+            "integrations": integ.integration_count,
+            "native_integrations": tools.native_registration_count,
+            "capabilities": ingredients.capability_snapshot,
+            "mcp_servers": mcp.mcp_manager.server_count,
+            "mcp_tools": mcp.mcp_tool_count,
         },
     )
 
