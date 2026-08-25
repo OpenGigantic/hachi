@@ -5185,6 +5185,111 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Locked by:** `tests/test_og_engine.py` — `test_engine_constructs_without_a_hachi_home`,
   `test_injected_usage_path_is_used_verbatim`, `test_with_role_view_shares_the_usage_tracker`.
 
+### BB-165 — `boot_agent`'s numbered step comments misreported execution order
+
+- **Symptom:** `boot_agent` carried steps numbered 0–10 plus 6b, 8b and 5.5. Step 5.5
+  (system-prompt assembly) sat ~285 lines *below* step 8b (tool registration) and executed
+  eleventh, not sixth. Two neighbouring comments were scar tissue from earlier reorderings
+  ("prompt assembled after tool registration below", "Moved up so Vault can bind to it") that
+  the numbers contradicted. Anyone decomposing the function by reading the numbers would build
+  a stage graph that is wrong at exactly the point where it matters most.
+- **Root cause:** blocks were reordered over time to satisfy real dependencies; the numbers were
+  never updated. The comments recorded the *original intent* while the code recorded the *actual
+  graph*, and nothing could detect the divergence — a comment cannot be executed.
+- **Fix:** the 1,245-line function became 15 named stages under `src/hachi/gateway/boot/`, each
+  taking typed inputs and returning a frozen dataclass, ordered by the dependency graph derived
+  empirically rather than read off the comments. `build_prompt` now takes `register_tools`'s
+  result as a parameter, so the downstream edge is a **type signature** instead of a coincidence
+  of file position. The numbering is gone.
+- **Avoid:** never encode execution order in a comment that a later edit can silently invalidate.
+  If an ordering is load-bearing, express it as a data dependency in a signature — then moving
+  the code in the wrong order is a type error rather than a stale comment. The same defect can
+  hide in user-facing strings: this boot sequence still emits `"Building system prompt"` at
+  progress step 7 of 11, four steps before the prompt is actually built (open, not fixed here).
+- **Locked by:** `tests/test_boot_agent_stages.py` —
+  `test_boot_emits_events_in_a_stable_order`, `test_prompt_reflects_registered_tool_count`,
+  `test_booted_session_has_the_expected_wiring`
+
+### BB-166 — Ten wall-clock tests forced the whole suite sequential; nothing enforced it
+
+- **Symptom:** `uv run pytest -n auto` failed on `test_two_sessions_run_concurrently` and
+  `test_parallel_execution_is_faster_than_sequential`, so the gate ran 4,600+ tests
+  sequentially (~520 s) with nothing in the tooling stating that as policy.
+- **Root cause:** eight tests asserted on `time.monotonic()` deltas (tightest: `elapsed < 0.05`)
+  and two compared cross-thread timestamps. Under xdist, workers steal the CPU those assertions
+  assume. Worse, sequential execution was enforced **by omission**: preflight simply never passed
+  `-n`, while `pyproject.toml` shipped `pytest-xdist`, kept `--dist=loadfile` in `addopts`, and
+  its own comment instructed readers to "Pass `-n <N>` or `-n auto` on the CLI" — the exact thing
+  the preflight docstring forbade. A contributor following the config's own instructions broke
+  the gate.
+- **Fix:** pinned `-n 0` explicitly first (note `-p no:xdist` does **not** work — it disables the
+  plugin and makes `--dist=loadfile` an unrecognized argument), then replaced every duration
+  assertion with a `threading.Event` handoff, a `threading.Barrier`, or a background thread with
+  a generous deadman-switch join; the two ordering tests became explicit handshakes over recorded
+  markers rather than timestamps. **No production file needed a clock seam** — see Avoid. Then
+  flipped preflight, CI and the `pyproject.toml` comment to `-n auto` (~120 s, ≈4×).
+- **Avoid:** never assert wall-clock duration to prove "did not block" — assert the slow
+  collaborator was never awaited (an Event the test controls), or force genuine concurrency with
+  a `Barrier` so a serial implementation deadlocks instead of merely running slow. Reach for
+  clock injection only when the code under test polls `time.monotonic()` itself; if its timeout
+  is delegated to a stdlib blocking primitive (`Thread.join(timeout=…)`,
+  `Condition.wait_for(timeout=…)`) there is no clock to swap and you should prove the *outcome*
+  instead. When you must keep a real time assertion, prefer a **lower** bound: starvation only
+  ever makes things slower, so `elapsed >= configured` is parallel-safe where `elapsed <` is not.
+  And when a gate depends on a mode, name the mode in the command — a rule enforced by omission
+  is not enforced.
+- **Locked by:** `tests/test_test_suite_hygiene.py::test_no_new_wall_clock_duration_assertions`;
+  CI's `test` job runs `-n auto` on all three platforms
+
+### BB-167 — `hydrate` widened its own type and could overwrite store actions
+
+- **Symptom:** any of ~20 domain loaders could write any of the frontend store's 75 state fields
+  in one call, and a patch key colliding with an action name would replace that action's
+  *function* with arbitrary data.
+- **Root cause:** `frontend/src/lib/store/store.ts` was one flat 1,847-line store — 75 fields,
+  100 actions, 22 unrelated concerns, no ownership boundaries. `hydrate` was **declared**
+  `(patch: Partial<State>) => void` but **implemented** as `set(patch as Partial<State & Actions>)`.
+  The cast existed only to satisfy zustand's setter and silently discarded the guarantee the
+  signature made. State it precisely: not "untyped" — *typed, then widened, and unscoped*.
+- **Fix:** split into typed slices under `lib/store/slices/`, one owner per concern, with
+  per-domain hydrate functions and both casts removed. `useStore`'s public shape is unchanged and
+  **no component file was touched**. The field *set* — not merely its count — was diffed before
+  and after to prove nothing was dropped or duplicated.
+- **Avoid:** a cast that widens a parameter past its declared type is a silent contract break —
+  if a library's setter needs a wider type than your API promises, narrow at the boundary rather
+  than widening the promise. And never refactor a store that four untested 1,200+-line screens
+  depend on without landing render smoke tests **first**: the split is mechanical, but the failure
+  mode is a blank screen that typechecks.
+- **Locked by:** `frontend/src/lib/store/store.test.ts` — `hydrate cannot overwrite an action`;
+  `frontend/src/routes/{integrations,work,memory,og}.test.tsx` (render smoke tests)
+
+### BB-168 — Tests keyed to a code *location* break when the code moves — in three different ways
+
+- **Symptom:** three separate refactors in this pack each broke a test that was not asserting
+  anything wrong, only asserting it *at an address that had changed*: a monkeypatch target
+  (BB-158), an AST-structural test anchored to an enclosing function (`test_routing_boot_failure.py`,
+  which walks `boot_agent`'s source for a `try/except` shape), and an import-graph test anchored
+  to a literal edge (`module-graph.test.ts`, pinning `store.ts → data/domains/chat`).
+- **Root cause:** each keys on *where* code lives rather than *what it does*. File-level ownership
+  analysis cannot see them: none of the three tests lives in the file being edited, and two reach
+  into a function's source text, so grepping for imports of the moved symbol does not find them
+  either.
+- **Fix:** re-anchor to the new location; never weaken the assertion. `test_routing_boot_failure.py`
+  moved its anchor from `boot_agent` to `boot.providers.build_routing` with **zero** assertion
+  changes. `module-graph.test.ts` was re-pointed at the real, now-longer chain
+  (`store.ts → slices/chat.ts → data/domains/chat.ts → store.ts`) — the cycle it guards never went
+  away, it gained a hop.
+- **Avoid:** before moving a function, grep the **whole** test suite for `ast.parse` /
+  `inspect.getsource` against its name, and for monkeypatch targets naming its module — a
+  file-ownership list will not contain them. Two such tests in this pack were missed by exactly
+  that omission and were found only because the implementer distrusted the list. When one does
+  break, the question is always "did the fact change, or only the address?" — if only the address,
+  fix the anchor. Deleting or inverting the assertion destroys the guard: `module-graph.test.ts`
+  exists *because* a comment once claimed there was no cycle while a cycle existed, so relaxing it
+  to "no cycle" would have restored the original defect.
+- **Locked by:** `tests/test_routing_boot_failure.py` (5 tests, unchanged assertions);
+  `frontend/src/lib/module-graph.test.ts` (both tests in the `module graph` block)
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
