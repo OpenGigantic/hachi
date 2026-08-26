@@ -5228,6 +5228,12 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   a generous deadman-switch join; the two ordering tests became explicit handshakes over recorded
   markers rather than timestamps. **No production file needed a clock seam** — see Avoid. Then
   flipped preflight, CI and the `pyproject.toml` comment to `-n auto` (~120 s, ≈4×).
+  **Superseded 2026-08-26 — the gate is back on `-n 0`.** Not because the eight conversions
+  regressed (they hold, and they stay), but because `-n auto` exposed three *unrelated*,
+  pre-existing races in **production** code, which make the parallel suite fail roughly
+  1-in-5 with a different test each time. See the `-n 0` ADR in `docs/DECISIONS.md` for the
+  three mechanisms and their source anchors. The parallelism is reverted; this wall-clock
+  fix is not.
 - **Avoid:** never assert wall-clock duration to prove "did not block" — assert the slow
   collaborator was never awaited (an Event the test controls), or force genuine concurrency with
   a `Barrier` so a serial implementation deadlocks instead of merely running slow. Reach for
@@ -5237,9 +5243,17 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
   instead. When you must keep a real time assertion, prefer a **lower** bound: starvation only
   ever makes things slower, so `elapsed >= configured` is parallel-safe where `elapsed <` is not.
   And when a gate depends on a mode, name the mode in the command — a rule enforced by omission
-  is not enforced.
-- **Locked by:** `tests/test_test_suite_hygiene.py::test_no_new_wall_clock_duration_assertions`;
-  CI's `test` job runs `-n auto` on all three platforms
+  is not enforced. Finally, **a small number of green runs cannot clear a low-rate flake — do the
+  probability before you trust a verification bar.** This flip was qualified on three consecutive
+  green full-suite runs; at the ~1-in-5 failure rate measured afterwards, three greens in a row is a
+  ~51% outcome (0.8³ = 0.512). The verification was a coin flip that came up heads, and the flake
+  surfaced within a wave. Clearing a 1-in-5 flake at 95% confidence takes about fourteen consecutive
+  runs. Note the tempting wrong lesson — "verify under load" — is not it: `-n auto` already
+  manufactures contention among its own workers, so the idle runs were never low-contention.
+- **Locked by:** `tests/test_test_suite_hygiene.py::test_no_new_wall_clock_duration_assertions`
+  — still enforced; the eight conversions stand. The former second clause, "CI's `test` job
+  runs `-n auto` on all three platforms", no longer holds: the gate was reverted to `-n 0`
+  on 2026-08-26 for three unrelated production races.
 
 ### BB-167 — `hydrate` widened its own type and could overwrite store actions
 

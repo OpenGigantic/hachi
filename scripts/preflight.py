@@ -17,15 +17,18 @@ Design notes for this repo specifically:
   PostToolUse auto-format hook instead — see .claude/hooks/auto_format.py.
 - `mypy` runs the **scoped strict gate** (mypy-strict-gate.ini), not the full tree:
   the full tree has known pre-existing debt and is advisory-only in CI.
-- pytest runs the **full** suite (the contract, CLAUDE.md Rule 2) with `-n auto`
-  (T-71): ten wall-clock-duration / cross-thread-timestamp tests were converted to
-  injected clocks / threading.Event / threading.Barrier handoffs so parallel workers
-  no longer starve them (tests/test_test_suite_hygiene.py locks this down — no new
-  `elapsed <` / `wall_time <` assertion may land outside its documented allowlist).
-  `test_loop_backstop_cancel.py` still asserts a real production deadline (5x margin)
-  and is the one deliberate holdout; it survived three consecutive full-suite `-n auto`
-  runs before this flip. NOT `-p no:xdist`: that disables the plugin and makes
-  `--dist=loadfile` in `addopts` an unrecognized argument (see pyproject.toml).
+- pytest runs the **full** suite (the contract, CLAUDE.md Rule 2) serially, `-n 0`
+  (T-71 REVERTED): `-n auto` exposed three pre-existing races in **production
+  code** under `src/hachi/` -- the parallel suite is the detector, not the
+  location -- see the comment above the "pytest (full suite)" Step below for
+  the full account and file anchors. Eight of the ten wall-clock-duration /
+  cross-thread-timestamp assertion sites (across seven files) that T-71
+  converted to injected clocks / threading.Event / threading.Barrier handoffs
+  stay regardless of `-n` (tests/test_test_suite_hygiene.py still locks this
+  down); `test_loop_backstop_cancel.py`'s other two sites still assert a real
+  production deadline (5x margin) and remain the deliberate holdout. Still
+  NOT `-p no:xdist`: that disables the plugin and makes `--dist=loadfile` in
+  `addopts` an unrecognized argument (see pyproject.toml).
 """
 
 from __future__ import annotations
@@ -161,14 +164,73 @@ STEPS: list[Step] = [
         needs_frontend=True,
     ),
     # Slow steps — skipped by --quick.
-    # -n auto (T-71): flipped after three consecutive full-suite parallel runs came
-    # back green (4640 passed / 21 skipped, 0 failed, each run). test_loop_backstop_cancel.py
-    # still asserts a real production deadline (5x margin) and is the one deliberate
-    # holdout -- see its KNOWN_WALL_CLOCK entry in tests/test_test_suite_hygiene.py.
-    # NOT -p no:xdist: that disables the plugin and makes --dist=loadfile in addopts
-    # an unrecognized argument. If this step starts flaking, re-pin `-n 0` and re-open
-    # T-71 rather than adding retries/flaky-markers.
-    Step("pytest (full suite)", [["uv", "run", "pytest", "-q", "-n", "auto"]], in_quick=False),
+    # -n 0 (T-71 REVERTED): pinned back to serial, deliberately -- this undoes
+    # T-71's flip, it is not a reversion to a pre-T-71 state. `-n auto` flipped
+    # after three consecutive full-suite parallel runs came back green (4640
+    # passed / 21 skipped, 0 failed, each run), then went red roughly 1-in-5 on a
+    # quiet machine and 2-for-2 under concurrent load, a DIFFERENT test failing
+    # each time. Investigation proved three independent race mechanisms -- all
+    # in production code under src/hachi/, none in test-harness code. Running
+    # the suite in parallel is what EXPOSED them; it did not create them:
+    #   1. Config write race -- src/hachi/core/config_loader.py -- THREE
+    #      distinct defects, not one:
+    #      (a) `_CONFIG_LOCK` (:33) is a threading.Lock: process-local, so it
+    #          gives zero cross-process serialisation. Neither fix below
+    #          touches this one.
+    #      (b) Read-modify-write (:371-372): `for key, value in
+    #          payload.items(): doc[key] = value` reapplies the caller's
+    #          already-stale FULL payload over the doc freshly read at
+    #          :365-366. THIS is the silent lost update -- no exception, any
+    #          platform, any tmp filename.
+    #      (c) Fixed-name `.tmp` sibling (:375), shared by every writer: THIS
+    #          is what collides -- WinError 32 / FileNotFoundError on the
+    #          second `os.replace`. It is the only one of the three that
+    #          `tempfile.mkstemp()` (src/hachi/core/atomic_io.py:56) fixes.
+    #          Adopting it alone leaves (a) and (b) fully intact and would
+    #          tell the fixer they're done when they are not -- exactly the
+    #          partial fix this revert exists to prevent.
+    #      NOT TEST-ONLY: this is a live defect the suite happens to make
+    #      reproducible, not an artifact of testing it. Real writers: five
+    #      call sites in gateway/in_process_runtime.py, three in
+    #      gateway/provider_admin.py, plus gateway/routers/integrations.py,
+    #      cli/main.py, core/onboarding.py, channels/telegram_setup.py, and
+    #      others. tools/config_tools.py wires `set_agent_config` as an
+    #      agent-callable tool, so an AGENT TURN can write settings.toml while
+    #      a CLI or gateway process does -- no test harness involved, the
+    #      single strongest piece of evidence this is a live-path bug.
+    #      provider_admin.py's own module docstring (:12-15) states the
+    #      load->mutate->write section "is serialised by `_CONFIG_LOCK`" --
+    #      true within one process, false across processes, and a production
+    #      module is relying on it today.
+    #   2. Wall-clock startup deadline -- src/hachi/gateway/control_plane.py:1474:
+    #      a hard `deadline = time.time() + 5.0` spin waiting for the
+    #      `gateway-http` thread to come up. Under N-way CPU contention from other
+    #      xdist workers, that thread does not get scheduled inside the budget.
+    #   3. chromadb write-then-read window -- src/hachi/core/memory/vault.py:
+    #      1025-1049: `_query_collection` queries immediately after an upsert and
+    #      can hit `InternalError: ... Nothing found on disk`, which is caught and
+    #      fails open to `[]` -- the one of the three that corrupts results
+    #      silently rather than erroring.
+    # The config race alone is a multi-day fix to code with prior-incident
+    # history; a partial fix would lower the flake rate without curing it, which
+    # is strictly worse than an honest slow gate. THE FIX IS TO REPAIR THESE
+    # THREE, not to add retries, `flaky` markers, `xdist_group`, reruns, or
+    # per-test exclusions. T-71's eight converted wall-clock-duration /
+    # cross-thread-timestamp assertion sites (across seven files -- injected
+    # clocks / threading.Event / threading.Barrier) STAY
+    # regardless of `-n` -- they are correct independently of the parallelism
+    # decision, and tests/test_test_suite_hygiene.py still enforces that no new
+    # `elapsed <` / `wall_time <` assertion lands outside its allowlist. Still NOT
+    # `-p no:xdist` (BB-166): that disables the plugin outright and makes
+    # `--dist=loadfile` in addopts an unrecognized argument. Before flipping this
+    # back to `-n auto`, fix the three races above -- then requalify with the
+    # arithmetic, not three green runs: at this ~20%-per-run failure rate,
+    # three greens is only a ~51% coin flip (0.8^3) -- which is exactly what
+    # T-71's own "three consecutive" bar was, not proof. ~14 consecutive
+    # full-suite green runs clears it at ~95% confidence. `-n auto` also
+    # manufactures its own N-way contention among workers, so there is no such
+    # thing as a low-contention "quiet" run to requalify on.
+    Step("pytest (full suite)", [["uv", "run", "pytest", "-q", "-n", "0"]], in_quick=False),
     Step(
         "frontend build",
         [["npm", "run", "--prefix", "frontend", "build"]],

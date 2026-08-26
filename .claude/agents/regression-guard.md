@@ -24,8 +24,9 @@ For every bug:
    prevents recurrence (the `Avoid:` line). This is what stops the bug coming back a third time.
 
 # Running tests (Windows-aware)
-- Full suite: `uv run pytest -q`. Run it **sequentially** — do NOT use `-n auto`; parallel
-  workers flake the wall-clock timing tests.
+- Full suite: `uv run pytest -q`. Run it **sequentially** — do NOT use `-n auto`;
+  three production-code races (not the tests) flake it under parallel workers —
+  see scripts/preflight.py's "pytest (full suite)" comment for detail.
 - **BB-1:** on Windows the `.exe` shims can fail with OS error 4551. If `uv run pytest` won't
   start, fall back to `python -m pytest` (and `python -m mypy`).
 - Report ACTUAL pass/fail counts. Never claim a green you did not observe.

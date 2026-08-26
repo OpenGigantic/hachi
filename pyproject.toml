@@ -150,12 +150,26 @@ testpaths = ["tests"]
 pythonpath = ["src", "."]
 norecursedirs = ["tokoboros", "*.egg", ".git", ".venv", "node_modules", "build", "dist"]
 # --dist=loadfile keeps all tests from the same file on the same worker, preventing
-# module-level singleton / patch.dict conflicts. NOTE (T-71): the gate runs `-n auto`
-# (see scripts/preflight.py) -- ten former wall-clock / cross-thread-timestamp tests
-# were converted to injected clocks / threading.Event / threading.Barrier so parallel
-# workers no longer starve them (tests/test_test_suite_hygiene.py locks this down).
-# `test_loop_backstop_cancel.py` still asserts a real production deadline (5x margin)
-# and is the one deliberate holdout. Pass -n <N> to override on the CLI if needed.
+# module-level singleton / patch.dict conflicts. Useful under `-n 0` too: a
+# developer who passes `-n <N>` on the CLI still gets same-file grouping.
+# NOTE (T-71 REVERTED): the gate itself runs `-n 0` (scripts/preflight.py),
+# deliberately -- a revert of T-71's flip, not a return to a pre-T-71 state.
+# `-n auto` exposed three proven races in production code under `src/hachi/`
+# -- not the tests themselves, which merely exposed them under parallel
+# execution: config_loader.py's write race is really three bugs --
+# `_CONFIG_LOCK` (:33) is process-local, never serialises across processes;
+# the read-modify-write at :371-372 is the actual silent-lost-update cause (a
+# stale full payload, no exception); the FIXED-NAME `.tmp` at :375 is a
+# separate collision (WinError 32), the only one `tempfile.mkstemp()` fixes --
+# plus the 5s wall-clock startup spin in gateway/control_plane.py:1474, and
+# the upsert-then-query window in core/memory/vault.py:1025-1049 that fails
+# open to `[]`. Fix is repairing those three, not retries / `flaky` markers /
+# `xdist_group` / reruns / exclusions. Full account: scripts/preflight.py's
+# comment above its "pytest (full suite)" Step. T-71's eight converted
+# wall-clock-assertion sites (across seven files) stay regardless of `-n`.
+# NOT `-p no:xdist` (BB-166) if you do pass
+# `-n` yourself -- it disables this plugin and makes `--dist=loadfile` an
+# unrecognized argument.
 addopts = "--dist=loadfile"
 
 [tool.hatch.build.targets.wheel]
