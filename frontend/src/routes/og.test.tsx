@@ -57,5 +57,12 @@ describe("og route", () => {
     expect(
       await screen.findByRole("heading", { name: /og explorer/i }, { timeout: 5000 })
     ).toBeInTheDocument();
-  });
+    // Outer per-test timeout, bumped from vitest's 5000ms default: it exactly matched
+    // the findByRole timeout above, so its clock (which starts before render(), not at
+    // the findByRole call) could fire first and kill the test with a blunt "Test timed
+    // out in 5000ms" before the generous inner wait got a chance to resolve. Reproduced
+    // empirically: all four Phase 1 route smoke tests failed this way when the vitest
+    // step ran alongside `pytest -n auto` (green in isolation). Hang-detector, not a
+    // performance assertion -- raising it doesn't relax anything being checked.
+  }, 15000);
 });
