@@ -685,8 +685,8 @@ values:
 |---|---|---|
 | `skill` | The ordinary case — a node contributing routable knowledge/instructions. No special runtime handling beyond normal 3-pass loading. | Nearly every shipped skill, e.g. `currency.og`'s `core_currency` node above. |
 | `native_integration` | A discovery/search entry describing a native Python SDK integration (Google Workspace, Slack, Notion) so it surfaces like a normal skill in `search_skills`. Grouped with `skill` by `og_engine/engine.py`'s `_SKILL_ROLES` — a **lint-severity** distinction only (structural violations are errors, not warnings). **Not** wired to the actual Google/Slack/Notion tool mounts: those are driven by a separate, hardcoded `CapabilityRegistry` in `gateway/orchestrator.py` (`_build_capability_registry`), keyed by capability id, not by scanning `.og` nodes for this role — no `get_nodes_by_role("native_integration")` call exists anywhere in the codebase. | `src/hachi/default_skills/core_integrations.og` (`google_workspace`, `slack`, `notion` nodes). |
-| `env` | **Reserved.** At boot, `IntegrationRuntime.load_env_node` reads the node's **`::dense` block** (not `::config`) as `KEY=VALUE` lines and merges them into an in-memory credential store. This is the plaintext-credential-in-a-file path named in [T-58](../audit/2026-07-19/tasks/T-58-declarative-integrations-consolidation.md) — documented here, not fixed here. | None shipped (§ below). |
-| `integration` | **Reserved.** At boot, `IntegrationRuntime.setup_integration` reads the node's `::config` block, opens a persistent SMTP or HTTP connection, and — via `register_tools` and the node's `::tool` block — registers a live tool the LLM can call. | None shipped. |
+| `env` | **Reserved, deprecated as a credential source.** [T-58](../audit/2026-07-19/tasks/T-58-declarative-integrations-consolidation.md) closed the plaintext-credential-in-a-file path this row used to document: `IntegrationRuntime.load_env_node` no longer reads the node's `::dense` block into a live credential store. The node is ignored; boot logs a one-time migration warning naming the file and the credential **key names** (never the values) plus the `hachi secrets --set <key>` command to store each one in the vault instead. | None shipped (§ below). |
+| `integration` | **Reserved.** At boot, `IntegrationRuntime.setup_integration` reads the node's `::config` block, opens a persistent SMTP connection using credentials resolved from the `CredentialVault`, and — via `register_tools` and the node's `::tool` block — registers a live tool the LLM can call. (Prior to T-58 this also covered `type=http`; that path was removed — `core/rest_adapter.py`'s `UniversalRestAdapter` already covers HTTP declaratively via `::api` blocks, with a vault, an SSRF allowlist, and outbound redaction.) | None shipped. |
 | `mcp` | **Reserved.** At boot, `MCPManager.setup_from_node` reads the node's `::config` block and **starts an MCP server subprocess** (`stdio`) or connects one (`sse`/`http`). | None shipped. |
 
 `skill` and `native_integration` are ordinary first-party role values — nothing in this
@@ -700,16 +700,16 @@ exactly why they went undocumented for so long. The two worked examples below ar
 illustrative: assembled directly from the keys the handler code above actually reads (not
 invented), but not lifted from a shipped file, because none exists.
 
-*Illustrative — SMTP integration (`role=env` + `role=integration` + `::config` + `::tool`):*
+*Illustrative — SMTP integration (`role=integration` + `::config` + `::tool`, credentials
+from the vault):*
+
+Store the credentials in the credential vault **before** boot —
+`hachi secrets --set GMAIL_ADDRESS` and `hachi secrets --set GMAIL_APP_PASSWORD` — then
+reference the same key names from `::config`. (A `role=env` node used to be able to supply
+these directly from a `.og` file's `::dense` block; [T-58](../audit/2026-07-19/tasks/T-58-declarative-integrations-consolidation.md)
+closed that plaintext path — see the `env` row above.)
 
 ```
-::node[gmail_credentials]
-->[:role=env]
-
-::dense
-GMAIL_ADDRESS=devops@example.com
-GMAIL_APP_PASSWORD=<an-app-password, never a real one in a tracked file>
-
 ::node[gmail_smtp]
 ->[:role=integration]
 
@@ -768,14 +768,16 @@ current line numbers — they move often; verified present as of `7aa3e86`, 2026
   non-filesystem server, but a node loaded from outside `<skills_dir>/packs/` is passed in
   as `trusted=True` (SEC-005) — the gate, not the format, is what distinguishes first-party
   from installed-pack servers; nothing in the `.og` syntax itself does.
-- Every `role=env` node is handed to `integrations.load_env_node`, which reads its
-  `::dense` block as **plaintext `KEY=VALUE` credentials** into an in-memory store — no
-  encryption, no secret-store indirection at the format level. See
-  [T-58](../audit/2026-07-19/tasks/T-58-declarative-integrations-consolidation.md), which
-  owns fixing this; this section only names the risk.
+- Every `role=env` node is handed to `integrations.load_env_node`, which — as of
+  [T-58](../audit/2026-07-19/tasks/T-58-declarative-integrations-consolidation.md) — no
+  longer reads its `::dense` block into a live credential store. The node is ignored and
+  boot logs a one-time migration warning (file + key names, never values). Before T-58 this
+  block was read as **plaintext `KEY=VALUE` credentials** into an in-memory store, with no
+  encryption and no secret-store indirection at the format level; that path is now closed.
 - Every `role=integration` node is handed to `integrations.setup_integration`, which opens
-  a persistent SMTP or HTTP connection using those credentials and **mounts a live,
-  LLM-callable tool** (`register_tools`) built from the node's `::tool` block.
+  a persistent SMTP connection using credentials resolved from the `CredentialVault` and
+  **mounts a live, LLM-callable tool** (`register_tools`) built from the node's `::tool`
+  block.
 
 None of this requires the agent to do anything — it happens once, automatically, the
 moment the file is loaded at boot, for every `.og` file the engine indexes. This is why

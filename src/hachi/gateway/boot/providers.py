@@ -18,7 +18,6 @@ from typing import Any
 
 from hachi.core.cost import CostTracker
 from hachi.core.llm import create_llm_client
-from hachi.core.secret_store import create_default_secret_store
 from hachi.core.sub_agent import DEFAULT_SUB_AGENT_MODEL
 
 from .stages import LLMProviderStage, RoutingStage
@@ -26,9 +25,20 @@ from .stages import LLMProviderStage, RoutingStage
 logger = logging.getLogger(__name__)
 
 
-def build_llm_provider(provider_config: dict[str, Any], *, max_tokens: int) -> LLMProviderStage:
-    """Moved verbatim from `:2899-2912` (old step 6)."""
-    secret_store = create_default_secret_store()
+def build_llm_provider(
+    provider_config: dict[str, Any], *, max_tokens: int, secret_store: Any
+) -> LLMProviderStage:
+    """Moved verbatim from `:2899-2912` (old step 6).
+
+    Args:
+        secret_store: T-58 — previously created here via
+            `create_default_secret_store()`; now built by the composition
+            root BEFORE this stage runs (so a CredentialVault derived from it
+            can be threaded into `boot.environment.build_integrations`,
+            several stages earlier) and passed in. Still exactly one
+            secret store for the whole boot — only its construction site
+            moved.
+    """
     client = create_llm_client(provider_config, secret_store=secret_store, max_tokens=max_tokens)
 
     # Sub-agents reuse the SAME resolved provider credentials as the main agent so

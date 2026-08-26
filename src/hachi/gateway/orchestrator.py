@@ -2648,6 +2648,8 @@ def boot_agent(
     # orchestrator-local helpers back (see boot/__init__.py's docstring for the
     # full explanation of why the import direction is safe this way and not the
     # other).
+    from hachi.core.credential_vault import CredentialVault
+    from hachi.core.secret_store import create_default_secret_store
     from hachi.gateway.boot.assembly import build_brain_loop, build_prompt
     from hachi.gateway.boot.config import build_config_and_brain
     from hachi.gateway.boot.environment import (
@@ -2771,8 +2773,26 @@ def boot_agent(
         },
     )
 
+    # --- Credential vault (T-58) ---
+    # Built HERE, not by boot.providers.build_llm_provider ("llm" step, below)
+    # or boot.tool_infra.build_tool_infrastructure ("tools" step, further
+    # below) where they used to live -- three stages earlier, so
+    # IntegrationRuntime (built by build_integrations immediately below) can
+    # resolve role=integration/type=smtp credentials from the vault instead
+    # of a role=env node's plaintext ::dense block (see
+    # hachi.core.integrations for the full writeup). create_default_secret_store()
+    # is a zero-argument call with no dependency on cfg/skills/permissions, so
+    # pulling it this far forward is behaviour-neutral: it emits no
+    # boot.progress event of its own and doesn't touch anything the steps
+    # between here and "llm"/"tools" read. build_llm_provider and
+    # build_tool_infrastructure now take the already-built secret_store /
+    # credential_vault as parameters instead of constructing their own --
+    # exactly one CredentialVault construction in the whole boot path.
+    _secret_store = create_default_secret_store()
+    _credential_vault = CredentialVault(secret_store=_secret_store)
+
     # --- Direct integrations (boot.environment.build_integrations) ---
-    integ = build_integrations(skills.skill_engine)
+    integ = build_integrations(skills.skill_engine, vault=_credential_vault)
 
     emit_runtime_event(
         BOOT_PROGRESS,
@@ -2837,7 +2857,9 @@ def boot_agent(
     )
 
     # --- LLM provider (boot.providers.build_llm_provider) ---
-    providers = build_llm_provider(cfg.provider_config, max_tokens=cfg.max_tokens)
+    providers = build_llm_provider(
+        cfg.provider_config, max_tokens=cfg.max_tokens, secret_store=_secret_store
+    )
 
     # --- Routing (boot.providers.build_routing) ---
     routing = build_routing(
@@ -2896,7 +2918,7 @@ def boot_agent(
     # fully-constructed objects rather than lazy placeholders.
     infra = build_tool_infrastructure(
         shared=skills.shared,
-        secret_store=providers.secret_store,
+        credential_vault=_credential_vault,
         checkpoints_dir=get_hachi_paths().checkpoints_dir,
         schedules_file=get_hachi_paths().schedules_file,
         get_or_create_shared_scheduler=_get_or_create_shared_scheduler,

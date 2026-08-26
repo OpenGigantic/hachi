@@ -33,7 +33,7 @@ CoerceInt = Callable[..., int]
 def build_tool_infrastructure(
     *,
     shared: Any,
-    secret_store: Any,
+    credential_vault: CredentialVault,
     checkpoints_dir: Any,
     schedules_file: Any,
     get_or_create_shared_scheduler: GetOrCreateSharedScheduler,
@@ -42,6 +42,14 @@ def build_tool_infrastructure(
 
     Args:
         shared: the `ProcessSharedServices` singleton (`SkillEngineStage.shared`).
+        credential_vault: T-58 — previously constructed HERE via
+            `CredentialVault(secret_store=secret_store)`; now built by the
+            composition root BEFORE `boot.environment.build_integrations`
+            runs (several stages earlier than this one) so
+            `IntegrationRuntime` can also receive it, and passed in ready-
+            made. This keeps exactly one `CredentialVault` construction in
+            the whole boot path — this stage only builds the
+            `UniversalRestAdapter` that wraps it now.
         checkpoints_dir: `get_hachi_paths().checkpoints_dir`.
         schedules_file: `get_hachi_paths().schedules_file`.
         get_or_create_shared_scheduler: orchestrator-local
@@ -66,7 +74,6 @@ def build_tool_infrastructure(
     # this out from under sibling sessions / the gateway.
     shared.session_store = session_store
 
-    credential_vault = CredentialVault(secret_store=secret_store)
     rest_adapter = UniversalRestAdapter(tool_registry, credential_vault)
 
     # P4-01: per-session write-target lease manager (prevents concurrent delegation conflicts).
