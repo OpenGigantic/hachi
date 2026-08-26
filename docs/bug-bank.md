@@ -5296,3 +5296,66 @@ and (if the constraint is subtle) drop a comment next to the code itself — the
 gets far better attention on a comment beside the function than on a doc three
 directories away.
 -->
+
+### BB-169 — `.og` files were a plaintext credential source for the legacy IntegrationRuntime
+
+- **Symptom:** a `role=env` node's `::dense` block could carry `GMAIL_APP_PASSWORD=…` in cleartext.
+  The boot path loads **every** `.og` under the skills dir, so any such node became a live
+  credential and was handed to `smtplib.login()`. Setup failures went to `print()`, corrupting the
+  Textual render and escaping the logging config entirely.
+- **Root cause:** `core/integrations.py` predates the credential vault and never caught up.
+  `load_env_node` parsed `KEY=VALUE` into `self._env: dict[str, str]`, `get_credential` returned it
+  raw, and `_setup_smtp` consumed it directly — `grep "vault\|secret_store\|redact"` on the module
+  returned **nothing**, while its sibling `UniversalRestAdapter`, in the same layer, already
+  resolved secrets from `CredentialVault` at request time and redacted outbound params. Same repo,
+  two eras, both live.
+- **Fix:** `role=env` is no longer a credential source — `load_env_node` stores nothing and emits
+  one `logger.warning` naming the file and the credential **key names** (never values) plus the
+  `hachi secrets --set <key>` command to migrate each. SMTP credentials resolve through
+  `CredentialVault.get_token(..., prompt_if_missing=False)`. `_setup_http` was deleted rather than
+  ported: `UniversalRestAdapter` already covers declarative HTTP with a vault, an SSRF allowlist and
+  outbound redaction. All five `print()` sites became logger calls.
+- **Avoid:** when a newer subsystem in the same layer already solves a cross-cutting concern
+  (secrets, redaction, logging), an older sibling solving it differently is a **defect, not a style
+  difference** — grep the old module for the new module's safety primitives before assuming parity.
+  Second, and more transferable: when the dependency a fix needs is constructed several stages
+  *after* the code that needs it, prefer moving the **dependency** earlier over moving the
+  **consumer** later. Moving the consumer changes observable ordering (here it would have moved a
+  `boot.progress` event that `tests/test_boot_agent_stages.py` pins); moving a cheap dependency
+  usually does not. **Verify "cheap" rather than asserting it** — `create_default_secret_store()`
+  looks pure but calls `ensure_directories()`, which writes to disk. It is safe to hoist here for
+  two specific reasons that had to be checked: the call is `mkdir(parents=True, exist_ok=True)`
+  (idempotent), and `load_config()` already invoked it four stages earlier. "Side-effect-free"
+  would have been the wrong justification for a correct move.
+- **Locked by:** `tests/test_integration_runtime_credentials.py` —
+  `test_role_env_node_is_not_a_credential_source`, `test_integration_runtime_emits_no_stdout`
+
+### BB-170 — A test's outer timeout exactly matched its inner one, so load killed the wrong clock
+
+- **Symptom:** the gate's `frontend vitest` step was green in isolation (262 passed / 33 files,
+  ~23–25 s) but failed inside the full preflight, where the same step took ~55 s and the four route
+  smoke tests died with the blunt `Error: Test timed out in 5000ms.` The failing subset varied run
+  to run, which is what made it read as three flaky tests rather than one defect in four.
+- **Root cause:** each test set a deliberately generous **inner** `findByRole(..., {timeout: 5000})`
+  for a cold React + TanStack Router + loader mount — and vitest's **outer** per-test `testTimeout`
+  was left at its default, which is **also 5000 ms**. The two numbers read as equal but are not:
+  the outer clock starts at test entry, before `render()`; the inner clock starts later, at the
+  `findByRole` call. So the outer budget has **zero headroom** over the budget it is supposed to
+  bound, and under load it always wins the race — killing the test before the generous inner wait
+  could resolve or fail informatively.
+- **Fix:** an explicit per-test budget, `it("renders without crashing", async () => {…}, 15000)`,
+  on all four files — 3× both the default and the inner wait. Scoped to the four call sites rather
+  than a global `test.testTimeout`, which would have relaxed the hang-detector for the other ~258
+  tests that do no such mount. No assertion, no inner timeout and no production source changed:
+  the entire functional diff is `});` → `}, 15000);`, four times.
+- **Avoid:** when a test configures an explicit `waitFor`/`findBy*` timeout, **check it against the
+  runner's own default outer timeout.** If the inner value is equal to or greater than the outer
+  one, the outer wins under any load and the inner generosity is silently inert. Give the outer
+  real headroom rather than a matching number. Related process lesson: a flake that only appears
+  under load will not reproduce in the isolated run you use to verify the fix — reproduce it
+  *under real load first* (here: concurrently with `pytest -n auto`), or you are testing nothing.
+  And do not trust the observed failing subset to delimit the bug: three of four tests failed in the
+  gate, but all four failed under heavier load — the fourth's survival was timing luck, not a
+  structural difference.
+- **Locked by:** `frontend/src/routes/{memory,og,work,integrations}.test.tsx` — explicit 15000 ms
+  `it(...)` budgets; reproduced red under concurrent `pytest -n auto` load pre-fix, green after

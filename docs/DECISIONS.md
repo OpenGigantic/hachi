@@ -4171,3 +4171,131 @@ file's own convention of tagging constants (`UC-DEV-001`, `MED-004`, `LOW-014`, 
 introduced unremarked in the commit that created the file and copy-pasted into three transports by
 an unrelated split. A user configuring `request_timeout_seconds=0.5` silently gets `1.0`. Whether
 that is protection or a bug needs a decision, not a guess.
+
+---
+
+## Wave 3 — one task, solo, because the remaining lane admits no parallelism (2026-08-26) **[ADR]**
+
+**Decision.** T-58 ran alone. The three tasks left in the pack (T-58, T-75, T-70) have **no safe
+concurrency between them**: T-75's anchors sit inside `boot_agent`, the same function T-58
+restructures, and since subagents own no git two agents in one function overwrite each other rather
+than conflict. T-70 relocates ~300 test files and collides with everything, so it stays last.
+
+**The pre-dispatch verification pass paid for itself twice this wave, in opposite directions.**
+T-58's spec was anchored to `main @ bd24afe`, 72 commits back, and **every one of its
+`gateway/orchestrator.py` anchors was stale** — T-44 had moved the exact block it targets into
+`boot/environment.py`. Checking that before dispatch is the difference between a brief that
+describes the tree and one that sends an agent hunting line numbers that no longer exist. In the
+same pass, T-75's spec turned out to have **barely decayed at all** — its `runtime_read_models.py`
+anchors are still exact, because nothing in waves 1–2 touched that file. Decay is per-file, not
+per-spec; assuming either uniformly is wrong.
+
+**A prohibition in a spec can expire.** T-58 §9 says "do not update `docs/reference/objectgraph-spec.md`
+— that is T-72's job." T-72 has since landed, and it wrote *into* the spec that `role=env` reads
+plaintext credentials, citing "See T-58, which owns fixing this." So the prohibition, followed
+literally, would have shipped documentation that is confidently and specifically wrong. Worse, the
+conformance test guarding that section (`test_spec_documents_every_executable_node_role`) only
+asserts the string `role=env` is *present* — it cannot detect that the sentence around it became
+false. **When a spec forbids touching something, check whether the reason still holds**; a
+dependency landing can invert the instruction without anyone editing it.
+
+---
+
+## T-58 — `role=env` stops being a credential source (2026-08-26) **[ADR]**
+
+**Decision.** Option (a) of the task's own decision block: the plaintext path is deleted, not
+fenced and not laundered. `load_env_node` stores nothing and emits one migration warning naming the
+file and the credential **key names** — never the values — plus the exact `hachi secrets --set <key>`
+command. `_setup_smtp` resolves through `CredentialVault.get_token(..., prompt_if_missing=False)`;
+that keyword matters, because `setup_integration` runs during boot and this project forbids
+interactive credential prompts there. `_setup_http` was deleted rather than ported, since
+`UniversalRestAdapter` already covers declarative HTTP with a vault, an SSRF allowlist and outbound
+redaction. All five `print()` calls became logger calls. See BB-169.
+
+**The decision block resolved on evidence rather than judgement, because T-72 moved the ground.**
+Option (c) — fence `role=env` against installed packs — existed to close a pack-supplied-credential
+attack surface that `scripts/lint_skills.py` **already closes**: `env`/`integration`/`mcp` are now
+reserved roles, rejected outside first-party skills. And no shipped `.og` file uses `role=env` at
+all, so (a)'s breaking change cannot break a first-party skill. What the spec framed as a judgement
+call had become a lookup.
+
+**The ordering problem was real, and not the one the spec described.** The spec says move the vault
+construction "from `:3108` to before `:2819`." Post-T-44 those lines do not exist, and the actual
+constraint runs the other way: the vault needs a `secret_store`, built by `build_llm_provider` at
+**stage 9**, while `build_integrations` is **stage 6**. Three shapes were available; two were
+rejected for stated reasons. Moving `build_integrations` later would move a `boot.progress` event
+that `test_boot_agent_stages.py` pins, requiring a baseline edit with no user-visible justification.
+Threading the vault in after construction does not work at all, because `setup_integration` — SMTP
+connection included — runs *synchronously inside* `build_integrations`. So `create_default_secret_store()`
+and `CredentialVault(...)` were hoisted into the composition root, and the two downstream stages now
+take them as parameters. Exactly one `CredentialVault` in the boot path.
+
+**The hoist is safe, but not for the reason first given, and the distinction is the point.** The
+implementation report justified it as moving "cheap, side-effect-free constructions."
+`create_default_secret_store()` is **not** side-effect-free — it calls `ensure_directories()`, which
+writes to disk. The move is safe for two narrower reasons that had to be checked rather than
+assumed: `ensure_directories` is `mkdir(parents=True, exist_ok=True)`, and `load_config()` already
+called it at stage 2, four stages earlier. A correct conclusion resting on a false premise is still
+a defect in the reasoning, and it is the kind that survives review by sounding right.
+
+**The strongest evidence is a test that did not change.** `test_boot_agent_stages.py` has **zero
+diff**: T-44 built it specifically to catch stage reordering, and it stayed green with no edit to
+`EXPECTED_BOOT_EVENTS` or `EXPECTED_BOOT_PROGRESS_STEPS`. That is mechanical proof the reorder is
+invisible to the boot sequence, rather than an assertion anyone has to take on trust — which is
+what a guard test is for.
+
+**Open, not fixed:** `cli/main.py:760` and `:766` tell users to run
+`hachi secrets --set <KEY>=<value>`, but `--set` takes a bare key and prompts for the value, so that
+syntax creates a secret literally *named* `KEY=<value>`. T-58's new migration message uses the
+correct form, which is how the discrepancy surfaced. Two user-facing strings teaching a syntax the
+CLI mishandles. No bug-bank entry — those lock fixed bugs.
+
+---
+
+## The frontend gate was flaky, and the gate is where flakiness is least affordable (2026-08-26) **[ADR]**
+
+**Decision.** The four route smoke tests T-63 added get explicit per-test budgets
+(`it(…, 15000)`) rather than a suite-wide `test.testTimeout`. A global bump would relax the
+hang-detector for ~258 tests that never do a cold React + Router + loader mount; the defect is
+scoped to four call sites, so the fix is too. This mirrors T-71's `test_obs_sink.py` precedent —
+a generous budget scoped and disclosed at the one site that needs it. See BB-170.
+
+**This was our own defect, shipped one wave earlier.** T-63's tests were accepted on a single green
+gate run. T-71, in the same wave, was held to three consecutive full-suite runs on a quiet tree
+before its parallelism flip was accepted — and that asymmetry is exactly where this got through.
+The standard was available; it was applied to the Python suite and not to the frontend one.
+
+**Two findings worth more than the fix.** First, a load-dependent flake **will not reproduce in the
+isolated run you use to verify the fix** — this one passed 262/262 alone, twice, both before and
+after the change. Reproducing it required deliberately generating load (running the vitest step
+concurrently with `pytest -n auto`), and any "fix" verified only in isolation here would have been
+worthless. Second, **the observed failing subset does not delimit the bug**: three of four tests
+failed in the gate, which read as three flaky tests. Under heavier load all four failed. The
+fourth's survival was timing luck, and treating the observed set as the scope would have left a
+known-defective test in place to resurface later.
+
+---
+
+## Open: the Python suite itself flakes under `-n auto`, and nothing is enforcing otherwise (2026-08-26)
+
+**Not an ADR — an unresolved finding recorded so it is not rediscovered.** While generating load to
+reproduce the frontend flake, the background `pytest -n auto` runs failed intermittently too, with
+**a different test each time**: `test_add_core_memory_fact`, `test_capability_toggle_round_trip`,
+`test_live_read_models_reflect_subsystem_state`, and on a later run
+`test_cockpit_gaps.py::TestConfigActions::test_change_tier_cycle`.
+
+Measured on the current tree: **four green full-suite runs (4643 passed / 21 skipped) to one red**
+under normal conditions, and **two of two red** under deliberately heavy concurrent load. The
+failures are not reproducible in isolation — `test_change_tier_cycle` passes alone (6.7 s) and its
+entire file passes alone under `-n auto` (13/13). So this is **cross-file** interference:
+`--dist=loadfile` keeps same-file tests on one worker, but different files racing on shared
+filesystem/global state get no such protection, and the flaky names all touch config, capabilities,
+read models or memory — process- or disk-level shared state.
+
+This is the same *class* of problem T-71 solved for wall-clock assertions, by a different
+mechanism, and T-71's flip to `-n auto` is what exposed it. `tests/test_test_suite_hygiene.py`
+cannot catch it: it greps for duration assertions, and there are none here. **Roughly a one-in-five
+red on an unrelated flake is corrosive to a gate specifically because it trains people to re-run
+until green**, which is how a real failure gets waved through. The options are to find and fix the
+shared-state races, or to revert the gate to `-n 0` and accept ~4× slower runs as the honest price.
+That is a decision, not a guess, and it is not T-58's to make.
