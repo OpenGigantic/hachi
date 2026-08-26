@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from hachi.core.credential_vault import CredentialVault
 from hachi.core.integrations import IntegrationRuntime
 from hachi.core.mcp_client import MCPManager
 from hachi.gateway.workspace import get_skills_dir
@@ -88,9 +89,22 @@ def build_skill_engine(
     return SkillEngineStage(skill_engine=skill_engine, skill_count=skill_count, shared=shared)
 
 
-def build_integrations(skill_engine: SkillEngine) -> IntegrationsStage:
-    """Moved verbatim from `:2836-2845` (old step 3)."""
-    integrations = IntegrationRuntime()
+def build_integrations(
+    skill_engine: SkillEngine, *, vault: CredentialVault | None = None
+) -> IntegrationsStage:
+    """Moved verbatim from `:2836-2845` (old step 3).
+
+    Args:
+        vault: T-58 — the CredentialVault so role=integration/type=smtp nodes
+            can resolve `auth_email_key`/`auth_password_key` from it instead
+            of a role=env node's plaintext `::dense` block (see
+            `hachi.core.integrations.IntegrationRuntime`). The composition
+            root (`orchestrator.py`) now constructs this vault BEFORE this
+            stage runs — three stages earlier than it used to be built —
+            specifically so it can be threaded in here; see the construction
+            site's comment for why.
+    """
+    integrations = IntegrationRuntime(vault=vault)
     integration_count = 0
 
     for node in skill_engine.get_nodes_by_role("env"):
