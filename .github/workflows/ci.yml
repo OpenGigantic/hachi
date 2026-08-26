@@ -32,18 +32,32 @@ jobs:
         run: uv sync --extra dev
 
       - name: Run tests
-        # T-71: flipped to -n auto after three consecutive full-suite parallel runs
-        # came back green (4640 passed / 21 skipped, 0 failed, each run). Ten
-        # wall-clock-duration / cross-thread-timestamp tests were converted to
-        # injected clocks / threading.Event / threading.Barrier handoffs so parallel
-        # workers no longer starve them (tests/test_test_suite_hygiene.py locks this
-        # down). test_loop_backstop_cancel.py still asserts a real production
-        # deadline (5x margin) and is the one deliberate holdout -- see its
-        # KNOWN_WALL_CLOCK entry. If this step starts flaking on a specific
-        # platform, re-pin `-n 0` here AND in scripts/preflight.py AND
-        # pyproject.toml's addopts comment together, and re-open T-71 rather than
-        # adding retries/flaky-markers.
-        run: uv run pytest -q -n auto
+        # T-71 REVERTED: back to `-n 0` (serial), deliberately -- not a return to
+        # a pre-T-71 state. `-n auto` flipped after three consecutive full-suite
+        # parallel runs came back green (4640 passed / 21 skipped, 0 failed, each
+        # run), then went red roughly 1-in-5 on a quiet machine (2-for-2 under
+        # concurrent load), a DIFFERENT test failing each run. Investigation
+        # proved three races in production code under `src/hachi/` -- parallel
+        # execution exposed them, it did not create them, and none is in the
+        # test suite itself: config_loader.py's write race is really three
+        # bugs -- `_CONFIG_LOCK` (:33) is process-local, so it never
+        # serialises across processes; the read-modify-write at :371-372
+        # reapplies a stale full payload, which is the actual silent lost
+        # update (no exception, any tmp name); the FIXED-NAME `.tmp` sibling
+        # at :375 is a separate collision (WinError 32), the only one
+        # `tempfile.mkstemp()` fixes -- plus the 5s wall-clock startup
+        # spin in src/hachi/gateway/control_plane.py:1474, and the
+        # upsert-then-query window in src/hachi/core/memory/vault.py:1025-1049
+        # that fails open to `[]`. Full account + anchors: scripts/preflight.py's
+        # comment above its "pytest (full suite)" Step. The fix is repairing
+        # those three -- NOT retries, `flaky` markers, `xdist_group`, reruns, or
+        # exclusions. T-71's eight converted wall-clock-assertion sites (across
+        # seven files) stay regardless of `-n`. Before anyone flips this back
+        # to `-n auto`: fix the three races above, then requalify with the
+        # arithmetic -- at ~20%/run, three green runs is only a ~51% coin flip
+        # (T-71's own bar); ~14 consecutive green runs clears it at ~95%
+        # confidence, not three.
+        run: uv run pytest -q -n 0
 
   security:
     runs-on: ubuntu-latest

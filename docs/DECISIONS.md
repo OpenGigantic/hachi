@@ -4299,3 +4299,94 @@ red on an unrelated flake is corrosive to a gate specifically because it trains 
 until green**, which is how a real failure gets waved through. The options are to find and fix the
 shared-state races, or to revert the gate to `-n 0` and accept ~4× slower runs as the honest price.
 That is a decision, not a guess, and it is not T-58's to make.
+
+---
+
+## The gate goes back to `-n 0`: three proven races, and why a partial fix would be worse (2026-08-26) **[ADR]**
+
+**Decision.** The gate runs `pytest -q -n 0` again, in `scripts/preflight.py` and `.github/workflows/ci.yml`.
+This resolves the open finding recorded directly above, which ended by saying the choice was a
+decision and not T-58's to make. It has now been made, on evidence: an investigation reproduced the
+flake on demand and proved **three independent race mechanisms** in source. All three are real
+defects, none is a test-only artifact, and none is small. `addopts = "--dist=loadfile"` stays — it is
+inert under `-n 0` and keeps same-file grouping for anyone who passes `-n 4` locally; removing it
+would plant a fresh regression for the first developer who does.
+
+**T-71's conversions stay — eight of them.** The count is worth stating precisely, because the
+promise of this revert is that the hygiene work survives it. There were **ten wall-clock assertion
+sites across eight files**; T-71 converted **eight sites in seven files** to injected clocks,
+`threading.Event` and `threading.Barrier`, and deliberately left **two** in
+`tests/test_loop_backstop_cancel.py`, which asserts a real production deadline at a 5× margin and is
+the documented `KNOWN_WALL_CLOCK` holdout. Saying "ten converted" — as T-71's own text did, and as
+this revert nearly repeated in six places — contradicts the holdout sentence printed beside it, and
+an auditor who counts ten and finds eight stops trusting everything else on the page. The
+conversions are correct whether or not the suite runs in parallel; the old versions were flaky under
+load *serially* too, just less often. The parallelism flip is reverted; the hygiene work it was
+bundled with is not, and `tests/test_test_suite_hygiene.py` still enforces the no-new-assertions rule.
+
+**The three mechanisms.**
+
+1. **Config writes race across processes** — `src/hachi/core/config_loader.py`. This reads as one
+   defect and is actually **three**, which matters because the obvious fix cures only the least
+   important of them:
+   - **(a) `_CONFIG_LOCK` is a `threading.Lock`** (`:33`), so it serialises threads within one
+     interpreter and **nothing at all between processes**; xdist workers are processes. Note that
+     `src/hachi/gateway/provider_admin.py:12-16` asserts the opposite in production prose — "the
+     load->mutate->write critical section for each writer is serialised by `_CONFIG_LOCK`" — which
+     is true within a process, false across them, and a shipped module is relying on it.
+   - **(b) The save path reapplies the caller's already-stale full document** (`:371-372`) over the
+     one it just read fresh at `:365-366`. This is the **silent lost update**: it raises nothing, on
+     every platform, regardless of how the temp file is named.
+   - **(c) The write goes through a fixed-name `.tmp` sibling** (`:375`) shared by every writer,
+     before `os.replace` (`:377`). This is the collision, and the only source of `WinError 32`.
+   `src/hachi/core/atomic_io.py:56` (`tempfile.mkstemp()`) is the correct pattern **for (c) alone**.
+   Adopting it and stopping there would leave the lost update and the cross-process gap fully
+   intact while looking and feeling like a fix — which is exactly the partial repair this ADR argues
+   against, blessed by our own citation. Pointing at a nearby correct pattern is only useful if you
+   also say which fault it addresses.
+2. **A five-second wall-clock startup deadline** — `src/hachi/gateway/control_plane.py:1474`:
+   `deadline = time.time() + 5.0`, spun on while waiting for the `gateway-http` thread to come up.
+   Under N-way CPU contention that thread does not get scheduled inside the budget.
+3. **A chromadb write-then-read window** — `src/hachi/core/memory/vault.py:1025-1049`.
+   `_query_collection` can query immediately after an upsert and hit
+   `InternalError: ... Nothing found on disk` — that exact string is an observation from the
+   investigation, not a message this repo emits, since the handler catches generically. It is caught
+   by a broad `except Exception` (`:1039`) and **fails open, returning `[]`** (`:1049`), so this one
+   never surfaces as an error. It silently returns the wrong answer, and a recall test downstream
+   fails somewhere else entirely.
+
+**Why not fix them instead.** The config repair alone is a multi-day change to a module with prior
+incident history, and it is the only one of the three that a serial gate does not fully mask. More
+to the point: **a partial fix would be worse than the revert.** Lowering a 1-in-5 flake to 1-in-30
+does not restore trust in the gate; it makes the remaining failures rarer, harder to attribute, and
+easier to wave through — while removing the pressure to finish the job. A visibly slow honest gate
+beats a fast one that is wrong 3% of the time.
+
+**The most important finding is not about the tests.** Mechanism 1 is a **production** defect that
+the test suite merely exposed. A `threading.Lock` cannot span processes, so any two Hachi processes
+writing config concurrently — a CLI invocation while the TUI is open, two terminals, a gateway plus
+a `hachi` command — hit exactly the same hazard, with the silent-lost-update outcome being the
+likely one on POSIX. The parallel test run did not create this bug; it was the first thing to
+exercise it often enough to be noticed. Relatedly, and worth fixing on its own: **`tests/conftest.py`
+has no filesystem isolation and `src/hachi/core/paths.py` has no path override**, so running the
+suite writes to the developer's real Hachi install.
+
+**A guard test's scope is part of its contract, and we accepted one that was too narrow.**
+`tests/test_test_suite_hygiene.py` does `TESTS.rglob("test_*.py")` against its own directory — it
+scans `tests/` and nothing else. So it can never see mechanism 2, a hard wall-clock deadline of
+exactly the kind it exists to prohibit, sitting in `src/`. It was accepted as adequate cover for the
+parallelism flip; it covers half the tree. That is the same failure mode as the frontend flake
+recorded above — a standard applied unevenly rather than a standard that did not exist.
+
+**What would have caught this earlier is arithmetic, not more load.** The flip was qualified on
+three consecutive green full-suite runs. At the ~1-in-5 failure rate we later measured *on a quiet
+machine*, three greens in a row is a **~51% outcome** (0.8³ = 0.512): the verification was a coin
+flip, and it came up heads. Clearing a 1-in-5 flake at 95% confidence takes roughly **fourteen**
+consecutive green runs. So the bar was not merely applied on too quiet a tree — three runs cannot
+clear a low-rate flake on *any* tree. It is worth killing the tempting wrong lesson explicitly:
+"verify under load" is not the rule, because `-n auto` manufactures N-way contention among its own
+workers, so an idle host was never a low-contention run. That is precisely why these races fired
+1-in-5 there rather than not at all. When a verification bar is a run count, do the probability
+before trusting it.
+
+---
