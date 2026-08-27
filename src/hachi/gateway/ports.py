@@ -14,7 +14,7 @@ here in full:
 
 * **``Live*Port`` protocols** — ``LiveSessionPort``, ``LiveObservabilityPort``,
   ``LiveSchedulingPort``, ``LiveSkillsPort``, ``LiveMemoryPort``,
-  ``LiveSpendPort`` (28 handlers total) — group the endpoints that need a
+  ``LiveSpendPort`` (29 handlers total) — group the endpoints that need a
   *live agent session*. The gateway builder
   (``hachi.cli.main._build_gateway_control_plane``) wires these from a
   ``runtime`` object that is ``None`` until a session actually boots, so
@@ -63,13 +63,13 @@ if TYPE_CHECKING:
 
 # ======================================================================
 # Runtime-gated ports (nullable) -- the builder passes `runtime`, which is
-# None until a session boots. 28 handlers across 6 ports.
+# None until a session boots. 29 handlers across 6 ports.
 # ======================================================================
 
 
 @runtime_checkable
 class LiveSessionPort(Protocol):
-    """Session lifecycle & transport -- 11 members."""
+    """Session lifecycle & transport -- 12 members."""
 
     # ctor kwarg was 'on_connect'
     def register_connection(self, session_id: str, request: ConnectRequest) -> None: ...
@@ -83,6 +83,12 @@ class LiveSessionPort(Protocol):
     def read_events(self, session_id: str, after: int, limit: int) -> list[GatewayEvent]: ...
 
     def read_events_base(self, session_id: str) -> int: ...
+
+    # T-75 Stage B: durable replay for a not-live session (no ctor kwarg --
+    # added after the flat-kwarg constructor was retired).
+    def read_events_durable(
+        self, session_id: str, after: int, limit: int
+    ) -> list[GatewayEvent]: ...
 
     # ctor kwarg was 'get_session_state'
     def session_state(self, session_id: str) -> dict[str, Any]: ...

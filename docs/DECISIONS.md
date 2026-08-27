@@ -4390,3 +4390,81 @@ workers, so an idle host was never a low-contention run. That is precisely why t
 before trusting it.
 
 ---
+
+## T-75 — runtime events get a durable table, and the deferral that named its own trigger (2026-08-27) **[ADR]**
+
+Full record: [ADR-0008](architecture/adr/0008-durable-event-log.md). Autopsies:
+[BB-171](bug-bank.md) (the log itself, and the boot-window orphan) and [BB-172](bug-bank.md) (the
+singleton that outlived a repointed state dir). This entry covers what neither does: why the task was
+taken now, and what it deliberately left open.
+
+**Why now, and why this is not relitigating.** `docs/architecture/12-event-architecture.md` §8
+deferred the durable event log and named the condition to revisit it: *"first multi-process
+deployment or first 'replay events since T' requirement."* The second trigger fired —
+`GET /sessions/{id}/events?after=N` shipped — and nobody went back to the deferral, so two lossy
+substitutes were built instead: a 2,000-entry in-memory ring and a message-row reconstruction that
+could emit four of ~30 event types. T-75 is that decision's own stated follow-through, not a reopened
+decision. §8 now lists three deferrals instead of four.
+
+**Two things the task spec got wrong, and one it did not decide.**
+
+1. *The ADR number.* The spec said `0006-durable-event-log.md`; `0006` and `0007` were taken in the
+   interim and `adr-lint` enforces unique numbers. It is `0008`.
+2. *`paths.py` grew an enforced registry after the spec was written.* Adding an `events_db` property
+   is half a change — `HachiPaths.all_stores()` is what `hachi backup`/`restore`/`doctor` enumerate,
+   and `test_every_hachi_path_is_registered_or_explicitly_exempt` fails on an unregistered path. It
+   is registered `derived=False`: an audit log is not rebuildable, and one that backup silently skips
+   is not an *owned* audit trail. The two tempting ways to make that test pass — `derived=True`, or an
+   exemption — are both test-weakening under Rule 2.
+3. *Store lifetime.* The spec's step 11 (one store per booted agent) and step 12 (the history branch
+   reads it) are **incompatible**: the history branch runs precisely when no agent is booted, so a
+   per-agent store is unreachable from the path that most needs it, and the "replay fidelity equals
+   live fidelity" criterion becomes unsatisfiable. The store is process-wide, reached through a third
+   collaborator alongside the `_read_events`/`_read_events_base` pair already in
+   `GatewayControlPlane.__init__`. BB-42 independently requires one store per process. **That
+   decision was correct and it is also what caused BB-172** — a process-wide singleton is reachable
+   from everywhere, including from tests that repoint the state directory underneath it. Both halves
+   are worth remembering together.
+
+**Redaction was a decision, not an implementation detail.** Persisting payloads converts a transient
+in-memory exposure into a durable on-disk one, and `run.suspended` carries `wait_key` — which the
+LLM-facing tool schema documents as a *"webhook token"*, i.e. the credential that resumes a suspended
+run. Redaction happens at the persist boundary, so only the durable copy is scrubbed and live SSE/TUI
+consumers are unchanged. It is **two layers and it is partial**: `redact_structure` matches a PEM
+block plus twelve provider-token shapes and provably cannot see an internal token with no vendor
+prefix, which is why `_SENSITIVE_PAYLOAD_KEYS` exists as additive defence for that blind spot. The
+ADR states the limit explicitly rather than claiming payloads are redacted. **A partial guarantee
+described as total is worse than no guarantee**, because the next reader stops checking.
+
+**Process note: only the full gate found the real bug.** Five stages each ran targeted tests green —
+including the two stages whose work was defective. The full suite found 39 failures across nine files
+none of them had touched, and the mechanism was only isolated by stashing the change and measuring
+the parent commit (4643 passed / 0 failed, against 39 failed with it). This is CLAUDE.md Rule 2's
+"scoped runs miss Hachi's cross-module regressions" as an observation rather than a maxim, and it is
+the second time in two waves that reading the **verdict line** rather than the exit code was
+load-bearing: the failing gate exited `0` (BB-155).
+
+**Deliberately left open, so nobody mistakes these for oversights.**
+
+- **No retention or pruning.** The table is unbounded. How long an audit trail lives is a product
+  decision, not an implementation detail; `RetentionSettings` was left unwired on purpose.
+- **The two `_sequence` counters stay independent.** `EventBus`'s is a per-process fan-out ordinal;
+  `RuntimeReadModelStore`'s is what clients page against. Reconciling them touches the async-dispatch
+  path.
+- **`_synthesize_history_events` stays.** Sessions recorded before this table can only be replayed
+  through it; deleting it is silent data loss for existing users.
+- **Sequences are monotonic within a session but not contiguous**, because `seq` is global and
+  concurrent sessions interleave. Do not write a test asserting contiguity.
+- **The type gate is narrower than it looks.** Adding `core/events/` took `mypy-strict-gate.ini` from
+  129 to 131 files, but `control_plane.py`, `ports.py`, `orchestrator.py` and `in_process_runtime.py`
+  — the whole gateway wiring surface this task touched — remain outside it. Expanding that allowlist
+  is its own task; recorded here so the gap is known rather than assumed closed.
+- **`core/mcp_client.py`'s `_cached_secret_store` has BB-172's exact shape** — a module-global caching
+  a value derived from `get_hachi_paths()`, forever, with no reset fixture. It did not fire here
+  (neither boot-isolation profile configures MCP servers), but it is the same landmine and it is
+  still armed.
+- **Tests that boot a real agent write to the developer's real Hachi install**, and `events.db` now
+  joins `sessions.db`/`jobs.db`/`runs.db` in doing so. Pre-existing — `tests/conftest.py` has no
+  filesystem isolation and `core/paths.py` has no path override — and worth fixing on its own terms.
+
+---

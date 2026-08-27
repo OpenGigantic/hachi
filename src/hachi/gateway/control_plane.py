@@ -163,6 +163,10 @@ class GatewayControlPlane:
         self._on_chat = sessions.chat if sessions else None
         self._read_events = sessions.read_events if sessions else None
         self._read_events_base = sessions.read_events_base if sessions else None
+        # T-75 Stage B: durable replay for the history (not-live) branch of
+        # read_session_events -- reads the process-wide EventStore directly,
+        # bypassing _get_agent (there is no live agent for this branch).
+        self._read_events_durable = sessions.read_events_durable if sessions else None
         self._get_session_state = sessions.session_state if sessions else None
         self._get_recent_sessions = sessions.recent_sessions if sessions else None
         self._get_session_messages = sessions.session_messages if sessions else None
@@ -518,10 +522,40 @@ class GatewayControlPlane:
             }
 
         # Not a live connection — replay the persisted transcript so a past session
-        # can be resumed. We synthesize the same event envelopes the client already
-        # reconstructs from a live turn, so the UI replay path is identical.
+        # can be resumed.
         if self._get_session_messages is None:
             raise GatewayProtocolError("Unknown session_id")
+
+        # T-75 Stage B: prefer the durable event log when it holds rows for this
+        # session — a real record of what happened rather than a reconstruction,
+        # and the only path that can return governance events (permission.decided)
+        # that never survive message-row synthesis (spec §4.3). Falls through to
+        # _synthesize_history_events (never deleted -- spec §9) when the durable
+        # read comes back empty: every session recorded before this table existed
+        # can only be replayed through synthesis, so dropping that fallback would
+        # be silent data loss for those sessions.
+        if self._read_events_durable is not None:
+            durable_batch = self._read_events_durable(session_id, safe_after, safe_limit)
+            if durable_batch:
+                return {
+                    "session_id": session_id,
+                    "events": [
+                        {
+                            "sequence": event.sequence,
+                            "event_type": event.event_type,
+                            "payload": event.payload,
+                            "time": event.time,
+                        }
+                        for event in durable_batch
+                    ],
+                    "next_sequence": durable_batch[-1].sequence,
+                    # T-75: the durable table has no retention/trim (spec §9), so
+                    # a cursor can never fall behind it — never signal a gap.
+                    "base_sequence": 0,
+                }
+
+        # We synthesize the same event envelopes the client already reconstructs
+        # from a live turn, so the UI replay path is identical.
         events = self._synthesize_history_events(session_id, safe_after, safe_limit)
         next_sequence = events[-1]["sequence"] if events else safe_after
         return {

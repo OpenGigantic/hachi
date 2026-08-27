@@ -32,6 +32,7 @@ from hachi.core.approvals import (
     get_approval_registry,
 )
 from hachi.core.cost import clamp_nonnegative_cost_delta, today_utc_str
+from hachi.core.events import get_event_store
 from hachi.core.integrations import IntegrationRuntime
 from hachi.core.llm import Message
 from hachi.core.loop import ExecutionLoop, ToolRegistry, TurnOutcome, TurnStatus
@@ -665,6 +666,11 @@ class AgentSession:
             # T-52: bind the same store so compaction checkpoints persist and can
             # be updated in place when the background summary job completes.
             self.memory.set_session_store(store, self._session_id)
+        # T-75 Stage B: rebind the durable-log session id now that it exists --
+        # see boot_agent's RuntimeReadModelStore(get_event_store()) call for why
+        # it could not be set at construction time. Mirrors the
+        # memory.set_session_id() late-binding call directly above.
+        self._read_models.set_session_id(self._session_id)
 
     def resume_from_session(self, source_session_id: str, max_messages: int = 40) -> int:
         """Replay a prior session's transcript into active memory (full context reload).
@@ -2587,7 +2593,28 @@ def boot_agent(
     # Enable OpenTelemetry tracing when HACHI_TRACING is set (no-op otherwise).
     configure_from_env()
 
-    read_models = RuntimeReadModelStore()
+    # T-75 Stage B: attach the process-wide durable event log now (seeds the
+    # sequence counter from its global high-water mark -- see
+    # RuntimeReadModelStore.__init__). The session id is NOT yet known here:
+    # AgentSession._session_id is assigned later, inside set_session_store()
+    # (SessionStore.start_session() mints it), well after this point -- so
+    # writes are tagged with the "" default until AgentSession.set_session_store
+    # rebinds it via read_models.set_session_id().
+    #
+    # Do not "fix" this by minting an id here instead: GatewayControlPlane's
+    # not-live history branch (control_plane.py's read_session_events) reads
+    # the durable log back by the SAME session_id
+    # SessionStore.get_session_messages() already requires for its own
+    # transcript fallback (_synthesize_history_events) -- i.e. AgentSession's
+    # SessionStore-minted id, not the ephemeral gateway connection id
+    # (control_plane.py's create_session() UUID, used only as the
+    # _connections/_agents map key). A locally-invented id here would match
+    # neither space, making every durably-written event unreachable from the
+    # one endpoint this table exists to serve. The "" window (boot.progress
+    # events emitted before set_session_store runs) is a known, narrow gap:
+    # those rows are durably written but tagged "", not attributable to any
+    # one session's replay query -- not silently dropped, just orphaned.
+    read_models = RuntimeReadModelStore(get_event_store())
     job_queue: JobQueue = SQLiteJobQueue()
 
     # ------------------------------------------------------------------

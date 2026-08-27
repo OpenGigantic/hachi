@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import threading
+import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
+from hachi.core.events import EventStore
 from hachi.core.runtime_events import RuntimeEvent
 from hachi.core.secret_scanner import redact_secrets
 
@@ -217,10 +219,40 @@ def _resolve_recent_tool(
     return tuple(out)
 
 
+# T-75 Stage D: prefix for the unique per-instance placeholder session id used
+# to tag writes made during the boot window, before the real session id is
+# known -- see RuntimeReadModelStore.__init__ and .set_session_id. Must never
+# be used as a literal shared constant: several sessions share one
+# process-wide EventStore, so every not-yet-bound instance minting the SAME
+# placeholder would let one session's rebind sweep up another's still-unbound
+# rows (the bug this prefix + a uuid4 suffix exists to avoid).
+_BOOT_PLACEHOLDER_PREFIX = "__boot__"
+
+
 class RuntimeReadModelStore:
     """Maintains read-only state projections for TUI queries."""
 
-    def __init__(self) -> None:
+    def __init__(self, event_store: EventStore | None = None, session_id: str = "") -> None:
+        """
+        Args:
+            event_store: Optional durable writer (T-75 Stage B). ``None``
+                (the default) keeps behaviour byte-identical to pre-T-75:
+                events live only in the in-memory ring below. When attached,
+                :meth:`append_event` writes through to it and
+                :meth:`read_events_since` / :meth:`oldest_sequence` serve
+                from it instead of the ring.
+            session_id: The durable-log identity to tag writes with. May be
+                unknown at construction time (see :meth:`set_session_id`) --
+                left at the default ``""``. T-75 Stage D: when ``event_store``
+                is attached and no ``session_id`` is given, a unique
+                per-instance placeholder (:data:`_BOOT_PLACEHOLDER_PREFIX` plus
+                a uuid4) is generated and used instead, so this instance's
+                boot-window writes are tagged with something only this
+                instance owns -- never the bare ``""`` that every not-yet-bound
+                store in the process would otherwise share.
+                :meth:`set_session_id` reattaches those rows once the real id
+                is known.
+        """
         self._lock = threading.Lock()
         self._boot_ready = False
         self._jobs: dict[str, JobSnapshot] = {}
@@ -232,10 +264,61 @@ class RuntimeReadModelStore:
         # name -> FIFO of indices into _tool_calls still in the "running" state,
         # so a completed event resolves the matching earlier start.
         self._pending_tool_calls: dict[str, list[int]] = {}
+        self._event_store = event_store
+        if not session_id and event_store is not None:
+            # T-75 Stage D: `""` is a value every not-yet-bound instance in the
+            # process would share -- a blind `UPDATE ... WHERE session_id = ''`
+            # in set_session_id() would rebind *other concurrent sessions'*
+            # still-unbound boot rows into whichever one happened to bind
+            # first (see EventStore.rebind_session's docstring). A unique
+            # per-instance placeholder is safe to rebind by exact equality;
+            # a shared constant is not.
+            session_id = f"{_BOOT_PLACEHOLDER_PREFIX}{uuid.uuid4().hex}"
+        self._session_id = session_id
         # Monotonic per-store event counter; the sole source of event sequence
-        # numbers that paging clients poll against.
-        self._sequence = 0
+        # numbers that paging clients poll against. T-75: when a durable store
+        # is attached, seed from its global high-water mark instead of 0 so
+        # numbering continues across a restart rather than resetting to 1.
+        # EventStore.max_seq() is global (not per-session) by design (spec
+        # §5.2) -- do not scope this to session_id.
+        self._sequence = event_store.max_seq() if event_store is not None else 0
         self._activity = _IDLE_ACTIVITY
+
+    def set_session_id(self, session_id: str) -> None:
+        """Rebind the durable-log session identity once it is known.
+
+        ``RuntimeReadModelStore`` is constructed (``orchestrator.py``'s
+        ``boot_agent``) before ``AgentSession``'s own persisted session id
+        exists -- ``SessionStore.start_session()`` assigns it later, inside
+        ``AgentSession.set_session_store()``. Mirrors the existing
+        ``MemoryManager.set_session_id`` late-binding idiom.
+
+        T-75 Stage D: everything written during that boot window is tagged
+        with this instance's own placeholder id (see :meth:`__init__`), not
+        left unattributed -- so this method also reattaches those rows to the
+        real id, via :meth:`EventStore.rebind_session` scoped to exactly this
+        instance's own current tag (never a value another instance could
+        share). Idempotent and safe to call more than once (``set_session_store``
+        is not guaranteed to run exactly once): a no-op when no durable store
+        is attached, or when ``session_id`` is unchanged from the current tag
+        -- so it neither re-issues the rebind nor loses already-rebound rows.
+
+        Only the session-id tag is rebindable, never the sequence counter:
+        that is seeded exactly once at construction from
+        ``event_store.max_seq()``, and :meth:`read_events_since`'s ring
+        index math assumes the ring's sequence numbers are contiguous --
+        re-seeding mid-life would break that. Rebinding the session id has
+        no such hazard: it only changes which ``session_id`` *future*
+        writes are tagged with in the durable table, plus retags rows
+        already written under the id being replaced.
+        """
+        with self._lock:
+            if session_id == self._session_id:
+                return
+            previous_session_id = self._session_id
+            self._session_id = session_id
+            if self._event_store is not None:
+                self._event_store.rebind_session(previous_session_id, session_id)
 
     def append_event(self, event: RuntimeEvent) -> None:
         with self._lock:
@@ -249,6 +332,20 @@ class RuntimeReadModelStore:
             # events endpoint), so keep a generous tail for slow-polling clients.
             if len(self._events) > 2000:
                 self._events = self._events[-2000:]
+
+            # T-75: write through to the durable log, right after the ring append,
+            # so the ring and the table can never disagree about ordering. One
+            # choke point for both the EventBus-funnel path and the legacy
+            # direct-call path (both call append_event -- see orchestrator.py's
+            # emit_runtime_event/relay_event). EventStore.append() itself applies
+            # the streaming-firehose deny-list (text.stream.delta/thinking.step),
+            # so no filtering is duplicated here. RuntimeEvent carries no
+            # session_id (core/runtime_events.py) -- it comes from this store
+            # instance, via set_session_id() once known.
+            if self._event_store is not None:
+                self._event_store.append(
+                    self._session_id, event.name, dict(event.payload), event.timestamp
+                )
 
             self._activity = advance_activity(self._activity, event.name, event.payload)
 
@@ -427,11 +524,26 @@ class RuntimeReadModelStore:
         """Events whose sequence is greater than ``after``, oldest→newest, capped at ``limit``.
 
         The single source for sequence-based polling (the gateway events endpoint).
-        O(1) index into the bounded ring-tail: the event at index ``i`` has sequence
-        ``base + i`` where ``base = self._events[0].sequence``.  Clamp ``start`` to
-        zero for stale clients (``after < base``) to avoid the silent tail-slice wrap
-        that a naive ``after - base + 1`` would produce after a trim (BB entry).
+
+        T-75: when a durable store is attached, serves straight from disk --
+        this is what makes a stale cursor (older than the ring's 2000-entry
+        tail) servable rather than clamped, per spec §5.5. Falls back to the
+        in-memory ring otherwise (byte-identical to pre-T-75 behaviour): O(1)
+        index into the bounded ring-tail, where the event at index ``i`` has
+        sequence ``base + i`` and ``base = self._events[0].sequence``. Clamp
+        ``start`` to zero for stale clients (``after < base``) to avoid the
+        silent tail-slice wrap that a naive ``after - base + 1`` would produce
+        after a trim (BB entry).
         """
+        with self._lock:
+            event_store = self._event_store
+            session_id = self._session_id
+        if event_store is not None:
+            records = event_store.read_since(session_id, after, limit)
+            return tuple(
+                RuntimeEventSnapshot(record.name, record.payload, record.timestamp, record.sequence)
+                for record in records
+            )
         with self._lock:
             if not self._events:
                 return ()
@@ -440,15 +552,38 @@ class RuntimeReadModelStore:
             return tuple(self._events[start : start + limit])
 
     def oldest_sequence(self) -> int:
-        """Oldest sequence still retained in the ring, or 0 when empty.
+        """Oldest sequence a caller should assume is still retrievable, or 0.
 
         Clients compare this against their own cursor to detect events dropped by
         the 2000-entry trim in :meth:`append_event`: a gap occurred iff
-        ``oldest_sequence() > after + 1`` (T-30). Takes the lock separately from
-        :meth:`read_events_since`, so a trim can land between the two calls — the
-        only consequence is a harmless false-positive gap (a spurious refetch),
-        never a false negative, so no atomicity is required across the pair.
+        ``oldest_sequence() > after + 1`` (T-30).
+
+        T-75: once a durable store is attached, the table has no retention
+        policy (spec §9 -- not this task's to add) and is served in full by
+        :meth:`read_events_since`, so no cursor can ever fall behind it.
+        Reporting 0 here means ``oldest_sequence() > after + 1`` can never be
+        true again for any non-negative ``after`` -- the T-30 field stays
+        present but stops indicating a gap (spec §9), which is truthful: the
+        gap it used to detect is now structurally impossible, not merely
+        unreported. Falls back to the ring's own oldest retained sequence
+        when no store is attached (byte-identical to pre-T-75 behaviour).
+
+        T-75 Stage D: "served in full" above includes the boot window --
+        events written before the real session id is known are tagged with a
+        per-instance placeholder (see :meth:`__init__`) and reattached to the
+        real id by :meth:`set_session_id`'s rebind, so they are not a silent
+        exception to that claim. Without that rebind they would be durably
+        written but permanently unreachable through the real id, and this
+        method would still (wrongly) report 0 -- a false "no gap" for a gap
+        that genuinely existed. The claim is only true because Stage D closes
+        that window, not merely because Stage B stopped reporting it.
+        Takes the lock separately from :meth:`read_events_since`, so a trim
+        can land between the two calls — the only consequence is a harmless
+        false-positive gap (a spurious refetch), never a false negative, so
+        no atomicity is required across the pair.
         """
+        if self._event_store is not None:
+            return 0
         with self._lock:
             return self._events[0].sequence if self._events else 0
 

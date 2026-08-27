@@ -26,6 +26,7 @@ outcome.
 | [0005](0005-observability-correlation-and-injected-exporter.md) | Observability via correlation-id + injected exporter | Proposed |
 | [0006](0006-single-tenant-authz.md) | Single-tenant authorization: delete the per-session ownership layer | Accepted |
 | [0007](0007-sdk-public-surface.md) | `hachi.sdk` is the supported public surface | Accepted |
+| [0008](0008-durable-event-log.md) | Durable runtime-event log | Accepted |
 
 > **Statuses are point-in-time and may lag implementation.** Several of these designs have
 > since shipped; the **outcome of record** for a shipped decision is its `DECISIONS.md` entry,
