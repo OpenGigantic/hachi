@@ -5373,3 +5373,114 @@ directories away.
   structural difference.
 - **Locked by:** `frontend/src/routes/{memory,og,work,integrations}.test.tsx` — explicit 15000 ms
   `it(...)` budgets; reproduced red under concurrent `pytest -n auto` load pre-fix, green after
+
+### BB-171 — Runtime events lived only in memory, and the fix's own late-bound session id orphaned every boot event
+
+- **Symptom:** every runtime event — including `permission.requested`/`permission.decided`, the
+  governance record the product's audit story rests on — was held in a per-session Python list
+  capped at 2,000 entries. A gateway restart erased all of them and reset the sequence counter to 0,
+  so a surviving client holding cursor N never received another event from the new process. Replay
+  for a non-live session was *reconstructed* from message rows and could only ever emit **four** of
+  the ~30 event types — so the governance events were exactly the ones replay could not represent.
+  Then, while fixing that: the eleven `boot.progress` events of every session were written to the
+  new durable table and were immediately **unreachable**.
+- **Root cause:** `RuntimeReadModelStore._events` (`core/runtime_read_models.py:230`) was a plain
+  `list`, trimmed at `:250-251`, with `self._sequence = 0` re-initialised per construction.
+  `GatewayControlPlane._synthesize_history_events` (`gateway/control_plane.py:537`) synthesized a
+  substitute from the transcript in a separate sequence space starting at `seq = 0`.
+  `docs/architecture/12-event-architecture.md` §8 had deferred the durable log with the trigger
+  "first 'replay events since T' requirement" — that requirement shipped as
+  `GET /sessions/{id}/events?after=N` without the deferral ever being revisited.
+  The **second** defect was a shape problem, not a typo: `RuntimeReadModelStore` is constructed in
+  `boot_agent` (`gateway/orchestrator.py:2607`) *before* the real session id exists —
+  `SessionStore.start_session()` assigns it inside `AgentSession.set_session_store()` (`:3118`),
+  while the eleven `BOOT_PROGRESS` emits run at `:2663-2997`. Those events were tagged
+  `session_id=""` and then orphaned by `EventStore.read_since`'s `WHERE session_id = ?` filter the
+  instant the real id bound.
+- **Fix:** added `EventStore` (`core/events/store.py`) on the `RunStateStore` pattern — one
+  persistent connection, WAL, `RLock`, `ensure_schema_version`, `apply_migrations` — registered in
+  `HachiPaths.all_stores()` as `derived=False` so backup/restore/doctor cover it. Threaded it as an
+  **optional** collaborator into `RuntimeReadModelStore`, writing through at the `append_event`
+  choke point that *both* the `EventBus` funnel and the legacy direct-call path traverse. Payloads
+  are redacted at the persist boundary. For the boot window, each store mints a unique per-instance
+  placeholder (`__boot__` plus a uuid4) and `set_session_id` reattaches those rows via
+  `EventStore.rebind_session(old, new)` on exact equality.
+- **Avoid:** when a "deferred, seam only" architecture decision names a **trigger** condition, the
+  trigger firing is a scheduling event. Shipping the triggering feature without revisiting the
+  deferral is how a documented non-goal quietly becomes two lossy substitute implementations —
+  neither of which anyone chose.
+- **Also avoid — the one that nearly shipped:** *persisted is not the same as retrievable.* The boot
+  events were durably written, on disk, in the right table, with correct payloads — and permanently
+  unqueryable. Worse, `oldest_sequence()` returned `0` (T-30's "no events were dropped"), so the
+  system **actively asserted there was no gap** while eleven of that session's events were
+  unreachable: a false negative on the exact signal T-30 exists to provide, and strictly worse than
+  the ring-clamping it replaced, which was lossy but never claimed otherwise. Whenever an identity is
+  **late-bound** — bound after the rows tagged with it are already written — ask what the pre-binding
+  rows are tagged with and whether anything can still find them. And note why the obvious repair is
+  wrong: `UPDATE ... WHERE session_id = ''` looks equivalent and is not, because several sessions
+  share one process-wide store, so it rebinds *other concurrent sessions'* unbound boot rows into
+  whichever session binds first. A shared placeholder is the bug; a per-instance one is the fix.
+- **Also avoid:** hook durable side-effects at the choke point every configuration traverses, not the
+  one the default configuration happens to use. Persisting in `EventBus.publish` — which the
+  architecture doc itself suggested — would have silently stopped persisting under
+  `[events] bus_funnel = false`: a dead feature that reports success.
+- **Also avoid:** a new package can ship **outside** the blocking type gate without anything failing.
+  `mypy-strict-gate.ini` listed `core/paths.py`, `core/runtime_read_models.py` and
+  `core/runtime/store.py` — the very store this task was told to copy — but not the new
+  `core/events/` package, so the gate command passed while type-checking none of it. Adding a module
+  is not the same as covering it: prove coverage grew by watching mypy's "no issues found in N
+  source files" count actually increase (129 to 131 here).
+- **Locked by:** `tests/test_event_store_durability.py` — `test_events_survive_store_restart`,
+  `test_replay_fidelity_matches_live_fidelity`, `test_stale_cursor_is_served_not_clamped`,
+  `test_streaming_deltas_are_not_persisted`,
+  `test_events_emitted_before_the_session_id_is_known_are_not_orphaned`,
+  `test_rebind_does_not_capture_another_sessions_boot_events`; and `tests/test_event_store.py` —
+  `test_rebind_is_an_exact_equality_match_not_a_prefix`,
+  `test_wait_key_is_scrubbed_while_sibling_fields_survive_unchanged`
+
+### BB-172 — A process-wide singleton cached a resolved path forever, then wrote to a deleted directory and reported success
+
+- **Symptom:** 39 tests failed across **nine files that had nothing to do with the change** — voice,
+  messaging, skill-packs, scheduler, provider-admin, repo-hygiene. Every one passed in isolation, and
+  passed in every subset tried (the nine together: 235 passed). Only the full suite failed, and only
+  the full **gate** revealed it: four targeted stage-level runs had all been green.
+- **Root cause:** `get_event_store()` (`core/events/__init__.py`) cached its `EventStore` in a
+  module-global that was never invalidated, resolving `get_hachi_paths().events_db` exactly once for
+  the life of the process. `tests/test_boot_agent_stages.py` and `tests/test_feature_liveness.py`
+  isolate a real agent boot by patching **every module's** bound `get_hachi_paths` to a temp
+  directory, so a boot never touches the developer's real Hachi install. `boot_agent` calls
+  `get_event_store()` inside that window, so the singleton captured the **temp** path and kept it
+  after the patch unwound and the directory was deleted — poisoning every later test in the process.
+- **The failure mode is why it took so long to find: it does not raise.** On Windows SQLite holds the
+  file open without `FILE_SHARE_DELETE`, so removing the tree leaves the locked `events.db` behind,
+  and `append()` keeps **succeeding** against an orphaned file in a deleted directory. Verified
+  directly: "tmp deleted; path exists? True" / "append after tmp deletion: SUCCEEDED". An audit log
+  that reports success while writing nowhere is the exact fail-open the whole task existed to
+  eliminate, reintroduced by the task itself.
+- **Fix:** re-resolve the path on every call and compare it against the path the cached store was
+  opened against; on mismatch, build a new store and `close()` the previous one (BB-42). Single slot,
+  not a dict keyed by path — a per-path cache accumulates one open SQLite handle per repoint, which
+  is the BB-42 leak in a new costume. In production the path never changes, so the comparison is a
+  no-op; the docstring says so explicitly, because the check reads like dead weight and is not.
+- **Avoid:** a module-global that caches anything **derived from `get_hachi_paths()`** must re-check
+  the derivation, not just the cache slot. Two other process-globals already have autouse reset
+  fixtures in `conftest.py` (`ProcessSharedServices`, the active gateway runtime) added after past
+  leaks — which is precisely why nothing caught this one. Before adding a singleton, ask what happens
+  when a test repoints the state directory underneath it. A known sibling of the same shape is still
+  live: `core/mcp_client.py`'s `_cached_secret_store` caches `create_default_secret_store(paths=...)`
+  forever, with no reset anywhere.
+- **Also avoid — the diagnostic lesson, which cost more than the fix:** four separate hypotheses were
+  *disproved by testing* (the new tests as polluter, agent-boot ordering, the nine files interacting,
+  writes to the real install) and the conclusion drawn from four negatives — "the evidence points away
+  from my change" — was wrong. Refuting four specific mechanisms is not evidence about a fifth. The
+  question was only settled by stashing the change and running the full suite at the parent commit:
+  **4643 passed, 0 failed**, against 39 failed with it. When you cannot find the mechanism, measure
+  the baseline instead of reasoning about it. The clue visible the whole time — `boot_agent` calls
+  `get_event_store()`, which *creates* the file, yet no real `events.db` existed — was treated as a
+  curiosity rather than as the contradiction it was.
+- **Also avoid:** do not "fix" this shape with a `try/except` around the write-through, or with a
+  `Path.exists()` check inside `append()`. The latter would not even have caught it — the file *did*
+  still exist, held open by SQLite; what had moved on was the resolved path, which only
+  `get_hachi_paths()` can know. The fix has to live where the path is resolved.
+- **Locked by:** `tests/test_event_store.py` — `test_singleton_follows_a_repointed_state_dir`,
+  `test_repointing_closes_the_previous_store`, `test_same_path_call_returns_the_identical_object`

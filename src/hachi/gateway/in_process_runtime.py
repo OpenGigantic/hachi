@@ -19,6 +19,7 @@ from hachi.core.config_loader import (
     read_global_config_file,
     write_global_config_dict,
 )
+from hachi.core.events import get_event_store
 from hachi.core.onboarding import (
     OnboardingService,
     looks_like_env_var_name,
@@ -316,6 +317,33 @@ class _InProcessGatewayRuntime:
     def read_events_base(self, session_id: str) -> int:
         """Oldest sequence still retained for ``session_id`` (T-30 gap signal)."""
         return self._get_agent(session_id).snapshot_events_base()
+
+    def read_events_durable(self, session_id: str, after: int, limit: int) -> list[GatewayEvent]:
+        """Durable replay for a session with no live agent (T-75 Stage B).
+
+        Reads the process-wide :class:`~hachi.core.events.EventStore` directly
+        -- deliberately **without** going through :meth:`_get_agent`, since a
+        not-live session (the only caller of this method,
+        ``GatewayControlPlane``'s history branch) has none. ``session_id`` here
+        is the SessionStore-persisted id (the same one ``session_messages`` /
+        ``_synthesize_history_events`` already require -- both filter
+        ``SessionStore`` rows by it), **not** the ephemeral gateway connection
+        id ``register_connection``/``close_connection`` key by (that one is
+        minted per-connect in ``control_plane.py``'s ``create_session`` and
+        never reaches ``SessionStore``). The two id spaces are independent by
+        construction; this method's caller only ever holds the former once a
+        session is no longer live.
+        """
+        records = get_event_store().read_since(session_id, after, limit)
+        return [
+            GatewayEvent(
+                sequence=record.sequence,
+                event_type=record.name,
+                payload=record.payload,
+                time=record.timestamp,
+            )
+            for record in records
+        ]
 
     def session_state(self, session_id: str) -> dict:
         return asdict(self._get_agent(session_id).snapshot_session_state())

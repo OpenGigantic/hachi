@@ -124,6 +124,16 @@ class HachiPaths:
         """
         return self.data_dir / "runs.db"
 
+    @property
+    def events_db(self) -> Path:
+        """SQLite database for the durable runtime-event log (T-75 Stage A).
+
+        On ``state_dir``, alongside its SQLite siblings ``sessions.db``,
+        ``files.db`` and ``jobs.db`` -- unlike ``runs.db``, there is no
+        historical reason for this one to deviate.
+        """
+        return self.state_dir / "events.db"
+
     def journal_shard_path(self, device_id: str | None = None) -> Path:
         """Per-device journal file path for conflict-free git sync.
 
@@ -180,6 +190,16 @@ class HachiPaths:
                 kind="sqlite",
                 derived=False,
                 note="durable run state: WAITING runs and resume cursors",
+            ),
+            StoreSpec(
+                name="events.db",
+                path=self.events_db,
+                kind="sqlite",
+                derived=False,
+                note=(
+                    "durable runtime-event log: the audit trail (T-75) -- not "
+                    "rebuildable from anything else, so NOT derived"
+                ),
             ),
             StoreSpec(
                 name="files.db",

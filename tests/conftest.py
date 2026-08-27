@@ -188,6 +188,7 @@ _LEGACY_HANDLER_PORTS: dict[str, tuple[str, str]] = {
     "on_chat": ("sessions", "chat"),
     "read_events": ("sessions", "read_events"),
     "read_events_base": ("sessions", "read_events_base"),
+    "read_events_durable": ("sessions", "read_events_durable"),
     "get_session_state": ("sessions", "session_state"),
     "get_recent_sessions": ("sessions", "recent_sessions"),
     "get_session_messages": ("sessions", "session_messages"),

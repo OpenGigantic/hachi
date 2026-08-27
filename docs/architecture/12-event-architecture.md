@@ -100,8 +100,19 @@ work runs through the durable job substrate, not inline.
 
 ## 8. Deferred (seam only, per §4a)
 
-Durable/persistent event log, replay, dead-letter queue, cross-process/distributed delivery.
-The bus interface accommodates all four later (persist in `publish`; replay by re-reading a
-persisted log; DLQ as a failed-handler-job sink) — none is built now because no consumer needs
-them on a single node. Trigger to build: first multi-process deployment or first "replay events
-since T" requirement.
+**The durable/persistent event log is no longer deferred — it shipped.** Its trigger ("first
+'replay events since T' requirement") fired when `GET /sessions/{session_id}/events?after=N`
+shipped, some time before this section was revisited; the deferral sat unexecuted until T-75
+closed it. See [ADR-0008](adr/0008-durable-event-log.md) for the full decision. `core/events/store.py`'s
+`EventStore` now persists runtime events to a SQLite `events` table; `RuntimeReadModelStore`
+writes through to it and serves stale-cursor reads from disk instead of clamping;
+`GatewayControlPlane`'s history branch reads real persisted events for a session instead of only
+synthesizing them from message rows (`_synthesize_history_events` is retained as the fallback for
+sessions recorded before the table existed).
+
+**Still deferred:** replay *via the bus* — re-publishing persisted events to a newly-subscribing
+handler, so it can catch up on history; `EventBus` itself does not read `EventStore` back, so this
+is not a side effect of the durable log above — a dead-letter queue, and
+cross-process/distributed delivery. The bus interface still accommodates all three later (replay
+by re-reading the persisted log; DLQ as a failed-handler-job sink) — none is built because no
+consumer needs them on a single node.
