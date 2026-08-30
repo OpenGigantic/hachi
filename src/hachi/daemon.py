@@ -172,9 +172,21 @@ def locate_executable() -> Path:
 def _build_argv(config: DaemonConfig) -> list[str]:
     """Build the gateway command-line arguments list (no shell=True)."""
     exe = locate_executable()
-    # If shutil.which found a direct entry point, call it directly.
-    # If we fell back to sys.executable, invoke as a module.
-    if exe.name in ("python", "python3", "python.exe", "python3.exe"):
+    # If shutil.which found a direct 'hachi' entry point, call it directly.
+    # If locate_executable() fell back to sys.executable (its dev/editable-install
+    # path), invoke as a module instead.
+    #
+    # BB-180: this used to guess "is this a python interpreter?" from a fixed
+    # exe.name allowlist ("python", "python3", "python.exe", "python3.exe"). That
+    # missed the versioned binary names Linux/macOS ship (e.g. `python3.11`,
+    # `python3.12`) -- CI's ubuntu/macOS runners resolve sys.executable to exactly
+    # one of those, so the fallback branch was never taken there and the daemon
+    # would have tried to exec e.g. `python3.11 gateway --host ...` directly,
+    # which is not a valid invocation. Comparing against the resolved
+    # sys.executable is exact regardless of the interpreter's filename
+    # convention, because locate_executable()'s fallback branch returns exactly
+    # this value.
+    if exe == Path(sys.executable).resolve():
         cmd = [str(exe), "-m", "hachi"]
     else:
         cmd = [str(exe)]

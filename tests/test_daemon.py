@@ -156,6 +156,35 @@ def test_build_argv_python_module_fallback():
     assert "gateway" in argv
 
 
+def test_build_argv_python_module_fallback_versioned_interpreter_name(monkeypatch):
+    """BB-180: the -m hachi fallback must trigger regardless of the interpreter's
+    filename convention.
+
+    Linux/macOS CPython builds -- including the ones ``actions/setup-python``
+    installs on ``ubuntu-latest``/``macos-latest`` -- ship a *versioned* binary
+    name like ``python3.11``; there is often no bare ``python``/``python3`` in
+    the resolved path at all. ``_build_argv`` used to detect "is this a python
+    interpreter, not the hachi entry point" via a fixed ``exe.name`` allowlist
+    that only covered ``("python", "python3", "python.exe", "python3.exe")``, so
+    on those platforms it silently took the *direct-exe* branch instead of the
+    ``-m hachi`` fallback -- producing ``argv == [".../python3.11", "gateway",
+    ...]``, which is not a runnable command (that is precisely the CI failure:
+    ``argv[1] == "gateway"`` instead of ``"-m"``). Simulate the versioned name
+    directly (independent of this machine's actual interpreter filename) so the
+    assertion is deterministic on every OS, not just reproducible by installing
+    a matching Python build.
+    """
+    fake_python = str(Path(sys.executable).parent / "python3.11")
+    monkeypatch.setattr(sys, "executable", fake_python)
+    with mock.patch("shutil.which", return_value=None):
+        with mock.patch("pathlib.Path.exists", return_value=True):
+            cfg = DaemonConfig(log_path=Path(fake_python).parent / "gw.log")
+            argv = _build_argv(cfg)
+    assert argv[1] == "-m"
+    assert argv[2] == "hachi"
+    assert "gateway" in argv
+
+
 # ---------------------------------------------------------------------------
 # macOS (launchd) — mocked subprocess + file I/O
 # ---------------------------------------------------------------------------

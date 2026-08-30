@@ -255,7 +255,15 @@ success: TODO: define what success looks like
 """
 
     output_path.write_text(scaffold, encoding="utf-8")
-    console.print(f"[green]Created[/green] {output_path}")
+    # BB-180: soft_wrap=True -- with no real terminal attached (e.g. under
+    # typer.testing.CliRunner, or piped/redirected output), Rich falls back to
+    # an 80-column default width and, since a file path has no internal
+    # whitespace for it to break on, hard-wraps the single long "word"
+    # character-by-character wherever it happens to exceed that width -- which
+    # can land the fold in the middle of the filename itself. That silently
+    # corrupts a path a caller might copy/paste or a script might parse; a
+    # printed path should never contain an artificial newline.
+    console.print(f"[green]Created[/green] {output_path}", soft_wrap=True)
 
 
 @skill_app.command("import")

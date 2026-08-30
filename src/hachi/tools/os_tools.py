@@ -384,8 +384,21 @@ def _make_guarded_read_file(gate: Any):
         # UC-PERF-005: Fail CLOSED on the size check — if we cannot determine the
         # file size (e.g. a broken stat), refuse the read rather than swallowing the
         # error and proceeding with an unbounded read.
+        #
+        # BB-180: on Python <3.12, Path.exists()/is_file() route internally through
+        # Path.stat() and re-raise any non-ignorable-errno OSError instead of
+        # returning False (3.12+'s os.path.exists()-based implementation swallows
+        # it), so the probe itself -- not just the explicit stat() call below --
+        # must be inside the fail-closed guard.
         target = normalized
-        if target.exists() and target.is_file():
+        try:
+            is_probeable_file = target.exists() and target.is_file()
+        except OSError as exc:
+            return (
+                f"Permission Denied: Cannot determine file size for '{target}': {exc}. "
+                "Read refused to avoid loading an unverified file."
+            )
+        if is_probeable_file:
             try:
                 file_size = target.stat().st_size
             except Exception as exc:

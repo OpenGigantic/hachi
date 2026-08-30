@@ -536,7 +536,21 @@ class PermissionGate:
                 f"Delete operations are disabled. Set allow_delete=true in {_PERMISSIONS_HINT}.",
             )
 
-        if operation in {"read", "write"} and resolved.exists() and resolved.is_file():
+        # BB-180: on Python <3.12, Path.exists()/is_file() route internally through
+        # Path.stat() and re-raise any non-ignorable-errno OSError instead of
+        # returning False (3.12+'s os.path.exists()-based implementation swallows
+        # it). Guard the probe itself so a broken stat() can't crash this check;
+        # os_tools.py's guarded_read_file carries the authoritative fail-closed
+        # contract for read_file specifically (UC-PERF-005), so this duplicate
+        # size guard simply skips itself rather than denying broadly here.
+        try:
+            needs_size_check = (
+                operation in {"read", "write"} and resolved.exists() and resolved.is_file()
+            )
+        except OSError:
+            needs_size_check = False
+
+        if needs_size_check:
             max_bytes = self._fs.max_file_size_mb * 1024 * 1024
             try:
                 current_size = resolved.stat().st_size
