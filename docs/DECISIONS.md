@@ -4468,3 +4468,78 @@ load-bearing: the failing gate exited `0` (BB-155).
   filesystem isolation and `core/paths.py` has no path override — and worth fixing on its own terms.
 
 ---
+
+## T-70 — `tests/` mirrors `src/hachi/`, and the three depth dependencies that had to die first (2026-08-30)
+
+Autopsies: [BB-173](bug-bank.md) (the move and its three interlocking hazards) and
+[BB-174](bug-bank.md) (the sweep that certified an anchor it could not see). This entry covers what
+neither does: why the task was sequenced the way it was, what was deliberately *not* done, and the
+one methodological failure worth generalising.
+
+**The finding was findability, and only findability.** All 358 test files sat flat in `tests/` —
+recursive and non-recursive counts identical, which is the proof there was no structure at all. The
+cost is not aesthetic: an agent that cannot locate the existing tests for a module writes a new file
+and ships a duplicate suite that drifts from the original. At agent-velocity authorship that is a
+live failure mode, not a tidiness argument. 343 files now mirror `src/hachi/`; 16 stay at the root,
+each with a written reason.
+
+**Three commits, in a forced order, each independently gated.** The order is the whole design. A
+bulk move breaks three things at once and *none of them fails loudly at the moment a file moves*, so
+they had to be retired one at a time with a green gate between:
+
+1. `ad7273c` — 46 `Path(__file__)` sites in ~40 files each encoded "I live exactly one level below
+   the repo root." Hoisted `REPO_ROOT` / `FIXTURES` into `conftest.py`, which stays at the tests root
+   at any depth.
+2. `5e274be` — added `tests/__init__.py`, because pytest's default `prepend` mode keys modules on
+   their **basename** and the first two same-named files in different directories abort collection.
+   That change also breaks the suite's own bare `from conftest import` idiom, so the 23 files using
+   it moved to `from tests.conftest import` in the same commit.
+3. `52be3c7` — the move. Zero content edits.
+
+**Why the move commit contains no content edits, stated as a rule rather than a preference.** With
+content untouched, git matches all 343 as *exact* renames by blob hash, on a fast path that never
+consults the similarity matrix or `diff.renameLimit`. `git log --follow` and a reviewable
+`git show --stat` then come for free — verified on three spot-checked files, whose history traces
+back through the move to `ec70e0a` and `eeb663d`. Edit one byte in one file and that file alone
+drops into similarity scoring. Note also that the spec's instruction to use `git mv` "so git records
+renames" rests on a false premise: **git does not record renames, it detects them at diff time**, so
+plain `mv` plus staging produces a byte-identical commit.
+
+**The methodological failure, which is the part worth generalising.** The spec's §3.5 certified "no
+cross-test imports — every file is independently relocatable," from the sweep
+`rg "^\s*(from|import)\s+test_" tests/`. That anchored pattern sees only the *bare* form. One real
+cross-import exists in the *qualified* form — `from tests.test_delegation_blocklist_integrity import
+_registered_tool_names`, reusing an AST tool-inventory scanner (T-34 / BB-89) — and moving that file
+broke it mid-run. The anchor was "re-derived" against the newer HEAD by re-running the spec's own
+regex, which faithfully reproduced the spec's blind spot and converted an unexamined assumption into
+an apparently *measured* one. **Do not re-verify a claim with the instrument that produced it.** This
+is BB-172's lesson — refuting the mechanisms you thought of is not evidence about the ones you did
+not — recurring one wave later in a new disguise, which is why it is filed separately.
+
+The same shape appeared twice more in this task and was caught both times only by varying the
+instrument: three of the 23 bare-`conftest` imports sit inside *function bodies*, so they collect
+clean and fail at run time — a `--collect-only` check, the fast and obvious instrument, calls them
+green. And the claim that the isort reshuffle would recur across 358 moves was settled by copying an
+affected file one directory deeper and running ruff (clean) rather than by argument.
+
+**Deliberately left open, so nobody mistakes these for oversights.**
+
+- **The 55 batch-named files keep their names.** `test_g3_turn_lock.py` tells you which audit wave
+  produced it and nothing about what it protects, but a 55-file rename commit rewrites `git blame`'s
+  entry point for 55 files at once and buys nothing that the same renames spread over months do not.
+  Spec §5 part 2 is explicitly opportunistic: rename by subject **as you touch a file**.
+- **`test_delegation_blocklist_integrity.py` is pinned at the root by a cross-import, not by its
+  subject** (`tools/delegation_tools.py`). Unpinning it means editing the importing file — fine in a
+  later commit, wrong in a pure-rename one. The reason is recorded inline in `ROOT_ALLOWED` so the
+  next reader can act on it deliberately instead of rediscovering it.
+- **Five real `src/hachi` packages got no test mirror** — `gateway/routers`, `integrations/notion`,
+  `integrations/slack`, `core/files`, `tui/cockpit/views` — because no file's subject concentrated on
+  any of them. That is a coverage observation this task deliberately did not act on.
+- **~64 prose references to bare `tests/test_X.py` paths** in source comments and test docstrings are
+  now stale. They break nothing, and fixing them inside the move would have buried a 343-rename diff
+  under unreviewable churn.
+- **`ROOT_ALLOWED` is a bucket that will rot if it is allowed to.** It holds 16 entries, each with a
+  written reason. Growing it without one defeats the task; the layout test is what makes adding an
+  entry a deliberate act.
+
+---
