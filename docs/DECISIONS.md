@@ -4622,8 +4622,23 @@ is precisely what Rule 2 exists to prevent. Left red.
 state from an exposed one. `benchmark`: recall that reaches past integration names to the skill nodes
 behind them.
 
-**Also carried knowingly:** 22 remaining test-job failures across the three OS jobs, all environmental
-and all present on `main` — no audio device (`test_play_audio`), no keyring (`test_secret_store`), a
-sandbox recursion guard (`test_os_tools_hardening`), bundled-pack skill counts
-(`test_cli_skill_benchmark`, 4 × 3 OSes), and `test_daemon` argv. This PR's own fixes took the OS jobs
-from 30 failures to 22, adding none.
+**Correction (2026-08-30).** The paragraph that stood here called the 22 remaining test-job failures
+"all environmental". That was wrong, and only the second half — that they were all present on `main` —
+held up. On investigation, five of the six root causes were **production bugs**, not host problems:
+BB-180 (a version-dependent `Path.stat` re-entry, plus two unguarded probes that crash on a genuinely
+broken stat; a daemon filename allowlist missing versioned interpreters; a path folded mid-filename by
+Rich), BB-181 (a bootstrap guard testing existence while an unrelated `mkdir` established existence),
+BB-182 (a `@staticmethod` availability check blind to its injected dependency), and BB-183 (a composite
+delete leaving a credential on disk while reporting success). Only the keyring test's own hermeticity
+was a genuine test defect — and pulling on it is what exposed BB-183, which had never appeared in any
+suite. All are now fixed and locked; see those entries in `docs/bug-bank.md`.
+
+**The lesson worth keeping:** "fails only in CI" invited the environmental reading, and the reading was
+comfortable because it implied nothing needed fixing. The runners were not misconfigured; they were the
+only machines whose environment did not silently satisfy a precondition the code had come to depend on.
+
+**Two structural gaps this surfaced, flagged and not acted on:** the suite is not sandboxed from the
+developer's real installation — `get_hachi_paths()` resolves through `PlatformDirs` with no environment
+override and no autouse fixture redirects it, so tests read and write the real `hachi` workspace, which
+is precisely what hid BB-181. And CI tests **only** Python 3.11 while development happens on 3.14, with
+3.12 and 3.13 claimed in the classifiers and exercised nowhere; every BB-180 bug lived in that gap.
