@@ -15,10 +15,10 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.fastapi_app import create_gateway_app
+from tests.conftest import control_plane
 
 # ---------------------------------------------------------------------------
 # Helpers

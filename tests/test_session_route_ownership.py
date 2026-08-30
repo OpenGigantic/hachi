@@ -24,11 +24,11 @@ as before. One test is added: the route's real remaining access control
 
 from __future__ import annotations
 
-from conftest import control_plane as build_control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane
 from hachi.gateway.fastapi_app import create_gateway_app
+from tests.conftest import control_plane as build_control_plane
 
 TOKEN = "t62-test-token"  # noqa: S105 - test fixture, not a real credential
 

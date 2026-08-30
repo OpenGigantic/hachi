@@ -138,7 +138,7 @@ def test_control_plane_synthesized_completed_event_carries_model(tmp_path) -> No
     store.log_message(sid, "assistant", "a", model="gpt-4o-mini")
     store.flush_sync()
 
-    from conftest import control_plane
+    from tests.conftest import control_plane
 
     cp = control_plane(get_session_messages=store.get_session_messages)
     events = cp._synthesize_history_events(sid, after=0, limit=100)

@@ -13,13 +13,13 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
-from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane
 from hachi.gateway.fastapi_app import create_gateway_app
 from hachi.gateway.orchestrator import AgentSession
 from hachi.jobs.scheduler import Schedule, ScheduleKind, Scheduler, ScheduleStore
+from tests.conftest import control_plane
 
 
 def _fake_scheduler(schedule: Schedule | None) -> MagicMock:

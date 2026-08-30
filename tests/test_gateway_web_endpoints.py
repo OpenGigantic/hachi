@@ -7,11 +7,11 @@ route wiring and response shapes.  No live agent is needed.
 
 from __future__ import annotations
 
-from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane
 from hachi.gateway.fastapi_app import create_gateway_app  # noqa: F401 (used via TestClient)
+from tests.conftest import control_plane
 
 # ---------------------------------------------------------------------------
 # #1 GET /skills

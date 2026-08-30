@@ -27,7 +27,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.core.memory.gardener import GardeningResult, MemoryGardener
@@ -35,6 +34,7 @@ from hachi.core.paths import HachiPaths
 from hachi.core.settings import MemoryGardenerSettings, ResolvedConfig
 from hachi.gateway.control_plane import GatewayControlPlane
 from hachi.gateway.fastapi_app import create_gateway_app
+from tests.conftest import control_plane
 
 
 def _paths(tmp_path: Path) -> HachiPaths:

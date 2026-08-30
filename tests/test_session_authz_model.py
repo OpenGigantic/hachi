@@ -57,13 +57,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from conftest import control_plane as build_control_plane
 from fastapi.testclient import TestClient
 
 from hachi.core.session_store import SessionStore
 from hachi.gateway import control_plane as cp_mod
 from hachi.gateway.control_plane import GatewayControlPlane
 from hachi.gateway.fastapi_app import create_gateway_app
+from tests.conftest import control_plane as build_control_plane
 
 TOKEN = "t61-test-token"  # noqa: S105 - test fixture, not a real credential
 

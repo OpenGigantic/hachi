@@ -17,11 +17,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane
 from hachi.gateway.fastapi_app import create_gateway_app
+from tests.conftest import control_plane
 
 # ---------------------------------------------------------------------------
 # Helpers
