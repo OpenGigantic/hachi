@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from hachi.jobs.queue import (
@@ -104,6 +105,50 @@ def test_get_recent_jobs_returns_most_recent_first(tmp_path: Path) -> None:
     assert names == ["job2", "job1", "job0"]
 
 
+def test_get_recent_jobs_orders_equal_created_at_by_insertion_order(tmp_path: Path) -> None:
+    """BB-178: ``ORDER BY created_at DESC LIMIT ?`` alone is a partial order — when
+    ``created_at`` ties (routine on Windows' coarser clock under fast consecutive
+    enqueues), SQLite is free to return the tied rows in any order and in practice
+    returns rowid-ascending, exactly inverting "most recent first". Under LIMIT this
+    drops the actually-recent rows rather than merely reordering them.
+
+    Forced deterministically via a raw insert with an identical ``created_at``
+    (mirrors the pattern in ``tests/jobs/test_retention_sweep.py``), since a natural
+    race between fast consecutive ``enqueue()`` calls doesn't reproduce reliably on
+    any one machine.
+    """
+    q = _queue(tmp_path)
+    same_ts = "2026-01-01T00:00:00+00:00"
+    with q._conn() as conn:
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO jobs (job_id, name, handler_name, payload, status, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (f"job{i}", f"job{i}", "noop", "{}", "pending", same_ts),
+            )
+    recent = q.get_recent_jobs(limit=3)
+    names = [j.name for j in recent]
+    assert names == ["job2", "job1", "job0"]
+
+
+def test_get_failed_jobs_orders_equal_completed_at_by_insertion_order(tmp_path: Path) -> None:
+    """BB-178: same tiebreak gap as ``get_recent_jobs``, on the
+    ``completed_at DESC LIMIT ?`` query behind the failed-jobs list.
+    """
+    q = _queue(tmp_path)
+    same_ts = "2026-01-01T00:00:00+00:00"
+    with q._conn() as conn:
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO jobs (job_id, name, handler_name, payload, status,"
+                " created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (f"fail{i}", f"fail{i}", "noop", "{}", "failed", same_ts, same_ts),
+            )
+    recent = q.get_failed_jobs(limit=3)
+    names = [j.name for j in recent]
+    assert names == ["fail2", "fail1", "fail0"]
+
+
 def test_cleanup_completed_removes_old_jobs(tmp_path: Path) -> None:
     q = _queue(tmp_path)
     jid = q.enqueue(_named_job())
@@ -113,6 +158,43 @@ def test_cleanup_completed_removes_old_jobs(tmp_path: Path) -> None:
 
     removed = q.cleanup_completed(older_than_hours=0)
     assert removed == 1
+    assert q.get_job(jid) is None
+
+
+def test_cleanup_completed_removes_job_completed_exactly_at_cutoff(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """BB-178: ``older_than_hours`` must be an *inclusive* cutoff. ``cleanup_completed``
+    computes ``cutoff = now() - older_than_hours`` and (pre-fix) deleted rows with
+    ``completed_at < cutoff`` — strict. With ``older_than_hours=0`` the cutoff IS "now",
+    and on a coarse clock a job's ``completed_at`` and that later cutoff read can land
+    in the identical tick, so the strict ``<`` silently keeps a job that just finished
+    (the observed CI symptom: ``assert 0 == 1``).
+
+    The clock is frozen so ``completed_at`` and ``cutoff`` are bit-for-bit identical —
+    an exact tie proven by construction, not by hoping the two reads happen to collide.
+    """
+    import hachi.jobs.queue as queue_mod
+
+    q = _queue(tmp_path)
+    fixed_now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return fixed_now
+
+    monkeypatch.setattr(queue_mod, "datetime", _FixedDateTime)
+
+    jid = q.enqueue(_named_job())
+    q.update_status(jid, JobStatus.RUNNING)
+    result = JobResult(status=JobStatus.COMPLETED, duration_seconds=0.0)
+    q.update_status(jid, JobStatus.COMPLETED, result=result)  # completed_at == fixed_now
+
+    # older_than_hours=0 -> cutoff = fixed_now - 0h = fixed_now: an EXACT tie with
+    # completed_at, not merely "close".
+    removed = q.cleanup_completed(older_than_hours=0)
+    assert removed == 1, "a job completed exactly at the cutoff instant must be removed"
     assert q.get_job(jid) is None
 
 

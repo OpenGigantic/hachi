@@ -78,6 +78,36 @@ def test_get_interactions_newest_first_and_respects_limit(tmp_path: Path) -> Non
     assert rows[0]["turn_id"] == "t4"
 
 
+def test_get_interactions_orders_equal_timestamps_by_insertion_order(tmp_path: Path) -> None:
+    """BB-178: ``ORDER BY ts DESC`` alone is a partial order — rows that share a
+    ``ts`` (routine on Windows' coarser clock under fast consecutive inserts) can
+    come back in any order, and in practice SQLite returns rowid-ascending order
+    for a tie, exactly inverting "newest first". Combined with LIMIT this doesn't
+    just misorder rows, it returns the *wrong* rows (oldest 3 instead of newest 3).
+
+    The natural race doesn't reproduce reliably on any one machine, so the tie is
+    forced deterministically here by writing rows directly with an identical
+    ``ts`` instead of going through ``log_interaction`` (whose per-call
+    ``datetime.now()`` read would only *sometimes* collide).
+    """
+    store = _store(tmp_path)
+    same_ts = "2026-01-01T00:00:00+00:00"
+    with store._lock:
+        for i in range(5):
+            store._conn.execute(
+                "INSERT INTO interaction_log (id, session_id, turn_id, ts, user_input, "
+                "agent_output, tool_calls, memory_hits) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (f"id{i}", "s", f"t{i}", same_ts, f"q{i}", f"a{i}", "[]", "[]"),
+            )
+        store._conn.commit()
+
+    rows = store.get_interactions("s", limit=3)
+    assert len(rows) == 3
+    # Newest-inserted-first, even though every ts is identical — and it must be
+    # the 3 most-recently-inserted rows (t4, t3, t2), not the 3 oldest.
+    assert [r["turn_id"] for r in rows] == ["t4", "t3", "t2"]
+
+
 def test_set_interaction_rating_updates_row(tmp_path: Path) -> None:
     store = _store(tmp_path)
     row_id = store.log_interaction(session_id="s", turn_id="t", user_input="q", agent_output="a")

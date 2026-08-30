@@ -981,24 +981,35 @@ class SQLiteJobQueue(JobQueue):
                 (attempt, scheduled_for, job_id),
             )
 
+    # BB-178: ``created_at``/``completed_at`` alone are a partial order — rows
+    # written in the same tick (routine on Windows' coarser clock under fast
+    # consecutive enqueues/completions) tie, and SQLite is then free to return
+    # them in any order (in practice rowid-ascending, i.e. oldest-first — the
+    # opposite of "most recent first"). Combined with LIMIT that doesn't just
+    # misorder rows, it drops the actually-recent ones. ``rowid`` is monotonic
+    # with insertion order for this table (plain ``job_id TEXT PRIMARY KEY`` —
+    # no ``INTEGER PRIMARY KEY`` alias, no ``WITHOUT ROWID``), so it is a safe,
+    # always-available tiebreaker.
     def get_recent_jobs(self, limit: int = 50, job_type: str | None = None) -> list[Job]:
         if job_type:
             with self._conn() as conn:
                 rows = conn.execute(
-                    "SELECT * FROM jobs WHERE job_type = ? ORDER BY created_at DESC LIMIT ?",
+                    "SELECT * FROM jobs WHERE job_type = ? "
+                    "ORDER BY created_at DESC, rowid DESC LIMIT ?",
                     (job_type, limit),
                 ).fetchall()
         else:
             with self._conn() as conn:
                 rows = conn.execute(
-                    "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+                    "SELECT * FROM jobs ORDER BY created_at DESC, rowid DESC LIMIT ?", (limit,)
                 ).fetchall()
         return [self._row_to_job(r) for r in rows]
 
     def get_failed_jobs(self, limit: int = 20) -> list[Job]:
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM jobs WHERE status = 'failed' ORDER BY completed_at DESC LIMIT ?",
+                "SELECT * FROM jobs WHERE status = 'failed' "
+                "ORDER BY completed_at DESC, rowid DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [self._row_to_job(r) for r in rows]
@@ -1008,6 +1019,12 @@ class SQLiteJobQueue(JobQueue):
 
         DEAD_LETTER jobs are intentionally excluded — they hold state needed for
         re-drive and must only be removed by explicit purge or ``redrive_dead_letter``.
+
+        BB-178: the cutoff is inclusive (``completed_at <= cutoff``, not ``<``).
+        ``older_than_hours=0`` means "cutoff is now" — on a coarse clock, a job's
+        ``completed_at`` and this cutoff read a moment later can land in the
+        identical tick, and a strict ``<`` would then silently keep a job that
+        had, in truth, already completed at or before the cutoff.
         """
         cutoff = (datetime.now(UTC) - timedelta(hours=older_than_hours)).isoformat()
         with self._conn() as conn:
@@ -1016,7 +1033,7 @@ class SQLiteJobQueue(JobQueue):
                 DELETE FROM jobs
                 WHERE status IN ('completed', 'failed', 'cancelled')
                   AND completed_at IS NOT NULL
-                  AND completed_at < ?
+                  AND completed_at <= ?
                 """,
                 (cutoff,),
             )

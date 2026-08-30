@@ -44,7 +44,13 @@ class _LeaseEntry:
         return self.acquired_at + self.ttl_seconds
 
     def is_expired(self) -> bool:
-        return time.monotonic() > self.expires_at
+        # BB-178: inclusive boundary — "now == expires_at" counts as expired, not
+        # only "now > expires_at". A TTL is "at least ttl_seconds have elapsed",
+        # so the exact expiry instant must already qualify; a strict ``>`` leaves
+        # a lease that is due for expiry uncollected whenever the clock reading
+        # taken here ties the one captured in ``acquired_at`` (routine on a
+        # coarse clock under a short TTL and fast back-to-back calls).
+        return time.monotonic() >= self.expires_at
 
 
 class LeaseConflict(Exception):
