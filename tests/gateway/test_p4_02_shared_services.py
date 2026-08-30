@@ -134,12 +134,28 @@ def test_skill_engine_is_present() -> None:
 
 
 def test_uptime_seconds_increases() -> None:
+    """BB-184: wait derived from the monotonic clock's own resolution, not a hardcoded
+    value.
+
+    ``uptime_seconds()`` is ``time.monotonic() - initialized_at`` — two reads of the
+    same clock ``time.sleep(0.01)`` apart. On CPython 3.11 on Windows (what CI runs),
+    ``time.monotonic()`` is backed by ``GetTickCount64()`` at 0.015625s (15.625ms)
+    resolution, coarser than that 10ms sleep, so both reads can land in the same tick
+    and come back bit-for-bit equal, making ``t2 > t1`` fail depending on tick phase
+    (this dev box's interpreter uses ``QueryPerformanceCounter()``, resolution 1e-07s,
+    where the old constant never had a chance to fail — same mechanism as BB-184's
+    ``test_lease_ttl_expiry``). Deriving the wait from
+    ``time.get_clock_info('monotonic').resolution`` keeps the premise valid on any
+    clock: measured on 3.11, the old ``sleep(0.01)`` (0.64x resolution) failed
+    168/500 trials; ``3 * resolution`` failed 0/500.
+    """
     from hachi.gateway.shared_services import ProcessSharedServices
 
     try:
         inst = _patched_shared()
+        resolution = time.get_clock_info("monotonic").resolution
         t1 = inst.uptime_seconds()
-        time.sleep(0.01)
+        time.sleep(resolution * 3)
         t2 = inst.uptime_seconds()
         assert t2 > t1
     finally:
