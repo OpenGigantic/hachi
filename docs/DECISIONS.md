@@ -4592,3 +4592,38 @@ configurer one of three things: a warning when it overrides, the constraint stat
 the parameter is documented, or a validation error at parse time. Silence is not one of them.
 
 ---
+
+## Open: two CI checks on PR #144 are red by decision, and one had never run (2026-08-30)
+
+PR #144 lands the wave-2 branch with two red checks, `security` and `benchmark`. Both were red before
+this branch touched anything, neither is a regression, and both were left red on purpose.
+
+**`security`.** Fails the "Strict security audit (fail on medium)" step on two high findings that both
+describe fail-closed states — `GOOGLE_CLIENT_ID` unset ("should fail closed") and `HACHI_REST_ALLOWLIST`
+empty ("secret-bearing REST calls are blocked") — plus one medium for the development-grade process
+sandbox. The step is gated `if: github.event_name == 'pull_request'`; this repo develops on `main`
+pushes, so the gate had never executed on this history. "Green on main" meant "never ran", not "passed".
+
+Three ways to make it green, and why none was taken. Setting the two variables in the CI job supplies
+exactly the configuration the audit exists to detect the absence of — green, and permanently blind.
+Relaxing the strict step removes the only place the gate ever runs. Fixing the severity model so
+*unconfigured-and-fail-closed* scores info/low while *misconfigured-and-exposed* stays high is the
+defensible answer, and it is a change to security architecture, which CLAUDE.md says to flag rather than
+auto-build. Flagged. See BB-179.
+
+**`benchmark`.** M1 retrieval p@5 = 0.677 against a 0.8 threshold, 0 false positives, 31 queries. All ten
+misses have one shape: the query resolves to the *integration* node and never reaches the *skill* node —
+`'slack standup'` → `['slack']` where `daily_standup` was expected, `'email inbox'` → `[]`. Token savings
+passed at 0.973. It fails identically on `main`. Greening it means genuinely improving skill-node recall,
+which is a scoped product task rather than a CI repair; lowering `p5_threshold` below the measured value
+is precisely what Rule 2 exists to prevent. Left red.
+
+**What would change each.** `security`: a severity model that distinguishes an unconfigured fail-closed
+state from an exposed one. `benchmark`: recall that reaches past integration names to the skill nodes
+behind them.
+
+**Also carried knowingly:** 22 remaining test-job failures across the three OS jobs, all environmental
+and all present on `main` — no audio device (`test_play_audio`), no keyring (`test_secret_store`), a
+sandbox recursion guard (`test_os_tools_hardening`), bundled-pack skill counts
+(`test_cli_skill_benchmark`, 4 × 3 OSes), and `test_daemon` argv. This PR's own fixes took the OS jobs
+from 30 failures to 22, adding none.

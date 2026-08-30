@@ -5759,3 +5759,33 @@ directories away.
   `::test_get_failed_jobs_orders_equal_completed_at_by_insertion_order`,
   `::test_cleanup_completed_removes_job_completed_exactly_at_cutoff`;
   `tests/core/test_p4_01_multi_agent_v2.py::test_lease_expiry_boundary_is_inclusive`.
+
+### BB-179 — A security gate rated two fail-closed states as high severity, and it had never once run
+
+- **Symptom:** the `security` CI job fails on every pull request with `"status": "fail"`, `"high": 2`,
+  `fail_reasons: ["2 high-severity finding(s)"]`. Nothing in the diff touches security. The same job is
+  green on `main`.
+- **Root cause, part one — the severity model.** Both high findings describe a **fail-closed** state, in
+  their own wording: `oauth.google_client_id_missing` says "Google OAuth will fail *and should fail
+  closed*", and `rest.allowlist_missing` says "secret-bearing REST calls *are blocked*". Neither
+  describes an exposure. The audit conflates *not configured for production* with *insecure*, so on a CI
+  runner — or any developer laptop — the correct, safe state is scored `high`.
+- **Root cause, part two — why nobody noticed.** The strict step is gated
+  `if: github.event_name == 'pull_request'`, and this repository develops by pushing to `main`. The gate
+  had therefore **never executed** on this history. Its green record was not a record of passing; it was
+  a record of not running. The first PR to reach it discovered it was unsatisfiable in the only
+  environment it runs in.
+- **Avoid:** **"it passes on main" is a claim about the code only if the job actually ran on main.**
+  Before concluding a red check is a regression, read the job's `if:` condition and confirm the baseline
+  runs were the same event type. A green history can be an unexecuted one.
+- **Avoid — the sharper one:** never make a security gate pass by supplying the very configuration it
+  exists to detect the absence of. Setting `GOOGLE_CLIENT_ID` and `HACHI_REST_ALLOWLIST` in the CI job
+  turns the check green *and permanently blind* — it would thereafter report "configured" on a runner
+  where nothing is configured, including the day a real misconfiguration lands.
+- **Deliberately not fixed (2026-08-30, PR #144).** The defensible fix is to separate
+  *unconfigured-and-fail-closed* (info/low) from *misconfigured-and-exposed* (high), which is a change to
+  security architecture — CLAUDE.md says flag those, do not auto-build. Left red and documented by
+  explicit decision; see `docs/DECISIONS.md`. A gate that cannot pass in the only environment it runs in
+  teaches everyone to ignore it, so this is a real cost being carried knowingly, not a shrug.
+- **Locked by:** none yet — add a test asserting a fail-closed unconfigured state is not `high` when the
+  severity model is next touched.
