@@ -134,9 +134,23 @@ class _ParsedNode:
 
 
 def _parse_dir(memory_dir: Path) -> dict[str, list[_ParsedNode]]:
-    """Parse all .og files in memory_dir → name → list of ParsedNode (one per file)."""
+    """Parse all .og files in memory_dir → name → list of ParsedNode (one per file).
+
+    BB-177: iterated in a stable, filesystem-independent order (sorted by full
+    path string), never raw ``Path.rglob()`` order. The stdlib documents glob
+    order as unspecified ("the order of the returned list is undefined"), and
+    it is realised differently per filesystem — NTFS/ext4 happened to return
+    small directories in creation/alphabetical order, which is why callers
+    downstream (``_find_similar_content``'s name_a/name_b assignment, and
+    hence which file ``decide()`` appends the ``::changelog`` to) worked by
+    accident on Windows/Linux; APFS (macOS) does not make that guarantee, so
+    the same two files could enumerate in the opposite order there, flipping
+    which file received the approved write-back and leaving the file a
+    reviewer expected to change looking completely untouched — silently,
+    since nothing raises either way.
+    """
     index: dict[str, list[_ParsedNode]] = {}
-    for og_file in memory_dir.rglob("*.og"):
+    for og_file in sorted(memory_dir.rglob("*.og"), key=str):
         try:
             text = og_file.read_text(encoding="utf-8", errors="replace")
             mtime = og_file.stat().st_mtime
