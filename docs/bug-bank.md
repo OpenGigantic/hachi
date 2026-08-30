@@ -5653,3 +5653,109 @@ directories away.
   `test_sub_floor_request_timeout_reaches_retry_policy_clamped`,
   `test_sub_floor_request_timeout_warns_naming_server_and_values`,
   `test_at_floor_request_timeout_does_not_warn`
+
+### BB-177 — An unsorted directory scan chose which file an approved edit was written to, and macOS chose differently
+
+- **Symptom:** macOS-only CI failure on `test_memory_gardener_wiring.py`. Approve a `MERGE_SIMILAR`
+  memory-gardener proposal; the route returns `200` with `ok: True` and `auto_applied: True`; the file
+  the reviewer was looking at is byte-for-byte unchanged. The assertion reads
+  `assert '::node[topic_beta]\n::dense\n…' != '<the identical string>'`. Green on `windows-latest`,
+  `ubuntu-latest`, and every dev machine.
+- **Root cause:** `_parse_dir()` built its `name → [_ParsedNode]` index by iterating
+  `memory_dir.rglob("*.og")` **with no sort**. The stdlib is explicit that glob order is undefined; it is
+  realised per filesystem, and NTFS/ext4 happen to hand back small directories in creation/alphabetical
+  order while APFS promises nothing. That order becomes `list(index.keys())` in `_find_similar_content`,
+  which assigns `name_a`/`file_path_a` to whichever node was seen first and `name_b`/`file_path_b` to the
+  second — and `_apply_reviewed_proposal` always appends the `::changelog` to `file_path_b`. **Same two
+  files, opposite scan order, and the edit lands on the other one.**
+- **The fail-open, and why it reads as "did nothing":** nothing raises anywhere on this path.
+  `_append_changelog` no-ops when the target is missing and otherwise just opens in append mode, so a
+  write genuinely happened and the route is not lying when it reports success — it wrote to a file the
+  caller never asked about. Both failing assertions inspect only `b.og`, so a real write to `a.og` is
+  indistinguishable from no write at all. Same family as BB-172: a confident success report
+  over a write that went somewhere the caller did not mean.
+- **Which test fails is evidence about where the bug is not.** The obvious macOS hypotheses all live in
+  path resolution — `/var` → `/private/var` symlinks, a `resolve()`/`realpath` mismatch on the tmp dir,
+  APFS case folding. One of the two failures,
+  `TestMemoryGardenerDecide::test_approve_applies_append_only_and_persists`, drives
+  `MemoryGardener(memory_dir)` **directly** against a plain `Path`: `get_hachi_paths()` and the entire
+  gateway wiring layer are absent from its call path. That one fact kills every wiring-layer hypothesis
+  outright, before grepping for `resolve()` proves anything. **Read the call path of the narrowest
+  failing test first; it bounds the search better than any keyword sweep.**
+- **Fix:** `sorted(memory_dir.rglob("*.og"), key=str)` — at the scan, not at each consumer. One line fixes
+  `_find_similar_content`'s pairing, `_find_dedup_same_name`'s equal-mtime tie-break (a stable sort over a
+  now-deterministic sequence) and `_find_expired`'s ordering together; sorting per consumer is N fixes and
+  a standing invitation to miss the N+1th.
+- **What the fix does not settle:** whether `file_path_b` is the semantically *right* target for a merge
+  annotation. It makes the choice deterministic and platform-independent, which is what was broken. The
+  convention — annotate the second file in sorted order, in favour of the first — is now stable enough to
+  argue about.
+- **Reproduced without macOS**, by monkeypatching `Path.rglob` to return the same two files in both
+  possible orders and asserting the write-back target is identical either way. Proving the mechanism beats
+  waiting to observe it on a platform you cannot reach — and the test then fails on *every* OS before the
+  fix, which is what makes it a regression test rather than a CI-only tripwire.
+- **Avoid:** treating unordered filesystem enumeration as an ordering. `rglob`, `glob`, `iterdir` and
+  `os.listdir` are all documented as unordered. The moment that order reaches a pairing, a branch, or a
+  tie-break, it is an *input* — sort it at the source.
+- **Avoid — the general one:** **"passes on my machine and on two of the three CI OSes" is not evidence of
+  determinism.** It is three samples from a distribution the standard library explicitly refuses to
+  define. The third OS was not unlucky; it was the only one telling the truth.
+- **Locked by:** `tests/core/memory/test_p3_02_memory_gardener.py::test_merge_similar_changelog_target_is_order_independent`.
+
+### BB-178 — ORDER BY a timestamp that can tie is a partial order, and under LIMIT it returns the wrong rows
+
+- **Symptom:** six Windows-only CI failures in three shapes.
+  `assert ['job0', 'job1', 'job2'] == ['job2', 'job1', 'job0']` — the newest-first list came back
+  perfectly reversed. `assert 0 == 1` — a cleanup that removed nothing. `Expired lease should not block
+  new acquisition` — a lease past its TTL still held.
+- **Root cause, ordering:** `ORDER BY ts DESC LIMIT ?` (and `created_at` / `completed_at` alike) is a
+  **partial** order. SQLite may return tied rows in any order and in practice returns them
+  rowid-ascending — which, when every row ties, is exactly the reverse of the direction asked for.
+  **Under `LIMIT` that is not a cosmetic misordering: it returns the wrong rows.**
+  `get_interactions(limit=3)` over five same-tick rows hands back the three *oldest*.
+- **Root cause, boundaries:** two strict comparisons where the contract is inclusive.
+  `completed_at < cutoff` with `older_than_hours=0` makes the cutoff *now*, so a job that completed in
+  the same tick is silently kept. `time.monotonic() > expires_at` makes a lease exactly at its TTL not
+  yet expired, though a TTL means "at least `ttl_seconds` have elapsed".
+- **One disease, three presentations:** all of it is a same-tick tie. Windows' coarser clock does not
+  *create* these bugs — it *samples* them. Every one is reachable on every platform.
+- **"Windows-only" and "new on this branch" were both wrong, and the distinction is the lesson.** All six
+  buggy sites are byte-identical on `main` (checked line by line against `git show main:<file>`, not
+  inferred from the file being untouched — five commits on this branch do touch those files elsewhere),
+  and three of the six were already red on `main`'s Windows job. Why the other three flipped from green
+  to red here is **not proven**: the T-70 reorg moved 358 test files into a package hierarchy, which
+  certainly changed pytest's serial collection order and therefore which tests run adjacent to which,
+  and that is the only candidate on offer — but "changed timing" is where the evidence stops, and it is
+  not worth more confidence than that. What matters is that it changes nothing about the fix. **"It
+  started failing when I changed X" is a claim about exposure, not about cause**, and the two are worth
+  separating before writing a line of fix.
+- **Fix:** `, rowid DESC` appended to the three `DESC … LIMIT` queries; `<` → `<=` on the cleanup cutoff;
+  `>` → `>=` on the lease boundary. `rowid` is the correct tiebreaker here specifically because both
+  tables declare a *text* primary key (`interaction_log.id` is a random UUID, `jobs.job_id` a text id —
+  neither monotonic), so no `INTEGER PRIMARY KEY` alias exists to shadow the rowid and neither table is
+  `WITHOUT ROWID`. SQLite assigns an implicit rowid of `max(rowid) + 1`, so it is monotonic with
+  insertion order across all live rows. Check both of those before reaching for this fix elsewhere — on a
+  `WITHOUT ROWID` table the column does not exist, and on an `INTEGER PRIMARY KEY` table it is whatever
+  the caller supplied.
+- **The tests force the tie; they do not race for it.** Rows are written by raw `INSERT` at an identical
+  timestamp, and the two boundary tests freeze the clock so both reads are bit-for-bit equal. A test that
+  *hopes* two `datetime.now()` calls collide is a test that passes for the wrong reason on fast hardware
+  — which is precisely how these six survived on `main`. All five new tests fail on every OS before the
+  fix and pass after it.
+- **Avoid:** "fixing" a same-tick tie with `sleep()`, a rerun plugin, a flaky marker, a fudge factor, or a
+  loosened assertion. Every one of those stops the test reporting the bug without removing the bug.
+- **Avoid — the general one:** `ORDER BY <timestamp>` is a total order only when the timestamps are
+  distinct, and nothing in the schema makes them distinct. **Any `ORDER BY … LIMIT` over a column that
+  can tie needs a unique tiebreaker, or it silently serves the wrong page.**
+- **Known siblings, deliberately still live — these are bugs kept, not tickets filed.** No failing test
+  proves any of them, so none was touched: `session_store.get_sessions_missing_title`,
+  `search_sessions`, `get_recent_sessions`, `get_latest_session_id`, `cleanup_idempotency_keys`,
+  `cleanup_interaction_log`; `queue.get_pending` and `_recover_running`'s orphan sweep.
+  `get_latest_session_id` is the one to fix first if any: `ORDER BY started_at DESC LIMIT 1` picks the
+  wrong session outright on a tie. Explicitly **not** in this family: `session_store`'s clean-by-date
+  `started_at < cutoff_iso`, whose docstring documents strictly-less-than as a caller-supplied contract.
+- **Locked by:** `tests/core/test_interaction_log.py::test_get_interactions_orders_equal_timestamps_by_insertion_order`;
+  `tests/jobs/test_p2_02_job_queue.py::test_get_recent_jobs_orders_equal_created_at_by_insertion_order`,
+  `::test_get_failed_jobs_orders_equal_completed_at_by_insertion_order`,
+  `::test_cleanup_completed_removes_job_completed_exactly_at_cutoff`;
+  `tests/core/test_p4_01_multi_agent_v2.py::test_lease_expiry_boundary_is_inclusive`.
