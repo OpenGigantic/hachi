@@ -5789,3 +5789,205 @@ directories away.
   teaches everyone to ignore it, so this is a real cost being carried knowingly, not a shrug.
 - **Locked by:** none yet — add a test asserting a fail-closed unconfigured state is not `high` when the
   severity model is next touched.
+
+### BB-180 — Three CI-only failures, three different host assumptions, none reproducible on the machine that wrote them
+
+- **Symptom:** three unrelated CI failures, every one green locally and on every dev box —
+  `RecursionError` in `test_read_file_refused_on_stat_failure` (all three OSes),
+  `assert 'gateway' == '-m'` in `test_build_argv_python_module_fallback` (macOS + ubuntu), and a
+  truncated-path assertion in `test_skill_new_output_flag_respects_path` (ubuntu).
+- **What they share is not a bug, it is a gap.** This repo develops on Python **3.14** and CI tests only
+  **3.11**. `requires-python = ">=3.11"`, the classifiers claim 3.11/3.12/3.13, nothing pins the dev
+  interpreter, and 3.12–3.13 are exercised nowhere at all. All three bugs lived in that gap.
+
+**1. `Path.resolve()` re-enters a patched `Path.stat` on 3.11 and does not on 3.14.**
+Measured rather than read: `resolve()` invokes `Path.stat` **once** on 3.11.15 and **zero** times on
+3.14.3. The test patched `Path.stat` and then called `target.resolve()` *from inside the patch*, so on CI
+it re-entered itself without bound. Fix: compute `target.resolve()` **before** installing the patch.
+
+  - **The test-only fix was not sufficient, which is the half worth remembering.** With the recursion
+    gone, 3.11 surfaced a second, real defect: on `<3.12`, `Path.exists()` / `is_file()` route through
+    `Path.stat()` and re-raise a non-ignorable `OSError`; on 3.12+ they go through `os.path.exists()` and
+    never touch `Path.stat` at all. Both `PermissionGate.check_path` and `guarded_read_file` therefore had
+    unguarded probes that crash outright on a genuinely broken stat (EACCES, I/O error), not just under a
+    mock. Both are now guarded, with a **deliberate asymmetry**: `check_path` skips only its duplicate
+    *size* check — a resource limit, and the blocked-path/allowed-path security checks run earlier and are
+    untouched — while `guarded_read_file`, at the actual read site, fails **closed** per its own
+    UC-PERF-005 contract. The guard makes 3.11 behave the way 3.12+ already does everywhere else.
+
+**2. The daemon guessed "is this a Python interpreter?" from a filename allowlist.**
+`exe.name in ("python", "python3", "python.exe", "python3.exe")` misses the versioned binary names Linux
+and macOS ship (`python3.11`, `python3.12`) — exactly what `sys.executable` resolves to there. The
+`-m hachi` fallback was never taken on those hosts, so the daemon built `[".../python3.11", "gateway", …]`,
+which is not a runnable command. **A real production bug** on any editable/dev install where `hachi` is
+not on `PATH`, not merely a test artifact. Fix: `exe == Path(sys.executable).resolve()`, exact because
+`locate_executable()`'s fallback branch returns precisely that expression.
+
+**3. Rich hard-wraps a path, because a path has no whitespace to break on.**
+With no terminal attached — `CliRunner`, a pipe, a redirect — Rich falls back to an 80-column default and
+breaks the single long "word" character by character, which can land the fold *inside the filename*
+(`…\my_s\nkill.og`). Fix: `soft_wrap=True`. A printed path must never contain an artificial newline;
+something downstream will copy or parse it.
+
+- **Avoid:** **never call a method from inside the patch for that method.** `mock.patch.object(Path,
+  "stat", f)` where `f` calls `resolve()`, `exists()` or `is_file()` is a recursion waiting for the right
+  stdlib version to arrive. Compute whatever the patch needs *before* installing it.
+- **Avoid:** identify an object by **identity, not by filename**. Filenames carry version suffixes,
+  platform conventions and shims; `exe == Path(sys.executable).resolve()` cannot be wrong in the way an
+  allowlist of four spellings can.
+- **Avoid — the structural one:** **"passes locally" is a claim about the local interpreter and nothing
+  more.** Until the dev Python is pinned or the CI matrix is widened, a green local suite is evidence
+  about 3.14 only — and 3.14 is not in the project's own classifiers.
+- **Locked by:** `tests/core/test_os_tools_hardening.py::test_read_file_refused_on_stat_failure`
+  (repaired), `tests/test_daemon.py::test_build_argv_python_module_fallback_versioned_interpreter_name`
+  (simulates the versioned interpreter name, so it fails on every OS), and
+  `tests/cli/commands/test_p5_02_skill_new.py::test_skill_new_created_message_path_is_not_word_wrapped`
+  (forces an 8-column console, so the fold is guaranteed regardless of host path length).
+
+### BB-181 — A bootstrap guard asked whether the directory existed, while an unrelated `mkdir` answered that question for it
+
+- **Symptom:** twelve CI failures — all four `test_cli_skill_benchmark.py` tests, on all three OSes.
+  `hachi skill benchmark` exits 2 with
+  `Not enough skill nodes to run a meaningful benchmark (found 0).` Green on every dev box.
+- **Root cause:** `get_skills_dir()` bootstrapped with `if not skills_dir.exists(): ensure_workspace()`.
+  Several *unrelated* call sites — `load_effective_config()` (run by nearly every `hachi <command>`),
+  `tools/config_tools.py`'s own thinner `get_skills_dir()`, `secret_store.py`, `onboarding.py` — call
+  `core.paths.ensure_directories()`, which **creates `skills_dir` as an empty side effect and installs
+  nothing**. Whichever of those runs first wins permanently: the directory now exists, so the guard never
+  fires again, and the workspace stays empty forever.
+- **The guard was strictly weaker than the one it was gating.** `ensure_workspace()` already checks
+  `if not any(skills_dir.iterdir())` before calling `install_core_skill_packs`. The outer guard asked
+  "does it exist", the inner one asked "is it populated" — and only the outer one could stop the inner
+  one from running.
+- **Why no developer machine can see it, which is the bigger finding.** `get_hachi_paths()` resolves
+  through `PlatformDirs` with **no environment override**, and `tests/conftest.py` has no autouse fixture
+  redirecting it. The suite therefore reads *and writes* the developer's **real** Hachi installation. Any
+  machine with Hachi history has a populated skills dir, so the benchmark finds nodes and passes; a fresh
+  CI runner starts empty. **Local green was partly an artifact of accumulated machine state, not of the
+  code.** That the suite is unsandboxed from the real install is its own standing hazard — recorded here
+  because this bug is the first time it cost anything.
+- **Refuted, and worth recording because the refutation was the work:** packaging is *fine* — building the
+  actual wheel confirms all 32 `.og`/`manifest.json` files ship as package data. The test's skip-guard and
+  the command count parsed nodes identically, so they do not disagree about "enough". `load_directory`
+  does **not** silently drop unparseable files — it records them in `_failed_files` and logs a warning.
+  All three of the obvious hypotheses were wrong.
+- **A skip-guard that checks a different location than the code under test cannot protect it.**
+  `_bundled_dir()` (the installed package's own `default_skills/`) and `get_skills_dir()` (the
+  `platformdirs` user workspace) are two entirely different places. The test guarded on the first and the
+  command loaded the second, so the guard was never capable of skipping this failure.
+- **Fix:** `if not skills_dir.exists() or not any(skills_dir.iterdir())` — the outer guard now asks the
+  same question as the inner one, making bootstrap idempotent regardless of call order.
+- **Known consequence, accepted:** `install_core_skill_packs` is wrapped in `try/except: pass`, so if it
+  fails persistently, `get_skills_dir()` now retries on every call instead of once. Self-healing in the
+  normal case, repeated work in the pathological one. Preferred over the previous behaviour, which was a
+  permanently empty workspace and no retry ever.
+- **Avoid:** **a bootstrap guard must test the condition the bootstrap actually establishes.** "Does the
+  directory exist" and "is the directory populated" are different questions, and any `mkdir` anywhere else
+  in the process will answer the first one on your behalf. Guard on the postcondition, never on a
+  side effect that something else can produce.
+- **Locked by:** `tests/cli/test_cli_skill_benchmark.py::test_benchmark_bootstraps_when_skills_dir_exists_but_empty`
+  — points `get_hachi_paths()` at an isolated `tmp_path`, calls `load_effective_config()` first to
+  reproduce the real poisoning order, and asserts the benchmark still runs. Fails with the exact CI text
+  (`found 0`, exit 2) before the fix.
+
+### BB-182 — A `@staticmethod` availability check could not see the dependency that had been injected into it
+
+- **Symptom:** three ubuntu-only CI failures in `test_play_audio.py`. Each test injects a fake player
+  precisely so it needs no real one, and each gets back
+  `"No audio player available on this system. Install paplay …"`. Green on Windows and macOS, green on
+  every dev box.
+- **Root cause:** `AudioPlayer.is_available()` was declared `@staticmethod`, so it *structurally could
+  not* read `self._player`. It only ever called the module-level `_detect_player_binary()`, which probes
+  the host with `shutil.which`. The tool call site gates on it **before** ever reaching the player:
+  `if not active.is_available(): return "No audio player available…"` then `active.play(target)`. On a
+  bare Linux runner with no `paplay`/`aplay`/`mpv`/`ffplay`, the probe fails and the injected player is
+  never consulted. Windows always has `winsound` and macOS always has `afplay`, so the probe always
+  succeeds there and the bug is invisible on both.
+- **The decorator was the bug.** `@staticmethod` on a method whose entire job is to report on *this
+  instance's* collaborator is a category error — and one no type checker flags, because the code is
+  perfectly well typed. It is only wrong about what it means.
+- **The intent was written down correctly and the implementation contradicted it.** The `AudioPlayer`
+  class docstring already said `is_available` is "always True in tests that inject a fake player". The
+  spec was right, the code disagreed, and nothing ever compared the two. Same family as BB-176:
+  documentation that nothing enforces is a wish.
+- **The test named for exactly this behaviour was built so that it could not fail.**
+  `test_audio_player_is_available_when_injected` made three different claims in three places: its **name**
+  said injection suffices; its **docstring** said the opposite ("is_available() is based on
+  detect_player_binary, *not* on the injected fn"); its **body** patched the probe to a truthy value
+  *and* injected a player, satisfying both branches of the condition at once, so it returned True under
+  the broken logic and the fixed logic alike. Only the body runs — but the disagreement is itself the
+  finding.
+- **Avoid:** never gate a call to an **injected** dependency behind a **static** probe of the host. If
+  the caller handed you an implementation, there is nothing left to detect. An availability check that
+  cannot see the injection point defeats the seam it is standing in front of.
+- **Avoid — the test-design one, which is the transferable half:** **a test that satisfies every branch
+  of the condition it is probing cannot fail.** Patching `_detect_player_binary` to a truthy value *and*
+  injecting a player made the `or` true twice over. Turn the other branch **off** — patch the probe to
+  `None` — so the behaviour under test is the only thing that can make it pass. And when a test's name
+  and its docstring disagree, that is a signal nobody re-read it after the behaviour moved; fix all three
+  parts, not just the failing one.
+- **Only a bare Linux runner could see this**, which is the same lesson as BB-177 from the other
+  direction: the platform that reported the failure was not unlucky, it was the only one whose
+  environment did not silently satisfy the precondition.
+- **Locked by:** `tests/core/test_play_audio.py` — `test_play_audio_happy_path_no_system_binary`,
+  `test_play_audio_player_failure_no_system_binary`,
+  `test_play_audio_player_exception_no_system_binary` (tool level, all forcing
+  `_detect_player_binary → None` so they fail on every OS before the fix), and the repaired
+  `test_audio_player_is_available_when_injected` (unit level, now discriminating).
+
+### BB-183 — A composite delete reported success while the credential was still on disk
+
+- **Symptom:** none, in any test suite — this was found by pulling on a *test* failure
+  (`test_keyring_delete_metadata_desync_is_self_healed`, ubuntu-only, `NoKeyringError`) and refusing to
+  accept the obvious explanation. The test was not hermetic, which was true; mocking the entrypoint would
+  have made it green and silenced a real production bug underneath.
+- **Root cause:** `CompositeSecretStore.delete` was two unguarded statements:
+  ```python
+  self._primary.delete(name)
+  self._fallback.delete(name)
+  ```
+  `_primary` is the `KeyringSecretStore`, whose `delete()` probes with `keyring.get_password` on its
+  *first* line. On a host with no keyring backend that raises `NoKeyringError` — so
+  `self._fallback.delete(name)` never executed, and the credential survived in the
+  `EncryptedFileSecretStore`, which on exactly those hosts is the store where it actually lives. The caller
+  sees an exception, may treat it as transient, and the secret is still there.
+- **The asymmetry inside the class was the tell.** `get()` swallows failures and `list_metadata()` wraps
+  *both* stores in `try/except`. Only `delete` — the single operation carrying a durability obligation —
+  had no guard at all. **When one method in a class is unguarded and its siblings are not, that is not a
+  style inconsistency; it is a question nobody asked.**
+- **The first fix was right in shape and wrong at the boundary, and the boundary is the lesson.**
+  "Attempt both; raise only if *both* fail" fixes the reported direction and leaves its mirror image open:
+  primary succeeds, fallback raises on decrypt (wrong or absent `HACHI_SECRET_PASSPHRASE` — BB-175), and
+  the method returns *normally* while the ciphertext sits on disk, recoverable the moment the right
+  passphrase reappears. Counting failures is not the same as understanding them.
+- **Fix — classify the exception, don't count the stores.** `keyring.errors.NoKeyringError` means the
+  store has *no possible location* for the secret; there was never anything there to delete, so it is
+  swallowed. **Every other exception, from either store, raises** — naming which store and why — because a
+  store that could hold the secret did not confirm removal. Both stores healthy is byte-for-byte
+  unchanged.
+- **Why `NoKeyringError` specifically, verified against the installed `keyring/errors.py`:** it is the only
+  type in that hierarchy meaning "no backend at all". Its siblings `KeyringLocked` and
+  `PasswordDeleteError` both mean the backend *exists* and the operation did not complete — genuine
+  failures that must surface. `healthcheck()` was considered and **rejected as less precise**: it catches
+  `Exception` broadly and would misclassify a locked keyring as unavailable, which is the exact
+  miscategorisation this rule exists to avoid.
+- **Stated limit, not an oversight:** `EncryptedFileSecretStore` has no equivalent "no possible location"
+  signal. Every failure path there — missing passphrase, wrong passphrase, corrupt file — is consistent
+  with the ciphertext still being present, so none of them is treated as unavailable. That asymmetry is
+  deliberate and is written into the docstring.
+- **Avoid:** **a delete that cannot confirm removal must not return normally.** `get()` returning `None`
+  on failure is a benign miss the caller already handles; `delete()` returning quietly is a
+  security-relevant lie — the caller clears the badge, writes the audit entry, and treats the name as
+  free.
+- **Avoid — the one that generalises past this file:** **when a CI failure looks like a test-environment
+  problem, check what the environment is telling you before you mock it away.** The ubuntu runner had no
+  keyring, which is precisely the condition this bug needs. Mocking the entrypoint would have turned the
+  check green and left a credential-deletion bug in production. The environment was not in the way of the
+  test; it was the only thing reproducing the bug.
+- **Locked by:** `tests/core/test_secret_store.py` —
+  `test_composite_delete_still_removes_fallback_copy_when_keyring_unavailable` (asserts the fallback copy
+  is genuinely gone, on observable store state rather than on the absence of an exception),
+  `test_composite_delete_raises_when_both_stores_genuinely_fail` (uses `KeyringLocked`, not
+  `NoKeyringError`, so it exercises the new classification rather than the old count), and
+  `test_composite_delete_raises_when_fallback_cannot_decrypt` (a real `Fernet` failure; fails with
+  `DID NOT RAISE` against the count-based version).
