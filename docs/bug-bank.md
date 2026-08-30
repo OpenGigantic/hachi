@@ -5558,3 +5558,54 @@ directories away.
   `tests/test_test_tree_layout.py`'s `ROOT_ALLOWED`, which carries the full reason inline;
   `test_every_test_file_mirrors_a_src_package` fails if it is silently moved without addressing the
   import.
+
+### BB-175 — A cached secret store went stale and reported "unknown credential" for a credential that was there
+
+- **Symptom:** never seen in a red suite — this one was found by *reading BB-172's own last bullet*, which
+  named `core/mcp_client.py`'s `_cached_secret_store` as a live sibling of the same shape and left it
+  armed. When the cache is stale, `MCPManager.setup_from_config` registers the MCP server as **failed**
+  with `env/header 'API_KEY' references unknown credential 'apikey'. Store it first via POST
+  /runtime/secrets` — a confident, precise, wrong diagnosis for a credential that exists in the store the
+  caller actually meant. The user is told to store something they already stored.
+- **Root cause:** `create_default_secret_store()` freezes **three** things at construction —
+  `paths.secrets_metadata_file`, `paths.secrets_fallback_file` (both off `get_hachi_paths()`) and
+  `os.environ["HACHI_SECRET_PASSPHRASE"]` — and `_get_module_secret_store()` re-checked none of them,
+  returning the first store it ever built for the life of the process. It is reachable inside the boot
+  window: its only caller is `setup_from_config`, called from `_configure_mcp_servers`, wired into boot in
+  `gateway/orchestrator.py` — exactly what `test_boot_agent_stages.py` / `test_feature_liveness.py` enter
+  with `get_hachi_paths` patched to a temp dir.
+- **Two axes fail by two different routes that converge on the same `None`, and the difference matters:**
+  a stale **path** fails *silently* — `_read_blob()` returns empty strings for an absent file,
+  `_decrypt_all()` short-circuits to `{}`, `get()` returns `None`; nothing raises and nothing is
+  swallowed. A stale **passphrase** fails *loudly* — `Fernet` raises `InvalidToken`, or `_decrypt_all`
+  raises `RuntimeError` when the passphrase is now unset — and only *that* raise is what
+  `CompositeSecretStore.get` swallows. Both land on `_MissingSecretError` and the same wrong message.
+  A first draft of the fix's own docstring said "missing file … raises", which is wrong for precisely the
+  case the headline regression test exercises. **When two mechanisms share an outcome, the outcome is not
+  the explanation** — write down both routes or the next reader debugs the wrong one.
+- **Fix:** mirror `get_event_store()` (BB-172's accepted fix). Resolve `get_hachi_paths()` exactly once
+  per call, key the cache on `(secrets_metadata_file, secrets_fallback_file, sha256(passphrase))`, rebuild
+  on mismatch, and pass `paths=` explicitly into `create_default_secret_store` so the key and the store
+  can never be derived from two different resolutions. Single slot, not a dict (BB-172 / BB-42). `None`
+  (unset) is kept distinct from `""` (explicitly empty).
+- **Difference from BB-172 that must be stated in the code, not just here:** nothing is closed. The
+  `SecretStore` Protocol declares no `close()`, and both backends re-read their backing store on every
+  call (`EncryptedFileSecretStore` re-decrypts the file; `KeyringSecretStore` hits the OS keyring), so a
+  superseded store holds no handle. A reviewer who knows BB-172 will look for the `close()` and needs to
+  find the reason it is absent, or they will "fix" its absence.
+- **Avoid — the process lesson, which is the expensive one:** BB-172 documented this exact global as
+  still-armed and that note sat through an entire wave without an owner. **A "known sibling, still live"
+  line in an autopsy is not a fix and not a ticket — it is a bug you have chosen to keep, described
+  well.** Either fix the sibling in the same change, or accept that the note's only real function is to
+  shorten the next diagnosis.
+- **Also avoid:** the two tests that touch this code path (`tests/core/test_mcp_registration.py`)
+  monkeypatch `_get_module_secret_store` — the *function* — so the cache underneath it had no coverage at
+  all. Patching the accessor is the standard way to isolate a singleton and it also guarantees the
+  singleton itself is never exercised; when the accessor *is* the thing under suspicion, the test has to
+  go through it, not around it.
+- **Locked by:** `tests/core/test_mcp_secret_store_cache.py` —
+  `test_repointing_state_dir_rebuilds_the_store_and_finds_the_new_credential`,
+  `test_same_derivation_returns_the_identical_object`,
+  `test_changing_passphrase_env_var_rebuilds_the_store`,
+  `test_unset_passphrase_is_not_confused_with_an_empty_string`,
+  `test_stale_store_makes_setup_from_config_report_a_wrong_diagnosis`
