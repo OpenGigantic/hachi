@@ -4172,6 +4172,10 @@ introduced unremarked in the commit that created the file and copy-pasted into t
 an unrelated split. A user configuring `request_timeout_seconds=0.5` silently gets `1.0`. Whether
 that is protection or a bug needs a decision, not a guess.
 
+**Resolved (2026-08-30).** It is protection; the silence was the bug. See *The MCP
+request-timeout floor is protection, and it is now audible* at the end of this file, and
+[BB-176](bug-bank.md).
+
 ---
 
 ## Wave 3 — one task, solo, because the remaining lane admits no parallelism (2026-08-26) **[ADR]**
@@ -4541,5 +4545,50 @@ affected file one directory deeper and running ruff (clean) rather than by argum
 - **`ROOT_ALLOWED` is a bucket that will rot if it is allowed to.** It holds 16 entries, each with a
   written reason. Growing it without one defeats the task; the layout test is what makes adding an
   entry a deliberate act.
+
+---
+
+## The MCP request-timeout floor is protection, and it is now audible (2026-08-30) **[ADR]**
+
+**Decision.** Keep the 1.0 s `request_timeout_seconds` floor, and make every override of a configured
+value visible. The T-71 entry above left this explicitly open — *"Whether that is protection or a bug
+needs a decision, not a guess"* — and this is the guess being replaced by a decision. Mechanism and
+autopsy: [BB-176](bug-bank.md).
+
+**Why protection, not a bug.** Below a second, a per-request JSON-RPC timeout stops being a deadline and
+becomes a way to fail every call: an MCP server's `tools/list` round trip alone — subprocess spawn or an
+HTTP handshake, then the response — will not reliably fit inside it. Honouring `0.2` verbatim would not
+give a user a fast agent; it would give them a server that never answers, diagnosed as a timeout. The
+floor was right. Nothing about the *number* needed changing.
+
+**What was wrong was the silence.** Four copy-pasted `max(1.0, …)` sites, no named constant, no comment,
+no docstring, no linked reference — in a file that otherwise tags its constants (`UC-DEV-001`, `MED-004`,
+`BB-9`). The floor *was* documented, precisely and correctly, in a T-71 **test** docstring, where it
+explains why that test picks `2.5`. That is the wrong audience by construction: nobody configuring an MCP
+server reads the tests for the transport. **A fact recorded where its audience will not look is not
+documented.** It now lives in one named constant, one helper, four constructor docstrings, and a warning
+that names the server and both values at the moment it fires.
+
+**Config is deliberately not clamped, and that is the load-bearing half of the decision.**
+`MCPServerConfig.to_toml_entry` still round-trips the user's `0.5` back to `settings.toml` verbatim. The
+tempting alternative — clamp at parse time so everything downstream agrees — trades one dishonesty for a
+worse one: the file would then misreport what the user *asked for*, not merely what runs, and it does so
+by silently editing something they wrote. The rule this sets: **correct the behaviour, warn about the
+difference, never rewrite the statement of intent.** The cost is that `settings.toml` and the runtime can
+disagree; the warning is what makes that disagreement discoverable, and the config-field comment says so
+where the field is defined.
+
+**One config value must yield one number.** The same constructor derived two — a clamped copy for the
+transport and a raw copy into `RetryPolicy(timeout_s=…)`. That field is *inert* on this path today
+(`resilient_call` reads `max_attempts` and `backoff_base_s`, plus the breaker fields via
+`HealthRecorder`, and never `timeout_s`; its only reader anywhere is `router.py`, on the LLM path's own
+policy). Fixing an unread field looks like busywork and is not: "nothing reads it" is a fact about this
+path *today*, not about the type, and a value that is wrong but unread is a bug with a delay fuse.
+Verified by reading `resilient_call`'s body rather than grepping the field name — a grep finds the
+declaration and its docstring and says nothing about readers.
+
+**The general rule.** A silent clamp is a config lie. Code that overrides a configured value owes the
+configurer one of three things: a warning when it overrides, the constraint stated in the docstring where
+the parameter is documented, or a validation error at parse time. Silence is not one of them.
 
 ---
