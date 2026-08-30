@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+import keyring.errors
 import pytest
 
 from hachi.core.secret_store import (
@@ -61,6 +63,171 @@ def test_composite_get_falls_back_when_keyring_get_is_unavailable(
     assert composite.get("provider.api_key") == "fallback-secret"
 
 
+def test_composite_delete_still_removes_fallback_copy_when_keyring_unavailable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """BB-183: CompositeSecretStore.delete() must not let a primary-store failure
+    prevent the fallback-store attempt -- and must not report success unless a
+    store actually completed the delete.
+
+    Pre-fix, ``CompositeSecretStore.delete()`` was::
+
+        def delete(self, name: str) -> None:
+            self._primary.delete(name)
+            self._fallback.delete(name)
+
+    completely unguarded. ``KeyringSecretStore.delete()`` reads the entry first
+    via ``keyring.get_password`` (see BB-180) before it ever calls
+    ``keyring.delete_password``; on a host with no keyring backend at all that
+    raises ``keyring.errors.NoKeyringError`` on the *first* statement, so
+    ``self._fallback.delete(name)`` was never reached. Since ``set()`` routes a
+    secret to *whichever* store was healthy at write time (its own docstring),
+    on a backend-less host the fallback is where the secret actually lives --
+    so the user asks to delete a credential, gets an exception, and the
+    credential survives on disk. That is the bug: assert on the store's
+    observable state (the fallback still has the secret), not on whether an
+    exception happened -- a caught-and-logged exception with the secret still
+    present would pass a "did it raise" test while still being wrong.
+
+    ``store.delete()`` is wrapped in ``contextlib.suppress`` deliberately: the
+    fixed code no longer raises here (the fallback attempt succeeds), but the
+    pre-fix code does (before ever touching the fallback) -- suppressing lets
+    this test exercise the real invariant (was the secret actually removed)
+    under both, rather than coupling the test to which one is running.
+    """
+    metadata = _MetadataStore(tmp_path / "secrets_metadata.json")
+    keyring_store = KeyringSecretStore(service_name="hachi-test", metadata_store=metadata)
+    fallback_store = EncryptedFileSecretStore(
+        file_path=tmp_path / "secrets.enc",
+        passphrase="test-passphrase",
+        metadata_store=metadata,
+    )
+    composite = CompositeSecretStore(primary=keyring_store, fallback=fallback_store)
+
+    # Write directly to the fallback so we know precisely where the secret
+    # lives before delete() is called (bypassing set()'s healthcheck-based
+    # routing, which is not what's under test here).
+    fallback_store.set("slack.bot_token", "xoxb-secret")
+    assert fallback_store.get("slack.bot_token") == "xoxb-secret"
+
+    # Force the exact condition a keyring-less CI runner produces.
+    monkeypatch.setattr(
+        "hachi.core.secret_store.keyring.get_password",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            keyring.errors.NoKeyringError("no recommended backend")
+        ),
+    )
+    monkeypatch.setattr(
+        "hachi.core.secret_store.keyring.set_password",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            keyring.errors.NoKeyringError("no recommended backend")
+        ),
+    )
+    monkeypatch.setattr(
+        "hachi.core.secret_store.keyring.delete_password",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            keyring.errors.NoKeyringError("no recommended backend")
+        ),
+    )
+
+    with contextlib.suppress(Exception):
+        composite.delete("slack.bot_token")
+
+    assert fallback_store.get("slack.bot_token") is None, (
+        "secret survived in the fallback store -- CompositeSecretStore.delete() "
+        "must attempt the fallback even when the primary raises"
+    )
+
+
+def test_composite_delete_raises_when_both_stores_genuinely_fail(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """BB-183: delete() must not silently report success when neither store
+    could confirm the secret was removed.
+
+    This locks the other half of BB-183's decision (see the docstring on
+    ``CompositeSecretStore.delete``): a delete failure in one store must never
+    block the attempt on the other (covered by
+    ``test_composite_delete_still_removes_fallback_copy_when_keyring_unavailable``
+    above) -- but when *both* attempts are genuine failures (not merely a
+    ``NoKeyringError`` "nothing was ever there" case), silently returning as
+    if the secret were gone would be the "security-relevant lie" BB-183
+    exists to prevent, so this must surface the failure -- naming both,
+    unlike ``get()``, which swallows a lookup miss.
+
+    The primary is mocked with ``keyring.errors.KeyringLocked`` rather than
+    ``NoKeyringError`` deliberately: a locked backend still *has* a possible
+    location for the secret (unlike "no backend at all"), so it must count
+    as a genuine failure under the store-unavailable/delete-failed split,
+    not be swallowed the way a headless host's ``NoKeyringError`` is.
+    """
+    metadata = _MetadataStore(tmp_path / "secrets_metadata.json")
+    keyring_store = KeyringSecretStore(service_name="hachi-test", metadata_store=metadata)
+    # No passphrase -> EncryptedFileSecretStore.delete() always raises (see
+    # _decrypt_all/_encrypt_all above), so the fallback attempt fails too.
+    fallback_store = EncryptedFileSecretStore(
+        file_path=tmp_path / "secrets.enc",
+        passphrase=None,
+        metadata_store=metadata,
+    )
+    composite = CompositeSecretStore(primary=keyring_store, fallback=fallback_store)
+
+    monkeypatch.setattr(
+        "hachi.core.secret_store.keyring.get_password",
+        lambda *_a, **_k: (_ for _ in ()).throw(keyring.errors.KeyringLocked("keyring is locked")),
+    )
+
+    with pytest.raises(RuntimeError, match="primary=.*fallback="):
+        composite.delete("slack.bot_token")
+
+
+def test_composite_delete_raises_when_fallback_cannot_decrypt(tmp_path: Path, monkeypatch) -> None:
+    """BB-183: a healthy, successful primary delete must not paper over a
+    fallback that cannot confirm the secret is gone.
+
+    This is the mirror image of
+    ``test_composite_delete_still_removes_fallback_copy_when_keyring_unavailable``:
+    there, the primary was unavailable (``NoKeyringError``) and the fallback
+    succeeded, so returning normally was correct. Here, the primary succeeds
+    (a healthy, simulated keyring -- never touches the real host backend) but
+    the fallback cannot decrypt its own blob because it was built with the
+    wrong passphrase (``cryptography.fernet.InvalidToken`` out of
+    ``_decrypt_all``, BB-175's exact symptom). Unlike ``NoKeyringError``, an
+    ``InvalidToken`` does *not* mean the secret is absent -- it means the
+    ciphertext is still on disk, recoverable the moment the right passphrase
+    reappears -- so ``delete()`` must raise rather than return as if the
+    secret were gone.
+    """
+    metadata = _MetadataStore(tmp_path / "secrets_metadata.json")
+    backing: dict[str, str] = {}
+    _set, _get, _del = _make_simulated_windows_keyring(backing)
+    monkeypatch.setattr("hachi.core.secret_store.keyring.set_password", _set)
+    monkeypatch.setattr("hachi.core.secret_store.keyring.get_password", _get)
+    monkeypatch.setattr("hachi.core.secret_store.keyring.delete_password", _del)
+    keyring_store = KeyringSecretStore(service_name="hachi-test", metadata_store=metadata)
+
+    enc_path = tmp_path / "secrets.enc"
+    writer = EncryptedFileSecretStore(
+        file_path=enc_path, passphrase="correct-passphrase", metadata_store=metadata
+    )
+    writer.set("slack.bot_token", "xoxb-secret")
+    assert enc_path.exists(), "expected the encrypted blob to be written to disk"
+
+    # Same file, wrong key -- this is what "wrong HACHI_SECRET_PASSPHRASE at
+    # delete time" looks like in practice.
+    fallback_store = EncryptedFileSecretStore(
+        file_path=enc_path, passphrase="wrong-passphrase", metadata_store=metadata
+    )
+    composite = CompositeSecretStore(primary=keyring_store, fallback=fallback_store)
+
+    with pytest.raises(RuntimeError, match="fallback="):
+        composite.delete("slack.bot_token")
+
+    # The whole point: the ciphertext is still there, untouched, recoverable
+    # with the correct passphrase -- delete() must not have claimed otherwise.
+    assert writer.get("slack.bot_token") == "xoxb-secret"
+
+
 def test_missing_passphrase_blocks_fallback_set_when_keyring_unavailable(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -104,10 +271,36 @@ def test_corrupted_metadata_file_is_tolerated_and_recovers(tmp_path: Path) -> No
 
 
 def test_keyring_delete_metadata_desync_is_self_healed(tmp_path: Path, monkeypatch) -> None:
+    """BB-180: delete() must self-heal a metadata/keyring desync with no dependence
+    on a host keyring backend.
+
+    ``KeyringSecretStore.delete()`` reads the entry first via ``keyring.get_password``
+    (to detect a chunk manifest) before it ever calls ``keyring.delete_password`` --
+    see ``KeyringSecretStore.delete``/``_kget`` in ``src/hachi/core/secret_store.py``.
+    This test never actually writes ``slack.bot_token`` through the store (only the
+    metadata side is pre-seeded), so on a machine with a real, working, empty
+    keyring backend ``get_password`` just returns ``None`` and the gap is invisible.
+    A CI runner with *no* keyring backend configured at all (ubuntu-latest) has no
+    such fallback: the unmocked ``get_password`` call raises
+    ``keyring.errors.NoKeyringError`` there, before the ``delete_password`` mock
+    below is ever reached. Match the ``_no_real_keyring`` pattern in
+    ``tests/core/test_mcp_secret_store_cache.py`` and patch every keyring
+    entrypoint ``KeyringSecretStore`` can reach (not just the one this test wants
+    to fail), so the desync-self-heal path is exercised with no dependence on a
+    host keyring either way.
+    """
     metadata = _MetadataStore(tmp_path / "secrets_metadata.json")
     store = KeyringSecretStore(service_name="hachi-test", metadata_store=metadata)
 
     metadata.upsert("slack.bot_token", {"name": "slack.bot_token", "backend": "keyring"})
+    monkeypatch.setattr(
+        "hachi.core.secret_store.keyring.get_password",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "hachi.core.secret_store.keyring.set_password",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(
         "hachi.core.secret_store.keyring.delete_password",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("missing in keyring")),
