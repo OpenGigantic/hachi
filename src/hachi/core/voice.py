@@ -609,10 +609,27 @@ class AudioPlayer:
 
     def __init__(self, player: Player | None = None) -> None:
         self._player: Player = player or _default_player
+        # Whether the caller supplied their own player (vs. falling back to
+        # _default_player). Recorded explicitly rather than compared later so
+        # is_available() doesn't need to special-case the default sentinel.
+        self._injected = player is not None
 
-    @staticmethod
-    def is_available() -> bool:
-        """Return True when a suitable audio-player binary (or stdlib module) is found."""
+    def is_available(self) -> bool:
+        """Return True when a player is usable.
+
+        An explicitly injected ``player`` (as tests supply, precisely so they
+        run fully offline without a real system binary) always makes the
+        instance "available" — the caller already handed over a working
+        implementation, so there is nothing left to probe. Only the default
+        player consults :func:`_detect_player_binary` to check the host.
+
+        BB-182: this used to be a ``@staticmethod`` that only ever checked
+        ``_detect_player_binary()``, so an injected player was silently
+        ignored whenever the host had no real audio-player binary — the
+        exact case dependency injection exists to avoid needing.
+        """
+        if self._injected:
+            return True
         return _detect_player_binary() is not None
 
     def play(self, path: Path) -> tuple[int, str]:
