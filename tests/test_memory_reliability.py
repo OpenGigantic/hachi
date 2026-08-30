@@ -17,6 +17,7 @@ import pytest
 
 from hachi.core.loop import ToolRegistry
 from hachi.tools.memory_tools import register_memory_tools
+from tests.conftest import REPO_ROOT
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -397,7 +398,7 @@ class TestNoFalseEncryptionClaims:
     ]
 
     def _repo_root(self) -> Path:
-        return Path(__file__).parent.parent
+        return REPO_ROOT
 
     def test_no_encrypt_claims_in_target_files(self) -> None:
         """None of the target files contain claims about at-rest encryption."""

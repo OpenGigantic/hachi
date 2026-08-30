@@ -14,8 +14,9 @@ from unittest import mock
 
 from hachi.og_engine.engine import SkillEngine, estimate_tokens
 from hachi.og_engine.parser import parse_og_file
+from tests.conftest import FIXTURES
 
-FIXTURE = Path(__file__).parent / "fixtures" / "sample_skill.og"
+FIXTURE = FIXTURES / "sample_skill.og"
 
 # A sentence that appears ONLY in deploy_to_prod's ::full block.
 DEPLOY_FULL_MARKER = "multi-step process"

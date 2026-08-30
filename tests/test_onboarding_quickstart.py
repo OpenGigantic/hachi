@@ -17,8 +17,7 @@ from hachi.core.onboarding import (
     default_model_for,
 )
 from hachi.core.paths import HachiPaths
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from tests.conftest import REPO_ROOT
 
 
 def _paths(tmp_path: Path) -> HachiPaths:

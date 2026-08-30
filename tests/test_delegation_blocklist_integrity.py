@@ -4,7 +4,6 @@ tools that mutate the schedule store were never blocked."""
 from __future__ import annotations
 
 import ast
-import pathlib
 
 from hachi.core.loop import ToolRegistry
 from hachi.jobs.scheduler import Scheduler, ScheduleStore
@@ -14,8 +13,9 @@ from hachi.tools.delegation_tools import (
     _build_scoped_registry,
 )
 from hachi.tools.schedule_tools import register_schedule_tools
+from tests.conftest import REPO_ROOT
 
-_SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "hachi"
+_SRC = REPO_ROOT / "src" / "hachi"
 
 
 def _registered_tool_names() -> set[str]:

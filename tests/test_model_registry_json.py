@@ -21,8 +21,9 @@ import pytest
 from hachi.core.routing.descriptor import ModelDescriptor
 from hachi.core.routing.registry import ModelRegistry
 from hachi.core.routing.registry_data import load_model_registry_json
+from tests.conftest import REPO_ROOT
 
-_BUNDLED_JSON = Path(__file__).parent.parent / "src" / "hachi" / "data" / "model-registry.json"
+_BUNDLED_JSON = REPO_ROOT / "src" / "hachi" / "data" / "model-registry.json"
 
 # ---------------------------------------------------------------------------
 # JSON structure

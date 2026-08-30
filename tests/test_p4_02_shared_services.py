@@ -15,6 +15,8 @@ from __future__ import annotations
 import time
 from unittest.mock import MagicMock, patch
 
+from tests.conftest import REPO_ROOT
+
 # ---------------------------------------------------------------------------
 # Helper: build a fake ProcessSharedServices without touching disk or subprocesses.
 # We patch _init() rather than its 5 internal imports so tests stay simple.
@@ -180,12 +182,10 @@ def test_skill_engine_loads_default_skills() -> None:
     silently swallowed by except-Exception), leaving the engine empty.  The fix
     replaces it with ``skill_engine.load_directory()``.
     """
-    from pathlib import Path
-
     from hachi.og_engine.engine import SkillEngine
 
     engine = SkillEngine(agent_role="orchestrator")
-    default_skills_dir = Path(__file__).parent.parent / "src" / "hachi" / "default_skills"
+    default_skills_dir = REPO_ROOT / "src" / "hachi" / "default_skills"
     assert default_skills_dir.exists(), f"default_skills not found at {default_skills_dir}"
 
     engine.load_directory(default_skills_dir)
@@ -209,13 +209,11 @@ def test_og_graph_from_engine_returns_nodes() -> None:
     when no active agent session exists, the shared skill engine is used via
     og_graph_from_engine(), so the OG Explorer shows default-skill nodes immediately.
     """
-    from pathlib import Path
-
     from hachi.gateway.orchestrator import og_graph_from_engine
     from hachi.og_engine.engine import SkillEngine
 
     engine = SkillEngine(agent_role="orchestrator")
-    default_skills_dir = Path(__file__).parent.parent / "src" / "hachi" / "default_skills"
+    default_skills_dir = REPO_ROOT / "src" / "hachi" / "default_skills"
     engine.load_directory(default_skills_dir)
 
     result = og_graph_from_engine(engine)
@@ -223,12 +221,9 @@ def test_og_graph_from_engine_returns_nodes() -> None:
     assert "nodes" in result, "Result must contain 'nodes' key"
     assert "count" in result, "Result must contain 'count' key"
     assert len(result["nodes"]) > 0, (
-        "og_graph_from_engine must return >0 nodes when engine is loaded "
-        "with default_skills"
+        "og_graph_from_engine must return >0 nodes when engine is loaded with default_skills"
     )
-    assert result["count"] == len(result["nodes"]), (
-        "'count' must equal len(nodes)"
-    )
+    assert result["count"] == len(result["nodes"]), "'count' must equal len(nodes)"
 
 
 # ---------------------------------------------------------------------------

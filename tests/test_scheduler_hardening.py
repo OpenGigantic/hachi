@@ -26,6 +26,7 @@ from hachi.jobs.scheduler import (
     cron_next,
     deliver_result,
 )
+from tests.conftest import REPO_ROOT
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -109,7 +110,7 @@ for _ in range(int(sys.argv[3])):
 """,
             encoding="utf-8",
         )
-        src_root = str(Path(__file__).parent.parent / "src")
+        src_root = str(REPO_ROOT / "src")
         n = 5
         # Launch both processes, then wait for both (sequential wait is fine; the
         # real test is that the *counter* is exact, not that they ran in parallel).

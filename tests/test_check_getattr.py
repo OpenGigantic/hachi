@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import ast
 import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from tests.conftest import REPO_ROOT
+
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from check_getattr import _violations, main  # noqa: E402
 

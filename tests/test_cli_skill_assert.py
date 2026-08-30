@@ -8,10 +8,11 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from hachi.cli.main import app
+from tests.conftest import FIXTURES
 
 runner = CliRunner()
 
-FIXTURE = Path(__file__).parent / "fixtures" / "sample_skill.og"
+FIXTURE = FIXTURES / "sample_skill.og"
 
 # A skill with real `assert <lhs> <op> <rhs> "msg"` preconditions (the fixture
 # sample_skill.og uses the non-checkable `key: prose` form → "manual").

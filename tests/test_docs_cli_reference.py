@@ -14,13 +14,13 @@ intentionally describe aspirational commands and are excluded.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import typer
 
 from hachi.cli.main import app
+from tests.conftest import REPO_ROOT
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = REPO_ROOT
 
 # User-facing command references (NOT the historical audit/strategy corpora).
 _REFERENCE_DOCS = [

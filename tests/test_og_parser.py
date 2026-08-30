@@ -9,8 +9,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from hachi.og_engine.parser import parse_og_file
+from tests.conftest import FIXTURES
 
-FIXTURE = Path(__file__).parent / "fixtures" / "sample_skill.og"
+FIXTURE = FIXTURES / "sample_skill.og"
 
 
 def _parse():

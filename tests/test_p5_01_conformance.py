@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 from typing import Any
 
 import pytest
 
 from hachi.og_engine.parser import OGFile, parse_og_file
+from tests.conftest import REPO_ROOT
 
-SPEC_DIR = Path(__file__).parent.parent / "spec"
+SPEC_DIR = REPO_ROOT / "spec"
 CONFORMANCE_JSON = SPEC_DIR / "conformance" / "conformance.json"
 FIXTURES_DIR = SPEC_DIR / "conformance" / "fixtures"
 
@@ -186,7 +186,7 @@ def test_conformance_assertions(fixture_name: str) -> None:
 # docs/reference/objectgraph-spec.md section 4.7 "Runtime & Integration Tags".
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = REPO_ROOT
 _OG_SPEC_MD = _REPO_ROOT / "docs" / "reference" / "objectgraph-spec.md"
 _PARSER_PY = _REPO_ROOT / "src" / "hachi" / "og_engine" / "parser.py"
 

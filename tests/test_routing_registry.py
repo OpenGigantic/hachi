@@ -11,6 +11,7 @@ from hachi.core.cost import MODEL_PRICING
 from hachi.core.routing.capability import Capability
 from hachi.core.routing.descriptor import ModelDescriptor, Pricing
 from hachi.core.routing.registry import ModelRegistry
+from tests.conftest import REPO_ROOT
 
 # ---------------------------------------------------------------------------
 # Pricing parity guard (doc 14 §7)
@@ -66,9 +67,8 @@ class TestPricingParity:
     def test_all_json_entries_in_model_pricing(self) -> None:
         """Every priced, non-disabled entry in model-registry.json appears in MODEL_PRICING."""
         import json
-        from pathlib import Path
 
-        path = Path(__file__).parent.parent / "src" / "hachi" / "data" / "model-registry.json"
+        path = REPO_ROOT / "src" / "hachi" / "data" / "model-registry.json"
         entries = json.loads(path.read_text(encoding="utf-8"))
         missing = [
             e["id"]

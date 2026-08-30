@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
 
-_REPO_ROOT = Path(__file__).parent.parent
+from tests.conftest import REPO_ROOT
+
+_REPO_ROOT = REPO_ROOT
 _GATE_CONFIG = _REPO_ROOT / "mypy-strict-gate.ini"
 
 

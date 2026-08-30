@@ -14,13 +14,13 @@ Tests:
 
 from __future__ import annotations
 
-from pathlib import Path
+from tests.conftest import REPO_ROOT
 
 # ---------------------------------------------------------------------------
 # Manifest parsing tests
 # ---------------------------------------------------------------------------
 
-PACK_ROOT = Path(__file__).parent.parent / "src" / "hachi" / "packs"
+PACK_ROOT = REPO_ROOT / "src" / "hachi" / "packs"
 
 
 def _pack_toml(pack_id: str) -> bytes:

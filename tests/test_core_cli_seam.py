@@ -21,7 +21,8 @@ assert:
 from __future__ import annotations
 
 import re
-from pathlib import Path
+
+from tests.conftest import REPO_ROOT
 
 ENGINE_PACKAGES = ("core", "og_engine", "tools", "jobs", "integrations")
 
@@ -42,7 +43,7 @@ def test_core_does_not_import_the_cli() -> None:
     import-linter contract makes, expressed so a developer sees it in `pytest`
     output rather than only in the gate.
     """
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = REPO_ROOT
     src_root = repo_root / "src" / "hachi"
     offenders = [
         p.relative_to(repo_root).as_posix()

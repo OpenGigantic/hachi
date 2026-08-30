@@ -23,6 +23,7 @@ from hachi.core.runtime_events import (
     now_iso,
 )
 from hachi.core.settings import EventsSettings
+from tests.conftest import REPO_ROOT
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -81,11 +82,8 @@ class TestPromotedConstants:
     def test_loop_imports_constants(self) -> None:
         """loop.py must import the four promoted constants (AST/import check)."""
         import ast
-        import pathlib
 
-        loop_src = (
-            pathlib.Path(__file__).parent.parent / "src" / "hachi" / "core" / "loop.py"
-        ).read_text(encoding="utf-8")
+        loop_src = (REPO_ROOT / "src" / "hachi" / "core" / "loop.py").read_text(encoding="utf-8")
         tree = ast.parse(loop_src)
 
         imported_names: set[str] = set()
@@ -100,11 +98,8 @@ class TestPromotedConstants:
     def test_queue_imports_job_retry(self) -> None:
         """queue.py must import JOB_RETRY from runtime_events (no raw literal)."""
         import ast
-        import pathlib
 
-        queue_src = (
-            pathlib.Path(__file__).parent.parent / "src" / "hachi" / "jobs" / "queue.py"
-        ).read_text(encoding="utf-8")
+        queue_src = (REPO_ROOT / "src" / "hachi" / "jobs" / "queue.py").read_text(encoding="utf-8")
         tree = ast.parse(queue_src)
 
         imported_names: set[str] = set()
@@ -117,22 +112,14 @@ class TestPromotedConstants:
 
     def test_no_underscore_literals_in_loop(self) -> None:
         """loop.py must not contain the old underscore event-name literals."""
-        import pathlib
-
-        loop_src = (
-            pathlib.Path(__file__).parent.parent / "src" / "hachi" / "core" / "loop.py"
-        ).read_text(encoding="utf-8")
+        loop_src = (REPO_ROOT / "src" / "hachi" / "core" / "loop.py").read_text(encoding="utf-8")
 
         for bad in ('"llm_retry"', '"budget_exceeded"', '"session_time_limit"'):
             assert bad not in loop_src, f"loop.py still contains raw literal {bad}"
 
     def test_no_underscore_literal_in_queue(self) -> None:
         """queue.py must not contain the old raw 'job.retry' string literal."""
-        import pathlib
-
-        queue_src = (
-            pathlib.Path(__file__).parent.parent / "src" / "hachi" / "jobs" / "queue.py"
-        ).read_text(encoding="utf-8")
+        queue_src = (REPO_ROOT / "src" / "hachi" / "jobs" / "queue.py").read_text(encoding="utf-8")
 
         assert '"job.retry"' not in queue_src, "queue.py still contains raw literal 'job.retry'"
 
@@ -228,11 +215,10 @@ class TestObservabilitySinkSubscribed:
         We verify that orchestrator.py imports ObservabilitySink and subscribes it.
         """
         import ast
-        import pathlib
 
-        orch_src = (
-            pathlib.Path(__file__).parent.parent / "src" / "hachi" / "gateway" / "orchestrator.py"
-        ).read_text(encoding="utf-8")
+        orch_src = (REPO_ROOT / "src" / "hachi" / "gateway" / "orchestrator.py").read_text(
+            encoding="utf-8"
+        )
 
         # Check the import is present.
         assert "ObservabilitySink" in orch_src, (

@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
 from unittest.mock import MagicMock
+
+from tests.conftest import REPO_ROOT
 
 # Generated with:
 #   awk 'NR>=216 && NR<=2773' src/hachi/cli/main.py \
@@ -156,7 +157,7 @@ def test_runtime_is_importable_from_gateway_without_cli() -> None:
     )
     result = subprocess.run(
         [sys.executable, "-c", script],
-        cwd=Path(__file__).resolve().parent.parent,
+        cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         timeout=60,

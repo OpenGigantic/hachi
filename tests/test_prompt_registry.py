@@ -45,6 +45,7 @@ import hashlib
 from pathlib import Path
 
 from hachi.core.prompt_composer import PROMPT_REGISTRY_VERSION, all_prompts, get_prompt
+from tests.conftest import REPO_ROOT
 
 
 def _digest(text: str) -> str:
@@ -394,7 +395,7 @@ def test_no_inline_system_prompt_literals_at_migrated_sites() -> None:
     assert its (former) inline prompt literal is no longer there. FAILS before
     the move because the literal IS there today; fails again in the future if
     anyone reintroduces an inline prompt at a migrated site."""
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = REPO_ROOT
     src = repo_root / "src" / "hachi"
 
     manager_py = src / "core" / "memory" / "manager.py"

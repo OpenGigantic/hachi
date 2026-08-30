@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from hachi.core.config_loader import load_effective_config
 from hachi.core.paths import HachiPaths
 from hachi.core.settings import ResolvedConfig
+from tests.conftest import REPO_ROOT
 
 
 def _paths(tmp_path: Path) -> HachiPaths:
@@ -176,7 +177,7 @@ api_key_env = "OPENAI_API_KEY"
 # (logger.error, returns {}) so the user's whole config silently no-ops.
 # ---------------------------------------------------------------------------
 
-_EXAMPLE_TOML = Path(__file__).resolve().parents[1] / "settings.example.toml"
+_EXAMPLE_TOML = REPO_ROOT / "settings.example.toml"
 
 # These sections are open-ended dicts whose keys are chosen by the user
 # (provider names, capability names, MCP server names) — their children must

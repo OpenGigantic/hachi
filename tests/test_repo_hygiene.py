@@ -26,7 +26,9 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
+from tests.conftest import REPO_ROOT
+
+ROOT = REPO_ROOT
 BLANKET = {"*.png", "*.jpg", "*.jpeg", "*.gif", "*.html"}
 
 
