@@ -489,14 +489,23 @@ class SessionStore:
         ``/review`` surface and trajectory-eval suite.
         """
         with self._lock:
+            # BB-178: ``ts`` alone is a partial order — rows written in the same tick
+            # (routine on Windows' coarser clock under fast consecutive inserts) tie,
+            # and SQLite is then free to return them in any order (in practice
+            # rowid-ascending, i.e. oldest-first — the opposite of "newest first").
+            # Combined with LIMIT that doesn't just misorder rows, it drops the actual
+            # newest ones. ``rowid`` is monotonic with insertion order for this table
+            # (plain ``id TEXT PRIMARY KEY`` — no ``INTEGER PRIMARY KEY`` alias, no
+            # ``WITHOUT ROWID``), so it is a safe, always-available tiebreaker.
             if session_id is not None:
                 rows = self._conn.execute(
-                    "SELECT * FROM interaction_log WHERE session_id = ? ORDER BY ts DESC LIMIT ?",
+                    "SELECT * FROM interaction_log WHERE session_id = ? "
+                    "ORDER BY ts DESC, rowid DESC LIMIT ?",
                     (session_id, limit),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
-                    "SELECT * FROM interaction_log ORDER BY ts DESC LIMIT ?",
+                    "SELECT * FROM interaction_log ORDER BY ts DESC, rowid DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
         out: list[dict[str, Any]] = []

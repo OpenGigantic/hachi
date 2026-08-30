@@ -97,6 +97,30 @@ def test_lease_ttl_expiry() -> None:
     assert ok is True, "Expired lease should not block new acquisition"
 
 
+def test_lease_expiry_boundary_is_inclusive(monkeypatch) -> None:
+    """BB-178: ``_LeaseEntry.is_expired()`` must treat "now == expires_at" as expired,
+    not just "now > expires_at". ``test_lease_ttl_expiry`` (above) proves this with a
+    real ``time.sleep()``, but a 0.001s TTL racing a coarse Windows clock can leave the
+    two reads tied by chance, which is exactly what made that test flaky on CI while
+    green here — this test removes the race by controlling the clock directly so the
+    boundary itself is what's under test, not timing luck.
+    """
+    import hachi.core.lease_manager as lease_manager
+
+    mgr = lease_manager.LeaseManager()
+    ok, _ = mgr.acquire("researcher", ["projects/old"], ttl_seconds=5.0)
+    assert ok is True
+    entry = mgr._leases["projects/old"]
+    boundary = entry.acquired_at + entry.ttl_seconds  # == entry.expires_at, exactly
+
+    # Freeze "now" to land EXACTLY on the expiry instant — a tie, not "clearly past
+    # it" — the same same-tick scenario a coarse clock produces under real timing.
+    monkeypatch.setattr(lease_manager.time, "monotonic", lambda: boundary)
+
+    ok, _ = mgr.acquire("analyst", ["projects/old"])
+    assert ok is True, "A lease exactly at its TTL boundary must count as expired"
+
+
 # ---------------------------------------------------------------------------
 # 6. LeaseManager.snapshot() returns active leases
 # ---------------------------------------------------------------------------
