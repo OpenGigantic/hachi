@@ -445,8 +445,89 @@ class CompositeSecretStore:
         self._fallback.set(name, value, metadata)
 
     def delete(self, name: str) -> None:
-        self._primary.delete(name)
-        self._fallback.delete(name)
+        """Delete *name* from both the primary and fallback stores.
+
+        BB-183: try both stores unconditionally, even if one raises. ``set()``
+        (above) routes a given secret to *whichever* store was healthy at
+        write time and never migrates it if health later changes, so a
+        delete cannot assume the secret lives in only one place — a failure
+        reaching one store must never skip the attempt on the other.
+
+        This deliberately does **not** mirror ``get()``'s blanket swallow.
+        ``get()`` returning ``None`` on a failure is a benign "no such
+        secret" outcome the caller already treats as normal. A *delete*
+        that silently reports success without confirming removal is a
+        security-relevant lie: the caller believes the credential is gone —
+        and may act on that belief (clear a UI badge, write an audit-log
+        entry, treat re-adding the same name as fresh) — while it is still
+        on disk.
+
+        Whether a raised exception should itself cause *this* method to
+        raise depends on what the exception means, not on how many stores
+        raised something:
+
+        - ``keyring.errors.NoKeyringError`` — "there is no keyring backend
+          on this host" — means that store has *no possible location* for
+          the secret. It is not a failed deletion; there was never
+          anywhere for it to be. This is the ordinary state of any
+          headless CI/server host, since ``KeyringSecretStore.delete()``'s
+          ``get_password`` probe raises it unconditionally there (see
+          BB-180) — treating it as a failure would make every ``delete()``
+          raise on exactly the hosts this composite exists to support, a
+          usability regression for no security benefit. So this is
+          swallowed.
+        - Every *other* exception — from either store — means a store that
+          *could* hold the secret failed to complete the operation:
+          ``keyring.errors.KeyringLocked`` (the backend exists but refused
+          to unlock), ``keyring.errors.PasswordDeleteError``, or — the gap
+          this method used to miss entirely — ``EncryptedFileSecretStore``
+          failing to decrypt its blob because ``HACHI_SECRET_PASSPHRASE``
+          is wrong or absent (``cryptography.fernet.InvalidToken`` /
+          ``RuntimeError`` out of ``_decrypt_all``, BB-175). None of these
+          tell us the secret is gone; the encrypted-file case tells us the
+          opposite — the ciphertext is still on disk, recoverable the
+          moment the right passphrase reappears. Reporting success here
+          would be exactly the security-relevant lie this method exists to
+          prevent, so *any* such exception raises — even if the *other*
+          store's attempt succeeded, and even if the other store's problem
+          was merely "unavailable".
+
+        Both stores healthy (the common case) is unchanged: neither raises,
+        so this returns normally, same as before this fix.
+
+        ``EncryptedFileSecretStore`` has no analogous "definitely has no
+        possible location for the secret" signal of its own — every
+        exception path there (missing passphrase, wrong passphrase, a
+        corrupt or unreadable file) is consistent with the ciphertext still
+        being on disk, so none of them are treated as "unavailable" here.
+        """
+        primary_error: Exception | None = None
+        fallback_error: Exception | None = None
+
+        try:
+            self._primary.delete(name)
+        except Exception as exc:
+            primary_error = exc
+
+        try:
+            self._fallback.delete(name)
+        except Exception as exc:
+            fallback_error = exc
+
+        # NoKeyringError alone means "nothing was ever there to delete" -- not
+        # a failure. Anything else means a store that could hold the secret
+        # did not confirm it was removed.
+        failures = {
+            store_name: exc
+            for store_name, exc in (("primary", primary_error), ("fallback", fallback_error))
+            if exc is not None and not isinstance(exc, keyring.errors.NoKeyringError)
+        }
+        if failures:
+            detail = "; ".join(f"{store_name}={exc!r}" for store_name, exc in failures.items())
+            raise RuntimeError(
+                f"Failed to delete secret '{name}': {detail}. "
+                "The secret may still be present in the store(s) named above."
+            ) from next(iter(failures.values()))
 
     def list_metadata(self) -> list[SecretMetadata]:
         metadata: dict[str, SecretMetadata] = {}
