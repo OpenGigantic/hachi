@@ -5609,3 +5609,47 @@ directories away.
   `test_changing_passphrase_env_var_rebuilds_the_store`,
   `test_unset_passphrase_is_not_confused_with_an_empty_string`,
   `test_stale_store_makes_setup_from_config_report_a_wrong_diagnosis`
+
+### BB-176 — A timeout floor silently overrode config, and the constructor that applied it clamped one copy of the value and not the other
+
+- **Symptom:** set `request_timeout_seconds = 0.5` on an MCP server — via `[mcp_servers.NAME]` in
+  `settings.toml` or an `.og` `role=mcp` node, both of which accept any float with no validation — and
+  every request waits at least 1.0 s instead. No warning, no docstring, no error. `to_toml_entry` writes
+  `0.5` back verbatim, so the config file goes on reporting a number that never runs.
+- **Root cause:** `max(1.0, float(request_timeout_seconds))` inlined at four constructors
+  (`StdioTransport`, `SseTransport`, `HttpTransport`, `MCPServerConnection`) with no named constant, no
+  comment and no reference of any kind — out of step with this file's own convention of tagging constants
+  (`UC-DEV-001`, `MED-004`, `BB-9`). Introduced unremarked and copy-pasted into three transports by a
+  later split.
+- **The floor was documented — for the wrong audience.** T-71 described it precisely, in a *test*
+  docstring (`tests/core/test_mcp_client_timeout.py`), where it explains why that test picks `2.5`.
+  Accurate, useful, and invisible to anyone configuring an MCP server. **A fact recorded where its
+  audience will not look is not documented.**
+- **The second defect, which the first one hides:** `MCPServerConnection.__init__` derives *two* numbers
+  from that one parameter and clamps only one — `self._request_timeout_seconds` (clamped, reaches the
+  transport) and `RetryPolicy(timeout_s=float(request_timeout_seconds))` (raw). Configure `0.2` and the
+  object holds both `1.0` and `0.2` for the same setting.
+- **That second one is a latent trap, not a live bug, and the distinction is the point.**
+  `RetryPolicy.timeout_s` is inert on the MCP path: `resilient_call` reads `max_attempts` and
+  `backoff_base_s` (plus the breaker fields, via `HealthRecorder`) and never `timeout_s`; its only reader
+  anywhere is `core/routing/router.py`, on `ModelRouter`'s own `[routing.resilience]` policy. **Verified
+  by reading `resilient_call`'s body, not by grepping the name** — a grep for `timeout_s` finds the
+  field's declaration and its docstring and tells you exactly nothing about whether anything reads it.
+  Fixed anyway: a wrong-but-unread value is a bug with a delay fuse, and it fires the day the field is
+  enforced.
+- **Fix:** one named `_MIN_REQUEST_TIMEOUT_SECONDS`, one `_clamp_request_timeout_seconds(server_name,
+  value)` that clamps **and warns — naming the server and both values — only when it actually clamps**,
+  called from all four constructors; `RetryPolicy` gets the clamped value. Config is deliberately left
+  alone (see the decision record).
+- **Avoid:** the naive version of this fix — clamp-and-warn independently in all four constructors —
+  double-warns on the *common* path, because `MCPServerConnection` clamps first and then hands the
+  already-clamped value to `_make_transport`. The transport's own clamp must be a silent no-op. Locked by
+  a test asserting exactly one log record, and by a second asserting that a value *at* the floor warns not
+  at all.
+- **Avoid — the general one:** **a silent clamp is a config lie.** Code that overrides a configured value
+  owes the configurer one of three things: a warning when it overrides, the constraint in the docstring
+  where the parameter is documented, or a validation error at parse time. Silence is not one of them.
+- **Locked by:** `tests/core/test_mcp_client_timeout.py` —
+  `test_sub_floor_request_timeout_reaches_retry_policy_clamped`,
+  `test_sub_floor_request_timeout_warns_naming_server_and_values`,
+  `test_at_floor_request_timeout_does_not_warn`
