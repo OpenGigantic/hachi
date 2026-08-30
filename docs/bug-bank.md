@@ -5484,3 +5484,77 @@ directories away.
   `get_hachi_paths()` can know. The fix has to live where the path is resolved.
 - **Locked by:** `tests/test_event_store.py` — `test_singleton_follows_a_repointed_state_dir`,
   `test_repointing_closes_the_previous_store`, `test_same_path_call_returns_the_identical_object`
+
+### BB-173 — A flat test tree hides three separate depth dependencies, and all three detonate on the same move
+
+- **Symptom:** 358 test files sat flat in `tests/`, so "where are the tests for module X" had no
+  mechanical answer — `test_g3_turn_lock.py` names the audit wave that produced it, not the thing it
+  protects. The obvious fix, moving them into a tree mirroring `src/hachi/`, breaks three unrelated
+  things at once, and **none of the three fails loudly at the moment you move a file**: (1) tests that
+  resolve the repo root as `Path(__file__).parent.parent` silently start resolving to `tests/`;
+  (2) with no `tests/__init__.py`, pytest's default `prepend` import mode keys every module on its
+  **basename**, so the first two same-named files in different directories abort collection outright;
+  (3) the suite's own `from conftest import control_plane` idiom stops resolving the instant
+  `__init__.py` exists.
+- **Root cause:** file depth was an undeclared part of ~40 files' contract. 46 `Path(__file__)` call
+  sites in four spellings (`.parent.parent`, `.resolve().parent.parent`, `.resolve().parents[1]`, and
+  the same walk embedded in a `sys.path.insert` and a subprocess `cwd=`) each encoded "I live exactly
+  one level below the repo root." Separately, `tests/` had no `__init__.py`, so module identity *was*
+  the basename — and `pyproject.toml` sets no `--import-mode`, so `prepend` is in force. And the bare
+  `conftest` name resolves only because pytest puts `tests/` itself on `sys.path` precisely when it is
+  **not** a package.
+- **Fix:** three commits, each independently gated, in this order — the order is the point.
+  1. Hoist `REPO_ROOT` / `FIXTURES` into `tests/conftest.py`, which stays at the tests root at any
+     depth, and convert all 46 sites. 2. Add `tests/__init__.py`, converting the 23 files on the bare
+  idiom to `from tests.conftest import ...` in the same commit. 3. Move, with **zero** content edits.
+- **Avoid:** never compute a repo or fixture path from `__file__` in a test — import it from
+  `conftest`. And when a bulk move is coming, treat the collection count as the acceptance bar:
+  **a file that silently stops being collected shows up as a lower total, never as a failure.**
+  Capture it before (`4692 collected, 0 errors` here), require it after. Check the error count
+  separately — a collection error can hide behind a plausible-looking total.
+- **Also avoid — the one that would have shipped green:** three of the 23 bare-idiom files keep the
+  import **inside a function body**. They collect clean and raise `ModuleNotFoundError` only when that
+  path executes. A `--collect-only` check — the fast, obvious instrument for "did the move break
+  anything" — calls those three green. Collection integrity and runtime integrity are different
+  questions; the full suite is what separates them.
+- **Also avoid:** `ruff`'s `I` (isort) is in the **blocking** select list, and isort classifies bare
+  `conftest` as third-party-adjacent but `tests.conftest` as first-party — so that rename forces the
+  import line to move within its block. This does **not** recur on the move itself (verified by
+  copying an affected file one directory deeper and running ruff: clean), because isort classifies the
+  modules being *imported*, not the location of the importer.
+- **Also avoid:** the move must be a **pure** rename. With content untouched git matches all 343 as
+  *exact* renames by blob hash, on a fast path that never consults the similarity matrix or
+  `diff.renameLimit`; `git log --follow` and a reviewable `git show --stat` then come for free. Edit
+  one byte in one file and that file alone drops into similarity scoring. Note also that `git mv` is
+  not required and its usual justification is wrong: git does not *record* renames, it detects them at
+  diff time, so plain `mv` plus staging produces a byte-identical commit.
+- **Locked by:** `tests/test_test_tree_layout.py` — `test_every_test_file_mirrors_a_src_package`,
+  `test_no_test_basename_collisions`
+
+### BB-174 — A sweep that matched only the bare import form certified "no cross-test imports" on a tree that had one
+
+- **Symptom:** the T-70 spec's §3.5 stated, as verified good news, that no test module imports another
+  — "every file is independently relocatable." One does. Moving
+  `test_delegation_blocklist_integrity.py` to its correct package broke
+  `tests/gateway/test_tool_groups_at_registration.py:96` with `ModuleNotFoundError`, surfacing as
+  exactly one failure in the middle of a 358-file move.
+- **Root cause:** the sweep was `rg -n "^\s*(from|import)\s+test_" tests/`. That pattern matches only
+  the **bare** `from test_x import` form. The one real cross-import uses the **qualified** form,
+  `from tests.test_delegation_blocklist_integrity import _registered_tool_names`, reusing that file's
+  AST tool-inventory scanner (T-34 / BB-89) rather than duplicating it. The anchored `^\s*` also can't
+  see a function-body import, which is where several of this task's other landmines lived.
+- **Fix:** kept the file at `tests/` root and recorded the reason in `ROOT_ALLOWED` — a zero-content-
+  edit resolution that preserves the move's pure-rename property. It is pinned there by the
+  cross-import, not by its subject (`tools/delegation_tools.py`), and that is written down at the
+  entry so the next reader can unpin it deliberately rather than discover it.
+- **Avoid:** **do not re-verify a claim with the instrument that produced it.** The spec's number was
+  re-derived against a newer HEAD by re-running the spec's own regex, which reproduced the spec's blind
+  spot exactly and converted an unexamined assumption into a "measured" one. When re-confirming a stale
+  anchor, vary the instrument: for imports that means both `from x import` and `from pkg.x import`,
+  both anchored and unanchored, and both module-level and function-body. This is the same failure shape
+  as **BB-172** — refuting the mechanisms you thought of is not evidence about the ones you did not —
+  and it recurred one wave later, which is why it is written down separately.
+- **Locked by:** the entry for `test_delegation_blocklist_integrity.py` in
+  `tests/test_test_tree_layout.py`'s `ROOT_ALLOWED`, which carries the full reason inline;
+  `test_every_test_file_mirrors_a_src_package` fails if it is silently moved without addressing the
+  import.
