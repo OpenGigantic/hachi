@@ -128,9 +128,16 @@ def test_read_file_refused_on_stat_failure(tmp_path: Path) -> None:
 
     # Simulate stat failure by patching Path.stat to raise OSError.
     original_stat = Path.stat
+    # BB-180: resolve target BEFORE patching Path.stat, not inside _bad_stat. On
+    # Python 3.11, Path.resolve(strict=False) itself calls p.stat() at the end to
+    # detect symlink loops (3.12+ dropped that call and resolves via
+    # os.path.realpath() alone) -- calling target.resolve() *inside* _bad_stat
+    # would re-enter the very patch being installed and recurse without bound
+    # (RecursionError), which is exactly what this test hit on CI's Python 3.11.
+    target_resolved = target.resolve()
 
     def _bad_stat(self, **kwargs):  # type: ignore[override]
-        if self == target.resolve() or self == target:
+        if self == target_resolved or self == target:
             raise OSError("simulated stat failure")
         return original_stat(self, **kwargs)
 

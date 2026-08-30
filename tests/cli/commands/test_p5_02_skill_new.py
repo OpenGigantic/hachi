@@ -40,6 +40,41 @@ def test_skill_new_output_flag_respects_path(tmp_path: Path) -> None:
     assert out.name in result.output
 
 
+def test_skill_new_created_message_path_is_not_word_wrapped(tmp_path: Path, monkeypatch) -> None:
+    """BB-180: the 'Created <path>' message must never split the filename itself.
+
+    ``console = Console()`` in ``hachi/cli/commands/skill.py`` has no real
+    terminal attached under ``CliRunner.invoke()``, so Rich falls back to a
+    small fixed width (its 80-column default, adjusted by -1 on a "legacy
+    Windows" console -- see ``rich.console.Console.size``). A file path has no
+    internal whitespace, so Rich's word-wrapper treats the whole path as one
+    "word" and, when it doesn't fit the console width, hard-breaks it
+    character-by-character -- including, unluckily, sometimes mid-filename.
+    That is exactly what ubuntu-latest's CI runner hit:
+    ``test_skill_new_output_flag_respects_path``'s ``out.name`` ("my_skill.og")
+    stopped being a contiguous substring of ``result.output`` because the fold
+    landed inside it. This dev box's own tmp_path length happens to avoid that
+    fold point, so simulate it directly with an explicitly narrow console
+    width (smaller than the filename itself, which forces a split regardless
+    of the surrounding path's length or the host OS) instead of depending on
+    hitting the right tmp_path length by chance.
+    """
+    from hachi.cli.commands.skill import console as skill_console
+
+    # Narrower than "my_skill.og" (11 chars) -- guarantees a fold lands inside
+    # the filename no matter where in the wrapped path it starts.
+    monkeypatch.setattr(skill_console, "_width", 8)
+
+    out = tmp_path / "custom" / "my_skill.og"
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    result = runner.invoke(
+        skill_app, ["new", "my-skill", "--output", str(out)], catch_exceptions=False
+    )
+    assert result.exit_code == 0, result.output
+    assert out.name in result.output, f"filename was split by console word-wrap: {result.output!r}"
+
+
 def test_skill_new_domain_appears_in_output(tmp_path: Path) -> None:
     """--domain value is written into the generated .og file."""
     out = tmp_path / "domain-test.og"
