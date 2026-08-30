@@ -29,9 +29,23 @@ def get_workspace_dir() -> Path:
 
 
 def get_skills_dir() -> Path:
-    """Returns the absolute path to the user skill directory."""
+    """Returns the absolute path to the user skill directory.
+
+    BB-181: the bootstrap guard below must treat "exists but empty" the same
+    as "missing". Several unrelated call sites — load_effective_config()
+    (run by nearly every `hachi <command>`), hachi.tools.config_tools's own
+    thinner get_skills_dir(), secret_store.py, onboarding.py — call
+    core.paths.ensure_directories(), which creates skills_dir as a side
+    effect WITHOUT installing the core skill packs. If any of those runs
+    before this function's first call for a given filesystem location, a
+    plain `not skills_dir.exists()` check sees the (empty) directory as
+    already bootstrapped and never installs the default skills — the
+    workspace stays permanently empty. Checking emptiness too (matching
+    ensure_workspace()'s own internal check before install_core_skill_packs)
+    makes this idempotent regardless of call order.
+    """
     skills_dir = get_hachi_paths().skills_dir
-    if not skills_dir.exists():
+    if not skills_dir.exists() or not any(skills_dir.iterdir()):
         ensure_workspace()
     return skills_dir
 
