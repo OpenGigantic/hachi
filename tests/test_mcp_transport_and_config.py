@@ -314,9 +314,8 @@ class TestMcpRegisterRequestValidation:
 
     @pytest.fixture()
     def app(self):
-        from conftest import control_plane
-
         from hachi.gateway.fastapi_app import create_gateway_app
+        from tests.conftest import control_plane
 
         def _fake_register(**kwargs):
             return {

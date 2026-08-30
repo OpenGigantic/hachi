@@ -14,13 +14,13 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from conftest import control_plane
 
 from hachi.gateway.control_plane import (
     GatewayControlPlane,
     GatewayProtocolError,
     SessionExpiredError,
 )
+from tests.conftest import control_plane
 
 # ---------------------------------------------------------------------------
 # Issue 1a: session_state for a session absent from _connections but present

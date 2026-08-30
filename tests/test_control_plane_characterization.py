@@ -24,9 +24,9 @@ suite -- produces a genuinely working control plane.
 from __future__ import annotations
 
 import pytest
-from conftest import control_plane
 
 from hachi.gateway.control_plane import GatewayControlPlane, GatewayProtocolError
+from tests.conftest import control_plane
 
 
 def test_session_limit_is_enforced_at_the_control_plane() -> None:

@@ -8,11 +8,11 @@ inspect the text that reaches it.
 
 from __future__ import annotations
 
-from conftest import control_plane
 from fastapi.testclient import TestClient
 
 from hachi.core.untrusted_content import _BEGIN, _END
 from hachi.gateway.fastapi_app import create_gateway_app
+from tests.conftest import control_plane
 
 # ---------------------------------------------------------------------------
 # Helpers
