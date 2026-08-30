@@ -243,6 +243,15 @@ class MCPServerConfig:
 
     # Optional per-server timeouts
     boot_timeout_seconds: float | None = None
+    # BB-176: this value round-trips through to_toml_entry() below UNCHANGED, even
+    # when it is below the runtime floor (_MIN_REQUEST_TIMEOUT_SECONDS, 1.0s,
+    # defined near MCPServerConnection below) -- config is the user's stated
+    # intent, so it is not silently rewritten here. The floor is applied only at
+    # runtime construction (MCPServerConnection.__init__, via
+    # _clamp_request_timeout_seconds), which logs a warning naming the server
+    # when it actually clamps. So settings.toml (or an .og node) can say a value
+    # below 1.0s forever while every call still waits at least 1.0s -- what the
+    # config says is not necessarily what runs.
     request_timeout_seconds: float = 30.0
 
     # The TOML keys that ``to_toml_entry`` owns. On re-registration,
@@ -359,6 +368,59 @@ class MCPServerConfig:
 
 
 # ---------------------------------------------------------------------------
+# Request-timeout floor (BB-176)
+# ---------------------------------------------------------------------------
+
+# Below this, a per-request timeout is more likely to fail every call outright
+# than to do anything useful, so it is clamped up rather than honoured verbatim.
+# Named once here (rather than the four separate inline `max(1.0, ...)` call
+# sites this constant replaces) so the floor has exactly one definition.
+_MIN_REQUEST_TIMEOUT_SECONDS: float = 1.0
+
+
+def _clamp_request_timeout_seconds(server_name: str, request_timeout_seconds: float) -> float:
+    """Clamp a per-request timeout to ``_MIN_REQUEST_TIMEOUT_SECONDS``, loudly.
+
+    BB-176: a ``request_timeout_seconds`` below the floor used to be silently
+    overridden at runtime with no signal anywhere that it had happened —
+    ``[mcp_servers.NAME]`` TOML (parsed by ``MCPServerConfig.from_toml_entry``)
+    and ``.og`` ``role=mcp`` nodes both accept any float, so ``settings.toml`` /
+    the node could say ``0.5`` forever while every constructor actually used
+    ``1.0``. This is now the single place that clamp happens, called from all
+    four constructors that used to inline
+    ``max(1.0, float(request_timeout_seconds))`` (``StdioTransport``,
+    ``SseTransport``, ``HttpTransport``, ``MCPServerConnection``) — so the floor
+    has one number and one log line.
+
+    Only warns when *request_timeout_seconds* is genuinely below the floor; a
+    value at or above it is returned unchanged and silently — this matters for
+    ``MCPServerConnection``, which clamps first and then passes its own
+    already-clamped value down to whichever transport it constructs
+    (``_make_transport``), so the transport's own call into this function is a
+    silent no-op rather than a second warning.
+
+    Args:
+        server_name:             Logical MCP server name, so the warning is
+                                  actionable in a multi-server setup.
+        request_timeout_seconds: The raw (as-configured) value.
+
+    Returns:
+        ``request_timeout_seconds`` unchanged, or ``_MIN_REQUEST_TIMEOUT_SECONDS``
+        when the input is smaller.
+    """
+    raw = float(request_timeout_seconds)
+    clamped = max(_MIN_REQUEST_TIMEOUT_SECONDS, raw)
+    if clamped != raw:
+        logger.warning(
+            "[mcp] %s: request_timeout_seconds=%s is below the minimum; clamped to %s",
+            server_name,
+            raw,
+            clamped,
+        )
+    return clamped
+
+
+# ---------------------------------------------------------------------------
 # Transport interface
 # ---------------------------------------------------------------------------
 
@@ -431,11 +493,26 @@ class StdioTransport(MCPTransport):
         request_timeout_seconds: float = 30.0,
         boot_timeout_seconds: float | None = None,
     ) -> None:
+        """Initialise the stdio transport.
+
+        Args:
+            name:                    Logical server name for logging.
+            command:                 Subprocess command to spawn.
+            args:                    Subprocess args.
+            env:                     Extra environment variables for the subprocess.
+            request_timeout_seconds: Per-request JSON-RPC timeout. Clamped up to
+                                      ``_MIN_REQUEST_TIMEOUT_SECONDS`` (1.0s) when
+                                      smaller, logging a warning that names this
+                                      server when it actually clamps (BB-176).
+            boot_timeout_seconds:    Max seconds for the entire boot sequence.
+        """
         self._name = name
         self._command = command
         self._args = list(args or [])
         self._env = dict(env or {})
-        self._request_timeout_seconds = max(1.0, float(request_timeout_seconds))
+        self._request_timeout_seconds = _clamp_request_timeout_seconds(
+            name, request_timeout_seconds
+        )
         self._boot_timeout_seconds = (
             float(boot_timeout_seconds)
             if boot_timeout_seconds is not None
@@ -727,13 +804,18 @@ class SseTransport(MCPTransport):
             url:                     Base URL of the MCP SSE server.
             headers:                 Optional HTTP headers added to every request.
             env:                     Ignored for SSE (kept for API symmetry).
-            request_timeout_seconds: Per-request JSON-RPC timeout.
+            request_timeout_seconds: Per-request JSON-RPC timeout. Clamped up to
+                                      ``_MIN_REQUEST_TIMEOUT_SECONDS`` (1.0s) when
+                                      smaller, logging a warning that names this
+                                      server when it actually clamps (BB-176).
             boot_timeout_seconds:    Max seconds for the initial SSE handshake + initialize.
         """
         self._name = name
         self._base_url = url.rstrip("/")
         self._headers = dict(headers or {})
-        self._request_timeout_seconds = max(1.0, float(request_timeout_seconds))
+        self._request_timeout_seconds = _clamp_request_timeout_seconds(
+            name, request_timeout_seconds
+        )
         self._boot_timeout_seconds = float(boot_timeout_seconds or 60.0)
 
         self._lock = threading.Lock()
@@ -933,13 +1015,18 @@ class HttpTransport(MCPTransport):
             url:                     Full URL to POST JSON-RPC messages to.
             headers:                 Optional HTTP headers added to every request.
             env:                     Ignored for HTTP (kept for API symmetry).
-            request_timeout_seconds: Per-request HTTP timeout.
+            request_timeout_seconds: Per-request HTTP timeout. Clamped up to
+                                      ``_MIN_REQUEST_TIMEOUT_SECONDS`` (1.0s) when
+                                      smaller, logging a warning that names this
+                                      server when it actually clamps (BB-176).
             boot_timeout_seconds:    Max seconds for the MCP initialize handshake.
         """
         self._name = name
         self._url = url
         self._headers = dict(headers or {})
-        self._request_timeout_seconds = max(1.0, float(request_timeout_seconds))
+        self._request_timeout_seconds = _clamp_request_timeout_seconds(
+            name, request_timeout_seconds
+        )
         self._boot_timeout_seconds = float(boot_timeout_seconds or 30.0)
         self._client: Any = None
         self._alive: bool = False
@@ -1123,7 +1210,14 @@ class MCPServerConnection:
             command:                 Subprocess command (stdio only).
             args:                    Subprocess args (stdio only).
             env:                     Extra environment variables.
-            request_timeout_seconds: Per-request JSON-RPC timeout.
+            request_timeout_seconds: Per-request JSON-RPC timeout. Clamped up to
+                                      ``_MIN_REQUEST_TIMEOUT_SECONDS`` (1.0s) when
+                                      smaller, logging a warning that names this
+                                      server when it actually clamps — the CLAMPED
+                                      value is what reaches both the transport
+                                      and ``RetryPolicy.timeout_s`` below, so a
+                                      sub-floor ``settings.toml`` / ``.og`` value
+                                      is not what actually runs (BB-176).
             boot_timeout_seconds:    Max seconds for the full boot sequence (UC-DEV-001).
             transport:               ``"stdio"``, ``"sse"``, or ``"http"``.
             url:                     Remote server URL (sse / http only).
@@ -1133,7 +1227,9 @@ class MCPServerConnection:
         self.command = command
         self.args = list(args or [])
         self.env = dict(env or {})
-        self._request_timeout_seconds = max(1.0, float(request_timeout_seconds))
+        self._request_timeout_seconds = _clamp_request_timeout_seconds(
+            name, request_timeout_seconds
+        )
         # Store the boot timeout in a plain backing attribute BEFORE creating the transport
         # so the _boot_timeout_seconds property (which reads from the transport) doesn't
         # try to access self._transport before it exists.
@@ -1162,7 +1258,10 @@ class MCPServerConnection:
         self._retry_policy: RetryPolicy = RetryPolicy(
             max_attempts=3,
             backoff_base_s=0.25,
-            timeout_s=float(request_timeout_seconds),
+            # BB-176: the CLAMPED value, not the raw `request_timeout_seconds`
+            # parameter — one config value must yield one number everywhere it
+            # is read, not a clamped copy for the transport and a raw copy here.
+            timeout_s=self._request_timeout_seconds,
             breaker_threshold=5,
             breaker_cooldown_s=30.0,
         )
