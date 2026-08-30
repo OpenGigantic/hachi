@@ -24,6 +24,7 @@ Reference: https://modelcontextprotocol.io/
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -33,6 +34,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from hachi.core.errors import MCPError
@@ -76,19 +78,91 @@ class _MissingSecretError(ValueError):
 
 _SECRET_REF_PREFIX: str = "secret:"
 
+# BB-175: cache key is (secrets_metadata_file, secrets_fallback_file, passphrase digest),
+# not the whole HachiPaths object. paths also reaches ensure_directories(paths) (creates
+# config_dir/data_dir/cache_dir/state_dir/skills_dir), but that is a directory-creation side
+# effect that cannot change the resulting store's behaviour -- the narrower key covers only
+# what the store actually reads/writes, so it avoids a false "changed" on an unrelated
+# HachiPaths field.
+_SecretStoreCacheKey = tuple[Path, Path, str | None]
+
 _cached_secret_store: Any | None = None
+_cached_secret_store_key: _SecretStoreCacheKey | None = None
 _cached_secret_store_lock = threading.Lock()
 
 
 def _get_module_secret_store() -> Any:
-    """Return a lazily-created, module-level secret store (core→core, layering-clean)."""
-    global _cached_secret_store  # noqa: PLW0603
-    if _cached_secret_store is None:
+    """Return a process-wide, lazily-created secret store (core→core, layering-clean; BB-175).
+
+    Mirrors ``get_event_store()`` (``core/events/__init__.py``, BB-172's accepted fix, which
+    names this exact global as a known-live sibling of the same shape): ``get_hachi_paths()``
+    is re-resolved on *every* call and, together with ``HACHI_SECRET_PASSPHRASE``, compared
+    against the derivation the cached store was built from; a mismatch rebuilds the store. In
+    production neither axis changes for the life of the process, so this comparison is a
+    no-op and the function behaves exactly like an unconditional cache — do NOT "optimise"
+    the check away, it is load-bearing for the case below, not dead weight.
+
+    Without it, a test that isolates a real boot by patching ``get_hachi_paths`` to a temp
+    directory (``test_boot_agent_stages.py``, ``test_feature_liveness.py``) permanently pins
+    the singleton to that patched path's secret files, and separately
+    ``tests/conftest.py``'s ``_restore_os_environ`` restores ``HACHI_SECRET_PASSPHRASE`` after
+    any test that sets it — but the cached store keeps decrypting with whichever value was
+    live when it was built. Either way, the resulting store no longer matches what
+    ``get_hachi_paths()``/``os.environ`` currently say, and the two axes fail open by
+    different routes that both converge on ``None``. A stale *path* fails silently: the file
+    at the stale path is simply absent (or present but missing the looked-up name), so
+    ``_read_blob``/``_decrypt_all`` return ``{}`` directly and ``get()`` returns ``None`` with
+    nothing raised or swallowed. A stale *passphrase* fails loudly instead: ``Fernet`` raises
+    ``InvalidToken`` decrypting a file that was written under a different passphrase, or
+    ``_decrypt_all`` raises ``RuntimeError`` if the passphrase is now unset — and only this
+    raise is what ``CompositeSecretStore.get`` swallows into a plain ``None``. Either route,
+    ``_resolve_secret_refs`` raises ``_MissingSecretError`` and ``setup_from_config`` reports
+    the MCP server as failed with "unknown credential", even though the credential exists in
+    the store the caller actually meant. A wrong diagnosis, reported confidently.
+
+    The paths are resolved exactly once per call — not once for this comparison and again
+    inside ``create_default_secret_store`` — and passed explicitly as ``paths=`` so there is
+    no window for the two resolutions to disagree.
+
+    The cache key stores a ``sha256`` digest of the passphrase, not the plaintext: the value
+    is already resident on the constructed store object, so a digest here adds no new
+    exposure while keeping this module's globals safe to log or inspect. ``None`` (passphrase
+    unset) is kept distinct from ``""`` (explicitly set empty) rather than collapsing both to
+    the same bucket.
+
+    Unlike ``get_event_store()`` this never closes a superseded store: the ``SecretStore``
+    Protocol (``secret_store.py``) declares no ``close()``, and both concrete backends already
+    re-read their backing store on every call rather than caching decrypted contents on the
+    instance — ``EncryptedFileSecretStore.get`` re-decrypts the file via
+    ``_decrypt_all``/``_read_blob`` and ``KeyringSecretStore.get`` hits the OS keyring API —
+    so a superseded store holds no open handle and there is nothing to close.
+
+    Single slot, not a dict keyed by derivation: BB-172 is explicit that a per-key cache would
+    just be the BB-42 handle-leak in a new costume, and production never repoints either axis
+    anyway.
+    """
+    global _cached_secret_store, _cached_secret_store_key
+    from hachi.core.paths import get_hachi_paths  # local: re-resolved fresh on every call
+
+    paths = get_hachi_paths()
+    passphrase = os.environ.get("HACHI_SECRET_PASSPHRASE")
+    passphrase_digest = (
+        None if passphrase is None else hashlib.sha256(passphrase.encode("utf-8")).hexdigest()
+    )
+    cache_key: _SecretStoreCacheKey = (
+        paths.secrets_metadata_file,
+        paths.secrets_fallback_file,
+        passphrase_digest,
+    )
+
+    # The comparison below is the whole fix -- see the docstring.
+    if _cached_secret_store is None or _cached_secret_store_key != cache_key:
         with _cached_secret_store_lock:
-            if _cached_secret_store is None:
+            if _cached_secret_store is None or _cached_secret_store_key != cache_key:
                 from hachi.core.secret_store import create_default_secret_store
 
-                _cached_secret_store = create_default_secret_store()
+                _cached_secret_store = create_default_secret_store(paths=paths)
+                _cached_secret_store_key = cache_key
     return _cached_secret_store
 
 
