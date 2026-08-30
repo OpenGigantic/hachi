@@ -86,9 +86,22 @@ def test_audio_player_failure_propagates(tmp_path: Path) -> None:
 
 
 def test_audio_player_is_available_when_injected() -> None:
-    """is_available() is based on detect_player_binary, not on the injected fn."""
-    # Patch _detect_player_binary to return a fake binary name
-    with patch("hachi.core.voice._detect_player_binary", return_value="fake-player"):
+    """An explicitly injected player is available on its own — no host probe needed.
+
+    Only the default (non-injected) player consults ``_detect_player_binary``;
+    an injected one is available regardless of what — if anything — is on the
+    host.
+
+    BB-182: this docstring previously claimed the opposite ("is_available()
+    is based on detect_player_binary, not on the injected fn"), and the body
+    patched ``_detect_player_binary`` to a truthy value *in addition to*
+    injecting a player — so both the old (broken) logic and the new (fixed)
+    logic returned True and the test could not fail either way. That is how
+    a test named for exactly this behaviour let the bug through. Patching
+    the probe to ``None`` here isolates the injected path: if the fix ever
+    regresses to consulting the host again, this now catches it.
+    """
+    with patch("hachi.core.voice._detect_player_binary", return_value=None):
         ap = AudioPlayer(player=lambda p: (0, ""))
         assert ap.is_available() is True
 
@@ -176,6 +189,59 @@ def test_play_audio_player_exception(tmp_path: Path) -> None:
     ap = AudioPlayer(player=_boom)
     fn = _make_play_audio(None, ap)
     result = fn(str(p))
+    assert "failed" in result.lower()
+    assert "device busy" in result
+
+
+# ---------------------------------------------------------------------------
+# play_audio tool — an injected player must be honoured even when the host
+# has no real audio-player binary (BB-182).
+#
+# Regression: AudioPlayer.is_available() used to be a @staticmethod that
+# only ever consulted _detect_player_binary(), completely ignoring whatever
+# ``player`` callable the instance had been constructed with. On a machine
+# with no real player binary (e.g. a bare ubuntu-latest CI runner — no
+# paplay/aplay/mpv/ffplay/mplayer/vlc) is_available() returned False and
+# play_audio short-circuited to "No audio player available" *before* the
+# injected player was ever called — even though the whole point of
+# injecting one is to avoid needing a real binary. These tests force that
+# same "no real binary" condition with an explicit patch (rather than
+# relying on a host that happens to lack one) so they fail deterministically
+# on every OS, including this dev box, before the fix.
+# ---------------------------------------------------------------------------
+
+
+def test_play_audio_happy_path_no_system_binary(tmp_path: Path) -> None:
+    """BB-182: an injected player is honoured even with no system binary present."""
+    p = _wav(tmp_path)
+    with patch("hachi.core.voice._detect_player_binary", return_value=None):
+        fn = _make_play_audio(None, _fake_player(returncode=0))
+        result = fn(str(p))
+    assert "Played" in result
+    assert p.name in result
+
+
+def test_play_audio_player_failure_no_system_binary(tmp_path: Path) -> None:
+    """BB-182: an injected player's failure is surfaced with no system binary present."""
+    p = _wav(tmp_path)
+    with patch("hachi.core.voice._detect_player_binary", return_value=None):
+        fn = _make_play_audio(None, _fake_player(returncode=1, stderr="no sound card"))
+        result = fn(str(p))
+    assert "failed" in result.lower()
+    assert "no sound card" in result
+
+
+def test_play_audio_player_exception_no_system_binary(tmp_path: Path) -> None:
+    """BB-182: an injected player's exception is handled with no system binary present."""
+
+    def _boom(path: Path) -> tuple[int, str]:
+        raise OSError("device busy")
+
+    p = _wav(tmp_path)
+    with patch("hachi.core.voice._detect_player_binary", return_value=None):
+        ap = AudioPlayer(player=_boom)
+        fn = _make_play_audio(None, ap)
+        result = fn(str(p))
     assert "failed" in result.lower()
     assert "device busy" in result
 
