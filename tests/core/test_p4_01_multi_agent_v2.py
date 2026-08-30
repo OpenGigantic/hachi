@@ -87,11 +87,38 @@ def test_lease_release_clears_target() -> None:
 
 
 def test_lease_ttl_expiry() -> None:
+    """BB-184: TTL and wait derived from the monotonic clock's own resolution.
+
+    ``time.monotonic()``'s resolution is interpreter/platform dependent — CPython 3.11
+    on Windows (what CI runs) backs it with ``GetTickCount64()``, resolution 0.015625s
+    (15.625ms); this dev box's interpreter backs it with ``QueryPerformanceCounter()``,
+    resolution 1e-07s. A hardcoded ``ttl_seconds=0.001`` with a fixed ``sleep(0.01)`` is
+    not observable on the coarse clock: two ``time.monotonic()`` reads landing in the
+    same ~15.6ms tick come back bit-for-bit equal, so ``now == acquired_at``, therefore
+    ``now < acquired_at + 0.001`` and the lease reads as not-yet-expired — flaky
+    depending on where in the tick the first read lands (measured empirically at
+    ~33% failure on 3.11), not a real product bug.
+
+    Deriving both the TTL and the wait from ``time.get_clock_info('monotonic').resolution``
+    keeps this a genuine real-time test (still a real ``time.sleep()``, unlike the frozen
+    -clock exact-boundary case in ``test_lease_expiry_boundary_is_inclusive`` above, which
+    covers BB-178's ``now == expires_at`` tie separately) while making its timing premise
+    valid on any clock. ``wait = 3 * resolution`` is the smallest margin that is safe on
+    any tick phase: in the worst case the "acquire" read lands a hair before a tick edge,
+    so up to one full tick can elapse before the *next* distinguishable reading —
+    ``2 * resolution`` is therefore the analytic minimum (confirmed empirically: 0
+    failures/500 trials on 3.11 at exactly 2x, 182/500 at 1x); the third resolution unit
+    is margin for scheduler jitter on a loaded CI box, not a guessed inflation.
+    """
     from hachi.core.lease_manager import LeaseManager
 
+    resolution = time.get_clock_info("monotonic").resolution
+    ttl_seconds = resolution
+    wait_seconds = resolution * 3
+
     mgr = LeaseManager()
-    mgr.acquire("researcher", ["projects/old"], ttl_seconds=0.001)
-    time.sleep(0.01)  # let it expire
+    mgr.acquire("researcher", ["projects/old"], ttl_seconds=ttl_seconds)
+    time.sleep(wait_seconds)  # let it expire — see BB-184 docstring for why 3x
 
     ok, _ = mgr.acquire("analyst", ["projects/old"])
     assert ok is True, "Expired lease should not block new acquisition"
