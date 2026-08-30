@@ -5991,3 +5991,51 @@ something downstream will copy or parse it.
   `NoKeyringError`, so it exercises the new classification rather than the old count), and
   `test_composite_delete_raises_when_fallback_cannot_decrypt` (a real `Fernet` failure; fails with
   `DID NOT RAISE` against the count-based version).
+
+### BB-184 — A 1 ms TTL cannot be observed by a 15.6 ms clock, and a third of CI runs said so
+
+- **Symptom:** `test_lease_ttl_expiry` fails on windows-latest with
+  `Expired lease should not block new acquisition` — **intermittently**. It passed on one commit and
+  failed on the next with no change to any code it touches.
+- **Root cause:** `time.monotonic()` is not the same clock everywhere.
+  On **CPython 3.11 on Windows — which is what CI runs** — it is backed by `GetTickCount64()` with a
+  resolution of **0.015625 s (15.625 ms)**. On this dev box's 3.14 it is `QueryPerformanceCounter()` at
+  `1e-07 s`. The test acquired a lease with `ttl_seconds=0.001` and slept 10 ms. **A 1 ms TTL is not
+  observable on a 15.6 ms clock**: two reads landing in the same tick return bit-for-bit identical values,
+  so `now == acquired_at`, therefore `now < acquired_at + 0.001`, the lease reads as live, and the second
+  acquire is wrongly blocked. Whether it passes depends on where in the tick the first read lands.
+- **Measured, not argued:** with the old constants on 3.11, `135/400` trials (**~34%**) failed to see the
+  lease as expired. With the fix, `0/400`. A test failing a third of the time on one platform looks like
+  bad luck one run at a time; the failure rate is the thing that identifies it.
+- **BB-178's fix was necessary and not sufficient, which is the correction worth recording.** That change
+  made `is_expired()` inclusive (`>` → `>=`), which handles `now == expires_at` exactly. It cannot help
+  `now < expires_at`, which is what a clock that has not ticked produces. **Fixing the boundary is not the
+  same as fixing the resolution**, and claiming the test was fixed on the strength of one green run was
+  premature.
+- **Fix:** derive the timing from the clock instead of guessing at it —
+  `resolution = time.get_clock_info("monotonic").resolution`, `ttl = resolution`, `wait = resolution * 3`.
+  The multiplier is derived, not padded: with `ttl == resolution` the analytic worst-case phase needs
+  `wait >= 2 * resolution`, and a sweep on 3.11 agrees (`1x` → 182/500 fail, `1.5x` → 91/500, `2x` →
+  0/500). The third unit is jitter margin for a loaded runner.
+- **Sibling found by sweeping, same mechanism, already red on `main`:**
+  `test_uptime_seconds_increases` read `uptime_seconds()` twice across `sleep(0.01)` and asserted `t2 >
+  t1` strictly — `168/500` failures on 3.11, fixed the same way.
+- **Avoid:** **never hardcode a duration that a platform's clock cannot resolve.** If a test asserts that
+  time passed, derive its interval from `time.get_clock_info(...).resolution`, because the clock backing
+  `time.monotonic()` changes with OS *and* interpreter version and can differ by five orders of magnitude.
+- **Avoid — the one that cost the extra round trip:** **a flaky test is not fixed by a green run.** When a
+  failure is timing-dependent, measure the failure *rate* before and after; a change that takes it from
+  34% to 20% still looks green most of the time and is not a fix.
+- **Note for future test authors, probed on 3.11.15/Windows:** `time.time()` is `GetSystemTimeAsFileTime()`
+  at the *same* coarse `0.015625 s`; only `time.perf_counter()` is `QueryPerformanceCounter()` at `1e-07 s`.
+  No test in the suite currently uses `perf_counter()` at all, so nothing mixes the two — but `monotonic()`
+  and `time()` are both coarse there, and only one of the three is not.
+- **Deliberately not changed by the sweep, with reasons:** `test_expired_state_rejected` uses `ttl=0`, so
+  `expires_at` is numerically identical to the creation read and `is_valid()`'s strict `<` is False from
+  the next read onward on any clock — no resolution dependency. Several `while time.monotonic() <
+  deadline` polling loops use their small sleeps as throttles against multi-second deadlines, not as
+  asserted deltas. `test_loop_backstop_cancel`'s `elapsed < 5.0` bounds are the *upper*-bound xdist
+  starvation class already documented as a permanent exception by the hygiene test (T-71), not this bug.
+- **Locked by:** `tests/core/test_p4_01_multi_agent_v2.py::test_lease_ttl_expiry` and
+  `tests/gateway/test_p4_02_shared_services.py::test_uptime_seconds_increases`, both now deriving their
+  intervals from the live clock's resolution.
