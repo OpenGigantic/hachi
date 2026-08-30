@@ -15,10 +15,11 @@ from hachi.og_engine.graph_viz import (
     render_html,
     render_mermaid,
 )
+from tests.conftest import FIXTURES
 
 runner = CliRunner()
 
-FIXTURE = Path(__file__).parent / "fixtures" / "sample_skill.og"
+FIXTURE = FIXTURES / "sample_skill.og"
 
 # deploy_to_prod -> run_tests; secret_rotation + run_tests have no deps.
 _GRAPH = {

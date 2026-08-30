@@ -11,10 +11,11 @@ from typer.testing import CliRunner
 
 from hachi.cli.main import app
 from hachi.og_engine.engine import lint_og_file
+from tests.conftest import FIXTURES
 
 runner = CliRunner()
 
-FIXTURE = Path(__file__).parent / "fixtures" / "sample_skill.og"
+FIXTURE = FIXTURES / "sample_skill.og"
 
 # A deliberately flawed file exercising every *warning/info* code using non-skill roles.
 # Non-skill roles (rule/persona) only emit warnings, not errors, so ok=True.

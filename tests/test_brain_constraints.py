@@ -17,18 +17,16 @@ Design rationale:
 
 from __future__ import annotations
 
-import pathlib
-
 import pytest
+
+from tests.conftest import REPO_ROOT
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 # Canonical path to the shipped brain.og — same relative anchor used by workspace.py
-_BRAIN_OG_PATH = (
-    pathlib.Path(__file__).parent.parent / "src" / "hachi" / "default_skills" / "brain.og"
-)
+_BRAIN_OG_PATH = REPO_ROOT / "src" / "hachi" / "default_skills" / "brain.og"
 
 
 def _brain_og_text() -> str:

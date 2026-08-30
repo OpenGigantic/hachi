@@ -14,11 +14,10 @@ The fixture ``tests/fixtures/sample_skill.og`` contains:
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from hachi.og_engine.engine import SkillEngine
+from tests.conftest import FIXTURES
 
-FIXTURE = Path(__file__).parent / "fixtures" / "sample_skill.og"
+FIXTURE = FIXTURES / "sample_skill.og"
 
 # Orchestrator-scoped node name in the fixture.
 _ORCH_NODE = "secret_rotation"

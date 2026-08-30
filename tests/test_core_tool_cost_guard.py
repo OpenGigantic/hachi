@@ -16,12 +16,13 @@ Baseline: 5 673 tokens (Phase 0 offline measurement, 2026-06-28,
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 import pytest
 
+from tests.conftest import REPO_ROOT
+
 # Make scripts/ importable without installing it.
-_SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
+_SCRIPTS_DIR = REPO_ROOT / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 

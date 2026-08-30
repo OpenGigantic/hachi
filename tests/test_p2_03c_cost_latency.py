@@ -12,6 +12,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+from tests.conftest import REPO_ROOT
+
 # ---------------------------------------------------------------------------
 # Engine pass-depth counter tests
 # ---------------------------------------------------------------------------
@@ -19,12 +21,10 @@ from unittest.mock import MagicMock
 
 def _loaded_engine():
     """Return a SkillEngine loaded with the shipped default skills."""
-    from pathlib import Path
-
     from hachi.og_engine.engine import SkillEngine
 
     engine = SkillEngine()
-    skills_dir = Path(__file__).parent.parent / "src" / "hachi" / "default_skills"
+    skills_dir = REPO_ROOT / "src" / "hachi" / "default_skills"
     if skills_dir.exists():
         engine.load_directory(skills_dir)
     return engine

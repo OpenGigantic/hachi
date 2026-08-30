@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from tests.conftest import REPO_ROOT
+
+ROOT = REPO_ROOT
 
 
 def test_no_tokoboros_env_shim_in_src() -> None:

@@ -9,9 +9,9 @@ fast, with no daemon. A live image build + ``docker compose up`` is verified by 
 
 from __future__ import annotations
 
-from pathlib import Path
+from tests.conftest import REPO_ROOT
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = REPO_ROOT
 
 
 def test_dockerfile_runs_the_gateway() -> None:

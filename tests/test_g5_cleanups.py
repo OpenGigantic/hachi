@@ -16,12 +16,13 @@ from hachi.core.llm import Message
 from hachi.core.memory import MemoryManager
 from hachi.core.onboarding import OnboardingService, SetupPlan
 from hachi.core.paths import HachiPaths
+from tests.conftest import FIXTURES
 
 # ---------------------------------------------------------------------------
 # L5 — BM25 prefix-set deduplication
 # ---------------------------------------------------------------------------
 
-FIXTURE = Path(__file__).parent / "fixtures" / "sample_skill.og"
+FIXTURE = FIXTURES / "sample_skill.og"
 
 
 def _engine():
@@ -78,8 +79,7 @@ class TestL5PrefixSetDedup:
         engine.search("deploy run")
         # Two unique tokens → exactly 2 calls (not 4)
         assert len(call_count) == 2, (
-            f"Expected 2 calls to _prefix_matched_qids (one per token), "
-            f"got {len(call_count)}"
+            f"Expected 2 calls to _prefix_matched_qids (one per token), got {len(call_count)}"
         )
 
 
@@ -170,7 +170,7 @@ class TestL6BoundarySelection:
         msgs = [
             Message(role="user", content="ask"),
             Message(role="assistant", content=[_tool_use_block("id2")]),  # idx 1
-            Message(role="user", content=[_tool_result_block("id2")]),    # idx 2
+            Message(role="user", content=[_tool_result_block("id2")]),  # idx 2
             Message(role="assistant", content="ok"),
             Message(role="user", content="next"),
         ]
@@ -234,9 +234,7 @@ class TestM7LightningMemory:
             plan = SetupPlan.model_validate(plan_dict)
             assert plan.enable_memory is True, f"Tier '{tier}' has enable_memory=False"
 
-    def test_lightning_apply_setup_writes_memory_config(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_lightning_apply_setup_writes_memory_config(self, tmp_path: Path, monkeypatch):
         """apply_setup() for lightning tier must write memory enabled to config."""
         from hachi.core.config_loader import load_effective_config
 

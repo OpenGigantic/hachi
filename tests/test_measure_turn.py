@@ -16,12 +16,13 @@ module on import, so conftest's existing guard is not double-applied.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-_REPO_ROOT = Path(__file__).parent.parent
+from tests.conftest import REPO_ROOT
+
+_REPO_ROOT = REPO_ROOT
 _BASELINE_FILE = _REPO_ROOT / "docs" / "audit" / "2026-06-28" / "COST_BASELINE.json"
 
 # The live "after" baseline captured on 2026-06-28: 5 037 input tokens for a trivial

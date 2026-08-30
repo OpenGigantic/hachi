@@ -8,10 +8,11 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from hachi.cli.main import app
+from tests.conftest import FIXTURES
 
 runner = CliRunner()
 
-FIXTURE = Path(__file__).parent / "fixtures" / "sample_skill.og"
+FIXTURE = FIXTURES / "sample_skill.og"
 
 
 def _isolate(monkeypatch, tmp_path: Path) -> Path:

@@ -20,8 +20,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from scripts.lint_skills import check_reserved_tags, is_first_party_skill, main
+from tests.conftest import REPO_ROOT
 
-_DEFAULT_SKILLS_ROOT = Path(__file__).parent.parent / "src" / "hachi" / "default_skills"
+_DEFAULT_SKILLS_ROOT = REPO_ROOT / "src" / "hachi" / "default_skills"
 
 # A community-style pack using ::api (the declarative, REST-calling block type).
 _API_OG = """::meta

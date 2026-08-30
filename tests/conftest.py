@@ -33,6 +33,7 @@ they construct ``MemoryVault`` directly with ``tmp_path`` and never go through
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -72,6 +73,20 @@ except Exception:  # pragma: no cover - chromadb is optional in some CI envs
     pass
 
 import pytest
+
+# ---------------------------------------------------------------------------
+# T-70 Stage 1 -- shared path constants, so tests stop hand-computing them.
+#
+# ~40 test files used to walk up from their own `Path(__file__)` to reach the
+# repo root or `tests/fixtures/`. That walk is relative to WHERE THE FILE
+# LIVES, so it silently breaks the moment a file moves one directory deeper
+# (T-70's tree-mirroring move moves 358 of them). `conftest.py` stays at
+# `tests/` root forever, so these two constants stay correct no matter how
+# deep a test file ends up. Import them instead of recomputing --
+# do NOT "simplify" a test file back to its own `Path(__file__)` parent walk.
+# ---------------------------------------------------------------------------
+REPO_ROOT = Path(__file__).resolve().parent.parent
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 @pytest.fixture(autouse=True)

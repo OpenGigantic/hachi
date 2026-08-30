@@ -33,8 +33,9 @@ from fastapi.testclient import TestClient
 
 from hachi.gateway.control_plane import GatewayControlPlane
 from hachi.gateway.fastapi_app import create_gateway_app
+from tests.conftest import FIXTURES
 
-BASELINE = Path(__file__).parent / "fixtures" / "openapi_baseline.json"
+BASELINE = FIXTURES / "openapi_baseline.json"
 
 # Routes that are genuinely public by design (no auth dependency at all) --
 # established by reading the handlers, NOT by trusting the generated OpenAPI
