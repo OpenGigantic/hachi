@@ -2174,6 +2174,14 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** never add a line pattern to the paragraph stop condition unless that same pattern is also handled by an earlier branch that ALWAYS increments `i`; any stop condition that causes an empty `lines` result without advancing `i` produces an infinite outer loop.
 - **Locked by:** `frontend/src/components/ui/Markdown.test.tsx` — "does not produce a table without a separator row" passes the failing input directly to the component.
 
+### BB-89 — The PR security gate was red for every pull request, for a year
+
+- **Symptom:** `security-audit --fail-on-high --fail-on-medium`, run on every `pull_request` in CI, exits **2** on any fresh checkout. `main` pushes were green (the strict step was gated on `github.event_name == 'pull_request'`), so the failure was invisible to maintainers and total for contributors. 19 merges landed through a gate that had never passed.
+- **Root cause:** `security_audit` mixes two categories of check. **Source** checks depend on the committed tree (embedded `GOCSPX-` secret, `permissions.tier == unrestricted`, terminal `allow_all`, capability `secret_ref`). **Posture** checks depend on how *the runner* is configured (`GOOGLE_CLIENT_ID` set?, `HACHI_REST_ALLOWLIST` populated?, `HACHI_SANDBOX_BACKEND` containerised?). A fresh GitHub runner satisfies none of the posture checks, so it always emitted 2 high + 1 medium. Gating a PR on posture checks means gating it on something the contributor cannot change — every PR is red regardless of its diff.
+- **Fix:** Added `--ignore-checks <ids>` to `security-audit` (excluded from both the report and the exit-code gate, echoed back as `ignored_checks` so "absent" is distinguishable from "excluded"). CI now pins `GOOGLE_CLIENT_ID` / `HACHI_REST_ALLOWLIST` in the job `env:` block and adds `--ignore-checks sandbox.process_backend`. The sandbox check is *ignored* rather than satisfied via `HACHI_SANDBOX_BACKEND=container`, because that would make the gate depend on Docker being present — trading a permanently-red gate for an intermittently-red one. Verified negative case: an unset `HACHI_REST_ALLOWLIST` still exits 2.
+- **Avoid:** never gate a pull request on a check whose input is runner/deployment state rather than the committed tree — pin the environment and `--ignore-checks` the posture-only ids; the gate must be deterministic or contributors learn to ignore it.
+- **Locked by:** `tests/test_cli_gateway_command.py` — `test_security_audit_ignore_checks_excludes_findings`, `test_security_audit_ignore_checks_can_clear_the_gate`, `test_security_audit_ignore_checks_tolerates_whitespace`.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

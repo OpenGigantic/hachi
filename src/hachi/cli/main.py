@@ -4666,6 +4666,16 @@ def security_audit(
     max_findings: int | None = typer.Option(
         None, "--max-findings", help="Exit non-zero if finding count exceeds this threshold."
     ),
+    ignore_checks: str = typer.Option(
+        "",
+        "--ignore-checks",
+        help=(
+            "Comma-separated check ids to exclude from both the report and the exit-code "
+            "gate. Use for checks that describe the *deployment/runner* rather than the "
+            "source tree (e.g. sandbox.process_backend on a CI runner), so a pull-request "
+            "gate can still be strict about everything a contributor can affect."
+        ),
+    ),
     json_output: bool = typer.Option(
         False, "--json", help="Output machine-readable JSON (for CI/automation)."
     ),
@@ -4678,6 +4688,7 @@ def security_audit(
         - --fail-on-high: Exit code 2 if any high-severity findings exist.
         - --fail-on-medium: Exit code 2 if any high or medium-severity findings exist.
         - --max-findings: Exit code 2 if total findings exceed threshold.
+        - --ignore-checks: Exclude named check ids from the report and the gate.
 
     Default behavior: Pretty-print findings with human-friendly formatting.
     """
@@ -4767,6 +4778,22 @@ def security_audit(
                 "Bind the capability to a secret reference managed by the secret backend.",
             )
 
+    # --ignore-checks: drop named check ids before counting, so they are excluded
+    # from BOTH the report and the exit-code gate. This exists because some checks
+    # describe the *deployment* (e.g. sandbox.process_backend reports that the
+    # active sandbox backend is process-isolation, which is the documented default
+    # and not something a pull request can change). Without an escape hatch, a
+    # PR-level --fail-on-medium gate is red for every contributor regardless of
+    # their diff — which teaches contributors to ignore the gate.
+    #
+    # Filter in place (`[:]`) rather than rebinding `findings`: `add_finding`
+    # closes over the name, and rebinding would leave the closure appending to a
+    # detached list if a future change adds a finding after this point.
+    ignored_checks = sorted({c.strip() for c in ignore_checks.split(",") if c.strip()})
+    if ignored_checks:
+        _ignored = set(ignored_checks)
+        findings[:] = [f for f in findings if f["check_id"] not in _ignored]
+
     high_count = sum(1 for f in findings if f["severity"] == "high")
     medium_count = sum(1 for f in findings if f["severity"] == "medium")
     low_count = sum(1 for f in findings if f["severity"] == "low")
@@ -4780,6 +4807,9 @@ def security_audit(
         "low": low_count,
         "total": total_count,
         "findings": findings,
+        # Echo the ignore set so a CI consumer can tell "no finding" apart from
+        # "that finding was deliberately excluded".
+        "ignored_checks": ignored_checks,
     }
 
     # Determine exit code based on fail thresholds
