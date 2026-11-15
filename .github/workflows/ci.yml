@@ -36,6 +36,28 @@ jobs:
 
   security:
     runs-on: ubuntu-latest
+    # Hachi's security-audit mixes two kinds of check:
+    #   (a) SOURCE checks  — is the code/committed config sound? (embedded secrets,
+    #       unrestricted permission tier, terminal allow-all, capability secret_ref)
+    #   (b) POSTURE checks — how is *this deployment/runner* configured? (is
+    #       GOOGLE_CLIENT_ID set, is HACHI_REST_ALLOWLIST populated, is the sandbox
+    #       backend containerised)
+    # Only (a) is a function of a pull request's diff. Left unconfigured, (b) fires
+    # on every fresh runner (2 high + 1 medium, exit 2), so the PR gate was red for
+    # every contributor regardless of what they changed — which trains people to
+    # ignore the gate. We therefore pin (b) to a known-good baseline here and
+    # exclude the one posture check that cannot be satisfied on a shared runner.
+    #
+    # sandbox.process_backend is ignored rather than "fixed" by setting
+    # HACHI_SANDBOX_BACKEND=container because that would make the gate depend on
+    # Docker being present on the runner — swapping a permanently-red gate for an
+    # intermittently-red one. The gate must be deterministic.
+    #
+    # Everything else stays strict: a contributor who embeds a real GOCSPX- secret,
+    # sets permissions unrestricted, or enables terminal allow-all still fails.
+    env:
+      GOOGLE_CLIENT_ID: ci-posture-placeholder.apps.googleusercontent.com
+      HACHI_REST_ALLOWLIST: api.example.com
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,12 +74,16 @@ jobs:
         run: uv sync --extra dev --extra security
 
       - name: Run security audit
-        run: uv run python -m hachi.cli.main security-audit --json --fail-on-high
+        run: |
+          uv run python -m hachi.cli.main security-audit --json --fail-on-high \
+            --ignore-checks sandbox.process_backend
         continue-on-error: true
 
       - name: Strict security audit (fail on medium)
-        run: uv run python -m hachi.cli.main security-audit --json --fail-on-high --fail-on-medium
         if: github.event_name == 'pull_request'
+        run: |
+          uv run python -m hachi.cli.main security-audit --json --fail-on-high --fail-on-medium \
+            --ignore-checks sandbox.process_backend
 
       # ---------------------------------------------------------------------------
       # Dependency CVE scan (E11/T11.4 / G-A5)
