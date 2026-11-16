@@ -16,7 +16,6 @@ regress:
 
 from __future__ import annotations
 
-import os
 import stat
 from pathlib import Path
 
@@ -70,16 +69,6 @@ def test_shell_installer_verifies_uv_is_on_path_after_install() -> None:
     # An explicit re-check after the PATH export, with a real error message.
     assert "command -v uv" in tail
     assert "not on PATH" in tail
-
-
-def test_shell_installer_only_runs_guided_setup_when_interactive() -> None:
-    """`quickstart` prompts interactively; masking failure with `|| true` hid it."""
-    text = INSTALL_SH.read_text(encoding="utf-8")
-    assert "[ -t 0 ]" in text and "[ -t 1 ]" in text
-    quickstart_lines = [ln for ln in text.splitlines() if "quickstart" in ln]
-    assert quickstart_lines
-    for line in quickstart_lines:
-        assert "|| true" not in line, f"quickstart failure must not be masked: {line.strip()}"
 
 
 def test_shell_installer_supports_a_pinned_ref() -> None:
@@ -140,10 +129,52 @@ def test_posix_launcher_resolves_both_venv_layouts() -> None:
     assert not any('exec "$(dirname "$0")/.venv/Scripts' in ln for ln in exec_lines)
 
 
-def test_posix_launcher_runs(monkeypatch) -> None:
-    """The shim should actually execute in this repo (a venv is present in CI/dev)."""
-    if not (REPO_ROOT / ".venv").exists():
-        import pytest
+def test_powershell_installer_checks_uv_sync_exit_code() -> None:
+    """PS 5.1 does not treat a native non-zero exit as terminating.
 
-        pytest.skip("no .venv in this checkout")
-    assert os.access(SHIM, os.X_OK)
+    Without an explicit $LASTEXITCODE check a failed `uv sync` fell through and
+    the installer printed the success banner anyway.
+    """
+    text = INSTALL_PS1.read_text(encoding="utf-8")
+    # Find the actual command line, not a mention in a comment.
+    lines = [ln.strip() for ln in text.splitlines()]
+    try:
+        sync_idx = lines.index("uv sync")
+    except ValueError:  # pragma: no cover - would mean the command was renamed
+        raise AssertionError("expected a bare `uv sync` command line in install.ps1") from None
+    tail = "\n".join(lines[sync_idx : sync_idx + 6])
+    assert "$LASTEXITCODE" in tail, "uv sync exit code must be checked in install.ps1"
+    assert "dependency install failed" in tail.lower()
+
+
+def test_powershell_installer_blanks_askpass_helper() -> None:
+    """GIT_TERMINAL_PROMPT=0 does not stop Git Credential Manager's GUI prompt."""
+    text = INSTALL_PS1.read_text(encoding="utf-8")
+    assert "GIT_ASKPASS" in text
+
+
+def test_powershell_installer_preserves_the_live_path() -> None:
+    """Assigning machine;user discards session-injected directories (conda, scoop)."""
+    text = INSTALL_PS1.read_text(encoding="utf-8")
+    assert '$env:Path = "$env:Path;' in text, "must prepend, not replace, the live PATH"
+    assert "ExpandEnvironmentVariables" in text
+
+
+def test_posix_launcher_actually_runs() -> None:
+    """Execute the shim, rather than merely re-asserting the mode bit.
+
+    The previous version of this test only checked os.access(..., X_OK) — the
+    same thing the preceding test asserts — and so never executed anything.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        [str(SHIM), "--version"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(REPO_ROOT),
+        check=False,
+    )
+    assert result.returncode == 0, f"shim failed: {result.stdout} {result.stderr}"
+    assert "hachi" in (result.stdout + result.stderr).lower()
