@@ -128,6 +128,80 @@ def test_blocked_subpath_overrides_allowed_root(tmp_path: Path) -> None:
     assert "inside blocked directory" in denied.reason
 
 
+# ---------------------------------------------------------------------------
+# P-01 — launcher/edit commands must not bypass the blocked-path check.
+#
+# `check_command` used to run its file-argument scan only when the executable
+# was in `_EXFIL_STEMS` (cat, head, copy, …). Six commands that are in the
+# guided-tier allowlist but NOT in that set — the GUI/editor launchers — fell
+# straight through to `allowed` with no path inspection at all, so
+# `code ~/.ssh/id_rsa` was permitted while `cat ~/.ssh/id_rsa` was denied.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "launcher",
+    ["code", "open", "notepad", "xdg-open", "explorer", "start"],
+)
+def test_launcher_commands_cannot_bypass_blocked_paths(tmp_path: Path, launcher: str) -> None:
+    """Every allowlisted launcher must be denied a path inside blocked_paths."""
+    target_file = tmp_path / "blocked" / "id_rsa"
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    target_file.write_text("PRIVATE", encoding="utf-8")
+
+    gate = PermissionGate(_write_permissions_file(tmp_path))
+
+    result = gate.check_command(f"{launcher} {target_file}")
+    assert result.allowed is False, (
+        f"{launcher!r} was allowed to open {target_file} — this is the P-01 blocked-path bypass"
+    )
+    assert "blocked" in result.reason.lower()
+
+
+def test_direct_read_still_denied_as_control(tmp_path: Path) -> None:
+    """Control case: the exfil path that always worked must keep working."""
+    target_file = tmp_path / "blocked" / "id_rsa"
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    target_file.write_text("PRIVATE", encoding="utf-8")
+
+    gate = PermissionGate(_write_permissions_file(tmp_path))
+
+    denied = gate.check_command(f"cat {target_file}")
+    assert denied.allowed is False
+    assert "blocked" in denied.reason.lower()
+
+
+def test_bare_filename_resolving_into_blocked_path_is_denied(tmp_path: Path, monkeypatch) -> None:
+    """A relative filename is still a path when cwd sits inside blocked_paths.
+
+    `_check_path_args` skipped any token without `/`, `\\`, `~` or `.`, so a
+    bare filename was never resolved — `cat id_rsa` run from inside the blocked
+    directory was permitted.
+    """
+    blocked_dir = tmp_path / "blocked"
+    blocked_dir.mkdir(parents=True, exist_ok=True)
+    (blocked_dir / "id_rsa").write_text("PRIVATE", encoding="utf-8")
+
+    gate = PermissionGate(_write_permissions_file(tmp_path))
+    monkeypatch.chdir(blocked_dir)
+
+    denied = gate.check_command("cat id_rsa")
+    assert denied.allowed is False, "bare filename inside a blocked cwd was allowed"
+    assert "blocked" in denied.reason.lower()
+
+
+def test_allowed_path_still_permitted_after_launcher_fix(tmp_path: Path) -> None:
+    """The fix must not deny legitimate work in allowed directories."""
+    allowed_file = tmp_path / "allowed" / "notes.txt"
+    allowed_file.parent.mkdir(parents=True, exist_ok=True)
+    allowed_file.write_text("hello", encoding="utf-8")
+
+    gate = PermissionGate(_write_permissions_file(tmp_path))
+
+    assert gate.check_command(f"code {allowed_file}").allowed is True
+    assert gate.check_command(f"cat {allowed_file}").allowed is True
+
+
 def test_relative_traversal_outside_allowed_root_is_denied(tmp_path: Path) -> None:
     permissions_file = _write_permissions_file(tmp_path)
     gate = PermissionGate(permissions_file)

@@ -2174,6 +2174,14 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** never add a line pattern to the paragraph stop condition unless that same pattern is also handled by an earlier branch that ALWAYS increments `i`; any stop condition that causes an empty `lines` result without advancing `i` produces an infinite outer loop.
 - **Locked by:** `frontend/src/components/ui/Markdown.test.tsx` — "does not produce a table without a separator row" passes the failing input directly to the component.
 
+### BB-90 — Six allowlisted launchers bypassed the blocked-path check entirely
+
+- **Symptom:** In the `guided` tier, `cat ~/.ssh/id_rsa` was denied but `code ~/.ssh/id_rsa` (also `open`, `notepad`, `xdg-open`, `explorer`, `start`) returned `Command 'code' is allowed.` The same secret was readable through any GUI/editor launcher.
+- **Root cause:** `check_command` ran its file-argument scan only when the executable was in `_EXFIL_STEMS` (`cat`, `head`, `copy`, `move`, …). Those six launchers are in `_SAFE_COMMANDS` but **not** in `_EXFIL_STEMS`, so they fell through to `return PermissionResult(True, …)` without inspecting a single argument. Separately, `_check_path_args` skipped any token without `/`, `\\`, `~` or `.`, so a bare filename (`cat id_rsa`) was never resolved against the cwd — uncaught whenever cwd sat inside a blocked directory.
+- **Fix:** the argument scan now runs for **every** allowlisted command, not just the exfiltrate set. `_EXFIL_STEMS` is retained only to *widen* the scan (a path-taking command's bare argument is presumed a filename even before it exists). `_check_path_args` also resolves a bare token when it exists on disk, closing the blocked-cwd gap. Verified: all eight commands now return `Access to blocked path denied.`
+- **Avoid:** never make a security scan conditional on a *category list* of executables — any allowlist entry missing from that list silently skips the check; run the scan on every allowlisted command and let the categorisation only widen it.
+- **Locked by:** `tests/test_permission_gate_hardening.py` — `test_launcher_commands_cannot_bypass_blocked_paths` (parametrised over all six), `test_bare_filename_resolving_into_blocked_path_is_denied`, plus `test_allowed_path_still_permitted_after_launcher_fix` to guard against over-blocking.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
