@@ -84,4 +84,51 @@ def test_models_human_readable_marks_current(monkeypatch) -> None:
     result = runner.invoke(app, ["models"])
     assert result.exit_code == 0, result.output
     assert "claude-sonnet-4-5" in result.output
+
+
+# ---------------------------------------------------------------------------
+# P-06 — a missing API key is the expected first-run state, not a crash.
+#
+# `models` built the LLM client OUTSIDE its try/except, so
+# AnthropicClient.__init__ raising ValueError escaped as a Rich traceback and
+# the command exited 1. The "live discovery unavailable (offline or no API key)"
+# branch further down was unreachable. Precedent for the correct shape:
+# the TUI/memory list path (~line 870) wraps construction in try/except.
+# ---------------------------------------------------------------------------
+
+
+def _patch_client_build_failure(monkeypatch) -> None:
+    """Make client construction fail the way it does with no credential present."""
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: _cfg())
+    monkeypatch.setattr("hachi.cli.main.create_default_secret_store", lambda: object())
+
+    def _raise(*_args, **_kwargs):
+        raise ValueError("ANTHROPIC_API_KEY must be provided or set in the environment.")
+
+    # create_llm_client is imported inside the command, so patch it at its source.
+    monkeypatch.setattr("hachi.core.llm.create_llm_client", _raise)
+
+
+def test_models_without_api_key_exits_zero(monkeypatch) -> None:
+    """The command must degrade to the configured model, not crash."""
+    _patch_client_build_failure(monkeypatch)
+
+    result = runner.invoke(app, ["models", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["source"] == "configured"
+    assert payload["models"] == ["claude-haiku-4-5"]
+
+
+def test_models_without_api_key_shows_no_traceback(monkeypatch) -> None:
+    """Human-readable output must be the friendly hint, not a stack trace."""
+    _patch_client_build_failure(monkeypatch)
+
+    result = runner.invoke(app, ["models"])
+
+    assert result.exit_code == 0, result.output
+    assert "Traceback" not in result.output
+    assert "ANTHROPIC_API_KEY must be provided" not in result.output
+    assert "live discovery unavailable" in result.output
     assert "(current)" in result.output
