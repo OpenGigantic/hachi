@@ -70,10 +70,14 @@ else
   fi
 fi
 
-# 3. Install dependencies.
+# 4. Install dependencies. Report a failure explicitly rather than letting
+#    `set -e` abort with a bare uv error after we have already claimed success.
 cd "$INSTALL_DIR"
 info "Installing dependencies (this can take a minute)..."
-uv sync
+if ! uv sync; then
+  err "Dependency install failed. Run 'uv sync' in $INSTALL_DIR to see the full error."
+  exit 1
+fi
 
 # 4. Drop a friendly launcher on PATH.
 mkdir -p "$BIN_DIR"
@@ -85,13 +89,18 @@ chmod +x "$BIN_DIR/hachi"
 
 # 5. Launch the guided setup — only when a human is actually present.
 #    `quickstart` is entirely interactive: with no TTY it either EOFs or hangs.
-#    Skipping is honest; the previous `|| true` hid genuine failures while
-#    still printing "Hachi is installed".
-if [ -t 0 ] && [ -t 1 ]; then
+#
+#    Test stdout, not stdin. Under `curl … | bash` — the only advertised
+#    invocation — fd0 IS the pipe, so `-t 0` is always false and gating on it
+#    meant setup never ran even for a human at a terminal. Reattach the real
+#    terminal from /dev/tty instead, and fall back to skipping when there is
+#    genuinely no terminal (CI, Docker, cron).
+if [ -t 1 ] && { : </dev/tty; } 2>/dev/null; then
   info "Installed! Launching setup..."
-  "$BIN_DIR/hachi" quickstart || info "Setup exited early — run 'hachi quickstart' when ready."
+  "$BIN_DIR/hachi" quickstart </dev/tty \
+    || info "Setup exited early — run 'hachi quickstart' when ready."
 else
-  info "Installed (non-interactive shell — skipping guided setup)."
+  info "Installed (no terminal — skipping guided setup; run 'hachi quickstart' later)."
 fi
 
 cat <<EOF
