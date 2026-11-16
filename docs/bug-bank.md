@@ -2174,6 +2174,16 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** never add a line pattern to the paragraph stop condition unless that same pattern is also handled by an earlier branch that ALWAYS increments `i`; any stop condition that causes an empty `lines` result without advancing `i` produces an infinite outer loop.
 - **Locked by:** `frontend/src/components/ui/Markdown.test.tsx` — "does not produce a table without a separator row" passes the failing input directly to the component.
 
+### BB-93 — `curl | bash` installer hung forever and silently skipped the rest of itself
+
+- **Symptom:** Piping `install.sh` into bash could hang indefinitely with no output, and *every line after the clone never executed* — no dependency install, no launcher, no completion message. On Windows, `install.ps1` aborted at `uv sync` with "uv not recognised".
+- **Root cause (two independent defects).**
+  1. **stdin theft.** `git clone` inherits the script's stdin. Under `curl … | bash` that stdin *is the pipe carrying the remaining script text*, so git consumed the rest of the file. If the clone then needed credentials (private repo, typo'd `HACHI_REPO`) it blocked on a username prompt with no TTY — forever. Reproduced: `printf 'echo START\ngit clone …\necho LINE3\n' | bash` printed `START`, then hung; `LINE3` never appeared.
+  2. **PowerShell PATH.** Upstream's uv installer edits the *registry* PATH only, never the current process. `$ErrorActionPreference = "Stop"` then killed `uv sync` even though the install had succeeded. macOS was fine only because `install.sh` had an `export PATH`; the PowerShell equivalent was missing.
+- **Fix:** `export GIT_TERMINAL_PROMPT=0` (fail fast instead of prompting), `</dev/null` on every git invocation, explicit exit-code checks with actionable messages, git preconditions moved *before* the uv bootstrap, an explicit `command -v uv` re-check after the PATH export, PowerShell re-reads Machine+User PATH into `$env:Path`, guided setup only runs when a TTY/console is actually present, `HACHI_REF` added for reproducible installs, and the POSIX `hachi` shim now resolves both `.venv/bin` and `.venv/Scripts` and ships executable.
+- **Avoid:** any command in a `curl | bash` script that can read stdin — git, ssh, package managers — must be given `</dev/null` plus a non-interactive flag; and a script that installs a tool must re-verify it is on PATH rather than trusting the installer's own PATH edit.
+- **Locked by:** `tests/test_install_scripts.py` — structural guards for the stdin redirect, `GIT_TERMINAL_PROMPT`, ordering, POSIX/PowerShell PATH re-checks, TTY-guarded setup, ASCII-only `install.ps1`, and the shim's executable bit and dual venv layout.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
