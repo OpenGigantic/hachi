@@ -2174,6 +2174,14 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** never add a line pattern to the paragraph stop condition unless that same pattern is also handled by an earlier branch that ALWAYS increments `i`; any stop condition that causes an empty `lines` result without advancing `i` produces an infinite outer loop.
 - **Locked by:** `frontend/src/components/ui/Markdown.test.tsx` — "does not produce a table without a separator row" passes the failing input directly to the component.
 
+### BB-92 — A guard placed outside the try/except left the error branch unreachable
+
+- **Symptom:** `hachi models` — a README-documented command — exited 1 with a Rich source-code traceback (`ValueError: ANTHROPIC_API_KEY must be provided…`) whenever no provider key was configured, i.e. on every fresh install.
+- **Root cause:** `cli/main.py` built the LLM client *outside* the `try` and only `client.list_models()` inside it. `create_llm_client` → `AnthropicClient.__init__` raises when the credential is absent, so the exception escaped before the `try` was entered. The command already contained the correct degraded path — `elif not discovered: "live discovery unavailable (offline or no API key)"` — but **that branch was unreachable**, because reaching it requires `client` to exist. The same call is wrapped correctly in the TUI/memory list path ~3,000 lines earlier.
+- **Fix:** move client construction inside the `try`, default `discovered` to `[]` and `client` to `None`, and swallow the exception with a comment naming the expected cases. Guard the `finally` close with `getattr(client, "close", None)` so it is a no-op when construction failed.
+- **Avoid:** when a function has a "graceful degradation" branch, put the *construction* that can fail inside the same try block — a fallback placed after a call that raises is dead code, and any test that stubs the call to succeed will never notice.
+- **Locked by:** `tests/test_cli_models.py` — `test_models_without_api_key_exits_zero`, `test_models_without_api_key_shows_no_traceback` (both patch `create_llm_client` to **raise**, rather than stubbing it to succeed).
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
