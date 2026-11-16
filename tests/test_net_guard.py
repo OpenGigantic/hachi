@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ipaddress
+
 import pytest
 
 from hachi.core.net_guard import ValidationResult, validate_outbound_url
@@ -111,25 +113,75 @@ def test_allow_private_hatch_still_covers_cgnat() -> None:
 # ---- the gateway guard is a separate code path and must agree ----
 
 
-@pytest.mark.parametrize(
-    "url,expected",
-    [
-        ("http://100.64.0.1/", False),
-        ("http://100.100.100.100/", False),
-        ("http://100.127.255.255/", False),
-        ("http://[::ffff:100.64.0.1]/", False),
-        ("http://100.63.255.255/", True),
-        ("http://100.128.0.0/", True),
-        ("http://1.1.1.1/", True),
-        ("http://169.254.169.254/", False),
-        ("http://10.0.0.5/", False),
-    ],
-)
-def test_gateway_guard_agrees_on_cgnat(url: str, expected: bool) -> None:
-    """`gateway/_net_guard.py` duplicates the core predicate — keep them in step."""
+def test_cgnat_is_neither_global_nor_private_on_this_python() -> None:
+    """Pin the CPython premise the guard is written against.
+
+    `net_guard` does not rely on `is_global` alone for 100.64.0.0/10 — there is
+    an explicit range check — but the premise is worth asserting: if CPython ever
+    reports `is_global is True` for CGNAT, this fails loudly instead of the
+    guard's behaviour changing silently underneath us.
+    """
+    addr = ipaddress.ip_address("100.64.0.1")
+    assert addr.is_global is False
+    assert addr.is_private is False
+
+
+_CORPUS = [
+    "http://100.64.0.1/",
+    "http://100.100.100.100/",
+    "http://100.127.255.255/",
+    "http://[::ffff:100.64.0.1]/",
+    "http://100.63.255.255/",
+    "http://100.128.0.0/",
+    "http://1.1.1.1/",
+    "http://8.8.8.8/",
+    "http://169.254.169.254/",
+    "http://10.0.0.5/",
+    "http://127.0.0.1/",
+    "http://0.0.0.0/",
+    "http://[64:ff9b::1.2.3.4]/",
+    "http://[2606:4700::1111]/",
+]
+
+
+def test_gateway_and_core_guards_agree(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Compare the two implementations directly rather than hardcoding expectations.
+
+    The previous version of this test hardcoded nine booleans, so it could not
+    detect divergence — it only re-stated its own table. The gateway now
+    delegates to core, and this asserts that.
+    """
     from hachi.gateway._net_guard import is_safe_outbound_url
 
-    assert is_safe_outbound_url(url) is expected
+    monkeypatch.delenv("HACHI_REST_ALLOW_PRIVATE", raising=False)
+    for url in _CORPUS:
+        # ValidationResult unpacks as (ok, reason) but is not indexable.
+        core_ok, _reason = validate_outbound_url(url)
+        gateway_ok = is_safe_outbound_url(url)
+        assert gateway_ok == core_ok, (
+            f"guards disagree for {url}: gateway={gateway_ok} core={core_ok}"
+        )
+
+
+def test_gateway_allow_private_hatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tailnet Ollama endpoint must remain reachable via the documented opt-in."""
+    from hachi.gateway._net_guard import is_safe_outbound_url
+
+    monkeypatch.delenv("HACHI_REST_ALLOW_PRIVATE", raising=False)
+    assert is_safe_outbound_url("http://100.64.0.1:11434/") is False
+    assert is_safe_outbound_url("http://100.64.0.1:11434/", allow_private=True) is True
+
+
+def test_gateway_honours_rest_allow_private_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`HACHI_REST_ALLOW_PRIVATE` is honoured here, as the channel senders do."""
+    from hachi.gateway._net_guard import is_safe_outbound_url
+
+    for value in ("1", "true", "TRUE", "yes"):
+        monkeypatch.setenv("HACHI_REST_ALLOW_PRIVATE", value)
+        assert is_safe_outbound_url("http://100.64.0.1:11434/") is True, value
+
+    monkeypatch.setenv("HACHI_REST_ALLOW_PRIVATE", "0")
+    assert is_safe_outbound_url("http://100.64.0.1:11434/") is False
 
 
 def test_gateway_guard_loopback_exemption_is_preserved() -> None:
