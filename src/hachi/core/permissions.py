@@ -16,6 +16,8 @@ Security Invariants:
     5. The gate is immutable after construction — no runtime modification.
 """
 
+import os
+import shlex
 import sys
 import uuid
 from collections.abc import Callable
@@ -461,8 +463,18 @@ class PermissionGate:
         """
         for token in arg_tokens:
             token = token.strip("\"'")
-            if not token or token.startswith("-"):
+            if not token:
                 continue
+            if token.startswith("-"):
+                # P-01b: `--flag=value` carries its path in the right-hand side.
+                # Skipping every token that starts with "-" meant
+                # `code --file=~/.ssh/id_rsa` was never inspected. Keep skipping
+                # bare flags, but look at the value half when there is one.
+                if "=" not in token:
+                    continue
+                token = token.split("=", 1)[1].strip("\"'")
+                if not token:
+                    continue
             # P-01: tokens with a separator, ``~`` or ``.`` are paths outright.
             # A bare token used to be skipped unconditionally, which meant
             # `cat id_rsa` was permitted whenever cwd was inside a blocked
@@ -621,7 +633,17 @@ class PermissionGate:
         if self._term.allow_all:
             return PermissionResult(True, "Command allowed (unrestricted mode).")
 
-        tokens = command.strip().split()
+        # P-01b: tokenise exactly the way the executor will. `os_tools` runs the
+        # command through shlex.split, so using plain .split() here let a quoted
+        # argument fragment into harmless pieces: with a blocked path containing a
+        # space, `code "/…/blocked dir/id_rsa"` produced the tokens `code`,
+        # `"/…/blocked`, `dir/id_rsa"` — none of which resolved inside the blocked
+        # directory — and was allowed. Fall back on unbalanced quotes so we still
+        # return a verdict instead of raising.
+        try:
+            tokens = shlex.split(command, posix=(os.name != "nt"))
+        except ValueError:
+            tokens = command.strip().split()
         executable = tokens[0] if tokens else ""
         executable_name = Path(executable.strip("\"'")).name.lower()
         executable_stem = Path(executable_name).stem.lower()
@@ -673,6 +695,22 @@ class PermissionGate:
                 if executable_stem in ("pip", "pip3") and "install" in arg_tokens:
                     return PermissionResult(
                         False, f"Command is privileged and blocked in {self._tier} tier."
+                    )
+
+                # P-01c: `find` takes a NESTED COMMAND, so scanning its arguments
+                # for paths does not help — `find / -name id_rsa -exec cat {} +`
+                # has no blocked path among its tokens (`/`, `cat`, `{}`, `+` are
+                # all harmless) yet reads the file end to end. Deny the exec
+                # primaries outright in guided/sandbox, mirroring the git/pip
+                # privileged-subcommand guard above. `-execdir`, `-ok` and `-okdir`
+                # are the same primitive with slightly different confirmation.
+                if executable_stem == "find" and any(
+                    flag in arg_tokens for flag in ("-exec", "-execdir", "-ok", "-okdir")
+                ):
+                    return PermissionResult(
+                        False,
+                        f"'find' with -exec is blocked in {self._tier} tier because it "
+                        "runs an arbitrary command against matched files.",
                     )
 
                 # P-01 — scan arguments for blocked paths on EVERY allowlisted
