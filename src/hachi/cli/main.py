@@ -4455,9 +4455,22 @@ def models(
         "api_key_env": getattr(provider, "api_key_env", None),
         "base_url": getattr(provider, "base_url", None),
     }
-    client = create_llm_client(provider_config, secret_store=create_default_secret_store())
+    # P-06: a missing provider credential makes create_llm_client raise
+    # (AnthropicClient.__init__ -> "ANTHROPIC_API_KEY must be provided…").
+    # "No API key yet" is the expected first-run state, not an error, so degrade
+    # to the configured model list rather than letting the traceback escape with
+    # exit 1. Without this the "live discovery unavailable (offline or no API
+    # key)" hint below was unreachable — construction blew up before it.
+    # Mirrors the TUI/memory list path, which already wraps construction.
+    discovered: list[str] = []
+    client = None
     try:
+        client = create_llm_client(provider_config, secret_store=create_default_secret_store())
         discovered = client.list_models()
+    except Exception:
+        # Offline, missing API key, or import error — fall through to the
+        # configured model list.
+        pass
     finally:
         close = getattr(client, "close", None)
         if callable(close):
