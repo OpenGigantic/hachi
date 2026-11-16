@@ -40,6 +40,106 @@ def test_allow_private_bypass() -> None:
     assert ok is True
 
 
+# ---- P-04: CGNAT / overlay networks were neither "private" nor blocked ----
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # RFC 6598 shared address space — Tailscale hands these out.
+        "http://100.64.0.1/",
+        "http://100.64.0.0/",
+        "http://100.100.100.100/",  # Tailscale MagicDNS
+        "http://100.127.255.255/",  # last address of 100.64.0.0/10
+        # IPv4-mapped IPv6 form of the same address. ipaddress reports the mapped
+        # form as is_private=False, so a denylist of 100.64.0.0/10 misses it —
+        # membership tests return False for ::ffff:100.64.0.1.
+        "http://[::ffff:100.64.0.1]/",
+    ],
+)
+def test_cgnat_and_overlay_addresses_are_rejected(url: str) -> None:
+    """100.64.0.0/10 is neither is_private nor is_global — it must still be blocked."""
+    ok, reason = validate_outbound_url(url)
+    assert ok is False, f"{url} was allowed; CGNAT/overlay hosts must be rejected"
+    assert "non-public" in reason or "blocked" in reason.lower()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Just outside 100.64.0.0/10 on both sides — ordinary public space.
+        # A naive `startswith("100.")` rule would wrongly block these.
+        "http://100.63.255.255/",
+        "http://100.128.0.0/",
+    ],
+)
+def test_public_neighbours_of_cgnat_are_allowed(url: str) -> None:
+    ok, reason = validate_outbound_url(url)
+    assert ok is True, f"{url} was blocked but is public; reason={reason}"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.0.0.5/internal",
+        "http://127.0.0.1/admin",
+        "http://0.0.0.0/",
+        "http://[::1]/admin",
+        # NAT64 is_reserved=True even though is_global=True — a bare
+        # `return addr.is_global` rewrites would regress this.
+        "http://[64:ff9b::1.2.3.4]/",
+    ],
+)
+def test_existing_rejections_survive_the_is_global_change(url: str) -> None:
+    ok, _reason = validate_outbound_url(url)
+    assert ok is False
+
+
+@pytest.mark.parametrize("url", ["http://1.1.1.1/", "http://8.8.8.8/", "http://[2606:4700::1111]/"])
+def test_genuinely_public_addresses_still_pass(url: str) -> None:
+    ok, reason = validate_outbound_url(url)
+    assert ok is True, reason
+
+
+def test_allow_private_hatch_still_covers_cgnat() -> None:
+    """The documented opt-in must keep working for self-hosted tailnet services."""
+    ok, reason = validate_outbound_url("http://100.64.0.1/", allow_private=True)
+    assert ok is True, reason
+
+
+# ---- the gateway guard is a separate code path and must agree ----
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("http://100.64.0.1/", False),
+        ("http://100.100.100.100/", False),
+        ("http://100.127.255.255/", False),
+        ("http://[::ffff:100.64.0.1]/", False),
+        ("http://100.63.255.255/", True),
+        ("http://100.128.0.0/", True),
+        ("http://1.1.1.1/", True),
+        ("http://169.254.169.254/", False),
+        ("http://10.0.0.5/", False),
+    ],
+)
+def test_gateway_guard_agrees_on_cgnat(url: str, expected: bool) -> None:
+    """`gateway/_net_guard.py` duplicates the core predicate — keep them in step."""
+    from hachi.gateway._net_guard import is_safe_outbound_url
+
+    assert is_safe_outbound_url(url) is expected
+
+
+def test_gateway_guard_loopback_exemption_is_preserved() -> None:
+    """Ollama on localhost must keep working — the documented allow_loopback case."""
+    from hachi.gateway._net_guard import is_safe_outbound_url
+
+    assert is_safe_outbound_url("http://127.0.0.1:11434/") is False
+    assert is_safe_outbound_url("http://127.0.0.1:11434/", allow_loopback=True) is True
+
+
 # ---- HIGH-001: ValidationResult carries resolved IPs for DNS pinning ----
 
 

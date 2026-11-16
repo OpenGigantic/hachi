@@ -31,7 +31,22 @@ def _ip_is_public(raw_ip: str) -> bool:
         addr = ipaddress.ip_address(raw_ip)
     except ValueError:
         return False
-    return not (
+    # P-04: the negative list alone is insufficient. `is_private` is a closed
+    # table (RFC1918, 127/8, 169.254/16, TEST-NETs, 240/4, …) that does NOT
+    # include RFC 6598 shared address space — 100.64.0.0/10, which Tailscale and
+    # other overlay networks hand out. Those addresses report
+    # is_private=False *and* is_global=False, so every disjunct below was False
+    # and they passed the guard.
+    #
+    # Requiring is_global positively closes it, including the IPv4-mapped form
+    # (::ffff:100.64.0.1), which a range denylist would still miss because
+    # `ipaddress.ip_network("100.64.0.0/10")` membership is False for mapped
+    # addresses.
+    #
+    # The negative list is kept deliberately: `is_global` on its own would
+    # *regress* NAT64 (64:ff9b::/96), which reports is_global=True but
+    # is_reserved=True and is blocked today.
+    return addr.is_global and not (
         addr.is_private
         or addr.is_loopback
         or addr.is_link_local
