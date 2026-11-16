@@ -2174,6 +2174,14 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** never add a line pattern to the paragraph stop condition unless that same pattern is also handled by an earlier branch that ALWAYS increments `i`; any stop condition that causes an empty `lines` result without advancing `i` produces an infinite outer loop.
 - **Locked by:** `frontend/src/components/ui/Markdown.test.tsx` — "does not produce a table without a separator row" passes the failing input directly to the component.
 
+### BB-91 — The SSRF guard let CGNAT and overlay networks straight through
+
+- **Symptom:** `validate_outbound_url("http://100.64.0.1/")` returned `ok=True`. On any machine running Tailscale, the agent could reach every device on the tailnet — provider endpoints, webhook receivers, voice base URLs.
+- **Root cause:** the guard was a pure *negative* list — `not (is_private or is_loopback or is_link_local or is_reserved or is_multicast or is_unspecified)`. CPython's `is_private` is a closed literal table (RFC1918, 127/8, 169.254/16, TEST-NETs, 240/4, …) and RFC 6598 shared address space `100.64.0.0/10` is **not in it**. Those addresses also report `is_global=False`, so every disjunct was False and they were treated as public. Present since origin commit `bd9256c` — never a refactor regression. `gateway/_net_guard.py` calls itself a "thin wrapper" but imports nothing from core and duplicates the same negative list, so it carried the identical hole.
+- **Fix:** require `is_global` positively *in addition to* keeping the negative list. The list stays because `is_global` alone would regress NAT64 (`64:ff9b::/96`, `is_global=True` but `is_reserved=True`, blocked today). A range denylist of `100.64.0.0/10` was rejected as the fix because `ip_network` membership is False for the IPv4-mapped form `::ffff:100.64.0.1`, which also passed. Both modules patched; the loopback short-circuit stays first so `allow_loopback=True` (local Ollama) still works.
+- **Avoid:** never define "public" as "matches none of the bad ranges" — the special-purpose registry grows and `ipaddress.is_private` is a closed table, so require `is_global` and keep the negative checks only to catch is_global-but-reserved cases like NAT64.
+- **Locked by:** `tests/test_net_guard.py` — `test_cgnat_and_overlay_addresses_are_rejected` (incl. the `::ffff:` form), `test_public_neighbours_of_cgnat_are_allowed` (100.63.255.255 / 100.128.0.0 — a naive `100.` prefix rule breaks these), `test_existing_rejections_survive_the_is_global_change` (incl. NAT64), `test_allow_private_hatch_still_covers_cgnat`, and `test_gateway_guard_agrees_on_cgnat` for the duplicated gateway path.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

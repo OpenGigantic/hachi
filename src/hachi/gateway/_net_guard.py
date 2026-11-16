@@ -76,6 +76,20 @@ def is_safe_outbound_url(url: str, *, allow_loopback: bool = False) -> bool:
                 return False
             continue  # allowed — skip remaining checks for this address
 
+        # P-04: this module duplicates the core predicate rather than importing
+        # it (the module docstring calls it a "thin wrapper", but it imports
+        # nothing from hachi.core.net_guard), so the same gap has to be closed
+        # here independently. CGNAT / overlay addresses (100.64.0.0/10 —
+        # Tailscale) are neither is_private nor is_global, so every negative
+        # check below passed them. Require is_global positively.
+        #
+        # The negative list is kept because is_global alone would regress NAT64
+        # (64:ff9b::/96), which is is_global but is_reserved and is blocked
+        # today. Placed after the loopback short-circuit so the documented
+        # allow_loopback=True path (local Ollama) still works.
+        if not addr.is_global:
+            return False
+
         if addr.is_private:
             return False
         if addr.is_link_local:
