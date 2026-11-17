@@ -74,8 +74,17 @@ Tier-1 or Tier-2 skills (wave-2 enforcement; tracked as a follow-up).
 
 - Reference credentials by **environment variable name** (e.g. `api_key_env = "ANTHROPIC_API_KEY"`).
 - Store secrets in the secret store (`hachi secrets --set <name>`) and reference by key name.
-- The CI `security` job (which runs `security-audit --fail-on-medium` on PRs) scans all
-  tracked files including `.og` files for secret patterns.
+- **Correction (2026-11-16):** an earlier revision of this section claimed the CI
+  `security` job "scans all tracked files including `.og` files for secret
+  patterns". **It does not.** `hachi security-audit` inspects the process
+  environment and resolved config; it never opens a file. Its
+  `oauth.google_client_secret_embedded` check fires on a `GOOGLE_CLIENT_SECRET`
+  exported into the environment, not on a key committed to a `.og` file or any
+  other source file. There is currently **no** tree secret-scan step in CI, so a
+  pull request that commits a credential is not blocked by this gate.
+  Tracked as PRODUCT-AUDIT P-30 (wire `core/secret_scanner.py` over the tracked
+  files with a fixture allowlist). Until that lands, the rule above is a
+  convention enforced by review, not by CI.
 
 ---
 

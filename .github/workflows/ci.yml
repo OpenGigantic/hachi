@@ -53,8 +53,21 @@ jobs:
     # Docker being present on the runner — swapping a permanently-red gate for an
     # intermittently-red one. The gate must be deterministic.
     #
-    # Everything else stays strict: a contributor who embeds a real GOCSPX- secret,
-    # sets permissions unrestricted, or enables terminal allow-all still fails.
+    # Everything else stays strict: a contributor who sets permissions
+    # unrestricted, enables terminal allow-all, or exports a concrete
+    # GOOGLE_CLIENT_SECRET to the runner still fails.
+    #
+    # !! WHAT THIS GATE DOES *NOT* DO — read before trusting it. !!
+    # `security-audit` inspects the PROCESS ENVIRONMENT and resolved config; it
+    # never opens a file. So it CANNOT catch a credential *committed to the
+    # tree* — `oauth.google_client_secret_embedded` fires on an exported env var,
+    # not on a secret in a source file. There is currently no tree secret-scan
+    # step in this workflow, so a pull request that commits an API key passes.
+    # (`docs/reference/og-security.md` used to claim otherwise; corrected.)
+    # Tracking: PRODUCT-AUDIT P-30 — wire `hachi/core/secret_scanner.py` over the
+    # tracked files, with an allowlist for the deliberate fixtures under tests/
+    # (AKIAIOSFODNN7EXAMPLE, sk-ant-api03-AAAA..., etc.) so the scan can be a hard
+    # gate rather than another suppressed red.
     env:
       GOOGLE_CLIENT_ID: ci-posture-placeholder.apps.googleusercontent.com
       HACHI_REST_ALLOWLIST: api.example.com
@@ -79,8 +92,10 @@ jobs:
             --ignore-checks sandbox.process_backend
         continue-on-error: true
 
+      # Runs on push AND pull_request. Gating this to PRs only meant `main` was
+      # never checked by the strict gate — the asymmetry that let this job stay
+      # red on every PR for weeks without anyone noticing.
       - name: Strict security audit (fail on medium)
-        if: github.event_name == 'pull_request'
         run: |
           uv run python -m hachi.cli.main security-audit --json --fail-on-high --fail-on-medium \
             --ignore-checks sandbox.process_backend

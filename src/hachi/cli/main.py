@@ -4786,11 +4786,19 @@ def security_audit(
     # PR-level --fail-on-medium gate is red for every contributor regardless of
     # their diff — which teaches contributors to ignore the gate.
     #
-    # Filter in place (`[:]`) rather than rebinding `findings`: `add_finding`
-    # closes over the name, and rebinding would leave the closure appending to a
-    # detached list if a future change adds a finding after this point.
+    # Filter in place (`[:]`) rather than rebinding `findings`. (Both work —
+    # `add_finding` closes over the *cell*, not the object — but in-place keeps
+    # the list identity stable for anything else holding a reference.)
+    #
+    # A requested id that matches nothing is reported separately. Without that, a
+    # typo (`sandbox.process back-end`) or a renamed check looks exactly like a
+    # successful exclusion: the finding survives, the gate goes red, and the CI
+    # log says the check was ignored.
     ignored_checks = sorted({c.strip() for c in ignore_checks.split(",") if c.strip()})
+    ignored_checks_unmatched: list[str] = []
     if ignored_checks:
+        _present = {f["check_id"] for f in findings}
+        ignored_checks_unmatched = [c for c in ignored_checks if c not in _present]
         _ignored = set(ignored_checks)
         findings[:] = [f for f in findings if f["check_id"] not in _ignored]
 
@@ -4799,17 +4807,18 @@ def security_audit(
     low_count = sum(1 for f in findings if f["severity"] == "low")
     total_count = len(findings)
 
-    # Build result payload
+    # Build result payload. `status` is set below, from the final exit code.
     result = {
-        "status": "pass" if high_count == 0 else "fail",
         "high": high_count,
         "medium": medium_count,
         "low": low_count,
         "total": total_count,
         "findings": findings,
         # Echo the ignore set so a CI consumer can tell "no finding" apart from
-        # "that finding was deliberately excluded".
+        # "that finding was deliberately excluded" — and can see when a requested
+        # id matched nothing (a typo or a renamed check).
         "ignored_checks": ignored_checks,
+        "ignored_checks_unmatched": ignored_checks_unmatched,
     }
 
     # Determine exit code based on fail thresholds
@@ -4830,6 +4839,11 @@ def security_audit(
         fail_reasons.append(f"finding count ({total_count}) exceeds max ({max_findings})")
 
     result["exit_code"] = exit_code
+    # Derive `status` from the exit code, not from high_count alone: with
+    # --fail-on-medium, a medium-only run exits 2 while `status` said "pass",
+    # and medium-only is the steady state for CI now that posture checks are
+    # pinned. The two fields must not disagree.
+    result["status"] = "pass" if exit_code == 0 else "fail"
     result["fail_reasons"] = fail_reasons if fail_reasons else []
 
     # Output format selection
