@@ -471,6 +471,10 @@ def _security_audit_fixture(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
     monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
     monkeypatch.delenv("HACHI_REST_ALLOWLIST", raising=False)
+    # A developer machine with HACHI_SANDBOX_BACKEND=container and no Docker
+    # flips the sandbox finding to `sandbox.container_unavailable`, which would
+    # make the ignore-checks tests depend on the host's setup.
+    monkeypatch.delenv("HACHI_SANDBOX_BACKEND", raising=False)
     monkeypatch.setenv("HACHI_REST_ALLOW_PRIVATE", "false")
 
 
@@ -506,6 +510,42 @@ def test_security_audit_ignore_checks_excludes_findings(monkeypatch, tmp_path: P
     # Everything not ignored still reports.
     assert "oauth.google_client_id_missing" in check_ids
     assert "rest.allowlist_missing" in check_ids
+    # The echoed contract is what CI reads to know what it gated on.
+    assert payload["ignored_checks"] == ["sandbox.process_backend"]
+    assert payload["ignored_checks_unmatched"] == []
+    # Still fails on the remaining highs — filtering must not clear the gate.
+    assert payload["exit_code"] == 2
+    assert payload["status"] == "fail"
+
+
+def test_security_audit_reports_ignore_ids_that_matched_nothing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A typo'd or renamed check id must be visible, not silently a no-op.
+
+    `--ignore-checks "sandbox.process back-end"` previously echoed the requested
+    string while the real finding survived — so the log said "ignored" and the
+    gate still failed, with nothing pointing at the mismatch.
+    """
+    _security_audit_fixture(monkeypatch, tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "security-audit",
+            "--json",
+            "--fail-on-medium",
+            "--ignore-checks",
+            "sandbox.process back-end",
+        ],
+        env={"COLUMNS": "40"},
+    )
+
+    payload = json.loads(result.stdout)
+    check_ids = {finding["check_id"] for finding in payload["findings"]}
+    assert "sandbox.process_backend" in check_ids, "the real check must survive a typo"
+    assert payload["ignored_checks_unmatched"] == ["sandbox.process back-end"]
+    assert payload["exit_code"] == 2
 
 
 def test_security_audit_ignore_checks_can_clear_the_gate(monkeypatch, tmp_path: Path) -> None:
