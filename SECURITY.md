@@ -117,7 +117,7 @@ Every push and pull request runs the following automated security checks:
 
 | Package | Version | Advisory status |
 |---------|---------|-----------------|
-| `aiohttp` | **3.14.5** (was 3.13.5) | Resolved — six HIGH advisories were fixed in 3.14.x |
+| `aiohttp` | **3.14.5** (was 3.13.5) | Resolved — OSV reports 31 advisories against 3.13.5 (12 HIGH, 14 moderate, 5 low); the high-severity class is fixed in 3.14.x |
 | `cryptography` | **50.0.2** (was 49.0.0) | Resolved — `CVE-2026-69247` (HIGH, PKCS#7 Bleichenbacher) fixed in 50.0.0 |
 | `starlette` | **1.3.1** | No outstanding advisories reported for this version |
 | `chromadb` | **1.5.9 — no fixed release exists** | Four unpatched advisories; see scope analysis below |
