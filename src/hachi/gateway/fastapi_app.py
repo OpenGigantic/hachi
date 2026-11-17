@@ -29,6 +29,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import Response
+from starlette.staticfiles import StaticFiles
 
 # UC-PERM-006: approvals inbox REST surface. core/approvals.py is a foundation
 # module that is always present, so these imports are direct.
@@ -438,6 +441,30 @@ def _resolve_session_store() -> Any:
         return None
 
 
+class _SPAStaticFiles(StaticFiles):
+    """StaticFiles with a history fallback for client-side routing.
+
+    Starlette's ``html=True`` resolves directory-like paths to ``index.html``, but
+    it does **not** fall back for arbitrary deep paths. A single-page app serves
+    one entry document and routes on the client, so ``/conversation`` (a route,
+    not a file) must return ``index.html`` or every refresh and every direct link
+    is a 404.
+
+    API prefixes are excluded so a genuinely missing endpoint still reports 404
+    rather than a confusing HTML body.
+    """
+
+    _NON_SPA_PREFIXES = ("api/", "v1/", "sessions/", "config/", "setup/", "memory/", "jobs/")
+
+    async def get_response(self, path: str, scope: Any) -> Response:
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404 or path.startswith(self._NON_SPA_PREFIXES):
+                raise
+            return await super().get_response("index.html", scope)
+
+
 def create_gateway_app(
     control_plane: GatewayControlPlane,
     auth_token: str | None = None,
@@ -715,8 +742,7 @@ def create_gateway_app(
     config = APIRouter(prefix="/config", tags=["config"], dependencies=protected_dependencies)
     setup = APIRouter(prefix="/setup", tags=["setup"], dependencies=protected_dependencies)
 
-    @system.get("/")
-    async def get_root() -> Any:
+    def _service_descriptor() -> dict[str, Any]:
         return {
             "service": "Hachi Gateway",
             "version": "1.0.0",
@@ -724,6 +750,27 @@ def create_gateway_app(
             "readiness": "/readiness",
             "docs": "/docs",
         }
+
+    @system.get("/status")
+    async def get_status() -> Any:
+        """Stable home for the service descriptor.
+
+        Added because "/" now belongs to the SPA whenever a frontend is mounted —
+        the URL `hachi serve` prints is the web UI, and users pointing a browser
+        at it must not get raw JSON.
+        """
+        return _service_descriptor()
+
+    @system.get("/")
+    async def get_root() -> Any:
+        # P-32: with a frontend mounted, "/" is the web UI. This route is
+        # registered before the static mount, so it previously won the match and
+        # every user following the printed "Web UI: http://…" URL got JSON.
+        if frontend_dist is not None:
+            _index = Path(frontend_dist) / "index.html"
+            if _index.is_file():
+                return FileResponse(str(_index))
+        return _service_descriptor()
 
     @system.get("/health", response_model=HealthResponse)
     async def get_health() -> Any:
@@ -3043,15 +3090,21 @@ def create_gateway_app(
 
         app.openapi = _custom_openapi  # type: ignore[method-assign]
 
-    # CRIT-008 — Mount the pre-built frontend as a static SPA AFTER all API routes
-    # so that API paths always win.  The catch-all ``html=True`` makes
-    # ``/anything/deep`` return ``index.html`` for client-side routing.
+    # Mount the pre-built frontend as a static SPA AFTER all API routes so that
+    # API paths always win.
+    #
+    # P-33: `html=True` alone does NOT give client-side routing a history
+    # fallback — it only resolves directory-like paths. Every SPA route
+    # (/conversation, /memory, …) therefore returned 404 on refresh or direct
+    # link, because there is no matching file on disk. `_SPAStaticFiles` falls
+    # back to index.html for unknown non-API paths, which is what the router
+    # expects. The comment here previously claimed `html=True` already did this;
+    # it did not, and the test that "covered" it only asserted the string
+    # "Hachi" appeared — which the JSON descriptor at "/" also satisfied.
     if frontend_dist is not None:
         _dist = Path(frontend_dist)
         if _dist.is_dir():
-            from starlette.staticfiles import StaticFiles
-
-            app.mount("/", StaticFiles(directory=str(_dist), html=True), name="frontend")
+            app.mount("/", _SPAStaticFiles(directory=str(_dist), html=True), name="frontend")
             _log.info("Frontend mounted from %s", _dist)
         else:
             _log.warning("frontend_dist '%s' is not a directory — skipping static mount", _dist)
