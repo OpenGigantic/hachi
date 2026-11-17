@@ -152,6 +152,23 @@ norecursedirs = ["tokoboros", "*.egg", ".git", ".venv", "node_modules", "build",
 # module-level singleton / patch.dict conflicts. Pass -n <N> or -n auto on the CLI.
 addopts = "--dist=loadfile"
 
+[tool.hatch.build]
+# Keep agent/tool scratch out of published artifacts. `.anvaya/` is the scratch
+# directory used by agent tooling and can reach ~95 MB including full copies of
+# this repository; none of it should ever ship.
+#
+# NOTE: this exclude does NOT by itself make `uv build` safe in a worktree that
+# contains such scratch — see BB-94. A tree containing `.anvaya/` still produced
+# a 15 KB wheel with no `src/` and no `.og` skills (build reported success).
+# Build release artifacts from a clean checkout or CI.
+exclude = [
+  "/.anvaya",
+  "/.pytest_cache",
+  "/.ruff_cache",
+  "/.mypy_cache",
+  "/.import_linter_cache",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/hachi"]
 
