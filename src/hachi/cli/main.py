@@ -4464,17 +4464,26 @@ def models(
     # Mirrors the TUI/memory list path, which already wraps construction.
     discovered: list[str] = []
     client = None
+    discovery_error: str | None = None
     try:
         client = create_llm_client(provider_config, secret_store=create_default_secret_store())
-        discovered = client.list_models()
-    except Exception:
-        # Offline, missing API key, or import error — fall through to the
-        # configured model list.
-        pass
-    finally:
-        close = getattr(client, "close", None)
-        if callable(close):
-            close()
+        try:
+            discovered = client.list_models()
+        finally:
+            # Nested INSIDE the outer try so a failing close() is swallowed by the
+            # same handler. The close used to sit in a sibling `finally`, where a
+            # failure (dead HTTP session on a flaky network) escaped as exactly the
+            # traceback this change exists to remove. This is the shape the
+            # TUI/memory list path already uses.
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+    except Exception as exc:  # noqa: BLE001 — degrade, never crash on discovery
+        # Offline, missing API key, *or a broken provider config*. The reason is
+        # kept and surfaced below: a typo'd `kind`, a bad `base_url` or a bad
+        # `api_key_ref` must not masquerade as "no API key yet" — that is the one
+        # case the user need not act on, and the bug this could otherwise hide.
+        discovery_error = str(exc) or exc.__class__.__name__
 
     options = resolve_available_models(discovered, allowed, current)
     source = "allowlist" if allowed else ("provider" if discovered else "configured")
@@ -4484,6 +4493,9 @@ def models(
         "source": source,
         "restricted": bool(allowed),
         "models": options,
+        # Additive: lets CI distinguish "no key yet" (expected) from a broken
+        # provider config (actionable). Both share source == "configured".
+        "discovery_error": discovery_error,
     }
     named_providers: dict = getattr(cfg, "providers", {}) or {}
     if named_providers:
@@ -4509,9 +4521,11 @@ def models(
     if allowed:
         console.print("  [dim]switching is restricted to the configured allowlist.[/dim]")
     elif not discovered:
+        # Exception messages routinely end in a period; strip it so the
+        # "; showing the configured model." clause reads cleanly.
+        detail = (discovery_error or "offline or no API key").rstrip(".")
         console.print(
-            "  [dim]live discovery unavailable (offline or no API key); "
-            "showing the configured model.[/dim]"
+            f"  [dim]live discovery unavailable: {detail}; showing the configured model.[/dim]"
         )
 
     if named_providers:
