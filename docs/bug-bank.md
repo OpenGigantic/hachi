@@ -2227,6 +2227,16 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Workaround:** build release artifacts from a **clean checkout** (CI, or a separate `git worktree`). Verified: a detached worktree of the same commit builds correctly regardless.
 - **Avoid:** never treat "Successfully built" as proof a package is complete — assert on artifact *contents* (wheel size, presence of the package dir and bundled data files), not just the exit code. A 15 KB wheel and a 1 MB wheel both exit 0.
 - **Still open:** the precise mechanism inside hatchling's file walk is unidentified. The `[tool.hatch.build] exclude` for `.anvaya` is kept because agent scratch should never ship, but it is documented as *not* a fix for this.
+### BB-95 — `hachi serve` served JSON at `/` and 404'd every SPA route
+
+- **Symptom:** `hachi serve` printed `Web UI: http://127.0.0.1:8787`, but a browser at that URL got `{"service":"Hachi Gateway",…}`. Navigating to or refreshing any app route (`/conversation`, `/settings`) returned `404`. The web UI was reachable only by typing `/index.html` explicitly and never using deep links.
+- **Root cause (two independent defects).**
+  1. **Route shadowing.** `system.get("/")` — the service descriptor — is registered *before* the static mount at `/`. Starlette matches in registration order, so the descriptor won the match for `/` while the mount handled everything else.
+  2. **`html=True` gives no history fallback.** The mount's comment claimed "the catch-all `html=True` makes `/anything/deep` return `index.html`". It does not: `html=True` resolves *directory-like* paths to `index.html`. A deep path with no matching file raises 404, so every client-side route broke on refresh or direct link.
+- **Fix:** `/` now returns `index.html` when a frontend is mounted (the descriptor moved to a new `/status`, which is stable in both modes), and the mount uses `_SPAStaticFiles`, which falls back to `index.html` for unknown non-API paths while still 404ing genuinely missing API routes.
+- **Why no test caught it:** the covering test asserted `assert "Hachi" in resp.text`. The service descriptor *is* `{"service": "Hachi Gateway"}` — so the test passed against the broken behaviour and had never once verified the mount. Replaced with a marker string that cannot appear in an API response.
+- **Avoid:** an assertion that a substring is present will happily pass on the wrong response whenever the substring is generic. Assert on something only the *intended* response can contain, and prefer asserting the absence of the wrong one too.
+- **Found but not fixed (P-35):** four frontend routes collide with REST paths — `/memory`, `/skills`, `/approvals`, `/integrations`. API routes correctly win, so those pages still break on refresh. The fix is a frontend-side prefix (`/app/*`) or moving REST under `/api/*`. Locked as an explicit assertion in `tests/test_serve_frontend_routing.py::test_known_spa_route_collisions` so it cannot be mistaken for a fallback regression.
 
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
