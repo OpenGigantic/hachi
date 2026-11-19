@@ -16,6 +16,8 @@ Security Invariants:
     5. The gate is immutable after construction — no runtime modification.
 """
 
+import os
+import shlex
 import sys
 import uuid
 from collections.abc import Callable
@@ -436,7 +438,9 @@ class PermissionGate:
 
     # ── Internal Helpers ──
 
-    def _check_path_args(self, arg_tokens: list[str]) -> PermissionResult | None:
+    def _check_path_args(
+        self, arg_tokens: list[str], *, assume_paths: bool = False
+    ) -> PermissionResult | None:
         """
         Scan command argument tokens for filesystem paths that fall inside a blocked_path.
 
@@ -446,6 +450,12 @@ class PermissionGate:
 
         Args:
             arg_tokens: The argv[1:] slice of the original command token list.
+            assume_paths: Treat bare tokens (no separator, ``~`` or ``.``) as
+                filenames even when they do not exist yet. Passed for commands
+                classified as path-takers (``_EXFIL_STEMS``). For every other
+                command a bare token is still resolved when it *does* exist,
+                because a relative filename is a path whenever the process cwd
+                sits inside a blocked directory.
 
         Returns:
             A denied ``PermissionResult`` if any argument resolves inside a
@@ -453,11 +463,29 @@ class PermissionGate:
         """
         for token in arg_tokens:
             token = token.strip("\"'")
-            if not token or token.startswith("-"):
+            if not token:
                 continue
-            # Only treat tokens that look like paths (contain a separator, ~, or ./)
-            if not any(c in token for c in ("/", "\\", "~", ".")):
-                continue
+            if token.startswith("-"):
+                # P-01b: `--flag=value` carries its path in the right-hand side.
+                # Skipping every token that starts with "-" meant
+                # `code --file=~/.ssh/id_rsa` was never inspected. Keep skipping
+                # bare flags, but look at the value half when there is one.
+                if "=" not in token:
+                    continue
+                token = token.split("=", 1)[1].strip("\"'")
+                if not token:
+                    continue
+            # P-01: tokens with a separator, ``~`` or ``.`` are paths outright.
+            # A bare token used to be skipped unconditionally, which meant
+            # `cat id_rsa` was permitted whenever cwd was inside a blocked
+            # directory — the token was never resolved against that cwd.
+            looks_like_path = any(c in token for c in ("/", "\\", "~", "."))
+            if not looks_like_path and not assume_paths:
+                try:
+                    if not Path(token).exists():
+                        continue
+                except OSError:
+                    continue
             try:
                 resolved = Path(token).expanduser().resolve()
             except Exception:
@@ -605,7 +633,17 @@ class PermissionGate:
         if self._term.allow_all:
             return PermissionResult(True, "Command allowed (unrestricted mode).")
 
-        tokens = command.strip().split()
+        # P-01b: tokenise exactly the way the executor will. `os_tools` runs the
+        # command through shlex.split, so using plain .split() here let a quoted
+        # argument fragment into harmless pieces: with a blocked path containing a
+        # space, `code "/…/blocked dir/id_rsa"` produced the tokens `code`,
+        # `"/…/blocked`, `dir/id_rsa"` — none of which resolved inside the blocked
+        # directory — and was allowed. Fall back on unbalanced quotes so we still
+        # return a verdict instead of raising.
+        try:
+            tokens = shlex.split(command, posix=(os.name != "nt"))
+        except ValueError:
+            tokens = command.strip().split()
         executable = tokens[0] if tokens else ""
         executable_name = Path(executable.strip("\"'")).name.lower()
         executable_stem = Path(executable_name).stem.lower()
@@ -659,11 +697,38 @@ class PermissionGate:
                         False, f"Command is privileged and blocked in {self._tier} tier."
                     )
 
-                # FIX C1a — file-argument path check for read/copy/exfiltrate commands
-                if executable_stem in _EXFIL_STEMS:
-                    blocked_result = self._check_path_args(tokens[1:])
-                    if blocked_result is not None:
-                        return blocked_result
+                # P-01c: `find` takes a NESTED COMMAND, so scanning its arguments
+                # for paths does not help — `find / -name id_rsa -exec cat {} +`
+                # has no blocked path among its tokens (`/`, `cat`, `{}`, `+` are
+                # all harmless) yet reads the file end to end. Deny the exec
+                # primaries outright in guided/sandbox, mirroring the git/pip
+                # privileged-subcommand guard above. `-execdir`, `-ok` and `-okdir`
+                # are the same primitive with slightly different confirmation.
+                if executable_stem == "find" and any(
+                    flag in arg_tokens for flag in ("-exec", "-execdir", "-ok", "-okdir")
+                ):
+                    return PermissionResult(
+                        False,
+                        f"'find' with -exec is blocked in {self._tier} tier because it "
+                        "runs an arbitrary command against matched files.",
+                    )
+
+                # P-01 — scan arguments for blocked paths on EVERY allowlisted
+                # command. This was previously gated on `executable_stem in
+                # _EXFIL_STEMS`, so the GUI/editor launchers that sit in
+                # _SAFE_COMMANDS but not in that set (code, open, notepad,
+                # xdg-open, explorer, start) returned "allowed" without
+                # inspecting a single argument: `code ~/.ssh/id_rsa` passed
+                # while `cat ~/.ssh/id_rsa` was denied.
+                #
+                # _EXFIL_STEMS is retained because it still carries meaning: for
+                # path-taking commands, bare arguments are presumed to be
+                # filenames even before they exist on disk.
+                blocked_result = self._check_path_args(
+                    tokens[1:], assume_paths=executable_stem in _EXFIL_STEMS
+                )
+                if blocked_result is not None:
+                    return blocked_result
 
                 return PermissionResult(True, f"Command '{ac}' is allowed.")
 
