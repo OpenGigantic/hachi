@@ -17,7 +17,10 @@ regress:
 from __future__ import annotations
 
 import stat
+import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO_ROOT / "install.sh"
@@ -113,6 +116,7 @@ def test_powershell_installer_has_no_non_ascii() -> None:
 # ── root launcher shim ───────────────────────────────────────────────────────
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits do not exist on Windows")
 def test_posix_launcher_is_executable() -> None:
     mode = SHIM.stat().st_mode
     assert mode & stat.S_IXUSR, "the repo-root `hachi` launcher must be executable"
@@ -160,11 +164,19 @@ def test_powershell_installer_preserves_the_live_path() -> None:
     assert "ExpandEnvironmentVariables" in text
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the shim is a bash script; Windows cannot execute it (WinError 193)",
+)
 def test_posix_launcher_actually_runs() -> None:
     """Execute the shim, rather than merely re-asserting the mode bit.
 
     The previous version of this test only checked os.access(..., X_OK) — the
     same thing the preceding test asserts — and so never executed anything.
+
+    Windows is excluded deliberately: `hachi` is a bash script, and the filesystem
+    has no POSIX execute bit. The Windows launcher is `hachi.bat`, covered
+    separately. Without this guard the assertion fails with WinError 193.
     """
     import subprocess
 
