@@ -136,9 +136,7 @@ def test_gateway_command_passes_runtime_flag(monkeypatch) -> None:
         captured["port"] = port
         captured["attach_runtime"] = attach_runtime
 
-    monkeypatch.setattr(
-        "hachi.cli.main._run_gateway_http_server", _fake_run_gateway_http_server
-    )
+    monkeypatch.setattr("hachi.cli.main._run_gateway_http_server", _fake_run_gateway_http_server)
 
     result = runner.invoke(app, ["gateway", "--port", "8999", "--no-runtime"])
 
@@ -215,7 +213,6 @@ def test_run_repl_skips_gateway_bootstrap(monkeypatch) -> None:
     assert result.exit_code == 0
     assert state["run_repl_called"] is True
     assert state["gateway_started"] is False
-
 
 
 def test_apply_quick_setup_runs_only_when_needed(monkeypatch) -> None:
@@ -452,3 +449,146 @@ def test_security_audit_json_reports_findings_and_exit_code(monkeypatch, tmp_pat
     assert "terminal.allow_all" in check_ids
     assert "rest.allowlist_missing" in check_ids
     assert "sandbox.process_backend" in check_ids
+
+
+def _security_audit_fixture(monkeypatch, tmp_path: Path) -> None:
+    """Point security-audit at a config that reliably produces findings."""
+    permissions_file = tmp_path / "device-permissions.og"
+    permissions_file.write_text("", encoding="utf-8")
+
+    fake_config = SimpleNamespace(
+        permissions=SimpleNamespace(tier="unrestricted"),
+        capabilities={},
+    )
+
+    class FakePermissionGate:
+        def __init__(self, _permissions_file: Path) -> None:
+            self._term = SimpleNamespace(allow_all=True)
+
+    monkeypatch.setattr("hachi.cli.main.load_effective_config", lambda: fake_config)
+    monkeypatch.setattr("hachi.cli.main.get_permissions_file", lambda: permissions_file)
+    monkeypatch.setattr("hachi.cli.main.PermissionGate", FakePermissionGate)
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("HACHI_REST_ALLOWLIST", raising=False)
+    # A developer machine with HACHI_SANDBOX_BACKEND=container and no Docker
+    # flips the sandbox finding to `sandbox.container_unavailable`, which would
+    # make the ignore-checks tests depend on the host's setup.
+    monkeypatch.delenv("HACHI_SANDBOX_BACKEND", raising=False)
+    monkeypatch.setenv("HACHI_REST_ALLOW_PRIVATE", "false")
+
+
+def test_security_audit_ignore_checks_excludes_findings(monkeypatch, tmp_path: Path) -> None:
+    """--ignore-checks suppresses named checks so CI can gate on the rest.
+
+    Regression for the open-source launch blocker: the PR security gate ran
+    --fail-on-medium, but `sandbox.process_backend` describes the *runner's*
+    deployment posture and can never be resolved by a contributor's diff, so
+    every external PR was red for reasons unrelated to its contents. CI now
+    ignores that one check id while keeping the strict gate for everything else.
+    """
+    _security_audit_fixture(monkeypatch, tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "security-audit",
+            "--json",
+            "--fail-on-medium",
+            "--ignore-checks",
+            "sandbox.process_backend",
+        ],
+        env={"COLUMNS": "40"},
+    )
+
+    payload = json.loads(result.stdout)
+    check_ids = {finding["check_id"] for finding in payload["findings"]}
+
+    # The ignored check is gone from the report entirely (not merely de-counted),
+    # so the JSON a CI consumer reads matches what was actually gated on.
+    assert "sandbox.process_backend" not in check_ids
+    # Everything not ignored still reports.
+    assert "oauth.google_client_id_missing" in check_ids
+    assert "rest.allowlist_missing" in check_ids
+    # The echoed contract is what CI reads to know what it gated on.
+    assert payload["ignored_checks"] == ["sandbox.process_backend"]
+    assert payload["ignored_checks_unmatched"] == []
+    # Still fails on the remaining highs — filtering must not clear the gate.
+    assert payload["exit_code"] == 2
+    assert payload["status"] == "fail"
+
+
+def test_security_audit_reports_ignore_ids_that_matched_nothing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A typo'd or renamed check id must be visible, not silently a no-op.
+
+    `--ignore-checks "sandbox.process back-end"` previously echoed the requested
+    string while the real finding survived — so the log said "ignored" and the
+    gate still failed, with nothing pointing at the mismatch.
+    """
+    _security_audit_fixture(monkeypatch, tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "security-audit",
+            "--json",
+            "--fail-on-medium",
+            "--ignore-checks",
+            "sandbox.process back-end",
+        ],
+        env={"COLUMNS": "40"},
+    )
+
+    payload = json.loads(result.stdout)
+    check_ids = {finding["check_id"] for finding in payload["findings"]}
+    assert "sandbox.process_backend" in check_ids, "the real check must survive a typo"
+    assert payload["ignored_checks_unmatched"] == ["sandbox.process back-end"]
+    assert payload["exit_code"] == 2
+
+
+def test_security_audit_ignore_checks_can_clear_the_gate(monkeypatch, tmp_path: Path) -> None:
+    """Ignoring every remaining finding makes the gate pass — deterministically.
+
+    Pins the property CI relies on: the gate outcome is a function of the
+    ignore set, not of whether Docker happens to be on the runner.
+    """
+    _security_audit_fixture(monkeypatch, tmp_path)
+
+    all_ids = (
+        "oauth.google_client_id_missing,permissions.unrestricted_tier,"
+        "terminal.allow_all,rest.allowlist_missing,sandbox.process_backend"
+    )
+    result = runner.invoke(
+        app,
+        ["security-audit", "--json", "--fail-on-medium", "--ignore-checks", all_ids],
+        env={"COLUMNS": "40"},
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["findings"] == []
+    assert payload["exit_code"] == 0, payload
+    assert result.exit_code == 0
+
+
+def test_security_audit_ignore_checks_tolerates_whitespace(monkeypatch, tmp_path: Path) -> None:
+    """A comma list with stray spaces is accepted (people write them in YAML)."""
+    _security_audit_fixture(monkeypatch, tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "security-audit",
+            "--json",
+            "--fail-on-medium",
+            "--ignore-checks",
+            " terminal.allow_all , sandbox.process_backend ",
+        ],
+        env={"COLUMNS": "40"},
+    )
+
+    payload = json.loads(result.stdout)
+    check_ids = {finding["check_id"] for finding in payload["findings"]}
+    assert "terminal.allow_all" not in check_ids
+    assert "sandbox.process_backend" not in check_ids
