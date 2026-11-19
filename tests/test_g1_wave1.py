@@ -408,20 +408,28 @@ def test_serve_mounts_static_files_when_dist_exists(tmp_path: Path) -> None:
     """create_gateway_app mounts StaticFiles when frontend_dist is a valid directory."""
     from hachi.gateway.fastapi_app import create_gateway_app
 
-    # Create a minimal dist directory with an index.html.
+    # Create a minimal dist directory with an index.html carrying a marker that
+    # cannot appear in any API response.
+    #
+    # This previously used the literal "Hachi" as the assertion — which the
+    # gateway's own service descriptor ({"service": "Hachi Gateway"}) also
+    # satisfies. The test therefore passed while GET / was returning JSON
+    # instead of the SPA, and never verified the mount at all.
+    marker = "<!--SPA-MOUNT-MARKER-->"
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir()
-    (dist_dir / "index.html").write_text("<html><body>Hachi</body></html>", encoding="utf-8")
+    (dist_dir / "index.html").write_text(f"<html><body>{marker}</body></html>", encoding="utf-8")
 
     cp = GatewayControlPlane()
     app = create_gateway_app(cp, frontend_dist=dist_dir)
 
-    # Verify the frontend route is mounted: GET / returns the index.html content.
     with TestClient(app, raise_server_exceptions=False) as client:
         resp = client.get("/")
-    # StaticFiles returns 200 for index.html.
     assert resp.status_code == 200
-    assert "Hachi" in resp.text
+    assert marker in resp.text, (
+        "GET / must serve the mounted SPA, not the service descriptor JSON: "
+        f"{(resp.text or '')[:120]}"
+    )
 
 
 def test_serve_skips_mount_when_dist_missing() -> None:
