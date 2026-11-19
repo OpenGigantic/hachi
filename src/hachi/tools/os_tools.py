@@ -520,11 +520,12 @@ def _make_guarded_run_terminal(gate: Any):
                     if not path_result.allowed:
                         return f"Permission Denied: {path_result.reason}"
 
-            # M3: check_command's blocked_paths scan (via _EXFIL_STEMS) only catches
-            # move/copy destinations/sources that fall inside blocked_paths — it never
-            # consults the full read/write/delete permission tier for paths outside
-            # that list. Mirror the _CAT_STEMS re-check above: resolve src/dst the same
-            # way _raw_run_terminal_command does and gate them explicitly.
+            # M3: check_command's blocked_paths scan now covers the arguments of
+            # every allowlisted command (P-01), but it still only tests them against
+            # blocked_paths — it never consults the full read/write/delete tier for
+            # paths outside that list. Mirror the _CAT_STEMS re-check above: resolve
+            # src/dst the same way _raw_run_terminal_command does and gate them
+            # explicitly.
             if executable_stem in _COPY_STEMS or executable_stem in _MOVE_STEMS:
                 non_flag = [t.strip("\"'") for t in argv[1:] if not t.startswith("-")]
                 if len(non_flag) >= 2:
