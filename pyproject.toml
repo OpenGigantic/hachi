@@ -9,7 +9,12 @@ version = "0.1.0"
 description = "Hachi - The Autonomous Agent Engine powered by ObjectGraph (.og)"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+# Apache-2.0 rather than MIT: the express patent grant (§3) and the explicit
+# trademark carve-out (§6) matter for a product whose pitch is security, and §6 is
+# what stops a fork presenting itself as the official project. See TRADEMARK.md.
+# PEP 639 form: an SPDX expression plus declared license files.
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [
     { name = "Open Gigantic" }
 ]
@@ -26,7 +31,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Scientific/Engineering :: Artificial Intelligence"
