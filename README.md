@@ -1,6 +1,6 @@
 <div align="center">
 
-# Hachi
+# Hachi - The Last Agent
 
 **The governed personal agent**
 
