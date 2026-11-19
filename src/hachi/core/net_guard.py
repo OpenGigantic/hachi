@@ -26,12 +26,42 @@ from urllib.parse import urlparse
 _ALLOWED_SCHEMES = {"http", "https"}
 
 
-def _ip_is_public(raw_ip: str) -> bool:
+# RFC 6598 shared address space — what Tailscale and other overlay networks hand
+# out. CPython's `is_global` *happens* to report False for this range, but only
+# because of a private constant (`_IPv4Constants._public_network`); that is an
+# implementation detail, not a documented guarantee. Pin the range explicitly so
+# a future CPython change cannot silently reopen the hole — and so the premise is
+# stated somewhere a test can assert it.
+_CGNAT_V4 = ipaddress.ip_network("100.64.0.0/10")
+
+
+def ip_is_public(raw_ip: str) -> bool:
+    """Return True only for globally-routable addresses.
+
+    Public and shared by both guard layers (`core.net_guard` and
+    `gateway._net_guard`) so the rule has exactly one implementation — the
+    gateway copy drifted silently when this predicate was hardened.
+    """
     try:
         addr = ipaddress.ip_address(raw_ip)
     except ValueError:
         return False
-    return not (
+
+    # P-04: the negative list alone is insufficient. `is_private` is a closed
+    # table (RFC1918, 127/8, 169.254/16, TEST-NETs, 240/4, …) that does NOT
+    # include RFC 6598 shared address space, and those addresses also report
+    # is_global=False — so every disjunct below was False and they passed.
+    #
+    # `ipv4_mapped` makes the check cover the ::ffff:100.64.0.1 form, which raw
+    # ip_network membership does NOT match.
+    effective = getattr(addr, "ipv4_mapped", None) or addr
+    if effective.version == 4 and effective in _CGNAT_V4:
+        return False
+
+    # Requiring is_global positively closes the rest. The negative list is kept
+    # deliberately: `is_global` alone would *regress* NAT64 (64:ff9b::/96),
+    # which reports is_global=True but is_reserved=True and is blocked today.
+    return addr.is_global and not (
         addr.is_private
         or addr.is_loopback
         or addr.is_link_local
@@ -39,6 +69,11 @@ def _ip_is_public(raw_ip: str) -> bool:
         or addr.is_multicast
         or addr.is_unspecified
     )
+
+
+# Backwards-compatible alias: the function was private until the gateway needed
+# to share it. Kept so any out-of-tree caller does not break.
+_ip_is_public = ip_is_public
 
 
 @dataclass(slots=True, frozen=True)
