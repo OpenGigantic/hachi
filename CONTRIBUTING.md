@@ -153,5 +153,11 @@ is the gate that matters.
 
 ## License
 
-By contributing you agree that your contributions are licensed under the MIT License — see
-[LICENSE](LICENSE).
+By contributing you agree that your contributions are licensed under the **Apache License 2.0**
+— see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Section 5 of the licence means no separate CLA is required: a contribution intentionally
+submitted for inclusion is licensed under the same terms, automatically.
+
+Contributing code does not grant any rights in the project's **name or logo** — the Apache
+licence explicitly withholds trademark rights (§6). See [TRADEMARK.md](TRADEMARK.md).

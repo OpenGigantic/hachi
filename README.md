@@ -7,7 +7,7 @@
 _Safety, spend, and self-improvement enforced by code — not by vibes._
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Status: pre-release](https://img.shields.io/badge/status-pre--release-orange.svg)](#project-status)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-purple.svg)](https://docs.astral.sh/ruff/)
 [![.og token savings: 97.6%](https://img.shields.io/badge/.og%20token%20savings-97.6%25-brightgreen)](docs/reference/benchmark.md)
@@ -260,5 +260,11 @@ on purpose. You don't need any of it to contribute; `preflight.py` is the gate t
 
 ## License
 
-MIT — see [LICENSE](LICENSE). The `.og` specification and the arXiv paper are separate works
-(CC BY 4.0).
+**Apache-2.0** — see [LICENSE](LICENSE) and [NOTICE](NOTICE). This is a permissive licence: you
+may use, modify and redistribute Hachi, including commercially. The express patent grant (§3)
+and the trademark carve-out (§6) are the reasons it was chosen over MIT.
+
+The **name and logo are not licensed** — see [TRADEMARK.md](TRADEMARK.md). A fork is welcome;
+calling it the official Hachi is not.
+
+The `.og` specification and the arXiv paper are separate works (CC BY 4.0).
