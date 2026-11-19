@@ -2219,6 +2219,14 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Known gap:** the one-liner URLs still fetch the *installer* from `main` (`HACHI_REF` pins only the clone), and an existing checkout ignores `HACHI_REF` on `pull --ff-only`. Both need the script served from a tag.
 - **Avoid:** any command in a `curl | bash` script that can read stdin — git, ssh, package managers — must be given `</dev/null` plus a non-interactive flag; and when deciding whether a human is present under a pipe, test **stdout** and reattach `/dev/tty`, never test stdin.
 - **Locked by:** `tests/test_install_scripts.py` — structural guards for the stdin redirect, `GIT_TERMINAL_PROMPT`, ordering, POSIX/PowerShell PATH re-checks, TTY-guarded setup, ASCII-only `install.ps1`, and the shim's executable bit and dual venv layout.
+### BB-94 — `uv build` silently produced an EMPTY wheel and still reported success
+
+- **Symptom:** `uv build` printed "Successfully built" for both artifacts, but the wheel was **15 KB** (normally ~1.0 MB) and contained only `dist-info` — no `hachi/` package, no `.og` skills, no packs. The sdist was missing `src/` entirely (0 of 279 files). Nothing failed and nothing warned. Installing that wheel would give a `hachi` console script pointing at an import that does not exist.
+- **Root cause:** the working tree contained `.anvaya/` — the agent-tooling scratch directory, **95 MB**, holding full copies of this repository plus symlinks to absolute paths. Hatchling builds the wheel *from the sdist*, so once the sdist lost `src/` the wheel was empty by construction. Listing it in `.gitignore` is not sufficient.
+- **What did NOT fix it** (each tested, each left the wheel at 15 KB): `[tool.hatch.build] exclude = ["/.anvaya", …]`; removing each nested `pyproject.toml` copy individually; removing both together. Moving the whole `.anvaya/` aside from the *same* tree produced the correct 1.0 MB wheel with 279 source files and 32 skills, every time.
+- **Workaround:** build release artifacts from a **clean checkout** (CI, or a separate `git worktree`). Verified: a detached worktree of the same commit builds correctly regardless.
+- **Avoid:** never treat "Successfully built" as proof a package is complete — assert on artifact *contents* (wheel size, presence of the package dir and bundled data files), not just the exit code. A 15 KB wheel and a 1 MB wheel both exit 0.
+- **Still open:** the precise mechanism inside hatchling's file walk is unidentified. The `[tool.hatch.build] exclude` for `.anvaya` is kept because agent scratch should never ship, but it is documented as *not* a fix for this.
 
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
