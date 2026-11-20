@@ -35,7 +35,7 @@ from hachi.core.checkpoints import CheckpointManager
 from hachi.core.cost import CostTracker, clamp_nonnegative_cost_delta, today_utc_str
 from hachi.core.credential_vault import CredentialVault
 from hachi.core.integrations import IntegrationRuntime
-from hachi.core.llm import Message, create_llm_client
+from hachi.core.llm import BaseLLMClient, Message, UnconfiguredLLMClient, create_llm_client
 from hachi.core.loop import ExecutionLoop, ToolRegistry
 from hachi.core.mcp_client import MCPManager, MCPServerConfig
 from hachi.core.memory import MemoryManager
@@ -85,7 +85,7 @@ from hachi.core.runtime_read_models import (
     TaskLedgerItemSnapshot,
     ToolCallSnapshot,
 )
-from hachi.core.secret_store import create_default_secret_store
+from hachi.core.secret_store import SecretStore, create_default_secret_store
 from hachi.core.session_store import SessionStore
 from hachi.core.session_titler import generate_title
 from hachi.core.sub_agent import DEFAULT_SUB_AGENT_MODEL
@@ -2554,6 +2554,51 @@ def _apply_observability_settings(
         )
 
 
+def _make_boot_client(
+    provider_config: dict[str, Any],
+    secret_store: SecretStore | None,
+    max_tokens: int,
+) -> BaseLLMClient:
+    """Build the provider client for boot, tolerating a machine with no credential.
+
+    Eager construction made a missing key a *boot* failure: ``POST /sessions``
+    answered 500, so memory CRUD, config actions and the cockpit UI were all dead on
+    a keyless box even though none of them call the model. It also contradicted
+    CONTRIBUTING.md ("No API key is needed to develop or to run the test suite") and
+    the CLAUDE.md rule that credentials resolve lazily, at call time.
+
+    So: a resolution failure yields an :class:`UnconfiguredLLMClient` that boots and
+    raises an actionable :class:`~hachi.core.llm.LLMNotConfiguredError` on the first
+    generation. A resolvable credential is unchanged — the real client is built here,
+    exactly as before.
+
+    This mirrors the degradation ``boot_agent`` already applies to the routed default
+    model (log loudly, keep booting) rather than inventing a second policy.
+
+    Args:
+        provider_config: Resolved provider config (``kind``/``model``/secret refs).
+        secret_store: Secret store for ``api_key_ref`` resolution, or None.
+        max_tokens: Max output tokens for the client.
+
+    Returns:
+        The real provider client, or a placeholder that defers the failure.
+    """
+    try:
+        return create_llm_client(provider_config, secret_store=secret_store, max_tokens=max_tokens)
+    except ValueError as exc:
+        # Also covers "Unsupported provider kind" — a bad config must not make the
+        # whole session unopenable; the turn-level error explains it.
+        logger.warning(
+            "Boot: provider client for kind=%r model=%r is not usable (%s) — "
+            "booting with an unconfigured client. The first turn will explain how to "
+            "configure a provider.",
+            provider_config.get("kind", "anthropic"),
+            provider_config.get("model", "?"),
+            exc,
+        )
+        return UnconfiguredLLMClient(str(exc))
+
+
 def boot_agent(
     on_event: Callable[..., None] | None = None,
     on_permission_request: Callable[[PermissionRequest], PermissionDecision] | None = None,
@@ -2880,7 +2925,7 @@ def boot_agent(
 
     # 6. Initialize the LLM Provider
     secret_store = create_default_secret_store()
-    client = create_llm_client(provider_config, secret_store=secret_store, max_tokens=max_tokens)
+    client = _make_boot_client(provider_config, secret_store, max_tokens)
 
     # Sub-agents reuse the SAME resolved provider credentials as the main agent so
     # delegation never fails with "ANTHROPIC_API_KEY must be provided". For Anthropic
@@ -2889,9 +2934,7 @@ def boot_agent(
     sub_agent_provider = dict(provider_config)
     if str(provider_config.get("kind", "anthropic")).lower() == "anthropic":
         sub_agent_provider["model"] = DEFAULT_SUB_AGENT_MODEL
-    sub_agent_client = create_llm_client(
-        sub_agent_provider, secret_store=secret_store, max_tokens=4096
-    )
+    sub_agent_client = _make_boot_client(sub_agent_provider, secret_store, 4096)
 
     # 6b. Build routing infrastructure (behind [routing] flag; absent = back-compat).
     # ProviderRegistry → ModelRegistry → RoutingPolicy → ModelRouter.

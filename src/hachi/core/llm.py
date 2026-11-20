@@ -228,6 +228,65 @@ class BaseLLMClient(abc.ABC):
         return False
 
 
+class LLMNotConfiguredError(RuntimeError):
+    """Raised when a generation is attempted with no provider credential resolved.
+
+    Distinct from :class:`ValueError` so callers can tell "you never configured a
+    provider" apart from "the provider rejected your request", and surface advice
+    instead of a stack trace.
+    """
+
+
+class UnconfiguredLLMClient(BaseLLMClient):
+    """Placeholder client used when boot has no provider credential.
+
+    Why this exists
+    ---------------
+    ``boot_agent`` used to construct the provider client eagerly, so on a machine
+    with no key the *first* thing that failed was session creation: `POST /sessions`
+    answered 500 and every endpoint needing a live session (memory CRUD, config
+    actions, the whole cockpit UI) was unusable — even though none of them call the
+    model. That also broke the promise in CONTRIBUTING.md that no API key is needed
+    to run the suite.
+
+    Boot therefore installs this stand-in and the failure moves to the first turn,
+    where it can be explained. The message is deliberately actionable: the old
+    ``ValueError("ANTHROPIC_API_KEY must be provided ...")`` told a new user the
+    variable name but not what to do with it.
+
+    Attributes:
+        reason: The underlying resolution error, kept for logs/diagnostics.
+    """
+
+    model = "unconfigured"
+
+    def __init__(self, reason: str = "") -> None:
+        self.reason = reason
+
+    def generate(
+        self,
+        messages: list[Message],
+        system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        dynamic_system: str | None = None,
+    ) -> LLMResponse:
+        raise LLMNotConfiguredError(self._message())
+
+    def _message(self) -> str:
+        return (
+            "No LLM provider is configured, so Hachi cannot generate a reply.\n"
+            "Fix it with one of:\n"
+            "  hachi quickstart                 # guided setup (writes the config)\n"
+            "  export ANTHROPIC_API_KEY=sk-ant-...   # or the key for your provider\n"
+            "Then restart the session.\n"
+            + (f"Underlying error: {self.reason}" if self.reason else "")
+        )
+
+    def list_models(self) -> list[str]:
+        """Discovery is impossible without a credential; never raise (base contract)."""
+        return []
+
+
 def drain_stream(
     stream: "Generator[str, None, LLMResponse]",
 ) -> "tuple[list[str], LLMResponse]":

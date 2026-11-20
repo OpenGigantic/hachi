@@ -72,6 +72,22 @@ except Exception:  # pragma: no cover - chromadb is optional in some CI envs
 import pytest
 
 
+@pytest.fixture()
+def anthropic_test_key(monkeypatch) -> str:
+    """Set a placeholder ``ANTHROPIC_API_KEY`` for tests that must *build* a client.
+
+    The suite deliberately runs without real credentials, and ``AnthropicClient``
+    raises ``ValueError`` when no key resolves — a load-bearing fail-fast (boot uses
+    it to fall back to the primary model, and ``_make_boot_client`` uses it to decide
+    it must install a placeholder client). Tests that exercise a code path *past*
+    credential resolution opt in to this fixture explicitly rather than by default,
+    so the keyless path stays the default condition under test.
+    """
+    key = "sk-ant-test-placeholder-not-a-real-key"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+    return key
+
+
 @pytest.fixture(autouse=True)
 def _reset_process_shared_services() -> None:  # type: ignore[return]
     """Clear the ProcessSharedServices singleton cache before each test.

@@ -353,8 +353,18 @@ class TestDefaultClient:
 
         assert isinstance(client, ResilientClient)
 
+    @pytest.mark.usefixtures("anthropic_test_key")
     def test_default_client_unknown_model_synthesises_descriptor(self) -> None:
-        """Amendment A11: unknown models get a synthetic REASONING descriptor."""
+        """Amendment A11: unknown models get a synthetic REASONING descriptor.
+
+        The synthesized provider for an unrecognised id is ``anthropic``, so building
+        the default client needs a credential — and ``AnthropicClient`` deliberately
+        raises ``ValueError`` when none resolves. That fail-fast is load-bearing: it is
+        what makes ``boot_agent`` fall back to the primary client when a routed default
+        is unusable. The suite runs keyless on purpose (see conftest), so this test
+        supplies a placeholder key. The call path under assertion here is descriptor
+        synthesis, not credential resolution.
+        """
         registry = ModelRegistry()  # empty — no bundled defaults
         policy = RoutingPolicy(default_model="some-local-ollama")
         provider_reg = _FakeProviderRegistry([])
