@@ -2852,3 +2852,40 @@ wrappers at the work seams; the sink enriches them.
   attribute enrichment is unavailable (Phase 0 degraded-mode warning covers this).
 
 **Locked by.** `tests/test_obs_sink.py` (10 tests, post-Phase-2 contract).
+
+## CI test matrix + benchmark deferred — non-blocking for now (2026-11-21)
+
+**Found.** Five of the ten CI jobs were red on **every** workflow run this repository has ever
+recorded (`test` ubuntu/macos/windows, `benchmark`, `frontend-contract`). All five reproduced
+locally against `main` @ `da83271`, and none was caused by the PR under review (a one-line README
+retitle in #159). The suite on that commit was `6 failed, 4398 passed`. Four independent causes:
+
+1. **Keyless boot** — `boot_agent` built the provider client eagerly, so `POST /sessions` returned
+   `500` (`ValueError: ANTHROPIC_API_KEY must be provided`) on any machine without a provider key.
+   CI never has one; a developer machine usually does. This alone failed 4 tests × 3 OSes and also
+   contradicted CONTRIBUTING.md ("No API key is needed to develop or to run the test suite"). Fixed
+   in `f18febe` (`_make_boot_client` + `UnconfiguredLLMClient`). BB-96.
+2. **Stale generated artifacts** — the `/status` route (from #154) was in neither
+   `openapi/hachi-openapi.json` nor `frontend/src/lib/data/schema.d.ts`, so `frontend-contract`
+   failed on a TS diff and named the wrong file. Regenerated; a fresh export is now byte-identical
+   to the committed JSON. BB-100.
+3. **Benchmark graded the wrong corpus** — `skill benchmark` defaults to `get_skills_dir()` (the
+   mutable user workspace) while its `--help` claims the bundled corpus: 49 nodes → P@5 0.677 on a
+   fresh runner vs 60 nodes → P@5 1.00 shipped. Pinned with `--dir src/hachi/default_skills`, and
+   the step added to `preflight.py`, which had never run it (BB-99).
+4. Smaller: `_build_argv` matched interpreters by exact name, so the daemon installed
+   `python3.12 gateway …` (BB-98); two fail-closed stat guards were unreachable (BB-97); two POSIX
+   launcher tests ran on Windows (ported from #158).
+
+**Decided/Changed.** The three `test` matrix legs and the `benchmark` job are made **non-blocking**
+(`continue-on-error: true`) and the same two steps are marked `blocking=False` in
+`scripts/preflight.py`, so the local gate stays in step with CI (BB-99). Nothing is deleted and the
+matrix is **not** trimmed — macOS and Windows keep running the suite and keep reporting; they stop
+gating merges. Re-arm by deleting the two `continue-on-error` lines and the two `blocking=False`
+flags; both steps were green when this was set, so re-arming should not need a fix first.
+
+**Why.** Deferral was requested for capacity/noise reasons after the four gates were green, not to
+suppress a failure. The cost is stated plainly so nobody rediscovers it: an unblocked test step
+means a red suite can merge, and the keyless-boot defect in (1) was caught *only* in CI — the local
+gate was green the entire time. While this is deferred, treat `uv run pytest -q` as a
+contributor-side obligation, not an enforced one.

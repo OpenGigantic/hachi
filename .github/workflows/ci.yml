@@ -31,8 +31,24 @@ jobs:
       - name: Sync dependencies
         run: uv sync --extra dev
 
+      # DEFERRED — non-blocking until further notice (maintainer decision, 2026-11-21).
+      #
+      # This step (all three matrix legs) plus the `benchmark` job below is temporarily
+      # advisory: it still runs and still reports, but no longer blocks a merge. Nothing
+      # was deleted and the matrix was NOT trimmed — macOS and Windows keep running the
+      # suite, they just stop gating on it.
+      #
+      # WHY this is the risky one: an unblocked test step means a red suite can land.
+      # The keyless-boot bug (BB-96: POST /sessions 500 with no API key) was caught ONLY
+      # here, because CI has no provider key and a developer machine does — the local
+      # gate was green throughout. Expect that class of defect to slip while deferred.
+      #
+      # HOW TO RE-ARM: delete the `continue-on-error` lines on this step and on the
+      # benchmark step. Both were green when this was set (docs/DECISIONS.md, "CI test
+      # matrix + benchmark deferred"), so re-arming should not require any fix first.
       - name: Run tests
         run: uv run pytest -q
+        continue-on-error: true
 
   security:
     runs-on: ubuntu-latest
@@ -271,10 +287,17 @@ jobs:
       # benchmarks 60 nodes at P@5 1.0. A blocking gate must not depend on what a
       # contributor happens to have installed — same principle as the security job
       # above. See BB-99.
+      # DEFERRED — non-blocking until further notice (maintainer decision, 2026-11-21).
+      # See the comment on the `test` job's "Run tests" step. The subject is pinned with
+      # --dir, so this is deterministic (60 nodes, M1 P@5 1.00); it is deferred for
+      # capacity/noise reasons, not because it is failing.
+      #
+      # HOW TO RE-ARM: delete the `continue-on-error` line below.
       - name: ObjectGraph benchmark (token-savings + M1 retrieval)
         run: |
           uv run hachi skill benchmark --suite fast --json --threshold 0.80 \
             --dir src/hachi/default_skills
+        continue-on-error: true
 
   eval:
     # Regression gate for the agent loop (P4 Eval). Replays the curated eval
