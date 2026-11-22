@@ -390,6 +390,36 @@
         ]
       }
     },
+    "/status": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Get Status",
+        "description": "Stable home for the service descriptor.\n\nAdded because \"/\" now belongs to the SPA whenever a frontend is mounted \u2014\nthe URL `hachi serve` prints is the web UI, and users pointing a browser\nat it must not get raw JSON.",
+        "operationId": "get_status_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Get Status Status Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/": {
       "get": {
         "tags": [
