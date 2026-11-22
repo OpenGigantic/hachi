@@ -174,7 +174,16 @@ def _build_argv(config: DaemonConfig) -> list[str]:
     exe = locate_executable()
     # If shutil.which found a direct entry point, call it directly.
     # If we fell back to sys.executable, invoke as a module.
-    if exe.name in ("python", "python3", "python.exe", "python3.exe"):
+    #
+    # Match on the prefix, not a fixed set of names: `locate_executable` returns
+    # `sys.executable`, which is version-stamped (python3.12, python3.13t, or
+    # /opt/.../pyvenv/bin/python3.12). The old membership test against
+    # ("python", "python3", "python.exe", "python3.exe") missed all of those, so the
+    # daemon installed a service running `python3.12 gateway --host ...` — which is
+    # not a valid command; the fallback path was broken for every versioned
+    # interpreter. See BB-1xx / tests/test_daemon.py::
+    # test_build_argv_python_module_fallback.
+    if exe.name.lower().startswith("python"):
         cmd = [str(exe), "-m", "hachi"]
     else:
         cmd = [str(exe)]
