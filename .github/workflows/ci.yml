@@ -261,8 +261,20 @@ jobs:
       - name: Sync dependencies
         run: uv sync --extra dev
 
+      # The subject of this gate is the corpus the REPO ships, so pin it with --dir.
+      # Without the flag `skill benchmark` defaults to get_skills_dir() — the mutable
+      # user workspace, seeded with a starter pack (brain.og, general/, roles/,
+      # technical/) that does not contain the google/slack/notion skills the M1 probes
+      # are written against. So the gate failed on a fresh runner (49 nodes → P@5 0.677
+      # vs the 0.80 gate) while passing on a developer machine whose workspace happens
+      # to have the full set installed (54 nodes → P@5 0.806). The shipped corpus
+      # benchmarks 60 nodes at P@5 1.0. A blocking gate must not depend on what a
+      # contributor happens to have installed — same principle as the security job
+      # above. See BB-99.
       - name: ObjectGraph benchmark (token-savings + M1 retrieval)
-        run: uv run hachi skill benchmark --suite fast --json --threshold 0.80
+        run: |
+          uv run hachi skill benchmark --suite fast --json --threshold 0.80 \
+            --dir src/hachi/default_skills
 
   eval:
     # Regression gate for the agent loop (P4 Eval). Replays the curated eval
