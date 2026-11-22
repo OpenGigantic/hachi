@@ -126,10 +126,15 @@ def test_read_file_refused_on_stat_failure(tmp_path: Path) -> None:
     register_os_tools(registry, gate=gate)
 
     # Simulate stat failure by patching Path.stat to raise OSError.
+    #
+    # Resolve FIRST: `Path.resolve()` itself calls stat(), so resolving inside the
+    # patched stat() re-enters the patch and recurses until RecursionError — the test
+    # then failed for the wrong reason (a stack overflow, not the refusal it asserts).
+    resolved_target = target.resolve()
     original_stat = Path.stat
 
     def _bad_stat(self, **kwargs):  # type: ignore[override]
-        if self == target.resolve() or self == target:
+        if self == resolved_target or self == target:
             raise OSError("simulated stat failure")
         return original_stat(self, **kwargs)
 
