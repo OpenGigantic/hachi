@@ -2889,3 +2889,32 @@ suppress a failure. The cost is stated plainly so nobody rediscovers it: an unbl
 means a red suite can merge, and the keyless-boot defect in (1) was caught *only* in CI — the local
 gate was green the entire time. While this is deferred, treat `uv run pytest -q` as a
 contributor-side obligation, not an enforced one.
+
+### Update (2026-11-23) — deferred → **removed** from the workflow
+
+The deferral above is superseded. By maintainer decision the `test` job (all three OS legs) and the
+`benchmark` job are **deleted from `.github/workflows/ci.yml`**, and the three
+`test (*-latest)` contexts are **removed from `main`'s required status checks**, which now read:
+
+```
+strict: true
+contexts: [security, lint, skill-lint]
+```
+
+The protection edit was applied as a **full** `PUT` (a partial one would have dropped the review
+requirements); `enforce_admins`, required reviews (1, code-owner), conversation resolution and
+`allow_force_pushes: false` are unchanged. Pre-edit snapshot kept at
+`/tmp/protection-backup-before-removal.json` for that session only — the live values are what matter.
+
+Why the workflow and the protection had to move together: a required context that no job produces
+is never reported, so every PR would sit at *"Expected — Waiting for status to be reported"* and
+nothing could merge.
+
+Both checks were green when removed (branch `fix/ci-unbreak-gate` ran 10/10). They are not gone from
+the repo: restore the jobs from the removal commit's parent, and both still run locally via
+`uv run python scripts/preflight.py` (full mode, advisory) and `uv run pytest -q`.
+
+**Accepted cost.** There is now no CI enforcement of the test suite, and the three-OS matrix that
+caught the Windows-only launcher failures no longer runs. `uv run pytest -q` is a prerequisite a
+contributor must satisfy themselves. Reversing this is `git revert` of the removal commit plus
+re-adding the contexts to the protection object.

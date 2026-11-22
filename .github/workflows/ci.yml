@@ -7,48 +7,25 @@ on:
   pull_request:
 
 jobs:
-  test:
-    # Verify the suite passes on Linux, macOS, and Windows so platform-specific
-    # regressions (paths, subprocess env, notifier/audio backends, Windows encoding)
-    # are caught. windows-latest covers the primary dev platform.
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v6
-
-      - name: Sync dependencies
-        run: uv sync --extra dev
-
-      # DEFERRED — non-blocking until further notice (maintainer decision, 2026-11-21).
-      #
-      # This step (all three matrix legs) plus the `benchmark` job below is temporarily
-      # advisory: it still runs and still reports, but no longer blocks a merge. Nothing
-      # was deleted and the matrix was NOT trimmed — macOS and Windows keep running the
-      # suite, they just stop gating on it.
-      #
-      # WHY this is the risky one: an unblocked test step means a red suite can land.
-      # The keyless-boot bug (BB-96: POST /sessions 500 with no API key) was caught ONLY
-      # here, because CI has no provider key and a developer machine does — the local
-      # gate was green throughout. Expect that class of defect to slip while deferred.
-      #
-      # HOW TO RE-ARM: delete the `continue-on-error` lines on this step and on the
-      # benchmark step. Both were green when this was set (docs/DECISIONS.md, "CI test
-      # matrix + benchmark deferred"), so re-arming should not require any fix first.
-      - name: Run tests
-        run: uv run pytest -q
-        continue-on-error: true
+  # ---------------------------------------------------------------------------
+  # `test` (pytest, 3-OS matrix) and `benchmark` were REMOVED from this workflow on
+  # 2026-11-23 by maintainer decision — to stop the runs, not because they failed.
+  # Both were green when removed: branch fix/ci-unbreak-gate ran 10/10 checks passed.
+  #
+  # Neither check is gone from the repo:
+  #   * restore the jobs from git history (the removal commit is referenced in
+  #     docs/DECISIONS.md, "CI test matrix + benchmark deferred / removed");
+  #   * both still run locally — `uv run python scripts/preflight.py` (pytest and the
+  #     benchmark, full mode) and plain `uv run pytest -q`;
+  #   * `main`'s required status checks no longer list them, so no PR waits forever
+  #     on a check that will never report.
+  #
+  # CONSEQUENCE, stated once so nobody rediscovers it the hard way: there is now NO
+  # CI enforcement of the test suite. The keyless-boot bug (BB-96) was caught ONLY in
+  # CI, because CI has no provider key while a developer machine usually does — that
+  # class of defect can now land silently. `uv run pytest -q` is a hard prerequisite
+  # for pushing, not a suggestion.
+  # ---------------------------------------------------------------------------
 
   security:
     runs-on: ubuntu-latest
@@ -259,45 +236,6 @@ jobs:
 
       - name: Lint shipped .og skill files
         run: uv run python scripts/lint_skills.py
-
-  benchmark:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v6
-
-      - name: Sync dependencies
-        run: uv sync --extra dev
-
-      # The subject of this gate is the corpus the REPO ships, so pin it with --dir.
-      # Without the flag `skill benchmark` defaults to get_skills_dir() — the mutable
-      # user workspace, seeded with a starter pack (brain.og, general/, roles/,
-      # technical/) that does not contain the google/slack/notion skills the M1 probes
-      # are written against. So the gate failed on a fresh runner (49 nodes → P@5 0.677
-      # vs the 0.80 gate) while passing on a developer machine whose workspace happens
-      # to have the full set installed (54 nodes → P@5 0.806). The shipped corpus
-      # benchmarks 60 nodes at P@5 1.0. A blocking gate must not depend on what a
-      # contributor happens to have installed — same principle as the security job
-      # above. See BB-99.
-      # DEFERRED — non-blocking until further notice (maintainer decision, 2026-11-21).
-      # See the comment on the `test` job's "Run tests" step. The subject is pinned with
-      # --dir, so this is deterministic (60 nodes, M1 P@5 1.00); it is deferred for
-      # capacity/noise reasons, not because it is failing.
-      #
-      # HOW TO RE-ARM: delete the `continue-on-error` line below.
-      - name: ObjectGraph benchmark (token-savings + M1 retrieval)
-        run: |
-          uv run hachi skill benchmark --suite fast --json --threshold 0.80 \
-            --dir src/hachi/default_skills
-        continue-on-error: true
 
   eval:
     # Regression gate for the agent loop (P4 Eval). Replays the curated eval
