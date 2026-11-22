@@ -5,6 +5,13 @@ Four cases:
 2. JSON output — `--json` flag produces valid JSON with expected keys.
 3. Custom threshold — `--threshold 0.0` always passes; `--threshold 0.9999` fails (exit 1).
 4. Dir not found — `--dir /nonexistent` exits 2.
+
+Every case pins `--dir` to the shipped corpus, because that is what these tests have
+always *meant* ("runs against bundled skills") while invoking the command without
+`--dir` defaults to `get_skills_dir()` — the mutable user workspace. That mismatch made the tests
+depend on what the machine had installed: they passed on a developer box and failed on
+a fresh runner with "found 0 nodes". Same defect as BB-99. Workspace seeding itself is
+covered by the onboarding tests (test_onboarding_quickstart, test_zero_config_onboarding).
 """
 
 from __future__ import annotations
@@ -53,7 +60,7 @@ def _skip_if_no_bundled():
 
 def test_benchmark_human_output_exits_zero() -> None:
     _skip_if_no_bundled()
-    result = runner.invoke(app, ["skill", "benchmark"])
+    result = runner.invoke(app, ["skill", "benchmark", "--dir", str(_bundled_dir())])
     assert result.exit_code == 0, result.output
     # Must mention the key figures.
     assert "Token savings" in result.output
@@ -68,7 +75,7 @@ def test_benchmark_human_output_exits_zero() -> None:
 
 def test_benchmark_json_output_has_expected_keys() -> None:
     _skip_if_no_bundled()
-    result = runner.invoke(app, ["skill", "benchmark", "--json"])
+    result = runner.invoke(app, ["skill", "benchmark", "--json", "--dir", str(_bundled_dir())])
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     # Top-level keys (suite=token by default)
@@ -105,7 +112,9 @@ def test_benchmark_json_output_has_expected_keys() -> None:
 
 def test_benchmark_threshold_zero_always_passes() -> None:
     _skip_if_no_bundled()
-    result = runner.invoke(app, ["skill", "benchmark", "--json", "--threshold", "0.0"])
+    result = runner.invoke(
+        app, ["skill", "benchmark", "--json", "--threshold", "0.0", "--dir", str(_bundled_dir())]
+    )
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["passed"] is True
@@ -119,7 +128,10 @@ def test_benchmark_threshold_zero_always_passes() -> None:
 
 def test_benchmark_threshold_999_fails_exit_1() -> None:
     _skip_if_no_bundled()
-    result = runner.invoke(app, ["skill", "benchmark", "--json", "--threshold", "0.9999"])
+    result = runner.invoke(
+        app,
+        ["skill", "benchmark", "--json", "--threshold", "0.9999", "--dir", str(_bundled_dir())],
+    )
     # savings will always be < 0.9999 (even at 97% we need > 99.99% to pass)
     data = json.loads(result.output)
     if data["token"]["savings_pct"] < 0.9999:

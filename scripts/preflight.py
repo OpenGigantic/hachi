@@ -115,6 +115,39 @@ STEPS: list[Step] = [
     # ratchet to blocking; kept advisory for one cycle like the other rails. See scripts/check_adrs.py.
     Step("adr-lint (docs)", [["uv", "run", "python", "scripts/check_adrs.py"]], blocking=False),
     Step("eval regression", [["uv", "run", "hachi", "eval", "run"]]),
+    # CI parity. `.github/workflows/ci.yml` has a blocking `benchmark` job; it was
+    # missing from this gate, so `preflight.py` could report a clean run while CI came
+    # back red — the contributor had no local evidence of the failure and no way to
+    # reproduce it. That divergence is the bug this step removes.
+    #
+    # `--dir` pins the subject to the corpus the REPO ships. Without it the command
+    # defaults to get_skills_dir() — the mutable user workspace — so the result depended
+    # on what the contributor happened to have installed: 49 nodes (P@5 0.677, FAIL) on
+    # a fresh runner, 54 nodes (P@5 0.806, pass) on a developer box, 60 nodes (P@5 1.0,
+    # pass) for the shipped corpus. A gate whose verdict changes with local state is not
+    # a gate. See BB-99.
+    #
+    # Full mode only: it is redundant with `hachi eval run` for the fast inner loop and
+    # adds ~1s + a skill-index build, and --quick is the tight edit/test cycle.
+    Step(
+        "skill benchmark (M1 + token savings)",
+        [
+            [
+                "uv",
+                "run",
+                "hachi",
+                "skill",
+                "benchmark",
+                "--suite",
+                "fast",
+                "--threshold",
+                "0.80",
+                "--dir",
+                "src/hachi/default_skills",
+            ]
+        ],
+        in_quick=False,
+    ),
     Step(
         "frontend typecheck",
         [["npm", "run", "--prefix", "frontend", "typecheck"]],
