@@ -2238,6 +2238,57 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** an assertion that a substring is present will happily pass on the wrong response whenever the substring is generic. Assert on something only the *intended* response can contain, and prefer asserting the absence of the wrong one too.
 - **Found but not fixed (P-35):** four frontend routes collide with REST paths — `/memory`, `/skills`, `/approvals`, `/integrations`. API routes correctly win, so those pages still break on refresh. The fix is a frontend-side prefix (`/app/*`) or moving REST under `/api/*`. Locked as an explicit assertion in `tests/test_serve_frontend_routing.py::test_known_spa_route_collisions` so it cannot be mistaken for a fallback regression.
 
+### BB-96 — A missing API key was a *boot* failure, so `POST /sessions` 500'd on every keyless machine
+
+- **Symptom:** `POST /sessions` returned `500` with `ValueError: ANTHROPIC_API_KEY must be provided or set in the environment`. Everything that needs a live session — memory CRUD, config actions, the whole cockpit UI — was unusable with no provider key configured, even though none of those endpoints call the model. In CI (no key, ever) this failed 4 tests: `test_cockpit_gaps::TestMemoryCRUD` ×3 and `test_routing_router::test_default_client_unknown_model_synthesises_descriptor`.
+- **Root cause:** `boot_agent` constructed the provider client **eagerly**, and `AnthropicClient.__init__` raises when no key resolves. Credential resolution therefore happened at session *creation* rather than at the first generation. This also contradicted two written rules: CONTRIBUTING.md's "No API key is needed to develop or to run the test suite", and CLAUDE.md's "resolve credentials lazily at call time". `tests/conftest.py` deliberately disables dotenv autoload for hermeticity, so the keyless path was the *normal* path — it had simply never been exercised because the 4 tests were already red for this reason and treated as "pre-existing".
+- **Fix:** `_make_boot_client()` (orchestrator) catches the resolution failure and installs `UnconfiguredLLMClient`, which boots fine and raises `LLMNotConfiguredError` on the first `generate()` — with actionable text (`hachi quickstart`, the env var, then restart) instead of a bare variable name. A resolvable credential is unchanged: the real client is built exactly as before. Mirrors the degradation `boot_agent` already applied to an unusable routed default model.
+- **Avoid:** never resolve a credential as a side effect of constructing a long-lived object at boot — resolve at call time, and make the *boot* path survive a machine with nothing configured.
+- **Locked by:** `tests/test_boot_without_credentials.py` (keyless ⇒ placeholder client + actionable error; keyed ⇒ real client; `POST /sessions` succeeds keyless).
+
+### BB-97 — `exists()` / `is_file()` above the `try` made two fail-closed guards unreachable
+
+- **Symptom:** `test_os_tools_hardening::test_read_file_refused_on_stat_failure` blew up with `OSError: simulated stat failure` (and, before the test helper was fixed, `RecursionError`) instead of returning the denial it asserts.
+- **Root cause:** the same shape as BB-92, but with `stat()`. Both `PermissionGate.check_path` and `guarded_read_file` guarded `stat()` with a `try`, while calling `resolved.exists()` / `resolved.is_file()` — *also* `stat()` calls — **outside** it. A broken stat therefore propagated `OSError` out of the guard and crashed the caller, leaving the fail-closed branch dead code. `check_path` additionally mapped a failed size read to `current_size = 0`, i.e. it failed **open** on a file it could not verify.
+- **Fix:** the existence/size probes moved inside the `try` in both places, and a stat failure now returns a denial ("Operation refused to avoid acting on an unverified file") rather than propagating or being read as zero. The test's own monkeypatch was fixed too: `Path.resolve()` calls `stat()`, so resolving inside the patched `stat()` recursed forever.
+- **Avoid:** inside a fail-closed guard, every filesystem probe goes in the `try` — `exists()`, `is_file()` and `resolve()` are `stat()` in disguise and raise exactly like it.
+- **Locked by:** `tests/test_os_tools_hardening.py::test_read_file_refused_on_stat_failure`, `tests/test_permissions_path.py`, `tests/test_permission_gate_hardening.py`.
+
+### BB-98 — The daemon installed `python3.12 gateway …`, which is not a command
+
+- **Symptom:** `test_daemon::test_build_argv_python_module_fallback` → `assert 'gateway' == '-m'`. The daemon's service definition named the interpreter followed directly by `gateway`.
+- **Root cause:** `_build_argv` decided "invoke as a module" with an exact membership test, `exe.name in ("python", "python3", "python.exe", "python3.exe")`. The fallback path returns `sys.executable`, which is version-stamped — `.venv/bin/python3.12`, `python3.13t`, … — so the test missed and the `-m hachi` prefix was dropped. Any install whose `hachi` entry point was not on PATH (the whole point of the fallback) installed a service that could never start.
+- **Fix:** match the prefix (`exe.name.lower().startswith("python")`).
+- **Avoid:** never match an interpreter by exact filename — `sys.executable` is version-stamped and patched (`.venv`, `python3.12`, `python3.13t`); match the family prefix.
+- **Locked by:** `tests/test_daemon.py::test_build_argv_python_module_fallback`.
+
+### BB-99 — `preflight.py` was not a superset of CI, so "green locally" meant nothing
+
+- **Symptom:** a contributor ran the documented local gate, saw every check pass, pushed, and CI came back red with no local evidence and no local reproduction. `main` has been red on the same 5 checks since the first CI run the repo ever recorded.
+- **Root cause:** `.github/workflows/ci.yml` has a blocking `benchmark` job (`hachi skill benchmark --suite fast --threshold 0.80`) that `scripts/preflight.py` did not run at all. The local gate was therefore strictly weaker than CI, and the one check that fails deterministically was invisible to the person who could have caught it.
+- **Fix:** the benchmark step is now in `preflight.py` (full mode only — see the inline comment: it is currently red on the bundled corpus, and a permanently-red inner loop trains people to ignore the loop).
+- **Root cause of the *benchmark's* redness (a second, independent bug):** `skill benchmark` defaults its subject to `get_skills_dir()` — the **mutable user workspace** — while its own `--help` says "Defaults to the bundled default_skills". The workspace is seeded with a starter pack (`brain.og`, `core_integrations.og`, `general/`, `roles/`, `technical/`) that does **not** contain the `google/`, `slack/` or `notion/` skills the M1 probes are written against (`inbox_sentinel`, `morning_briefing`, `daily_standup`, …). Measured, same commit, same command:
+
+  | Corpus | Nodes | M1 P@5 | Verdict |
+  |---|---|---|---|
+  | Fresh runner (`HOME` empty) → seeded workspace | 49 | 0.677 | **FAIL** |
+  | Developer machine (extra skills installed) | 54 | 0.806 | pass |
+  | Shipped corpus (`--dir src/hachi/default_skills`) | 60 | **1.0** | pass |
+
+  So the shipped corpus satisfies the probes perfectly; the gate was grading the wrong corpus and its verdict changed with local install state. `test_cli_skill_benchmark`'s CI-only "found 0 nodes" failures are the same defect (an empty workspace on the runner).
+- **Fix (both halves):** `preflight.py` now runs the benchmark (parity), and **both** CI and preflight pin `--dir src/hachi/default_skills` so the gate measures a repo-derived corpus instead of developer state.
+- **Avoid:** when you add a blocking CI job, add it to `scripts/preflight.py` in the same change — a gate weaker than CI manufactures false confidence. And never let a gate default its *subject* to mutable user state; pin the corpus explicitly.
+- **Locked by:** the `--dir src/hachi/default_skills` flag in `.github/workflows/ci.yml` and `scripts/preflight.py` (mechanical guard).
+
+### BB-100 — The artifact-drift gate regenerates its own input, then blames the wrong file
+
+- **Symptom:** `frontend-contract` failed on `git diff --exit-code -- src/lib/data/schema.d.ts`, i.e. a *frontend TypeScript* complaint. The actual stale file was `openapi/hachi-openapi.json` — the `/status` route added in #154 was missing from it entirely.
+- **Root cause:** the job's steps are "Export OpenAPI schema" (`hachi gateway-openapi --output openapi/hachi-openapi.json`, which **overwrites** the committed file) followed by `check:api`, which regenerates `schema.d.ts` *from that fresh JSON* and diffs **only** the TS file. So the committed JSON was never compared against anything: its drift was destroyed before it could be observed, and it resurfaced one step later as a mismatch in a file it had just caused. Worse, a JSON-only change that does not alter any generated type (a description, an example, a summary) would pass while the committed artifact stays stale.
+- **Fix:** both artifacts were regenerated (verified by re-exporting and getting a byte-identical file, then re-running `check:api` green).
+- **Avoid:** a drift gate must diff **every** generated artifact against git, and must never regenerate an artifact before checking it — otherwise the check can only see second-order damage.
+- **Recommended (not yet done):** add `git diff --exit-code -- openapi/hachi-openapi.json` to the `frontend-contract` job *before* `check:api` runs, so the JSON is verified on its own terms and the failure names the file that is actually stale.
+- **Locked by:** none yet — the recommendation above is the mechanical guard.
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
