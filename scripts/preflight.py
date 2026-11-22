@@ -146,6 +146,10 @@ STEPS: list[Step] = [
                 "src/hachi/default_skills",
             ]
         ],
+        # DEFERRED (2026-11-21): advisory to match CI. See docs/DECISIONS.md,
+        # "CI test matrix + benchmark deferred". Deterministic now that --dir pins the
+        # subject; deferral is about capacity/noise, not correctness.
+        blocking=False,
         in_quick=False,
     ),
     Step(
@@ -163,7 +167,12 @@ STEPS: list[Step] = [
         needs_frontend=True,
     ),
     # Slow steps — skipped by --quick.
-    Step("pytest (full suite)", [["uv", "run", "pytest", "-q"]], in_quick=False),
+    # DEFERRED (2026-11-21): advisory to match CI, which made the test matrix
+    # non-blocking. See docs/DECISIONS.md, "CI test matrix + benchmark deferred".
+    # This gate must not be stricter than CI (BB-99), so the two move together —
+    # re-arm both by dropping `blocking=False` here and `continue-on-error` in
+    # .github/workflows/ci.yml.
+    Step("pytest (full suite)", [["uv", "run", "pytest", "-q"]], blocking=False, in_quick=False),
     Step(
         "frontend build",
         [["npm", "run", "--prefix", "frontend", "build"]],
