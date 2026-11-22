@@ -384,20 +384,25 @@ def _make_guarded_read_file(gate: Any):
         # UC-PERF-005: Fail CLOSED on the size check — if we cannot determine the
         # file size (e.g. a broken stat), refuse the read rather than swallowing the
         # error and proceeding with an unbounded read.
+        #
+        # `exists()` and `is_file()` are themselves stat() calls, so they belong INSIDE
+        # the try: with the guard clause outside it, a broken stat raised OSError out of
+        # the tool instead of refusing, and the fail-closed path was unreachable. The
+        # tool must never propagate an exception for an unverifiable file.
         target = normalized
-        if target.exists() and target.is_file():
-            try:
+        try:
+            if target.exists() and target.is_file():
                 file_size = target.stat().st_size
-            except Exception as exc:
-                return (
-                    f"Permission Denied: Cannot determine file size for '{target}': {exc}. "
-                    "Read refused to avoid loading an unverified file."
-                )
-            if file_size > gate.max_file_size_bytes:
-                return (
-                    "Permission Denied: File exceeds configured max_file_size_mb. "
-                    "Update device-permissions.og to raise the limit."
-                )
+                if file_size > gate.max_file_size_bytes:
+                    return (
+                        "Permission Denied: File exceeds configured max_file_size_mb. "
+                        "Update device-permissions.og to raise the limit."
+                    )
+        except Exception as exc:
+            return (
+                f"Permission Denied: Cannot determine file size for '{target}': {exc}. "
+                "Read refused to avoid loading an unverified file."
+            )
 
         return _raw_read_file(str(normalized))
 

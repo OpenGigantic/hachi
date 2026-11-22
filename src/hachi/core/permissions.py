@@ -564,13 +564,23 @@ class PermissionGate:
                 f"Delete operations are disabled. Set allow_delete=true in {_PERMISSIONS_HINT}.",
             )
 
-        if operation in {"read", "write"} and resolved.exists() and resolved.is_file():
+        if operation in {"read", "write"}:
+            # exists()/is_file()/stat() are all stat() calls. The previous shape put
+            # exists()/is_file() outside any handler, so a broken stat propagated
+            # OSError out of the gate and crashed the caller instead of denying, and it
+            # treated an unreadable size as 0 — failing OPEN on an unverifiable file.
+            # The size gate exists to fail closed (UC-PERF-005), so deny here.
             max_bytes = self._fs.max_file_size_mb * 1024 * 1024
             try:
-                current_size = resolved.stat().st_size
-            except OSError:
-                current_size = 0
-            if current_size > max_bytes:
+                is_file = resolved.exists() and resolved.is_file()
+                current_size = resolved.stat().st_size if is_file else 0
+            except OSError as exc:
+                return PermissionResult(
+                    False,
+                    f"Cannot determine the size of '{resolved}': {exc}. "
+                    "Operation refused to avoid acting on an unverified file.",
+                )
+            if is_file and current_size > max_bytes:
                 return PermissionResult(
                     False,
                     f"'{resolved}' exceeds max_file_size_mb={self._fs.max_file_size_mb}. "
