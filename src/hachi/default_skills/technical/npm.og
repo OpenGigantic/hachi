@@ -1,0 +1,32 @@
+::meta
+  title: Core npm Package Info
+  version: 1.0.0
+  domain: development|javascript|packages
+
+::index
+  # node-id    | type  | scope | conf | keywords
+  core_npm      | skill | all   | 1.0  | npm, npm package, node package, node module, javascript package, package version
+
+::node[core_npm]
+->[:role=skill]
+->[:keywords=npm, npm package, node package, node module, javascript package, package version]
+
+::api[get_npm_package]
+method=GET
+endpoint=https://registry.npmjs.org/{package}/latest
+schema={"package": "string"}
+fields=name, version, description, license, homepage, engines, dependencies
+description=Fetches the latest published release of an npm package from the public registry: version, description, license, homepage, Node engine requirement and runtime dependencies. No API key needed. Unscoped package names only (e.g., express, lodash).
+
+::dense
+npm package metadata: latest version, license, dependencies. No key needed.
+
+::steps
+1. Get the exact npm package name from the user (e.g., express, lodash). Scoped names such as @scope/name are not supported by this skill.
+2. Call `get_npm_package`.
+3. Report `version`, `description`, `license`, `homepage`, and `engines` if present. Summarise `dependencies` briefly rather than listing every entry.
+4. If the call returns an HTTP 404 error, tell the user the package was not found on npm and suggest checking the spelling.
+5. Remind the user that this is the latest published release, not necessarily the version installed in their project (`npm ls <package>` shows that).
+
+::assertions
+assert package != "" "An npm package name is required."
