@@ -2918,3 +2918,45 @@ the repo: restore the jobs from the removal commit's parent, and both still run 
 caught the Windows-only launcher failures no longer runs. `uv run pytest -q` is a prerequisite a
 contributor must satisfy themselves. Reversing this is `git revert` of the removal commit plus
 re-adding the contexts to the protection object.
+
+## Tracked-tree secret scan — PRODUCT-AUDIT P-30 closed (2026-11-26)
+
+**What.** `hachi security-audit` gained `--scan-tree` (with `--tree-root`, default: the
+current directory). The audit's own checks inspect the process environment and the resolved
+config and never open a file, so a credential committed to the tree passed the gate
+untouched; the new check runs `core/secret_scanner.py` over every git-tracked file and
+reports one high finding per file as `tree.committed_secret` — kind + line only, the matched
+text is never echoed into the report or CI logs. In `core/secret_scanner.py` (which stays in
+the mypy strict gate): `find_secrets` (position-aware detection), `tracked_files`
+(`git ls-files`, with a filesystem-walk fallback for exported trees), `scan_tree`, and the
+allowlist helpers `load_allowlist` / `is_allowlisted`. The CI security job passes
+`--scan-tree` in both audit steps; the preflight security step mirrors it.
+
+**Allowlist.** Deliberate fixtures are allowlisted per occurrence in
+`.secret-scan-allowlist` at the repo root — `path:kind:fingerprint`, where the fingerprint
+is the first 12 hex chars of the SHA-256 of the fixture value — so a *different* credential
+of the same kind in the same file still trips the gate. A scan of the tree at the time of
+this change found 18 fixture hits across 9 test files (all obviously fake:
+`sk-ant-test-dummy-…`, `_FAKE_AWS`, `xoxb-FAKE-…`) and no real credentials.
+
+**Review follow-up (2026-11-26).** A hard review of the original change found that the
+`path:kind` allowlist form suppressed *every* credential of a kind in a file (a second,
+real key of the same kind in a fixture file would have been hidden), and that the scan
+failed open in several places. The follow-up therefore: made the fingerprint form the
+*only* accepted allowlist form (`load_allowlist` rejects bare-path, directory, and
+fingerprint-less entries as malformed, and the allowlist file is CODEOWNERS-gated); made
+the scan fail closed — unreadable/deleted/oversized tracked files are scan errors surfaced
+as the high finding `tree.scan_incomplete`, a broken `git ls-files` inside a checkout
+raises instead of silently falling back to a filesystem walk, files with invalid UTF-8 are
+scanned with replacement decoding, and symlinks pointing outside the tree are never
+followed (their target string is scanned as text instead); bounded the private-key pattern
+to a base64 body, which removed the 2 cross-literal false positives (the final tree state
+is 16 fixture hits, 11 unique occurrences, across 8 test files); and added Slack webhook
+and Telegram bot token patterns. Scope, stated plainly: the scan covers the **current
+tracked tree only** — a secret committed and later removed remains in git history and is
+not detected; history scanning is future work. The P-30 closure claim is scoped to the
+CI-wiring gap: the gate now *sees* committed credentials in the current tree.
+
+**Why opt-in.** A deployment audit describes the running installation, not a checkout;
+scanning the caller's working directory by default would flag end users' own repositories.
+The gate is armed where the tree is the subject: CI and preflight.

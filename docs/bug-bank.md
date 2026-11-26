@@ -2289,6 +2289,13 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Recommended (not yet done):** add `git diff --exit-code -- openapi/hachi-openapi.json` to the `frontend-contract` job *before* `check:api` runs, so the JSON is verified on its own terms and the failure names the file that is actually stale.
 - **Locked by:** none yet — the recommendation above is the mechanical guard.
 
+### BB-101 — The tree secret scan failed open, and its allowlist suppressed by kind
+
+- **Symptom:** `security-audit --scan-tree` (P-30) reported clean in cases it had not actually checked: a tracked file with invalid UTF-8 was skipped whole, an unreadable or deleted tracked file was silently passed over, a broken `git ls-files` silently fell back to a filesystem walk, and a nonexistent `--tree-root` audited as clean. Separately, a `path:kind` allowlist entry suppressed *every* credential of that kind in the file, so a real key planted next to a fake fixture was hidden.
+- **Root cause:** the scan treated "could not check" as "nothing found" at every layer (decode, read, enumeration, CLI root), and the allowlist granularity was chosen for authoring convenience (file+kind) instead of for the adversary's move (same file, same kind, different value).
+- **Avoid:** a security scan must fail closed — every unchecked input becomes a scan error the gate can see — and an allowlist entry must name one exact occurrence (path + kind + value fingerprint), never a class of findings.
+- **Locked by:** `tests/test_secret_scanner_tree_hardening.py` (per-occurrence suppression, invalid-UTF-8 flagging, incomplete-scan CLI failure, broken-git raising, symlink policy, oversize cap) and the updated `tests/test_secret_scanner_tree.py` (malformed-entry rejection, stale-entry liveness check on the committed allowlist).
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent

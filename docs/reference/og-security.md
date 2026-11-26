@@ -76,15 +76,42 @@ Tier-1 or Tier-2 skills (wave-2 enforcement; tracked as a follow-up).
 - Store secrets in the secret store (`hachi secrets --set <name>`) and reference by key name.
 - **Correction (2026-11-16):** an earlier revision of this section claimed the CI
   `security` job "scans all tracked files including `.og` files for secret
-  patterns". **It does not.** `hachi security-audit` inspects the process
-  environment and resolved config; it never opens a file. Its
-  `oauth.google_client_secret_embedded` check fires on a `GOOGLE_CLIENT_SECRET`
-  exported into the environment, not on a key committed to a `.og` file or any
-  other source file. There is currently **no** tree secret-scan step in CI, so a
-  pull request that commits a credential is not blocked by this gate.
-  Tracked as PRODUCT-AUDIT P-30 (wire `core/secret_scanner.py` over the tracked
-  files with a fixture allowlist). Until that lands, the rule above is a
-  convention enforced by review, not by CI.
+  patterns". At the time that was false for the audit itself: `hachi
+  security-audit` inspects the process environment and resolved config; its own
+  checks never open a file, and its `oauth.google_client_secret_embedded` check
+  fires on a `GOOGLE_CLIENT_SECRET` exported into the environment, not on a key
+  committed to a `.og` file or any other source file.
+- **Update (PRODUCT-AUDIT P-30, closed):** the CI `security` job now also passes
+  `--scan-tree`, which runs `core/secret_scanner.py` over every git-tracked file
+  (including `.og` files) and fails the strict gate on check id
+  `tree.committed_secret`. The rule above is now enforced by CI for the current
+  tree, not by review alone.
+- **Allowlist discipline:** deliberate test fixtures are allowlisted in
+  `.secret-scan-allowlist` at the repo root in exactly one form —
+  `path:kind:fingerprint`, where the fingerprint is the first 12 hex chars of
+  the SHA-256 of the fixture value. An entry suppresses that one occurrence
+  only: a different credential of the same kind in the same file still trips
+  the gate. Bare-path, directory, and fingerprint-less entries are rejected
+  as malformed and fail the scan; the file is CODEOWNERS-gated.
+- **Fail-closed semantics:** a tracked file that cannot be read, or is over
+  the 10 MiB scan cap, makes the scan *incomplete* (check id
+  `tree.scan_incomplete`, a high finding) rather than clean. A broken
+  `git ls-files` inside a checkout fails the scan instead of silently
+  falling back to a filesystem walk. Files with invalid UTF-8 are scanned
+  with replacement decoding so an ASCII credential cannot hide behind
+  malformed bytes. Symlinks are never followed outside the tree root: for a
+  link pointing outside, the link-target string itself is scanned as text
+  and the target content is never read.
+- **Coverage and limits:** the pattern set covers PEM private keys, Anthropic,
+  OpenAI, AWS access key IDs, GitHub tokens (classic and fine-grained),
+  Slack tokens and webhook URLs, Telegram bot tokens, Google API keys and
+  OAuth client secrets, Stripe, SendGrid, and npm tokens, and JWTs. Two gaps
+  are deliberate: AWS *secret* access keys and passwords embedded in
+  database/connection URLs have no distinguishing shape, and detecting them
+  would need the generic high-entropy heuristics this scanner avoids by
+  design. And the scan covers the **current tracked tree only** — a secret
+  that was committed and later removed remains in git history and is not
+  detected; history scanning is future work.
 
 ---
 

@@ -3,3 +3,7 @@
 # See https://docs.github.com/en/repositories/managing-your-repository-settings/about-code-owners
 
 * @opsingh861 @mohit-dubey66
+
+# The tree-scan allowlist gates the CI secret scan: entries here suppress
+# real findings, so changes need the same owners' review explicitly.
+.secret-scan-allowlist @opsingh861 @mohit-dubey66

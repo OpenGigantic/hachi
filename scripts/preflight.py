@@ -84,9 +84,11 @@ STEPS: list[Step] = [
     # pyproject [tool.importlinter]. A new cross-layer import fails here.
     Step("import-linter (layers)", [["uv", "run", "lint-imports"]]),
     # Advisory -- mirrors CI (the security job is continue-on-error on main). Surfaced, never blocks.
+    # --scan-tree mirrors the CI security job: scan the tracked files for committed
+    # credentials (PRODUCT-AUDIT P-30), not just the environment/config posture.
     Step(
         "security audit (high)",
-        [["uv", "run", "hachi", "security-audit", "--json", "--fail-on-high"]],
+        [["uv", "run", "hachi", "security-audit", "--json", "--fail-on-high", "--scan-tree"]],
         blocking=False,
     ),
     # Advisory rails (Guardrails Phase 2): surfaced every run, never block. Ratchet each to

@@ -4703,6 +4703,21 @@ def security_audit(
             "gate can still be strict about everything a contributor can affect."
         ),
     ),
+    scan_tree: bool = typer.Option(
+        False,
+        "--scan-tree",
+        help=(
+            "Also scan the tracked files of the source tree at --tree-root for "
+            "credentials committed to the tree (check id tree.committed_secret, "
+            "PRODUCT-AUDIT P-30). Off by default: a deployment audit describes the "
+            "running installation, not a checkout. CI passes this flag."
+        ),
+    ),
+    tree_root: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--tree-root",
+        help="Root of the source tree to scan with --scan-tree (default: current directory).",
+    ),
     json_output: bool = typer.Option(
         False, "--json", help="Output machine-readable JSON (for CI/automation)."
     ),
@@ -4716,6 +4731,9 @@ def security_audit(
         - --fail-on-medium: Exit code 2 if any high or medium-severity findings exist.
         - --max-findings: Exit code 2 if total findings exceed threshold.
         - --ignore-checks: Exclude named check ids from the report and the gate.
+        - --scan-tree: Also scan the tracked files at --tree-root for committed
+          credentials (the checks above inspect the environment and resolved
+          config only; they never open a file).
 
     Default behavior: Pretty-print findings with human-friendly formatting.
     """
@@ -4805,6 +4823,77 @@ def security_audit(
                 "Bind the capability to a secret reference managed by the secret backend.",
             )
 
+    # Tracked-tree secret scan (PRODUCT-AUDIT P-30). Every check above inspects
+    # the process environment or the resolved config — none of them opens a
+    # file, so a credential committed to the tree passed this gate untouched.
+    # Opt-in via --scan-tree because a deployment audit describes the running
+    # installation, not a checkout; CI passes the flag from the repo root.
+    # Findings are grouped one per file so the report stays readable, and the
+    # matched text is never echoed — kind + line locates the credential
+    # without republishing it into CI logs.
+    #
+    # The scan fails closed: an invalid --tree-root or an untrustworthy scan
+    # (broken git enumeration, malformed allowlist) aborts the audit with a
+    # non-zero exit, and files the scan could not check surface as a
+    # tree.scan_incomplete high finding — an incomplete scan is never
+    # reported as a clean one.
+    tree_scan_stats: dict[str, object] | None = None
+    if scan_tree:
+        from hachi.core import secret_scanner
+
+        _tree_root = (tree_root or Path.cwd()).resolve()
+        if not _tree_root.is_dir():
+            typer.echo(
+                f"security-audit: --tree-root {_tree_root} does not exist or is not a directory.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        try:
+            _allowlist = secret_scanner.load_allowlist(
+                _tree_root / secret_scanner.ALLOWLIST_FILENAME
+            )
+            _scan = secret_scanner.scan_tree(_tree_root, _allowlist)
+        except secret_scanner.TreeScanError as exc:
+            typer.echo(f"security-audit: tracked-tree scan failed: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        tree_scan_stats = {
+            "files_discovered": _scan.files_discovered,
+            "files_scanned": _scan.files_scanned,
+            "files_binary_skipped": _scan.files_binary_skipped,
+            "errors": len(_scan.errors),
+            "enumeration": _scan.enumeration,
+        }
+        _tree_hits: dict[str, list[tuple[str, int]]] = {}
+        for _hit in _scan.findings:
+            _tree_hits.setdefault(_hit.path, []).append((_hit.kind, _hit.line))
+        for _path in sorted(_tree_hits):
+            _hits = _tree_hits[_path]
+            _kinds = ", ".join(sorted({kind for kind, _line in _hits}))
+            _lines = ", ".join(str(line) for _kind, line in _hits)
+            add_finding(
+                "high",
+                "tree.committed_secret",
+                f"Tracked file {_path} contains {len(_hits)} credential-shaped "
+                f"string(s) ({_kinds}) at line(s) {_lines}.",
+                "Remove the credential from the tree and rotate it — a committed "
+                "secret stays in git history. If this is a deliberate test fixture, "
+                "add a justified path:kind:fingerprint entry to "
+                f"{secret_scanner.ALLOWLIST_FILENAME} (fingerprint: "
+                "hachi.core.secret_scanner.secret_fingerprint of the fixture value).",
+            )
+        if _scan.errors:
+            _error_summary = "; ".join(
+                f"{_error.path} ({_error.reason})" for _error in _scan.errors[:10]
+            )
+            add_finding(
+                "high",
+                "tree.scan_incomplete",
+                f"Tracked-tree scan incomplete: {len(_scan.errors)} tracked "
+                f"file(s) could not be scanned: {_error_summary}.",
+                "Make every tracked file readable and within the scan size "
+                "limit, then re-run — a partial scan cannot pass this gate.",
+            )
+
     # --ignore-checks: drop named check ids before counting, so they are excluded
     # from BOTH the report and the exit-code gate. This exists because some checks
     # describe the *deployment* (e.g. sandbox.process_backend reports that the
@@ -4846,6 +4935,10 @@ def security_audit(
         # id matched nothing (a typo or a renamed check).
         "ignored_checks": ignored_checks,
         "ignored_checks_unmatched": ignored_checks_unmatched,
+        # Present only when --scan-tree ran: how the tree scan enumerated
+        # and covered the tree, so "clean" is distinguishable from "the scan
+        # never really ran".
+        **({"tree_scan": tree_scan_stats} if tree_scan_stats is not None else {}),
     }
 
     # Determine exit code based on fail thresholds
@@ -4892,6 +4985,7 @@ def security_audit(
                         "low": low_count,
                         "total": total_count,
                         "findings": findings,
+                        **({"tree_scan": tree_scan_stats} if tree_scan_stats is not None else {}),
                     },
                     indent=2,
                 ),

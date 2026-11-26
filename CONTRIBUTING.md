@@ -47,6 +47,99 @@ write a lot of code.
 
 ---
 
+## Your first pull request
+
+Follow these steps to contribute a change to Hachi and submit it for review.
+
+### 1. Fork the repository
+
+Open the [Hachi repository](https://github.com/OpenGigantic/hachi) on GitHub and click **Fork**. This creates your own copy of the repository under your GitHub account.
+
+### 2. Clone your fork
+
+Open a terminal and clone your fork. Replace `YOUR_USERNAME` with your GitHub username.
+
+```bash
+git clone https://github.com/YOUR_USERNAME/hachi.git
+cd hachi
+```
+
+### 3. Connect the original repository
+
+Add the original Hachi repository as a remote named `upstream`.
+
+```bash
+git remote add upstream https://github.com/OpenGigantic/hachi.git
+git remote -v
+```
+
+You should now have:
+- `origin` pointing to your fork.
+- `upstream` pointing to the original Hachi repository.
+
+### 4. Create a branch
+
+Fetch the latest changes and update your local main branch.
+
+```bash
+git fetch upstream
+git switch main
+git merge --ff-only upstream/main
+```
+
+Create a separate branch for your contribution.
+
+```bash
+git switch -c docs/describe-your-change
+```
+
+Use a descriptive branch name that follows the naming conventions below.
+
+### 5. Make and test your changes
+
+Edit the relevant files and inspect your changes.
+
+```bash
+git status
+git diff
+```
+
+Run the project's tests and checks:
+
+```bash
+uv sync --extra dev
+uv run pytest -q
+uv run python scripts/preflight.py
+```
+
+Make sure the checks pass before submitting your contribution.
+
+### 6. Commit and push your changes
+
+Stage only the files related to your contribution.
+
+```bash
+git add path/to/changed-file
+git commit -m "docs: describe your change"
+git push -u origin docs/describe-your-change
+```
+
+Replace the example file path and branch name with your actual values.
+
+### 7. Open a pull request
+
+Visit your fork on GitHub. Click **Compare & pull request** for the branch you just pushed.
+
+Before submitting, check that:
+- The base repository is `OpenGigantic/hachi`.
+- The base branch is `main`.
+- The compare branch is your contribution branch.
+
+Complete the pull request template with a clear summary and actual test results. Link any related issues and respond to reviewer feedback.
+
+Keep your pull request focused on one logical change. See the Branch and PR model section below for the full contribution rules.
+
+
 ## Branch and PR model
 
 **Branch from `main`. Every PR is one logical change.**
