@@ -7,6 +7,7 @@ Covers:
   FIX 3 — _smart_upsert bare-fallback removal: dup not written on forced failure.
   FIX 4 — Trivial turns produce no vault writes (write-quality gate).
   FIX 5 — Growth past the soft cap triggers prune_core_memory.
+  issue10 — core_memory eviction is least-recently-used (recall stamps last_accessed).
 
 All tests are pure unit tests: ChromaDB is stubbed with lightweight fakes so no
 real DB I/O occurs and tests run without requiring ChromaDB to be installed.
@@ -69,6 +70,17 @@ class _FakeCollection:
             "metadatas": [[r["metadata"] for r in rows]],
             "distances": [distances],
         }
+
+    def update(self, ids, metadatas=None, documents=None) -> None:
+        for i, _id in enumerate(ids):
+            if _id not in self._data:
+                continue
+            if metadatas is not None:
+                # Replace (not merge): the strictest backend behaviour, so a caller
+                # that forgets to carry existing keys forward is caught by tests.
+                self._data[_id]["metadata"] = dict(metadatas[i])
+            if documents is not None:
+                self._data[_id]["document"] = documents[i]
 
     def delete(self, ids) -> None:
         for _id in ids:
@@ -583,6 +595,133 @@ class TestCoreMemorySoftCap:
         assert coll.count() <= cap, (
             f"Expected count ≤ {cap} after cap-triggered prune, got {coll.count()}"
         )
+
+
+# ---------------------------------------------------------------------------
+# issue10 — LRU eviction: recall stamps last_accessed, prune evicts least
+# recently used instead of oldest-written.
+# ---------------------------------------------------------------------------
+
+
+def _seed_core(vault, rows: list[tuple[str, dict]]) -> dict[str, str]:
+    """Insert (content, metadata) rows into core_memory; return content -> fact id."""
+    import hashlib
+
+    coll = vault._collections["collection"]
+    ids: dict[str, str] = {}
+    for content, meta in rows:
+        fact_id = hashlib.sha256(content.encode()).hexdigest()
+        coll._data[fact_id] = {"document": content, "metadata": dict(meta)}
+        ids[content] = fact_id
+    return ids
+
+
+def _six_facts() -> list[tuple[str, dict]]:
+    """F0 is the oldest write ... F5 the newest; none has been recalled."""
+    return [
+        (f"F{i}", {"category": "ws", "timestamp": f"2026-01-0{i + 1}T00:00:00+00:00"})
+        for i in range(6)
+    ]
+
+
+class TestCoreMemoryLRU:
+    """issue10: core_memory eviction is least-recently-used."""
+
+    def test_recency_key_prefers_later_of_timestamp_and_last_accessed(self) -> None:
+        from hachi.core.memory_vault import _core_recency_key
+
+        assert _core_recency_key(None) == ""
+        assert _core_recency_key({}) == ""
+        assert _core_recency_key({"timestamp": "2026-01-01"}) == "2026-01-01"
+        assert (
+            _core_recency_key({"timestamp": "2026-01-01", "last_accessed": "2026-03-01"})
+            == "2026-03-01"
+        )
+        # A rewrite refreshes the timestamp past an old stamp: the rewrite wins.
+        assert (
+            _core_recency_key({"timestamp": "2026-06-01", "last_accessed": "2026-03-01"})
+            == "2026-06-01"
+        )
+
+    def test_semantic_search_stamps_last_accessed_on_returned_facts(self) -> None:
+        vault = _make_vault()
+        ids = _seed_core(vault, _six_facts())
+        coll = vault._collections["collection"]
+
+        # The fake backend returns entries in insertion order, so top_k=2 -> F0, F1.
+        results = vault.semantic_search("anything", top_k=2)
+        assert {r["raw_content"] for r in results} == {"F0", "F1"}
+
+        for name in ("F0", "F1"):
+            meta = coll._data[ids[name]]["metadata"]
+            assert meta.get("last_accessed"), f"{name} should be stamped after being returned"
+            # Existing metadata is carried forward, not clobbered by the update.
+            assert meta["category"] == "ws"
+            assert meta["timestamp"].startswith("2026-01-0")
+        # Facts the query did not return are untouched.
+        assert "last_accessed" not in coll._data[ids["F2"]]["metadata"]
+
+    def test_prune_evicts_least_recently_used_not_oldest_written(self) -> None:
+        vault = _make_vault(core_memory_max_entries=4)  # 6 entries -> target 3 -> evict 3
+        ids = _seed_core(vault, _six_facts())
+        coll = vault._collections["collection"]
+        # F0 is the oldest write but was recalled most recently.
+        coll._data[ids["F0"]]["metadata"]["last_accessed"] = "2026-12-01T00:00:00+00:00"
+
+        deleted = vault.prune_core_memory()
+
+        assert deleted == 3
+        remaining = {v["document"] for v in coll._data.values()}
+        assert remaining == {"F0", "F4", "F5"}, (
+            "recently recalled F0 must survive; the least recently used F1-F3 go"
+        )
+
+    def test_prune_without_last_accessed_is_oldest_first(self) -> None:
+        """Entries with no recall history (e.g. written before issue10) keep the old order."""
+        vault = _make_vault(core_memory_max_entries=4)
+        _seed_core(vault, _six_facts())
+
+        vault.prune_core_memory()
+
+        remaining = {v["document"] for v in vault._collections["collection"]._data.values()}
+        assert remaining == {"F3", "F4", "F5"}
+
+    def test_recalled_oldest_fact_survives_prune_end_to_end(self) -> None:
+        vault = _make_vault(core_memory_max_entries=4)
+        _seed_core(vault, _six_facts())
+
+        # Recall touches F0 (first in the fake's result order), the oldest write.
+        assert [r["raw_content"] for r in vault.semantic_search("q", top_k=1)] == ["F0"]
+        vault.prune_core_memory()
+
+        remaining = {v["document"] for v in vault._collections["collection"]._data.values()}
+        assert remaining == {"F0", "F4", "F5"}
+
+    def test_touch_failure_never_breaks_search(self) -> None:
+        vault = _make_vault()
+        _seed_core(vault, _six_facts())
+        coll = vault._collections["collection"]
+
+        def _boom(*_args, **_kwargs) -> None:
+            raise RuntimeError("backend update failed")
+
+        coll.update = _boom  # type: ignore[method-assign]
+
+        results = vault.semantic_search("q", top_k=2)
+
+        assert [r["raw_content"] for r in results] == ["F0", "F1"]
+
+    def test_touch_ignores_ids_missing_from_collection(self) -> None:
+        vault = _make_vault()
+        ids = _seed_core(vault, _six_facts())
+        coll = vault._collections["collection"]
+
+        # A graph-index-only hit has an id that Chroma does not hold.
+        vault._touch_core_facts([{"id": "not-in-chroma"}, {"id": ids["F2"]}, {"no": "id"}])
+
+        assert "last_accessed" in coll._data[ids["F2"]]["metadata"]
+        assert coll.count() == 6
+        assert "not-in-chroma" not in coll._data
 
 
 # ---------------------------------------------------------------------------

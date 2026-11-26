@@ -429,7 +429,7 @@ on `usage.updated` + `session.chat.completed` (A8 emits field, A7 populates, A1 
 
 - `TODO(issue1)`: full server-side session re-boot-on-resume (current fix makes `session_state` SQLite-tolerant + returns a typed `session_expired`; the frontend then resumes/creates cleanly).
 - `TODO(issue9)`: modality-tagged daily ledger for a true per-session voice/text/image cost split.
-- `TODO(issue10)`: cosine write-time dedup for paraphrases; bound/TTL `delegation_log`; LRU (not just oldest-first) eviction for `core_memory`.
+- `TODO(issue10)`: cosine write-time dedup for paraphrases; bound/TTL `delegation_log`. (LRU eviction for `core_memory` is done: recall stamps `last_accessed`, `prune_core_memory` evicts least recently used first.)
 - `TODO(issue8c)`: gateway route + UI view for `.og` version history (CLI `hachi og history`/`rollback` shipped; the append-only store + engine wiring shipped).
 - Voice provider/hardware limits (documented, not code-fixable): Whisper is batch-only (mitigate via Groq `whisper-large-v3-turbo` through `stt_base_url`); OpenAI/ElevenLabs TTS buffer server-side until they expose `synthesize_stream`; energy-RMS VAD is noise-sensitive (a WASM VAD like Silero is the upgrade path).
 

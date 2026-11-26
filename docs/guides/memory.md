@@ -46,7 +46,11 @@ at write time remains a `# TODO(issue10)` (cosine-similarity skip > ~0.92).
 
 **Bounds.** `user_profile`/`agent_profile` are hard-capped at 25 entries. `core_memory`
 now has a configurable soft cap (`memory.core_memory_max_entries`, default 1000) with
-oldest-first pruning so it cannot grow unbounded. `delegation_log` remains unbounded
+least-recently-used (LRU) pruning so it cannot grow unbounded: facts returned by
+`semantic_search` are stamped with a `last_accessed` time, and eviction removes the least
+recently used first. Facts that were never recalled (including all written before this
+existed) fall back to their write time, i.e. oldest-first. Only `semantic_search` hits
+count as use; `get_recent_facts` does not. `delegation_log` remains unbounded
 (`# TODO(issue10)`).
 
 ## Reading / recall
@@ -111,4 +115,3 @@ access is serialised by an `RLock`.
 
 - Cosine-similarity write-time dedup for paraphrases (> ~0.92 → skip).
 - Bound / TTL the `delegation_log` collection.
-- LRU (not just oldest-first) eviction for `core_memory`.

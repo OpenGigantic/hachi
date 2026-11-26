@@ -91,6 +91,24 @@ _DEFAULT_RECALL_DISTANCE_MAX: float = 0.85
 # ---------------------------------------------------------------------------
 _DEFAULT_CORE_MEMORY_MAX_ENTRIES: int = 1000
 
+# issue10 — LRU eviction.  ``semantic_search`` stamps this metadata key on the
+# core_memory facts it returns; ``prune_core_memory`` evicts the least recently
+# used entries first.  Entries never recalled (including all written before this
+# key existed) have no stamp and fall back to their write ``timestamp``.
+_LAST_ACCESSED_KEY = "last_accessed"
+
+
+def _core_recency_key(meta: dict[str, Any] | None) -> str:
+    """Eviction sort key for a core_memory entry: when it was last used.
+
+    The later of the write ``timestamp`` and the ``last_accessed`` stamp.  Both
+    are UTC ISO-8601 strings from ``MemoryVault._now_iso``, so string order is
+    chronological order.  A rewrite via ``upsert_fact`` replaces the metadata (and
+    so drops any old stamp) with a fresh ``timestamp`` -- also correct.
+    """
+    meta = meta or {}
+    return max(str(meta.get(_LAST_ACCESSED_KEY) or ""), str(meta.get("timestamp") or ""))
+
 # ---------------------------------------------------------------------------
 # M2 — Memory decay constants
 #
@@ -1119,7 +1137,17 @@ class MemoryVault:
 
         Returns:
             Ranked list of fact dicts with id, content, category, timestamp, raw_content.
+
+        issue10: each returned fact is stamped with a ``last_accessed`` time so
+        :meth:`prune_core_memory` can evict least-recently-used entries first.  The
+        stamp is best-effort and never changes the search result.
         """
+        results = self._semantic_search(query, top_k)
+        self._touch_core_facts(results)
+        return results
+
+    def _semantic_search(self, query: str, top_k: int) -> list[dict[str, Any]]:
+        """Core_memory search without access tracking; see :meth:`semantic_search`."""
         chroma_results = self._query_collection("collection", query, top_k)
         if self._graph_index is None:
             return _redact_results(chroma_results)
@@ -1133,6 +1161,36 @@ class MemoryVault:
         except Exception:
             logger.debug("MemoryVault: graph index search failed; falling back to Chroma only")
             return _redact_results(chroma_results)
+
+    def _touch_core_facts(self, results: list[dict[str, Any]]) -> None:
+        """Stamp ``last_accessed`` on the core_memory facts a query just returned.
+
+        Feeds LRU eviction in :meth:`prune_core_memory` (issue10).  Reads each
+        entry's current metadata and writes it back with the new stamp, so it is
+        correct whether the backend merges or replaces metadata on update.  Ids
+        absent from the Chroma collection (e.g. graph-index-only hits) are skipped.
+
+        Best-effort: any failure is logged at DEBUG and swallowed -- recording an
+        access must never fail or slow a recall.
+        """
+        ids = list(dict.fromkeys(r["id"] for r in results if isinstance(r.get("id"), str)))
+        if not ids:
+            return
+        try:
+            with self._vault_lock:
+                if self._closed:
+                    return
+                coll = self._get_collection("collection")
+                rows = coll.get(ids=ids, include=["metadatas"])
+                found = list(rows.get("ids") or [])
+                if not found:
+                    return
+                metas = rows.get("metadatas") or []
+                now = self._now_iso()
+                prev = [metas[i] if i < len(metas) and metas[i] else {} for i in range(len(found))]
+                coll.update(ids=found, metadatas=[{**m, _LAST_ACCESSED_KEY: now} for m in prev])
+        except Exception:
+            logger.debug("_touch_core_facts: could not stamp last_accessed", exc_info=True)
 
     def get_recent_facts(self, collection: str = "core_memory", limit: int = 8) -> list[str]:
         """Return the most-recently-stored facts by insertion timestamp.
@@ -1216,17 +1274,20 @@ class MemoryVault:
         return _guard_filter_docs([doc for (_ts, doc) in paired])[:limit]
 
     def prune_core_memory(self, target_count: int | None = None) -> int:
-        """Evict the oldest core_memory entries to respect the soft cap.
+        """Evict the least-recently-used core_memory entries to respect the soft cap.
 
         FIX 5 — Bound core_memory growth.
 
         When the ``core_memory`` collection exceeds ``_core_memory_max_entries``,
-        this method deletes the oldest entries (sorted by their stored ``timestamp``
-        metadata field) until the collection size is at or below ``target_count``.
+        this method deletes the least recently used entries until the collection
+        size is at or below ``target_count``.  An entry's recency is the later of
+        its write ``timestamp`` and its ``last_accessed`` stamp (set whenever
+        :meth:`semantic_search` returns it); see :func:`_core_recency_key`.  Entries
+        that were never recalled fall back to ``timestamp``, so this reduces to the
+        previous oldest-first behaviour for stores with no recall history.
 
         This is a *soft* cap: writes are not blocked, but ``upsert_fact`` calls
-        this method opportunistically when the collection is over the cap.  For a
-        smarter LRU/access-frequency strategy, see ``# TODO(issue10)`` below.
+        this method opportunistically when the collection is over the cap.
 
         Args:
             target_count: Desired collection size after pruning.  Defaults to 90%
@@ -1235,9 +1296,6 @@ class MemoryVault:
 
         Returns:
             The number of entries deleted.  Returns 0 on any error.
-
-        # TODO(issue10): Replace naive oldest-first eviction with LRU (track
-        # last-accessed timestamp via a metadata field updated on each query hit).
         """
         if target_count is None:
             target_count = max(1, int(self._core_memory_max_entries * 0.9))
@@ -1268,12 +1326,12 @@ class MemoryVault:
         ids_all = rows.get("ids") or []
         metas_all = rows.get("metadatas") or []
 
-        # Pair each id with its timestamp, sort ascending (oldest first).
+        # Pair each id with its recency stamp, sort ascending (least recently used first).
         id_ts: list[tuple[str, str]] = []
         for i, entry_id in enumerate(ids_all):
-            ts = metas_all[i].get("timestamp", "") if i < len(metas_all) else ""
-            id_ts.append((entry_id, ts))
-        id_ts.sort(key=lambda x: x[1])  # oldest timestamp first
+            meta = metas_all[i] if i < len(metas_all) else None
+            id_ts.append((entry_id, _core_recency_key(meta)))
+        id_ts.sort(key=lambda x: x[1])  # least recently used first
 
         evict_ids = [entry_id for (entry_id, _) in id_ts[:n_to_delete]]
         if not evict_ids:
@@ -1292,7 +1350,7 @@ class MemoryVault:
             return 0
 
         logger.info(
-            "prune_core_memory: evicted %d oldest entries (was %d, target %d)",
+            "prune_core_memory: evicted %d least-recently-used entries (was %d, target %d)",
             len(evict_ids),
             current,
             target_count,
