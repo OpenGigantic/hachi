@@ -1,10 +1,8 @@
+<p align="center">
+  <img src="docs/assets/hachi-banner-readme.svg" alt="CODE_OF_CONDUCT.md - Hachi the last agent" width="780">
+</p>
+
 <div align="center">
-
-# Hachi - The Last Agent
-
-**The governed personal agent**
-
-_Safety, spend, and self-improvement enforced by code — not by vibes._
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)

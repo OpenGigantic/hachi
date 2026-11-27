@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/hachi-blink-security.svg" alt="SECURITY.md - Hachi the last agent" width="480">
+</p>
+
 # Security Policy
 
 ## Supported Versions

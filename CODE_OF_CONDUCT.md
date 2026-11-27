@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/hachi-blink-code-of-conduct.svg" alt="CODE_OF_CONDUCT.md - Hachi the last agent" width="480">
+</p>
+
 # Contributor Covenant Code of Conduct
 
 ## Our Pledge
