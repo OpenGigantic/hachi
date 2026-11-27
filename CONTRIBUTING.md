@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/hachi-blink-contributing.svg" alt="CONTRIBUTING.md - Hachi the dog blinking" width="480">
+</p>
+
 # Contributing to Hachi
 
 Thanks for being here. Hachi is pre-release and the surface is still moving, which means
@@ -25,6 +29,28 @@ You only need a provider key if you want to *use* the agent:
 See [README.md](README.md) for what the project actually is.
 
 ---
+
+## Before you start: check the issues first
+
+Hachi is growing, and the more contributors we have, the easier it is for two people to
+quietly build the same thing. A few minutes in the
+[issues tab](https://github.com/OpenGigantic/hachi/issues) up front prevents that.
+
+**Before you write any code, docs or skills:**
+
+1. **Search the open issues and PRs.** Look for your bug, idea or change, including similar wording.
+2. **If someone already has an issue or PR for it,** don't start a parallel one. Comment on it,
+   say you'd like to help, and coordinate with them, whether that means splitting the work,
+   reviewing, or testing.
+3. **If nothing exists,** open an issue first describing what you found or what you plan to
+   build, and say you're working on it. This claims the work and lets others see it.
+4. **Link your PR to the issue** (for example, `Closes #123`) so the trail stays clear.
+5. **If you stop working on it,** say so on the issue so someone else can pick it up.
+
+This keeps work visible, avoids duplicated effort, and makes collaboration the default.
+
+> **Security vulnerabilities are the exception.** Do **not** open a public issue for them.
+> Follow [SECURITY.md](SECURITY.md) instead.
 
 ## Where to ask
 
