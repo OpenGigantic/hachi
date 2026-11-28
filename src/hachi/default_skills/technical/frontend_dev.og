@@ -1,0 +1,268 @@
+::meta
+  title: Frontend Development Standards
+  version: 1.0.0
+  domain: development|frontend|web|react|typescript|css|accessibility
+
+::index
+  # node-id                | type  | scope | conf | keywords
+  frontend_workflow         | skill | all   | 1.0  | frontend, web, ui, workflow, plan, new feature, component, page, checklist, review
+  frontend_html_a11y        | skill | all   | 1.0  | html, semantic, accessibility, a11y, aria, wcag, keyboard, focus, forms, label, alt, screen reader, accessible, form, input, button, contrast, tab order, modal, dialog
+  frontend_css_responsive   | skill | all   | 1.0  | css, layout, flexbox, grid, responsive, mobile first, breakpoints, tokens, dark mode, tailwind, spacing, style, styling, mobile, layout shift, center, grid layout, theme
+  frontend_typescript       | skill | all   | 1.0  | javascript, typescript, types, async, errors, null, lint, eslint, prettier, modules, strict, type, promise, await, lint, error handling, js, ts
+  frontend_react            | skill | all   | 1.0  | react, component, hooks, props, state, effect, memo, key, composition, vue, rendering, components, hook, useeffect, usestate, props, jsx, next, nextjs
+  frontend_state_data       | skill | all   | 1.0  | state, data fetching, api, cache, loading, error state, query, forms, validation, optimistic, zustand, redux, fetch, forms, loading, spinner, empty state, request, rest, graphql
+  frontend_performance      | skill | all   | 1.0  | performance, lighthouse, core web vitals, lcp, cls, inp, bundle, lazy, images, code splitting, caching, slow, fast, speed, optimize, optimise, image, load time, bundle size
+  frontend_security         | skill | all   | 1.0  | security, xss, csrf, csp, sanitize, cookies, token, secrets, dependencies, cors, innerhtml, secure, vulnerability, injection, auth, password, sanitise
+  frontend_testing          | skill | all   | 1.0  | testing, unit test, vitest, jest, testing library, playwright, e2e, coverage, mock, accessibility test, test, tests, tested, unit, e2e test, mocking, flaky
+
+# ────────────────────────────────────────────────────────────
+::node[frontend_workflow]
+->[:role=skill]
+->[:keywords=frontend, web, ui, workflow, plan, new feature, component, page, checklist, review]
+
+::dense
+Frontend workflow: read existing code, match conventions, build small, check a11y/responsive/states, test, verify.
+
+::steps
+1. Read the existing project first: framework, styling approach, folder layout, lint config, design tokens. Match them; do not introduce a new library without a reason.
+2. Clarify the target: which screens, which breakpoints, which browsers, which states (loading, empty, error, success).
+3. Break the UI into small components with one job each. Decide where state lives before writing markup.
+4. Build semantic HTML first, then layout, then behaviour. Reach for platform features before libraries.
+5. Cover every state: loading, empty, error, partial, offline, long text, and no-JS fallback where it matters.
+6. Check keyboard navigation, focus order, contrast, and a 320px-wide viewport.
+7. Add tests for behaviour that matters, then run lint, type-check, tests and the build.
+8. Summarise what changed, what was not verified in a real browser, and any follow-ups.
+
+::warning
+Never claim a UI works visually unless it was actually rendered or tested. State what was and was not verified.
+
+::assertions
+assert task != "" "A description of the UI task is required."
+assert framework != "" "The target framework or stack must be known (React, Vue, plain HTML...)."
+
+::edges
+->[:requires] frontend_html_a11y
+->[:requires] frontend_css_responsive
+->[:see-also] frontend_testing
+
+::end
+
+# ────────────────────────────────────────────────────────────
+::node[frontend_html_a11y]
+->[:role=skill]
+->[:keywords=html, semantic, accessibility, a11y, aria, wcag, keyboard, focus, forms, label, alt, screen reader, accessible, form, input, button, contrast, tab order, modal, dialog]
+
+::dense
+Semantic HTML first; keyboard-operable; labelled controls; alt text; contrast 4.5:1; ARIA only when HTML cannot do it.
+
+::steps
+1. Use the right element: button for actions, a for navigation, nav/main/header/footer/section for landmarks, ul/ol for lists, table for tabular data.
+2. One h1 per page; headings descend in order without skipping levels.
+3. Every form control has a visible label tied by for/id (or wrapped). Placeholders are not labels.
+4. Every interactive element is reachable and operable by keyboard, with a visible focus style. Never remove outline without a replacement.
+5. Images get meaningful alt text; decorative images get alt="".
+6. Text contrast is at least 4.5:1 (3:1 for large text and UI components). Never use colour alone to convey meaning.
+7. Use ARIA only when native HTML cannot express the pattern. Prefer aria-label, aria-live, aria-expanded over custom roles.
+8. Modals trap and restore focus, close on Escape, and mark the rest of the page inert.
+9. Respect prefers-reduced-motion and avoid auto-playing media.
+10. Set lang on the html element and a meaningful title per page.
+
+::code[lang=html]
+<label for="email">Email</label>
+<input id="email" name="email" type="email" autocomplete="email" required aria-describedby="email-hint">
+<p id="email-hint">We only use this for receipts.</p>
+<button type="submit">Create account</button>
+
+::warning
+A div with an onClick is not a button. It breaks keyboard use, focus and screen readers. Use a real button.
+
+::end
+
+# ────────────────────────────────────────────────────────────
+::node[frontend_css_responsive]
+->[:role=skill]
+->[:keywords=css, layout, flexbox, grid, responsive, mobile first, breakpoints, tokens, dark mode, tailwind, spacing, style, styling, mobile, layout shift, center, grid layout, theme]
+
+::dense
+Mobile-first CSS; flex/grid layout; relative units; design tokens as variables; avoid fixed heights; test 320px to wide.
+
+::steps
+1. Design mobile-first: base styles for small screens, then add min-width media queries.
+2. Use Grid for two-dimensional layout and Flexbox for one-dimensional rows or columns. Use gap, not margin hacks.
+3. Define colours, spacing, radii, font sizes and shadows as CSS custom properties (design tokens) on :root. Never hard-code the same value in many places.
+4. Use rem for type and spacing, % or fr for widths, and clamp() for fluid type. Avoid fixed pixel heights on text containers.
+5. Support dark mode with prefers-color-scheme and tokens, not duplicated rules.
+6. Keep specificity low: single class selectors, no ids, avoid !important. Use a methodology (BEM, CSS Modules, or utility classes) and stay consistent.
+7. Make tap targets at least 44px, and let long words wrap (overflow-wrap).
+8. Use logical properties (margin-inline, padding-block) when the product may be RTL.
+9. Check the layout at 320px, 768px, 1280px and with browser zoom at 200%.
+
+::code[lang=css]
+:root { --space-2: 0.5rem; --space-4: 1rem; --color-text: #1a1a1a; --color-bg: #fff; }
+@media (prefers-color-scheme: dark) { :root { --color-text: #eee; --color-bg: #111; } }
+.cards { display: grid; gap: var(--space-4); grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
+h1 { font-size: clamp(1.75rem, 1.2rem + 2vw, 3rem); }
+
+::note
+With Tailwind or a component library, follow its tokens and config instead of writing parallel custom CSS.
+
+::end
+
+# ────────────────────────────────────────────────────────────
+::node[frontend_typescript]
+->[:role=skill]
+->[:keywords=javascript, typescript, types, async, errors, null, lint, eslint, prettier, modules, strict, type, promise, await, lint, error handling, js, ts]
+
+::dense
+Strict TypeScript; no any; handle async errors; small pure functions; ESLint + Prettier; ES modules.
+
+::steps
+1. Turn on strict mode. Avoid any; use unknown plus narrowing, or precise types. Model states with discriminated unions.
+2. Validate data at the boundary (API responses, form input, URL params) with a schema library such as Zod, and infer types from it.
+3. Always handle rejected promises. Use try/catch around await, and surface failures to the user.
+4. Keep functions small and pure where possible. Separate data transformation from rendering.
+5. Prefer const, immutable updates, and array methods over mutation.
+6. Use named exports, ES modules, and absolute or aliased imports consistently.
+7. Name things by intent (isLoading, onSubmit, userList). Avoid abbreviations.
+8. Let ESLint and Prettier decide style. Never fight the formatter in review.
+9. Remove dead code and console.log before finishing.
+
+::code[lang=typescript]
+type Status<T> =
+  | { kind: "loading" }
+  | { kind: "error"; message: string }
+  | { kind: "ready"; data: T };
+
+async function getUser(id: string, signal?: AbortSignal) {
+  const res = await fetch(`/api/users/${encodeURIComponent(id)}`, { signal });
+  if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+  return userSchema.parse(await res.json());
+}
+
+::end
+
+# ────────────────────────────────────────────────────────────
+::node[frontend_react]
+->[:role=skill]
+->[:keywords=react, component, hooks, props, state, effect, memo, key, composition, vue, rendering, components, hook, useeffect, usestate, props, jsx, next, nextjs]
+
+::dense
+Small function components; derive don't sync state; effects only for external sync; stable keys; compose over config.
+
+::steps
+1. Write small function components with typed props. One component, one responsibility.
+2. Keep state as local as possible; lift it only when siblings need it. Derive values during render instead of copying props into state.
+3. Use useEffect only to sync with external systems (subscriptions, timers, DOM APIs). Do not use it to compute values or respond to events. Always clean up.
+4. Use stable, unique keys for lists, never the array index for reorderable data.
+5. Prefer composition (children, slots) over many boolean props.
+6. Do not memoise by default. Measure first, then use memo, useMemo or useCallback where a real cost exists.
+7. Use controlled inputs consistently; keep form state in one place or a form library.
+8. Wrap risky subtrees in error boundaries, and use Suspense with meaningful fallbacks.
+9. Extract repeated logic into custom hooks named useSomething.
+10. Follow the project's own conventions if it uses Vue, Svelte or another framework; the same principles apply.
+
+::warning
+Never mutate state or props directly, and never call hooks conditionally or inside loops.
+
+::edges
+->[:requires] frontend_typescript
+->[:see-also] frontend_state_data
+
+::end
+
+# ────────────────────────────────────────────────────────────
+::node[frontend_state_data]
+->[:role=skill]
+->[:keywords=state, data fetching, api, cache, loading, error state, query, forms, validation, optimistic, zustand, redux, fetch, forms, loading, spinner, empty state, request, rest, graphql]
+
+::dense
+Server state via query cache; client state minimal; always loading/empty/error UI; validate forms; cancel stale requests.
+
+::steps
+1. Separate server state (remote data) from client state (UI). Use a query library (TanStack Query, SWR, RTK Query) for server state: caching, retries, dedupe, invalidation.
+2. Keep client state minimal. Prefer component state, then context, then a store (Zustand, Redux) only when truly shared.
+3. Every data view renders loading, empty, error and success states. Offer a retry on failure.
+4. Cancel or ignore stale requests (AbortController) so slow responses cannot overwrite newer ones.
+5. Validate forms on the client for usability and on the server for truth. Show errors next to fields and move focus to the first error.
+6. Disable the submit button while pending to prevent double submits. Use optimistic updates only with rollback.
+7. Keep URLs as state for shareable views (filters, tabs, pagination) via search params.
+8. Never store sensitive tokens in localStorage; see the security node.
+
+::end
+
+# ────────────────────────────────────────────────────────────
+::node[frontend_performance]
+->[:role=skill]
+->[:keywords=performance, lighthouse, core web vitals, lcp, cls, inp, bundle, lazy, images, code splitting, caching, slow, fast, speed, optimize, optimise, image, load time, bundle size]
+
+::dense
+Measure first; optimise LCP, CLS, INP; code-split; sized responsive images; lazy-load; cache; trim dependencies.
+
+::steps
+1. Measure before optimising: Lighthouse, Chrome DevTools Performance, and real-user Core Web Vitals.
+2. Targets: LCP under 2.5s, INP under 200ms, CLS under 0.1.
+3. Images: modern formats (AVIF/WebP), srcset and sizes, explicit width and height, loading="lazy" below the fold, and fetchpriority="high" for the hero image.
+4. Split code by route and lazy-load heavy components. Check the bundle with a visualiser and drop or replace large dependencies.
+5. Load fonts with font-display: swap, subset them, and limit weights.
+6. Avoid layout shift: reserve space for images, ads and async content.
+7. Keep main-thread work short; defer or move heavy work to a Web Worker. Debounce expensive input handlers.
+8. Virtualise very long lists.
+9. Use HTTP caching headers and a CDN for static assets with hashed filenames.
+
+::code[lang=html]
+<img src="hero-800.avif" srcset="hero-400.avif 400w, hero-800.avif 800w, hero-1600.avif 1600w"
+     sizes="(min-width: 60rem) 50vw, 100vw" width="1600" height="900" alt="Product dashboard" fetchpriority="high">
+
+::end
+
+# ────────────────────────────────────────────────────────────
+::node[frontend_security]
+->[:role=skill]
+->[:keywords=security, xss, csrf, csp, sanitize, cookies, token, secrets, dependencies, cors, innerhtml, secure, vulnerability, injection, auth, password, sanitise]
+
+::dense
+Escape output; never raw innerHTML; httpOnly cookies; CSP; no secrets in client; audit dependencies; HTTPS only.
+
+::steps
+1. Treat all external data as untrusted. Let the framework escape output. Avoid innerHTML and dangerouslySetInnerHTML; if unavoidable, sanitise with DOMPurify.
+2. Store session tokens in httpOnly, Secure, SameSite cookies, not localStorage. Protect state-changing requests against CSRF.
+3. Set a Content-Security-Policy and other security headers on the server.
+4. Never put secrets or private API keys in client code or env vars exposed to the browser. Anything shipped to the browser is public.
+5. Validate and encode URLs before navigating or embedding; reject javascript: URLs.
+6. Add rel="noopener noreferrer" to links that use target="_blank".
+7. Audit dependencies regularly (npm audit), pin versions with a lockfile, and avoid unmaintained packages.
+8. Load third-party scripts sparingly, with Subresource Integrity where possible.
+9. Do not log personal data to the console or analytics.
+
+::warning
+Client-side checks are for usability only. Authorisation and validation must be enforced on the server.
+
+::end
+
+# ────────────────────────────────────────────────────────────
+::node[frontend_testing]
+->[:role=skill]
+->[:keywords=testing, unit test, vitest, jest, testing library, playwright, e2e, coverage, mock, accessibility test, test, tests, tested, unit, e2e test, mocking, flaky]
+
+::dense
+Test behaviour not implementation; Testing Library queries by role; Playwright for key flows; mock network; run in CI.
+
+::steps
+1. Test what the user sees and does, not internal state. Query by role, label or text (Testing Library), not by class names or test ids unless nothing else works.
+2. Unit-test pure logic (formatters, reducers, validators) with Vitest or Jest. Component-test interactions and states.
+3. Mock the network at the boundary (MSW) so tests exercise real fetch code paths.
+4. Cover the sad paths: error responses, empty data, slow requests, and invalid form input.
+5. Use Playwright or Cypress for a small number of critical end-to-end flows (sign in, checkout, core task).
+6. Add automated accessibility checks (axe) and review keyboard flow by hand.
+7. Keep tests deterministic: no real timers, random data or network. Fix flaky tests instead of retrying them.
+8. Run lint, type-check, tests and the production build in CI before merge.
+
+::code[lang=typescript]
+test("shows an error when the request fails", async () => {
+  server.use(http.get("/api/users", () => HttpResponse.error()));
+  render(<UserList />);
+  expect(await screen.findByRole("alert")).toHaveTextContent(/something went wrong/i);
+  await userEvent.click(screen.getByRole("button", { name: /retry/i }));
+});
+
+::end
