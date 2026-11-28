@@ -131,3 +131,37 @@ def test_register_includes_check_skill_assertions() -> None:
     register_og_tools(reg, SkillEngine())
     names = {s["name"] for s in reg.get_schemas()}
     assert "check_skill_assertions" in names
+
+
+# --------------------------------------------------------------------------- #
+# Regression tests (BB-102): booleans and non-finite floats (NaN / inf)
+# --------------------------------------------------------------------------- #
+def test_boolean_ordering_comparison_is_unknown() -> None:
+    line = 'assert count > 0 "Count must be positive."'
+    assert evaluate_assertion(line, {"count": True}).status == "unknown"
+    assert evaluate_assertion(line, {"count": False}).status == "unknown"
+
+
+def test_nonfinite_float_comparison_is_unknown() -> None:
+    assert (
+        evaluate_assertion(
+            'assert amount != 0 "Amount must be non-zero."', {"amount": float("nan")}
+        ).status
+        == "unknown"
+    )
+    assert (
+        evaluate_assertion(
+            'assert amount > 0 "Amount must be positive."', {"amount": float("nan")}
+        ).status
+        == "unknown"
+    )
+    assert (
+        evaluate_assertion(
+            'assert amount > 0 "Amount must be positive."', {"amount": float("inf")}
+        ).status
+        == "unknown"
+    )
+    assert (
+        evaluate_assertion('assert amount > 0 "Amount must be positive."', {"amount": "nan"}).status
+        == "unknown"
+    )
