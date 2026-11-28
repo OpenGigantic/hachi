@@ -1,0 +1,32 @@
+::meta
+  title: Core PyPI Package Info
+  version: 1.0.0
+  domain: development|python|packages
+
+::index
+  # node-id    | type  | scope | conf | keywords
+  core_pypi     | skill | all   | 1.0  | pypi, python package, pip package, python library, package version, wheel
+
+::node[core_pypi]
+->[:role=skill]
+->[:keywords=pypi, python package, pip package, python library, package version, wheel]
+
+::api[get_pypi_package]
+method=GET
+endpoint=https://pypi.org/pypi/{package}/json
+schema={"package": "string"}
+fields=info.name, info.version, info.summary, info.license, info.home_page, info.requires_python, info.requires_dist
+description=Fetches the latest published release metadata of a Python package from the public PyPI registry: version, summary, license, homepage, Python version requirement, and dependencies. No API key needed.
+
+::dense
+PyPI package metadata: latest version, license, Python requirement, dependencies. No key needed.
+
+::steps
+1. Get the exact PyPI package name from the user (e.g., requests, fastapi, pydantic).
+2. Call `get_pypi_package`.
+3. Report `info.version`, `info.summary`, `info.license`, `info.home_page`, and `info.requires_python` if present. Summarise `info.requires_dist` briefly rather than listing every entry.
+4. If the call returns an HTTP 404 error, tell the user the package was not found on PyPI and suggest checking the spelling.
+5. Remind the user that this is the latest published release on PyPI, not necessarily the version installed in their environment (`uv pip show <package>` or `pip show <package>` shows that).
+
+::assertions
+assert package != "" "A PyPI package name is required."
