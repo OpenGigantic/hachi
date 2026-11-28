@@ -18,6 +18,7 @@ command-execution surface. Lines that aren't in the recognized form are reported
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -41,6 +42,11 @@ class AssertionResult:
     detail: str = ""
 
 
+def _is_nonfinite_number(val: Any) -> bool:
+    """Return True if *val* is a float NaN or +/-inf (excluding booleans)."""
+    return isinstance(val, float) and not math.isfinite(val)
+
+
 def _resolve(token: str, params: dict[str, Any]) -> tuple[Any, bool]:
     """Resolve an operand to a value. Returns ``(value, resolved)``.
 
@@ -53,7 +59,12 @@ def _resolve(token: str, params: dict[str, Any]) -> tuple[Any, bool]:
     if len(token) >= 2 and token[0] == token[-1] and token[0] in ("'", '"'):
         return token[1:-1], True
     try:
-        return (float(token) if "." in token else int(token)), True
+        if "." in token:
+            parsed = float(token)
+            if math.isfinite(parsed):
+                return parsed, True
+        else:
+            return int(token), True
     except ValueError:
         pass
     if token in params:
@@ -63,13 +74,20 @@ def _resolve(token: str, params: dict[str, Any]) -> tuple[Any, bool]:
 
 def _apply(op: str, left: Any, right: Any) -> bool | None:
     """Apply a comparison operator. Returns None when operands aren't comparable."""
+    if _is_nonfinite_number(left) or _is_nonfinite_number(right):
+        return None
     if op == "==":
         return bool(left == right)
     if op == "!=":
         return bool(left != right)
-    # Ordering: prefer numeric comparison; fall back to native comparison.
+    # Booleans are int subclasses in Python; never coerce them into numeric ordering.
+    if isinstance(left, bool) or isinstance(right, bool):
+        return None
+    # Ordering: prefer finite numeric comparison; fall back to native comparison.
     try:
         lf, rf = float(left), float(right)
+        if not math.isfinite(lf) or not math.isfinite(rf):
+            return None
         left, right = lf, rf
     except (TypeError, ValueError):
         pass

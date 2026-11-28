@@ -2296,6 +2296,13 @@ Keep **Avoid:** to a single imperative line: it is what gets injected at session
 - **Avoid:** a security scan must fail closed — every unchecked input becomes a scan error the gate can see — and an allowlist entry must name one exact occurrence (path + kind + value fingerprint), never a class of findings.
 - **Locked by:** `tests/test_secret_scanner_tree_hardening.py` (per-occurrence suppression, invalid-UTF-8 flagging, incomplete-scan CLI failure, broken-git raising, symlink policy, oversize cap) and the updated `tests/test_secret_scanner_tree.py` (malformed-entry rejection, stale-entry liveness check on the committed allowlist).
 
+### BB-102 — `assertion_eval` coerced booleans and non-finite floats (`NaN`/`inf`) in comparisons
+
+- **Symptom:** `evaluate_assertion` evaluated `assert count > 0` with `{"count": True}` as `pass` (`float(True) == 1.0`), and evaluated `assert amount != 0` with `{"amount": float("nan")}` as `pass` (or coerced `"nan"`/`"inf"` strings via `float()`), instead of returning `unknown` for uncomparable or non-finite values.
+- **Root cause:** `bool` is a subclass of `int` in Python so `float(True)` succeeds without `TypeError`, and `float("nan")` / `float("inf")` succeed without `ValueError` and bypass `math.isfinite` checks.
+- **Avoid:** in `core/assertion_eval.py`, reject `isinstance(..., bool)` before numeric coercion in ordering comparisons and reject non-finite floats (`not math.isfinite(...)`) before evaluating any operator.
+- **Locked by:** `tests/test_assertion_eval.py` (`test_boolean_ordering_comparison_is_unknown`, `test_nonfinite_float_comparison_is_unknown`).
+
 <!--
 When you fix a bug: add BB-N here with a one-line **Avoid:**, link the locking test,
 and (if the constraint is subtle) drop a comment next to the code itself — the agent
